@@ -49,3 +49,9 @@ cargo run -p loongclaw-daemon --bin loongclawd -- benchmark-programmatic-pressur
 - [Programmatic Tool Call](docs/reference/programmatic-tool-call.md)
 - [Programmatic Pressure Benchmark](docs/reference/programmatic-pressure-benchmark.md)
 - [Plugin Manifest Format](docs/reference/plugin-manifest-format.md)
+
+## Open Source Contribution
+
+- [Contributing Guide](CONTRIBUTING.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Security Policy](SECURITY.md)

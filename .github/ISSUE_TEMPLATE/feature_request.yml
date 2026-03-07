@@ -1,0 +1,35 @@
+name: Feature Request
+description: Propose a new feature or enhancement.
+labels:
+  - enhancement
+  - triage
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What user/system problem are you trying to solve?
+      placeholder: Describe the problem and constraints.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      placeholder: Describe your proposed approach.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      placeholder: What alternatives did you consider and why not use them?
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Estimated risk track
+      options:
+        - Track A (routine/low-risk)
+        - Track B (higher-risk/policy-impacting)
+    validations:
+      required: true
