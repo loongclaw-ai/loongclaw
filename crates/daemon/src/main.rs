@@ -1,26 +1,27 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs,
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{Arc, Mutex, OnceLock},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use clap::{Parser, Subcommand};
 use ed25519_dalek::{Signature as Ed25519Signature, Verifier, VerifyingKey};
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use kernel::{
     ArchitectureBoundaryPolicy, ArchitectureGuardReport, AuditEvent, AuditEventKind, AuditSink,
     AutoProvisionAgent, AutoProvisionRequest, BootstrapPolicy, BootstrapReport,
-    BootstrapTaskStatus, BridgeSupportMatrix, Capability, ChumosKernel, Clock,
-    CodebaseAwarenessConfig, CodebaseAwarenessEngine, CodebaseAwarenessSnapshot, ConnectorAdapter,
-    ConnectorCommand, ConnectorError, ConnectorOutcome, CoreConnectorAdapter, CoreMemoryAdapter,
-    CoreRuntimeAdapter, CoreToolAdapter, ExecutionRoute, FixedClock, HarnessAdapter, HarnessError,
-    HarnessKind, HarnessOutcome, HarnessRequest, InMemoryAuditSink, IntegrationCatalog,
-    IntegrationHotfix, MemoryCoreOutcome, MemoryCoreRequest, MemoryExtensionAdapter,
+    BootstrapTaskStatus, BridgeSupportMatrix, Capability, Clock, CodebaseAwarenessConfig,
+    CodebaseAwarenessEngine, CodebaseAwarenessSnapshot, ConnectorAdapter, ConnectorCommand,
+    ConnectorError, ConnectorOutcome, CoreConnectorAdapter, CoreMemoryAdapter, CoreRuntimeAdapter,
+    CoreToolAdapter, ExecutionRoute, FixedClock, HarnessAdapter, HarnessError, HarnessKind,
+    HarnessOutcome, HarnessRequest, InMemoryAuditSink, IntegrationCatalog, IntegrationHotfix,
+    LoongClawKernel, MemoryCoreOutcome, MemoryCoreRequest, MemoryExtensionAdapter,
     MemoryExtensionOutcome, MemoryExtensionRequest, PluginAbsorbReport, PluginActivationPlan,
     PluginActivationStatus, PluginBootstrapExecutor, PluginBridgeKind, PluginDescriptor,
     PluginScanReport, PluginScanner, PluginTranslationReport, PluginTranslator, ProvisionPlan,
@@ -29,9 +30,11 @@ use kernel::{
     ToolCoreRequest, ToolExtensionAdapter, ToolExtensionOutcome, ToolExtensionRequest,
     VerticalPackManifest,
 };
+use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use tokio::time::{sleep, Instant as TokioInstant};
 use wasmparser::{Parser as WasmParser, Payload as WasmPayload};
 use wasmtime::{
     Config as WasmtimeConfig, Engine as WasmtimeEngine, Linker as WasmtimeLinker,
@@ -42,9 +45,21 @@ const DEFAULT_PACK_ID: &str = "dev-automation";
 const DEFAULT_AGENT_ID: &str = "agent-dev-01";
 static BUNDLED_APPROVAL_RISK_PROFILE: OnceLock<ApprovalRiskProfile> = OnceLock::new();
 static BUNDLED_SECURITY_SCAN_PROFILE: OnceLock<SecurityScanProfile> = OnceLock::new();
+static WEBHOOK_TEST_RETRY_STATE: OnceLock<Mutex<BTreeMap<String, usize>>> = OnceLock::new();
+type CliResult<T> = Result<T, String>;
+
+mod pressure_benchmark;
+mod programmatic;
+use pressure_benchmark::run_programmatic_pressure_benchmark_cli;
+use programmatic::{
+    acquire_programmatic_circuit_slot, execute_programmatic_tool_call,
+    record_programmatic_circuit_outcome,
+};
+#[cfg(test)]
+mod tests;
 
 #[derive(Parser, Debug)]
-#[command(name = "daemon", about = "ChumOS low-level runtime daemon")]
+#[command(name = "loongclawd", about = "LoongClaw low-level runtime daemon")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -72,7 +87,7 @@ enum Commands {
     AuditDemo,
     /// Generate a runnable JSON spec template for quick vertical customization
     InitSpec {
-        #[arg(long, default_value = "chumos.spec.json")]
+        #[arg(long, default_value = "loongclaw.spec.json")]
         output: String,
     },
     /// Run a full workflow from a JSON spec (task/connector/runtime/tool/memory)
@@ -81,6 +96,23 @@ enum Commands {
         spec: String,
         #[arg(long, default_value_t = false)]
         print_audit: bool,
+    },
+    /// Run pressure benchmarks for programmatic orchestration and optional regression gate checks
+    BenchmarkProgrammaticPressure {
+        #[arg(
+            long,
+            default_value = "examples/benchmarks/programmatic-pressure-matrix.json"
+        )]
+        matrix: String,
+        #[arg(long)]
+        baseline: Option<String>,
+        #[arg(
+            long,
+            default_value = "target/benchmarks/programmatic-pressure-report.json"
+        )]
+        output: String,
+        #[arg(long, default_value_t = false)]
+        enforce_gate: bool,
     },
 }
 
@@ -161,6 +193,385 @@ enum OperationSpec {
         extension: String,
         core: Option<String>,
     },
+    ToolSearch {
+        query: String,
+        #[serde(default = "default_tool_search_limit")]
+        limit: usize,
+        #[serde(default)]
+        include_deferred: bool,
+        #[serde(default)]
+        include_examples: bool,
+    },
+    ProgrammaticToolCall {
+        caller: String,
+        #[serde(default = "default_programmatic_max_calls")]
+        max_calls: usize,
+        #[serde(default)]
+        include_intermediate: bool,
+        #[serde(default)]
+        allowed_connectors: BTreeSet<String>,
+        #[serde(default)]
+        connector_rate_limits: BTreeMap<String, ProgrammaticConnectorRateLimit>,
+        #[serde(default)]
+        connector_circuit_breakers: BTreeMap<String, ProgrammaticCircuitBreakerPolicy>,
+        #[serde(default = "default_programmatic_concurrency_policy")]
+        concurrency: ProgrammaticConcurrencyPolicy,
+        #[serde(default)]
+        return_step: Option<String>,
+        steps: Vec<ProgrammaticStep>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ProgrammaticStep {
+    SetLiteral {
+        step_id: String,
+        value: Value,
+    },
+    JsonPointer {
+        step_id: String,
+        from_step: String,
+        pointer: String,
+    },
+    ConnectorCall {
+        step_id: String,
+        connector_name: String,
+        operation: String,
+        #[serde(default)]
+        required_capabilities: BTreeSet<Capability>,
+        #[serde(default)]
+        retry: Option<ProgrammaticRetryPolicy>,
+        #[serde(default = "default_programmatic_priority_class")]
+        priority_class: ProgrammaticPriorityClass,
+        #[serde(default)]
+        payload: Value,
+    },
+    ConnectorBatch {
+        step_id: String,
+        #[serde(default = "default_true")]
+        parallel: bool,
+        #[serde(default)]
+        continue_on_error: bool,
+        calls: Vec<ProgrammaticBatchCall>,
+    },
+    Conditional {
+        step_id: String,
+        from_step: String,
+        #[serde(default)]
+        pointer: Option<String>,
+        #[serde(default)]
+        equals: Option<Value>,
+        #[serde(default)]
+        exists: Option<bool>,
+        when_true: Value,
+        #[serde(default)]
+        when_false: Option<Value>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ProgrammaticBatchCall {
+    call_id: String,
+    connector_name: String,
+    operation: String,
+    #[serde(default)]
+    required_capabilities: BTreeSet<Capability>,
+    #[serde(default)]
+    retry: Option<ProgrammaticRetryPolicy>,
+    #[serde(default = "default_programmatic_priority_class")]
+    priority_class: ProgrammaticPriorityClass,
+    #[serde(default)]
+    payload: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ProgrammaticRetryPolicy {
+    #[serde(default = "default_programmatic_retry_max_attempts")]
+    max_attempts: usize,
+    #[serde(default = "default_programmatic_retry_initial_backoff_ms")]
+    initial_backoff_ms: u64,
+    #[serde(default = "default_programmatic_retry_max_backoff_ms")]
+    max_backoff_ms: u64,
+    #[serde(default = "default_programmatic_retry_jitter_ratio")]
+    jitter_ratio: f64,
+    #[serde(default = "default_true")]
+    adaptive_jitter: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ProgrammaticConnectorRateLimit {
+    min_interval_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+enum ProgrammaticPriorityClass {
+    High,
+    Normal,
+    Low,
+}
+
+impl ProgrammaticPriorityClass {
+    fn as_str(self) -> &'static str {
+        match self {
+            ProgrammaticPriorityClass::High => "high",
+            ProgrammaticPriorityClass::Normal => "normal",
+            ProgrammaticPriorityClass::Low => "low",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ProgrammaticFairnessPolicy {
+    StrictRoundRobin,
+    WeightedRoundRobin,
+}
+
+impl ProgrammaticFairnessPolicy {
+    fn as_str(self) -> &'static str {
+        match self {
+            ProgrammaticFairnessPolicy::StrictRoundRobin => "strict_round_robin",
+            ProgrammaticFairnessPolicy::WeightedRoundRobin => "weighted_round_robin",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+enum ProgrammaticAdaptiveReduceOn {
+    AnyError,
+    ConnectorExecutionError,
+    CircuitOpen,
+    ConnectorNotFound,
+    ConnectorNotAllowed,
+    CapabilityDenied,
+    PolicyDenied,
+}
+
+impl ProgrammaticAdaptiveReduceOn {
+    fn as_str(self) -> &'static str {
+        match self {
+            ProgrammaticAdaptiveReduceOn::AnyError => "any_error",
+            ProgrammaticAdaptiveReduceOn::ConnectorExecutionError => "connector_execution_error",
+            ProgrammaticAdaptiveReduceOn::CircuitOpen => "circuit_open",
+            ProgrammaticAdaptiveReduceOn::ConnectorNotFound => "connector_not_found",
+            ProgrammaticAdaptiveReduceOn::ConnectorNotAllowed => "connector_not_allowed",
+            ProgrammaticAdaptiveReduceOn::CapabilityDenied => "capability_denied",
+            ProgrammaticAdaptiveReduceOn::PolicyDenied => "policy_denied",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ProgrammaticConcurrencyPolicy {
+    #[serde(default = "default_programmatic_concurrency_max_in_flight")]
+    max_in_flight: usize,
+    #[serde(default = "default_programmatic_concurrency_min_in_flight")]
+    min_in_flight: usize,
+    #[serde(default = "default_programmatic_fairness_policy")]
+    fairness: ProgrammaticFairnessPolicy,
+    #[serde(default = "default_true")]
+    adaptive_budget: bool,
+    #[serde(default = "default_programmatic_priority_high_weight")]
+    high_weight: usize,
+    #[serde(default = "default_programmatic_priority_normal_weight")]
+    normal_weight: usize,
+    #[serde(default = "default_programmatic_priority_low_weight")]
+    low_weight: usize,
+    #[serde(default = "default_programmatic_adaptive_recovery_successes")]
+    adaptive_recovery_successes: usize,
+    #[serde(default = "default_programmatic_adaptive_upshift_step")]
+    adaptive_upshift_step: usize,
+    #[serde(default = "default_programmatic_adaptive_downshift_step")]
+    adaptive_downshift_step: usize,
+    #[serde(default = "default_programmatic_adaptive_reduce_on")]
+    adaptive_reduce_on: BTreeSet<ProgrammaticAdaptiveReduceOn>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ProgrammaticCircuitBreakerPolicy {
+    #[serde(default = "default_programmatic_circuit_failure_threshold")]
+    failure_threshold: usize,
+    #[serde(default = "default_programmatic_circuit_cooldown_ms")]
+    cooldown_ms: u64,
+    #[serde(default = "default_programmatic_circuit_half_open_max_calls")]
+    half_open_max_calls: usize,
+    #[serde(default = "default_programmatic_circuit_success_threshold")]
+    success_threshold: usize,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedProgrammaticBatchCall {
+    call_id: String,
+    connector_name: String,
+    operation: String,
+    required_capabilities: BTreeSet<Capability>,
+    retry_policy: ProgrammaticRetryPolicy,
+    priority_class: ProgrammaticPriorityClass,
+    payload: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProgrammaticInvocationMetrics {
+    attempts: usize,
+    retries: usize,
+    priority_class: String,
+    rate_wait_ms_total: u64,
+    backoff_ms_total: u64,
+    circuit_phase_before: String,
+    circuit_phase_after: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProgrammaticBatchExecutionSummary {
+    mode: String,
+    fairness: String,
+    adaptive_budget: bool,
+    configured_max_in_flight: usize,
+    configured_min_in_flight: usize,
+    peak_in_flight: usize,
+    final_in_flight_budget: usize,
+    budget_reductions: usize,
+    budget_increases: usize,
+    adaptive_upshift_step: usize,
+    adaptive_downshift_step: usize,
+    adaptive_reduce_on: Vec<String>,
+    scheduler_wait_cycles: usize,
+    dispatch_order: Vec<String>,
+    priority_dispatch_counts: BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProgrammaticCircuitPhase {
+    Closed,
+    Open,
+    HalfOpen,
+}
+
+#[derive(Debug, Clone)]
+struct ProgrammaticCircuitRuntimeState {
+    phase: ProgrammaticCircuitPhase,
+    consecutive_failures: usize,
+    open_until: Option<TokioInstant>,
+    half_open_remaining_calls: usize,
+    half_open_successes: usize,
+}
+
+impl Default for ProgrammaticCircuitRuntimeState {
+    fn default() -> Self {
+        Self {
+            phase: ProgrammaticCircuitPhase::Closed,
+            consecutive_failures: 0,
+            open_until: None,
+            half_open_remaining_calls: 0,
+            half_open_successes: 0,
+        }
+    }
+}
+
+fn default_tool_search_limit() -> usize {
+    8
+}
+
+fn default_programmatic_max_calls() -> usize {
+    12
+}
+
+fn default_programmatic_retry_max_attempts() -> usize {
+    1
+}
+
+fn default_programmatic_retry_initial_backoff_ms() -> u64 {
+    100
+}
+
+fn default_programmatic_retry_max_backoff_ms() -> u64 {
+    2_000
+}
+
+fn default_programmatic_retry_jitter_ratio() -> f64 {
+    0.2
+}
+
+fn default_programmatic_priority_class() -> ProgrammaticPriorityClass {
+    ProgrammaticPriorityClass::Normal
+}
+
+fn default_programmatic_concurrency_max_in_flight() -> usize {
+    4
+}
+
+fn default_programmatic_concurrency_min_in_flight() -> usize {
+    1
+}
+
+fn default_programmatic_fairness_policy() -> ProgrammaticFairnessPolicy {
+    ProgrammaticFairnessPolicy::WeightedRoundRobin
+}
+
+fn default_programmatic_priority_high_weight() -> usize {
+    4
+}
+
+fn default_programmatic_priority_normal_weight() -> usize {
+    2
+}
+
+fn default_programmatic_priority_low_weight() -> usize {
+    1
+}
+
+fn default_programmatic_adaptive_recovery_successes() -> usize {
+    2
+}
+
+fn default_programmatic_adaptive_upshift_step() -> usize {
+    1
+}
+
+fn default_programmatic_adaptive_downshift_step() -> usize {
+    1
+}
+
+fn default_programmatic_adaptive_reduce_on() -> BTreeSet<ProgrammaticAdaptiveReduceOn> {
+    BTreeSet::from([
+        ProgrammaticAdaptiveReduceOn::ConnectorExecutionError,
+        ProgrammaticAdaptiveReduceOn::CircuitOpen,
+    ])
+}
+
+fn default_programmatic_concurrency_policy() -> ProgrammaticConcurrencyPolicy {
+    ProgrammaticConcurrencyPolicy {
+        max_in_flight: default_programmatic_concurrency_max_in_flight(),
+        min_in_flight: default_programmatic_concurrency_min_in_flight(),
+        fairness: default_programmatic_fairness_policy(),
+        adaptive_budget: default_true(),
+        high_weight: default_programmatic_priority_high_weight(),
+        normal_weight: default_programmatic_priority_normal_weight(),
+        low_weight: default_programmatic_priority_low_weight(),
+        adaptive_recovery_successes: default_programmatic_adaptive_recovery_successes(),
+        adaptive_upshift_step: default_programmatic_adaptive_upshift_step(),
+        adaptive_downshift_step: default_programmatic_adaptive_downshift_step(),
+        adaptive_reduce_on: default_programmatic_adaptive_reduce_on(),
+    }
+}
+
+fn default_programmatic_circuit_failure_threshold() -> usize {
+    3
+}
+
+fn default_programmatic_circuit_cooldown_ms() -> u64 {
+    1_000
+}
+
+fn default_programmatic_circuit_half_open_max_calls() -> usize {
+    1
+}
+
+fn default_programmatic_circuit_success_threshold() -> usize {
+    1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,6 +587,7 @@ struct RunnerSpec {
     bridge_support: Option<BridgeSupportSpec>,
     bootstrap: Option<BootstrapSpec>,
     auto_provision: Option<AutoProvisionSpec>,
+    #[serde(default)]
     hotfixes: Vec<HotfixSpec>,
     operation: OperationSpec,
 }
@@ -718,6 +1130,45 @@ struct SpecRunReport {
     audit_events: Option<Vec<AuditEvent>>,
 }
 
+#[derive(Debug, Clone)]
+struct ToolSearchEntry {
+    tool_id: String,
+    plugin_id: Option<String>,
+    connector_name: String,
+    provider_id: String,
+    source_path: Option<String>,
+    bridge_kind: PluginBridgeKind,
+    adapter_family: Option<String>,
+    entrypoint_hint: Option<String>,
+    source_language: Option<String>,
+    summary: Option<String>,
+    tags: Vec<String>,
+    input_examples: Vec<Value>,
+    output_examples: Vec<Value>,
+    deferred: bool,
+    loaded: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ToolSearchResult {
+    tool_id: String,
+    plugin_id: Option<String>,
+    connector_name: String,
+    provider_id: String,
+    source_path: Option<String>,
+    bridge_kind: String,
+    adapter_family: Option<String>,
+    entrypoint_hint: Option<String>,
+    source_language: Option<String>,
+    score: u32,
+    deferred: bool,
+    loaded: bool,
+    summary: Option<String>,
+    tags: Vec<String>,
+    input_examples: Vec<Value>,
+    output_examples: Vec<Value>,
+}
+
 struct EmbeddedPiHarness {
     seen: Mutex<Vec<String>>,
 }
@@ -758,6 +1209,48 @@ impl ConnectorAdapter for WebhookConnector {
     }
 
     async fn invoke(&self, command: ConnectorCommand) -> Result<ConnectorOutcome, ConnectorError> {
+        if let Some(test_config) = command
+            .payload
+            .as_object()
+            .and_then(|payload| payload.get("_loongclaw_test"))
+            .and_then(Value::as_object)
+        {
+            let delay_ms = test_config
+                .get("delay_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            if delay_ms > 0 {
+                sleep(Duration::from_millis(delay_ms)).await;
+            }
+            let request_id = test_config
+                .get("request_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_owned();
+            let failures_before_success = test_config
+                .get("failures_before_success")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize;
+            if !request_id.is_empty() && failures_before_success > 0 {
+                let attempts_map =
+                    WEBHOOK_TEST_RETRY_STATE.get_or_init(|| Mutex::new(BTreeMap::new()));
+                let current_attempt = {
+                    let mut guard = attempts_map.lock().map_err(|_| {
+                        ConnectorError::Execution("retry test state mutex poisoned".to_owned())
+                    })?;
+                    let entry = guard.entry(request_id.clone()).or_insert(0);
+                    *entry = entry.saturating_add(1);
+                    *entry
+                };
+                if current_attempt <= failures_before_success {
+                    return Err(ConnectorError::Execution(format!(
+                        "simulated transient failure for request_id={request_id}, attempt={current_attempt}, threshold={failures_before_success}"
+                    )));
+                }
+            }
+        }
+
         Ok(ConnectorOutcome {
             status: "ok".to_owned(),
             payload: json!({
@@ -793,6 +1286,23 @@ impl ConnectorAdapter for DynamicCatalogConnector {
                 self.provider_id
             ))
         })?;
+
+        let allowed_callers = provider_allowed_callers(provider);
+        if !allowed_callers.is_empty() {
+            let caller = caller_from_payload(&command.payload);
+            if !caller_is_allowed(caller.as_deref(), &allowed_callers) {
+                let caller_label = caller.unwrap_or_else(|| "unknown".to_owned());
+                return Err(ConnectorError::Execution(format!(
+                    "caller {caller_label} is not allowed for connector {} (allowed_callers={})",
+                    self.connector_name,
+                    allowed_callers
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )));
+            }
+        }
 
         let requested_channel = command
             .payload
@@ -980,7 +1490,7 @@ fn bridge_execution_payload(
 }
 
 fn maybe_execute_bridge(
-    mut execution: Value,
+    execution: Value,
     bridge_kind: PluginBridgeKind,
     provider: &kernel::ProviderConfig,
     channel: &kernel::ChannelConfig,
@@ -988,11 +1498,7 @@ fn maybe_execute_bridge(
     runtime_policy: &BridgeRuntimePolicy,
 ) -> Value {
     if runtime_policy.execute_http_json && matches!(bridge_kind, PluginBridgeKind::HttpJson) {
-        execution["status"] = Value::String("deferred".to_owned());
-        execution["reason"] = Value::String(
-            "http_json active execution is not implemented yet; planned request emitted".to_owned(),
-        );
-        return execution;
+        return execute_http_json_bridge(execution, provider, channel, command);
     }
 
     if runtime_policy.execute_process_stdio && matches!(bridge_kind, PluginBridgeKind::ProcessStdio)
@@ -1013,6 +1519,121 @@ fn maybe_execute_bridge(
     }
 
     execution
+}
+
+fn execute_http_json_bridge(
+    mut execution: Value,
+    provider: &kernel::ProviderConfig,
+    channel: &kernel::ChannelConfig,
+    command: &ConnectorCommand,
+) -> Value {
+    let method_label = provider
+        .metadata
+        .get("http_method")
+        .map(|value| value.trim().to_ascii_uppercase())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "POST".to_owned());
+    let method = match Method::from_bytes(method_label.as_bytes()) {
+        Ok(method) => method,
+        Err(error) => {
+            execution["status"] = Value::String("blocked".to_owned());
+            execution["reason"] =
+                Value::String(format!("invalid http_method {method_label}: {error}"));
+            return execution;
+        }
+    };
+
+    let timeout_ms = provider
+        .metadata
+        .get("http_timeout_ms")
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(8_000);
+
+    let request_payload = json!({
+        "provider_id": provider.provider_id,
+        "channel_id": channel.channel_id,
+        "operation": command.operation,
+        "payload": command.payload,
+    });
+    let url = channel.endpoint.clone();
+    let request_payload_for_runtime = request_payload.clone();
+    let request_payload_for_worker = request_payload.clone();
+
+    let run = std::thread::spawn(move || -> Result<(u16, bool, String, Value), String> {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_millis(timeout_ms))
+            .build()
+            .map_err(|error| format!("failed to initialize http_json client: {error}"))?;
+
+        let response = client
+            .request(method, &url)
+            .header("content-type", "application/json")
+            .json(&request_payload_for_worker)
+            .send()
+            .map_err(|error| format!("http_json bridge request failed: {error}"))?;
+
+        let status = response.status();
+        let status_code = status.as_u16();
+        let success = status.is_success();
+        let body = response
+            .text()
+            .map_err(|error| format!("failed to read http_json response body: {error}"))?;
+        let body_json = serde_json::from_str::<Value>(&body).unwrap_or(Value::Null);
+        Ok((status_code, success, body, body_json))
+    })
+    .join();
+
+    match run {
+        Ok(Ok((status_code, success, body, body_json))) => {
+            execution["status"] = Value::String(if success {
+                "executed".to_owned()
+            } else {
+                "failed".to_owned()
+            });
+            if !success {
+                execution["reason"] = Value::String(format!(
+                    "http_json bridge request failed with status {status_code}"
+                ));
+            }
+            execution["runtime"] = json!({
+                "executor": "http_json_reqwest",
+                "method": method_label,
+                "url": channel.endpoint,
+                "status_code": status_code,
+                "request": request_payload_for_runtime,
+                "response_text": body,
+                "response_json": body_json,
+                "timeout_ms": timeout_ms,
+            });
+            execution
+        }
+        Ok(Err(reason)) => {
+            execution["status"] = Value::String("failed".to_owned());
+            execution["reason"] = Value::String(reason);
+            execution["runtime"] = json!({
+                "executor": "http_json_reqwest",
+                "method": method_label,
+                "url": channel.endpoint,
+                "request": request_payload_for_runtime,
+                "timeout_ms": timeout_ms,
+            });
+            execution
+        }
+        Err(_) => {
+            execution["status"] = Value::String("failed".to_owned());
+            execution["reason"] =
+                Value::String("http_json bridge worker thread panicked".to_owned());
+            execution["runtime"] = json!({
+                "executor": "http_json_reqwest",
+                "method": method_label,
+                "url": channel.endpoint,
+                "request": request_payload_for_runtime,
+                "timeout_ms": timeout_ms,
+            });
+            execution
+        }
+    }
 }
 
 fn execute_process_stdio_bridge(
@@ -1295,8 +1916,7 @@ fn resolve_wasm_export_name(provider: &kernel::ProviderConfig) -> String {
         .cloned()
         .unwrap_or_else(|| "run".to_owned());
     raw.split([':', '/'])
-        .filter(|segment| !segment.trim().is_empty())
-        .next_back()
+        .rfind(|segment| !segment.trim().is_empty())
         .unwrap_or("run")
         .to_owned()
 }
@@ -1313,6 +1933,54 @@ fn parse_process_args(provider: &kernel::ProviderConfig) -> Vec<String> {
         .get("args")
         .map(|value| value.split_whitespace().map(str::to_owned).collect())
         .unwrap_or_default()
+}
+
+fn provider_allowed_callers(provider: &kernel::ProviderConfig) -> BTreeSet<String> {
+    let mut allowed = BTreeSet::new();
+
+    if let Some(raw_json) = provider.metadata.get("allowed_callers_json") {
+        if let Ok(values) = serde_json::from_str::<Vec<String>>(raw_json) {
+            for value in values {
+                let normalized = value.trim().to_ascii_lowercase();
+                if !normalized.is_empty() {
+                    allowed.insert(normalized);
+                }
+            }
+        }
+    }
+
+    if let Some(raw_list) = provider.metadata.get("allowed_callers") {
+        for token in raw_list.split([',', ';', ' ']) {
+            let normalized = token.trim().to_ascii_lowercase();
+            if !normalized.is_empty() {
+                allowed.insert(normalized);
+            }
+        }
+    }
+
+    allowed
+}
+
+fn caller_from_payload(payload: &Value) -> Option<String> {
+    payload
+        .get("_loongclaw")
+        .and_then(Value::as_object)
+        .and_then(|meta| meta.get("caller"))
+        .and_then(Value::as_str)
+        .map(|caller| caller.trim().to_ascii_lowercase())
+        .filter(|caller| !caller.is_empty())
+}
+
+fn caller_is_allowed(caller: Option<&str>, allowed: &BTreeSet<String>) -> bool {
+    if allowed.is_empty() {
+        return true;
+    }
+    if allowed.contains("*") {
+        return true;
+    }
+    caller
+        .map(|value| value.trim().to_ascii_lowercase())
+        .is_some_and(|value| allowed.contains(&value))
 }
 
 fn is_process_command_allowed(program: &str, allowed: &BTreeSet<String>) -> bool {
@@ -1655,36 +2323,53 @@ impl MemoryExtensionAdapter for VectorIndexMemoryExtension {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-
-    match cli.command.unwrap_or(Commands::Demo) {
+    let result = match cli.command.unwrap_or(Commands::Demo) {
         Commands::Demo => run_demo().await,
         Commands::RunTask { objective, payload } => run_task_cli(&objective, &payload).await,
         Commands::InvokeConnector { operation, payload } => {
-            invoke_connector_cli(&operation, &payload).await;
+            invoke_connector_cli(&operation, &payload).await
         }
         Commands::AuditDemo => run_audit_demo().await,
         Commands::InitSpec { output } => init_spec_cli(&output),
         Commands::RunSpec { spec, print_audit } => run_spec_cli(&spec, print_audit).await,
+        Commands::BenchmarkProgrammaticPressure {
+            matrix,
+            baseline,
+            output,
+            enforce_gate,
+        } => {
+            run_programmatic_pressure_benchmark_cli(
+                &matrix,
+                baseline.as_deref(),
+                &output,
+                enforce_gate,
+            )
+            .await
+        }
+    };
+    if let Err(error) = result {
+        eprintln!("error: {error}");
+        std::process::exit(2);
     }
 }
 
-async fn run_demo() {
+async fn run_demo() -> CliResult<()> {
     let kernel = bootstrap_kernel_default();
     let token = kernel
         .issue_token(DEFAULT_PACK_ID, DEFAULT_AGENT_ID, 300)
-        .expect("token issue failed");
+        .map_err(|error| format!("token issue failed: {error}"))?;
 
     let task = TaskIntent {
         task_id: "task-bootstrap-01".to_owned(),
         objective: "summarize flaky test clusters".to_owned(),
         required_capabilities: BTreeSet::from([Capability::InvokeTool, Capability::MemoryRead]),
-        payload: json!({"repo": "chumyin/ChumOS"}),
+        payload: json!({"repo": "chumyin/LoongClaw"}),
     };
 
     let task_dispatch = kernel
         .execute_task(DEFAULT_PACK_ID, &token, task)
         .await
-        .expect("task dispatch failed");
+        .map_err(|error| format!("task dispatch failed: {error}"))?;
 
     println!(
         "task dispatched via {:?}: {}",
@@ -1703,18 +2388,19 @@ async fn run_demo() {
             },
         )
         .await
-        .expect("connector dispatch failed");
+        .map_err(|error| format!("connector dispatch failed: {error}"))?;
 
     println!("connector dispatch: {}", connector_dispatch.outcome.payload);
+    Ok(())
 }
 
-async fn run_task_cli(objective: &str, payload_raw: &str) {
-    let payload = parse_json_payload(payload_raw, "run-task payload");
+async fn run_task_cli(objective: &str, payload_raw: &str) -> CliResult<()> {
+    let payload = parse_json_payload(payload_raw, "run-task payload")?;
 
     let kernel = bootstrap_kernel_default();
     let token = kernel
         .issue_token(DEFAULT_PACK_ID, DEFAULT_AGENT_ID, 120)
-        .expect("token issue failed");
+        .map_err(|error| format!("token issue failed: {error}"))?;
 
     let dispatch = kernel
         .execute_task(
@@ -1731,21 +2417,21 @@ async fn run_task_cli(objective: &str, payload_raw: &str) {
             },
         )
         .await
-        .expect("task dispatch failed");
+        .map_err(|error| format!("task dispatch failed: {error}"))?;
 
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&dispatch.outcome).expect("serialize task outcome")
-    );
+    let pretty = serde_json::to_string_pretty(&dispatch.outcome)
+        .map_err(|error| format!("serialize task outcome failed: {error}"))?;
+    println!("{pretty}");
+    Ok(())
 }
 
-async fn invoke_connector_cli(operation: &str, payload_raw: &str) {
-    let payload = parse_json_payload(payload_raw, "invoke-connector payload");
+async fn invoke_connector_cli(operation: &str, payload_raw: &str) -> CliResult<()> {
+    let payload = parse_json_payload(payload_raw, "invoke-connector payload")?;
 
     let kernel = bootstrap_kernel_default();
     let token = kernel
         .issue_token(DEFAULT_PACK_ID, DEFAULT_AGENT_ID, 120)
-        .expect("token issue failed");
+        .map_err(|error| format!("token issue failed: {error}"))?;
 
     let dispatch = kernel
         .invoke_connector(
@@ -1759,15 +2445,15 @@ async fn invoke_connector_cli(operation: &str, payload_raw: &str) {
             },
         )
         .await
-        .expect("connector dispatch failed");
+        .map_err(|error| format!("connector dispatch failed: {error}"))?;
 
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&dispatch.outcome).expect("serialize connector outcome")
-    );
+    let pretty = serde_json::to_string_pretty(&dispatch.outcome)
+        .map_err(|error| format!("serialize connector outcome failed: {error}"))?;
+    println!("{pretty}");
+    Ok(())
 }
 
-async fn run_audit_demo() {
+async fn run_audit_demo() -> CliResult<()> {
     let fixed_clock = Arc::new(FixedClock::new(1_700_000_000));
     let audit_sink = Arc::new(InMemoryAuditSink::default());
 
@@ -1775,7 +2461,7 @@ async fn run_audit_demo() {
 
     let token = kernel
         .issue_token(DEFAULT_PACK_ID, DEFAULT_AGENT_ID, 30)
-        .expect("token issue failed");
+        .map_err(|error| format!("token issue failed: {error}"))?;
 
     let _ = kernel
         .execute_task(
@@ -1789,7 +2475,7 @@ async fn run_audit_demo() {
             },
         )
         .await
-        .expect("task dispatch failed");
+        .map_err(|error| format!("task dispatch failed: {error}"))?;
 
     fixed_clock.advance_by(5);
 
@@ -1805,31 +2491,32 @@ async fn run_audit_demo() {
             },
         )
         .await
-        .expect("connector invoke failed");
+        .map_err(|error| format!("connector invoke failed: {error}"))?;
 
     kernel
         .revoke_token(&token.token_id, Some(DEFAULT_AGENT_ID))
-        .expect("token revoke failed");
+        .map_err(|error| format!("token revoke failed: {error}"))?;
 
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&audit_sink.snapshot()).expect("serialize audit events")
-    );
+    let pretty = serde_json::to_string_pretty(&audit_sink.snapshot())
+        .map_err(|error| format!("serialize audit events failed: {error}"))?;
+    println!("{pretty}");
+    Ok(())
 }
 
-fn init_spec_cli(output_path: &str) {
+fn init_spec_cli(output_path: &str) -> CliResult<()> {
     let spec = RunnerSpec::template();
-    write_json_file(output_path, &spec);
+    write_json_file(output_path, &spec)?;
     println!("spec template written to {}", output_path);
+    Ok(())
 }
 
-async fn run_spec_cli(spec_path: &str, print_audit: bool) {
-    let spec = read_spec_file(spec_path);
+async fn run_spec_cli(spec_path: &str, print_audit: bool) -> CliResult<()> {
+    let spec = read_spec_file(spec_path)?;
     let report = execute_spec(spec, print_audit).await;
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&report).expect("serialize spec run report")
-    );
+    let pretty = serde_json::to_string_pretty(&report)
+        .map_err(|error| format!("serialize spec run report failed: {error}"))?;
+    println!("{pretty}");
+    Ok(())
 }
 
 async fn execute_spec(spec: RunnerSpec, include_audit: bool) -> SpecRunReport {
@@ -1919,22 +2606,28 @@ async fn execute_spec(spec: RunnerSpec, include_audit: bool) -> SpecRunReport {
             }
 
             let engine = CodebaseAwarenessEngine::new();
-            let snapshot = engine
-                .snapshot(&CodebaseAwarenessConfig {
-                    roots: self_awareness_spec.roots.clone(),
-                    plugin_roots: self_awareness_spec.plugin_roots.clone(),
-                    proposed_mutations: self_awareness_spec.proposed_mutations.clone(),
-                    architecture_policy,
-                })
-                .expect("self-awareness snapshot failed");
-            architecture_guard = Some(snapshot.architecture_guard.clone());
-            if self_awareness_spec.enforce_guard && snapshot.architecture_guard.has_denials() {
-                blocked_reason = Some(
-                    "architecture guard blocked proposed mutations outside mutable boundaries"
-                        .to_owned(),
-                );
+            match engine.snapshot(&CodebaseAwarenessConfig {
+                roots: self_awareness_spec.roots.clone(),
+                plugin_roots: self_awareness_spec.plugin_roots.clone(),
+                proposed_mutations: self_awareness_spec.proposed_mutations.clone(),
+                architecture_policy,
+            }) {
+                Ok(snapshot) => {
+                    architecture_guard = Some(snapshot.architecture_guard.clone());
+                    if self_awareness_spec.enforce_guard
+                        && snapshot.architecture_guard.has_denials()
+                    {
+                        blocked_reason = Some(
+                            "architecture guard blocked proposed mutations outside mutable boundaries"
+                                .to_owned(),
+                        );
+                    }
+                    self_awareness = Some(snapshot);
+                }
+                Err(error) => {
+                    blocked_reason = Some(format!("self-awareness snapshot failed: {error}"));
+                }
             }
-            self_awareness = Some(snapshot);
         }
     }
 
@@ -1981,7 +2674,14 @@ async fn execute_spec(spec: RunnerSpec, include_audit: bool) -> SpecRunReport {
             let mut remaining_bootstrap_budget =
                 bootstrap_policy.as_ref().map(|policy| policy.max_tasks);
             for root in &plugin_scan.roots {
-                let report = scanner.scan_path(root).expect("plugin scan failed");
+                let report = match scanner.scan_path(root) {
+                    Ok(report) => report,
+                    Err(error) => {
+                        blocked_reason =
+                            Some(format!("plugin scan failed for root {root}: {error}"));
+                        break;
+                    }
+                };
                 let translation = translator.translate_scan_report(&report);
                 let activation = translator.plan_activation(&translation, &bridge_matrix);
 
@@ -2159,39 +2859,213 @@ async fn execute_spec(spec: RunnerSpec, include_audit: bool) -> SpecRunReport {
                 required_capabilities: auto.required_capabilities.clone(),
             };
 
-            let plan = agent
-                .plan(&integration_catalog, &spec.pack, &request)
-                .expect("auto-provision planning failed");
-            if !plan.is_noop() {
-                integration_catalog
-                    .apply_plan(&mut spec.pack, &plan)
-                    .expect("applying auto-provision plan failed");
-                auto_provision_plan = Some(plan);
+            match agent.plan(&integration_catalog, &spec.pack, &request) {
+                Ok(plan) => {
+                    if !plan.is_noop() {
+                        if let Err(error) = integration_catalog.apply_plan(&mut spec.pack, &plan) {
+                            blocked_reason =
+                                Some(format!("applying auto-provision plan failed: {error}"));
+                        } else {
+                            auto_provision_plan = Some(plan);
+                        }
+                    }
+                }
+                Err(error) => {
+                    blocked_reason = Some(format!("auto-provision planning failed: {error}"));
+                }
             }
         }
     }
 
-    for hotfix in &spec.hotfixes {
-        integration_catalog
-            .apply_hotfix(&hotfix.to_kernel_hotfix())
-            .expect("hotfix application failed");
+    if blocked_reason.is_none() {
+        for hotfix in &spec.hotfixes {
+            if let Err(error) = integration_catalog.apply_hotfix(&hotfix.to_kernel_hotfix()) {
+                blocked_reason = Some(format!("hotfix application failed: {error}"));
+                break;
+            }
+        }
+    }
+
+    if let Some(reason) = blocked_reason.clone() {
+        return SpecRunReport {
+            pack_id: spec.pack.pack_id,
+            agent_id: spec.agent_id,
+            operation_kind: "blocked",
+            blocked_reason: Some(reason.clone()),
+            approval_guard,
+            bridge_support_checksum,
+            bridge_support_sha256,
+            self_awareness,
+            architecture_guard,
+            plugin_scan_reports,
+            plugin_translation_reports,
+            plugin_activation_plans,
+            plugin_bootstrap_reports,
+            plugin_bootstrap_queue,
+            plugin_absorb_reports,
+            security_scan_report,
+            auto_provision_plan,
+            outcome: json!({
+                "status": "blocked",
+                "reason": reason,
+            }),
+            integration_catalog,
+            audit_events: if include_audit {
+                Some(audit_sink.snapshot())
+            } else {
+                None
+            },
+        };
     }
 
     let shared_catalog = Arc::new(Mutex::new(integration_catalog.clone()));
     let bridge_runtime_policy = bridge_runtime_policy(&spec, security_scan_policy.as_ref());
     register_dynamic_catalog_connectors(&mut kernel, shared_catalog, bridge_runtime_policy);
 
-    kernel
-        .register_pack(spec.pack.clone())
-        .expect("spec pack registration failed");
-    apply_default_selection(&mut kernel, spec.defaults.as_ref());
+    if let Err(error) = kernel.register_pack(spec.pack.clone()) {
+        let reason = format!("spec pack registration failed: {error}");
+        return SpecRunReport {
+            pack_id: spec.pack.pack_id,
+            agent_id: spec.agent_id,
+            operation_kind: "blocked",
+            blocked_reason: Some(reason.clone()),
+            approval_guard,
+            bridge_support_checksum,
+            bridge_support_sha256,
+            self_awareness,
+            architecture_guard,
+            plugin_scan_reports,
+            plugin_translation_reports,
+            plugin_activation_plans,
+            plugin_bootstrap_reports,
+            plugin_bootstrap_queue,
+            plugin_absorb_reports,
+            security_scan_report,
+            auto_provision_plan,
+            outcome: json!({
+                "status": "blocked",
+                "reason": reason,
+            }),
+            integration_catalog,
+            audit_events: if include_audit {
+                Some(audit_sink.snapshot())
+            } else {
+                None
+            },
+        };
+    }
+    if let Err(error) = apply_default_selection(&mut kernel, spec.defaults.as_ref()) {
+        return SpecRunReport {
+            pack_id: spec.pack.pack_id,
+            agent_id: spec.agent_id,
+            operation_kind: "blocked",
+            blocked_reason: Some(error.clone()),
+            approval_guard,
+            bridge_support_checksum,
+            bridge_support_sha256,
+            self_awareness,
+            architecture_guard,
+            plugin_scan_reports,
+            plugin_translation_reports,
+            plugin_activation_plans,
+            plugin_bootstrap_reports,
+            plugin_bootstrap_queue,
+            plugin_absorb_reports,
+            security_scan_report,
+            auto_provision_plan,
+            outcome: json!({
+                "status": "blocked",
+                "reason": error,
+            }),
+            integration_catalog,
+            audit_events: if include_audit {
+                Some(audit_sink.snapshot())
+            } else {
+                None
+            },
+        };
+    }
 
-    let token = kernel
-        .issue_token(&spec.pack.pack_id, &spec.agent_id, spec.ttl_s)
-        .expect("token issue for spec failed");
+    let token = match kernel.issue_token(&spec.pack.pack_id, &spec.agent_id, spec.ttl_s) {
+        Ok(token) => token,
+        Err(error) => {
+            let reason = format!("token issue for spec failed: {error}");
+            return SpecRunReport {
+                pack_id: spec.pack.pack_id,
+                agent_id: spec.agent_id,
+                operation_kind: "blocked",
+                blocked_reason: Some(reason.clone()),
+                approval_guard,
+                bridge_support_checksum,
+                bridge_support_sha256,
+                self_awareness,
+                architecture_guard,
+                plugin_scan_reports,
+                plugin_translation_reports,
+                plugin_activation_plans,
+                plugin_bootstrap_reports,
+                plugin_bootstrap_queue,
+                plugin_absorb_reports,
+                security_scan_report,
+                auto_provision_plan,
+                outcome: json!({
+                    "status": "blocked",
+                    "reason": reason,
+                }),
+                integration_catalog,
+                audit_events: if include_audit {
+                    Some(audit_sink.snapshot())
+                } else {
+                    None
+                },
+            };
+        }
+    };
 
-    let (operation_kind, outcome) =
-        execute_spec_operation(&kernel, &spec.pack.pack_id, &token, &spec.operation).await;
+    let (operation_kind, outcome) = match execute_spec_operation(
+        &kernel,
+        &spec.pack.pack_id,
+        &token,
+        &integration_catalog,
+        &plugin_scan_reports,
+        &plugin_translation_reports,
+        &spec.operation,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            return SpecRunReport {
+                pack_id: spec.pack.pack_id,
+                agent_id: spec.agent_id,
+                operation_kind: "blocked",
+                blocked_reason: Some(error.clone()),
+                approval_guard,
+                bridge_support_checksum,
+                bridge_support_sha256,
+                self_awareness,
+                architecture_guard,
+                plugin_scan_reports,
+                plugin_translation_reports,
+                plugin_activation_plans,
+                plugin_bootstrap_reports,
+                plugin_bootstrap_queue,
+                plugin_absorb_reports,
+                security_scan_report,
+                auto_provision_plan,
+                outcome: json!({
+                    "status": "blocked",
+                    "reason": error,
+                }),
+                integration_catalog,
+                audit_events: if include_audit {
+                    Some(audit_sink.snapshot())
+                } else {
+                    None
+                },
+            };
+        }
+    };
 
     SpecRunReport {
         pack_id: spec.pack.pack_id,
@@ -2429,7 +3303,7 @@ fn apply_security_scan_delta(report: &mut SecurityScanReport, delta: SecuritySca
 }
 
 fn emit_security_scan_audit_event(
-    kernel: &ChumosKernel<StaticPolicyEngine>,
+    kernel: &LoongClawKernel<StaticPolicyEngine>,
     pack_id: &str,
     agent_id: &str,
     report: &SecurityScanReport,
@@ -3291,6 +4165,10 @@ fn operation_approval_key(operation: &OperationSpec) -> String {
         } => {
             format!("memory_extension:{extension}:{operation}")
         }
+        OperationSpec::ToolSearch { query, .. } => format!("tool_search:{query}"),
+        OperationSpec::ProgrammaticToolCall { caller, .. } => {
+            format!("programmatic_tool_call:{caller}")
+        }
     }
 }
 
@@ -3306,6 +4184,8 @@ fn operation_approval_kind(operation: &OperationSpec) -> &'static str {
         OperationSpec::ToolExtension { .. } => "tool_extension",
         OperationSpec::MemoryCore { .. } => "memory_core",
         OperationSpec::MemoryExtension { .. } => "memory_extension",
+        OperationSpec::ToolSearch { .. } => "tool_search",
+        OperationSpec::ProgrammaticToolCall { .. } => "programmatic_tool_call",
     }
 }
 
@@ -3313,7 +4193,9 @@ fn is_operation_in_approval_scope(operation: &OperationSpec, scope: HumanApprova
     match scope {
         HumanApprovalScope::ToolCalls => matches!(
             operation,
-            OperationSpec::ToolCore { .. } | OperationSpec::ToolExtension { .. }
+            OperationSpec::ToolCore { .. }
+                | OperationSpec::ToolExtension { .. }
+                | OperationSpec::ProgrammaticToolCall { .. }
         ),
         HumanApprovalScope::AllOperations => true,
     }
@@ -3446,13 +4328,13 @@ fn operation_tool_name(operation: &OperationSpec) -> Option<&str> {
         OperationSpec::ToolExtension {
             extension_action, ..
         } => Some(extension_action.as_str()),
+        OperationSpec::ProgrammaticToolCall { caller, .. } => Some(caller.as_str()),
         _ => None,
     }
 }
 
 fn operation_payload_keys(operation: &OperationSpec) -> Vec<String> {
-    let mut keys = Vec::new();
-    let payload = match operation {
+    match operation {
         OperationSpec::Task { payload, .. }
         | OperationSpec::ConnectorLegacy { payload, .. }
         | OperationSpec::ConnectorCore { payload, .. }
@@ -3462,10 +4344,195 @@ fn operation_payload_keys(operation: &OperationSpec) -> Vec<String> {
         | OperationSpec::ToolCore { payload, .. }
         | OperationSpec::ToolExtension { payload, .. }
         | OperationSpec::MemoryCore { payload, .. }
-        | OperationSpec::MemoryExtension { payload, .. } => payload,
-    };
-    collect_json_keys(payload, &mut keys);
-    keys
+        | OperationSpec::MemoryExtension { payload, .. } => {
+            let mut keys = Vec::new();
+            collect_json_keys(payload, &mut keys);
+            keys
+        }
+        OperationSpec::ToolSearch { .. } => {
+            let mut keys = Vec::new();
+            keys.extend(
+                ["query", "limit", "include_deferred", "include_examples"]
+                    .iter()
+                    .map(|value| (*value).to_owned()),
+            );
+            keys
+        }
+        OperationSpec::ProgrammaticToolCall {
+            allowed_connectors,
+            connector_rate_limits,
+            connector_circuit_breakers,
+            concurrency,
+            steps,
+            ..
+        } => {
+            let mut keys = Vec::new();
+            keys.extend(
+                [
+                    "caller",
+                    "max_calls",
+                    "include_intermediate",
+                    "connector_rate_limits",
+                    "connector_circuit_breakers",
+                    "concurrency",
+                    "return_step",
+                    "steps",
+                ]
+                .iter()
+                .map(|value| (*value).to_owned()),
+            );
+            keys.push("max_in_flight".to_owned());
+            keys.push(concurrency.max_in_flight.to_string());
+            keys.push("min_in_flight".to_owned());
+            keys.push(concurrency.min_in_flight.to_string());
+            keys.push("fairness".to_owned());
+            keys.push(concurrency.fairness.as_str().to_owned());
+            keys.push("adaptive_budget".to_owned());
+            keys.push(concurrency.adaptive_budget.to_string());
+            keys.push("high_weight".to_owned());
+            keys.push(concurrency.high_weight.to_string());
+            keys.push("normal_weight".to_owned());
+            keys.push(concurrency.normal_weight.to_string());
+            keys.push("low_weight".to_owned());
+            keys.push(concurrency.low_weight.to_string());
+            keys.push("adaptive_recovery_successes".to_owned());
+            keys.push(concurrency.adaptive_recovery_successes.to_string());
+            keys.push("adaptive_upshift_step".to_owned());
+            keys.push(concurrency.adaptive_upshift_step.to_string());
+            keys.push("adaptive_downshift_step".to_owned());
+            keys.push(concurrency.adaptive_downshift_step.to_string());
+            keys.push("adaptive_reduce_on".to_owned());
+            for rule in &concurrency.adaptive_reduce_on {
+                keys.push(rule.as_str().to_owned());
+            }
+            keys.extend(allowed_connectors.iter().cloned());
+            for (connector_name, limit) in connector_rate_limits {
+                keys.push("connector_name".to_owned());
+                keys.push(connector_name.clone());
+                keys.push("min_interval_ms".to_owned());
+                keys.push(limit.min_interval_ms.to_string());
+            }
+            for (connector_name, policy) in connector_circuit_breakers {
+                keys.push("connector_name".to_owned());
+                keys.push(connector_name.clone());
+                keys.push("failure_threshold".to_owned());
+                keys.push(policy.failure_threshold.to_string());
+                keys.push("cooldown_ms".to_owned());
+                keys.push(policy.cooldown_ms.to_string());
+                keys.push("half_open_max_calls".to_owned());
+                keys.push(policy.half_open_max_calls.to_string());
+                keys.push("success_threshold".to_owned());
+                keys.push(policy.success_threshold.to_string());
+            }
+            for step in steps {
+                keys.push("step_id".to_owned());
+                match step {
+                    ProgrammaticStep::SetLiteral { value, .. } => {
+                        collect_json_keys(value, &mut keys);
+                    }
+                    ProgrammaticStep::JsonPointer { .. } => {
+                        keys.push("pointer".to_owned());
+                    }
+                    ProgrammaticStep::ConnectorCall {
+                        connector_name,
+                        operation,
+                        priority_class,
+                        retry,
+                        payload,
+                        ..
+                    } => {
+                        keys.push("connector_name".to_owned());
+                        keys.push("operation".to_owned());
+                        keys.push("priority_class".to_owned());
+                        keys.push(connector_name.clone());
+                        keys.push(operation.clone());
+                        keys.push(priority_class.as_str().to_owned());
+                        if let Some(retry) = retry {
+                            keys.push("retry".to_owned());
+                            keys.push("max_attempts".to_owned());
+                            keys.push("initial_backoff_ms".to_owned());
+                            keys.push("max_backoff_ms".to_owned());
+                            keys.push("jitter_ratio".to_owned());
+                            keys.push("adaptive_jitter".to_owned());
+                            keys.push(retry.max_attempts.to_string());
+                            keys.push(retry.initial_backoff_ms.to_string());
+                            keys.push(retry.max_backoff_ms.to_string());
+                            keys.push(retry.jitter_ratio.to_string());
+                            keys.push(retry.adaptive_jitter.to_string());
+                        }
+                        collect_json_keys(payload, &mut keys);
+                    }
+                    ProgrammaticStep::ConnectorBatch {
+                        parallel,
+                        continue_on_error,
+                        calls,
+                        ..
+                    } => {
+                        keys.push("parallel".to_owned());
+                        keys.push(parallel.to_string());
+                        keys.push("continue_on_error".to_owned());
+                        keys.push(continue_on_error.to_string());
+                        keys.push("calls".to_owned());
+                        for call in calls {
+                            keys.push("call_id".to_owned());
+                            keys.push(call.call_id.clone());
+                            keys.push("connector_name".to_owned());
+                            keys.push("operation".to_owned());
+                            keys.push("priority_class".to_owned());
+                            keys.push(call.connector_name.clone());
+                            keys.push(call.operation.clone());
+                            keys.push(call.priority_class.as_str().to_owned());
+                            if let Some(retry) = &call.retry {
+                                keys.push("retry".to_owned());
+                                keys.push("max_attempts".to_owned());
+                                keys.push("initial_backoff_ms".to_owned());
+                                keys.push("max_backoff_ms".to_owned());
+                                keys.push("jitter_ratio".to_owned());
+                                keys.push("adaptive_jitter".to_owned());
+                                keys.push(retry.max_attempts.to_string());
+                                keys.push(retry.initial_backoff_ms.to_string());
+                                keys.push(retry.max_backoff_ms.to_string());
+                                keys.push(retry.jitter_ratio.to_string());
+                                keys.push(retry.adaptive_jitter.to_string());
+                            }
+                            collect_json_keys(&call.payload, &mut keys);
+                        }
+                    }
+                    ProgrammaticStep::Conditional {
+                        from_step,
+                        pointer,
+                        equals,
+                        exists,
+                        when_true,
+                        when_false,
+                        ..
+                    } => {
+                        keys.push("from_step".to_owned());
+                        keys.push(from_step.clone());
+                        if let Some(pointer) = pointer {
+                            keys.push("pointer".to_owned());
+                            keys.push(pointer.clone());
+                        }
+                        if let Some(equals) = equals {
+                            keys.push("equals".to_owned());
+                            collect_json_keys(equals, &mut keys);
+                        }
+                        if let Some(exists) = exists {
+                            keys.push("exists".to_owned());
+                            keys.push(exists.to_string());
+                        }
+                        keys.push("when_true".to_owned());
+                        collect_json_keys(when_true, &mut keys);
+                        if let Some(when_false) = when_false {
+                            keys.push("when_false".to_owned());
+                            collect_json_keys(when_false, &mut keys);
+                        }
+                    }
+                }
+            }
+            keys
+        }
+    }
 }
 
 fn collect_json_keys(value: &Value, keys: &mut Vec<String>) {
@@ -3499,8 +4566,7 @@ fn operation_risk_haystack(operation: &OperationSpec) -> String {
 }
 
 fn operation_payload_strings(operation: &OperationSpec) -> Vec<String> {
-    let mut values = Vec::new();
-    let payload = match operation {
+    match operation {
         OperationSpec::Task { payload, .. }
         | OperationSpec::ConnectorLegacy { payload, .. }
         | OperationSpec::ConnectorCore { payload, .. }
@@ -3510,10 +4576,158 @@ fn operation_payload_strings(operation: &OperationSpec) -> Vec<String> {
         | OperationSpec::ToolCore { payload, .. }
         | OperationSpec::ToolExtension { payload, .. }
         | OperationSpec::MemoryCore { payload, .. }
-        | OperationSpec::MemoryExtension { payload, .. } => payload,
-    };
-    collect_json_strings(payload, &mut values);
-    values
+        | OperationSpec::MemoryExtension { payload, .. } => {
+            let mut values = Vec::new();
+            collect_json_strings(payload, &mut values);
+            values
+        }
+        OperationSpec::ToolSearch {
+            query,
+            limit,
+            include_deferred,
+            include_examples,
+        } => {
+            let mut values = Vec::new();
+            values.push(query.clone());
+            values.push(limit.to_string());
+            values.push(include_deferred.to_string());
+            values.push(include_examples.to_string());
+            values
+        }
+        OperationSpec::ProgrammaticToolCall {
+            caller,
+            max_calls,
+            include_intermediate,
+            allowed_connectors,
+            connector_rate_limits,
+            connector_circuit_breakers,
+            concurrency,
+            return_step,
+            steps,
+        } => {
+            let mut values = Vec::new();
+            values.push(caller.clone());
+            values.push(max_calls.to_string());
+            values.push(include_intermediate.to_string());
+            values.push(concurrency.max_in_flight.to_string());
+            values.push(concurrency.min_in_flight.to_string());
+            values.push(concurrency.fairness.as_str().to_owned());
+            values.push(concurrency.adaptive_budget.to_string());
+            values.push(concurrency.high_weight.to_string());
+            values.push(concurrency.normal_weight.to_string());
+            values.push(concurrency.low_weight.to_string());
+            values.push(concurrency.adaptive_recovery_successes.to_string());
+            values.push(concurrency.adaptive_upshift_step.to_string());
+            values.push(concurrency.adaptive_downshift_step.to_string());
+            for rule in &concurrency.adaptive_reduce_on {
+                values.push(rule.as_str().to_owned());
+            }
+            values.extend(allowed_connectors.iter().cloned());
+            for (connector_name, limit) in connector_rate_limits {
+                values.push(connector_name.clone());
+                values.push(limit.min_interval_ms.to_string());
+            }
+            for (connector_name, policy) in connector_circuit_breakers {
+                values.push(connector_name.clone());
+                values.push(policy.failure_threshold.to_string());
+                values.push(policy.cooldown_ms.to_string());
+                values.push(policy.half_open_max_calls.to_string());
+                values.push(policy.success_threshold.to_string());
+            }
+            if let Some(return_step) = return_step {
+                values.push(return_step.clone());
+            }
+            for step in steps {
+                match step {
+                    ProgrammaticStep::SetLiteral { step_id, value } => {
+                        values.push(step_id.clone());
+                        collect_json_strings(value, &mut values);
+                    }
+                    ProgrammaticStep::JsonPointer {
+                        step_id,
+                        from_step,
+                        pointer,
+                    } => {
+                        values.push(step_id.clone());
+                        values.push(from_step.clone());
+                        values.push(pointer.clone());
+                    }
+                    ProgrammaticStep::ConnectorCall {
+                        step_id,
+                        connector_name,
+                        operation,
+                        priority_class,
+                        retry,
+                        payload,
+                        ..
+                    } => {
+                        values.push(step_id.clone());
+                        values.push(connector_name.clone());
+                        values.push(operation.clone());
+                        values.push(priority_class.as_str().to_owned());
+                        if let Some(retry) = retry {
+                            values.push(retry.max_attempts.to_string());
+                            values.push(retry.initial_backoff_ms.to_string());
+                            values.push(retry.max_backoff_ms.to_string());
+                            values.push(retry.jitter_ratio.to_string());
+                            values.push(retry.adaptive_jitter.to_string());
+                        }
+                        collect_json_strings(payload, &mut values);
+                    }
+                    ProgrammaticStep::ConnectorBatch {
+                        step_id,
+                        parallel,
+                        continue_on_error,
+                        calls,
+                    } => {
+                        values.push(step_id.clone());
+                        values.push(parallel.to_string());
+                        values.push(continue_on_error.to_string());
+                        for call in calls {
+                            values.push(call.call_id.clone());
+                            values.push(call.connector_name.clone());
+                            values.push(call.operation.clone());
+                            values.push(call.priority_class.as_str().to_owned());
+                            if let Some(retry) = &call.retry {
+                                values.push(retry.max_attempts.to_string());
+                                values.push(retry.initial_backoff_ms.to_string());
+                                values.push(retry.max_backoff_ms.to_string());
+                                values.push(retry.jitter_ratio.to_string());
+                                values.push(retry.adaptive_jitter.to_string());
+                            }
+                            collect_json_strings(&call.payload, &mut values);
+                        }
+                    }
+                    ProgrammaticStep::Conditional {
+                        step_id,
+                        from_step,
+                        pointer,
+                        equals,
+                        exists,
+                        when_true,
+                        when_false,
+                    } => {
+                        values.push(step_id.clone());
+                        values.push(from_step.clone());
+                        if let Some(pointer) = pointer {
+                            values.push(pointer.clone());
+                        }
+                        if let Some(exists) = exists {
+                            values.push(exists.to_string());
+                        }
+                        if let Some(equals) = equals {
+                            collect_json_strings(equals, &mut values);
+                        }
+                        collect_json_strings(when_true, &mut values);
+                        if let Some(when_false) = when_false {
+                            collect_json_strings(when_false, &mut values);
+                        }
+                    }
+                }
+            }
+            values
+        }
+    }
 }
 
 fn collect_json_strings(value: &Value, values: &mut Vec<String>) {
@@ -3655,6 +4869,54 @@ fn enrich_scan_report_with_translation(
                 .metadata
                 .entry("plugin_source_path".to_owned())
                 .or_insert_with(|| descriptor.path.clone());
+            descriptor
+                .manifest
+                .metadata
+                .entry("plugin_id".to_owned())
+                .or_insert_with(|| descriptor.manifest.plugin_id.clone());
+            descriptor
+                .manifest
+                .metadata
+                .entry("defer_loading".to_owned())
+                .or_insert_with(|| descriptor.manifest.defer_loading.to_string());
+            if let Some(summary) = descriptor.manifest.summary.clone() {
+                descriptor
+                    .manifest
+                    .metadata
+                    .entry("summary".to_owned())
+                    .or_insert(summary);
+            }
+            if !descriptor.manifest.tags.is_empty() {
+                if let Ok(tags_json) = serde_json::to_string(&descriptor.manifest.tags) {
+                    descriptor
+                        .manifest
+                        .metadata
+                        .entry("tags_json".to_owned())
+                        .or_insert(tags_json);
+                }
+            }
+            if !descriptor.manifest.input_examples.is_empty() {
+                if let Ok(input_examples_json) =
+                    serde_json::to_string(&descriptor.manifest.input_examples)
+                {
+                    descriptor
+                        .manifest
+                        .metadata
+                        .entry("input_examples_json".to_owned())
+                        .or_insert(input_examples_json);
+                }
+            }
+            if !descriptor.manifest.output_examples.is_empty() {
+                if let Ok(output_examples_json) =
+                    serde_json::to_string(&descriptor.manifest.output_examples)
+                {
+                    descriptor
+                        .manifest
+                        .metadata
+                        .entry("output_examples_json".to_owned())
+                        .or_insert(output_examples_json);
+                }
+            }
             if let Some(component) = descriptor.manifest.metadata.get("component").cloned() {
                 let resolved = resolve_plugin_relative_path(&descriptor.path, &component);
                 let normalized = normalize_path_for_policy(&resolved);
@@ -3904,7 +5166,7 @@ fn default_integration_catalog() -> IntegrationCatalog {
 }
 
 fn register_dynamic_catalog_connectors(
-    kernel: &mut ChumosKernel<StaticPolicyEngine>,
+    kernel: &mut LoongClawKernel<StaticPolicyEngine>,
     catalog: Arc<Mutex<IntegrationCatalog>>,
     bridge_runtime_policy: BridgeRuntimePolicy,
 ) {
@@ -3930,16 +5192,32 @@ fn operation_connector_name(operation: &OperationSpec) -> Option<String> {
         OperationSpec::ConnectorLegacy { connector_name, .. }
         | OperationSpec::ConnectorCore { connector_name, .. }
         | OperationSpec::ConnectorExtension { connector_name, .. } => Some(connector_name.clone()),
+        OperationSpec::ProgrammaticToolCall { steps, .. } => {
+            steps.iter().find_map(|step| match step {
+                ProgrammaticStep::ConnectorCall { connector_name, .. } => {
+                    Some(connector_name.clone())
+                }
+                ProgrammaticStep::ConnectorBatch { calls, .. } => {
+                    calls.first().map(|call| call.connector_name.clone())
+                }
+                ProgrammaticStep::SetLiteral { .. }
+                | ProgrammaticStep::JsonPointer { .. }
+                | ProgrammaticStep::Conditional { .. } => None,
+            })
+        }
         _ => None,
     }
 }
 
 async fn execute_spec_operation(
-    kernel: &ChumosKernel<StaticPolicyEngine>,
+    kernel: &LoongClawKernel<StaticPolicyEngine>,
     pack_id: &str,
     token: &kernel::CapabilityToken,
+    integration_catalog: &IntegrationCatalog,
+    plugin_scan_reports: &[PluginScanReport],
+    plugin_translation_reports: &[PluginTranslationReport],
     operation: &OperationSpec,
-) -> (&'static str, Value) {
+) -> CliResult<(&'static str, Value)> {
     match operation {
         OperationSpec::Task {
             task_id,
@@ -3959,14 +5237,14 @@ async fn execute_spec_operation(
                     },
                 )
                 .await
-                .expect("task execution from spec failed");
-            (
+                .map_err(|error| format!("task execution from spec failed: {error}"))?;
+            Ok((
                 "task",
                 json!({
                     "route": dispatch.adapter_route,
                     "outcome": dispatch.outcome,
                 }),
-            )
+            ))
         }
         OperationSpec::ConnectorLegacy {
             connector_name,
@@ -3986,14 +5264,14 @@ async fn execute_spec_operation(
                     },
                 )
                 .await
-                .expect("legacy connector execution from spec failed");
-            (
+                .map_err(|error| format!("legacy connector execution from spec failed: {error}"))?;
+            Ok((
                 "connector_legacy",
                 json!({
                     "connector_name": dispatch.connector_name,
                     "outcome": dispatch.outcome,
                 }),
-            )
+            ))
         }
         OperationSpec::ConnectorCore {
             connector_name,
@@ -4015,14 +5293,14 @@ async fn execute_spec_operation(
                     },
                 )
                 .await
-                .expect("core connector execution from spec failed");
-            (
+                .map_err(|error| format!("core connector execution from spec failed: {error}"))?;
+            Ok((
                 "connector_core",
                 json!({
                     "connector_name": dispatch.connector_name,
                     "outcome": dispatch.outcome,
                 }),
-            )
+            ))
         }
         OperationSpec::ConnectorExtension {
             connector_name,
@@ -4046,14 +5324,16 @@ async fn execute_spec_operation(
                     },
                 )
                 .await
-                .expect("extension connector execution from spec failed");
-            (
+                .map_err(|error| {
+                    format!("extension connector execution from spec failed: {error}")
+                })?;
+            Ok((
                 "connector_extension",
                 json!({
                     "connector_name": dispatch.connector_name,
                     "outcome": dispatch.outcome,
                 }),
-            )
+            ))
         }
         OperationSpec::RuntimeCore {
             action,
@@ -4073,8 +5353,8 @@ async fn execute_spec_operation(
                     },
                 )
                 .await
-                .expect("runtime core execution from spec failed");
-            ("runtime_core", json!({ "outcome": outcome }))
+                .map_err(|error| format!("runtime core execution from spec failed: {error}"))?;
+            Ok(("runtime_core", json!({ "outcome": outcome })))
         }
         OperationSpec::RuntimeExtension {
             action,
@@ -4096,8 +5376,10 @@ async fn execute_spec_operation(
                     },
                 )
                 .await
-                .expect("runtime extension execution from spec failed");
-            ("runtime_extension", json!({ "outcome": outcome }))
+                .map_err(|error| {
+                    format!("runtime extension execution from spec failed: {error}")
+                })?;
+            Ok(("runtime_extension", json!({ "outcome": outcome })))
         }
         OperationSpec::ToolCore {
             tool_name,
@@ -4117,8 +5399,8 @@ async fn execute_spec_operation(
                     },
                 )
                 .await
-                .expect("tool core execution from spec failed");
-            ("tool_core", json!({ "outcome": outcome }))
+                .map_err(|error| format!("tool core execution from spec failed: {error}"))?;
+            Ok(("tool_core", json!({ "outcome": outcome })))
         }
         OperationSpec::ToolExtension {
             extension_action,
@@ -4140,8 +5422,8 @@ async fn execute_spec_operation(
                     },
                 )
                 .await
-                .expect("tool extension execution from spec failed");
-            ("tool_extension", json!({ "outcome": outcome }))
+                .map_err(|error| format!("tool extension execution from spec failed: {error}"))?;
+            Ok(("tool_extension", json!({ "outcome": outcome })))
         }
         OperationSpec::MemoryCore {
             operation,
@@ -4161,8 +5443,8 @@ async fn execute_spec_operation(
                     },
                 )
                 .await
-                .expect("memory core execution from spec failed");
-            ("memory_core", json!({ "outcome": outcome }))
+                .map_err(|error| format!("memory core execution from spec failed: {error}"))?;
+            Ok(("memory_core", json!({ "outcome": outcome })))
         }
         OperationSpec::MemoryExtension {
             operation,
@@ -4184,68 +5466,479 @@ async fn execute_spec_operation(
                     },
                 )
                 .await
-                .expect("memory extension execution from spec failed");
-            ("memory_extension", json!({ "outcome": outcome }))
+                .map_err(|error| format!("memory extension execution from spec failed: {error}"))?;
+            Ok(("memory_extension", json!({ "outcome": outcome })))
+        }
+        OperationSpec::ToolSearch {
+            query,
+            limit,
+            include_deferred,
+            include_examples,
+        } => {
+            let matches = execute_tool_search(
+                integration_catalog,
+                plugin_scan_reports,
+                plugin_translation_reports,
+                query,
+                *limit,
+                *include_deferred,
+                *include_examples,
+            );
+            Ok((
+                "tool_search",
+                json!({
+                    "query": query,
+                    "limit": limit,
+                    "include_deferred": include_deferred,
+                    "include_examples": include_examples,
+                    "returned": matches.len(),
+                    "results": matches,
+                }),
+            ))
+        }
+        OperationSpec::ProgrammaticToolCall {
+            caller,
+            max_calls,
+            include_intermediate,
+            allowed_connectors,
+            connector_rate_limits,
+            connector_circuit_breakers,
+            concurrency,
+            return_step,
+            steps,
+        } => {
+            let outcome = execute_programmatic_tool_call(
+                kernel,
+                pack_id,
+                token,
+                caller,
+                *max_calls,
+                *include_intermediate,
+                allowed_connectors,
+                connector_rate_limits,
+                connector_circuit_breakers,
+                concurrency,
+                return_step.as_deref(),
+                steps,
+            )
+            .await?;
+            Ok(("programmatic_tool_call", outcome))
         }
     }
 }
 
+fn execute_tool_search(
+    integration_catalog: &IntegrationCatalog,
+    plugin_scan_reports: &[PluginScanReport],
+    plugin_translation_reports: &[PluginTranslationReport],
+    query: &str,
+    limit: usize,
+    include_deferred: bool,
+    include_examples: bool,
+) -> Vec<ToolSearchResult> {
+    let mut entries: BTreeMap<String, ToolSearchEntry> = BTreeMap::new();
+    let mut translation_by_key: BTreeMap<
+        (String, String),
+        (PluginBridgeKind, String, String, String),
+    > = BTreeMap::new();
+
+    for report in plugin_translation_reports {
+        for entry in &report.entries {
+            translation_by_key.insert(
+                (entry.source_path.clone(), entry.plugin_id.clone()),
+                (
+                    entry.runtime.bridge_kind,
+                    entry.runtime.adapter_family.clone(),
+                    entry.runtime.entrypoint_hint.clone(),
+                    entry.runtime.source_language.clone(),
+                ),
+            );
+        }
+    }
+
+    for provider in integration_catalog.providers() {
+        let channel_endpoint = integration_catalog
+            .channels_for_provider(&provider.provider_id)
+            .into_iter()
+            .find(|channel| channel.enabled)
+            .map(|channel| channel.endpoint)
+            .unwrap_or_default();
+        let bridge_kind = detect_provider_bridge_kind(&provider, &channel_endpoint);
+        let tool_id = format!("{}::{}", provider.provider_id, provider.connector_name);
+        let summary = provider.metadata.get("summary").cloned();
+        let tags = metadata_tags(&provider.metadata);
+        let input_examples = metadata_examples(&provider.metadata, "input_examples_json");
+        let output_examples = metadata_examples(&provider.metadata, "output_examples_json");
+        let deferred = metadata_bool(&provider.metadata, "defer_loading").unwrap_or(false);
+        let mut adapter_family = provider.metadata.get("adapter_family").cloned();
+        let mut entrypoint_hint = provider
+            .metadata
+            .get("entrypoint")
+            .or_else(|| provider.metadata.get("entrypoint_hint"))
+            .cloned();
+        let mut source_language = provider.metadata.get("source_language").cloned();
+        let mut resolved_bridge_kind = bridge_kind;
+
+        if let (Some(source_path), Some(plugin_id)) = (
+            provider.metadata.get("plugin_source_path"),
+            provider.metadata.get("plugin_id"),
+        ) {
+            if let Some((bridge, adapter, entrypoint, language)) =
+                translation_by_key.get(&(source_path.clone(), plugin_id.clone()))
+            {
+                resolved_bridge_kind = *bridge;
+                adapter_family = Some(adapter.clone());
+                entrypoint_hint = Some(entrypoint.clone());
+                source_language = Some(language.clone());
+            }
+        }
+
+        entries.insert(
+            tool_id.clone(),
+            ToolSearchEntry {
+                tool_id,
+                plugin_id: provider.metadata.get("plugin_id").cloned(),
+                connector_name: provider.connector_name.clone(),
+                provider_id: provider.provider_id.clone(),
+                source_path: provider.metadata.get("plugin_source_path").cloned(),
+                bridge_kind: resolved_bridge_kind,
+                adapter_family,
+                entrypoint_hint,
+                source_language,
+                summary,
+                tags,
+                input_examples,
+                output_examples,
+                deferred,
+                loaded: true,
+            },
+        );
+    }
+
+    for report in plugin_scan_reports {
+        for descriptor in &report.descriptors {
+            let manifest = &descriptor.manifest;
+            let tool_id = format!("{}::{}", manifest.provider_id, manifest.connector_name);
+            let translation =
+                translation_by_key.get(&(descriptor.path.clone(), manifest.plugin_id.clone()));
+            let bridge_kind = translation
+                .map(|(bridge, _, _, _)| *bridge)
+                .unwrap_or_else(|| descriptor_bridge_kind(descriptor));
+            let adapter_family = translation.map(|(_, adapter, _, _)| adapter.clone());
+            let entrypoint_hint = translation.map(|(_, _, entrypoint, _)| entrypoint.clone());
+            let source_language = translation.map(|(_, _, _, language)| language.clone());
+
+            let entry = entries
+                .entry(tool_id.clone())
+                .or_insert_with(|| ToolSearchEntry {
+                    tool_id: tool_id.clone(),
+                    plugin_id: Some(manifest.plugin_id.clone()),
+                    connector_name: manifest.connector_name.clone(),
+                    provider_id: manifest.provider_id.clone(),
+                    source_path: Some(descriptor.path.clone()),
+                    bridge_kind,
+                    adapter_family: adapter_family.clone(),
+                    entrypoint_hint: entrypoint_hint.clone(),
+                    source_language: source_language.clone(),
+                    summary: manifest.summary.clone(),
+                    tags: manifest.tags.clone(),
+                    input_examples: manifest.input_examples.clone(),
+                    output_examples: manifest.output_examples.clone(),
+                    deferred: manifest.defer_loading,
+                    loaded: false,
+                });
+
+            if entry.plugin_id.is_none() {
+                entry.plugin_id = Some(manifest.plugin_id.clone());
+            }
+            if entry.source_path.is_none() {
+                entry.source_path = Some(descriptor.path.clone());
+            }
+            if entry.summary.is_none() {
+                entry.summary = manifest.summary.clone();
+            }
+            if entry.adapter_family.is_none() {
+                entry.adapter_family = adapter_family.clone();
+            }
+            if entry.entrypoint_hint.is_none() {
+                entry.entrypoint_hint = entrypoint_hint.clone();
+            }
+            if entry.source_language.is_none() {
+                entry.source_language = source_language.clone();
+            }
+            if entry.input_examples.is_empty() {
+                entry.input_examples = manifest.input_examples.clone();
+            }
+            if entry.output_examples.is_empty() {
+                entry.output_examples = manifest.output_examples.clone();
+            }
+            for tag in &manifest.tags {
+                if !entry.tags.iter().any(|existing| existing == tag) {
+                    entry.tags.push(tag.clone());
+                }
+            }
+            if !entry.loaded {
+                entry.deferred = manifest.defer_loading;
+                entry.bridge_kind = bridge_kind;
+            }
+        }
+    }
+
+    let query_normalized = query.trim().to_ascii_lowercase();
+    let tokens: Vec<String> = query_normalized
+        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_' && ch != '-')
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(str::to_owned)
+        .collect();
+
+    let mut ranked: Vec<(u32, ToolSearchEntry)> = entries
+        .into_values()
+        .filter(|entry| include_deferred || !entry.deferred || entry.loaded)
+        .filter_map(|entry| {
+            let score = tool_search_score(&entry, &query_normalized, &tokens);
+            if query_normalized.is_empty() || score > 0 {
+                Some((score, entry))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    ranked.sort_by(|(left_score, left), (right_score, right)| {
+        right_score
+            .cmp(left_score)
+            .then_with(|| right.loaded.cmp(&left.loaded))
+            .then_with(|| left.tool_id.cmp(&right.tool_id))
+    });
+
+    let capped_limit = limit.clamp(1, 50);
+    ranked
+        .into_iter()
+        .take(capped_limit)
+        .map(|(score, entry)| ToolSearchResult {
+            tool_id: entry.tool_id,
+            plugin_id: entry.plugin_id,
+            connector_name: entry.connector_name,
+            provider_id: entry.provider_id,
+            source_path: entry.source_path,
+            bridge_kind: entry.bridge_kind.as_str().to_owned(),
+            adapter_family: entry.adapter_family,
+            entrypoint_hint: entry.entrypoint_hint,
+            source_language: entry.source_language,
+            score,
+            deferred: entry.deferred,
+            loaded: entry.loaded,
+            summary: entry.summary,
+            tags: entry.tags,
+            input_examples: if include_examples {
+                entry.input_examples
+            } else {
+                Vec::new()
+            },
+            output_examples: if include_examples {
+                entry.output_examples
+            } else {
+                Vec::new()
+            },
+        })
+        .collect()
+}
+
+fn metadata_tags(metadata: &BTreeMap<String, String>) -> Vec<String> {
+    if let Some(raw_json) = metadata.get("tags_json") {
+        if let Ok(values) = serde_json::from_str::<Vec<String>>(raw_json) {
+            return values;
+        }
+    }
+
+    metadata
+        .get("tags")
+        .map(|raw| {
+            raw.split([',', ';'])
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn metadata_examples(metadata: &BTreeMap<String, String>, key: &str) -> Vec<Value> {
+    metadata
+        .get(key)
+        .and_then(|raw| serde_json::from_str::<Vec<Value>>(raw).ok())
+        .unwrap_or_default()
+}
+
+fn metadata_bool(metadata: &BTreeMap<String, String>, key: &str) -> Option<bool> {
+    metadata
+        .get(key)
+        .and_then(|raw| match raw.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "y" | "on" => Some(true),
+            "false" | "0" | "no" | "n" | "off" => Some(false),
+            _ => None,
+        })
+}
+
+fn tool_search_score(entry: &ToolSearchEntry, query: &str, tokens: &[String]) -> u32 {
+    if query.is_empty() {
+        return if entry.loaded { 10 } else { 5 };
+    }
+
+    let connector = entry.connector_name.to_ascii_lowercase();
+    let provider = entry.provider_id.to_ascii_lowercase();
+    let tool_id = entry.tool_id.to_ascii_lowercase();
+    let summary = entry
+        .summary
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let source_path = entry
+        .source_path
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let adapter_family = entry
+        .adapter_family
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let entrypoint_hint = entry
+        .entrypoint_hint
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let source_language = entry
+        .source_language
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let tags: Vec<String> = entry
+        .tags
+        .iter()
+        .map(|tag| tag.to_ascii_lowercase())
+        .collect();
+
+    let mut score = 0_u32;
+    if connector == query {
+        score = score.saturating_add(150);
+    } else if connector.contains(query) {
+        score = score.saturating_add(110);
+    }
+    if provider == query {
+        score = score.saturating_add(120);
+    } else if provider.contains(query) {
+        score = score.saturating_add(80);
+    }
+    if tool_id.contains(query) {
+        score = score.saturating_add(60);
+    }
+    if summary.contains(query) {
+        score = score.saturating_add(55);
+    }
+    if source_path.contains(query) {
+        score = score.saturating_add(35);
+    }
+    if adapter_family.contains(query) {
+        score = score.saturating_add(18);
+    }
+    if entrypoint_hint.contains(query) {
+        score = score.saturating_add(12);
+    }
+    if source_language.contains(query) {
+        score = score.saturating_add(10);
+    }
+    if tags.iter().any(|tag| tag == query) {
+        score = score.saturating_add(45);
+    } else if tags.iter().any(|tag| tag.contains(query)) {
+        score = score.saturating_add(25);
+    }
+
+    let haystack = format!(
+        "{} {} {} {} {} {} {} {}",
+        connector,
+        provider,
+        tool_id,
+        summary,
+        adapter_family,
+        entrypoint_hint,
+        source_language,
+        tags.join(" ")
+    );
+    for token in tokens {
+        if haystack.contains(token) {
+            score = score.saturating_add(8);
+        }
+    }
+
+    if entry.loaded {
+        score = score.saturating_add(4);
+    }
+    score
+}
+
 fn apply_default_selection(
-    kernel: &mut ChumosKernel<StaticPolicyEngine>,
+    kernel: &mut LoongClawKernel<StaticPolicyEngine>,
     defaults: Option<&DefaultCoreSelection>,
-) {
+) -> CliResult<()> {
     if let Some(defaults) = defaults {
         if let Some(connector) = defaults.connector.as_deref() {
             kernel
                 .set_default_core_connector_adapter(connector)
-                .expect("invalid default connector core adapter");
+                .map_err(|error| {
+                    format!("invalid default connector core adapter ({connector}): {error}")
+                })?;
         }
         if let Some(runtime) = defaults.runtime.as_deref() {
             kernel
                 .set_default_core_runtime_adapter(runtime)
-                .expect("invalid default runtime core adapter");
+                .map_err(|error| {
+                    format!("invalid default runtime core adapter ({runtime}): {error}")
+                })?;
         }
         if let Some(tool) = defaults.tool.as_deref() {
             kernel
                 .set_default_core_tool_adapter(tool)
-                .expect("invalid default tool core adapter");
+                .map_err(|error| format!("invalid default tool core adapter ({tool}): {error}"))?;
         }
         if let Some(memory) = defaults.memory.as_deref() {
             kernel
                 .set_default_core_memory_adapter(memory)
-                .expect("invalid default memory core adapter");
+                .map_err(|error| {
+                    format!("invalid default memory core adapter ({memory}): {error}")
+                })?;
         }
     }
+    Ok(())
 }
 
-fn parse_json_payload(raw: &str, context: &str) -> Value {
-    serde_json::from_str(raw).unwrap_or_else(|error| {
-        panic!("invalid JSON for {context}: {error}");
-    })
+fn parse_json_payload(raw: &str, context: &str) -> CliResult<Value> {
+    serde_json::from_str(raw).map_err(|error| format!("invalid JSON for {context}: {error}"))
 }
 
-fn read_spec_file(path: &str) -> RunnerSpec {
-    let raw = fs::read_to_string(path).unwrap_or_else(|error| {
-        panic!("failed to read spec file {path}: {error}");
-    });
-    serde_json::from_str(&raw).unwrap_or_else(|error| {
-        panic!("failed to parse spec file {path}: {error}");
-    })
+fn read_spec_file(path: &str) -> CliResult<RunnerSpec> {
+    let raw = fs::read_to_string(path)
+        .map_err(|error| format!("failed to read spec file {path}: {error}"))?;
+    serde_json::from_str(&raw).map_err(|error| format!("failed to parse spec file {path}: {error}"))
 }
 
-fn write_json_file<T: Serialize>(path: &str, value: &T) {
-    let serialized =
-        serde_json::to_string_pretty(value).expect("serialize JSON value for output file");
+fn write_json_file<T: Serialize>(path: &str, value: &T) -> CliResult<()> {
+    let serialized = serde_json::to_string_pretty(value)
+        .map_err(|error| format!("serialize JSON value for output file failed: {error}"))?;
     if let Some(parent) = Path::new(path).parent() {
         if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).expect("create output directory");
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("create output directory failed: {error}"))?;
         }
     }
-    fs::write(path, serialized).expect("write JSON output file");
+    fs::write(path, serialized)
+        .map_err(|error| format!("write JSON output file failed: {error}"))?;
+    Ok(())
 }
 
-fn bootstrap_kernel_default() -> ChumosKernel<StaticPolicyEngine> {
-    let mut kernel = ChumosKernel::new(StaticPolicyEngine::default());
+fn bootstrap_kernel_default() -> LoongClawKernel<StaticPolicyEngine> {
+    let mut kernel = LoongClawKernel::new(StaticPolicyEngine::default());
     register_builtin_adapters(&mut kernel);
     kernel
         .register_pack(default_pack_manifest())
@@ -4256,8 +5949,8 @@ fn bootstrap_kernel_default() -> ChumosKernel<StaticPolicyEngine> {
 fn bootstrap_kernel_with_runtime(
     clock: Arc<dyn Clock>,
     audit: Arc<dyn AuditSink>,
-) -> ChumosKernel<StaticPolicyEngine> {
-    let mut kernel = ChumosKernel::with_runtime(StaticPolicyEngine::default(), clock, audit);
+) -> LoongClawKernel<StaticPolicyEngine> {
+    let mut kernel = LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock, audit);
     register_builtin_adapters(&mut kernel);
     kernel
         .register_pack(default_pack_manifest())
@@ -4265,7 +5958,7 @@ fn bootstrap_kernel_with_runtime(
     kernel
 }
 
-fn register_builtin_adapters(kernel: &mut ChumosKernel<StaticPolicyEngine>) {
+fn register_builtin_adapters(kernel: &mut LoongClawKernel<StaticPolicyEngine>) {
     kernel.register_harness_adapter(EmbeddedPiHarness {
         seen: Mutex::new(Vec::new()),
     });
@@ -4310,4166 +6003,5 @@ fn default_pack_manifest() -> VerticalPackManifest {
             ("owner".to_owned(), "platform-team".to_owned()),
             ("stage".to_owned(), "prototype".to_owned()),
         ]),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn approval_test_operation(tool_name: &str, payload: Value) -> OperationSpec {
-        OperationSpec::ToolCore {
-            tool_name: tool_name.to_owned(),
-            required_capabilities: BTreeSet::from([Capability::InvokeTool]),
-            payload,
-            core: None,
-        }
-    }
-
-    fn write_temp_risk_profile(path: &Path, body: &str) {
-        fs::create_dir_all(
-            path.parent()
-                .expect("temp risk profile path should have parent directory"),
-        )
-        .expect("create temp risk profile directory");
-        fs::write(path, body).expect("write temp risk profile");
-    }
-
-    fn sign_security_scan_profile_for_test(profile: &SecurityScanProfile) -> (String, String) {
-        use ed25519_dalek::{Signer, SigningKey};
-
-        let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
-        let signature = signing_key.sign(&security_scan_profile_message(profile));
-        let public_key_base64 = BASE64_STANDARD.encode(signing_key.verifying_key().to_bytes());
-        let signature_base64 = BASE64_STANDARD.encode(signature.to_bytes());
-        (public_key_base64, signature_base64)
-    }
-
-    #[test]
-    fn template_spec_is_json_roundtrip_stable() {
-        let spec = RunnerSpec::template();
-        let encoded = serde_json::to_string_pretty(&spec).expect("encode spec");
-        let decoded: RunnerSpec = serde_json::from_str(&encoded).expect("decode spec");
-        assert_eq!(decoded.pack.pack_id, "sales-intel-local");
-        assert!(matches!(
-            decoded.operation,
-            OperationSpec::RuntimeExtension { .. }
-        ));
-    }
-
-    #[test]
-    fn approval_uses_external_risk_profile_without_inline_overrides() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("chumos-risk-profile-{unique}.json"));
-        write_temp_risk_profile(
-            &path,
-            r#"{
-  "high_risk_keywords": ["irrelevant"],
-  "high_risk_tool_names": ["irrelevant-tool"],
-  "high_risk_payload_keys": ["irrelevant_key"],
-  "scoring": {
-    "keyword_weight": 10,
-    "tool_name_weight": 10,
-    "payload_key_weight": 10,
-    "keyword_hit_cap": 2,
-    "payload_key_hit_cap": 2,
-    "high_risk_threshold": 10
-  }
-}"#,
-        );
-
-        let policy = HumanApprovalSpec {
-            risk_profile_path: Some(path.display().to_string()),
-            ..HumanApprovalSpec::default()
-        };
-        let operation = approval_test_operation("delete-file", json!({"path":"/tmp/demo.txt"}));
-        let (risk_level, matched, score) = operation_risk_profile(&operation, &policy);
-
-        assert_eq!(risk_level, ApprovalRiskLevel::Low);
-        assert!(matched.is_empty());
-        assert_eq!(score, 0);
-    }
-
-    #[test]
-    fn approval_inline_risk_signals_override_external_profile() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("chumos-risk-profile-override-{unique}.json"));
-        write_temp_risk_profile(
-            &path,
-            r#"{
-  "high_risk_keywords": ["irrelevant"],
-  "high_risk_tool_names": ["irrelevant-tool"],
-  "high_risk_payload_keys": ["irrelevant_key"],
-  "scoring": {
-    "keyword_weight": 10,
-    "tool_name_weight": 10,
-    "payload_key_weight": 10,
-    "keyword_hit_cap": 2,
-    "payload_key_hit_cap": 2,
-    "high_risk_threshold": 10
-  }
-}"#,
-        );
-
-        let policy = HumanApprovalSpec {
-            risk_profile_path: Some(path.display().to_string()),
-            high_risk_tool_names: vec!["delete-file".to_owned()],
-            ..HumanApprovalSpec::default()
-        };
-        let operation = approval_test_operation("delete-file", json!({"path":"/tmp/demo.txt"}));
-        let (risk_level, matched, score) = operation_risk_profile(&operation, &policy);
-
-        assert_eq!(risk_level, ApprovalRiskLevel::High);
-        assert!(matched.iter().any(|value| value == "tool:delete-file"));
-        assert_eq!(score, 10);
-    }
-
-    #[test]
-    fn approval_falls_back_to_bundled_profile_when_path_missing() {
-        let policy = HumanApprovalSpec {
-            risk_profile_path: Some("/tmp/chumos-risk-profile-missing.json".to_owned()),
-            ..HumanApprovalSpec::default()
-        };
-        let operation = approval_test_operation("delete-file", json!({"path":"/tmp/demo.txt"}));
-        let (risk_level, matched, score) = operation_risk_profile(&operation, &policy);
-
-        assert_eq!(risk_level, ApprovalRiskLevel::High);
-        assert!(matched.iter().any(|value| value == "tool:delete-file"));
-        assert!(score >= 20);
-    }
-
-    #[test]
-    fn security_scan_profile_path_overrides_bundled_defaults() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("chumos-security-profile-{unique}.json"));
-        fs::write(
-            &path,
-            r#"{
-  "high_risk_metadata_keywords": ["custom-danger-keyword"],
-  "wasm": {
-    "enabled": true,
-    "max_module_bytes": 123456,
-    "allow_wasi": false,
-    "blocked_import_prefixes": ["wasi-custom"],
-    "allowed_path_prefixes": [],
-    "require_hash_pin": false,
-    "required_sha256_by_plugin": {}
-  }
-}"#,
-        )
-        .expect("write security scan profile");
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-security-profile-path".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::new(),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-security-profile-path".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: None,
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::WasmComponent],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: true,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-                execute_process_stdio: false,
-                execute_http_json: false,
-                allowed_process_commands: Vec::new(),
-                enforce_execution_success: false,
-                security_scan: Some(SecurityScanSpec {
-                    enabled: true,
-                    block_on_high: true,
-                    profile_path: Some(path.display().to_string()),
-                    profile_sha256: None,
-                    profile_signature: None,
-                    siem_export: None,
-                    runtime: SecurityRuntimeExecutionSpec::default(),
-                    high_risk_metadata_keywords: Vec::new(),
-                    wasm: WasmSecurityScanSpec {
-                        enabled: true,
-                        max_module_bytes: 0,
-                        allow_wasi: false,
-                        blocked_import_prefixes: Vec::new(),
-                        allowed_path_prefixes: Vec::new(),
-                        require_hash_pin: false,
-                        required_sha256_by_plugin: BTreeMap::new(),
-                    },
-                }),
-            }),
-            bootstrap: None,
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::Task {
-                task_id: "t-security-profile-path".to_owned(),
-                objective: "verify profile loading".to_owned(),
-                required_capabilities: BTreeSet::new(),
-                payload: json!({}),
-            },
-        };
-
-        let policy = security_scan_policy(&spec)
-            .expect("security scan policy should resolve")
-            .expect("security scan policy should be enabled");
-        assert_eq!(
-            policy.high_risk_metadata_keywords,
-            vec!["custom-danger-keyword".to_owned()]
-        );
-        assert_eq!(policy.wasm.max_module_bytes, 123456);
-        assert_eq!(
-            policy.wasm.blocked_import_prefixes,
-            vec!["wasi-custom".to_owned()]
-        );
-    }
-
-    #[test]
-    fn security_scan_profile_sha256_pin_accepts_matching_profile() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("chumos-security-profile-sha-match-{unique}.json"));
-        fs::write(
-            &path,
-            r#"{
-  "high_risk_metadata_keywords": ["pinned-danger"],
-  "wasm": {
-    "enabled": true,
-    "max_module_bytes": 654321,
-    "allow_wasi": false,
-    "blocked_import_prefixes": ["wasi-custom"],
-    "allowed_path_prefixes": [],
-    "require_hash_pin": false,
-    "required_sha256_by_plugin": {}
-  }
-}"#,
-        )
-        .expect("write pinned profile");
-
-        let profile = load_security_scan_profile_from_path(path.to_str().expect("utf8 path"))
-            .expect("profile should load");
-        let profile_sha256 = security_scan_profile_sha256(&profile);
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-security-profile-pin".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::new(),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-security-profile-pin".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: None,
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::WasmComponent],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: true,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-                execute_process_stdio: false,
-                execute_http_json: false,
-                allowed_process_commands: Vec::new(),
-                enforce_execution_success: false,
-                security_scan: Some(SecurityScanSpec {
-                    enabled: true,
-                    block_on_high: true,
-                    profile_path: Some(path.display().to_string()),
-                    profile_sha256: Some(profile_sha256),
-                    profile_signature: None,
-                    siem_export: None,
-                    runtime: SecurityRuntimeExecutionSpec::default(),
-                    high_risk_metadata_keywords: Vec::new(),
-                    wasm: WasmSecurityScanSpec {
-                        enabled: true,
-                        max_module_bytes: 0,
-                        allow_wasi: false,
-                        blocked_import_prefixes: Vec::new(),
-                        allowed_path_prefixes: Vec::new(),
-                        require_hash_pin: false,
-                        required_sha256_by_plugin: BTreeMap::new(),
-                    },
-                }),
-            }),
-            bootstrap: None,
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::Task {
-                task_id: "t-security-profile-pin".to_owned(),
-                objective: "verify profile sha pin".to_owned(),
-                required_capabilities: BTreeSet::new(),
-                payload: json!({}),
-            },
-        };
-
-        let policy = security_scan_policy(&spec)
-            .expect("security scan policy should resolve")
-            .expect("security scan policy should be enabled");
-        assert_eq!(
-            policy.high_risk_metadata_keywords,
-            vec!["pinned-danger".to_owned()]
-        );
-        assert_eq!(policy.wasm.max_module_bytes, 654321);
-    }
-
-    #[tokio::test]
-    async fn execute_spec_blocks_when_security_scan_profile_sha256_mismatches() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "chumos-security-profile-sha-mismatch-{unique}.json"
-        ));
-        fs::write(
-            &path,
-            r#"{
-  "high_risk_metadata_keywords": ["mismatch-danger"],
-  "wasm": {
-    "enabled": true,
-    "max_module_bytes": 1024,
-    "allow_wasi": false,
-    "blocked_import_prefixes": [],
-    "allowed_path_prefixes": [],
-    "require_hash_pin": false,
-    "required_sha256_by_plugin": {}
-  }
-}"#,
-        )
-        .expect("write mismatched profile");
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-security-profile-mismatch".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::new(),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-security-profile-mismatch".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: None,
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::WasmComponent],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: true,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-                execute_process_stdio: false,
-                execute_http_json: false,
-                allowed_process_commands: Vec::new(),
-                enforce_execution_success: false,
-                security_scan: Some(SecurityScanSpec {
-                    enabled: true,
-                    block_on_high: true,
-                    profile_path: Some(path.display().to_string()),
-                    profile_sha256: Some("deadbeef".repeat(8)),
-                    profile_signature: None,
-                    siem_export: None,
-                    runtime: SecurityRuntimeExecutionSpec::default(),
-                    high_risk_metadata_keywords: Vec::new(),
-                    wasm: WasmSecurityScanSpec {
-                        enabled: true,
-                        max_module_bytes: 0,
-                        allow_wasi: false,
-                        blocked_import_prefixes: Vec::new(),
-                        allowed_path_prefixes: Vec::new(),
-                        require_hash_pin: false,
-                        required_sha256_by_plugin: BTreeMap::new(),
-                    },
-                }),
-            }),
-            bootstrap: None,
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::Task {
-                task_id: "t-security-profile-mismatch".to_owned(),
-                objective: "mismatch pin should block".to_owned(),
-                required_capabilities: BTreeSet::new(),
-                payload: json!({}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "blocked");
-        assert!(report
-            .blocked_reason
-            .expect("blocked reason should exist")
-            .contains("profile sha256 mismatch"));
-    }
-
-    #[test]
-    fn security_scan_profile_signature_accepts_matching_signature() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "chumos-security-profile-signature-match-{unique}.json"
-        ));
-        fs::write(
-            &path,
-            r#"{
-  "high_risk_metadata_keywords": ["signed-danger"],
-  "wasm": {
-    "enabled": true,
-    "max_module_bytes": 2048,
-    "allow_wasi": false,
-    "blocked_import_prefixes": ["wasi"],
-    "allowed_path_prefixes": [],
-    "require_hash_pin": false,
-    "required_sha256_by_plugin": {}
-  }
-}"#,
-        )
-        .expect("write signed profile");
-
-        let profile = load_security_scan_profile_from_path(path.to_str().expect("utf8 path"))
-            .expect("profile should load");
-        let (public_key_base64, signature_base64) = sign_security_scan_profile_for_test(&profile);
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-security-signature-pin".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::new(),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-security-signature-pin".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: None,
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::WasmComponent],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: true,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-                execute_process_stdio: false,
-                execute_http_json: false,
-                allowed_process_commands: Vec::new(),
-                enforce_execution_success: false,
-                security_scan: Some(SecurityScanSpec {
-                    enabled: true,
-                    block_on_high: true,
-                    profile_path: Some(path.display().to_string()),
-                    profile_sha256: None,
-                    profile_signature: Some(SecurityProfileSignatureSpec {
-                        algorithm: "ed25519".to_owned(),
-                        public_key_base64,
-                        signature_base64,
-                    }),
-                    siem_export: None,
-                    runtime: SecurityRuntimeExecutionSpec::default(),
-                    high_risk_metadata_keywords: Vec::new(),
-                    wasm: WasmSecurityScanSpec {
-                        enabled: true,
-                        max_module_bytes: 0,
-                        allow_wasi: false,
-                        blocked_import_prefixes: Vec::new(),
-                        allowed_path_prefixes: Vec::new(),
-                        require_hash_pin: false,
-                        required_sha256_by_plugin: BTreeMap::new(),
-                    },
-                }),
-            }),
-            bootstrap: None,
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::Task {
-                task_id: "t-security-signature-pin".to_owned(),
-                objective: "verify profile signature pin".to_owned(),
-                required_capabilities: BTreeSet::new(),
-                payload: json!({}),
-            },
-        };
-
-        let policy = security_scan_policy(&spec)
-            .expect("security scan policy should resolve")
-            .expect("security scan policy should be enabled");
-        assert_eq!(
-            policy.high_risk_metadata_keywords,
-            vec!["signed-danger".to_owned()]
-        );
-    }
-
-    #[tokio::test]
-    async fn execute_spec_blocks_when_security_scan_profile_signature_mismatches() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "chumos-security-profile-signature-mismatch-{unique}.json"
-        ));
-        fs::write(
-            &path,
-            r#"{
-  "high_risk_metadata_keywords": ["signed-mismatch"],
-  "wasm": {
-    "enabled": true,
-    "max_module_bytes": 1024,
-    "allow_wasi": false,
-    "blocked_import_prefixes": [],
-    "allowed_path_prefixes": [],
-    "require_hash_pin": false,
-    "required_sha256_by_plugin": {}
-  }
-}"#,
-        )
-        .expect("write signed mismatch profile");
-
-        let profile = load_security_scan_profile_from_path(path.to_str().expect("utf8 path"))
-            .expect("profile should load");
-        let (public_key_base64, mut signature_base64) =
-            sign_security_scan_profile_for_test(&profile);
-        let replacement = if signature_base64.starts_with('A') {
-            "B"
-        } else {
-            "A"
-        };
-        signature_base64.replace_range(0..1, replacement);
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-security-signature-mismatch".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::new(),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-security-signature-mismatch".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: None,
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::WasmComponent],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: true,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-                execute_process_stdio: false,
-                execute_http_json: false,
-                allowed_process_commands: Vec::new(),
-                enforce_execution_success: false,
-                security_scan: Some(SecurityScanSpec {
-                    enabled: true,
-                    block_on_high: true,
-                    profile_path: Some(path.display().to_string()),
-                    profile_sha256: None,
-                    profile_signature: Some(SecurityProfileSignatureSpec {
-                        algorithm: "ed25519".to_owned(),
-                        public_key_base64,
-                        signature_base64,
-                    }),
-                    siem_export: None,
-                    runtime: SecurityRuntimeExecutionSpec::default(),
-                    high_risk_metadata_keywords: Vec::new(),
-                    wasm: WasmSecurityScanSpec {
-                        enabled: true,
-                        max_module_bytes: 0,
-                        allow_wasi: false,
-                        blocked_import_prefixes: Vec::new(),
-                        allowed_path_prefixes: Vec::new(),
-                        require_hash_pin: false,
-                        required_sha256_by_plugin: BTreeMap::new(),
-                    },
-                }),
-            }),
-            bootstrap: None,
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::Task {
-                task_id: "t-security-signature-mismatch".to_owned(),
-                objective: "signature mismatch should block".to_owned(),
-                required_capabilities: BTreeSet::new(),
-                payload: json!({}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "blocked");
-        assert!(report
-            .blocked_reason
-            .expect("blocked reason should exist")
-            .contains("profile signature verification failed"));
-    }
-
-    #[tokio::test]
-    async fn execute_spec_runs_runtime_extension_and_captures_audit() {
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-test-pack".to_owned(),
-                domain: "engineering".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::from(["crm".to_owned()]),
-                granted_capabilities: BTreeSet::from([Capability::ObserveTelemetry]),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-spec-test".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: Some(DefaultCoreSelection {
-                connector: None,
-                runtime: Some("fallback-core".to_owned()),
-                tool: None,
-                memory: None,
-            }),
-            self_awareness: None,
-            plugin_scan: None,
-            bridge_support: None,
-            bootstrap: None,
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::RuntimeExtension {
-                action: "start".to_owned(),
-                required_capabilities: BTreeSet::from([Capability::ObserveTelemetry]),
-                payload: json!({}),
-                extension: "acp-bridge".to_owned(),
-                core: None,
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "runtime_extension");
-        assert_eq!(report.outcome["outcome"]["status"], "ok");
-        let events = report.audit_events.expect("audit should be included");
-        assert!(events.iter().any(|event| {
-            matches!(
-                event.kind,
-                kernel::AuditEventKind::PlaneInvoked {
-                    plane: kernel::ExecutionPlane::Runtime,
-                    tier: kernel::PlaneTier::Extension,
-                    ..
-                }
-            )
-        }));
-    }
-
-    #[tokio::test]
-    async fn execute_spec_auto_provisions_provider_and_channel_when_missing() {
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-auto-provision".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::from([Capability::ObserveTelemetry]),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-auto".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: None,
-            bridge_support: None,
-            bootstrap: None,
-            auto_provision: Some(AutoProvisionSpec {
-                enabled: true,
-                provider_id: "openrouter".to_owned(),
-                channel_id: "primary".to_owned(),
-                connector_name: Some("openrouter".to_owned()),
-                endpoint: Some("https://openrouter.ai/api/v1/chat/completions".to_owned()),
-                required_capabilities: BTreeSet::from([Capability::InvokeConnector]),
-            }),
-            hotfixes: Vec::new(),
-            operation: OperationSpec::ConnectorLegacy {
-                connector_name: "openrouter".to_owned(),
-                operation: "chat".to_owned(),
-                required_capabilities: BTreeSet::from([Capability::InvokeConnector]),
-                payload: json!({}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "connector_legacy");
-        assert_eq!(report.outcome["outcome"]["status"], "ok");
-        assert_eq!(
-            report.outcome["outcome"]["payload"]["provider_id"],
-            "openrouter"
-        );
-        assert!(report.auto_provision_plan.is_some());
-        assert!(report.integration_catalog.provider("openrouter").is_some());
-        assert!(report.integration_catalog.channel("primary").is_some());
-    }
-
-    #[tokio::test]
-    async fn execute_spec_applies_hotfix_endpoint_before_invocation() {
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-hotfix".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::from([Capability::ObserveTelemetry]),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-hotfix".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: None,
-            bridge_support: None,
-            bootstrap: None,
-            auto_provision: Some(AutoProvisionSpec {
-                enabled: true,
-                provider_id: "slack".to_owned(),
-                channel_id: "alerts".to_owned(),
-                connector_name: Some("slack".to_owned()),
-                endpoint: Some("https://old.slack.invalid/hook".to_owned()),
-                required_capabilities: BTreeSet::from([Capability::InvokeConnector]),
-            }),
-            hotfixes: vec![HotfixSpec::ChannelEndpoint {
-                channel_id: "alerts".to_owned(),
-                new_endpoint: "https://hooks.slack.com/services/new".to_owned(),
-            }],
-            operation: OperationSpec::ConnectorLegacy {
-                connector_name: "slack".to_owned(),
-                operation: "notify".to_owned(),
-                required_capabilities: BTreeSet::from([Capability::InvokeConnector]),
-                payload: json!({"channel_id": "alerts"}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "connector_legacy");
-        assert_eq!(
-            report.outcome["outcome"]["payload"]["endpoint"],
-            "https://hooks.slack.com/services/new"
-        );
-    }
-
-    #[tokio::test]
-    async fn execute_spec_scans_plugin_files_and_absorbs_them_for_hotplug() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let plugin_root = std::env::temp_dir().join(format!("chumos-plugin-{}", unique));
-        fs::create_dir_all(&plugin_root).expect("create plugin root");
-
-        let plugin_file = plugin_root.join("openrouter_plugin.rs");
-        fs::write(
-            &plugin_file,
-            r#"
-// CHUMOS_PLUGIN_START
-// {
-//   "plugin_id": "openrouter-rs",
-//   "provider_id": "openrouter",
-//   "connector_name": "openrouter",
-//   "channel_id": "primary",
-//   "endpoint": "https://openrouter.ai/api/v1/chat/completions",
-//   "capabilities": ["InvokeConnector"],
-//   "metadata": {"version":"0.4.0","source":"community"}
-// }
-// CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write plugin file");
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-plugin-scan".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::from([Capability::ObserveTelemetry]),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-plugin-scan".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: Some(PluginScanSpec {
-                enabled: true,
-                roots: vec![plugin_root.display().to_string()],
-            }),
-            bridge_support: None,
-            bootstrap: None,
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::ConnectorLegacy {
-                connector_name: "openrouter".to_owned(),
-                operation: "chat".to_owned(),
-                required_capabilities: BTreeSet::from([Capability::InvokeConnector]),
-                payload: json!({}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "connector_legacy");
-        assert_eq!(report.outcome["outcome"]["status"], "ok");
-        assert_eq!(report.plugin_scan_reports.len(), 1);
-        assert_eq!(report.plugin_scan_reports[0].matched_plugins, 1);
-        assert_eq!(report.plugin_translation_reports.len(), 1);
-        assert_eq!(report.plugin_translation_reports[0].translated_plugins, 1);
-        assert_eq!(report.plugin_activation_plans.len(), 1);
-        assert_eq!(report.plugin_activation_plans[0].ready_plugins, 1);
-        assert_eq!(report.plugin_bootstrap_queue.len(), 1);
-        assert_eq!(report.plugin_absorb_reports.len(), 1);
-        assert_eq!(report.plugin_absorb_reports[0].absorbed_plugins, 1);
-        assert!(report.integration_catalog.provider("openrouter").is_some());
-        assert!(report.integration_catalog.channel("primary").is_some());
-    }
-
-    #[tokio::test]
-    async fn execute_spec_blocks_when_bridge_matrix_does_not_support_plugin() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let plugin_root = std::env::temp_dir().join(format!("chumos-plugin-bridge-{}", unique));
-        fs::create_dir_all(&plugin_root).expect("create plugin root");
-
-        let plugin_file = plugin_root.join("openrouter_plugin.rs");
-        fs::write(
-            &plugin_file,
-            r#"
-// CHUMOS_PLUGIN_START
-// {
-//   "plugin_id": "openrouter-rs",
-//   "provider_id": "openrouter",
-//   "connector_name": "openrouter",
-//   "channel_id": "primary",
-//   "endpoint": "https://openrouter.ai/api/v1/chat/completions",
-//   "capabilities": ["InvokeConnector"],
-//   "metadata": {"version":"0.4.0","source":"community"}
-// }
-// CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write plugin file");
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-plugin-bridge-block".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::new(),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-plugin-bridge-block".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: Some(PluginScanSpec {
-                enabled: true,
-                roots: vec![plugin_root.display().to_string()],
-            }),
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::HttpJson],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: true,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-
-                execute_process_stdio: false,
-
-                execute_http_json: false,
-
-                allowed_process_commands: Vec::new(),
-
-                enforce_execution_success: false,
-                security_scan: None,
-            }),
-            bootstrap: None,
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::ConnectorLegacy {
-                connector_name: "openrouter".to_owned(),
-                operation: "chat".to_owned(),
-                required_capabilities: BTreeSet::from([Capability::InvokeConnector]),
-                payload: json!({}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "blocked");
-        assert_eq!(report.outcome["status"], "blocked");
-        assert_eq!(report.plugin_activation_plans.len(), 1);
-        assert_eq!(report.plugin_activation_plans[0].blocked_plugins, 1);
-        assert!(report.plugin_bootstrap_queue.is_empty());
-        assert!(report.plugin_absorb_reports.is_empty());
-        assert!(report.integration_catalog.provider("openrouter").is_none());
-    }
-
-    #[tokio::test]
-    async fn execute_spec_skips_blocked_plugins_when_bridge_enforcement_is_disabled() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let plugin_root =
-            std::env::temp_dir().join(format!("chumos-plugin-bridge-selective-{}", unique));
-        fs::create_dir_all(&plugin_root).expect("create plugin root");
-
-        let rust_plugin = plugin_root.join("openrouter.rs");
-        fs::write(
-            &rust_plugin,
-            r#"
-// CHUMOS_PLUGIN_START
-// {
-//   "plugin_id": "openrouter-rs",
-//   "provider_id": "openrouter",
-//   "connector_name": "openrouter",
-//   "channel_id": "primary",
-//   "endpoint": "https://openrouter.ai/api/v1/chat/completions",
-//   "capabilities": ["InvokeConnector"],
-//   "metadata": {"version":"0.4.0"}
-// }
-// CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write rust plugin");
-
-        let http_plugin = plugin_root.join("webhook.js");
-        fs::write(
-            &http_plugin,
-            r#"
-// CHUMOS_PLUGIN_START
-// {
-//   "plugin_id": "webhook-js",
-//   "provider_id": "webhookx",
-//   "connector_name": "webhookx",
-//   "channel_id": "primary",
-//   "endpoint": "https://hooks.example.com/invoke",
-//   "capabilities": ["InvokeConnector"],
-//   "metadata": {"bridge_kind":"http_json","version":"1.0.0"}
-// }
-// CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write http plugin");
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-plugin-bridge-selective".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::new(),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-plugin-bridge-selective".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: Some(PluginScanSpec {
-                enabled: true,
-                roots: vec![plugin_root.display().to_string()],
-            }),
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::HttpJson],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: false,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-
-                execute_process_stdio: false,
-
-                execute_http_json: false,
-
-                allowed_process_commands: Vec::new(),
-
-                enforce_execution_success: false,
-                security_scan: None,
-            }),
-            bootstrap: None,
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::ConnectorLegacy {
-                connector_name: "webhookx".to_owned(),
-                operation: "notify".to_owned(),
-                required_capabilities: BTreeSet::from([Capability::InvokeConnector]),
-                payload: json!({}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "connector_legacy");
-        assert_eq!(report.outcome["outcome"]["status"], "ok");
-        assert_eq!(report.plugin_activation_plans.len(), 1);
-        assert_eq!(report.plugin_activation_plans[0].ready_plugins, 1);
-        assert_eq!(report.plugin_activation_plans[0].blocked_plugins, 1);
-        assert_eq!(report.plugin_bootstrap_queue.len(), 1);
-        assert_eq!(report.plugin_absorb_reports.len(), 1);
-        assert_eq!(report.plugin_absorb_reports[0].absorbed_plugins, 1);
-        assert!(report.integration_catalog.provider("webhookx").is_some());
-        assert!(report.integration_catalog.provider("openrouter").is_none());
-    }
-
-    #[tokio::test]
-    async fn execute_spec_bootstrap_applies_only_bridges_allowed_by_bootstrap_policy() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let plugin_root =
-            std::env::temp_dir().join(format!("chumos-plugin-bootstrap-selective-{}", unique));
-        fs::create_dir_all(&plugin_root).expect("create plugin root");
-
-        fs::write(
-            plugin_root.join("ffi_plugin.rs"),
-            r#"
-// CHUMOS_PLUGIN_START
-// {
-//   "plugin_id": "ffi-plugin",
-//   "provider_id": "ffi-provider",
-//   "connector_name": "ffi-provider",
-//   "channel_id": "primary",
-//   "endpoint": "https://ffi.invalid/invoke",
-//   "capabilities": ["InvokeConnector"],
-//   "metadata": {"bridge_kind":"native_ffi","version":"1.0.0"}
-// }
-// CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write ffi plugin");
-
-        fs::write(
-            plugin_root.join("http_plugin.js"),
-            r#"
-// CHUMOS_PLUGIN_START
-// {
-//   "plugin_id": "http-plugin",
-//   "provider_id": "http-provider",
-//   "connector_name": "http-provider",
-//   "channel_id": "primary",
-//   "endpoint": "https://hooks.example.com/invoke",
-//   "capabilities": ["InvokeConnector"],
-//   "metadata": {"bridge_kind":"http_json","version":"1.0.0"}
-// }
-// CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write http plugin");
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-bootstrap-selective".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::new(),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-bootstrap-selective".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: Some(PluginScanSpec {
-                enabled: true,
-                roots: vec![plugin_root.display().to_string()],
-            }),
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::HttpJson, PluginBridgeKind::NativeFfi],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: true,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-
-                execute_process_stdio: false,
-
-                execute_http_json: false,
-
-                allowed_process_commands: Vec::new(),
-
-                enforce_execution_success: false,
-                security_scan: None,
-            }),
-            bootstrap: Some(BootstrapSpec {
-                enabled: true,
-                allow_http_json_auto_apply: Some(true),
-                allow_process_stdio_auto_apply: Some(false),
-                allow_native_ffi_auto_apply: Some(false),
-                allow_wasm_component_auto_apply: Some(false),
-                allow_mcp_server_auto_apply: Some(false),
-                enforce_ready_execution: Some(false),
-                max_tasks: Some(10),
-            }),
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::ConnectorLegacy {
-                connector_name: "http-provider".to_owned(),
-                operation: "notify".to_owned(),
-                required_capabilities: BTreeSet::from([Capability::InvokeConnector]),
-                payload: json!({}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "connector_legacy");
-        assert_eq!(report.outcome["outcome"]["status"], "ok");
-        assert_eq!(report.plugin_activation_plans.len(), 1);
-        assert_eq!(report.plugin_activation_plans[0].ready_plugins, 2);
-        assert_eq!(report.plugin_bootstrap_reports.len(), 1);
-        assert_eq!(report.plugin_bootstrap_reports[0].applied_tasks, 1);
-        assert_eq!(report.plugin_bootstrap_reports[0].deferred_tasks, 1);
-        assert_eq!(report.plugin_absorb_reports[0].absorbed_plugins, 1);
-        assert_eq!(report.plugin_bootstrap_queue.len(), 1);
-        assert!(report
-            .integration_catalog
-            .provider("http-provider")
-            .is_some());
-        assert!(report
-            .integration_catalog
-            .provider("ffi-provider")
-            .is_none());
-    }
-
-    #[tokio::test]
-    async fn execute_spec_bootstrap_enforcement_blocks_when_ready_plugins_are_deferred() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let plugin_root =
-            std::env::temp_dir().join(format!("chumos-plugin-bootstrap-enforce-{}", unique));
-        fs::create_dir_all(&plugin_root).expect("create plugin root");
-
-        fs::write(
-            plugin_root.join("ffi_plugin.rs"),
-            r#"
-// CHUMOS_PLUGIN_START
-// {
-//   "plugin_id": "ffi-plugin",
-//   "provider_id": "ffi-provider",
-//   "connector_name": "ffi-provider",
-//   "channel_id": "primary",
-//   "endpoint": "https://ffi.invalid/invoke",
-//   "capabilities": ["InvokeConnector"],
-//   "metadata": {"bridge_kind":"native_ffi","version":"1.0.0"}
-// }
-// CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write ffi plugin");
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-bootstrap-enforce".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::new(),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-bootstrap-enforce".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: Some(PluginScanSpec {
-                enabled: true,
-                roots: vec![plugin_root.display().to_string()],
-            }),
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::NativeFfi],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: true,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-
-                execute_process_stdio: false,
-
-                execute_http_json: false,
-
-                allowed_process_commands: Vec::new(),
-
-                enforce_execution_success: false,
-                security_scan: None,
-            }),
-            bootstrap: Some(BootstrapSpec {
-                enabled: true,
-                allow_http_json_auto_apply: Some(true),
-                allow_process_stdio_auto_apply: Some(false),
-                allow_native_ffi_auto_apply: Some(false),
-                allow_wasm_component_auto_apply: Some(false),
-                allow_mcp_server_auto_apply: Some(false),
-                enforce_ready_execution: Some(true),
-                max_tasks: Some(10),
-            }),
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::Task {
-                task_id: "t-bootstrap-enforce".to_owned(),
-                objective: "must be blocked by bootstrap enforcement".to_owned(),
-                required_capabilities: BTreeSet::new(),
-                payload: json!({}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "blocked");
-        assert_eq!(report.outcome["status"], "blocked");
-        assert!(report
-            .blocked_reason
-            .expect("blocked reason must exist")
-            .contains("bootstrap policy blocked"));
-        assert_eq!(report.plugin_bootstrap_reports.len(), 1);
-        assert_eq!(report.plugin_bootstrap_reports[0].applied_tasks, 0);
-        assert_eq!(report.plugin_bootstrap_reports[0].deferred_tasks, 1);
-        assert!(report.plugin_absorb_reports.is_empty());
-        assert!(report
-            .integration_catalog
-            .provider("ffi-provider")
-            .is_none());
-    }
-
-    #[tokio::test]
-    async fn execute_spec_blocks_on_bridge_support_checksum_mismatch() {
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-bridge-checksum".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::from([Capability::ObserveTelemetry]),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-bridge-checksum".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: None,
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::HttpJson],
-                supported_adapter_families: vec!["http-adapter".to_owned()],
-                enforce_supported: true,
-                policy_version: Some("v1".to_owned()),
-                expected_checksum: Some("deadbeef".to_owned()),
-                expected_sha256: None,
-
-                execute_process_stdio: false,
-
-                execute_http_json: false,
-
-                allowed_process_commands: Vec::new(),
-
-                enforce_execution_success: false,
-                security_scan: None,
-            }),
-            bootstrap: None,
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::Task {
-                task_id: "t-bridge-checksum".to_owned(),
-                objective: "should be blocked before execution".to_owned(),
-                required_capabilities: BTreeSet::new(),
-                payload: json!({}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "blocked");
-        assert_eq!(report.outcome["status"], "blocked");
-        assert!(report
-            .blocked_reason
-            .expect("blocked reason should be present")
-            .contains("checksum mismatch"));
-        assert!(report.bridge_support_checksum.is_some());
-    }
-
-    #[tokio::test]
-    async fn execute_spec_blocks_on_bridge_support_sha256_mismatch() {
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-bridge-sha256".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::from([Capability::ObserveTelemetry]),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-bridge-sha256".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: None,
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::HttpJson],
-                supported_adapter_families: vec!["http-adapter".to_owned()],
-                enforce_supported: true,
-                policy_version: Some("v2".to_owned()),
-                expected_checksum: None,
-                expected_sha256: Some("badbad".to_owned()),
-
-                execute_process_stdio: false,
-
-                execute_http_json: false,
-
-                allowed_process_commands: Vec::new(),
-
-                enforce_execution_success: false,
-                security_scan: None,
-            }),
-            bootstrap: None,
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::Task {
-                task_id: "t-bridge-sha256".to_owned(),
-                objective: "should be blocked before execution".to_owned(),
-                required_capabilities: BTreeSet::new(),
-                payload: json!({}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "blocked");
-        assert_eq!(report.outcome["status"], "blocked");
-        assert!(report
-            .blocked_reason
-            .expect("blocked reason should be present")
-            .contains("sha256 mismatch"));
-        assert!(report.bridge_support_sha256.is_some());
-    }
-
-    #[tokio::test]
-    async fn execute_spec_allows_execution_when_bridge_support_sha256_matches() {
-        let mut bridge_support = BridgeSupportSpec {
-            enabled: true,
-            supported_bridges: vec![PluginBridgeKind::HttpJson, PluginBridgeKind::ProcessStdio],
-            supported_adapter_families: vec!["http-adapter".to_owned()],
-            enforce_supported: false,
-            policy_version: Some("v2".to_owned()),
-            expected_checksum: None,
-            expected_sha256: None,
-            execute_process_stdio: false,
-            execute_http_json: false,
-            allowed_process_commands: Vec::new(),
-            enforce_execution_success: false,
-            security_scan: None,
-        };
-        bridge_support.expected_sha256 = Some(bridge_support_policy_sha256(&bridge_support));
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-bridge-sha256-match".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::from([Capability::ObserveTelemetry]),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-bridge-sha256-match".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: None,
-            bridge_support: Some(bridge_support),
-            bootstrap: None,
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::Task {
-                task_id: "t-bridge-sha256-match".to_owned(),
-                objective: "should pass".to_owned(),
-                required_capabilities: BTreeSet::new(),
-                payload: json!({}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "task");
-        assert_eq!(report.outcome["outcome"]["status"], "ok");
-        assert!(report.blocked_reason.is_none());
-        assert!(report.bridge_support_sha256.is_some());
-    }
-
-    #[tokio::test]
-    async fn execute_spec_enriches_plugin_bridge_metadata_and_emits_bridge_execution() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let plugin_root =
-            std::env::temp_dir().join(format!("chumos-plugin-bridge-enrich-{unique}"));
-        fs::create_dir_all(&plugin_root).expect("create plugin root");
-
-        fs::write(
-            plugin_root.join("ffi_plugin.rs"),
-            r#"
-// CHUMOS_PLUGIN_START
-// {
-//   "plugin_id": "ffi-plugin",
-//   "provider_id": "ffi-provider",
-//   "connector_name": "ffi-provider",
-//   "channel_id": "primary",
-//   "endpoint": "https://ffi.invalid/invoke",
-//   "capabilities": ["InvokeConnector"],
-//   "metadata": {"version":"1.0.0"}
-// }
-// CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write ffi plugin");
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-bridge-enrich".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::new(),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-bridge-enrich".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: Some(PluginScanSpec {
-                enabled: true,
-                roots: vec![plugin_root.display().to_string()],
-            }),
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::NativeFfi],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: true,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-
-                execute_process_stdio: false,
-
-                execute_http_json: false,
-
-                allowed_process_commands: Vec::new(),
-
-                enforce_execution_success: false,
-                security_scan: None,
-            }),
-            bootstrap: Some(BootstrapSpec {
-                enabled: true,
-                allow_http_json_auto_apply: Some(false),
-                allow_process_stdio_auto_apply: Some(false),
-                allow_native_ffi_auto_apply: Some(true),
-                allow_wasm_component_auto_apply: Some(false),
-                allow_mcp_server_auto_apply: Some(false),
-                enforce_ready_execution: Some(true),
-                max_tasks: Some(10),
-            }),
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::ConnectorLegacy {
-                connector_name: "ffi-provider".to_owned(),
-                operation: "invoke".to_owned(),
-                required_capabilities: BTreeSet::from([Capability::InvokeConnector]),
-                payload: json!({"input":"demo"}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "connector_legacy");
-        assert_eq!(report.outcome["outcome"]["status"], "ok");
-        assert_eq!(
-            report.outcome["outcome"]["payload"]["bridge_execution"]["bridge_kind"],
-            "native_ffi"
-        );
-        assert_eq!(
-            report.outcome["outcome"]["payload"]["bridge_execution"]["entrypoint"],
-            "lib::invoke"
-        );
-        assert_eq!(
-            report
-                .integration_catalog
-                .provider("ffi-provider")
-                .expect("provider should exist")
-                .metadata
-                .get("bridge_kind")
-                .cloned(),
-            Some("native_ffi".to_owned())
-        );
-    }
-
-    #[tokio::test]
-    async fn execute_spec_process_stdio_bridge_executes_when_enabled_and_allowed() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let plugin_root =
-            std::env::temp_dir().join(format!("chumos-plugin-process-stdio-run-{unique}"));
-        fs::create_dir_all(&plugin_root).expect("create plugin root");
-
-        fs::write(
-            plugin_root.join("stdio_plugin.py"),
-            r#"
-# CHUMOS_PLUGIN_START
-# {
-#   "plugin_id": "stdio-plugin",
-#   "provider_id": "stdio-provider",
-#   "connector_name": "stdio-provider",
-#   "channel_id": "primary",
-#   "endpoint": "local://stdio-provider",
-#   "capabilities": ["InvokeConnector"],
-#   "metadata": {
-#     "bridge_kind":"process_stdio",
-#     "command":"cat",
-#     "version":"1.0.0"
-#   }
-# }
-# CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write stdio plugin");
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-process-stdio-run".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::new(),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-process-stdio-run".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: Some(PluginScanSpec {
-                enabled: true,
-                roots: vec![plugin_root.display().to_string()],
-            }),
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::ProcessStdio],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: true,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-                execute_process_stdio: true,
-                execute_http_json: false,
-                allowed_process_commands: vec!["cat".to_owned()],
-                enforce_execution_success: true,
-                security_scan: None,
-            }),
-            bootstrap: Some(BootstrapSpec {
-                enabled: true,
-                allow_http_json_auto_apply: Some(false),
-                allow_process_stdio_auto_apply: Some(true),
-                allow_native_ffi_auto_apply: Some(false),
-                allow_wasm_component_auto_apply: Some(false),
-                allow_mcp_server_auto_apply: Some(false),
-                enforce_ready_execution: Some(true),
-                max_tasks: Some(10),
-            }),
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::ConnectorLegacy {
-                connector_name: "stdio-provider".to_owned(),
-                operation: "invoke".to_owned(),
-                required_capabilities: BTreeSet::from([Capability::InvokeConnector]),
-                payload: json!({"question":"ping"}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "connector_legacy");
-        assert_eq!(report.outcome["outcome"]["status"], "ok");
-        assert_eq!(
-            report.outcome["outcome"]["payload"]["bridge_execution"]["status"],
-            "executed"
-        );
-        assert_eq!(
-            report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["executor"],
-            "process_stdio_local"
-        );
-        assert_eq!(
-            report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["stdout_json"]
-                ["operation"],
-            "invoke"
-        );
-    }
-
-    #[tokio::test]
-    async fn execute_spec_process_stdio_bridge_blocks_when_command_not_allowlisted() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let plugin_root =
-            std::env::temp_dir().join(format!("chumos-plugin-process-stdio-block-{unique}"));
-        fs::create_dir_all(&plugin_root).expect("create plugin root");
-
-        fs::write(
-            plugin_root.join("stdio_plugin.py"),
-            r#"
-# CHUMOS_PLUGIN_START
-# {
-#   "plugin_id": "stdio-plugin",
-#   "provider_id": "stdio-provider",
-#   "connector_name": "stdio-provider",
-#   "channel_id": "primary",
-#   "endpoint": "local://stdio-provider",
-#   "capabilities": ["InvokeConnector"],
-#   "metadata": {
-#     "bridge_kind":"process_stdio",
-#     "command":"cat",
-#     "version":"1.0.0"
-#   }
-# }
-# CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write stdio plugin");
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-process-stdio-block".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::new(),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-process-stdio-block".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: Some(PluginScanSpec {
-                enabled: true,
-                roots: vec![plugin_root.display().to_string()],
-            }),
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::ProcessStdio],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: true,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-                execute_process_stdio: true,
-                execute_http_json: false,
-                allowed_process_commands: vec!["python3".to_owned()],
-                enforce_execution_success: false,
-                security_scan: None,
-            }),
-            bootstrap: Some(BootstrapSpec {
-                enabled: true,
-                allow_http_json_auto_apply: Some(false),
-                allow_process_stdio_auto_apply: Some(true),
-                allow_native_ffi_auto_apply: Some(false),
-                allow_wasm_component_auto_apply: Some(false),
-                allow_mcp_server_auto_apply: Some(false),
-                enforce_ready_execution: Some(true),
-                max_tasks: Some(10),
-            }),
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::ConnectorLegacy {
-                connector_name: "stdio-provider".to_owned(),
-                operation: "invoke".to_owned(),
-                required_capabilities: BTreeSet::from([Capability::InvokeConnector]),
-                payload: json!({"question":"ping"}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "connector_legacy");
-        assert_eq!(report.outcome["outcome"]["status"], "ok");
-        assert_eq!(
-            report.outcome["outcome"]["payload"]["bridge_execution"]["status"],
-            "blocked"
-        );
-        assert!(
-            report.outcome["outcome"]["payload"]["bridge_execution"]["reason"]
-                .as_str()
-                .expect("blocked reason should be string")
-                .contains("not allowed")
-        );
-    }
-
-    #[tokio::test]
-    async fn execute_spec_wasm_component_bridge_executes_when_runtime_enabled() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let plugin_root = std::env::temp_dir().join(format!("chumos-wasm-runtime-run-{unique}"));
-        fs::create_dir_all(&plugin_root).expect("create plugin root");
-
-        fs::write(
-            plugin_root.join("plugin.rs"),
-            r#"
-// CHUMOS_PLUGIN_START
-// {
-//   "plugin_id": "wasm-runtime-run",
-//   "provider_id": "wasm-runtime-provider",
-//   "connector_name": "wasm-runtime-provider",
-//   "channel_id": "primary",
-//   "endpoint": "local://wasm-runtime-provider/invoke",
-//   "capabilities": ["InvokeConnector"],
-//   "metadata": {
-//     "bridge_kind":"wasm_component",
-//     "component":"plugin.wasm",
-//     "entrypoint":"run",
-//     "version":"1.0.0"
-//   }
-// }
-// CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write wasm plugin manifest");
-
-        let wasm_bytes = wat::parse_str(r#"(module (func (export "run")))"#).expect("compile wasm");
-        fs::write(plugin_root.join("plugin.wasm"), wasm_bytes).expect("write wasm module");
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-wasm-runtime-run".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::new(),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-wasm-runtime-run".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: Some(PluginScanSpec {
-                enabled: true,
-                roots: vec![plugin_root.display().to_string()],
-            }),
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::WasmComponent],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: true,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-                execute_process_stdio: false,
-                execute_http_json: false,
-                allowed_process_commands: Vec::new(),
-                enforce_execution_success: true,
-                security_scan: Some(SecurityScanSpec {
-                    enabled: true,
-                    block_on_high: true,
-                    profile_path: None,
-                    profile_sha256: None,
-                    profile_signature: None,
-                    siem_export: None,
-                    runtime: SecurityRuntimeExecutionSpec {
-                        execute_wasm_component: true,
-                        allowed_path_prefixes: vec![plugin_root.display().to_string()],
-                        max_component_bytes: Some(128 * 1024),
-                        fuel_limit: Some(200_000),
-                    },
-                    high_risk_metadata_keywords: Vec::new(),
-                    wasm: WasmSecurityScanSpec {
-                        enabled: true,
-                        max_module_bytes: 128 * 1024,
-                        allow_wasi: false,
-                        blocked_import_prefixes: vec!["wasi".to_owned()],
-                        allowed_path_prefixes: vec![plugin_root.display().to_string()],
-                        require_hash_pin: false,
-                        required_sha256_by_plugin: BTreeMap::new(),
-                    },
-                }),
-            }),
-            bootstrap: Some(BootstrapSpec {
-                enabled: true,
-                allow_http_json_auto_apply: Some(false),
-                allow_process_stdio_auto_apply: Some(false),
-                allow_native_ffi_auto_apply: Some(false),
-                allow_wasm_component_auto_apply: Some(true),
-                allow_mcp_server_auto_apply: Some(false),
-                enforce_ready_execution: Some(true),
-                max_tasks: Some(5),
-            }),
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::ConnectorLegacy {
-                connector_name: "wasm-runtime-provider".to_owned(),
-                operation: "invoke".to_owned(),
-                required_capabilities: BTreeSet::from([Capability::InvokeConnector]),
-                payload: json!({"input":"ping"}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "connector_legacy");
-        assert_eq!(report.outcome["outcome"]["status"], "ok");
-        assert_eq!(
-            report.outcome["outcome"]["payload"]["bridge_execution"]["status"],
-            "executed"
-        );
-        assert_eq!(
-            report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["executor"],
-            "wasmtime_module"
-        );
-        assert_eq!(
-            report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["export"],
-            "run"
-        );
-        assert_eq!(
-            report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["fuel_limit"],
-            200_000
-        );
-        assert!(
-            report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["fuel_consumed"]
-                .is_number()
-        );
-
-        let provider = report
-            .integration_catalog
-            .provider("wasm-runtime-provider")
-            .expect("provider should exist");
-        assert!(provider.metadata.contains_key("plugin_source_path"));
-        assert!(provider.metadata.contains_key("component_resolved_path"));
-    }
-
-    #[tokio::test]
-    async fn execute_spec_wasm_component_bridge_blocks_artifact_outside_runtime_prefixes() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let plugin_root =
-            std::env::temp_dir().join(format!("chumos-wasm-runtime-block-path-{unique}"));
-        let disallowed_root =
-            std::env::temp_dir().join(format!("chumos-wasm-runtime-deny-prefix-{unique}"));
-        fs::create_dir_all(&plugin_root).expect("create plugin root");
-        fs::create_dir_all(&disallowed_root).expect("create disallowed root");
-
-        fs::write(
-            plugin_root.join("plugin.rs"),
-            r#"
-// CHUMOS_PLUGIN_START
-// {
-//   "plugin_id": "wasm-runtime-path-block",
-//   "provider_id": "wasm-runtime-path-provider",
-//   "connector_name": "wasm-runtime-path-provider",
-//   "channel_id": "primary",
-//   "endpoint": "local://wasm-runtime-path-provider/invoke",
-//   "capabilities": ["InvokeConnector"],
-//   "metadata": {
-//     "bridge_kind":"wasm_component",
-//     "component":"plugin.wasm",
-//     "entrypoint":"run",
-//     "version":"1.0.0"
-//   }
-// }
-// CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write wasm plugin manifest");
-
-        let wasm_bytes = wat::parse_str(r#"(module (func (export "run")))"#).expect("compile wasm");
-        fs::write(plugin_root.join("plugin.wasm"), wasm_bytes).expect("write wasm module");
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-wasm-runtime-block-path".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::new(),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-wasm-runtime-block-path".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: Some(PluginScanSpec {
-                enabled: true,
-                roots: vec![plugin_root.display().to_string()],
-            }),
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::WasmComponent],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: true,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-                execute_process_stdio: false,
-                execute_http_json: false,
-                allowed_process_commands: Vec::new(),
-                enforce_execution_success: false,
-                security_scan: Some(SecurityScanSpec {
-                    enabled: true,
-                    block_on_high: true,
-                    profile_path: None,
-                    profile_sha256: None,
-                    profile_signature: None,
-                    siem_export: None,
-                    runtime: SecurityRuntimeExecutionSpec {
-                        execute_wasm_component: true,
-                        allowed_path_prefixes: vec![disallowed_root.display().to_string()],
-                        max_component_bytes: Some(128 * 1024),
-                        fuel_limit: Some(100_000),
-                    },
-                    high_risk_metadata_keywords: Vec::new(),
-                    wasm: WasmSecurityScanSpec {
-                        enabled: true,
-                        max_module_bytes: 128 * 1024,
-                        allow_wasi: false,
-                        blocked_import_prefixes: vec!["wasi".to_owned()],
-                        allowed_path_prefixes: vec![plugin_root.display().to_string()],
-                        require_hash_pin: false,
-                        required_sha256_by_plugin: BTreeMap::new(),
-                    },
-                }),
-            }),
-            bootstrap: Some(BootstrapSpec {
-                enabled: true,
-                allow_http_json_auto_apply: Some(false),
-                allow_process_stdio_auto_apply: Some(false),
-                allow_native_ffi_auto_apply: Some(false),
-                allow_wasm_component_auto_apply: Some(true),
-                allow_mcp_server_auto_apply: Some(false),
-                enforce_ready_execution: Some(true),
-                max_tasks: Some(5),
-            }),
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::ConnectorLegacy {
-                connector_name: "wasm-runtime-path-provider".to_owned(),
-                operation: "invoke".to_owned(),
-                required_capabilities: BTreeSet::from([Capability::InvokeConnector]),
-                payload: json!({"input":"ping"}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "connector_legacy");
-        assert_eq!(report.outcome["outcome"]["status"], "ok");
-        assert_eq!(
-            report.outcome["outcome"]["payload"]["bridge_execution"]["status"],
-            "blocked"
-        );
-        assert!(
-            report.outcome["outcome"]["payload"]["bridge_execution"]["reason"]
-                .as_str()
-                .expect("blocked reason should be string")
-                .contains("outside runtime allowed_path_prefixes")
-        );
-    }
-
-    #[tokio::test]
-    async fn execute_spec_wasm_component_bridge_blocks_when_module_size_exceeds_runtime_limit() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let plugin_root =
-            std::env::temp_dir().join(format!("chumos-wasm-runtime-block-size-{unique}"));
-        fs::create_dir_all(&plugin_root).expect("create plugin root");
-
-        fs::write(
-            plugin_root.join("plugin.rs"),
-            r#"
-// CHUMOS_PLUGIN_START
-// {
-//   "plugin_id": "wasm-runtime-size-block",
-//   "provider_id": "wasm-runtime-size-provider",
-//   "connector_name": "wasm-runtime-size-provider",
-//   "channel_id": "primary",
-//   "endpoint": "local://wasm-runtime-size-provider/invoke",
-//   "capabilities": ["InvokeConnector"],
-//   "metadata": {
-//     "bridge_kind":"wasm_component",
-//     "component":"plugin.wasm",
-//     "entrypoint":"run",
-//     "version":"1.0.0"
-//   }
-// }
-// CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write wasm plugin manifest");
-
-        let wasm_bytes = wat::parse_str(r#"(module (func (export "run")))"#).expect("compile wasm");
-        let wasm_size = wasm_bytes.len();
-        fs::write(plugin_root.join("plugin.wasm"), wasm_bytes).expect("write wasm module");
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-wasm-runtime-block-size".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::new(),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-wasm-runtime-block-size".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: Some(PluginScanSpec {
-                enabled: true,
-                roots: vec![plugin_root.display().to_string()],
-            }),
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::WasmComponent],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: true,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-                execute_process_stdio: false,
-                execute_http_json: false,
-                allowed_process_commands: Vec::new(),
-                enforce_execution_success: false,
-                security_scan: Some(SecurityScanSpec {
-                    enabled: true,
-                    block_on_high: true,
-                    profile_path: None,
-                    profile_sha256: None,
-                    profile_signature: None,
-                    siem_export: None,
-                    runtime: SecurityRuntimeExecutionSpec {
-                        execute_wasm_component: true,
-                        allowed_path_prefixes: vec![plugin_root.display().to_string()],
-                        max_component_bytes: Some(8),
-                        fuel_limit: Some(100_000),
-                    },
-                    high_risk_metadata_keywords: Vec::new(),
-                    wasm: WasmSecurityScanSpec {
-                        enabled: true,
-                        max_module_bytes: 128 * 1024,
-                        allow_wasi: false,
-                        blocked_import_prefixes: vec!["wasi".to_owned()],
-                        allowed_path_prefixes: vec![plugin_root.display().to_string()],
-                        require_hash_pin: false,
-                        required_sha256_by_plugin: BTreeMap::new(),
-                    },
-                }),
-            }),
-            bootstrap: Some(BootstrapSpec {
-                enabled: true,
-                allow_http_json_auto_apply: Some(false),
-                allow_process_stdio_auto_apply: Some(false),
-                allow_native_ffi_auto_apply: Some(false),
-                allow_wasm_component_auto_apply: Some(true),
-                allow_mcp_server_auto_apply: Some(false),
-                enforce_ready_execution: Some(true),
-                max_tasks: Some(5),
-            }),
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::ConnectorLegacy {
-                connector_name: "wasm-runtime-size-provider".to_owned(),
-                operation: "invoke".to_owned(),
-                required_capabilities: BTreeSet::from([Capability::InvokeConnector]),
-                payload: json!({"input":"ping"}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "connector_legacy");
-        assert_eq!(report.outcome["outcome"]["status"], "ok");
-        assert_eq!(
-            report.outcome["outcome"]["payload"]["bridge_execution"]["status"],
-            "blocked"
-        );
-        assert!(
-            report.outcome["outcome"]["payload"]["bridge_execution"]["reason"]
-                .as_str()
-                .expect("blocked reason should be string")
-                .contains("exceeds runtime max_component_bytes")
-        );
-        assert_eq!(
-            report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]
-                ["module_size_bytes"],
-            wasm_size
-        );
-        assert_eq!(
-            report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]
-                ["max_component_bytes"],
-            8
-        );
-    }
-
-    #[tokio::test]
-    async fn execute_spec_blocks_when_wasm_runtime_enabled_without_allowed_prefixes() {
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-wasm-runtime-invalid-policy".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::new(),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-wasm-runtime-invalid-policy".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: None,
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::WasmComponent],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: true,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-                execute_process_stdio: false,
-                execute_http_json: false,
-                allowed_process_commands: Vec::new(),
-                enforce_execution_success: false,
-                security_scan: Some(SecurityScanSpec {
-                    enabled: true,
-                    block_on_high: true,
-                    profile_path: None,
-                    profile_sha256: None,
-                    profile_signature: None,
-                    siem_export: None,
-                    runtime: SecurityRuntimeExecutionSpec {
-                        execute_wasm_component: true,
-                        allowed_path_prefixes: Vec::new(),
-                        max_component_bytes: Some(1024),
-                        fuel_limit: Some(10_000),
-                    },
-                    high_risk_metadata_keywords: Vec::new(),
-                    wasm: WasmSecurityScanSpec {
-                        enabled: true,
-                        max_module_bytes: 128 * 1024,
-                        allow_wasi: false,
-                        blocked_import_prefixes: vec!["wasi".to_owned()],
-                        allowed_path_prefixes: vec!["examples/plugins-wasm".to_owned()],
-                        require_hash_pin: false,
-                        required_sha256_by_plugin: BTreeMap::new(),
-                    },
-                }),
-            }),
-            bootstrap: None,
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::Task {
-                task_id: "t-wasm-runtime-invalid-policy".to_owned(),
-                objective: "runtime policy should fail closed".to_owned(),
-                required_capabilities: BTreeSet::new(),
-                payload: json!({}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "blocked");
-        assert!(report
-            .blocked_reason
-            .expect("blocked reason should exist")
-            .contains("runtime.execute_wasm_component requires runtime.allowed_path_prefixes"));
-    }
-
-    #[tokio::test]
-    async fn execute_spec_security_scan_blocks_wasm_plugin_with_wasi_import() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let plugin_root = std::env::temp_dir().join(format!("chumos-security-wasm-block-{unique}"));
-        fs::create_dir_all(&plugin_root).expect("create plugin root");
-
-        fs::write(
-            plugin_root.join("plugin.rs"),
-            r#"
-// CHUMOS_PLUGIN_START
-// {
-//   "plugin_id": "wasm-risky",
-//   "provider_id": "wasm-risky",
-//   "connector_name": "wasm-risky",
-//   "channel_id": "primary",
-//   "endpoint": "local://wasm-risky/invoke",
-//   "capabilities": ["InvokeConnector"],
-//   "metadata": {
-//     "bridge_kind":"wasm_component",
-//     "component":"plugin.wasm",
-//     "version":"1.0.0"
-//   }
-// }
-// CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write plugin manifest");
-
-        let wasm_bytes = wat::parse_str(
-            r#"(module
-                 (import "wasi_snapshot_preview1" "fd_write"
-                   (func $fd_write (param i32 i32 i32 i32) (result i32)))
-               )"#,
-        )
-        .expect("compile wasm");
-        fs::write(plugin_root.join("plugin.wasm"), wasm_bytes).expect("write wasm module");
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-security-wasm-block".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::new(),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-security-wasm-block".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: Some(PluginScanSpec {
-                enabled: true,
-                roots: vec![plugin_root.display().to_string()],
-            }),
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::WasmComponent],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: true,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-                execute_process_stdio: false,
-                execute_http_json: false,
-                allowed_process_commands: Vec::new(),
-                enforce_execution_success: false,
-                security_scan: Some(SecurityScanSpec {
-                    enabled: true,
-                    block_on_high: true,
-                    profile_path: None,
-                    profile_sha256: None,
-                    profile_signature: None,
-                    siem_export: None,
-                    runtime: SecurityRuntimeExecutionSpec::default(),
-                    high_risk_metadata_keywords: vec!["shell".to_owned()],
-                    wasm: WasmSecurityScanSpec {
-                        enabled: true,
-                        max_module_bytes: 128 * 1024,
-                        allow_wasi: false,
-                        blocked_import_prefixes: vec!["wasi".to_owned()],
-                        allowed_path_prefixes: vec![plugin_root.display().to_string()],
-                        require_hash_pin: false,
-                        required_sha256_by_plugin: BTreeMap::new(),
-                    },
-                }),
-            }),
-            bootstrap: Some(BootstrapSpec {
-                enabled: true,
-                allow_http_json_auto_apply: Some(false),
-                allow_process_stdio_auto_apply: Some(false),
-                allow_native_ffi_auto_apply: Some(false),
-                allow_wasm_component_auto_apply: Some(true),
-                allow_mcp_server_auto_apply: Some(false),
-                enforce_ready_execution: Some(true),
-                max_tasks: Some(10),
-            }),
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::Task {
-                task_id: "t-security-wasm-block".to_owned(),
-                objective: "security scan should block risky wasm".to_owned(),
-                required_capabilities: BTreeSet::new(),
-                payload: json!({}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "blocked");
-        assert!(report
-            .blocked_reason
-            .expect("blocked reason should exist")
-            .contains("security scan blocked"));
-        let security = report
-            .security_scan_report
-            .expect("security scan report should exist");
-        assert!(security.blocked);
-        assert!(security.high_findings > 0);
-        assert!(security
-            .findings
-            .iter()
-            .any(|finding| finding.category.contains("wasi")));
-        let audit = report.audit_events.expect("audit events should exist");
-        assert!(audit.iter().any(|event| {
-            matches!(
-                &event.kind,
-                AuditEventKind::SecurityScanEvaluated {
-                    blocked,
-                    high_findings,
-                    ..
-                } if *blocked && *high_findings > 0
-            )
-        }));
-    }
-
-    #[tokio::test]
-    async fn execute_spec_security_scan_allows_clean_wasm_with_hash_pin() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let plugin_root = std::env::temp_dir().join(format!("chumos-security-wasm-pass-{unique}"));
-        fs::create_dir_all(&plugin_root).expect("create plugin root");
-
-        fs::write(
-            plugin_root.join("plugin.rs"),
-            r#"
-// CHUMOS_PLUGIN_START
-// {
-//   "plugin_id": "wasm-clean",
-//   "provider_id": "wasm-clean",
-//   "connector_name": "wasm-clean",
-//   "channel_id": "primary",
-//   "endpoint": "local://wasm-clean/invoke",
-//   "capabilities": ["InvokeConnector"],
-//   "metadata": {
-//     "bridge_kind":"wasm_component",
-//     "component":"plugin.wasm",
-//     "version":"1.0.0"
-//   }
-// }
-// CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write plugin manifest");
-
-        let wasm_bytes = wat::parse_str(r#"(module (func (export "run")))"#).expect("compile wasm");
-        let digest = Sha256::digest(&wasm_bytes);
-        let digest_hex = hex_lower(&digest);
-        fs::write(plugin_root.join("plugin.wasm"), wasm_bytes).expect("write wasm module");
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-security-wasm-pass".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::new(),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-security-wasm-pass".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: Some(PluginScanSpec {
-                enabled: true,
-                roots: vec![plugin_root.display().to_string()],
-            }),
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::WasmComponent],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: true,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-                execute_process_stdio: false,
-                execute_http_json: false,
-                allowed_process_commands: Vec::new(),
-                enforce_execution_success: false,
-                security_scan: Some(SecurityScanSpec {
-                    enabled: true,
-                    block_on_high: true,
-                    profile_path: None,
-                    profile_sha256: None,
-                    profile_signature: None,
-                    siem_export: None,
-                    runtime: SecurityRuntimeExecutionSpec::default(),
-                    high_risk_metadata_keywords: vec!["shell".to_owned()],
-                    wasm: WasmSecurityScanSpec {
-                        enabled: true,
-                        max_module_bytes: 128 * 1024,
-                        allow_wasi: false,
-                        blocked_import_prefixes: vec!["wasi".to_owned()],
-                        allowed_path_prefixes: vec![plugin_root.display().to_string()],
-                        require_hash_pin: true,
-                        required_sha256_by_plugin: BTreeMap::from([(
-                            "wasm-clean".to_owned(),
-                            digest_hex.clone(),
-                        )]),
-                    },
-                }),
-            }),
-            bootstrap: Some(BootstrapSpec {
-                enabled: true,
-                allow_http_json_auto_apply: Some(false),
-                allow_process_stdio_auto_apply: Some(false),
-                allow_native_ffi_auto_apply: Some(false),
-                allow_wasm_component_auto_apply: Some(true),
-                allow_mcp_server_auto_apply: Some(false),
-                enforce_ready_execution: Some(true),
-                max_tasks: Some(10),
-            }),
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::Task {
-                task_id: "t-security-wasm-pass".to_owned(),
-                objective: "security scan should allow clean wasm".to_owned(),
-                required_capabilities: BTreeSet::new(),
-                payload: json!({}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "task");
-        assert_eq!(report.outcome["outcome"]["status"], "ok");
-        let security = report
-            .security_scan_report
-            .expect("security scan report should exist");
-        assert!(!security.blocked);
-        assert_eq!(security.high_findings, 0);
-        assert!(security
-            .findings
-            .iter()
-            .any(|finding| finding.category == "wasm_digest_observed"));
-        assert!(report.integration_catalog.provider("wasm-clean").is_some());
-    }
-
-    #[tokio::test]
-    async fn execute_spec_security_scan_emits_audit_summary_when_not_blocking() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let plugin_root = std::env::temp_dir().join(format!("chumos-security-audit-pass-{unique}"));
-        fs::create_dir_all(&plugin_root).expect("create plugin root");
-
-        fs::write(
-            plugin_root.join("plugin.py"),
-            r#"
-# CHUMOS_PLUGIN_START
-# {
-#   "plugin_id": "stdio-audit",
-#   "provider_id": "stdio-audit",
-#   "connector_name": "stdio-audit",
-#   "channel_id": "primary",
-#   "endpoint": "local://stdio-audit/invoke",
-#   "capabilities": ["InvokeConnector"],
-#   "metadata": {
-#     "bridge_kind":"process_stdio",
-#     "command":"python3",
-#     "version":"1.0.0"
-#   }
-# }
-# CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write plugin manifest");
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-security-audit-pass".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::new(),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-security-audit-pass".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: Some(PluginScanSpec {
-                enabled: true,
-                roots: vec![plugin_root.display().to_string()],
-            }),
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::ProcessStdio],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: true,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-                execute_process_stdio: false,
-                execute_http_json: false,
-                allowed_process_commands: vec!["cat".to_owned()],
-                enforce_execution_success: false,
-                security_scan: Some(SecurityScanSpec {
-                    enabled: true,
-                    block_on_high: false,
-                    profile_path: None,
-                    profile_sha256: None,
-                    profile_signature: None,
-                    siem_export: None,
-                    runtime: SecurityRuntimeExecutionSpec::default(),
-                    high_risk_metadata_keywords: Vec::new(),
-                    wasm: WasmSecurityScanSpec {
-                        enabled: false,
-                        max_module_bytes: 0,
-                        allow_wasi: false,
-                        blocked_import_prefixes: Vec::new(),
-                        allowed_path_prefixes: Vec::new(),
-                        require_hash_pin: false,
-                        required_sha256_by_plugin: BTreeMap::new(),
-                    },
-                }),
-            }),
-            bootstrap: Some(BootstrapSpec {
-                enabled: true,
-                allow_http_json_auto_apply: Some(false),
-                allow_process_stdio_auto_apply: Some(true),
-                allow_native_ffi_auto_apply: Some(false),
-                allow_wasm_component_auto_apply: Some(false),
-                allow_mcp_server_auto_apply: Some(false),
-                enforce_ready_execution: Some(false),
-                max_tasks: Some(5),
-            }),
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::Task {
-                task_id: "t-security-audit-pass".to_owned(),
-                objective: "security scan should emit audit summary".to_owned(),
-                required_capabilities: BTreeSet::new(),
-                payload: json!({}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "task");
-        let security = report
-            .security_scan_report
-            .expect("security scan report should exist");
-        assert!(!security.blocked);
-        assert!(security.high_findings >= 1);
-
-        let audit = report.audit_events.expect("audit events should exist");
-        let summary = audit.iter().find_map(|event| match &event.kind {
-            AuditEventKind::SecurityScanEvaluated {
-                blocked,
-                high_findings,
-                categories,
-                finding_ids,
-                ..
-            } => Some((
-                *blocked,
-                *high_findings,
-                categories.clone(),
-                finding_ids.clone(),
-            )),
-            _ => None,
-        });
-
-        let (blocked, high_findings, categories, finding_ids) =
-            summary.expect("security scan audit summary should exist");
-        assert!(!blocked);
-        assert!(high_findings >= 1);
-        assert!(categories
-            .iter()
-            .any(|value| value == "process_command_not_allowlisted"));
-        assert!(!finding_ids.is_empty());
-        assert!(finding_ids.iter().all(|value| value.starts_with("sf-")));
-    }
-
-    #[tokio::test]
-    async fn execute_spec_security_scan_exports_siem_record_with_truncation() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let plugin_root = std::env::temp_dir().join(format!("chumos-security-siem-pass-{unique}"));
-        let siem_path =
-            std::env::temp_dir().join(format!("chumos-security-siem-pass-{unique}.jsonl"));
-        fs::create_dir_all(&plugin_root).expect("create plugin root");
-
-        fs::write(
-            plugin_root.join("plugin.py"),
-            r#"
-# CHUMOS_PLUGIN_START
-# {
-#   "plugin_id": "stdio-siem",
-#   "provider_id": "stdio-siem",
-#   "connector_name": "stdio-siem",
-#   "channel_id": "primary",
-#   "endpoint": "local://stdio-siem/invoke",
-#   "capabilities": ["InvokeConnector"],
-#   "metadata": {
-#     "bridge_kind":"process_stdio",
-#     "command":"python3",
-#     "note":"shell-enabled",
-#     "version":"1.0.0"
-#   }
-# }
-# CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write plugin manifest");
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-security-siem-pass".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::new(),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-security-siem-pass".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: Some(PluginScanSpec {
-                enabled: true,
-                roots: vec![plugin_root.display().to_string()],
-            }),
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::ProcessStdio],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: true,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-                execute_process_stdio: false,
-                execute_http_json: false,
-                allowed_process_commands: vec!["cat".to_owned()],
-                enforce_execution_success: false,
-                security_scan: Some(SecurityScanSpec {
-                    enabled: true,
-                    block_on_high: false,
-                    profile_path: None,
-                    profile_sha256: None,
-                    profile_signature: None,
-                    siem_export: Some(SecuritySiemExportSpec {
-                        enabled: true,
-                        path: siem_path.display().to_string(),
-                        include_findings: true,
-                        max_findings_per_record: Some(1),
-                        fail_on_error: true,
-                    }),
-                    runtime: SecurityRuntimeExecutionSpec::default(),
-                    high_risk_metadata_keywords: vec!["shell".to_owned()],
-                    wasm: WasmSecurityScanSpec {
-                        enabled: false,
-                        max_module_bytes: 0,
-                        allow_wasi: false,
-                        blocked_import_prefixes: Vec::new(),
-                        allowed_path_prefixes: Vec::new(),
-                        require_hash_pin: false,
-                        required_sha256_by_plugin: BTreeMap::new(),
-                    },
-                }),
-            }),
-            bootstrap: Some(BootstrapSpec {
-                enabled: true,
-                allow_http_json_auto_apply: Some(false),
-                allow_process_stdio_auto_apply: Some(true),
-                allow_native_ffi_auto_apply: Some(false),
-                allow_wasm_component_auto_apply: Some(false),
-                allow_mcp_server_auto_apply: Some(false),
-                enforce_ready_execution: Some(false),
-                max_tasks: Some(5),
-            }),
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::Task {
-                task_id: "t-security-siem-pass".to_owned(),
-                objective: "security scan should export siem record".to_owned(),
-                required_capabilities: BTreeSet::new(),
-                payload: json!({}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "task");
-        let security = report
-            .security_scan_report
-            .expect("security scan report should exist");
-        let siem = security
-            .siem_export
-            .expect("siem export report should exist");
-        assert!(siem.success);
-        assert_eq!(siem.exported_records, 1);
-        assert_eq!(siem.exported_findings, 1);
-        assert!(siem.truncated_findings >= 1);
-
-        let siem_body = fs::read_to_string(&siem_path).expect("read siem record");
-        let first_line = siem_body.lines().next().expect("one siem line");
-        let record: Value = serde_json::from_str(first_line).expect("parse siem json");
-        assert_eq!(record["event_type"], "security_scan_report");
-        assert_eq!(record["pack_id"], "spec-security-siem-pass");
-        assert_eq!(record["agent_id"], "agent-security-siem-pass");
-        assert!(record["findings"].as_array().map_or(0, Vec::len) == 1);
-        assert!(record["truncated_findings"].as_u64().unwrap_or_default() >= 1);
-        assert!(record["finding_ids"].as_array().map_or(0, Vec::len) >= 2);
-    }
-
-    #[tokio::test]
-    async fn execute_spec_security_scan_siem_fail_closed_blocks_execution() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let plugin_root = std::env::temp_dir().join(format!("chumos-security-siem-block-{unique}"));
-        let invalid_parent =
-            std::env::temp_dir().join(format!("chumos-security-siem-parent-file-{unique}.tmp"));
-        let invalid_siem_path = invalid_parent.join("events.jsonl");
-        fs::create_dir_all(&plugin_root).expect("create plugin root");
-        fs::write(&invalid_parent, "not-a-directory").expect("create invalid parent marker file");
-
-        fs::write(
-            plugin_root.join("plugin.py"),
-            r#"
-# CHUMOS_PLUGIN_START
-# {
-#   "plugin_id": "stdio-siem-block",
-#   "provider_id": "stdio-siem-block",
-#   "connector_name": "stdio-siem-block",
-#   "channel_id": "primary",
-#   "endpoint": "local://stdio-siem-block/invoke",
-#   "capabilities": ["InvokeConnector"],
-#   "metadata": {
-#     "bridge_kind":"process_stdio",
-#     "command":"python3",
-#     "version":"1.0.0"
-#   }
-# }
-# CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write plugin manifest");
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-security-siem-block".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::new(),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-security-siem-block".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: Some(PluginScanSpec {
-                enabled: true,
-                roots: vec![plugin_root.display().to_string()],
-            }),
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::ProcessStdio],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: true,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-                execute_process_stdio: false,
-                execute_http_json: false,
-                allowed_process_commands: vec!["cat".to_owned()],
-                enforce_execution_success: false,
-                security_scan: Some(SecurityScanSpec {
-                    enabled: true,
-                    block_on_high: false,
-                    profile_path: None,
-                    profile_sha256: None,
-                    profile_signature: None,
-                    siem_export: Some(SecuritySiemExportSpec {
-                        enabled: true,
-                        path: invalid_siem_path.display().to_string(),
-                        include_findings: true,
-                        max_findings_per_record: None,
-                        fail_on_error: true,
-                    }),
-                    runtime: SecurityRuntimeExecutionSpec::default(),
-                    high_risk_metadata_keywords: Vec::new(),
-                    wasm: WasmSecurityScanSpec {
-                        enabled: false,
-                        max_module_bytes: 0,
-                        allow_wasi: false,
-                        blocked_import_prefixes: Vec::new(),
-                        allowed_path_prefixes: Vec::new(),
-                        require_hash_pin: false,
-                        required_sha256_by_plugin: BTreeMap::new(),
-                    },
-                }),
-            }),
-            bootstrap: Some(BootstrapSpec {
-                enabled: true,
-                allow_http_json_auto_apply: Some(false),
-                allow_process_stdio_auto_apply: Some(true),
-                allow_native_ffi_auto_apply: Some(false),
-                allow_wasm_component_auto_apply: Some(false),
-                allow_mcp_server_auto_apply: Some(false),
-                enforce_ready_execution: Some(false),
-                max_tasks: Some(5),
-            }),
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::Task {
-                task_id: "t-security-siem-block".to_owned(),
-                objective: "siem fail closed should block".to_owned(),
-                required_capabilities: BTreeSet::new(),
-                payload: json!({}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "blocked");
-        assert!(report
-            .blocked_reason
-            .expect("blocked reason should exist")
-            .contains("siem export failed"));
-        let security = report
-            .security_scan_report
-            .expect("security scan report should exist");
-        let siem = security
-            .siem_export
-            .expect("siem export report should exist");
-        assert!(!siem.success);
-        assert!(siem.error.is_some());
-    }
-
-    #[tokio::test]
-    async fn execute_spec_security_scan_covers_deferred_plugins_not_only_applied_subset() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let plugin_root =
-            std::env::temp_dir().join(format!("chumos-security-deferred-ready-{unique}"));
-        fs::create_dir_all(&plugin_root).expect("create plugin root");
-
-        fs::write(
-            plugin_root.join("01-safe.py"),
-            r#"
-# CHUMOS_PLUGIN_START
-# {
-#   "plugin_id": "stdio-safe",
-#   "provider_id": "stdio-safe",
-#   "connector_name": "stdio-safe",
-#   "channel_id": "primary",
-#   "endpoint": "local://stdio-safe/invoke",
-#   "capabilities": ["InvokeConnector"],
-#   "metadata": {
-#     "bridge_kind":"process_stdio",
-#     "command":"cat",
-#     "version":"1.0.0"
-#   }
-# }
-# CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write safe plugin");
-
-        fs::write(
-            plugin_root.join("02-risky.py"),
-            r#"
-# CHUMOS_PLUGIN_START
-# {
-#   "plugin_id": "stdio-risky",
-#   "provider_id": "stdio-risky",
-#   "connector_name": "stdio-risky",
-#   "channel_id": "primary",
-#   "endpoint": "local://stdio-risky/invoke",
-#   "capabilities": ["InvokeConnector"],
-#   "metadata": {
-#     "bridge_kind":"process_stdio",
-#     "command":"python3",
-#     "version":"1.0.0"
-#   }
-# }
-# CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write risky plugin");
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-security-deferred-ready".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::new(),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-security-deferred-ready".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: Some(PluginScanSpec {
-                enabled: true,
-                roots: vec![plugin_root.display().to_string()],
-            }),
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::ProcessStdio],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: true,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-                execute_process_stdio: false,
-                execute_http_json: false,
-                allowed_process_commands: vec!["cat".to_owned()],
-                enforce_execution_success: false,
-                security_scan: Some(SecurityScanSpec {
-                    enabled: true,
-                    block_on_high: true,
-                    profile_path: None,
-                    profile_sha256: None,
-                    profile_signature: None,
-                    siem_export: None,
-                    runtime: SecurityRuntimeExecutionSpec::default(),
-                    high_risk_metadata_keywords: Vec::new(),
-                    wasm: WasmSecurityScanSpec {
-                        enabled: false,
-                        max_module_bytes: 0,
-                        allow_wasi: false,
-                        blocked_import_prefixes: Vec::new(),
-                        allowed_path_prefixes: Vec::new(),
-                        require_hash_pin: false,
-                        required_sha256_by_plugin: BTreeMap::new(),
-                    },
-                }),
-            }),
-            bootstrap: Some(BootstrapSpec {
-                enabled: true,
-                allow_http_json_auto_apply: Some(false),
-                allow_process_stdio_auto_apply: Some(true),
-                allow_native_ffi_auto_apply: Some(false),
-                allow_wasm_component_auto_apply: Some(false),
-                allow_mcp_server_auto_apply: Some(false),
-                enforce_ready_execution: Some(false),
-                max_tasks: Some(1),
-            }),
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::Task {
-                task_id: "t-security-deferred-ready".to_owned(),
-                objective: "security scan must inspect deferred ready plugins".to_owned(),
-                required_capabilities: BTreeSet::new(),
-                payload: json!({}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "blocked");
-        assert!(report
-            .blocked_reason
-            .expect("blocked reason should exist")
-            .contains("security scan blocked"));
-        assert_eq!(report.plugin_bootstrap_reports.len(), 1);
-        assert!(report.plugin_bootstrap_reports[0].total_tasks >= 1);
-        assert_eq!(report.plugin_scan_reports[0].matched_plugins, 2);
-
-        let security = report
-            .security_scan_report
-            .expect("security scan report should exist");
-        assert!(security.blocked);
-        assert!(security.high_findings >= 1);
-        assert!(security
-            .findings
-            .iter()
-            .any(|finding| finding.plugin_id == "stdio-risky"));
-        assert!(report.plugin_absorb_reports.is_empty());
-    }
-
-    #[tokio::test]
-    async fn execute_spec_default_medium_policy_blocks_high_risk_tool_call_without_approval() {
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-approval-default-block".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::from([Capability::InvokeTool]),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-approval-default".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: None,
-            bridge_support: None,
-            bootstrap: None,
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::ToolCore {
-                tool_name: "delete-file".to_owned(),
-                required_capabilities: BTreeSet::from([Capability::InvokeTool]),
-                payload: json!({"path":"/tmp/demo.txt"}),
-                core: None,
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "blocked");
-        assert_eq!(report.outcome["status"], "blocked");
-        assert!(report.approval_guard.requires_human_approval);
-        assert!(!report.approval_guard.approved);
-        assert!(report
-            .blocked_reason
-            .expect("blocked reason should exist")
-            .contains("human approval required"));
-    }
-
-    #[tokio::test]
-    async fn execute_spec_per_call_approval_allows_high_risk_tool_call() {
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-approval-per-call".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::from([Capability::InvokeTool]),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-approval-per-call".to_owned(),
-            ttl_s: 120,
-            approval: Some(HumanApprovalSpec {
-                mode: HumanApprovalMode::MediumBalanced,
-                strategy: HumanApprovalStrategy::PerCall,
-                approved_calls: vec!["tool_core:delete-file".to_owned()],
-                ..HumanApprovalSpec::default()
-            }),
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: None,
-            bridge_support: None,
-            bootstrap: None,
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::ToolCore {
-                tool_name: "delete-file".to_owned(),
-                required_capabilities: BTreeSet::from([Capability::InvokeTool]),
-                payload: json!({"path":"/tmp/demo.txt"}),
-                core: None,
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "tool_core");
-        assert_eq!(report.outcome["outcome"]["status"], "ok");
-        assert!(report.approval_guard.requires_human_approval);
-        assert!(report.approval_guard.approved);
-    }
-
-    #[tokio::test]
-    async fn execute_spec_one_time_full_access_allows_high_risk_tool_call() {
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-approval-once-full".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::from([Capability::InvokeTool]),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-approval-once-full".to_owned(),
-            ttl_s: 120,
-            approval: Some(HumanApprovalSpec {
-                mode: HumanApprovalMode::MediumBalanced,
-                strategy: HumanApprovalStrategy::OneTimeFullAccess,
-                one_time_full_access_granted: true,
-                ..HumanApprovalSpec::default()
-            }),
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: None,
-            bridge_support: None,
-            bootstrap: None,
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::ToolCore {
-                tool_name: "delete-file".to_owned(),
-                required_capabilities: BTreeSet::from([Capability::InvokeTool]),
-                payload: json!({"path":"/tmp/demo.txt"}),
-                core: None,
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "tool_core");
-        assert_eq!(report.outcome["outcome"]["status"], "ok");
-        assert!(report.approval_guard.requires_human_approval);
-        assert!(report.approval_guard.approved);
-    }
-
-    #[tokio::test]
-    async fn execute_spec_strict_mode_requires_approval_for_low_risk_tool_call() {
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-approval-strict".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::from([Capability::InvokeTool]),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-approval-strict".to_owned(),
-            ttl_s: 120,
-            approval: Some(HumanApprovalSpec {
-                mode: HumanApprovalMode::Strict,
-                strategy: HumanApprovalStrategy::PerCall,
-                ..HumanApprovalSpec::default()
-            }),
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: None,
-            bridge_support: None,
-            bootstrap: None,
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::ToolCore {
-                tool_name: "read-schema".to_owned(),
-                required_capabilities: BTreeSet::from([Capability::InvokeTool]),
-                payload: json!({"scope":"analytics"}),
-                core: None,
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "blocked");
-        assert!(report.approval_guard.requires_human_approval);
-        assert!(!report.approval_guard.approved);
-    }
-
-    #[tokio::test]
-    async fn execute_spec_default_medium_policy_allows_low_risk_tool_call_without_approval() {
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-approval-default-allow".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::from([Capability::InvokeTool]),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-approval-default-allow".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: None,
-            bridge_support: None,
-            bootstrap: None,
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::ToolCore {
-                tool_name: "list-schema".to_owned(),
-                required_capabilities: BTreeSet::from([Capability::InvokeTool]),
-                payload: json!({"scope":"analytics"}),
-                core: None,
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "tool_core");
-        assert_eq!(report.outcome["outcome"]["status"], "ok");
-        assert!(!report.approval_guard.requires_human_approval);
-        assert!(report.approval_guard.approved);
-        assert_eq!(report.approval_guard.risk_level, ApprovalRiskLevel::Low);
-    }
-
-    #[tokio::test]
-    async fn execute_spec_denylist_overrides_other_approvals() {
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-approval-denylist".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::from([Capability::InvokeTool]),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-approval-denylist".to_owned(),
-            ttl_s: 120,
-            approval: Some(HumanApprovalSpec {
-                mode: HumanApprovalMode::Disabled,
-                strategy: HumanApprovalStrategy::PerCall,
-                approved_calls: vec!["tool_core:delete-file".to_owned()],
-                denied_calls: vec!["tool_core:delete-file".to_owned()],
-                ..HumanApprovalSpec::default()
-            }),
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: None,
-            bridge_support: None,
-            bootstrap: None,
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::ToolCore {
-                tool_name: "delete-file".to_owned(),
-                required_capabilities: BTreeSet::from([Capability::InvokeTool]),
-                payload: json!({"path":"/tmp/demo.txt"}),
-                core: None,
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "blocked");
-        assert!(report.approval_guard.denylisted);
-        assert!(!report.approval_guard.approved);
-        assert!(report
-            .blocked_reason
-            .expect("blocked reason should exist")
-            .contains("denylisted"));
-    }
-
-    #[tokio::test]
-    async fn execute_spec_one_time_full_access_expired_is_rejected() {
-        let now = current_epoch_s();
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-approval-full-expired".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::from([Capability::InvokeTool]),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-approval-full-expired".to_owned(),
-            ttl_s: 120,
-            approval: Some(HumanApprovalSpec {
-                mode: HumanApprovalMode::Strict,
-                strategy: HumanApprovalStrategy::OneTimeFullAccess,
-                one_time_full_access_granted: true,
-                one_time_full_access_expires_at_epoch_s: Some(now.saturating_sub(1)),
-                one_time_full_access_remaining_uses: Some(1),
-                ..HumanApprovalSpec::default()
-            }),
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: None,
-            bridge_support: None,
-            bootstrap: None,
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::ToolCore {
-                tool_name: "delete-file".to_owned(),
-                required_capabilities: BTreeSet::from([Capability::InvokeTool]),
-                payload: json!({"path":"/tmp/demo.txt"}),
-                core: None,
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "blocked");
-        assert!(!report.approval_guard.approved);
-        assert!(report.approval_guard.reason.contains("expired"));
-    }
-
-    #[tokio::test]
-    async fn execute_spec_one_time_full_access_with_zero_remaining_uses_is_rejected() {
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-approval-full-zero-uses".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::from([Capability::InvokeTool]),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-approval-full-zero-uses".to_owned(),
-            ttl_s: 120,
-            approval: Some(HumanApprovalSpec {
-                mode: HumanApprovalMode::Strict,
-                strategy: HumanApprovalStrategy::OneTimeFullAccess,
-                one_time_full_access_granted: true,
-                one_time_full_access_remaining_uses: Some(0),
-                ..HumanApprovalSpec::default()
-            }),
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: None,
-            bridge_support: None,
-            bootstrap: None,
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::ToolCore {
-                tool_name: "delete-file".to_owned(),
-                required_capabilities: BTreeSet::from([Capability::InvokeTool]),
-                payload: json!({"path":"/tmp/demo.txt"}),
-                core: None,
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "blocked");
-        assert!(!report.approval_guard.approved);
-        assert!(report.approval_guard.reason.contains("no remaining uses"));
-    }
-
-    #[tokio::test]
-    async fn execute_spec_bootstrap_max_tasks_limits_applied_plugins() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let plugin_root =
-            std::env::temp_dir().join(format!("chumos-plugin-bootstrap-limit-{unique}"));
-        fs::create_dir_all(&plugin_root).expect("create plugin root");
-
-        fs::write(
-            plugin_root.join("http_a.js"),
-            r#"
-// CHUMOS_PLUGIN_START
-// {
-//   "plugin_id": "http-a",
-//   "provider_id": "http-a",
-//   "connector_name": "http-a",
-//   "channel_id": "primary",
-//   "endpoint": "https://a.example.com/invoke",
-//   "capabilities": ["InvokeConnector"],
-//   "metadata": {"bridge_kind":"http_json","version":"1.0.0"}
-// }
-// CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write http plugin a");
-
-        fs::write(
-            plugin_root.join("http_b.js"),
-            r#"
-// CHUMOS_PLUGIN_START
-// {
-//   "plugin_id": "http-b",
-//   "provider_id": "http-b",
-//   "connector_name": "http-b",
-//   "channel_id": "primary",
-//   "endpoint": "https://b.example.com/invoke",
-//   "capabilities": ["InvokeConnector"],
-//   "metadata": {"bridge_kind":"http_json","version":"1.0.0"}
-// }
-// CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write http plugin b");
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-bootstrap-limit".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::new(),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-bootstrap-limit".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: Some(PluginScanSpec {
-                enabled: true,
-                roots: vec![plugin_root.display().to_string()],
-            }),
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::HttpJson],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: true,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-
-                execute_process_stdio: false,
-
-                execute_http_json: false,
-
-                allowed_process_commands: Vec::new(),
-
-                enforce_execution_success: false,
-                security_scan: None,
-            }),
-            bootstrap: Some(BootstrapSpec {
-                enabled: true,
-                allow_http_json_auto_apply: Some(true),
-                allow_process_stdio_auto_apply: Some(false),
-                allow_native_ffi_auto_apply: Some(false),
-                allow_wasm_component_auto_apply: Some(false),
-                allow_mcp_server_auto_apply: Some(false),
-                enforce_ready_execution: Some(false),
-                max_tasks: Some(1),
-            }),
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::Task {
-                task_id: "t-bootstrap-limit".to_owned(),
-                objective: "run regardless of selective bootstrap".to_owned(),
-                required_capabilities: BTreeSet::new(),
-                payload: json!({}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "task");
-        assert_eq!(report.outcome["outcome"]["status"], "ok");
-        assert_eq!(report.plugin_bootstrap_reports.len(), 1);
-        assert_eq!(report.plugin_bootstrap_reports[0].applied_tasks, 1);
-        assert_eq!(report.plugin_bootstrap_reports[0].skipped_tasks, 1);
-        assert_eq!(report.plugin_absorb_reports.len(), 1);
-        assert_eq!(report.plugin_absorb_reports[0].absorbed_plugins, 1);
-    }
-
-    #[tokio::test]
-    async fn execute_spec_scans_multiple_roots_and_absorbs_per_root() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-
-        let root_a = std::env::temp_dir().join(format!("chumos-plugin-root-a-{unique}"));
-        let root_b = std::env::temp_dir().join(format!("chumos-plugin-root-b-{unique}"));
-        fs::create_dir_all(&root_a).expect("create root a");
-        fs::create_dir_all(&root_b).expect("create root b");
-
-        fs::write(
-            root_a.join("a.js"),
-            r#"
-// CHUMOS_PLUGIN_START
-// {
-//   "plugin_id": "root-a",
-//   "provider_id": "root-a",
-//   "connector_name": "root-a",
-//   "channel_id": "primary",
-//   "endpoint": "https://a.example.com/invoke",
-//   "capabilities": ["InvokeConnector"],
-//   "metadata": {"bridge_kind":"http_json","version":"1.0.0"}
-// }
-// CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write root a plugin");
-
-        fs::write(
-            root_b.join("b.js"),
-            r#"
-// CHUMOS_PLUGIN_START
-// {
-//   "plugin_id": "root-b",
-//   "provider_id": "root-b",
-//   "connector_name": "root-b",
-//   "channel_id": "primary",
-//   "endpoint": "https://b.example.com/invoke",
-//   "capabilities": ["InvokeConnector"],
-//   "metadata": {"bridge_kind":"http_json","version":"1.0.0"}
-// }
-// CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write root b plugin");
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-multi-root".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::from([Capability::ObserveTelemetry]),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-multi-root".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: Some(PluginScanSpec {
-                enabled: true,
-                roots: vec![root_a.display().to_string(), root_b.display().to_string()],
-            }),
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::HttpJson],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: true,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-
-                execute_process_stdio: false,
-
-                execute_http_json: false,
-
-                allowed_process_commands: Vec::new(),
-
-                enforce_execution_success: false,
-                security_scan: None,
-            }),
-            bootstrap: Some(BootstrapSpec {
-                enabled: true,
-                allow_http_json_auto_apply: Some(true),
-                allow_process_stdio_auto_apply: Some(false),
-                allow_native_ffi_auto_apply: Some(false),
-                allow_wasm_component_auto_apply: Some(false),
-                allow_mcp_server_auto_apply: Some(false),
-                enforce_ready_execution: Some(true),
-                max_tasks: Some(8),
-            }),
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::Task {
-                task_id: "t-multi-root".to_owned(),
-                objective: "validate multi-root scan".to_owned(),
-                required_capabilities: BTreeSet::new(),
-                payload: json!({}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "task");
-        assert_eq!(report.plugin_scan_reports.len(), 2);
-        assert_eq!(report.plugin_absorb_reports.len(), 2);
-        let absorbed_total: usize = report
-            .plugin_absorb_reports
-            .iter()
-            .map(|entry| entry.absorbed_plugins)
-            .sum();
-        assert_eq!(absorbed_total, 2);
-        assert!(report.integration_catalog.provider("root-a").is_some());
-        assert!(report.integration_catalog.provider("root-b").is_some());
-    }
-
-    #[tokio::test]
-    async fn execute_spec_plugin_scan_is_transactional_when_blocked() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-
-        let root_a = std::env::temp_dir().join(format!("chumos-plugin-rollback-a-{unique}"));
-        let root_b = std::env::temp_dir().join(format!("chumos-plugin-rollback-b-{unique}"));
-        fs::create_dir_all(&root_a).expect("create root a");
-        fs::create_dir_all(&root_b).expect("create root b");
-
-        fs::write(
-            root_a.join("a.js"),
-            r#"
-// CHUMOS_PLUGIN_START
-// {
-//   "plugin_id": "rollback-a",
-//   "provider_id": "rollback-a",
-//   "connector_name": "rollback-a",
-//   "channel_id": "primary",
-//   "endpoint": "https://a.example.com/invoke",
-//   "capabilities": ["InvokeConnector"],
-//   "metadata": {"bridge_kind":"http_json","version":"1.0.0"}
-// }
-// CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write root a plugin");
-
-        fs::write(
-            root_b.join("b.rs"),
-            r#"
-// CHUMOS_PLUGIN_START
-// {
-//   "plugin_id": "rollback-b",
-//   "provider_id": "rollback-b",
-//   "connector_name": "rollback-b",
-//   "channel_id": "primary",
-//   "endpoint": "https://b.example.com/invoke",
-//   "capabilities": ["InvokeConnector"],
-//   "metadata": {"bridge_kind":"native_ffi","version":"1.0.0"}
-// }
-// CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write root b plugin");
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-plugin-rollback".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::from([Capability::ObserveTelemetry]),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-plugin-rollback".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: Some(PluginScanSpec {
-                enabled: true,
-                roots: vec![root_a.display().to_string(), root_b.display().to_string()],
-            }),
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::HttpJson],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: true,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-
-                execute_process_stdio: false,
-
-                execute_http_json: false,
-
-                allowed_process_commands: Vec::new(),
-
-                enforce_execution_success: false,
-                security_scan: None,
-            }),
-            bootstrap: None,
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::Task {
-                task_id: "t-plugin-rollback".to_owned(),
-                objective: "must block and rollback staged plugin absorb".to_owned(),
-                required_capabilities: BTreeSet::new(),
-                payload: json!({}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "blocked");
-        assert!(report
-            .blocked_reason
-            .expect("blocked reason")
-            .contains("bridge support enforcement blocked"));
-        assert_eq!(report.plugin_scan_reports.len(), 2);
-        assert!(report.plugin_absorb_reports.is_empty());
-        assert!(report.integration_catalog.provider("rollback-a").is_none());
-        assert!(report.integration_catalog.provider("rollback-b").is_none());
-    }
-
-    #[tokio::test]
-    async fn execute_spec_bootstrap_budget_is_global_across_multiple_roots() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-
-        let root_a = std::env::temp_dir().join(format!("chumos-bootstrap-global-a-{unique}"));
-        let root_b = std::env::temp_dir().join(format!("chumos-bootstrap-global-b-{unique}"));
-        fs::create_dir_all(&root_a).expect("create root a");
-        fs::create_dir_all(&root_b).expect("create root b");
-
-        fs::write(
-            root_a.join("a.js"),
-            r#"
-// CHUMOS_PLUGIN_START
-// {
-//   "plugin_id": "global-a",
-//   "provider_id": "global-a",
-//   "connector_name": "global-a",
-//   "channel_id": "primary",
-//   "endpoint": "https://a.example.com/invoke",
-//   "capabilities": ["InvokeConnector"],
-//   "metadata": {"bridge_kind":"http_json","version":"1.0.0"}
-// }
-// CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write root a plugin");
-
-        fs::write(
-            root_b.join("b.js"),
-            r#"
-// CHUMOS_PLUGIN_START
-// {
-//   "plugin_id": "global-b",
-//   "provider_id": "global-b",
-//   "connector_name": "global-b",
-//   "channel_id": "primary",
-//   "endpoint": "https://b.example.com/invoke",
-//   "capabilities": ["InvokeConnector"],
-//   "metadata": {"bridge_kind":"http_json","version":"1.0.0"}
-// }
-// CHUMOS_PLUGIN_END
-"#,
-        )
-        .expect("write root b plugin");
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-bootstrap-global".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::from([Capability::ObserveTelemetry]),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-bootstrap-global".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: None,
-            plugin_scan: Some(PluginScanSpec {
-                enabled: true,
-                roots: vec![root_a.display().to_string(), root_b.display().to_string()],
-            }),
-            bridge_support: Some(BridgeSupportSpec {
-                enabled: true,
-                supported_bridges: vec![PluginBridgeKind::HttpJson],
-                supported_adapter_families: Vec::new(),
-                enforce_supported: true,
-                policy_version: None,
-                expected_checksum: None,
-                expected_sha256: None,
-
-                execute_process_stdio: false,
-
-                execute_http_json: false,
-
-                allowed_process_commands: Vec::new(),
-
-                enforce_execution_success: false,
-                security_scan: None,
-            }),
-            bootstrap: Some(BootstrapSpec {
-                enabled: true,
-                allow_http_json_auto_apply: Some(true),
-                allow_process_stdio_auto_apply: Some(false),
-                allow_native_ffi_auto_apply: Some(false),
-                allow_wasm_component_auto_apply: Some(false),
-                allow_mcp_server_auto_apply: Some(false),
-                enforce_ready_execution: Some(false),
-                max_tasks: Some(1),
-            }),
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::Task {
-                task_id: "t-bootstrap-global".to_owned(),
-                objective: "max_tasks must be global across roots".to_owned(),
-                required_capabilities: BTreeSet::new(),
-                payload: json!({}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "task");
-        assert_eq!(report.plugin_bootstrap_reports.len(), 2);
-        let total_applied: usize = report
-            .plugin_bootstrap_reports
-            .iter()
-            .map(|entry| entry.applied_tasks)
-            .sum();
-        let total_skipped: usize = report
-            .plugin_bootstrap_reports
-            .iter()
-            .map(|entry| entry.skipped_tasks)
-            .sum();
-        assert_eq!(total_applied, 1);
-        assert_eq!(total_skipped, 1);
-
-        let total_absorbed: usize = report
-            .plugin_absorb_reports
-            .iter()
-            .map(|entry| entry.absorbed_plugins)
-            .sum();
-        assert_eq!(total_absorbed, 1);
-        assert!(report.integration_catalog.provider("global-a").is_some());
-        assert!(report.integration_catalog.provider("global-b").is_none());
-    }
-
-    #[tokio::test]
-    async fn execute_spec_allows_execution_with_clean_architecture_guard() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("chumos-guard-clean-{unique}"));
-        fs::create_dir_all(&root).expect("create awareness root");
-        fs::write(root.join("pack.md"), "# awareness\n").expect("write awareness file");
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-guard-clean".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::from([Capability::ObserveTelemetry]),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-guard-clean".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: Some(SelfAwarenessSpec {
-                enabled: true,
-                roots: vec![root.display().to_string()],
-                plugin_roots: Vec::new(),
-                proposed_mutations: vec!["examples/spec/runtime-extension.json".to_owned()],
-                enforce_guard: true,
-                immutable_core_paths: Vec::new(),
-                mutable_extension_paths: Vec::new(),
-            }),
-            plugin_scan: None,
-            bridge_support: None,
-            bootstrap: None,
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::Task {
-                task_id: "t-guard-clean".to_owned(),
-                objective: "run with clean guard".to_owned(),
-                required_capabilities: BTreeSet::new(),
-                payload: json!({}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "task");
-        assert_eq!(report.outcome["outcome"]["status"], "ok");
-        assert!(report.blocked_reason.is_none());
-        assert!(report.self_awareness.is_some());
-        assert!(report
-            .architecture_guard
-            .expect("guard report should be present")
-            .denied_paths
-            .is_empty());
-    }
-
-    #[tokio::test]
-    async fn execute_spec_blocks_when_architecture_guard_detects_core_mutation() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("chumos-guard-{unique}"));
-        fs::create_dir_all(&root).expect("create awareness root");
-        fs::write(root.join("notes.md"), "# guard demo\n").expect("write awareness file");
-
-        let spec = RunnerSpec {
-            pack: VerticalPackManifest {
-                pack_id: "spec-guard-block".to_owned(),
-                domain: "ops".to_owned(),
-                version: "0.1.0".to_owned(),
-                default_route: ExecutionRoute {
-                    harness_kind: HarnessKind::EmbeddedPi,
-                    adapter: Some("pi-local".to_owned()),
-                },
-                allowed_connectors: BTreeSet::new(),
-                granted_capabilities: BTreeSet::new(),
-                metadata: BTreeMap::new(),
-            },
-            agent_id: "agent-guard".to_owned(),
-            ttl_s: 120,
-            approval: None,
-            defaults: None,
-            self_awareness: Some(SelfAwarenessSpec {
-                enabled: true,
-                roots: vec![root.display().to_string()],
-                plugin_roots: Vec::new(),
-                proposed_mutations: vec![
-                    "crates/kernel/src/kernel.rs".to_owned(),
-                    "examples/spec/runtime-extension.json".to_owned(),
-                ],
-                enforce_guard: true,
-                immutable_core_paths: Vec::new(),
-                mutable_extension_paths: Vec::new(),
-            }),
-            plugin_scan: None,
-            bridge_support: None,
-            bootstrap: None,
-            auto_provision: None,
-            hotfixes: Vec::new(),
-            operation: OperationSpec::Task {
-                task_id: "t-guard".to_owned(),
-                objective: "should not run".to_owned(),
-                required_capabilities: BTreeSet::new(),
-                payload: json!({}),
-            },
-        };
-
-        let report = execute_spec(spec, true).await;
-        assert_eq!(report.operation_kind, "blocked");
-        assert_eq!(report.outcome["status"], "blocked");
-        assert!(report.blocked_reason.is_some());
-        assert!(report
-            .architecture_guard
-            .expect("guard report should be present")
-            .has_denials());
     }
 }

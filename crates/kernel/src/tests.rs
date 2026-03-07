@@ -17,7 +17,7 @@ use crate::{
     },
     errors::{ConnectorError, KernelError, PolicyError},
     harness::HarnessAdapter,
-    kernel::ChumosKernel,
+    kernel::LoongClawKernel,
     memory::{
         CoreMemoryAdapter, MemoryCoreOutcome, MemoryCoreRequest, MemoryExtensionAdapter,
         MemoryExtensionOutcome, MemoryExtensionRequest,
@@ -261,7 +261,7 @@ fn capability_set_from_mask(mask: u16) -> BTreeSet<Capability> {
 
 #[tokio::test]
 async fn kernel_executes_task_and_connector_under_pack_policy() {
-    let mut kernel = ChumosKernel::new(StaticPolicyEngine::default());
+    let mut kernel = LoongClawKernel::new(StaticPolicyEngine::default());
     kernel
         .register_pack(sample_pack())
         .expect("pack should register");
@@ -307,7 +307,7 @@ async fn kernel_executes_task_and_connector_under_pack_policy() {
 
 #[tokio::test]
 async fn kernel_rejects_token_missing_capability() {
-    let mut kernel = ChumosKernel::new(StaticPolicyEngine::default());
+    let mut kernel = LoongClawKernel::new(StaticPolicyEngine::default());
     kernel
         .register_pack(sample_pack())
         .expect("pack should register");
@@ -340,7 +340,7 @@ async fn kernel_rejects_token_missing_capability() {
 
 #[tokio::test]
 async fn kernel_rejects_connector_not_whitelisted_by_pack() {
-    let mut kernel = ChumosKernel::new(StaticPolicyEngine::default());
+    let mut kernel = LoongClawKernel::new(StaticPolicyEngine::default());
     kernel
         .register_pack(sample_pack())
         .expect("pack should register");
@@ -373,7 +373,7 @@ async fn kernel_rejects_connector_not_whitelisted_by_pack() {
 
 #[tokio::test]
 async fn layered_connector_core_executes_through_core_plane() {
-    let mut kernel = ChumosKernel::new(StaticPolicyEngine::default());
+    let mut kernel = LoongClawKernel::new(StaticPolicyEngine::default());
     kernel
         .register_pack(sample_pack())
         .expect("pack should register");
@@ -402,7 +402,7 @@ async fn layered_connector_core_executes_through_core_plane() {
 
 #[tokio::test]
 async fn layered_connector_extension_composes_over_core_plane() {
-    let mut kernel = ChumosKernel::new(StaticPolicyEngine::default());
+    let mut kernel = LoongClawKernel::new(StaticPolicyEngine::default());
     kernel
         .register_pack(sample_pack())
         .expect("pack should register");
@@ -433,7 +433,7 @@ async fn layered_connector_extension_composes_over_core_plane() {
 
 #[tokio::test]
 async fn layered_connector_plane_still_enforces_pack_whitelist() {
-    let mut kernel = ChumosKernel::new(StaticPolicyEngine::default());
+    let mut kernel = LoongClawKernel::new(StaticPolicyEngine::default());
     kernel
         .register_pack(sample_pack())
         .expect("pack should register");
@@ -466,7 +466,7 @@ async fn layered_connector_plane_still_enforces_pack_whitelist() {
 
 #[tokio::test]
 async fn layered_connector_extension_requires_available_core_adapter() {
-    let mut kernel = ChumosKernel::new(StaticPolicyEngine::default());
+    let mut kernel = LoongClawKernel::new(StaticPolicyEngine::default());
     kernel
         .register_pack(sample_pack())
         .expect("pack should register");
@@ -496,7 +496,7 @@ async fn layered_connector_extension_requires_available_core_adapter() {
 
 #[tokio::test]
 async fn layered_connector_default_core_adapter_can_be_overridden() {
-    let mut kernel = ChumosKernel::new(StaticPolicyEngine::default());
+    let mut kernel = LoongClawKernel::new(StaticPolicyEngine::default());
     kernel
         .register_pack(sample_pack())
         .expect("pack should register");
@@ -527,7 +527,7 @@ async fn layered_connector_default_core_adapter_can_be_overridden() {
 
 #[test]
 fn layered_connector_rejects_unknown_default_adapter_override() {
-    let mut kernel = ChumosKernel::new(StaticPolicyEngine::default());
+    let mut kernel = LoongClawKernel::new(StaticPolicyEngine::default());
     kernel.register_core_connector_adapter(MockCoreConnector);
 
     let error = kernel
@@ -551,7 +551,7 @@ fn pack_validation_rejects_invalid_semver() {
 
 #[tokio::test]
 async fn kernel_auto_routes_by_harness_kind_when_adapter_is_not_pinned() {
-    let mut kernel = ChumosKernel::new(StaticPolicyEngine::default());
+    let mut kernel = LoongClawKernel::new(StaticPolicyEngine::default());
     kernel
         .register_pack(acp_pack_without_explicit_adapter())
         .expect("pack should register");
@@ -582,7 +582,7 @@ async fn kernel_auto_routes_by_harness_kind_when_adapter_is_not_pinned() {
 
 #[tokio::test]
 async fn revoked_token_is_denied_by_policy_engine() {
-    let mut kernel = ChumosKernel::new(StaticPolicyEngine::default());
+    let mut kernel = LoongClawKernel::new(StaticPolicyEngine::default());
     kernel
         .register_pack(sample_pack())
         .expect("pack should register");
@@ -621,7 +621,7 @@ async fn audit_sink_receives_core_lifecycle_events() {
     let audit = Arc::new(InMemoryAuditSink::default());
 
     let mut kernel =
-        ChumosKernel::with_runtime(StaticPolicyEngine::default(), clock.clone(), audit.clone());
+        LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock.clone(), audit.clone());
     kernel
         .register_pack(sample_pack())
         .expect("pack should register");
@@ -698,7 +698,7 @@ fn record_audit_event_supports_security_scan_summary() {
     let clock: Arc<FixedClock> = Arc::new(FixedClock::new(1_700_000_123));
     let audit = Arc::new(InMemoryAuditSink::default());
     let kernel =
-        ChumosKernel::with_runtime(StaticPolicyEngine::default(), clock.clone(), audit.clone());
+        LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock.clone(), audit.clone());
 
     kernel
         .record_audit_event(
@@ -944,7 +944,7 @@ impl PolicyExtension for NoNetworkEgressPolicyExtension {
 
 #[tokio::test]
 async fn layered_runtime_tool_and_memory_paths_execute_via_core_and_extension() {
-    let mut kernel = ChumosKernel::new(StaticPolicyEngine::default());
+    let mut kernel = LoongClawKernel::new(StaticPolicyEngine::default());
     kernel
         .register_pack(VerticalPackManifest {
             pack_id: "layered-dev".to_owned(),
@@ -1039,7 +1039,7 @@ async fn audit_sink_captures_runtime_tool_memory_and_connector_plane_events() {
     let audit = Arc::new(InMemoryAuditSink::default());
 
     let mut kernel =
-        ChumosKernel::with_runtime(StaticPolicyEngine::default(), clock.clone(), audit.clone());
+        LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock.clone(), audit.clone());
     kernel
         .register_pack(VerticalPackManifest {
             pack_id: "audit-layered".to_owned(),
@@ -1202,7 +1202,7 @@ async fn audit_sink_captures_runtime_tool_memory_and_connector_plane_events() {
 
 #[tokio::test]
 async fn policy_extension_chain_can_block_high_risk_capabilities() {
-    let mut kernel = ChumosKernel::new(StaticPolicyEngine::default());
+    let mut kernel = LoongClawKernel::new(StaticPolicyEngine::default());
     kernel
         .register_pack(VerticalPackManifest {
             pack_id: "strict-env".to_owned(),
@@ -1253,7 +1253,7 @@ async fn plane_audit_records_resolved_default_core_adapter_names() {
     let audit = Arc::new(InMemoryAuditSink::default());
 
     let mut kernel =
-        ChumosKernel::with_runtime(StaticPolicyEngine::default(), clock.clone(), audit.clone());
+        LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock.clone(), audit.clone());
     kernel
         .register_pack(VerticalPackManifest {
             pack_id: "audit-defaults".to_owned(),
@@ -1362,7 +1362,7 @@ async fn audit_event_json_schema_for_plane_invoked_is_stable() {
     let audit = Arc::new(InMemoryAuditSink::default());
 
     let mut kernel =
-        ChumosKernel::with_runtime(StaticPolicyEngine::default(), clock.clone(), audit.clone());
+        LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock.clone(), audit.clone());
     kernel
         .register_pack(VerticalPackManifest {
             pack_id: "audit-schema".to_owned(),
@@ -1434,7 +1434,7 @@ proptest! {
         let pack_capabilities = capability_set_from_mask(pack_mask);
         let required_capabilities = capability_set_from_mask(required_mask);
 
-        let mut kernel = ChumosKernel::new(StaticPolicyEngine::default());
+        let mut kernel = LoongClawKernel::new(StaticPolicyEngine::default());
         let mut pack = sample_pack();
         pack.granted_capabilities = pack_capabilities.clone();
         kernel

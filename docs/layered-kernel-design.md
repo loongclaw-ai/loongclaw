@@ -1,4 +1,4 @@
-# ChumOS Kernel Layered Design (v0.1)
+# LoongClaw Kernel Layered Design (v0.1)
 
 This document defines the low-level layering model for a minimal but extensible Agentic OS kernel.
 
@@ -286,6 +286,11 @@ Without layering these modules, the kernel becomes a monolith and loses long-ter
 - Awareness snapshot determinism and language inventory checks.
 - Architecture guard denial paths for immutable-core mutation proposals.
 - Plugin IR translation consistency across multi-language plugin descriptors.
+- Tool discovery consistency across absorbed and deferred plugin sets.
+- Programmatic orchestration policy tests (connector allowlist, call budget, caller ACL,
+  batch parallel/continue-on-error behavior, conditional branch predicates, retry/jitter,
+  rate shaping, circuit breaker open/invalid-policy paths, and policy-driven adaptive
+  concurrency triggers).
 
 ## Near-Term Evolution Plan
 
@@ -294,3 +299,4 @@ Without layering these modules, the kernel becomes a monolith and loses long-ter
 3. Expand golden event tests for additional audit schemas.
 4. Expand property-based tests for capability/pack boundary combinations.
 5. Add compatibility tests for future contract revisions.
+6. Expand timing-sensitive integration tests for circuit half-open recovery and adaptive concurrency behavior under mixed failure/latency workloads.

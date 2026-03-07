@@ -5,6 +5,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::{
     contracts::Capability,
@@ -22,6 +23,16 @@ pub struct PluginManifest {
     pub endpoint: Option<String>,
     pub capabilities: BTreeSet<Capability>,
     pub metadata: BTreeMap<String, String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub input_examples: Vec<Value>,
+    #[serde(default)]
+    pub output_examples: Vec<Value>,
+    #[serde(default)]
+    pub defer_loading: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -228,16 +239,17 @@ fn parse_manifest_block(
     content: &str,
     path: &Path,
 ) -> Result<Option<PluginManifest>, IntegrationError> {
-    const START: &str = "CHUMOS_PLUGIN_START";
-    const END: &str = "CHUMOS_PLUGIN_END";
+    const START: &str = "LOONGCLAW_PLUGIN_START";
+    const END: &str = "LOONGCLAW_PLUGIN_END";
 
     let Some(start_idx) = content.find(START) else {
         return Ok(None);
     };
+
     let Some(end_idx) = content[start_idx..].find(END).map(|idx| start_idx + idx) else {
         return Err(IntegrationError::PluginManifestParse {
             path: path.display().to_string(),
-            reason: "missing CHUMOS_PLUGIN_END".to_owned(),
+            reason: "missing LOONGCLAW_PLUGIN_END".to_owned(),
         });
     };
 
@@ -305,14 +317,14 @@ mod tests {
 
     #[test]
     fn scanner_finds_manifest_in_rust_and_python_files() {
-        let root = unique_tmp_dir("chumos-plugin-scan");
+        let root = unique_tmp_dir("loongclaw-plugin-scan");
         fs::create_dir_all(&root).expect("create temp root");
 
         let rust_file = root.join("openrouter.rs");
         fs::write(
             &rust_file,
             r#"
-// CHUMOS_PLUGIN_START
+// LOONGCLAW_PLUGIN_START
 // {
 //   "plugin_id": "openrouter-rs",
 //   "provider_id": "openrouter",
@@ -322,7 +334,7 @@ mod tests {
 //   "capabilities": ["InvokeConnector", "ObserveTelemetry"],
 //   "metadata": {"version":"0.2.0","lang":"rust"}
 // }
-// CHUMOS_PLUGIN_END
+// LOONGCLAW_PLUGIN_END
 "#,
         )
         .expect("write rust plugin");
@@ -331,7 +343,7 @@ mod tests {
         fs::write(
             &py_file,
             r#"
-# CHUMOS_PLUGIN_START
+# LOONGCLAW_PLUGIN_START
 # {
 #   "plugin_id": "slack-py",
 #   "provider_id": "slack",
@@ -341,7 +353,7 @@ mod tests {
 #   "capabilities": ["InvokeConnector"],
 #   "metadata": {"version":"1.1.0","lang":"python"}
 # }
-# CHUMOS_PLUGIN_END
+# LOONGCLAW_PLUGIN_END
 "#,
         )
         .expect("write python plugin");
@@ -378,6 +390,11 @@ mod tests {
                         Capability::ObserveTelemetry,
                     ]),
                     metadata: BTreeMap::from([("version".to_owned(), "1.3.0".to_owned())]),
+                    summary: None,
+                    tags: Vec::new(),
+                    input_examples: Vec::new(),
+                    output_examples: Vec::new(),
+                    defer_loading: false,
                 },
             }],
         };
@@ -400,7 +417,7 @@ mod tests {
 
     #[test]
     fn scanner_skips_non_utf8_files_instead_of_failing() {
-        let root = unique_tmp_dir("chumos-plugin-binary");
+        let root = unique_tmp_dir("loongclaw-plugin-binary");
         fs::create_dir_all(&root).expect("create temp root");
         let binary = root.join("compiled.bin");
         fs::write(&binary, [0xff_u8, 0xfe, 0x00, 0x81]).expect("write binary file");

@@ -1,4 +1,4 @@
-// CHUMOS_PLUGIN_START
+// LOONGCLAW_PLUGIN_START
 // {
 //   "plugin_id": "openrouter-community-rs",
 //   "provider_id": "openrouter",
@@ -12,9 +12,9 @@
 //     "language": "rust"
 //   }
 // }
-// CHUMOS_PLUGIN_END
+// LOONGCLAW_PLUGIN_END
 
 pub fn plugin_placeholder() {
     // This file is intentionally a minimal Rust source that carries
-    // an embedded CHUMOS plugin manifest for scanner-based hotplug.
+    // an embedded LOONGCLAW plugin manifest for scanner-based hotplug.
 }

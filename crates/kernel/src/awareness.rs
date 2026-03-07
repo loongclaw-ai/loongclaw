@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn awareness_snapshot_captures_languages_plugins_and_guard() {
-        let root = unique_tmp_dir("chumos-awareness");
+        let root = unique_tmp_dir("loongclaw-awareness");
         fs::create_dir_all(&root).expect("create temp root");
 
         fs::write(root.join("runtime.rs"), "pub fn run() {}\n").expect("write rust file");
@@ -251,7 +251,7 @@ mod tests {
         fs::write(
             root.join("plugin.rs"),
             r#"
-// CHUMOS_PLUGIN_START
+// LOONGCLAW_PLUGIN_START
 // {
 //   "plugin_id": "openrouter-rs",
 //   "provider_id": "openrouter",
@@ -261,7 +261,7 @@ mod tests {
 //   "capabilities": ["InvokeConnector"],
 //   "metadata": {"version":"0.5.0"}
 // }
-// CHUMOS_PLUGIN_END
+// LOONGCLAW_PLUGIN_END
 "#,
         )
         .expect("write plugin file");
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn awareness_snapshot_detects_guard_violations() {
-        let root = unique_tmp_dir("chumos-awareness-guard");
+        let root = unique_tmp_dir("loongclaw-awareness-guard");
         fs::create_dir_all(&root).expect("create temp root");
         fs::write(root.join("main.rs"), "fn main() {}\n").expect("write rust file");
 
@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn awareness_snapshot_skips_target_directory_noise() {
-        let root = unique_tmp_dir("chumos-awareness-skip");
+        let root = unique_tmp_dir("loongclaw-awareness-skip");
         fs::create_dir_all(root.join("target")).expect("create target directory");
         fs::write(root.join("target").join("build.bin"), [0_u8, 159, 146, 150])
             .expect("write binary");

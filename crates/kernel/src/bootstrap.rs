@@ -217,8 +217,10 @@ mod tests {
     #[test]
     fn enforce_ready_execution_blocks_when_ready_tasks_are_deferred() {
         let executor = PluginBootstrapExecutor::new();
-        let mut policy = BootstrapPolicy::default();
-        policy.enforce_ready_execution = true;
+        let policy = BootstrapPolicy {
+            enforce_ready_execution: true,
+            ..BootstrapPolicy::default()
+        };
 
         let report = executor.execute(&sample_plan(), &policy);
         assert!(report.blocked);
@@ -228,8 +230,10 @@ mod tests {
     #[test]
     fn allow_all_bridges_applies_all_ready_tasks() {
         let executor = PluginBootstrapExecutor::new();
-        let mut policy = BootstrapPolicy::default();
-        policy.allow_native_ffi_auto_apply = true;
+        let policy = BootstrapPolicy {
+            allow_native_ffi_auto_apply: true,
+            ..BootstrapPolicy::default()
+        };
 
         let report = executor.execute(&sample_plan(), &policy);
         assert_eq!(report.applied_tasks, 2);

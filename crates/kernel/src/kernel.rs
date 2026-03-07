@@ -47,7 +47,19 @@ pub struct ConnectorDispatch {
     pub outcome: ConnectorOutcome,
 }
 
-pub struct ChumosKernel<P: PolicyEngine> {
+struct PlaneInvocationRecord<'a> {
+    timestamp_epoch_s: u64,
+    agent_id: &'a str,
+    pack_id: &'a str,
+    plane: ExecutionPlane,
+    tier: PlaneTier,
+    primary_adapter: String,
+    delegated_core_adapter: Option<String>,
+    operation: String,
+    required_capabilities: &'a BTreeSet<Capability>,
+}
+
+pub struct LoongClawKernel<P: PolicyEngine> {
     policy: P,
     packs: BTreeMap<String, VerticalPackManifest>,
     harness: HarnessBroker,
@@ -62,7 +74,7 @@ pub struct ChumosKernel<P: PolicyEngine> {
     event_seq: AtomicU64,
 }
 
-impl<P: PolicyEngine> ChumosKernel<P> {
+impl<P: PolicyEngine> LoongClawKernel<P> {
     #[must_use]
     pub fn new(policy: P) -> Self {
         Self::with_runtime(policy, Arc::new(SystemClock), Arc::new(NoopAuditSink))
@@ -297,17 +309,17 @@ impl<P: PolicyEngine> ChumosKernel<P> {
             },
         ))?;
 
-        self.record_plane_invocation(
-            now,
-            &token.agent_id,
-            &pack.pack_id,
-            ExecutionPlane::Connector,
-            PlaneTier::Legacy,
-            connector_name.clone(),
-            None,
+        self.record_plane_invocation(PlaneInvocationRecord {
+            timestamp_epoch_s: now,
+            agent_id: &token.agent_id,
+            pack_id: &pack.pack_id,
+            plane: ExecutionPlane::Connector,
+            tier: PlaneTier::Legacy,
+            primary_adapter: connector_name.clone(),
+            delegated_core_adapter: None,
             operation,
-            &required_capabilities,
-        )?;
+            required_capabilities: &required_capabilities,
+        })?;
 
         Ok(ConnectorDispatch {
             connector_name,
@@ -350,17 +362,17 @@ impl<P: PolicyEngine> ChumosKernel<P> {
             },
         ))?;
 
-        self.record_plane_invocation(
-            now,
-            &token.agent_id,
-            &pack.pack_id,
-            ExecutionPlane::Connector,
-            PlaneTier::Core,
-            resolved_core_adapter,
-            None,
+        self.record_plane_invocation(PlaneInvocationRecord {
+            timestamp_epoch_s: now,
+            agent_id: &token.agent_id,
+            pack_id: &pack.pack_id,
+            plane: ExecutionPlane::Connector,
+            tier: PlaneTier::Core,
+            primary_adapter: resolved_core_adapter,
+            delegated_core_adapter: None,
             operation,
-            &required_capabilities,
-        )?;
+            required_capabilities: &required_capabilities,
+        })?;
 
         Ok(ConnectorDispatch {
             connector_name,
@@ -407,17 +419,17 @@ impl<P: PolicyEngine> ChumosKernel<P> {
             },
         ))?;
 
-        self.record_plane_invocation(
-            now,
-            &token.agent_id,
-            &pack.pack_id,
-            ExecutionPlane::Connector,
-            PlaneTier::Extension,
-            extension_name.to_owned(),
-            Some(resolved_core_adapter),
+        self.record_plane_invocation(PlaneInvocationRecord {
+            timestamp_epoch_s: now,
+            agent_id: &token.agent_id,
+            pack_id: &pack.pack_id,
+            plane: ExecutionPlane::Connector,
+            tier: PlaneTier::Extension,
+            primary_adapter: extension_name.to_owned(),
+            delegated_core_adapter: Some(resolved_core_adapter),
             operation,
-            &required_capabilities,
-        )?;
+            required_capabilities: &required_capabilities,
+        })?;
 
         Ok(ConnectorDispatch {
             connector_name,
@@ -450,17 +462,17 @@ impl<P: PolicyEngine> ChumosKernel<P> {
             .await
             .map_err(KernelError::from)?;
 
-        self.record_plane_invocation(
-            now,
-            &token.agent_id,
-            &pack.pack_id,
-            ExecutionPlane::Runtime,
-            PlaneTier::Core,
-            resolved_core_adapter,
-            None,
-            action,
+        self.record_plane_invocation(PlaneInvocationRecord {
+            timestamp_epoch_s: now,
+            agent_id: &token.agent_id,
+            pack_id: &pack.pack_id,
+            plane: ExecutionPlane::Runtime,
+            tier: PlaneTier::Core,
+            primary_adapter: resolved_core_adapter,
+            delegated_core_adapter: None,
+            operation: action,
             required_capabilities,
-        )?;
+        })?;
 
         Ok(outcome)
     }
@@ -491,17 +503,17 @@ impl<P: PolicyEngine> ChumosKernel<P> {
             .await
             .map_err(KernelError::from)?;
 
-        self.record_plane_invocation(
-            now,
-            &token.agent_id,
-            &pack.pack_id,
-            ExecutionPlane::Runtime,
-            PlaneTier::Extension,
-            extension_name.to_owned(),
-            Some(resolved_core_adapter),
-            action,
+        self.record_plane_invocation(PlaneInvocationRecord {
+            timestamp_epoch_s: now,
+            agent_id: &token.agent_id,
+            pack_id: &pack.pack_id,
+            plane: ExecutionPlane::Runtime,
+            tier: PlaneTier::Extension,
+            primary_adapter: extension_name.to_owned(),
+            delegated_core_adapter: Some(resolved_core_adapter),
+            operation: action,
             required_capabilities,
-        )?;
+        })?;
 
         Ok(outcome)
     }
@@ -531,17 +543,17 @@ impl<P: PolicyEngine> ChumosKernel<P> {
             .await
             .map_err(KernelError::from)?;
 
-        self.record_plane_invocation(
-            now,
-            &token.agent_id,
-            &pack.pack_id,
-            ExecutionPlane::Tool,
-            PlaneTier::Core,
-            resolved_core_adapter,
-            None,
-            tool_name,
+        self.record_plane_invocation(PlaneInvocationRecord {
+            timestamp_epoch_s: now,
+            agent_id: &token.agent_id,
+            pack_id: &pack.pack_id,
+            plane: ExecutionPlane::Tool,
+            tier: PlaneTier::Core,
+            primary_adapter: resolved_core_adapter,
+            delegated_core_adapter: None,
+            operation: tool_name,
             required_capabilities,
-        )?;
+        })?;
 
         Ok(outcome)
     }
@@ -572,17 +584,17 @@ impl<P: PolicyEngine> ChumosKernel<P> {
             .await
             .map_err(KernelError::from)?;
 
-        self.record_plane_invocation(
-            now,
-            &token.agent_id,
-            &pack.pack_id,
-            ExecutionPlane::Tool,
-            PlaneTier::Extension,
-            extension_name.to_owned(),
-            Some(resolved_core_adapter),
-            action,
+        self.record_plane_invocation(PlaneInvocationRecord {
+            timestamp_epoch_s: now,
+            agent_id: &token.agent_id,
+            pack_id: &pack.pack_id,
+            plane: ExecutionPlane::Tool,
+            tier: PlaneTier::Extension,
+            primary_adapter: extension_name.to_owned(),
+            delegated_core_adapter: Some(resolved_core_adapter),
+            operation: action,
             required_capabilities,
-        )?;
+        })?;
 
         Ok(outcome)
     }
@@ -612,17 +624,17 @@ impl<P: PolicyEngine> ChumosKernel<P> {
             .await
             .map_err(KernelError::from)?;
 
-        self.record_plane_invocation(
-            now,
-            &token.agent_id,
-            &pack.pack_id,
-            ExecutionPlane::Memory,
-            PlaneTier::Core,
-            resolved_core_adapter,
-            None,
+        self.record_plane_invocation(PlaneInvocationRecord {
+            timestamp_epoch_s: now,
+            agent_id: &token.agent_id,
+            pack_id: &pack.pack_id,
+            plane: ExecutionPlane::Memory,
+            tier: PlaneTier::Core,
+            primary_adapter: resolved_core_adapter,
+            delegated_core_adapter: None,
             operation,
             required_capabilities,
-        )?;
+        })?;
 
         Ok(outcome)
     }
@@ -653,17 +665,17 @@ impl<P: PolicyEngine> ChumosKernel<P> {
             .await
             .map_err(KernelError::from)?;
 
-        self.record_plane_invocation(
-            now,
-            &token.agent_id,
-            &pack.pack_id,
-            ExecutionPlane::Memory,
-            PlaneTier::Extension,
-            extension_name.to_owned(),
-            Some(resolved_core_adapter),
+        self.record_plane_invocation(PlaneInvocationRecord {
+            timestamp_epoch_s: now,
+            agent_id: &token.agent_id,
+            pack_id: &pack.pack_id,
+            plane: ExecutionPlane::Memory,
+            tier: PlaneTier::Extension,
+            primary_adapter: extension_name.to_owned(),
+            delegated_core_adapter: Some(resolved_core_adapter),
             operation,
             required_capabilities,
-        )?;
+        })?;
 
         Ok(outcome)
     }
@@ -702,27 +714,19 @@ impl<P: PolicyEngine> ChumosKernel<P> {
 
     fn record_plane_invocation(
         &self,
-        timestamp_epoch_s: u64,
-        agent_id: &str,
-        pack_id: &str,
-        plane: ExecutionPlane,
-        tier: PlaneTier,
-        primary_adapter: String,
-        delegated_core_adapter: Option<String>,
-        operation: String,
-        required_capabilities: &BTreeSet<Capability>,
+        record: PlaneInvocationRecord<'_>,
     ) -> Result<(), KernelError> {
         self.audit.record(self.new_event(
-            timestamp_epoch_s,
-            Some(agent_id.to_owned()),
+            record.timestamp_epoch_s,
+            Some(record.agent_id.to_owned()),
             AuditEventKind::PlaneInvoked {
-                pack_id: pack_id.to_owned(),
-                plane,
-                tier,
-                primary_adapter,
-                delegated_core_adapter,
-                operation,
-                required_capabilities: required_capabilities.iter().copied().collect(),
+                pack_id: record.pack_id.to_owned(),
+                plane: record.plane,
+                tier: record.tier,
+                primary_adapter: record.primary_adapter,
+                delegated_core_adapter: record.delegated_core_adapter,
+                operation: record.operation,
+                required_capabilities: record.required_capabilities.iter().copied().collect(),
             },
         ))?;
         Ok(())

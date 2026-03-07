@@ -50,7 +50,7 @@ pub use integration::{
     AutoProvisionAgent, AutoProvisionRequest, ChannelConfig, IntegrationCatalog, IntegrationHotfix,
     ProviderConfig, ProviderTemplate, ProvisionAction, ProvisionPlan,
 };
-pub use kernel::{ChumosKernel, ConnectorDispatch, KernelDispatch};
+pub use kernel::{ConnectorDispatch, KernelDispatch, LoongClawKernel};
 pub use memory::{
     CoreMemoryAdapter, MemoryCoreOutcome, MemoryCoreRequest, MemoryExtensionAdapter,
     MemoryExtensionOutcome, MemoryExtensionRequest, MemoryPlane, MemoryTier,

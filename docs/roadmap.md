@@ -1,6 +1,6 @@
-# ChumOS Roadmap
+# LoongClaw Roadmap
 
-Last updated: 2026-03-04
+Last updated: 2026-03-07
 
 This roadmap is execution-focused. Every stage has:
 
@@ -14,7 +14,7 @@ Build a layered Agentic OS kernel that is:
 
 - minimal at the core
 - strong at policy and safety boundaries
-- deeply integrable in both directions (others integrate ChumOS, ChumOS integrates others)
+- deeply integrable in both directions (others integrate LoongClaw, LoongClaw integrates others)
 - hot-pluggable and community-extensible without core mutation
 - customizable into vertical domain systems through declarative packs
 
@@ -116,10 +116,46 @@ Acceptance criteria:
 - deterministic rollback behavior validated under injected failures
 - no core-path mutation allowed by plugin hotplug workflow
 
-## Stage 3: Autonomous Integration Expansion (Next)
+## Stage 3: Autonomous Integration Expansion (In Progress)
 
-Status: planned  
+Status: in progress  
 Focus: dynamic provider/channel integration without hardcoding.
+
+Delivered in current baseline:
+
+- `tool_search` operation for runtime tool discovery over:
+  - loaded providers in integration catalog
+  - scanned-but-not-absorbed plugin descriptors
+- translation-aligned retrieval payloads:
+  - runtime profile hints (`bridge_kind`, `adapter_family`, `entrypoint_hint`, `source_language`)
+  - plugin semantic fields (`summary`, `tags`, `input_examples`, `output_examples`, `defer_loading`)
+- `programmatic_tool_call` operation for server-side tool orchestration:
+  - step model (`set_literal`, `json_pointer`, `connector_call`, `connector_batch`, `conditional`)
+  - connector allowlist and call-budget enforcement
+  - batch execution controls (`parallel`, `continue_on_error`) with per-call structured outcomes
+  - branch predicates (`equals`, `exists`) for deterministic conditional routing
+  - per-call retry/backoff policy (`max_attempts`, `initial_backoff_ms`, `max_backoff_ms`)
+  - deterministic adaptive retry jitter (`jitter_ratio`, `adaptive_jitter`)
+  - per-connector rate shaping policy (`connector_rate_limits.<connector>.min_interval_ms`)
+  - per-connector circuit breaker policy (`failure_threshold`, `cooldown_ms`,
+    `half_open_max_calls`, `success_threshold`)
+  - adaptive concurrency policy (`concurrency`) with:
+    - global in-flight cap (`max_in_flight`)
+    - explicit floor and ramp profile (`min_in_flight`, adaptive up/down steps)
+    - fair scheduling policy (`weighted_round_robin` / `strict_round_robin`)
+    - per-call priority classes (`high` / `normal` / `low`)
+    - policy-driven adaptive budget contraction/recovery triggers (`adaptive_reduce_on`)
+  - scheduler telemetry for fanout (`dispatch_order`, `peak_in_flight`,
+    `budget_reductions`, `budget_increases`, `final_in_flight_budget`)
+  - typed programmatic error taxonomy (`programmatic_error[code]`, batch `error_code`)
+  - return-step targeting and optional intermediate traces
+  - payload templating (`{{step_id}}`, `{{step_id#/json/pointer}}`)
+- dynamic connector caller ACL:
+  - `allowed_callers` and `allowed_callers_json` metadata gates
+  - automatic `_loongclaw.caller` provenance injection for programmatic calls
+- active `http_json` runtime execution lane (no longer plan-only):
+  - timeout-controlled request execution
+  - structured runtime evidence (`status_code`, `response_json`)
 
 Planned deliverables:
 
@@ -138,6 +174,7 @@ Acceptance criteria:
 - repeated auto-provision runs are idempotent
 - unsupported protocol paths fail with explicit typed reasons
 - full integration catalog diff is auditable and reversible
+- discovery + orchestration tests remain stable under mixed absorbed/deferred plugin states
 
 ## Stage 4: Community Plugin Supply Chain (Next)
 

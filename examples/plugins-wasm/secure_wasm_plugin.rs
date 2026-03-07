@@ -1,4 +1,4 @@
-// CHUMOS_PLUGIN_START
+// LOONGCLAW_PLUGIN_START
 // {
 //   "plugin_id": "wasm-secure-echo",
 //   "provider_id": "wasm-secure-echo",
@@ -14,5 +14,5 @@
 //     "source": "example"
 //   }
 // }
-// CHUMOS_PLUGIN_END
+// LOONGCLAW_PLUGIN_END
 

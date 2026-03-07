@@ -1,4 +1,4 @@
-# CHUMOS_PLUGIN_START
+# LOONGCLAW_PLUGIN_START
 # {
 #   "plugin_id": "stdio-echo-py",
 #   "provider_id": "stdio-echo",
@@ -13,4 +13,4 @@
 #     "source": "example"
 #   }
 # }
-# CHUMOS_PLUGIN_END
+# LOONGCLAW_PLUGIN_END

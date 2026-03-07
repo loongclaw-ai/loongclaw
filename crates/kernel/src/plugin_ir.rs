@@ -380,6 +380,11 @@ mod tests {
                 endpoint: Some("https://example.com/invoke".to_owned()),
                 capabilities: BTreeSet::from([Capability::InvokeConnector]),
                 metadata,
+                summary: None,
+                tags: Vec::new(),
+                input_examples: Vec::new(),
+                output_examples: Vec::new(),
+                defer_loading: false,
             },
         }
     }
