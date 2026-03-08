@@ -1,6 +1,6 @@
 # LoongClaw Roadmap
 
-Last updated: 2026-03-07
+Last updated: 2026-03-08
 
 This roadmap is execution-focused. Every stage has:
 
@@ -219,6 +219,41 @@ Acceptance criteria:
 - new vertical pack reaches runnable state in <= 15 minutes
 - pack policy and required capabilities fully declarative
 - regression pack tests can be generated and executed automatically
+
+## Stage M: End-User MVP Product Layer (In Progress)
+
+Status: in progress  
+Focus: ship a low-friction daily-usable daemon entry for non-developers.
+
+Delivered in current baseline:
+
+- `setup` command to generate TOML configuration and bootstrap local state
+- `chat` command as baseline CLI channel
+- first-party Telegram polling channel adapter
+- first-party Feishu webhook channel adapter
+- SQLite-backed conversation memory with sliding-window retrieval
+- core tool execution for `shell.exec`, `file.read`, `file.write`
+- one-command source install scripts (`scripts/install.sh`, `scripts/install.ps1`)
+- Cargo feature flags for MVP packaging controls
+- modular channel/provider architecture for extension-safe evolution:
+  - `mvp/channel/feishu/*` split into adapter/payload/webhook layers
+  - `mvp/provider/*` split into policy/transport/shape layers
+  - `ConversationRuntime` port for non-invasive backend extension and contract testing
+
+Remaining deliverables:
+
+- OpenAI-compatible protocol adapter hardening and Volcengine custom adapter profile
+- beginner installation pipeline:
+  - prebuilt binaries
+  - one-command setup on macOS/Linux/Windows
+  - guided onboarding flow and diagnostics
+
+Acceptance criteria:
+
+- a new user can install and complete first successful chat in <= 5 minutes
+- local memory persistence is stable across process restarts
+- shell/file tools obey policy constraints and emit auditable outcomes
+- channel/provider modules can be toggled by feature flags without core code edits
 
 ## Quality Gate Matrix (Always On)
 

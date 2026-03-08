@@ -23,9 +23,25 @@ For full details, see [Layered Kernel Design](docs/layered-kernel-design.md).
 ## Current Validation Status
 
 - `loongclaw-kernel`: 39 unit tests passing.
-- `loongclaw-daemon`: 80 unit tests passing.
+- `loongclaw-daemon`: 99 unit tests passing.
 - `loongclawd` smoke/spec execution verified.
 - `programmatic` pressure benchmark gate (matrix + baseline) verified.
+
+## MVP Foundation (In Progress)
+
+- `setup` command: generate beginner-friendly TOML config and bootstrap SQLite memory.
+- `chat` command: interactive CLI channel with sliding-window conversation memory.
+- Core tool runtime now supports:
+  - `shell.exec`
+  - `file.read`
+  - `file.write`
+- Provider config supports:
+  - OpenAI-compatible endpoint composition
+  - Volcengine custom endpoint mode
+- Cargo feature flags are available for modular packaging:
+  - `config-toml`, `memory-sqlite`, `tool-shell`, `tool-file`
+  - channels: `channel-cli`, `channel-telegram`, `channel-feishu`
+  - providers: `provider-openai`, `provider-volcengine`
 
 ## Quick Start
 
@@ -33,11 +49,25 @@ For full details, see [Layered Kernel Design](docs/layered-kernel-design.md).
 cargo test -p loongclaw-kernel
 cargo test -p loongclaw-daemon
 cargo run -p loongclaw-daemon --bin loongclawd
+cargo run -p loongclaw-daemon --bin loongclawd -- setup --force
+cargo run -p loongclaw-daemon --bin loongclawd -- chat
 cargo run -p loongclaw-daemon --bin loongclawd -- run-spec --spec examples/spec/runtime-extension.json --print-audit
 cargo run -p loongclaw-daemon --bin loongclawd -- run-spec --spec examples/spec/tool-search.json --print-audit
 cargo run -p loongclaw-daemon --bin loongclawd -- run-spec --spec examples/spec/programmatic-tool-call.json --print-audit
 cargo run -p loongclaw-daemon --bin loongclawd -- benchmark-programmatic-pressure --matrix examples/benchmarks/programmatic-pressure-matrix.json --enforce-gate
 ./scripts/benchmark_programmatic_pressure.sh
+```
+
+One-command install from source:
+
+```bash
+./scripts/install.sh --setup
+```
+
+PowerShell:
+
+```powershell
+pwsh ./scripts/install.ps1 -Setup
 ```
 
 ## Documentation Index
@@ -49,6 +79,8 @@ cargo run -p loongclaw-daemon --bin loongclawd -- benchmark-programmatic-pressur
 - [Programmatic Tool Call](docs/reference/programmatic-tool-call.md)
 - [Programmatic Pressure Benchmark](docs/reference/programmatic-pressure-benchmark.md)
 - [Plugin Manifest Format](docs/reference/plugin-manifest-format.md)
+- [MVP Quickstart](docs/reference/mvp-quickstart.md)
+- [MVP Foundation Architecture](docs/reference/mvp-foundation-architecture.md)
 
 ## Open Source Contribution
 

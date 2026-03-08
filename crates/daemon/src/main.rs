@@ -48,6 +48,7 @@ static BUNDLED_SECURITY_SCAN_PROFILE: OnceLock<SecurityScanProfile> = OnceLock::
 static WEBHOOK_TEST_RETRY_STATE: OnceLock<Mutex<BTreeMap<String, usize>>> = OnceLock::new();
 type CliResult<T> = Result<T, String>;
 
+mod mvp;
 mod pressure_benchmark;
 mod programmatic;
 use pressure_benchmark::run_programmatic_pressure_benchmark_cli;
@@ -113,6 +114,47 @@ enum Commands {
         output: String,
         #[arg(long, default_value_t = false)]
         enforce_gate: bool,
+    },
+    /// Generate a beginner-friendly TOML config and bootstrap local state
+    Setup {
+        #[arg(long)]
+        output: Option<String>,
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
+    /// Start interactive CLI chat channel with sliding-window memory
+    Chat {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long)]
+        session: Option<String>,
+    },
+    /// Run Telegram channel polling/response loop
+    TelegramServe {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long, default_value_t = false)]
+        once: bool,
+    },
+    /// Send one Feishu message or card
+    FeishuSend {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long)]
+        receive_id: String,
+        #[arg(long)]
+        text: String,
+        #[arg(long, default_value_t = false)]
+        card: bool,
+    },
+    /// Run Feishu event callback server and auto-reply via provider
+    FeishuServe {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long)]
+        bind: Option<String>,
+        #[arg(long)]
+        path: Option<String>,
     },
 }
 
@@ -2224,14 +2266,7 @@ impl CoreToolAdapter for CoreToolRuntime {
         &self,
         request: ToolCoreRequest,
     ) -> Result<ToolCoreOutcome, kernel::ToolPlaneError> {
-        Ok(ToolCoreOutcome {
-            status: "ok".to_owned(),
-            payload: json!({
-                "adapter": "core-tools",
-                "tool_name": request.tool_name,
-                "payload": request.payload,
-            }),
-        })
+        mvp::tools::execute_tool_core(request).map_err(kernel::ToolPlaneError::Execution)
     }
 }
 
@@ -2278,14 +2313,7 @@ impl CoreMemoryAdapter for KvCoreMemory {
         &self,
         request: MemoryCoreRequest,
     ) -> Result<MemoryCoreOutcome, kernel::MemoryPlaneError> {
-        Ok(MemoryCoreOutcome {
-            status: "ok".to_owned(),
-            payload: json!({
-                "adapter": "kv-core",
-                "operation": request.operation,
-                "payload": request.payload,
-            }),
-        })
+        mvp::memory::execute_memory_core(request).map_err(kernel::MemoryPlaneError::Execution)
     }
 }
 
@@ -2345,6 +2373,22 @@ async fn main() {
                 enforce_gate,
             )
             .await
+        }
+        Commands::Setup { output, force } => run_setup_cli(output.as_deref(), force),
+        Commands::Chat { config, session } => {
+            run_chat_cli(config.as_deref(), session.as_deref()).await
+        }
+        Commands::TelegramServe { config, once } => {
+            run_telegram_serve_cli(config.as_deref(), once).await
+        }
+        Commands::FeishuSend {
+            config,
+            receive_id,
+            text,
+            card,
+        } => run_feishu_send_cli(config.as_deref(), &receive_id, &text, card).await,
+        Commands::FeishuServe { config, bind, path } => {
+            run_feishu_serve_cli(config.as_deref(), bind.as_deref(), path.as_deref()).await
         }
     };
     if let Err(error) = result {
@@ -2517,6 +2561,56 @@ async fn run_spec_cli(spec_path: &str, print_audit: bool) -> CliResult<()> {
         .map_err(|error| format!("serialize spec run report failed: {error}"))?;
     println!("{pretty}");
     Ok(())
+}
+
+fn run_setup_cli(output: Option<&str>, force: bool) -> CliResult<()> {
+    let path = mvp::config::write_template(output, force)?;
+    #[cfg(feature = "memory-sqlite")]
+    {
+        let path_str = path
+            .to_str()
+            .ok_or_else(|| format!("config path is not valid UTF-8: {}", path.display()))?;
+        let (_, parsed) = mvp::config::load(Some(path_str))?;
+        let memory_db =
+            mvp::memory::ensure_memory_db_ready(Some(parsed.memory.resolved_sqlite_path()))
+                .map_err(|error| format!("failed to bootstrap sqlite memory: {error}"))?;
+        println!(
+            "setup complete\n- config: {}\n- sqlite memory: {}",
+            path.display(),
+            memory_db.display()
+        );
+    }
+    #[cfg(not(feature = "memory-sqlite"))]
+    {
+        println!("setup complete\n- config: {}", path.display());
+    }
+    println!("next step: loongclawd chat --config {}", path.display());
+    Ok(())
+}
+
+async fn run_chat_cli(config_path: Option<&str>, session: Option<&str>) -> CliResult<()> {
+    mvp::chat::run_cli_chat(config_path, session).await
+}
+
+async fn run_telegram_serve_cli(config_path: Option<&str>, once: bool) -> CliResult<()> {
+    mvp::channel::run_telegram_channel(config_path, once).await
+}
+
+async fn run_feishu_send_cli(
+    config_path: Option<&str>,
+    receive_id: &str,
+    text: &str,
+    as_card: bool,
+) -> CliResult<()> {
+    mvp::channel::run_feishu_send(config_path, receive_id, text, as_card).await
+}
+
+async fn run_feishu_serve_cli(
+    config_path: Option<&str>,
+    bind_override: Option<&str>,
+    path_override: Option<&str>,
+) -> CliResult<()> {
+    mvp::channel::run_feishu_channel(config_path, bind_override, path_override).await
 }
 
 async fn execute_spec(spec: RunnerSpec, include_audit: bool) -> SpecRunReport {

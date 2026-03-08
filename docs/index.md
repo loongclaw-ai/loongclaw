@@ -15,6 +15,8 @@ Use this page as the single entry point.
 - [Programmatic Tool Call](./reference/programmatic-tool-call.md)
 - [Programmatic Pressure Benchmark](./reference/programmatic-pressure-benchmark.md)
 - [Plugin Manifest Format](./reference/plugin-manifest-format.md)
+- [MVP Quickstart](./reference/mvp-quickstart.md)
+- [MVP Foundation Architecture](./reference/mvp-foundation-architecture.md)
 
 ## Examples
 
