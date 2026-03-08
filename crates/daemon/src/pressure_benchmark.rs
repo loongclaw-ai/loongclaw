@@ -923,13 +923,32 @@ fn evaluate_scenario_gate(
             enforce_gate,
         );
     }
-    if let Some(expected) = thresholds.expected_schema_fingerprint.as_deref() {
-        push_schema_fingerprint_gate_check(
-            &mut checks,
-            &mut warnings,
-            report.schema_fingerprint.as_deref(),
-            expected,
-        );
+    if report.scenario_kind == "spec_run" {
+        if let Some(expected) = thresholds.expected_schema_fingerprint.as_deref() {
+            push_schema_fingerprint_gate_check(
+                &mut checks,
+                &mut warnings,
+                report.schema_fingerprint.as_deref(),
+                expected,
+            );
+        } else if enforce_gate {
+            checks.push(ProgrammaticPressureGateCheck {
+                metric: "schema_fingerprint_baseline_presence".to_owned(),
+                comparator: "required".to_owned(),
+                threshold: 1.0,
+                observed: 0.0,
+                passed: false,
+                baseline_threshold: None,
+                detail: Some(
+                    "expected_schema_fingerprint missing for spec_run scenario in baseline"
+                        .to_owned(),
+                ),
+            });
+        } else {
+            warnings.push(
+                "expected_schema_fingerprint missing for spec_run scenario in baseline".to_owned(),
+            );
+        }
     }
 
     ProgrammaticPressureScenarioGate {
@@ -1468,6 +1487,119 @@ mod tests {
     }
 
     #[test]
+    fn scenario_gate_fails_when_spec_run_schema_fingerprint_baseline_missing_in_strict_mode() {
+        let report = ProgrammaticPressureScenarioReport {
+            name: "schema-missing-baseline".to_owned(),
+            description: None,
+            scenario_kind: "spec_run".to_owned(),
+            iterations: 4,
+            warmup_iterations: 1,
+            success_runs: 4,
+            failed_runs: 0,
+            blocked_runs: 0,
+            error_rate: 0.0,
+            blocked_rate: 0.0,
+            connector_calls_total: 8,
+            throughput_rps: 16.0,
+            latency_ms: NumericStats {
+                count: 4,
+                min: Some(10.0),
+                max: Some(20.0),
+                avg: Some(14.0),
+                p50: Some(13.0),
+                p95: Some(19.0),
+                p99: Some(19.8),
+            },
+            circuit_open_error_ratio: 0.0,
+            schema_fingerprint: Some("observed-schema".to_owned()),
+            scheduler: None,
+            circuit: None,
+            error_codes: BTreeMap::new(),
+            gate: ProgrammaticPressureScenarioGate {
+                passed: true,
+                checks: Vec::new(),
+                warnings: Vec::new(),
+            },
+        };
+
+        let thresholds = ProgrammaticPressureScenarioThresholds {
+            max_error_rate: Some(0.0),
+            max_p95_latency_ms: Some(100.0),
+            max_p99_latency_ms: Some(100.0),
+            min_throughput_rps: Some(1.0),
+            min_peak_in_flight: None,
+            max_circuit_open_error_ratio: Some(0.2),
+            max_half_open_p95_ms: None,
+            expected_schema_fingerprint: None,
+            tolerance: ProgrammaticPressureGateTolerance::default(),
+        };
+
+        let gate = evaluate_scenario_gate(&report, Some(&thresholds), true);
+        let schema_check = gate
+            .checks
+            .iter()
+            .find(|check| check.metric == "schema_fingerprint_baseline_presence")
+            .expect("schema baseline presence check should be present");
+        assert!(!schema_check.passed);
+    }
+
+    #[test]
+    fn scenario_gate_warns_when_spec_run_schema_fingerprint_baseline_missing_non_strict() {
+        let report = ProgrammaticPressureScenarioReport {
+            name: "schema-missing-baseline".to_owned(),
+            description: None,
+            scenario_kind: "spec_run".to_owned(),
+            iterations: 4,
+            warmup_iterations: 1,
+            success_runs: 4,
+            failed_runs: 0,
+            blocked_runs: 0,
+            error_rate: 0.0,
+            blocked_rate: 0.0,
+            connector_calls_total: 8,
+            throughput_rps: 16.0,
+            latency_ms: NumericStats {
+                count: 4,
+                min: Some(10.0),
+                max: Some(20.0),
+                avg: Some(14.0),
+                p50: Some(13.0),
+                p95: Some(19.0),
+                p99: Some(19.8),
+            },
+            circuit_open_error_ratio: 0.0,
+            schema_fingerprint: Some("observed-schema".to_owned()),
+            scheduler: None,
+            circuit: None,
+            error_codes: BTreeMap::new(),
+            gate: ProgrammaticPressureScenarioGate {
+                passed: true,
+                checks: Vec::new(),
+                warnings: Vec::new(),
+            },
+        };
+
+        let thresholds = ProgrammaticPressureScenarioThresholds {
+            max_error_rate: Some(0.0),
+            max_p95_latency_ms: Some(100.0),
+            max_p99_latency_ms: Some(100.0),
+            min_throughput_rps: Some(1.0),
+            min_peak_in_flight: None,
+            max_circuit_open_error_ratio: Some(0.2),
+            max_half_open_p95_ms: None,
+            expected_schema_fingerprint: None,
+            tolerance: ProgrammaticPressureGateTolerance::default(),
+        };
+
+        let gate = evaluate_scenario_gate(&report, Some(&thresholds), false);
+        assert!(gate.passed);
+        assert!(gate
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("expected_schema_fingerprint missing")));
+    }
+
+    #[test]
     fn scenario_gate_tolerance_allows_expected_runtime_jitter() {
         let report = ProgrammaticPressureScenarioReport {
             name: "drift".to_owned(),
@@ -1520,7 +1652,7 @@ mod tests {
             min_peak_in_flight: Some(2.0),
             max_circuit_open_error_ratio: Some(0.1),
             max_half_open_p95_ms: None,
-            expected_schema_fingerprint: None,
+            expected_schema_fingerprint: Some("schema-a".to_owned()),
             tolerance: ProgrammaticPressureGateTolerance {
                 max_ratio: 0.05,
                 min_ratio: 0.10,

@@ -63,6 +63,7 @@ Schema fingerprint behavior:
 - The hash is shape-based (type/schema), not value-based, so dynamic payload values do not cause drift.
 - Baseline `expected_schema_fingerprint` enforces schema compatibility across refactors.
 - If multiple schema variants appear across iterations, the report emits a `multi:<sha256>` aggregate fingerprint.
+- In strict mode (`--enforce-gate`), every `spec_run` scenario is expected to define `expected_schema_fingerprint`.
 
 ### Drift Example
 
@@ -107,6 +108,14 @@ Run via unified helper script:
 
 ```bash
 ./scripts/benchmark_programmatic_pressure.sh
+```
+
+Refresh baseline schema fingerprints from the latest report:
+
+```bash
+./scripts/update_programmatic_pressure_schema_baseline.sh \
+  target/benchmarks/programmatic-pressure-report.json \
+  examples/benchmarks/programmatic-pressure-baseline.json
 ```
 
 ## Report Highlights
