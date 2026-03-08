@@ -128,6 +128,8 @@ Delivered in current baseline:
 - protocol foundation crate (`crates/protocol`) with:
   - transport contract (`Transport` trait + typed frame envelopes)
   - typed method routing (`ProtocolRoute`) and policy-aware resolver (`ProtocolRouter`)
+  - route authorization contract (`RouteAuthorizationRequest`) for deterministic
+    auth/capability gates before handler dispatch
   - strict/lenient custom route control to avoid ad-hoc string dispatch at call sites
   - linked in-memory `ChannelTransport` primitive with:
     - bounded queue backpressure

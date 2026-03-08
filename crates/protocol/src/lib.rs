@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -89,6 +89,12 @@ pub struct ResolvedRoute {
     pub policy: RoutePolicy,
 }
 
+impl ResolvedRoute {
+    pub fn method(&self) -> &str {
+        self.route.method()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ProtocolRouter {
     strict: bool,
@@ -119,11 +125,7 @@ impl ProtocolRouter {
         policy: RoutePolicy,
     ) -> Result<(), RouterError> {
         let method = method.into();
-        if method.trim().is_empty() {
-            return Err(RouterError::InvalidMethod(
-                "custom route method cannot be empty".to_owned(),
-            ));
-        }
+        validate_method_name(&method)?;
         if ProtocolRoute::from_method(&method).is_standard() {
             return Err(RouterError::InvalidMethod(format!(
                 "standard route cannot be registered as custom: {method}"
@@ -134,6 +136,7 @@ impl ProtocolRouter {
     }
 
     pub fn resolve(&self, method: &str) -> Result<ResolvedRoute, RouterError> {
+        validate_method_name(method)?;
         let route = ProtocolRoute::from_method(method);
         match route {
             ProtocolRoute::Initialize | ProtocolRoute::Ping => Ok(ResolvedRoute {
@@ -174,6 +177,34 @@ impl ProtocolRouter {
             }
         }
     }
+
+    pub fn authorize(
+        &self,
+        resolved: &ResolvedRoute,
+        request: &RouteAuthorizationRequest,
+    ) -> Result<RouteAuthorizationDecision, RouteAuthorizationError> {
+        if !request.authenticated && !resolved.policy.allow_anonymous {
+            return Err(RouteAuthorizationError::AuthenticationRequired {
+                method: resolved.method().to_owned(),
+            });
+        }
+
+        if let Some(required) = &resolved.policy.required_capability {
+            let normalized_required = normalize_capability(required);
+            let has_required = request.capabilities.iter().any(|capability| {
+                let normalized = normalize_capability(capability);
+                normalized == normalized_required || normalized == "*"
+            });
+            if !has_required {
+                return Err(RouteAuthorizationError::MissingCapability {
+                    method: resolved.method().to_owned(),
+                    required_capability: normalized_required,
+                });
+            }
+        }
+
+        Ok(RouteAuthorizationDecision::Allow)
+    }
 }
 
 #[derive(Debug, Error)]
@@ -184,12 +215,70 @@ pub enum RouterError {
     InvalidMethod(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteAuthorizationRequest {
+    pub authenticated: bool,
+    pub capabilities: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RouteAuthorizationDecision {
+    Allow,
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum RouteAuthorizationError {
+    #[error("authentication required for method: {method}")]
+    AuthenticationRequired { method: String },
+    #[error("missing capability `{required_capability}` for method: {method}")]
+    MissingCapability {
+        method: String,
+        required_capability: String,
+    },
+}
+
 #[derive(Debug, Error)]
 pub enum TransportError {
     #[error("transport closed")]
     Closed,
     #[error("transport failure: {0}")]
     Failure(String),
+}
+
+pub fn validate_method_name(method: &str) -> Result<(), RouterError> {
+    if method.trim().is_empty() {
+        return Err(RouterError::InvalidMethod(
+            "method cannot be empty".to_owned(),
+        ));
+    }
+    if method.trim() != method {
+        return Err(RouterError::InvalidMethod(format!(
+            "method cannot include surrounding whitespace: {method:?}"
+        )));
+    }
+    if method.len() > 128 {
+        return Err(RouterError::InvalidMethod(format!(
+            "method exceeds max length (128): {}",
+            method.len()
+        )));
+    }
+    if method.starts_with('/') || method.ends_with('/') || method.contains("//") {
+        return Err(RouterError::InvalidMethod(format!(
+            "method contains invalid slash placement: {method}"
+        )));
+    }
+    if !method.chars().all(|ch| {
+        ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '-' | '_' | '/' | '.')
+    }) {
+        return Err(RouterError::InvalidMethod(format!(
+            "method contains unsupported characters: {method}"
+        )));
+    }
+    Ok(())
+}
+
+fn normalize_capability(raw: &str) -> String {
+    raw.trim().to_ascii_lowercase()
 }
 
 #[async_trait]
@@ -340,6 +429,96 @@ mod tests {
             resolved.policy.required_capability.as_deref(),
             Some("channel.publish")
         );
+    }
+
+    #[test]
+    fn resolve_rejects_invalid_method_name() {
+        let router = ProtocolRouter::default();
+        let error = router
+            .resolve("Tools/Call")
+            .expect_err("invalid characters should be rejected");
+        assert!(matches!(error, RouterError::InvalidMethod(_)));
+    }
+
+    #[test]
+    fn authorize_denies_when_authentication_is_required() {
+        let router = ProtocolRouter::default();
+        let resolved = router
+            .resolve("tools/call")
+            .expect("standard route should resolve");
+        let error = router
+            .authorize(
+                &resolved,
+                &RouteAuthorizationRequest {
+                    authenticated: false,
+                    capabilities: BTreeSet::new(),
+                },
+            )
+            .expect_err("tools/call should require authentication");
+        assert!(matches!(
+            error,
+            RouteAuthorizationError::AuthenticationRequired { method } if method == "tools/call"
+        ));
+    }
+
+    #[test]
+    fn authorize_denies_when_capability_is_missing() {
+        let router = ProtocolRouter::default();
+        let resolved = router
+            .resolve("resources/read")
+            .expect("standard route should resolve");
+        let error = router
+            .authorize(
+                &resolved,
+                &RouteAuthorizationRequest {
+                    authenticated: true,
+                    capabilities: BTreeSet::from(["discover".to_owned()]),
+                },
+            )
+            .expect_err("resources/read should require invoke");
+        assert!(matches!(
+            error,
+            RouteAuthorizationError::MissingCapability {
+                method,
+                required_capability
+            } if method == "resources/read" && required_capability == "invoke"
+        ));
+    }
+
+    #[test]
+    fn authorize_allows_when_capability_matches() {
+        let router = ProtocolRouter::default();
+        let resolved = router
+            .resolve("resources/read")
+            .expect("standard route should resolve");
+        let decision = router
+            .authorize(
+                &resolved,
+                &RouteAuthorizationRequest {
+                    authenticated: true,
+                    capabilities: BTreeSet::from([" invoke ".to_owned()]),
+                },
+            )
+            .expect("matching capability should authorize");
+        assert_eq!(decision, RouteAuthorizationDecision::Allow);
+    }
+
+    #[test]
+    fn authorize_supports_wildcard_capability() {
+        let router = ProtocolRouter::default();
+        let resolved = router
+            .resolve("tools/call")
+            .expect("standard route should resolve");
+        let decision = router
+            .authorize(
+                &resolved,
+                &RouteAuthorizationRequest {
+                    authenticated: true,
+                    capabilities: BTreeSet::from(["*".to_owned()]),
+                },
+            )
+            .expect("wildcard capability should authorize");
+        assert_eq!(decision, RouteAuthorizationDecision::Allow);
     }
 
     #[tokio::test]
