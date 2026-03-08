@@ -170,6 +170,8 @@ Rules:
   bridge executors to keep telemetry schema stable and comparable.
 - Bridge protocol helper logic should be isolated in a dedicated module include
   to avoid unchecked line-count growth in the runtime orchestration file.
+- Bridge regression suites should be organized in dedicated test modules so
+  protocol-contract and authorization assertions remain maintainable.
 
 ### L6. Integration Control Plane (Autonomous Provisioning)
 
