@@ -83,18 +83,8 @@ impl BridgeProtocolRuntimeContext {
     }
 }
 
-#[derive(Debug, Default)]
-struct HttpJsonRuntimeDetails {
-    status_code: Option<u16>,
-    request: Option<Value>,
-    response_text: Option<String>,
-    response_json: Option<Value>,
-    response_method: Option<String>,
-    response_id: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct HttpJsonRuntimeEvidence {
+#[derive(Debug, Clone, Serialize)]
+struct HttpJsonRuntimeBase {
     executor: &'static str,
     method: String,
     url: String,
@@ -102,14 +92,39 @@ struct HttpJsonRuntimeEvidence {
     enforce_protocol_contract: bool,
     #[serde(flatten)]
     protocol: BridgeProtocolRuntimeContext,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    status_code: Option<u16>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    request: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    response_text: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    response_json: Option<Value>,
+}
+
+#[derive(Debug)]
+enum HttpJsonRuntimeEvidenceKind {
+    BaseOnly,
+    RequestOnly {
+        request: Value,
+    },
+    Response {
+        status_code: u16,
+        request: Value,
+        response_text: String,
+        response_json: Value,
+        response_method: Option<String>,
+        response_id: Option<String>,
+    },
+}
+
+#[derive(Debug, Serialize)]
+struct HttpJsonRuntimeRequestOnly {
+    #[serde(flatten)]
+    base: HttpJsonRuntimeBase,
+    request: Value,
+}
+
+#[derive(Debug, Serialize)]
+struct HttpJsonRuntimeResponse {
+    #[serde(flatten)]
+    base: HttpJsonRuntimeBase,
+    status_code: u16,
+    request: Value,
+    response_text: String,
+    response_json: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     response_method: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -122,39 +137,47 @@ fn http_json_runtime_evidence(
     url: &str,
     timeout_ms: u64,
     enforce_protocol_contract: bool,
-    details: HttpJsonRuntimeDetails,
+    evidence_kind: HttpJsonRuntimeEvidenceKind,
 ) -> Value {
-    serialize_runtime_evidence(
-        "http_json_reqwest",
-        &HttpJsonRuntimeEvidence {
-            executor: "http_json_reqwest",
-            method: method.to_owned(),
-            url: url.to_owned(),
-            timeout_ms,
-            enforce_protocol_contract,
-            protocol: BridgeProtocolRuntimeContext::from_connector_context(context),
-            status_code: details.status_code,
-            request: details.request,
-            response_text: details.response_text,
-            response_json: details.response_json,
-            response_method: details.response_method,
-            response_id: details.response_id,
-        },
-    )
+    const EXECUTOR: &str = "http_json_reqwest";
+    let base = HttpJsonRuntimeBase {
+        executor: EXECUTOR,
+        method: method.to_owned(),
+        url: url.to_owned(),
+        timeout_ms,
+        enforce_protocol_contract,
+        protocol: BridgeProtocolRuntimeContext::from_connector_context(context),
+    };
+    match evidence_kind {
+        HttpJsonRuntimeEvidenceKind::BaseOnly => serialize_runtime_evidence(EXECUTOR, &base),
+        HttpJsonRuntimeEvidenceKind::RequestOnly { request } => serialize_runtime_evidence(
+            EXECUTOR,
+            &HttpJsonRuntimeRequestOnly { base, request },
+        ),
+        HttpJsonRuntimeEvidenceKind::Response {
+            status_code,
+            request,
+            response_text,
+            response_json,
+            response_method,
+            response_id,
+        } => serialize_runtime_evidence(
+            EXECUTOR,
+            &HttpJsonRuntimeResponse {
+                base,
+                status_code,
+                request,
+                response_text,
+                response_json,
+                response_method,
+                response_id,
+            },
+        ),
+    }
 }
 
-#[derive(Debug, Default)]
-struct ProcessStdioRuntimeDetails {
-    exit_code: Option<i32>,
-    stdout: Option<String>,
-    stderr: Option<String>,
-    stdout_json: Option<Value>,
-    response_method: Option<String>,
-    response_id: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct ProcessStdioRuntimeEvidence {
+#[derive(Debug, Clone, Serialize)]
+struct ProcessStdioRuntimeBase {
     executor: &'static str,
     transport_kind: &'static str,
     command: String,
@@ -162,16 +185,31 @@ struct ProcessStdioRuntimeEvidence {
     timeout_ms: u64,
     #[serde(flatten)]
     protocol: BridgeProtocolRuntimeContext,
+}
+
+#[derive(Debug)]
+enum ProcessStdioRuntimeEvidenceKind {
+    BaseOnly,
+    Execution {
+        exit_code: Option<i32>,
+        stdout: String,
+        stderr: String,
+        stdout_json: Value,
+        response_method: String,
+        response_id: Option<String>,
+    },
+}
+
+#[derive(Debug, Serialize)]
+struct ProcessStdioRuntimeExecution {
+    #[serde(flatten)]
+    base: ProcessStdioRuntimeBase,
     #[serde(skip_serializing_if = "Option::is_none")]
     exit_code: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    stdout: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    stderr: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    stdout_json: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    response_method: Option<String>,
+    stdout: String,
+    stderr: String,
+    stdout_json: Value,
+    response_method: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     response_id: Option<String>,
 }
@@ -181,25 +219,39 @@ fn process_stdio_runtime_evidence(
     command: &str,
     args: &[String],
     timeout_ms: u64,
-    details: ProcessStdioRuntimeDetails,
+    evidence_kind: ProcessStdioRuntimeEvidenceKind,
 ) -> Value {
-    serialize_runtime_evidence(
-        "process_stdio_local",
-        &ProcessStdioRuntimeEvidence {
-            executor: "process_stdio_local",
-            transport_kind: "json_line",
-            command: command.to_owned(),
-            args: args.to_vec(),
-            timeout_ms,
-            protocol: BridgeProtocolRuntimeContext::from_connector_context(context),
-            exit_code: details.exit_code,
-            stdout: details.stdout,
-            stderr: details.stderr,
-            stdout_json: details.stdout_json,
-            response_method: details.response_method,
-            response_id: details.response_id,
-        },
-    )
+    const EXECUTOR: &str = "process_stdio_local";
+    let base = ProcessStdioRuntimeBase {
+        executor: EXECUTOR,
+        transport_kind: "json_line",
+        command: command.to_owned(),
+        args: args.to_vec(),
+        timeout_ms,
+        protocol: BridgeProtocolRuntimeContext::from_connector_context(context),
+    };
+    match evidence_kind {
+        ProcessStdioRuntimeEvidenceKind::BaseOnly => serialize_runtime_evidence(EXECUTOR, &base),
+        ProcessStdioRuntimeEvidenceKind::Execution {
+            exit_code,
+            stdout,
+            stderr,
+            stdout_json,
+            response_method,
+            response_id,
+        } => serialize_runtime_evidence(
+            EXECUTOR,
+            &ProcessStdioRuntimeExecution {
+                base,
+                exit_code,
+                stdout,
+                stderr,
+                stdout_json,
+                response_method,
+                response_id,
+            },
+        ),
+    }
 }
 
 fn serialize_runtime_evidence<T: Serialize>(executor: &str, runtime: &T) -> Value {

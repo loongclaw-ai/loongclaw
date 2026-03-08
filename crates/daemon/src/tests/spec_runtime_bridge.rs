@@ -70,6 +70,20 @@ fn assert_process_stdio_runtime_shape(runtime: &Value) {
     assert_eq!(runtime["transport_kind"], "json_line");
 }
 
+fn assert_runtime_keys_exact(runtime: &Value, expected_keys: &[&str]) {
+    let runtime_object = runtime
+        .as_object()
+        .expect("runtime payload should be a JSON object");
+    let mut actual = runtime_object.keys().cloned().collect::<Vec<_>>();
+    actual.sort();
+    let mut expected = expected_keys
+        .iter()
+        .map(|key| key.to_string())
+        .collect::<Vec<_>>();
+    expected.sort();
+    assert_eq!(actual, expected, "runtime key set should stay stable");
+}
+
 #[tokio::test]
 async fn execute_spec_process_stdio_bridge_executes_when_enabled_and_allowed() {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -170,6 +184,27 @@ async fn execute_spec_process_stdio_bridge_executes_when_enabled_and_allowed() {
         "executed"
     );
     assert_process_stdio_runtime_shape(runtime);
+    assert_runtime_keys_exact(
+        runtime,
+        &[
+            "args",
+            "command",
+            "executor",
+            "exit_code",
+            "protocol_capabilities",
+            "protocol_required_capability",
+            "protocol_route",
+            "request_id",
+            "request_method",
+            "response_id",
+            "response_method",
+            "stderr",
+            "stdout",
+            "stdout_json",
+            "timeout_ms",
+            "transport_kind",
+        ],
+    );
     assert_eq!(runtime["stdout_json"]["operation"], "invoke");
     assert!(runtime.get("exit_code").is_some());
     assert!(runtime.get("response_method").is_some());
@@ -722,6 +757,21 @@ async fn execute_spec_process_stdio_bridge_blocks_when_protocol_authorization_fa
     );
     let runtime = &report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"];
     assert_process_stdio_runtime_shape(runtime);
+    assert_runtime_keys_exact(
+        runtime,
+        &[
+            "args",
+            "command",
+            "executor",
+            "protocol_capabilities",
+            "protocol_required_capability",
+            "protocol_route",
+            "request_id",
+            "request_method",
+            "timeout_ms",
+            "transport_kind",
+        ],
+    );
     assert!(runtime.get("exit_code").is_none());
     assert!(runtime.get("response_method").is_none());
     assert!(runtime.get("response_id").is_none());
@@ -963,6 +1013,25 @@ async fn execute_spec_http_json_bridge_executes_against_local_server() {
         "executed"
     );
     assert_http_json_runtime_shape(runtime);
+    assert_runtime_keys_exact(
+        runtime,
+        &[
+            "enforce_protocol_contract",
+            "executor",
+            "method",
+            "protocol_capabilities",
+            "protocol_required_capability",
+            "protocol_route",
+            "request",
+            "request_id",
+            "request_method",
+            "response_json",
+            "response_text",
+            "status_code",
+            "timeout_ms",
+            "url",
+        ],
+    );
     assert_eq!(runtime["response_json"]["reply"], "pong");
     assert!(runtime.get("status_code").is_some());
     assert!(runtime.get("response_text").is_some());
@@ -1074,6 +1143,21 @@ async fn execute_spec_http_json_bridge_blocks_when_protocol_authorization_fails(
             .contains("protocol route authorization failed")
     );
     assert_http_json_runtime_shape(runtime);
+    assert_runtime_keys_exact(
+        runtime,
+        &[
+            "enforce_protocol_contract",
+            "executor",
+            "method",
+            "protocol_capabilities",
+            "protocol_required_capability",
+            "protocol_route",
+            "request_id",
+            "request_method",
+            "timeout_ms",
+            "url",
+        ],
+    );
     assert!(runtime.get("status_code").is_none());
     assert!(runtime.get("response_text").is_none());
     assert!(runtime.get("response_json").is_none());
@@ -1199,6 +1283,7 @@ async fn execute_spec_http_json_bridge_strict_contract_fails_on_method_mismatch(
 
     let report = execute_spec(spec, true).await;
     server.join().expect("join local http server");
+    let runtime = &report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"];
 
     assert_eq!(report.operation_kind, "connector_legacy");
     assert_eq!(
@@ -1210,6 +1295,22 @@ async fn execute_spec_http_json_bridge_strict_contract_fails_on_method_mismatch(
             .as_str()
             .expect("failed reason should be string")
             .contains("response method mismatch")
+    );
+    assert_runtime_keys_exact(
+        runtime,
+        &[
+            "enforce_protocol_contract",
+            "executor",
+            "method",
+            "protocol_capabilities",
+            "protocol_required_capability",
+            "protocol_route",
+            "request",
+            "request_id",
+            "request_method",
+            "timeout_ms",
+            "url",
+        ],
     );
 }
 
@@ -1321,6 +1422,7 @@ async fn execute_spec_http_json_bridge_strict_contract_fails_on_id_mismatch() {
 
     let report = execute_spec(spec, true).await;
     server.join().expect("join local http server");
+    let runtime = &report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"];
 
     assert_eq!(report.operation_kind, "connector_legacy");
     assert_eq!(
@@ -1332,6 +1434,22 @@ async fn execute_spec_http_json_bridge_strict_contract_fails_on_id_mismatch() {
             .as_str()
             .expect("failed reason should be string")
             .contains("response id mismatch")
+    );
+    assert_runtime_keys_exact(
+        runtime,
+        &[
+            "enforce_protocol_contract",
+            "executor",
+            "method",
+            "protocol_capabilities",
+            "protocol_required_capability",
+            "protocol_route",
+            "request",
+            "request_id",
+            "request_method",
+            "timeout_ms",
+            "url",
+        ],
     );
 }
 
@@ -1447,18 +1565,34 @@ async fn execute_spec_http_json_bridge_strict_contract_executes_on_matching_fram
 
     let report = execute_spec(spec, true).await;
     server.join().expect("join local http server");
+    let runtime = &report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"];
 
     assert_eq!(report.operation_kind, "connector_legacy");
     assert_eq!(
         report.outcome["outcome"]["payload"]["bridge_execution"]["status"],
         "executed"
     );
-    assert_eq!(
-        report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["response_method"],
-        "tools/call"
-    );
-    assert_eq!(
-        report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["response_id"],
-        expected_id
+    assert_eq!(runtime["response_method"], "tools/call");
+    assert_eq!(runtime["response_id"], expected_id);
+    assert_runtime_keys_exact(
+        runtime,
+        &[
+            "enforce_protocol_contract",
+            "executor",
+            "method",
+            "protocol_capabilities",
+            "protocol_required_capability",
+            "protocol_route",
+            "request",
+            "request_id",
+            "request_method",
+            "response_id",
+            "response_json",
+            "response_method",
+            "response_text",
+            "status_code",
+            "timeout_ms",
+            "url",
+        ],
     );
 }

@@ -174,6 +174,8 @@ Rules:
   protocol-contract and authorization assertions remain maintainable.
 - Bridge runtime telemetry should be emitted through typed evidence structs and
   shared serialization to keep executor payload shape evolution controlled.
+- Runtime evidence builders should use explicit state variants rather than
+  wide optional-field bags, and tests should assert exact key sets per state.
 
 ### L6. Integration Control Plane (Autonomous Provisioning)
 

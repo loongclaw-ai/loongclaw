@@ -1447,7 +1447,7 @@ fn execute_http_json_bridge(
             &channel.endpoint,
             timeout_ms,
             enforce_protocol_contract,
-            HttpJsonRuntimeDetails::default(),
+            HttpJsonRuntimeEvidenceKind::BaseOnly,
         );
         return execution;
     }
@@ -1542,11 +1542,11 @@ fn execute_http_json_bridge(
                 &channel.endpoint,
                 timeout_ms,
                 enforce_protocol_contract,
-                HttpJsonRuntimeDetails {
-                    status_code: Some(status_code),
-                    request: Some(request_payload_for_runtime),
-                    response_text: Some(body),
-                    response_json: Some(body_json),
+                HttpJsonRuntimeEvidenceKind::Response {
+                    status_code,
+                    request: request_payload_for_runtime,
+                    response_text: body,
+                    response_json: body_json,
                     response_method,
                     response_id,
                 },
@@ -1562,9 +1562,8 @@ fn execute_http_json_bridge(
                 &channel.endpoint,
                 timeout_ms,
                 enforce_protocol_contract,
-                HttpJsonRuntimeDetails {
-                    request: Some(request_payload_for_runtime),
-                    ..HttpJsonRuntimeDetails::default()
+                HttpJsonRuntimeEvidenceKind::RequestOnly {
+                    request: request_payload_for_runtime,
                 },
             );
             execution
@@ -1579,9 +1578,8 @@ fn execute_http_json_bridge(
                 &channel.endpoint,
                 timeout_ms,
                 enforce_protocol_contract,
-                HttpJsonRuntimeDetails {
-                    request: Some(request_payload_for_runtime),
-                    ..HttpJsonRuntimeDetails::default()
+                HttpJsonRuntimeEvidenceKind::RequestOnly {
+                    request: request_payload_for_runtime,
                 },
             );
             execution
@@ -1629,7 +1627,7 @@ async fn execute_process_stdio_bridge(
             &program,
             &args,
             timeout_ms,
-            ProcessStdioRuntimeDetails::default(),
+            ProcessStdioRuntimeEvidenceKind::BaseOnly,
         );
         return execution;
     }
@@ -1660,12 +1658,12 @@ async fn execute_process_stdio_bridge(
                 &program,
                 &args,
                 timeout_ms,
-                ProcessStdioRuntimeDetails {
+                ProcessStdioRuntimeEvidenceKind::Execution {
                     exit_code: outcome.exit_code,
-                    stdout: Some(outcome.stdout),
-                    stderr: Some(outcome.stderr),
-                    stdout_json: Some(outcome.stdout_json),
-                    response_method: Some(outcome.response_method),
+                    stdout: outcome.stdout,
+                    stderr: outcome.stderr,
+                    stdout_json: outcome.stdout_json,
+                    response_method: outcome.response_method,
                     response_id: outcome.response_id,
                 },
             );
@@ -1679,7 +1677,7 @@ async fn execute_process_stdio_bridge(
                 &program,
                 &args,
                 timeout_ms,
-                ProcessStdioRuntimeDetails::default(),
+                ProcessStdioRuntimeEvidenceKind::BaseOnly,
             );
             execution
         }

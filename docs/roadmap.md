@@ -156,6 +156,8 @@ Delivered in current baseline:
     (`tests/spec_runtime_bridge.rs`) to reduce test-file maintenance debt
   - typed bridge runtime evidence structs with shared serialization path to
     reduce ad-hoc JSON field drift across executors
+  - explicit runtime evidence state variants (`BaseOnly`/`RequestOnly`/
+    `Response` or `Execution`) to avoid impossible field combinations
   - strict/lenient custom route control to avoid ad-hoc string dispatch at call sites
   - linked in-memory `ChannelTransport` primitive with:
     - bounded queue backpressure
