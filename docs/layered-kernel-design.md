@@ -158,6 +158,8 @@ Rules:
 - Unknown custom methods must fail closed in strict mode.
 - Transport close semantics must be explicit and testable.
 - Bounded queues must preserve backpressure instead of unbounded buffering.
+- Runtime process stdio execution should consume protocol transport primitives
+  (json-line frame contract) instead of ad-hoc stdin/stdout JSON handling.
 
 ### L6. Integration Control Plane (Autonomous Provisioning)
 

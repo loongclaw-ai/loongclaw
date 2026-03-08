@@ -3,7 +3,7 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Stdio,
     sync::{Arc, Mutex, OnceLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -30,11 +30,16 @@ use kernel::{
     ToolCoreRequest, ToolExtensionAdapter, ToolExtensionOutcome, ToolExtensionRequest,
     VerticalPackManifest,
 };
+use loongclaw_protocol::{JsonLineTransport, OutboundFrame, Transport, TransportInfo};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::time::{sleep, Instant as TokioInstant};
+use tokio::{
+    io::AsyncReadExt,
+    process::Command as TokioCommand,
+    time::{sleep, Instant as TokioInstant},
+};
 use wasmparser::{Parser as WasmParser, Payload as WasmPayload};
 use wasmtime::{
     Config as WasmtimeConfig, Engine as WasmtimeEngine, Linker as WasmtimeLinker,

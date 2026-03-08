@@ -132,6 +132,10 @@ Delivered in current baseline:
     auth/capability gates before handler dispatch
   - json-line stream transport (`JsonLineTransport`) for stdio/pipe integration
     with deterministic decode/error handling and close semantics
+  - daemon `process_stdio` bridge now executes through protocol json-line frames
+    (request/response method + payload envelope), with runtime evidence
+    (`transport_kind`, request/response frame metadata) and deterministic
+    failure surfacing for malformed frame responses
   - strict/lenient custom route control to avoid ad-hoc string dispatch at call sites
   - linked in-memory `ChannelTransport` primitive with:
     - bounded queue backpressure

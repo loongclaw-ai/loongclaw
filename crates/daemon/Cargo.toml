@@ -22,6 +22,7 @@ tool-file = []
 async-trait.workspace = true
 clap.workspace = true
 kernel = { package = "loongclaw-kernel", path = "../kernel" }
+loongclaw-protocol = { path = "../protocol" }
 serde.workspace = true
 serde_json.workspace = true
 toml = { workspace = true, optional = true }

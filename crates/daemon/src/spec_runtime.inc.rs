@@ -1158,77 +1158,82 @@ impl ConnectorAdapter for DynamicCatalogConnector {
     }
 
     async fn invoke(&self, command: ConnectorCommand) -> Result<ConnectorOutcome, ConnectorError> {
-        let catalog = self.catalog.lock().map_err(|_| {
-            ConnectorError::Execution("integration catalog mutex poisoned".to_owned())
-        })?;
-
-        let provider = catalog.provider(&self.provider_id).ok_or_else(|| {
-            ConnectorError::Execution(format!(
-                "provider {} is not registered in integration catalog",
-                self.provider_id
-            ))
-        })?;
-
-        let allowed_callers = provider_allowed_callers(provider);
-        if !allowed_callers.is_empty() {
-            let caller = caller_from_payload(&command.payload);
-            if !caller_is_allowed(caller.as_deref(), &allowed_callers) {
-                let caller_label = caller.unwrap_or_else(|| "unknown".to_owned());
-                return Err(ConnectorError::Execution(format!(
-                    "caller {caller_label} is not allowed for connector {} (allowed_callers={})",
-                    self.connector_name,
-                    allowed_callers
-                        .iter()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(",")
-                )));
-            }
-        }
-
         let requested_channel = command
             .payload
             .get("channel_id")
             .and_then(Value::as_str)
             .map(std::string::ToString::to_string);
 
-        let chosen_channel = if let Some(channel_id) = requested_channel {
-            let channel = catalog.channel(&channel_id).ok_or_else(|| {
-                ConnectorError::Execution(format!("channel {channel_id} not found"))
+        let (provider, chosen_channel) = {
+            let catalog = self.catalog.lock().map_err(|_| {
+                ConnectorError::Execution("integration catalog mutex poisoned".to_owned())
             })?;
-            if !channel.enabled {
-                return Err(ConnectorError::Execution(format!(
-                    "channel {channel_id} is disabled"
-                )));
+
+            let provider = catalog.provider(&self.provider_id).ok_or_else(|| {
+                ConnectorError::Execution(format!(
+                    "provider {} is not registered in integration catalog",
+                    self.provider_id
+                ))
+            })?;
+
+            let allowed_callers = provider_allowed_callers(provider);
+            if !allowed_callers.is_empty() {
+                let caller = caller_from_payload(&command.payload);
+                if !caller_is_allowed(caller.as_deref(), &allowed_callers) {
+                    let caller_label = caller.unwrap_or_else(|| "unknown".to_owned());
+                    return Err(ConnectorError::Execution(format!(
+                        "caller {caller_label} is not allowed for connector {} (allowed_callers={})",
+                        self.connector_name,
+                        allowed_callers
+                            .iter()
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    )));
+                }
             }
-            if channel.provider_id != provider.provider_id {
-                return Err(ConnectorError::Execution(format!(
-                    "channel {} does not belong to provider {}",
-                    channel.channel_id, provider.provider_id
-                )));
-            }
-            channel.clone()
-        } else {
-            catalog
-                .channels_for_provider(&provider.provider_id)
-                .into_iter()
-                .find(|channel| channel.enabled)
-                .ok_or_else(|| {
-                    ConnectorError::Execution(format!(
-                        "no enabled channel for provider {}",
-                        provider.provider_id
-                    ))
-                })?
+
+            let chosen_channel = if let Some(channel_id) = requested_channel.as_ref() {
+                let channel = catalog.channel(channel_id).ok_or_else(|| {
+                    ConnectorError::Execution(format!("channel {channel_id} not found"))
+                })?;
+                if !channel.enabled {
+                    return Err(ConnectorError::Execution(format!(
+                        "channel {channel_id} is disabled"
+                    )));
+                }
+                if channel.provider_id != provider.provider_id {
+                    return Err(ConnectorError::Execution(format!(
+                        "channel {} does not belong to provider {}",
+                        channel.channel_id, provider.provider_id
+                    )));
+                }
+                channel.clone()
+            } else {
+                catalog
+                    .channels_for_provider(&provider.provider_id)
+                    .into_iter()
+                    .find(|channel| channel.enabled)
+                    .ok_or_else(|| {
+                        ConnectorError::Execution(format!(
+                            "no enabled channel for provider {}",
+                            provider.provider_id
+                        ))
+                    })?
+            };
+
+            (provider.clone(), chosen_channel)
         };
 
         let operation = command.operation.clone();
         let payload = command.payload.clone();
         let bridge_execution = bridge_execution_payload(
-            provider,
+            &provider,
             &chosen_channel,
             &command,
             &self.bridge_runtime_policy,
-        );
+        )
+        .await;
 
         if self.bridge_runtime_policy.enforce_execution_success
             && bridge_execution
@@ -1259,7 +1264,7 @@ impl ConnectorAdapter for DynamicCatalogConnector {
     }
 }
 
-fn bridge_execution_payload(
+async fn bridge_execution_payload(
     provider: &kernel::ProviderConfig,
     channel: &kernel::ChannelConfig,
     command: &ConnectorCommand,
@@ -1369,9 +1374,10 @@ fn bridge_execution_payload(
         command,
         runtime_policy,
     )
+    .await
 }
 
-fn maybe_execute_bridge(
+async fn maybe_execute_bridge(
     execution: Value,
     bridge_kind: PluginBridgeKind,
     provider: &kernel::ProviderConfig,
@@ -1385,7 +1391,8 @@ fn maybe_execute_bridge(
 
     if runtime_policy.execute_process_stdio && matches!(bridge_kind, PluginBridgeKind::ProcessStdio)
     {
-        return execute_process_stdio_bridge(execution, provider, channel, command, runtime_policy);
+        return execute_process_stdio_bridge(execution, provider, channel, command, runtime_policy)
+            .await;
     }
 
     if runtime_policy.execute_wasm_component
@@ -1518,7 +1525,7 @@ fn execute_http_json_bridge(
     }
 }
 
-fn execute_process_stdio_bridge(
+async fn execute_process_stdio_bridge(
     mut execution: Value,
     provider: &kernel::ProviderConfig,
     channel: &kernel::ChannelConfig,
@@ -1547,74 +1554,164 @@ fn execute_process_stdio_bridge(
         "operation": command.operation,
         "payload": command.payload,
     });
-    let stdin_payload = match serde_json::to_vec(&envelope) {
-        Ok(mut bytes) => {
-            bytes.push(b'\n');
-            bytes
-        }
-        Err(error) => {
-            execution["status"] = Value::String("failed".to_owned());
-            execution["reason"] =
-                Value::String(format!("failed to encode process envelope: {error}"));
-            return execution;
-        }
-    };
+    let request_method = "tools/call".to_owned();
+    let request_id = Some(format!("{}:{}:{}", provider.provider_id, channel.channel_id, command.operation));
+    let exchange_result = run_process_stdio_json_line_exchange(
+        &program,
+        &args,
+        OutboundFrame {
+            method: request_method.clone(),
+            id: request_id.clone(),
+            payload: envelope,
+        },
+    )
+    .await;
 
-    let output = (|| -> Result<std::process::Output, String> {
-        let mut child = Command::new(&program)
-            .args(&args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| format!("failed to spawn process command {program}: {error}"))?;
-
-        if let Some(stdin) = child.stdin.as_mut() {
-            stdin
-                .write_all(&stdin_payload)
-                .map_err(|error| format!("failed to write process stdin payload: {error}"))?;
-        }
-
-        child
-            .wait_with_output()
-            .map_err(|error| format!("failed to wait process output: {error}"))
-    })();
-
-    match output {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-            let stdout_json = serde_json::from_str::<Value>(&stdout).unwrap_or(Value::Null);
-            let success = output.status.success();
-
-            execution["status"] = Value::String(if success {
+    match exchange_result {
+        Ok(outcome) => {
+            execution["status"] = Value::String(if outcome.success {
                 "executed".to_owned()
             } else {
                 "failed".to_owned()
             });
-            if !success {
+            if !outcome.success {
                 execution["reason"] = Value::String(format!(
                     "process command exited with code {:?}",
-                    output.status.code()
+                    outcome.exit_code
                 ));
             }
             execution["runtime"] = json!({
                 "executor": "process_stdio_local",
+                "transport_kind": "json_line",
                 "command": program,
                 "args": args,
-                "exit_code": output.status.code(),
-                "stdout": stdout,
-                "stderr": stderr,
-                "stdout_json": stdout_json,
+                "exit_code": outcome.exit_code,
+                "stdout": outcome.stdout,
+                "stderr": outcome.stderr,
+                "stdout_json": outcome.stdout_json,
+                "request_method": request_method,
+                "request_id": request_id,
+                "response_method": outcome.response_method,
+                "response_id": outcome.response_id,
             });
             execution
         }
         Err(reason) => {
             execution["status"] = Value::String("failed".to_owned());
             execution["reason"] = Value::String(reason);
+            execution["runtime"] = json!({
+                "executor": "process_stdio_local",
+                "transport_kind": "json_line",
+                "command": program,
+                "args": args,
+                "request_method": request_method,
+                "request_id": request_id,
+            });
             execution
         }
     }
+}
+
+struct ProcessStdioExchangeOutcome {
+    success: bool,
+    exit_code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    stdout_json: Value,
+    response_method: String,
+    response_id: Option<String>,
+}
+
+async fn run_process_stdio_json_line_exchange(
+    program: &str,
+    args: &[String],
+    frame: OutboundFrame,
+) -> Result<ProcessStdioExchangeOutcome, String> {
+    let mut child = TokioCommand::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("failed to spawn process command {program}: {error}"))?;
+
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| format!("process command {program} stdin is not piped"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| format!("process command {program} stdout is not piped"))?;
+    let stderr = child.stderr.take();
+    let stderr_task = tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        if let Some(mut stderr_pipe) = stderr {
+            let _ = stderr_pipe.read_to_end(&mut bytes).await;
+        }
+        bytes
+    });
+
+    let transport = JsonLineTransport::new(
+        TransportInfo {
+            name: format!("process_stdio/{program}"),
+            version: "0.1.0".to_owned(),
+            secure: false,
+        },
+        stdout,
+        stdin,
+    );
+
+    if let Err(error) = transport.send(frame).await {
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+        let _ = stderr_task.await;
+        return Err(format!("process_stdio transport send failed: {error}"));
+    }
+    if let Err(error) = transport.close().await {
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+        let _ = stderr_task.await;
+        return Err(format!("process_stdio transport close failed: {error}"));
+    }
+
+    let response = match transport.recv().await {
+        Ok(Some(frame)) => frame,
+        Ok(None) => {
+            drop(transport);
+            let _ = child.wait().await;
+            let _ = stderr_task.await;
+            return Err("process_stdio transport closed before response frame".to_owned());
+        }
+        Err(error) => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            let _ = stderr_task.await;
+            return Err(format!("process_stdio transport recv failed: {error}"));
+        }
+    };
+
+    drop(transport);
+    let status = child
+        .wait()
+        .await
+        .map_err(|error| format!("failed to wait process output: {error}"))?;
+    let stderr_bytes = stderr_task
+        .await
+        .map_err(|error| format!("failed to collect process stderr: {error}"))?;
+    let stderr = String::from_utf8_lossy(&stderr_bytes).trim().to_owned();
+    let stdout_json = response.payload;
+    let stdout = serde_json::to_string(&stdout_json).unwrap_or_else(|_| "null".to_owned());
+
+    Ok(ProcessStdioExchangeOutcome {
+        success: status.success(),
+        exit_code: status.code(),
+        stdout,
+        stderr,
+        stdout_json,
+        response_method: response.method,
+        response_id: response.id,
+    })
 }
 
 fn execute_wasm_component_bridge(
