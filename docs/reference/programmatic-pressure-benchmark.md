@@ -64,6 +64,7 @@ Schema fingerprint behavior:
 - Baseline `expected_schema_fingerprint` enforces schema compatibility across refactors.
 - If multiple schema variants appear across iterations, the report emits a `multi:<sha256>` aggregate fingerprint.
 - In strict mode (`--enforce-gate`), every `spec_run` scenario is expected to define `expected_schema_fingerprint`.
+- Strict mode now validates that coverage as a preflight gate before running scenarios.
 
 ### Drift Example
 

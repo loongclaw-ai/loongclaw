@@ -235,6 +235,18 @@ pub(super) async fn run_programmatic_pressure_benchmark_cli(
     } else {
         None
     };
+    if enforce_gate {
+        if let Some(value) = baseline.as_ref() {
+            let missing_entries =
+                missing_spec_run_schema_fingerprint_baseline_entries(&matrix, value);
+            if !missing_entries.is_empty() {
+                return Err(format!(
+                    "programmatic pressure strict preflight failed: baseline missing spec_run schema fingerprint coverage for: {}",
+                    missing_entries.join(", ")
+                ));
+            }
+        }
+    }
 
     let report = run_programmatic_pressure_matrix(
         &matrix,
@@ -314,6 +326,40 @@ async fn run_programmatic_pressure_matrix(
             failed_scenarios,
         },
     }
+}
+
+fn missing_spec_run_schema_fingerprint_baseline_entries(
+    matrix: &ProgrammaticPressureMatrix,
+    baseline: &ProgrammaticPressureBaseline,
+) -> Vec<String> {
+    let mut missing = Vec::new();
+    for scenario in &matrix.scenarios {
+        if !matches!(
+            &scenario.kind,
+            ProgrammaticPressureScenarioKind::SpecRun { .. }
+        ) {
+            continue;
+        }
+        match baseline.scenarios.get(&scenario.name) {
+            Some(thresholds)
+                if baseline_has_schema_fingerprint(
+                    thresholds.expected_schema_fingerprint.as_deref(),
+                ) => {}
+            Some(_) => missing.push(format!(
+                "{} (expected_schema_fingerprint missing)",
+                scenario.name
+            )),
+            None => missing.push(format!("{} (baseline scenario missing)", scenario.name)),
+        }
+    }
+    missing
+}
+
+fn baseline_has_schema_fingerprint(value: Option<&str>) -> bool {
+    value
+        .map(str::trim)
+        .map(|fingerprint| !fingerprint.is_empty())
+        .unwrap_or(false)
 }
 
 async fn run_programmatic_pressure_scenario(
@@ -1307,6 +1353,63 @@ mod tests {
         let baseline: ProgrammaticPressureBaseline =
             serde_json::from_str(baseline_raw).expect("baseline fixture must parse");
         assert!(baseline.scenarios.contains_key("rate_limit_steady_state"));
+    }
+
+    #[test]
+    fn strict_preflight_reports_missing_spec_run_baseline_entry() {
+        let matrix_raw =
+            include_str!("../../../examples/benchmarks/programmatic-pressure-matrix.json");
+        let matrix: ProgrammaticPressureMatrix =
+            serde_json::from_str(matrix_raw).expect("matrix fixture must parse");
+        let baseline_raw =
+            include_str!("../../../examples/benchmarks/programmatic-pressure-baseline.json");
+        let mut baseline: ProgrammaticPressureBaseline =
+            serde_json::from_str(baseline_raw).expect("baseline fixture must parse");
+
+        baseline.scenarios.remove("adaptive_concurrency_recovery");
+        baseline.scenarios.remove("circuit_half_open_transition");
+
+        let missing =
+            missing_spec_run_schema_fingerprint_baseline_entries(&matrix, &baseline).join(", ");
+        assert!(missing.contains("adaptive_concurrency_recovery (baseline scenario missing)"));
+        assert!(!missing.contains("circuit_half_open_transition"));
+    }
+
+    #[test]
+    fn strict_preflight_reports_missing_spec_run_schema_fingerprint_field() {
+        let matrix_raw =
+            include_str!("../../../examples/benchmarks/programmatic-pressure-matrix.json");
+        let matrix: ProgrammaticPressureMatrix =
+            serde_json::from_str(matrix_raw).expect("matrix fixture must parse");
+        let baseline_raw =
+            include_str!("../../../examples/benchmarks/programmatic-pressure-baseline.json");
+        let mut baseline: ProgrammaticPressureBaseline =
+            serde_json::from_str(baseline_raw).expect("baseline fixture must parse");
+
+        let thresholds = baseline
+            .scenarios
+            .get_mut("rate_limit_steady_state")
+            .expect("rate_limit_steady_state baseline should exist");
+        thresholds.expected_schema_fingerprint = Some("   ".to_owned());
+
+        let missing =
+            missing_spec_run_schema_fingerprint_baseline_entries(&matrix, &baseline).join(", ");
+        assert!(missing.contains("rate_limit_steady_state (expected_schema_fingerprint missing)"));
+    }
+
+    #[test]
+    fn strict_preflight_accepts_complete_spec_run_schema_baseline_coverage() {
+        let matrix_raw =
+            include_str!("../../../examples/benchmarks/programmatic-pressure-matrix.json");
+        let matrix: ProgrammaticPressureMatrix =
+            serde_json::from_str(matrix_raw).expect("matrix fixture must parse");
+        let baseline_raw =
+            include_str!("../../../examples/benchmarks/programmatic-pressure-baseline.json");
+        let baseline: ProgrammaticPressureBaseline =
+            serde_json::from_str(baseline_raw).expect("baseline fixture must parse");
+
+        let missing = missing_spec_run_schema_fingerprint_baseline_entries(&matrix, &baseline);
+        assert!(missing.is_empty());
     }
 
     #[test]
