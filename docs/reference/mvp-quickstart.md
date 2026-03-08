@@ -116,6 +116,7 @@ enabled = false
 app_id_env = "FEISHU_APP_ID"
 app_secret_env = "FEISHU_APP_SECRET"
 verification_token_env = "FEISHU_VERIFICATION_TOKEN"
+encrypt_key_env = "FEISHU_ENCRYPT_KEY"
 base_url = "https://open.feishu.cn"
 receive_id_type = "chat_id"
 webhook_bind = "127.0.0.1:8080"
@@ -131,6 +132,10 @@ file_root = "."
 sqlite_path = "~/.loongclaw/memory.sqlite3"
 sliding_window = 12
 ```
+
+If you configure Feishu event encryption (`encrypt_key_env` or `encrypt_key`),
+the webhook handler enforces request signature verification using
+`X-Lark-Request-Timestamp`, `X-Lark-Request-Nonce`, and `X-Lark-Signature`.
 
 ## 6) Tool Runtime (Core)
 

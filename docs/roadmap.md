@@ -237,6 +237,7 @@ Delivered in current baseline:
 - Cargo feature flags for MVP packaging controls
 - modular channel/provider architecture for extension-safe evolution:
   - `mvp/channel/feishu/*` split into adapter/payload/webhook layers
+  - Feishu encrypted webhook payload decrypt lane with signature verification
   - `mvp/provider/*` split into policy/transport/shape layers
   - `ConversationRuntime` port for non-invasive backend extension and contract testing
 

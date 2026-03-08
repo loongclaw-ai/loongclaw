@@ -120,10 +120,10 @@ Any architecture-level change must keep all gates green:
 
 ## 6) Known Next-Level Enhancements
 
-1. Feishu encrypted event payload support (`encrypt` decode lane).
-2. Prebuilt binary distribution installer flow (not source-build only).
-3. Provider capability descriptor matrix (provider-specific features advertised by schema).
-4. Conversation runtime adapter packs (e.g. remote memory backend) with no orchestrator mutation.
+1. Prebuilt binary distribution installer flow (not source-build only).
+2. Provider capability descriptor matrix (provider-specific features advertised by schema).
+3. Conversation runtime adapter packs (e.g. remote memory backend) with no orchestrator mutation.
+4. Feishu signing key lifecycle and replay-window hardening for webhook signatures.
 
 These items are intentionally scheduled on top of the current baseline,
 not by replacing it.

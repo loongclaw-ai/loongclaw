@@ -101,6 +101,10 @@ pub struct FeishuChannelConfig {
     #[serde(default)]
     pub verification_token_env: Option<String>,
     #[serde(default)]
+    pub encrypt_key: Option<String>,
+    #[serde(default)]
+    pub encrypt_key_env: Option<String>,
+    #[serde(default)]
     pub allowed_chat_ids: Vec<String>,
     #[serde(default = "default_true")]
     pub ignore_bot_messages: bool,
@@ -254,6 +258,8 @@ impl Default for FeishuChannelConfig {
             webhook_path: default_feishu_webhook_path(),
             verification_token: None,
             verification_token_env: Some("FEISHU_VERIFICATION_TOKEN".to_owned()),
+            encrypt_key: None,
+            encrypt_key_env: Some("FEISHU_ENCRYPT_KEY".to_owned()),
             allowed_chat_ids: Vec::new(),
             ignore_bot_messages: true,
         }
@@ -277,6 +283,11 @@ impl FeishuChannelConfig {
             self.verification_token.as_deref(),
             self.verification_token_env.as_deref(),
         )
+    }
+
+    #[cfg(feature = "channel-feishu")]
+    pub fn encrypt_key(&self) -> Option<String> {
+        read_secret_prefer_inline(self.encrypt_key.as_deref(), self.encrypt_key_env.as_deref())
     }
 }
 
@@ -560,6 +571,10 @@ mod tests {
         assert_eq!(config.receive_id_type, "chat_id");
         assert_eq!(config.webhook_bind, "127.0.0.1:8080");
         assert_eq!(config.webhook_path, "/feishu/events");
+        assert_eq!(
+            config.encrypt_key_env.as_deref(),
+            Some("FEISHU_ENCRYPT_KEY")
+        );
         assert!(config.ignore_bot_messages);
     }
 
