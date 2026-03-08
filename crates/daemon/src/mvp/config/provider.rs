@@ -2,18 +2,62 @@ use std::{collections::BTreeMap, env};
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderProfile {
+    pub id: &'static str,
+    pub base_url: &'static str,
+    pub chat_completions_path: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
+}
+
+impl ReasoningEffort {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ReasoningEffort::Low => "low",
+            ReasoningEffort::Medium => "medium",
+            ReasoningEffort::High => "high",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
+    #[serde(alias = "anthropic_compatible")]
+    Anthropic,
+    #[serde(alias = "kimi_compatible")]
+    Kimi,
+    #[serde(alias = "minimax_compatible")]
+    Minimax,
+    #[serde(alias = "ollama_compatible")]
+    Ollama,
     #[default]
-    OpenaiCompatible,
-    VolcengineCustom,
+    #[serde(alias = "openai_compatible")]
+    Openai,
+    #[serde(alias = "openrouter_compatible")]
+    Openrouter,
+    #[serde(alias = "volcengine_custom", alias = "volcengine_compatible")]
+    Volcengine,
+    #[serde(alias = "xai_compatible")]
+    Xai,
+    #[serde(alias = "zai_compatible")]
+    Zai,
+    #[serde(alias = "zhipu_compatible")]
+    Zhipu,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
     #[serde(default)]
     pub kind: ProviderKind,
+    #[serde(default = "default_provider_model")]
     pub model: String,
     #[serde(default = "default_provider_base_url")]
     pub base_url: String,
@@ -22,9 +66,19 @@ pub struct ProviderConfig {
     #[serde(default)]
     pub endpoint: Option<String>,
     #[serde(default)]
+    pub models_endpoint: Option<String>,
+    #[serde(default)]
     pub api_key: Option<String>,
     #[serde(default)]
     pub api_key_env: Option<String>,
+    #[serde(default)]
+    pub oauth_access_token: Option<String>,
+    #[serde(default)]
+    pub oauth_access_token_env: Option<String>,
+    #[serde(default)]
+    pub preferred_models: Vec<String>,
+    #[serde(default)]
+    pub reasoning_effort: Option<ReasoningEffort>,
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
     #[serde(default = "default_temperature")]
@@ -44,13 +98,18 @@ pub struct ProviderConfig {
 impl Default for ProviderConfig {
     fn default() -> Self {
         Self {
-            kind: ProviderKind::OpenaiCompatible,
-            model: "gpt-4o-mini".to_owned(),
+            kind: ProviderKind::Openai,
+            model: default_provider_model(),
             base_url: default_provider_base_url(),
             chat_completions_path: default_openai_chat_path(),
             endpoint: None,
+            models_endpoint: None,
             api_key: None,
-            api_key_env: Some("OPENAI_API_KEY".to_owned()),
+            api_key_env: Some(default_provider_api_key_env().to_owned()),
+            oauth_access_token: None,
+            oauth_access_token_env: None,
+            preferred_models: Vec::new(),
+            reasoning_effort: None,
             headers: BTreeMap::new(),
             temperature: default_temperature(),
             max_tokens: None,
@@ -64,22 +123,120 @@ impl Default for ProviderConfig {
 
 impl ProviderConfig {
     pub fn endpoint(&self) -> String {
-        match self.kind {
-            ProviderKind::OpenaiCompatible => {
-                let base = self.base_url.trim_end_matches('/');
-                let path = self.chat_completions_path.trim();
-                if path.is_empty() {
-                    format!("{base}/v1/chat/completions")
-                } else if path.starts_with('/') {
-                    format!("{base}{path}")
-                } else {
-                    format!("{base}/{path}")
-                }
-            }
-            ProviderKind::VolcengineCustom => self.endpoint.clone().unwrap_or_else(|| {
-                "https://ark.cn-beijing.volces.com/api/v3/chat/completions".to_owned()
-            }),
+        if let Some(endpoint) = non_empty(self.endpoint.as_deref()) {
+            return endpoint.to_owned();
         }
+
+        let profile = self.kind.profile();
+        let resolved_base_url =
+            self.resolve_base_url(profile.base_url, default_provider_base_url().as_str());
+        let resolved_chat_path = self.resolve_chat_path(
+            profile.chat_completions_path,
+            default_openai_chat_path().as_str(),
+            default_provider_base_url().as_str(),
+        );
+        join_base_with_path(
+            &resolved_base_url,
+            &resolved_chat_path,
+            default_openai_chat_path().as_str(),
+        )
+    }
+
+    pub fn models_endpoint(&self) -> String {
+        if let Some(endpoint) = non_empty(self.models_endpoint.as_deref()) {
+            return endpoint.to_owned();
+        }
+
+        let profile = self.kind.profile();
+        let resolved_base_url =
+            self.resolve_base_url(profile.base_url, default_provider_base_url().as_str());
+        let resolved_chat_path = self.resolve_chat_path(
+            profile.chat_completions_path,
+            default_openai_chat_path().as_str(),
+            default_provider_base_url().as_str(),
+        );
+        let models_path = derive_models_path(&resolved_chat_path);
+        join_base_with_path(&resolved_base_url, &models_path, "/v1/models")
+    }
+
+    #[cfg(test)]
+    pub fn default_api_key_env(&self) -> Option<String> {
+        self.kind.default_api_key_env().map(str::to_owned)
+    }
+
+    #[cfg(test)]
+    pub fn default_oauth_access_token_env(&self) -> Option<String> {
+        self.kind
+            .default_oauth_access_token_env()
+            .map(str::to_owned)
+    }
+
+    pub fn authorization_header(&self) -> Option<String> {
+        if let Some(token) = self.oauth_access_token() {
+            return Some(format!("Bearer {token}"));
+        }
+        self.api_key().map(|key| format!("Bearer {key}"))
+    }
+
+    pub fn model_selection_requires_fetch(&self) -> bool {
+        let trimmed = self.model.trim();
+        trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto")
+    }
+
+    pub fn oauth_access_token(&self) -> Option<String> {
+        if let Some(raw) = self.oauth_access_token.as_deref() {
+            let value = raw.trim();
+            if !value.is_empty() {
+                return Some(value.to_owned());
+            }
+        }
+
+        let mut env_keys = Vec::new();
+        push_unique_env_key(&mut env_keys, self.oauth_access_token_env.as_deref());
+        push_unique_env_key(&mut env_keys, self.kind.default_oauth_access_token_env());
+        for alias in self.kind.oauth_access_token_env_aliases() {
+            push_unique_env_key(&mut env_keys, Some(alias));
+        }
+
+        first_non_empty_env_value(&env_keys)
+    }
+
+    fn resolve_base_url(&self, profile_default: &str, openai_default: &str) -> String {
+        let base = self.base_url.trim();
+        if base.is_empty() {
+            return profile_default.to_owned();
+        }
+        if self.kind != ProviderKind::Openai
+            && is_same_base_url(base, openai_default)
+            && (self.chat_completions_path.trim().is_empty()
+                || is_same_chat_path(
+                    self.chat_completions_path.as_str(),
+                    default_openai_chat_path().as_str(),
+                ))
+        {
+            return profile_default.to_owned();
+        }
+        base.to_owned()
+    }
+
+    fn resolve_chat_path(
+        &self,
+        profile_default: &str,
+        openai_default_path: &str,
+        openai_default_base: &str,
+    ) -> String {
+        let path = self.chat_completions_path.trim();
+        if path.is_empty() {
+            return profile_default.to_owned();
+        }
+        if self.kind != ProviderKind::Openai
+            && is_same_chat_path(path, openai_default_path)
+            && (self.base_url.trim().is_empty()
+                || is_same_base_url(self.base_url.as_str(), openai_default_base))
+        {
+            return profile_default.to_owned();
+        }
+        normalize_api_path(path)
     }
 
     pub fn api_key(&self) -> Option<String> {
@@ -89,19 +246,156 @@ impl ProviderConfig {
                 return Some(value.to_owned());
             }
         }
-        if let Some(env_key) = self.api_key_env.as_deref() {
-            let value = env::var(env_key).ok()?;
-            let trimmed = value.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_owned());
-            }
+
+        let mut env_keys = Vec::new();
+        push_unique_env_key(&mut env_keys, self.api_key_env.as_deref());
+        push_unique_env_key(&mut env_keys, self.kind.default_api_key_env());
+        for alias in self.kind.api_key_env_aliases() {
+            push_unique_env_key(&mut env_keys, Some(alias));
         }
-        None
+
+        first_non_empty_env_value(&env_keys)
     }
+}
+
+impl ProviderKind {
+    #[cfg(test)]
+    pub const fn all_sorted() -> &'static [ProviderKind] {
+        &[
+            ProviderKind::Anthropic,
+            ProviderKind::Kimi,
+            ProviderKind::Minimax,
+            ProviderKind::Ollama,
+            ProviderKind::Openai,
+            ProviderKind::Openrouter,
+            ProviderKind::Volcengine,
+            ProviderKind::Xai,
+            ProviderKind::Zai,
+            ProviderKind::Zhipu,
+        ]
+    }
+
+    #[cfg(test)]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ProviderKind::Anthropic => "anthropic",
+            ProviderKind::Kimi => "kimi",
+            ProviderKind::Minimax => "minimax",
+            ProviderKind::Ollama => "ollama",
+            ProviderKind::Openai => "openai",
+            ProviderKind::Openrouter => "openrouter",
+            ProviderKind::Volcengine => "volcengine",
+            ProviderKind::Xai => "xai",
+            ProviderKind::Zai => "zai",
+            ProviderKind::Zhipu => "zhipu",
+        }
+    }
+
+    pub const fn profile(self) -> ProviderProfile {
+        match self {
+            ProviderKind::Anthropic => ProviderProfile {
+                id: "anthropic",
+                base_url: "https://api.anthropic.com/v1",
+                chat_completions_path: "/chat/completions",
+            },
+            ProviderKind::Kimi => ProviderProfile {
+                id: "kimi",
+                base_url: "https://api.moonshot.cn",
+                chat_completions_path: "/v1/chat/completions",
+            },
+            ProviderKind::Minimax => ProviderProfile {
+                id: "minimax",
+                base_url: "https://api.minimaxi.com",
+                chat_completions_path: "/v1/chat/completions",
+            },
+            ProviderKind::Ollama => ProviderProfile {
+                id: "ollama",
+                base_url: "http://127.0.0.1:11434",
+                chat_completions_path: "/v1/chat/completions",
+            },
+            ProviderKind::Openai => ProviderProfile {
+                id: "openai",
+                base_url: "https://api.openai.com",
+                chat_completions_path: "/v1/chat/completions",
+            },
+            ProviderKind::Openrouter => ProviderProfile {
+                id: "openrouter",
+                base_url: "https://openrouter.ai",
+                chat_completions_path: "/api/v1/chat/completions",
+            },
+            ProviderKind::Volcengine => ProviderProfile {
+                id: "volcengine",
+                base_url: "https://ark.cn-beijing.volces.com",
+                chat_completions_path: "/api/v3/chat/completions",
+            },
+            ProviderKind::Xai => ProviderProfile {
+                id: "xai",
+                base_url: "https://api.x.ai",
+                chat_completions_path: "/v1/chat/completions",
+            },
+            ProviderKind::Zai => ProviderProfile {
+                id: "zai",
+                base_url: "https://api.z.ai",
+                chat_completions_path: "/api/paas/v4/chat/completions",
+            },
+            ProviderKind::Zhipu => ProviderProfile {
+                id: "zhipu",
+                base_url: "https://open.bigmodel.cn",
+                chat_completions_path: "/api/paas/v4/chat/completions",
+            },
+        }
+    }
+
+    pub const fn default_api_key_env(self) -> Option<&'static str> {
+        match self {
+            ProviderKind::Anthropic => Some("ANTHROPIC_API_KEY"),
+            ProviderKind::Kimi => Some("MOONSHOT_API_KEY"),
+            ProviderKind::Minimax => Some("MINIMAX_API_KEY"),
+            ProviderKind::Ollama => None,
+            ProviderKind::Openai => Some("OPENAI_API_KEY"),
+            ProviderKind::Openrouter => Some("OPENROUTER_API_KEY"),
+            ProviderKind::Volcengine => Some("ARK_API_KEY"),
+            ProviderKind::Xai => Some("XAI_API_KEY"),
+            ProviderKind::Zai => Some("ZAI_API_KEY"),
+            ProviderKind::Zhipu => Some("ZHIPUAI_API_KEY"),
+        }
+    }
+
+    pub const fn api_key_env_aliases(self) -> &'static [&'static str] {
+        match self {
+            ProviderKind::Kimi => &["KIMI_API_KEY"],
+            ProviderKind::Zhipu => &["ZHIPU_API_KEY"],
+            _ => &[],
+        }
+    }
+
+    pub const fn default_oauth_access_token_env(self) -> Option<&'static str> {
+        match self {
+            ProviderKind::Openai => Some("OPENAI_CODEX_OAUTH_TOKEN"),
+            ProviderKind::Volcengine => Some("VOLCENGINE_CODING_PLAN_OAUTH_TOKEN"),
+            _ => None,
+        }
+    }
+
+    pub const fn oauth_access_token_env_aliases(self) -> &'static [&'static str] {
+        match self {
+            ProviderKind::Openai => &["OPENAI_OAUTH_ACCESS_TOKEN"],
+            ProviderKind::Volcengine => &["ARK_OAUTH_ACCESS_TOKEN"],
+            _ => &[],
+        }
+    }
+}
+
+fn default_provider_model() -> String {
+    "auto".to_owned()
 }
 
 fn default_provider_base_url() -> String {
     "https://api.openai.com".to_owned()
+}
+
+const fn default_provider_api_key_env() -> &'static str {
+    "OPENAI_API_KEY"
 }
 
 fn default_openai_chat_path() -> String {
@@ -126,4 +420,85 @@ const fn default_provider_retry_initial_backoff_ms() -> u64 {
 
 const fn default_provider_retry_max_backoff_ms() -> u64 {
     3_000
+}
+
+fn first_non_empty_env_value(keys: &[String]) -> Option<String> {
+    for key in keys {
+        if let Ok(value) = env::var(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_owned());
+            }
+        }
+    }
+    None
+}
+
+fn push_unique_env_key(keys: &mut Vec<String>, maybe_key: Option<&str>) {
+    let Some(raw) = maybe_key else {
+        return;
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if keys.iter().any(|existing| existing == trimmed) {
+        return;
+    }
+    keys.push(trimmed.to_owned());
+}
+
+fn non_empty(value: Option<&str>) -> Option<&str> {
+    let raw = value?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed)
+}
+
+fn normalize_api_path(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.starts_with('/') {
+        return trimmed.to_owned();
+    }
+    format!("/{trimmed}")
+}
+
+fn is_same_base_url(left: &str, right: &str) -> bool {
+    left.trim().trim_end_matches('/') == right.trim().trim_end_matches('/')
+}
+
+fn is_same_chat_path(left: &str, right: &str) -> bool {
+    normalize_api_path(left) == normalize_api_path(right)
+}
+
+fn join_base_with_path(base_url: &str, path: &str, fallback_path: &str) -> String {
+    let base = base_url.trim().trim_end_matches('/');
+    let path = normalize_api_path(path);
+    if path.is_empty() {
+        return format!("{base}{}", normalize_api_path(fallback_path));
+    }
+    format!("{base}{path}")
+}
+
+fn derive_models_path(chat_path: &str) -> String {
+    let normalized = normalize_api_path(chat_path);
+    if normalized.is_empty() {
+        return "/v1/models".to_owned();
+    }
+
+    if let Some(prefix) = normalized.strip_suffix("/chat/completions") {
+        let prefix = if prefix.is_empty() { "" } else { prefix };
+        return format!("{prefix}/models");
+    }
+    if let Some(prefix) = normalized.strip_suffix("/completions") {
+        let prefix = if prefix.is_empty() { "" } else { prefix };
+        return format!("{prefix}/models");
+    }
+
+    "/v1/models".to_owned()
 }

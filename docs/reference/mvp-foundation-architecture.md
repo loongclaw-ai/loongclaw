@@ -65,6 +65,28 @@ Current first-party adapters:
 Provider layer currently exposes one stable operation:
 
 - `request_completion(config, messages)` with retry/timeout/backoff policy
+- `fetch_available_models(config)` for live model catalog discovery
+
+Provider presets (alphabetical, OpenAI-compatible payload family):
+
+- `anthropic`, `kimi`, `minimax`, `ollama`, `openai`, `openrouter`,
+  `volcengine`, `xai`, `zai`, `zhipu`
+
+Auth model:
+
+- API key bearer auth (provider-specific default env fallback)
+- OAuth bearer auth (`oauth_access_token` / `oauth_access_token_env`) with higher priority
+
+Model selection model:
+
+- explicit model name (`provider.model = "<model-id>"`)
+- dynamic discovery mode (`provider.model = "auto"`) via provider models endpoint
+- optional preferred ranking (`provider.preferred_models`)
+
+Reasoning controls:
+
+- optional `provider.reasoning_effort = low|medium|high`
+- serialized into provider payload as `reasoning.effort` when configured
 
 Design principle:
 

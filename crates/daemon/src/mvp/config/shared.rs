@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(super) const DEFAULT_CONFIG_FILE: &str = "loongclaw.toml";
+pub(super) const DEFAULT_CONFIG_FILE: &str = "config.toml";
 pub(super) const DEFAULT_SQLITE_FILE: &str = "memory.sqlite3";
 
 pub(super) fn default_loongclaw_home() -> PathBuf {

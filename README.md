@@ -50,6 +50,7 @@ cargo test -p loongclaw-kernel
 cargo test -p loongclaw-daemon
 cargo run -p loongclaw-daemon --bin loongclawd
 cargo run -p loongclaw-daemon --bin loongclawd -- setup --force
+cargo run -p loongclaw-daemon --bin loongclawd -- list-models --json
 cargo run -p loongclaw-daemon --bin loongclawd -- chat
 cargo run -p loongclaw-daemon --bin loongclawd -- run-spec --spec examples/spec/runtime-extension.json --print-audit
 cargo run -p loongclaw-daemon --bin loongclawd -- run-spec --spec examples/spec/tool-search.json --print-audit

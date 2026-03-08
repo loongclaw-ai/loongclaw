@@ -27,7 +27,7 @@ cargo run -p loongclaw-daemon --bin loongclawd -- setup --force
 Custom config path:
 
 ```bash
-cargo run -p loongclaw-daemon --bin loongclawd -- setup --output ~/.loongclaw/custom.toml --force
+cargo run -p loongclaw-daemon --bin loongclawd -- setup --output ~/.loongclaw/config.toml --force
 ```
 
 ## 2) Start CLI Chat Channel
@@ -45,13 +45,25 @@ cargo run -p loongclaw-daemon --bin loongclawd -- chat --session demo
 Custom config:
 
 ```bash
-cargo run -p loongclaw-daemon --bin loongclawd -- chat --config ~/.loongclaw/custom.toml
+cargo run -p loongclaw-daemon --bin loongclawd -- chat --config ~/.loongclaw/config.toml
+```
+
+Fetch latest callable model list from configured provider:
+
+```bash
+cargo run -p loongclaw-daemon --bin loongclawd -- list-models --config ~/.loongclaw/config.toml
+```
+
+JSON output:
+
+```bash
+cargo run -p loongclaw-daemon --bin loongclawd -- list-models --config ~/.loongclaw/config.toml --json
 ```
 
 ## 3) Start Telegram Channel
 
 ```bash
-cargo run -p loongclaw-daemon --bin loongclawd -- telegram-serve --config ~/.loongclaw/custom.toml
+cargo run -p loongclaw-daemon --bin loongclawd -- telegram-serve --config ~/.loongclaw/config.toml
 ```
 
 Run only one polling cycle (smoke check):
@@ -65,7 +77,7 @@ cargo run -p loongclaw-daemon --bin loongclawd -- telegram-serve --once
 Run webhook server (default bind `127.0.0.1:8080`, path `/feishu/events`):
 
 ```bash
-cargo run -p loongclaw-daemon --bin loongclawd -- feishu-serve --config ~/.loongclaw/custom.toml
+cargo run -p loongclaw-daemon --bin loongclawd -- feishu-serve --config ~/.loongclaw/config.toml
 ```
 
 Override bind/path at runtime:
@@ -84,11 +96,21 @@ cargo run -p loongclaw-daemon --bin loongclawd -- feishu-send --receive-id <chat
 
 ```toml
 [provider]
-kind = "openai_compatible" # or "volcengine_custom"
-model = "gpt-4o-mini"
+kind = "openai" # anthropic/kimi/minimax/ollama/openai/openrouter/volcengine/xai/zai/zhipu
+model = "auto" # auto = fetch latest available model list and select by preference
+# Optional overrides; keep defaults to use kind-specific preset endpoint.
 base_url = "https://api.openai.com"
 chat_completions_path = "/v1/chat/completions"
+# Optional override for model listing endpoint.
+# models_endpoint = "https://api.openai.com/v1/models"
+# API key auth (default path)
 api_key_env = "OPENAI_API_KEY"
+# OAuth bearer auth (takes precedence when present)
+# oauth_access_token_env = "OPENAI_CODEX_OAUTH_TOKEN"
+# Optional model preferences when model="auto".
+# preferred_models = ["<model-id-1>", "<model-id-2>", "<model-id-3>"]
+# Optional reasoning effort for providers that support reasoning controls.
+# reasoning_effort = "medium" # low | medium | high
 temperature = 0.2
 request_timeout_ms = 30000
 retry_max_attempts = 3
@@ -132,6 +154,42 @@ file_root = "."
 sqlite_path = "~/.loongclaw/memory.sqlite3"
 sliding_window = 12
 ```
+
+### Provider Presets (Alphabetical)
+
+All presets use OpenAI-compatible chat completion payload shape with
+provider-specific default endpoint + default API key env:
+
+| kind | default endpoint | default key env |
+| --- | --- | --- |
+| `anthropic` | `https://api.anthropic.com/v1/chat/completions` | `ANTHROPIC_API_KEY` |
+| `kimi` | `https://api.moonshot.cn/v1/chat/completions` | `MOONSHOT_API_KEY` |
+| `minimax` | `https://api.minimaxi.com/v1/chat/completions` | `MINIMAX_API_KEY` |
+| `ollama` | `http://127.0.0.1:11434/v1/chat/completions` | _(none)_ |
+| `openai` | `https://api.openai.com/v1/chat/completions` | `OPENAI_API_KEY` |
+| `openrouter` | `https://openrouter.ai/api/v1/chat/completions` | `OPENROUTER_API_KEY` |
+| `volcengine` | `https://ark.cn-beijing.volces.com/api/v3/chat/completions` | `ARK_API_KEY` |
+| `xai` | `https://api.x.ai/v1/chat/completions` | `XAI_API_KEY` |
+| `zai` | `https://api.z.ai/api/paas/v4/chat/completions` | `ZAI_API_KEY` |
+| `zhipu` | `https://open.bigmodel.cn/api/paas/v4/chat/completions` | `ZHIPUAI_API_KEY` |
+
+OAuth presets supported in the same schema:
+
+- OpenAI Codex OAuth: `oauth_access_token_env = "OPENAI_CODEX_OAUTH_TOKEN"`
+- Volcengine Coding Plan OAuth: `oauth_access_token_env = "VOLCENGINE_CODING_PLAN_OAUTH_TOKEN"`
+
+When `model = "auto"`:
+
+- LoongClaw fetches provider model list from `models_endpoint` (or inferred default)
+- if `preferred_models` is set, first matched model is used
+- otherwise first model from provider catalog order (newest-first when timestamp exists)
+- recommended flow: run `list-models --json`, then copy model IDs into `preferred_models`
+
+Backward compatibility aliases are accepted for older configs:
+
+- `openai_compatible` -> `openai`
+- `volcengine_custom` / `volcengine_compatible` -> `volcengine`
+- other `*_compatible` values are accepted and mapped to the matching plain kind
 
 If you configure Feishu event encryption (`encrypt_key_env` or `encrypt_key`),
 the webhook handler enforces request signature verification using

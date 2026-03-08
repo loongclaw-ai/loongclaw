@@ -153,6 +153,13 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+    /// Fetch and print currently available provider model list
+    ListModels {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
     /// Start interactive CLI chat channel with sliding-window memory
     Chat {
         #[arg(long)]
@@ -233,6 +240,7 @@ async fn main() {
             fail_on_warnings,
         ),
         Commands::Setup { output, force } => run_setup_cli(output.as_deref(), force),
+        Commands::ListModels { config, json } => run_list_models_cli(config.as_deref(), json).await,
         Commands::Chat { config, session } => {
             run_chat_cli(config.as_deref(), session.as_deref()).await
         }
@@ -443,6 +451,34 @@ fn run_setup_cli(output: Option<&str>, force: bool) -> CliResult<()> {
         println!("setup complete\n- config: {}", path.display());
     }
     println!("next step: loongclawd chat --config {}", path.display());
+    Ok(())
+}
+
+async fn run_list_models_cli(config_path: Option<&str>, as_json: bool) -> CliResult<()> {
+    let (resolved_path, config) = mvp::config::load(config_path)?;
+    let models = mvp::provider::fetch_available_models(&config).await?;
+    if as_json {
+        let payload = json!({
+            "config": resolved_path.display().to_string(),
+            "provider_kind": config.provider.kind,
+            "models_endpoint": config.provider.models_endpoint(),
+            "models": models,
+        });
+        let pretty = serde_json::to_string_pretty(&payload)
+            .map_err(|error| format!("serialize model-list output failed: {error}"))?;
+        println!("{pretty}");
+        return Ok(());
+    }
+
+    println!(
+        "config={} provider_kind={:?} models_endpoint={}",
+        resolved_path.display(),
+        config.provider.kind,
+        config.provider.models_endpoint()
+    );
+    for model in models {
+        println!("{model}");
+    }
     Ok(())
 }
 
