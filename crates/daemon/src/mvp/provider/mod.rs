@@ -469,6 +469,7 @@ fn adapt_payload_mode_for_error(
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn request_completion_with_model(
     config: &LoongClawConfig,
     messages: &[Value],
@@ -680,27 +681,33 @@ mod tests {
 
     #[test]
     fn completion_body_uses_provider_token_field_default() {
-        let mut openai = ProviderConfig::default();
-        openai.kind = ProviderKind::Openai;
-        openai.max_tokens = Some(512);
+        let openai = ProviderConfig {
+            kind: ProviderKind::Openai,
+            max_tokens: Some(512),
+            ..ProviderConfig::default()
+        };
         let openai_mode = CompletionPayloadMode::default_for(&openai);
         assert_eq!(
             openai_mode.token_field,
             TokenLimitField::MaxCompletionTokens
         );
 
-        let mut openrouter = ProviderConfig::default();
-        openrouter.kind = ProviderKind::Openrouter;
-        openrouter.max_tokens = Some(512);
+        let openrouter = ProviderConfig {
+            kind: ProviderKind::Openrouter,
+            max_tokens: Some(512),
+            ..ProviderConfig::default()
+        };
         let openrouter_mode = CompletionPayloadMode::default_for(&openrouter);
         assert_eq!(openrouter_mode.token_field, TokenLimitField::MaxTokens);
     }
 
     #[test]
     fn payload_mode_adapts_for_parameter_incompatibility() {
-        let mut provider = ProviderConfig::default();
-        provider.max_tokens = Some(1024);
-        provider.reasoning_effort = Some(ReasoningEffort::Medium);
+        let provider = ProviderConfig {
+            max_tokens: Some(1024),
+            reasoning_effort: Some(ReasoningEffort::Medium),
+            ..ProviderConfig::default()
+        };
 
         let max_tokens_error = json!({
             "error": {

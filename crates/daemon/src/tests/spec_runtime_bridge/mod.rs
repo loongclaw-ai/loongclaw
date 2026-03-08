@@ -46,9 +46,7 @@ fn assert_bridge_runtime_protocol_context(
         .filter_map(Value::as_str)
         .collect::<Vec<_>>();
     assert!(
-        capabilities
-            .iter()
-            .any(|capability| *capability == expected_granted_capability),
+        capabilities.contains(&expected_granted_capability),
         "protocol_capabilities should include {expected_granted_capability}, got {capabilities:?}",
     );
 }

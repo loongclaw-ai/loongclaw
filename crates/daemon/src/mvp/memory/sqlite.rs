@@ -76,8 +76,7 @@ pub(super) fn load_window(request: MemoryCoreRequest) -> Result<MemoryCoreOutcom
         .get("limit")
         .and_then(Value::as_u64)
         .unwrap_or_else(default_window_size_u64)
-        .max(1)
-        .min(128) as usize;
+        .clamp(1, 128) as usize;
     let default_window = default_window_size().max(1);
     let window_limit = requested_limit.min(default_window);
 

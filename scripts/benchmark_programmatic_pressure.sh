@@ -14,9 +14,16 @@ if [[ "$PREFLIGHT_FAIL_ON_WARNINGS" == "true" ]]; then
   EXTRA_ARGS+=(--preflight-fail-on-warnings)
 fi
 
-cargo run -p loongclaw-daemon -- benchmark-programmatic-pressure \
-  --matrix "$MATRIX_PATH" \
-  --baseline "$BASELINE_PATH" \
-  --enforce-gate \
-  "${EXTRA_ARGS[@]}" \
+CMD=(
+  cargo run -p loongclaw-daemon -- benchmark-programmatic-pressure
+  --matrix "$MATRIX_PATH"
+  --baseline "$BASELINE_PATH"
+  --enforce-gate
   --output "$OUTPUT_PATH"
+)
+
+if [[ "${#EXTRA_ARGS[@]}" -gt 0 ]]; then
+  CMD+=("${EXTRA_ARGS[@]}")
+fi
+
+"${CMD[@]}"

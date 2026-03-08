@@ -40,6 +40,7 @@ struct ProgrammaticPressureScenario {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 enum ProgrammaticPressureScenarioKind {
     SpecRun {
         spec: RunnerSpec,
@@ -618,7 +619,7 @@ fn lint_programmatic_pressure_baseline(
         }
     }
 
-    for (scenario_name, _thresholds) in &baseline.scenarios {
+    for scenario_name in baseline.scenarios.keys() {
         let matrix_scenario = matrix_scenario_map.get(scenario_name.as_str());
         if matrix_scenario.is_none() {
             issues.push(ProgrammaticPressureBaselineIssue {
@@ -1330,6 +1331,7 @@ fn push_min_gate_check(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_optional_max_gate_check(
     checks: &mut Vec<ProgrammaticPressureGateCheck>,
     warnings: &mut Vec<String>,

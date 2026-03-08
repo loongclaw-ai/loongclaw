@@ -2066,11 +2066,12 @@ fn operation_payload_strings(operation: &OperationSpec) -> Vec<String> {
             include_deferred,
             include_examples,
         } => {
-            let mut values = Vec::new();
-            values.push(query.clone());
-            values.push(limit.to_string());
-            values.push(include_deferred.to_string());
-            values.push(include_examples.to_string());
+            let values = vec![
+                query.clone(),
+                limit.to_string(),
+                include_deferred.to_string(),
+                include_examples.to_string(),
+            ];
             values
         }
         OperationSpec::ProgrammaticToolCall {
@@ -2084,20 +2085,21 @@ fn operation_payload_strings(operation: &OperationSpec) -> Vec<String> {
             return_step,
             steps,
         } => {
-            let mut values = Vec::new();
-            values.push(caller.clone());
-            values.push(max_calls.to_string());
-            values.push(include_intermediate.to_string());
-            values.push(concurrency.max_in_flight.to_string());
-            values.push(concurrency.min_in_flight.to_string());
-            values.push(concurrency.fairness.as_str().to_owned());
-            values.push(concurrency.adaptive_budget.to_string());
-            values.push(concurrency.high_weight.to_string());
-            values.push(concurrency.normal_weight.to_string());
-            values.push(concurrency.low_weight.to_string());
-            values.push(concurrency.adaptive_recovery_successes.to_string());
-            values.push(concurrency.adaptive_upshift_step.to_string());
-            values.push(concurrency.adaptive_downshift_step.to_string());
+            let mut values = vec![
+                caller.clone(),
+                max_calls.to_string(),
+                include_intermediate.to_string(),
+                concurrency.max_in_flight.to_string(),
+                concurrency.min_in_flight.to_string(),
+                concurrency.fairness.as_str().to_owned(),
+                concurrency.adaptive_budget.to_string(),
+                concurrency.high_weight.to_string(),
+                concurrency.normal_weight.to_string(),
+                concurrency.low_weight.to_string(),
+                concurrency.adaptive_recovery_successes.to_string(),
+                concurrency.adaptive_upshift_step.to_string(),
+                concurrency.adaptive_downshift_step.to_string(),
+            ];
             for rule in &concurrency.adaptive_reduce_on {
                 values.push(rule.as_str().to_owned());
             }
@@ -3391,4 +3393,3 @@ fn apply_default_selection(
     }
     Ok(())
 }
-

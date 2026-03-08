@@ -115,7 +115,7 @@ fn print_history(session_id: &str, limit: usize) -> CliResult<()> {
         for turn in turns {
             println!("[{}] {}: {}", turn.ts, turn.role, turn.content);
         }
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(feature = "memory-sqlite"))]

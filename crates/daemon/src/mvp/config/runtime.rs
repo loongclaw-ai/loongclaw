@@ -13,7 +13,7 @@ use super::{
     tools_memory::{MemoryConfig, ToolConfig},
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LoongClawConfig {
     #[serde(default)]
     pub provider: ProviderConfig,
@@ -27,19 +27,6 @@ pub struct LoongClawConfig {
     pub tools: ToolConfig,
     #[serde(default)]
     pub memory: MemoryConfig,
-}
-
-impl Default for LoongClawConfig {
-    fn default() -> Self {
-        Self {
-            provider: ProviderConfig::default(),
-            cli: CliChannelConfig::default(),
-            telegram: TelegramChannelConfig::default(),
-            feishu: FeishuChannelConfig::default(),
-            tools: ToolConfig::default(),
-            memory: MemoryConfig::default(),
-        }
-    }
 }
 
 pub fn load(path: Option<&str>) -> CliResult<(PathBuf, LoongClawConfig)> {

@@ -8,7 +8,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 version = "0.1.0"
 authors = ["chumyin"]
 
@@ -27,6 +27,6 @@ sha2 = "0.10"
 wasmparser = "0.240"
 base64 = "0.22"
 ed25519-dalek = "2.2"
-wasmtime = "31"
+wasmtime = "41.0.4"
 rusqlite = { version = "0.32", features = ["bundled"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }

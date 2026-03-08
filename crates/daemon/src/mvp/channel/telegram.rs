@@ -28,7 +28,7 @@ impl TelegramAdapter {
         Self {
             token,
             base_url: config.telegram.base_url.clone(),
-            timeout_s: config.telegram.polling_timeout_s.max(1).min(50),
+            timeout_s: config.telegram.polling_timeout_s.clamp(1, 50),
             offset_path,
             next_offset,
             allowlist: config.telegram.allowed_chat_ids.iter().copied().collect(),

@@ -1464,7 +1464,9 @@ fn execute_http_json_bridge(
     let request_method_for_worker = protocol_context.request_method.clone();
     let request_id_for_worker = protocol_context.request_id.clone();
 
-    let run = std::thread::spawn(move || -> Result<(u16, bool, String, Value, Option<String>, Option<String>), String> {
+    type HttpJsonBridgeWorkerResult =
+        Result<(u16, bool, String, Value, Option<String>, Option<String>), String>;
+    let run = std::thread::spawn(move || -> HttpJsonBridgeWorkerResult {
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_millis(timeout_ms))
             .build()

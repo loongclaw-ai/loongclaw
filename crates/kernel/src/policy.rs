@@ -11,19 +11,10 @@ use serde_json::Value;
 
 use crate::{contracts::CapabilityToken, errors::PolicyError, pack::VerticalPackManifest};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PolicyContext {
     pub conversation_hash: Option<String>,
     pub call_depth: u32,
-}
-
-impl Default for PolicyContext {
-    fn default() -> Self {
-        Self {
-            conversation_hash: None,
-            call_depth: 0,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

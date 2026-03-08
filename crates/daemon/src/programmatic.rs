@@ -68,6 +68,7 @@ fn should_reduce_programmatic_budget(
     triggers.contains(&mapped)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn execute_programmatic_tool_call(
     kernel: &LoongClawKernel<StaticPolicyEngine>,
     pack_id: &str,
@@ -549,6 +550,7 @@ fn prepare_programmatic_batch_calls(
     Ok(prepared)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_programmatic_batch_calls(
     kernel: &LoongClawKernel<StaticPolicyEngine>,
     pack_id: &str,
@@ -705,12 +707,11 @@ async fn execute_programmatic_batch_calls(
                             }),
                         );
                         if first_error.is_none() {
-                            first_error = Some(format!(
-                                "{}",
-                                programmatic_error(
-                                    ProgrammaticErrorCode::ConnectorInvokeFailed,
-                                    format!("programmatic batch step {step_id} call {call_id} failed: {error}")
-                                )
+                            first_error = Some(programmatic_error(
+                                ProgrammaticErrorCode::ConnectorInvokeFailed,
+                                format!(
+                                    "programmatic batch step {step_id} call {call_id} failed: {error}"
+                                ),
                             ));
                         }
                     }
@@ -869,15 +870,18 @@ fn build_programmatic_weighted_cycle(
     concurrency: &ProgrammaticConcurrencyPolicy,
 ) -> Vec<ProgrammaticPriorityClass> {
     let mut cycle = Vec::new();
-    cycle.extend(
-        std::iter::repeat(ProgrammaticPriorityClass::High).take(concurrency.high_weight.max(1)),
-    );
-    cycle.extend(
-        std::iter::repeat(ProgrammaticPriorityClass::Normal).take(concurrency.normal_weight.max(1)),
-    );
-    cycle.extend(
-        std::iter::repeat(ProgrammaticPriorityClass::Low).take(concurrency.low_weight.max(1)),
-    );
+    cycle.extend(std::iter::repeat_n(
+        ProgrammaticPriorityClass::High,
+        concurrency.high_weight.max(1),
+    ));
+    cycle.extend(std::iter::repeat_n(
+        ProgrammaticPriorityClass::Normal,
+        concurrency.normal_weight.max(1),
+    ));
+    cycle.extend(std::iter::repeat_n(
+        ProgrammaticPriorityClass::Low,
+        concurrency.low_weight.max(1),
+    ));
     cycle
 }
 
@@ -1127,6 +1131,7 @@ async fn apply_programmatic_rate_limit(
     Ok(wait_duration.as_millis() as u64)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn invoke_programmatic_connector_with_resilience(
     kernel: &LoongClawKernel<StaticPolicyEngine>,
     pack_id: &str,
