@@ -59,7 +59,9 @@ type CliResult<T> = Result<T, String>;
 mod mvp;
 mod pressure_benchmark;
 mod programmatic;
-use pressure_benchmark::run_programmatic_pressure_benchmark_cli;
+use pressure_benchmark::{
+    run_programmatic_pressure_baseline_lint_cli, run_programmatic_pressure_benchmark_cli,
+};
 use programmatic::{
     acquire_programmatic_circuit_slot, execute_programmatic_tool_call,
     record_programmatic_circuit_outcome,
@@ -118,6 +120,23 @@ enum Commands {
         #[arg(
             long,
             default_value = "target/benchmarks/programmatic-pressure-report.json"
+        )]
+        output: String,
+        #[arg(long, default_value_t = false)]
+        enforce_gate: bool,
+    },
+    /// Lint pressure baseline coverage without running benchmark scenarios
+    BenchmarkProgrammaticPressureLint {
+        #[arg(
+            long,
+            default_value = "examples/benchmarks/programmatic-pressure-matrix.json"
+        )]
+        matrix: String,
+        #[arg(long)]
+        baseline: Option<String>,
+        #[arg(
+            long,
+            default_value = "target/benchmarks/programmatic-pressure-baseline-lint-report.json"
         )]
         output: String,
         #[arg(long, default_value_t = false)]
@@ -194,6 +213,17 @@ async fn main() {
             )
             .await
         }
+        Commands::BenchmarkProgrammaticPressureLint {
+            matrix,
+            baseline,
+            output,
+            enforce_gate,
+        } => run_programmatic_pressure_baseline_lint_cli(
+            &matrix,
+            baseline.as_deref(),
+            &output,
+            enforce_gate,
+        ),
         Commands::Setup { output, force } => run_setup_cli(output.as_deref(), force),
         Commands::Chat { config, session } => {
             run_chat_cli(config.as_deref(), session.as_deref()).await

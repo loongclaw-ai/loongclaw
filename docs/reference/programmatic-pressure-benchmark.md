@@ -65,6 +65,7 @@ Schema fingerprint behavior:
 - If multiple schema variants appear across iterations, the report emits a `multi:<sha256>` aggregate fingerprint.
 - In strict mode (`--enforce-gate`), every `spec_run` scenario is expected to define `expected_schema_fingerprint`.
 - Strict mode now validates that coverage as a preflight gate before running scenarios.
+- Benchmark reports now include `gate.preflight` with structured preflight issues (when baseline is provided).
 
 ### Drift Example
 
@@ -111,6 +112,22 @@ Run via unified helper script:
 ./scripts/benchmark_programmatic_pressure.sh
 ```
 
+Lint baseline coverage without running pressure scenarios:
+
+```bash
+cargo run -p loongclaw-daemon -- benchmark-programmatic-pressure-lint \
+  --matrix examples/benchmarks/programmatic-pressure-matrix.json \
+  --baseline examples/benchmarks/programmatic-pressure-baseline.json \
+  --enforce-gate \
+  --output target/benchmarks/programmatic-pressure-baseline-lint-report.json
+```
+
+or:
+
+```bash
+./scripts/lint_programmatic_pressure_baseline.sh
+```
+
 Refresh baseline schema fingerprints from the latest report:
 
 ```bash
@@ -129,5 +146,6 @@ The report includes:
 - circuit transition timing (`half_open_transition_ms`)
 - per-scenario `schema_fingerprint` for contract drift detection
 - structured gate checks and pass/fail status
+- structured `gate.preflight` baseline-coverage audit output
 
 Use the report as the machine-readable artifact for performance regression audits.
