@@ -41,6 +41,7 @@ use crate::spec_execution::{normalize_path_for_policy, resolve_plugin_relative_p
 use crate::WEBHOOK_TEST_RETRY_STATE;
 
 const DEFAULT_WASM_MODULE_CACHE_CAPACITY: usize = 32;
+const MAX_WASM_MODULE_CACHE_CAPACITY: usize = 4096;
 static WASM_MODULE_CACHE: OnceLock<Mutex<WasmModuleCache>> = OnceLock::new();
 static WASM_MODULE_CACHE_CAPACITY: OnceLock<usize> = OnceLock::new();
 
@@ -1971,15 +1972,20 @@ fn wasm_module_cache() -> &'static Mutex<WasmModuleCache> {
     WASM_MODULE_CACHE.get_or_init(|| Mutex::new(WasmModuleCache::default()))
 }
 
+fn parse_wasm_module_cache_capacity(raw: Option<&str>) -> usize {
+    raw.and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .map(|value| value.min(MAX_WASM_MODULE_CACHE_CAPACITY))
+        .unwrap_or(DEFAULT_WASM_MODULE_CACHE_CAPACITY)
+}
+
 fn wasm_module_cache_capacity() -> usize {
     *WASM_MODULE_CACHE_CAPACITY.get_or_init(|| {
-        const MAX_WASM_MODULE_CACHE_CAPACITY: usize = 4096;
-        std::env::var("LOONGCLAW_WASM_CACHE_CAPACITY")
-            .ok()
-            .and_then(|value| value.trim().parse::<usize>().ok())
-            .filter(|value| *value > 0)
-            .map(|value| value.min(MAX_WASM_MODULE_CACHE_CAPACITY))
-            .unwrap_or(DEFAULT_WASM_MODULE_CACHE_CAPACITY)
+        parse_wasm_module_cache_capacity(
+            std::env::var("LOONGCLAW_WASM_CACHE_CAPACITY")
+                .ok()
+                .as_deref(),
+        )
     })
 }
 
@@ -2003,6 +2009,13 @@ fn build_wasm_module_cache_key(
         artifact_modified_unix_ns,
         fuel_enabled,
     }
+}
+
+fn normalize_allowed_wasm_path_prefixes(prefixes: &[PathBuf]) -> Vec<PathBuf> {
+    prefixes
+        .iter()
+        .map(|prefix| normalize_path_for_policy(prefix))
+        .collect()
 }
 
 fn compile_wasm_module(
@@ -2076,10 +2089,25 @@ pub fn execute_wasm_component_bridge(
             return execution;
         }
     };
+    let artifact_path = match fs::canonicalize(&artifact_path) {
+        Ok(path) => normalize_path_for_policy(&path),
+        Err(error) => {
+            execution["status"] = Value::String("failed".to_owned());
+            execution["reason"] = Value::String(format!(
+                "failed to canonicalize wasm artifact path: {error}"
+            ));
+            execution["runtime"] = json!({
+                "executor": "wasmtime_module",
+                "artifact_path": artifact_path.display().to_string(),
+            });
+            return execution;
+        }
+    };
+    let normalized_allowed_prefixes =
+        normalize_allowed_wasm_path_prefixes(&runtime_policy.wasm_allowed_path_prefixes);
 
-    if !runtime_policy.wasm_allowed_path_prefixes.is_empty()
-        && !runtime_policy
-            .wasm_allowed_path_prefixes
+    if !normalized_allowed_prefixes.is_empty()
+        && !normalized_allowed_prefixes
             .iter()
             .any(|prefix| artifact_path.starts_with(prefix))
     {
@@ -2089,8 +2117,7 @@ pub fn execute_wasm_component_bridge(
         execution["runtime"] = json!({
             "executor": "wasmtime_module",
             "artifact_path": artifact_path.display().to_string(),
-            "allowed_path_prefixes": runtime_policy
-                .wasm_allowed_path_prefixes
+            "allowed_path_prefixes": normalized_allowed_prefixes
                 .iter()
                 .map(|path| path.display().to_string())
                 .collect::<Vec<_>>(),
@@ -2808,5 +2835,45 @@ impl MemoryExtensionAdapter for VectorIndexMemoryExtension {
                 "payload": request.payload,
             }),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        parse_wasm_module_cache_capacity, DEFAULT_WASM_MODULE_CACHE_CAPACITY,
+        MAX_WASM_MODULE_CACHE_CAPACITY,
+    };
+
+    #[test]
+    fn parse_wasm_module_cache_capacity_defaults_for_missing_or_invalid_values() {
+        assert_eq!(
+            parse_wasm_module_cache_capacity(None),
+            DEFAULT_WASM_MODULE_CACHE_CAPACITY
+        );
+        assert_eq!(
+            parse_wasm_module_cache_capacity(Some("")),
+            DEFAULT_WASM_MODULE_CACHE_CAPACITY
+        );
+        assert_eq!(
+            parse_wasm_module_cache_capacity(Some("invalid")),
+            DEFAULT_WASM_MODULE_CACHE_CAPACITY
+        );
+        assert_eq!(
+            parse_wasm_module_cache_capacity(Some("0")),
+            DEFAULT_WASM_MODULE_CACHE_CAPACITY
+        );
+    }
+
+    #[test]
+    fn parse_wasm_module_cache_capacity_respects_positive_values_and_upper_bound() {
+        assert_eq!(parse_wasm_module_cache_capacity(Some("1")), 1);
+        assert_eq!(parse_wasm_module_cache_capacity(Some("128")), 128);
+
+        let over_limit = format!("{}", MAX_WASM_MODULE_CACHE_CAPACITY + 1);
+        assert_eq!(
+            parse_wasm_module_cache_capacity(Some(over_limit.as_str())),
+            MAX_WASM_MODULE_CACHE_CAPACITY
+        );
     }
 }
