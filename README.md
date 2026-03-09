@@ -26,6 +26,7 @@ For architecture boundaries, see [Layered Kernel Design](docs/design-docs/layere
 - `loongclaw-daemon`: 135 unit tests passing.
 - `loongclawd` smoke/spec execution verified.
 - `programmatic` pressure benchmark gate (matrix + baseline) verified.
+- `wasm` cache benchmark gate (cold/hot latency + hit/miss) verified.
 
 ## MVP Foundation (In Progress)
 
@@ -56,7 +57,16 @@ cargo run -p loongclaw-daemon --bin loongclawd -- run-spec --spec examples/spec/
 cargo run -p loongclaw-daemon --bin loongclawd -- run-spec --spec examples/spec/tool-search.json --print-audit
 cargo run -p loongclaw-daemon --bin loongclawd -- run-spec --spec examples/spec/programmatic-tool-call.json --print-audit
 cargo run -p loongclaw-daemon --bin loongclawd -- benchmark-programmatic-pressure --matrix examples/benchmarks/programmatic-pressure-matrix.json --enforce-gate
+cargo run -p loongclaw-daemon --bin loongclawd -- benchmark-wasm-cache --wasm examples/plugins-wasm/secure_echo.wasm --enforce-gate
 ./scripts/benchmark_programmatic_pressure.sh
+./scripts/benchmark_wasm_cache.sh
+```
+
+Optional runtime tuning:
+
+```bash
+# default = 32, max = 4096
+LOONGCLAW_WASM_CACHE_CAPACITY=64 cargo run -p loongclaw-daemon --bin loongclawd -- benchmark-wasm-cache --enforce-gate
 ```
 
 One-command install from source:

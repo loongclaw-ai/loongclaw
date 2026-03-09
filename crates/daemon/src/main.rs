@@ -23,6 +23,7 @@ use loongclaw_spec::{kernel_bootstrap, CliResult, DEFAULT_AGENT_ID, DEFAULT_PACK
 
 use loongclaw_bench::{
     run_programmatic_pressure_baseline_lint_cli, run_programmatic_pressure_benchmark_cli,
+    run_wasm_cache_benchmark_cli,
 };
 #[cfg(test)]
 pub(crate) use loongclaw_spec::programmatic::{
@@ -114,6 +115,26 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         fail_on_warnings: bool,
     },
+    /// Benchmark Wasm compile cache behavior and enforce hot-path speedup gate
+    BenchmarkWasmCache {
+        #[arg(long, default_value = "examples/plugins-wasm/secure_echo.wasm")]
+        wasm: String,
+        #[arg(
+            long,
+            default_value = "target/benchmarks/wasm-cache-benchmark-report.json"
+        )]
+        output: String,
+        #[arg(long, default_value_t = 8)]
+        cold_iterations: usize,
+        #[arg(long, default_value_t = 24)]
+        hot_iterations: usize,
+        #[arg(long, default_value_t = 2)]
+        warmup_iterations: usize,
+        #[arg(long, default_value_t = false)]
+        enforce_gate: bool,
+        #[arg(long, default_value_t = 1.5)]
+        min_speedup_ratio: f64,
+    },
     /// Generate a beginner-friendly TOML config and bootstrap local state
     Setup {
         #[arg(long)]
@@ -204,6 +225,23 @@ async fn main() {
             &output,
             enforce_gate,
             fail_on_warnings,
+        ),
+        Commands::BenchmarkWasmCache {
+            wasm,
+            output,
+            cold_iterations,
+            hot_iterations,
+            warmup_iterations,
+            enforce_gate,
+            min_speedup_ratio,
+        } => run_wasm_cache_benchmark_cli(
+            &wasm,
+            &output,
+            cold_iterations,
+            hot_iterations,
+            warmup_iterations,
+            enforce_gate,
+            min_speedup_ratio,
         ),
         Commands::Setup { output, force } => run_setup_cli(output.as_deref(), force),
         Commands::ListModels { config, json } => run_list_models_cli(config.as_deref(), json).await,

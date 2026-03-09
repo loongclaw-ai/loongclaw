@@ -1,10 +1,10 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     fs,
     path::{Path, PathBuf},
     process::Stdio,
-    sync::{Arc, Mutex},
-    time::Duration,
+    sync::{Arc, Mutex, OnceLock},
+    time::{Duration, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
@@ -39,6 +39,89 @@ use wasmtime::{
 
 use crate::spec_execution::{normalize_path_for_policy, resolve_plugin_relative_path};
 use crate::WEBHOOK_TEST_RETRY_STATE;
+
+const DEFAULT_WASM_MODULE_CACHE_CAPACITY: usize = 32;
+static WASM_MODULE_CACHE: OnceLock<Mutex<WasmModuleCache>> = OnceLock::new();
+static WASM_MODULE_CACHE_CAPACITY: OnceLock<usize> = OnceLock::new();
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct WasmModuleCacheKey {
+    artifact_path: PathBuf,
+    module_size_bytes: u64,
+    artifact_modified_unix_ns: Option<u128>,
+    fuel_enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+struct CachedWasmModule {
+    engine: WasmtimeEngine,
+    module: WasmtimeModule,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WasmModuleCacheLookup {
+    hit: bool,
+    evicted_entries: usize,
+    cache_len: usize,
+    cache_capacity: usize,
+}
+
+#[derive(Debug, Default)]
+struct WasmModuleCache {
+    order: VecDeque<WasmModuleCacheKey>,
+    entries: HashMap<WasmModuleCacheKey, CachedWasmModule>,
+}
+
+impl WasmModuleCache {
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn touch(&mut self, key: &WasmModuleCacheKey) {
+        if let Some(position) = self.order.iter().position(|candidate| candidate == key) {
+            let _ = self.order.remove(position);
+        }
+        self.order.push_back(key.clone());
+    }
+
+    fn get(&mut self, key: &WasmModuleCacheKey) -> Option<CachedWasmModule> {
+        let entry = self.entries.get(key).cloned()?;
+        self.touch(key);
+        Some(entry)
+    }
+
+    fn insert(
+        &mut self,
+        key: WasmModuleCacheKey,
+        value: CachedWasmModule,
+        max_entries: usize,
+    ) -> usize {
+        if max_entries == 0 {
+            self.entries.clear();
+            self.order.clear();
+            return 0;
+        }
+
+        if self.entries.contains_key(&key) {
+            self.entries.insert(key.clone(), value);
+            self.touch(&key);
+            return 0;
+        }
+
+        let mut evicted_entries = 0usize;
+        while self.entries.len() >= max_entries {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            if self.entries.remove(&oldest).is_some() {
+                evicted_entries = evicted_entries.saturating_add(1);
+            }
+        }
+        self.order.push_back(key.clone());
+        self.entries.insert(key, value);
+        evicted_entries
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DefaultCoreSelection {
@@ -1884,6 +1967,99 @@ pub async fn run_process_stdio_json_line_exchange(
     })
 }
 
+fn wasm_module_cache() -> &'static Mutex<WasmModuleCache> {
+    WASM_MODULE_CACHE.get_or_init(|| Mutex::new(WasmModuleCache::default()))
+}
+
+fn wasm_module_cache_capacity() -> usize {
+    *WASM_MODULE_CACHE_CAPACITY.get_or_init(|| {
+        const MAX_WASM_MODULE_CACHE_CAPACITY: usize = 4096;
+        std::env::var("LOONGCLAW_WASM_CACHE_CAPACITY")
+            .ok()
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .map(|value| value.min(MAX_WASM_MODULE_CACHE_CAPACITY))
+            .unwrap_or(DEFAULT_WASM_MODULE_CACHE_CAPACITY)
+    })
+}
+
+fn modified_unix_nanos(metadata: &fs::Metadata) -> Option<u128> {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+}
+
+fn build_wasm_module_cache_key(
+    artifact_path: &Path,
+    module_size_bytes: u64,
+    artifact_modified_unix_ns: Option<u128>,
+    fuel_enabled: bool,
+) -> WasmModuleCacheKey {
+    WasmModuleCacheKey {
+        artifact_path: artifact_path.to_path_buf(),
+        module_size_bytes,
+        artifact_modified_unix_ns,
+        fuel_enabled,
+    }
+}
+
+fn compile_wasm_module(
+    module_bytes: &[u8],
+    fuel_enabled: bool,
+) -> Result<CachedWasmModule, String> {
+    let mut config = WasmtimeConfig::new();
+    if fuel_enabled {
+        config.consume_fuel(true);
+    }
+    let engine = WasmtimeEngine::new(&config)
+        .map_err(|error| format!("failed to initialize wasmtime engine: {error}"))?;
+    let module = WasmtimeModule::new(&engine, module_bytes)
+        .map_err(|error| format!("failed to compile wasm module: {error}"))?;
+    Ok(CachedWasmModule { engine, module })
+}
+
+fn lookup_cached_wasm_module(
+    cache_key: &WasmModuleCacheKey,
+) -> Result<Option<(CachedWasmModule, WasmModuleCacheLookup)>, String> {
+    let cache_capacity = wasm_module_cache_capacity();
+    let cache_lock = wasm_module_cache();
+    let mut cache = cache_lock
+        .lock()
+        .map_err(|error| format!("failed to lock wasm module cache: {error}"))?;
+    let Some(cached) = cache.get(cache_key) else {
+        return Ok(None);
+    };
+    Ok(Some((
+        cached,
+        WasmModuleCacheLookup {
+            hit: true,
+            evicted_entries: 0,
+            cache_len: cache.len(),
+            cache_capacity,
+        },
+    )))
+}
+
+fn insert_cached_wasm_module(
+    cache_key: WasmModuleCacheKey,
+    module: CachedWasmModule,
+) -> Result<WasmModuleCacheLookup, String> {
+    let cache_capacity = wasm_module_cache_capacity();
+    let cache_lock = wasm_module_cache();
+    let mut cache = cache_lock
+        .lock()
+        .map_err(|error| format!("failed to lock wasm module cache: {error}"))?;
+    let evicted_entries = cache.insert(cache_key, module, cache_capacity);
+    Ok(WasmModuleCacheLookup {
+        hit: false,
+        evicted_entries,
+        cache_len: cache.len(),
+        cache_capacity,
+    })
+}
+
 #[allow(clippy::indexing_slicing)] // serde_json::Value string-keyed IndexMut is infallible
 pub fn execute_wasm_component_bridge(
     mut execution: Value,
@@ -1922,11 +2098,12 @@ pub fn execute_wasm_component_bridge(
         return execution;
     }
 
-    let module_bytes = match fs::read(&artifact_path) {
-        Ok(bytes) => bytes,
+    let artifact_metadata = match fs::metadata(&artifact_path) {
+        Ok(metadata) => metadata,
         Err(error) => {
             execution["status"] = Value::String("failed".to_owned());
-            execution["reason"] = Value::String(format!("failed to read wasm artifact: {error}"));
+            execution["reason"] =
+                Value::String(format!("failed to read wasm artifact metadata: {error}"));
             execution["runtime"] = json!({
                 "executor": "wasmtime_module",
                 "artifact_path": artifact_path.display().to_string(),
@@ -1934,18 +2111,20 @@ pub fn execute_wasm_component_bridge(
             return execution;
         }
     };
+    let artifact_modified_unix_ns = modified_unix_nanos(&artifact_metadata);
+    let mut module_size_bytes = artifact_metadata.len() as usize;
 
     if let Some(limit) = runtime_policy.wasm_max_component_bytes {
-        if module_bytes.len() > limit {
+        if module_size_bytes > limit {
             execution["status"] = Value::String("blocked".to_owned());
             execution["reason"] = Value::String(format!(
                 "wasm artifact size {} exceeds runtime max_component_bytes {limit}",
-                module_bytes.len()
+                module_size_bytes
             ));
             execution["runtime"] = json!({
                 "executor": "wasmtime_module",
                 "artifact_path": artifact_path.display().to_string(),
-                "module_size_bytes": module_bytes.len(),
+                "module_size_bytes": module_size_bytes,
                 "max_component_bytes": limit,
             });
             return execution;
@@ -1953,25 +2132,172 @@ pub fn execute_wasm_component_bridge(
     }
 
     let export_name = resolve_wasm_export_name(provider);
+    let fuel_enabled = runtime_policy.wasm_fuel_limit.is_some();
+    let cache_capacity = wasm_module_cache_capacity();
+
+    let initial_cache_key = build_wasm_module_cache_key(
+        &artifact_path,
+        module_size_bytes as u64,
+        artifact_modified_unix_ns,
+        fuel_enabled,
+    );
+    let (cached_module, cache_lookup) = match lookup_cached_wasm_module(&initial_cache_key) {
+        Ok(Some(hit)) => hit,
+        Ok(None) => {
+            let module_bytes = match fs::read(&artifact_path) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    execution["status"] = Value::String("failed".to_owned());
+                    execution["reason"] =
+                        Value::String(format!("failed to read wasm artifact: {error}"));
+                    execution["runtime"] = json!({
+                        "executor": "wasmtime_module",
+                        "artifact_path": artifact_path.display().to_string(),
+                        "export": export_name,
+                        "operation": command.operation,
+                        "payload": command.payload,
+                        "module_size_bytes": module_size_bytes,
+                        "fuel_limit": runtime_policy.wasm_fuel_limit,
+                        "cache_hit": false,
+                        "cache_miss": true,
+                        "cache_evicted_entries": 0,
+                        "cache_entries": 0,
+                        "cache_capacity": cache_capacity,
+                    });
+                    return execution;
+                }
+            };
+
+            module_size_bytes = module_bytes.len();
+            if let Some(limit) = runtime_policy.wasm_max_component_bytes {
+                if module_size_bytes > limit {
+                    execution["status"] = Value::String("blocked".to_owned());
+                    execution["reason"] = Value::String(format!(
+                        "wasm artifact size {} exceeds runtime max_component_bytes {limit}",
+                        module_size_bytes
+                    ));
+                    execution["runtime"] = json!({
+                        "executor": "wasmtime_module",
+                        "artifact_path": artifact_path.display().to_string(),
+                        "module_size_bytes": module_size_bytes,
+                        "max_component_bytes": limit,
+                    });
+                    return execution;
+                }
+            }
+
+            let refreshed_modified_unix_ns = fs::metadata(&artifact_path)
+                .ok()
+                .and_then(|metadata| modified_unix_nanos(&metadata));
+            let refreshed_cache_key = build_wasm_module_cache_key(
+                &artifact_path,
+                module_size_bytes as u64,
+                refreshed_modified_unix_ns.or(artifact_modified_unix_ns),
+                fuel_enabled,
+            );
+
+            match lookup_cached_wasm_module(&refreshed_cache_key) {
+                Ok(Some(hit)) => hit,
+                Ok(None) => {
+                    let compiled = match compile_wasm_module(&module_bytes, fuel_enabled) {
+                        Ok(module) => module,
+                        Err(reason) => {
+                            execution["status"] = Value::String("failed".to_owned());
+                            execution["reason"] = Value::String(reason);
+                            execution["runtime"] = json!({
+                                "executor": "wasmtime_module",
+                                "artifact_path": artifact_path.display().to_string(),
+                                "export": export_name,
+                                "operation": command.operation,
+                                "payload": command.payload,
+                                "module_size_bytes": module_size_bytes,
+                                "fuel_limit": runtime_policy.wasm_fuel_limit,
+                                "cache_hit": false,
+                                "cache_miss": true,
+                                "cache_evicted_entries": 0,
+                                "cache_entries": 0,
+                                "cache_capacity": cache_capacity,
+                            });
+                            return execution;
+                        }
+                    };
+                    let cache_lookup =
+                        match insert_cached_wasm_module(refreshed_cache_key, compiled.clone()) {
+                            Ok(lookup) => lookup,
+                            Err(reason) => {
+                                execution["status"] = Value::String("failed".to_owned());
+                                execution["reason"] = Value::String(reason);
+                                execution["runtime"] = json!({
+                                    "executor": "wasmtime_module",
+                                    "artifact_path": artifact_path.display().to_string(),
+                                    "export": export_name,
+                                    "operation": command.operation,
+                                    "payload": command.payload,
+                                    "module_size_bytes": module_size_bytes,
+                                    "fuel_limit": runtime_policy.wasm_fuel_limit,
+                                    "cache_hit": false,
+                                    "cache_miss": true,
+                                    "cache_evicted_entries": 0,
+                                    "cache_entries": 0,
+                                    "cache_capacity": cache_capacity,
+                                });
+                                return execution;
+                            }
+                        };
+                    (compiled, cache_lookup)
+                }
+                Err(reason) => {
+                    execution["status"] = Value::String("failed".to_owned());
+                    execution["reason"] = Value::String(reason);
+                    execution["runtime"] = json!({
+                        "executor": "wasmtime_module",
+                        "artifact_path": artifact_path.display().to_string(),
+                        "export": export_name,
+                        "operation": command.operation,
+                        "payload": command.payload,
+                        "module_size_bytes": module_size_bytes,
+                        "fuel_limit": runtime_policy.wasm_fuel_limit,
+                        "cache_hit": false,
+                        "cache_miss": true,
+                        "cache_evicted_entries": 0,
+                        "cache_entries": 0,
+                        "cache_capacity": cache_capacity,
+                    });
+                    return execution;
+                }
+            }
+        }
+        Err(reason) => {
+            execution["status"] = Value::String("failed".to_owned());
+            execution["reason"] = Value::String(reason);
+            execution["runtime"] = json!({
+                "executor": "wasmtime_module",
+                "artifact_path": artifact_path.display().to_string(),
+                "export": export_name,
+                "operation": command.operation,
+                "payload": command.payload,
+                "module_size_bytes": module_size_bytes,
+                "fuel_limit": runtime_policy.wasm_fuel_limit,
+                "cache_hit": false,
+                "cache_miss": true,
+                "cache_evicted_entries": 0,
+                "cache_entries": 0,
+                "cache_capacity": cache_capacity,
+            });
+            return execution;
+        }
+    };
 
     let run_result = (|| -> Result<Option<u64>, String> {
-        let mut config = WasmtimeConfig::new();
-        if runtime_policy.wasm_fuel_limit.is_some() {
-            config.consume_fuel(true);
-        }
-        let engine = WasmtimeEngine::new(&config)
-            .map_err(|error| format!("failed to initialize wasmtime engine: {error}"))?;
-        let module = WasmtimeModule::new(&engine, &module_bytes)
-            .map_err(|error| format!("failed to compile wasm module: {error}"))?;
-        let mut store = WasmtimeStore::new(&engine, ());
+        let mut store = WasmtimeStore::new(&cached_module.engine, ());
         if let Some(limit) = runtime_policy.wasm_fuel_limit {
             store
                 .set_fuel(limit)
                 .map_err(|error| format!("failed to set wasm fuel limit: {error}"))?;
         }
-        let linker = WasmtimeLinker::new(&engine);
+        let linker = WasmtimeLinker::new(&cached_module.engine);
         let instance = linker
-            .instantiate(&mut store, &module)
+            .instantiate(&mut store, &cached_module.module)
             .map_err(|error| format!("failed to instantiate wasm module: {error}"))?;
         let func = instance
             .get_typed_func::<(), ()>(&mut store, export_name.as_str())
@@ -2001,9 +2327,14 @@ pub fn execute_wasm_component_bridge(
                 "export": export_name,
                 "operation": command.operation,
                 "payload": command.payload,
-                "module_size_bytes": module_bytes.len(),
+                "module_size_bytes": module_size_bytes,
                 "fuel_limit": runtime_policy.wasm_fuel_limit,
                 "fuel_consumed": consumed_fuel,
+                "cache_hit": cache_lookup.hit,
+                "cache_miss": !cache_lookup.hit,
+                "cache_evicted_entries": cache_lookup.evicted_entries,
+                "cache_entries": cache_lookup.cache_len,
+                "cache_capacity": cache_lookup.cache_capacity,
             });
             execution
         }
@@ -2014,6 +2345,15 @@ pub fn execute_wasm_component_bridge(
                 "executor": "wasmtime_module",
                 "artifact_path": artifact_path.display().to_string(),
                 "export": export_name,
+                "operation": command.operation,
+                "payload": command.payload,
+                "module_size_bytes": module_size_bytes,
+                "fuel_limit": runtime_policy.wasm_fuel_limit,
+                "cache_hit": cache_lookup.hit,
+                "cache_miss": !cache_lookup.hit,
+                "cache_evicted_entries": cache_lookup.evicted_entries,
+                "cache_entries": cache_lookup.cache_len,
+                "cache_capacity": cache_lookup.cache_capacity,
             });
             execution
         }

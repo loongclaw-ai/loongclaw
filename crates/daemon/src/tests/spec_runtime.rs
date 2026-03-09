@@ -54,7 +54,7 @@ async fn execute_spec_returns_blocked_instead_of_panicking_on_operation_error() 
         },
     };
 
-    let report = execute_spec(spec, true).await;
+    let report = execute_spec(spec.clone(), true).await;
     assert_eq!(report.operation_kind, "blocked");
     assert!(report
         .blocked_reason
@@ -450,7 +450,7 @@ async fn execute_spec_blocks_when_security_scan_profile_sha256_mismatches() {
         },
     };
 
-    let report = execute_spec(spec, true).await;
+    let report = execute_spec(spec.clone(), true).await;
     assert_eq!(report.operation_kind, "blocked");
     assert!(report
         .blocked_reason
@@ -669,7 +669,7 @@ async fn execute_spec_blocks_when_security_scan_profile_signature_mismatches() {
         },
     };
 
-    let report = execute_spec(spec, true).await;
+    let report = execute_spec(spec.clone(), true).await;
     assert_eq!(report.operation_kind, "blocked");
     assert!(report
         .blocked_reason
@@ -716,7 +716,7 @@ async fn execute_spec_runs_runtime_extension_and_captures_audit() {
         },
     };
 
-    let report = execute_spec(spec, true).await;
+    let report = execute_spec(spec.clone(), true).await;
     assert_eq!(report.operation_kind, "runtime_extension");
     assert_eq!(report.outcome["outcome"]["status"], "ok");
     let events = report.audit_events.expect("audit should be included");
@@ -1759,7 +1759,7 @@ async fn execute_spec_wasm_component_bridge_executes_when_runtime_enabled() {
         },
     };
 
-    let report = execute_spec(spec, true).await;
+    let report = execute_spec(spec.clone(), true).await;
     assert_eq!(report.operation_kind, "connector_legacy");
     assert_eq!(report.outcome["outcome"]["status"], "ok");
     assert_eq!(
@@ -1782,6 +1782,14 @@ async fn execute_spec_wasm_component_bridge_executes_when_runtime_enabled() {
         report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["fuel_consumed"]
             .is_number()
     );
+    assert_eq!(
+        report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["cache_hit"],
+        false
+    );
+    assert_eq!(
+        report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["cache_miss"],
+        true
+    );
 
     let provider = report
         .integration_catalog
@@ -1789,6 +1797,16 @@ async fn execute_spec_wasm_component_bridge_executes_when_runtime_enabled() {
         .expect("provider should exist");
     assert!(provider.metadata.contains_key("plugin_source_path"));
     assert!(provider.metadata.contains_key("component_resolved_path"));
+
+    let cached_report = execute_spec(spec, true).await;
+    assert_eq!(
+        cached_report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["cache_hit"],
+        true
+    );
+    assert_eq!(
+        cached_report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["cache_miss"],
+        false
+    );
 }
 
 #[tokio::test]

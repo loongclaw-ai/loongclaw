@@ -13,6 +13,8 @@ jobs:
   benchmark:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      LOONGCLAW_BENCH_PROFILE: release
     permissions:
       contents: read
     steps:
@@ -28,9 +30,19 @@ jobs:
       - name: Run programmatic pressure benchmark
         run: ./scripts/benchmark_programmatic_pressure.sh
 
+      - name: Run wasm cache benchmark
+        run: ./scripts/benchmark_wasm_cache.sh
+
       - name: Upload benchmark report
         uses: actions/upload-artifact@v7
         with:
           name: programmatic-pressure-report-${{ github.run_id }}
           path: target/benchmarks/programmatic-pressure-report.json
+          retention-days: 30
+
+      - name: Upload wasm cache benchmark report
+        uses: actions/upload-artifact@v7
+        with:
+          name: wasm-cache-benchmark-report-${{ github.run_id }}
+          path: target/benchmarks/wasm-cache-benchmark-report.json
           retention-days: 30
