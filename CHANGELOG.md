@@ -6,6 +6,12 @@ The format follows Keep a Changelog and semantic versioning intent.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-03-09
+
+### Changed
+
+- Release governance upgraded with rich canonical reports, local AI-debug release logs, and automated post-release report generation.
+
 ## [0.1.0] - 2026-03-09
 
 ### Added
