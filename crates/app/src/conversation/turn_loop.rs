@@ -121,6 +121,8 @@ impl ConversationTurnLoop {
                                 turn.assistant_text.as_str(),
                                 reason.as_str(),
                                 user_input,
+                                Some(("tool_result", tool_text.as_str())),
+                                &mut followup_payload_budget,
                             );
                             request_completion_with_raw_fallback(
                                 runtime,
@@ -180,6 +182,8 @@ impl ConversationTurnLoop {
                                 turn.assistant_text.as_str(),
                                 loop_reason.as_str(),
                                 user_input,
+                                Some(("tool_failure", reason.as_str())),
+                                &mut followup_payload_budget,
                             );
                             request_completion_with_raw_fallback(
                                 runtime,
@@ -239,6 +243,8 @@ impl ConversationTurnLoop {
                                 turn.assistant_text.as_str(),
                                 loop_reason.as_str(),
                                 user_input,
+                                Some(("tool_failure", reason.as_str())),
+                                &mut followup_payload_budget,
                             );
                             request_completion_with_raw_fallback(
                                 runtime,
@@ -367,12 +373,21 @@ fn append_repeated_tool_guard_followup_messages(
     assistant_preface: &str,
     reason: &str,
     user_input: &str,
+    latest_tool_context: Option<(&str, &str)>,
+    followup_payload_budget: &mut FollowupPayloadBudget,
 ) {
     let preface = assistant_preface.trim();
     if !preface.is_empty() {
         messages.push(json!({
             "role": "assistant",
             "content": preface,
+        }));
+    }
+    if let Some((label, text)) = latest_tool_context {
+        let bounded = followup_payload_budget.truncate_payload(label, text);
+        messages.push(json!({
+            "role": "assistant",
+            "content": format!("[{label}]\n{bounded}"),
         }));
     }
     messages.push(json!({

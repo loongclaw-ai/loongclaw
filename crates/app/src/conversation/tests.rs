@@ -551,6 +551,10 @@ async fn handle_turn_with_runtime_repeated_tool_signature_guard_warns_then_trigg
         serialized.contains("[tool_loop_guard]"),
         "completion fallback payload should include loop guard marker, got: {serialized}"
     );
+    assert!(
+        serialized.matches("[tool_failure]").count() == 4,
+        "completion fallback should preserve the latest tool failure context before guard fallback, got: {serialized}"
+    );
 
     let turn_payloads = runtime
         .turn_requested_messages
@@ -633,6 +637,10 @@ async fn handle_turn_with_runtime_ping_pong_loop_guard_triggers_completion() {
     assert!(
         completion_payload.contains("[tool_loop_guard]"),
         "completion payload should include loop guard marker, got: {completion_payload}"
+    );
+    assert!(
+        completion_payload.matches("[tool_failure]").count() == 5,
+        "completion payload should include the latest tool failure payload before hard stop, got: {completion_payload}"
     );
     assert!(
         completion_payload.contains("ping_pong_tool_patterns"),
@@ -719,6 +727,10 @@ async fn handle_turn_with_runtime_failure_streak_guard_triggers_completion() {
     assert!(
         completion_payload.contains("[tool_loop_guard]"),
         "completion payload should include loop guard marker, got: {completion_payload}"
+    );
+    assert!(
+        completion_payload.matches("[tool_failure]").count() == 4,
+        "completion payload should include the latest tool failure payload before hard stop, got: {completion_payload}"
     );
     assert!(
         completion_payload.contains("tool_failure_streak"),
