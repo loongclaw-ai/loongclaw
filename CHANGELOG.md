@@ -6,6 +6,13 @@ The format follows Keep a Changelog and semantic versioning intent.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-03-09
+
+### Changed
+
+- Defaulted tool-turn fallback responses to natural-language output when no explicit structured tool response is produced.
+- Hardened workspace lint configuration and release-trace linkage checks in release documentation.
+
 ## [0.1.1] - 2026-03-09
 
 ### Changed
