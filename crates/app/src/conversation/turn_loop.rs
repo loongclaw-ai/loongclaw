@@ -1,3 +1,5 @@
+use std::hash::{DefaultHasher, Hash, Hasher};
+
 use serde_json::{json, Value};
 
 use crate::CliResult;
@@ -52,8 +54,7 @@ impl ConversationTurnLoop {
         let raw_tool_output_requested = user_requested_raw_tool_output(user_input);
         let mut last_raw_reply = String::new();
         let policy = TurnLoopPolicy::from_config(config);
-        let mut last_tool_signature: Option<String> = None;
-        let mut repeated_tool_signature_rounds = 0usize;
+        let mut loop_supervisor = ToolLoopSupervisor::default();
 
         for round_index in 0..policy.max_rounds {
             let turn = match runtime.request_turn(config, &messages).await {
@@ -74,78 +75,79 @@ impl ConversationTurnLoop {
             };
 
             let had_tool_intents = !turn.tool_intents.is_empty();
-            if had_tool_intents {
-                let current_tool_signature = tool_intent_signature_for_turn(&turn);
-                if last_tool_signature.as_deref() == Some(current_tool_signature.as_str()) {
-                    repeated_tool_signature_rounds += 1;
-                } else {
-                    repeated_tool_signature_rounds = 1;
-                    last_tool_signature = Some(current_tool_signature);
-                }
-                // Guard against model loops repeatedly requesting the same tool payload.
-                if repeated_tool_signature_rounds > policy.max_repeated_tool_call_rounds {
-                    let raw_reply = if last_raw_reply.trim().is_empty() {
-                        join_non_empty_lines(&[
-                            turn.assistant_text.as_str(),
-                            "repeated_tool_call_loop_guard_triggered",
-                        ])
-                    } else {
-                        last_raw_reply.clone()
-                    };
-                    let reply = if raw_tool_output_requested {
-                        raw_reply
-                    } else {
-                        append_repeated_tool_guard_followup_messages(
-                            &mut messages,
-                            turn.assistant_text.as_str(),
-                            user_input,
-                        );
-                        request_completion_with_raw_fallback(
-                            runtime,
-                            config,
-                            &messages,
-                            raw_reply.as_str(),
-                        )
-                        .await
-                    };
-                    persist_success_turns(runtime, session_id, user_input, &reply, kernel_ctx)
-                        .await?;
-                    return Ok(reply);
-                }
-            } else {
-                last_tool_signature = None;
-                repeated_tool_signature_rounds = 0;
-            }
+            let current_tool_signature =
+                had_tool_intents.then(|| tool_intent_signature_for_turn(&turn));
 
             let turn_result = TurnEngine::new(policy.max_tool_steps_per_round)
                 .execute_turn(&turn, kernel_ctx)
                 .await;
+            let loop_supervisor_verdict = if let Some(signature) = current_tool_signature.as_deref()
+            {
+                tool_round_outcome_fingerprint(&turn_result).map(|outcome_fingerprint| {
+                    loop_supervisor.observe_round(
+                        policy.max_repeated_tool_call_rounds,
+                        signature,
+                        outcome_fingerprint.as_str(),
+                    )
+                })
+            } else {
+                None
+            };
 
             let reply = match turn_result {
                 TurnResult::FinalText(tool_text) if had_tool_intents => {
                     let raw_reply =
                         join_non_empty_lines(&[turn.assistant_text.as_str(), tool_text.as_str()]);
                     last_raw_reply = raw_reply.clone();
-                    if raw_tool_output_requested {
-                        raw_reply
-                    } else {
-                        append_tool_followup_messages(
-                            &mut messages,
-                            turn.assistant_text.as_str(),
-                            tool_text.as_str(),
-                            user_input,
-                            policy.max_followup_tool_payload_chars,
-                        );
-                        if round_index + 1 < policy.max_rounds {
-                            continue;
+                    if let Some(ToolLoopSupervisorVerdict::HardStop { reason }) =
+                        loop_supervisor_verdict.as_ref()
+                    {
+                        if raw_tool_output_requested {
+                            raw_reply
+                        } else {
+                            append_repeated_tool_guard_followup_messages(
+                                &mut messages,
+                                turn.assistant_text.as_str(),
+                                reason.as_str(),
+                                user_input,
+                            );
+                            request_completion_with_raw_fallback(
+                                runtime,
+                                config,
+                                &messages,
+                                raw_reply.as_str(),
+                            )
+                            .await
                         }
-                        request_completion_with_raw_fallback(
-                            runtime,
-                            config,
-                            &messages,
-                            raw_reply.as_str(),
-                        )
-                        .await
+                    } else {
+                        let loop_warning_reason = match loop_supervisor_verdict.as_ref() {
+                            Some(ToolLoopSupervisorVerdict::InjectWarning { reason }) => {
+                                Some(reason.as_str())
+                            }
+                            _ => None,
+                        };
+                        if raw_tool_output_requested {
+                            raw_reply
+                        } else {
+                            append_tool_followup_messages(
+                                &mut messages,
+                                turn.assistant_text.as_str(),
+                                tool_text.as_str(),
+                                user_input,
+                                policy.max_followup_tool_payload_chars,
+                                loop_warning_reason,
+                            );
+                            if round_index + 1 < policy.max_rounds {
+                                continue;
+                            }
+                            request_completion_with_raw_fallback(
+                                runtime,
+                                config,
+                                &messages,
+                                raw_reply.as_str(),
+                            )
+                            .await
+                        }
                     }
                 }
                 TurnResult::ToolDenied(reason) if had_tool_intents => {
@@ -155,26 +157,56 @@ impl ConversationTurnLoop {
                         TurnResult::ToolDenied(reason.clone()),
                     );
                     last_raw_reply = raw_reply.clone();
-                    if raw_tool_output_requested {
-                        raw_reply
-                    } else {
-                        append_tool_failure_followup_messages(
-                            &mut messages,
-                            turn.assistant_text.as_str(),
-                            reason.as_str(),
-                            user_input,
-                            policy.max_followup_tool_payload_chars,
-                        );
-                        if round_index + 1 < policy.max_rounds {
-                            continue;
+                    if let Some(ToolLoopSupervisorVerdict::HardStop {
+                        reason: loop_reason,
+                    }) = loop_supervisor_verdict.as_ref()
+                    {
+                        if raw_tool_output_requested {
+                            raw_reply
+                        } else {
+                            append_repeated_tool_guard_followup_messages(
+                                &mut messages,
+                                turn.assistant_text.as_str(),
+                                loop_reason.as_str(),
+                                user_input,
+                            );
+                            request_completion_with_raw_fallback(
+                                runtime,
+                                config,
+                                &messages,
+                                raw_reply.as_str(),
+                            )
+                            .await
                         }
-                        request_completion_with_raw_fallback(
-                            runtime,
-                            config,
-                            &messages,
-                            raw_reply.as_str(),
-                        )
-                        .await
+                    } else {
+                        let loop_warning_reason = match loop_supervisor_verdict.as_ref() {
+                            Some(ToolLoopSupervisorVerdict::InjectWarning { reason }) => {
+                                Some(reason.as_str())
+                            }
+                            _ => None,
+                        };
+                        if raw_tool_output_requested {
+                            raw_reply
+                        } else {
+                            append_tool_failure_followup_messages(
+                                &mut messages,
+                                turn.assistant_text.as_str(),
+                                reason.as_str(),
+                                user_input,
+                                policy.max_followup_tool_payload_chars,
+                                loop_warning_reason,
+                            );
+                            if round_index + 1 < policy.max_rounds {
+                                continue;
+                            }
+                            request_completion_with_raw_fallback(
+                                runtime,
+                                config,
+                                &messages,
+                                raw_reply.as_str(),
+                            )
+                            .await
+                        }
                     }
                 }
                 TurnResult::ToolError(reason) if had_tool_intents => {
@@ -184,26 +216,56 @@ impl ConversationTurnLoop {
                         TurnResult::ToolError(reason.clone()),
                     );
                     last_raw_reply = raw_reply.clone();
-                    if raw_tool_output_requested {
-                        raw_reply
-                    } else {
-                        append_tool_failure_followup_messages(
-                            &mut messages,
-                            turn.assistant_text.as_str(),
-                            reason.as_str(),
-                            user_input,
-                            policy.max_followup_tool_payload_chars,
-                        );
-                        if round_index + 1 < policy.max_rounds {
-                            continue;
+                    if let Some(ToolLoopSupervisorVerdict::HardStop {
+                        reason: loop_reason,
+                    }) = loop_supervisor_verdict.as_ref()
+                    {
+                        if raw_tool_output_requested {
+                            raw_reply
+                        } else {
+                            append_repeated_tool_guard_followup_messages(
+                                &mut messages,
+                                turn.assistant_text.as_str(),
+                                loop_reason.as_str(),
+                                user_input,
+                            );
+                            request_completion_with_raw_fallback(
+                                runtime,
+                                config,
+                                &messages,
+                                raw_reply.as_str(),
+                            )
+                            .await
                         }
-                        request_completion_with_raw_fallback(
-                            runtime,
-                            config,
-                            &messages,
-                            raw_reply.as_str(),
-                        )
-                        .await
+                    } else {
+                        let loop_warning_reason = match loop_supervisor_verdict.as_ref() {
+                            Some(ToolLoopSupervisorVerdict::InjectWarning { reason }) => {
+                                Some(reason.as_str())
+                            }
+                            _ => None,
+                        };
+                        if raw_tool_output_requested {
+                            raw_reply
+                        } else {
+                            append_tool_failure_followup_messages(
+                                &mut messages,
+                                turn.assistant_text.as_str(),
+                                reason.as_str(),
+                                user_input,
+                                policy.max_followup_tool_payload_chars,
+                                loop_warning_reason,
+                            );
+                            if round_index + 1 < policy.max_rounds {
+                                continue;
+                            }
+                            request_completion_with_raw_fallback(
+                                runtime,
+                                config,
+                                &messages,
+                                raw_reply.as_str(),
+                            )
+                            .await
+                        }
                     }
                 }
                 other => {
@@ -230,6 +292,7 @@ fn append_tool_followup_messages(
     tool_result_text: &str,
     user_input: &str,
     max_followup_tool_payload_chars: usize,
+    loop_warning_reason: Option<&str>,
 ) {
     let preface = assistant_preface.trim();
     if !preface.is_empty() {
@@ -247,9 +310,15 @@ fn append_tool_followup_messages(
         "role": "assistant",
         "content": format!("[tool_result]\n{bounded_result}"),
     }));
+    if let Some(reason) = loop_warning_reason {
+        messages.push(json!({
+            "role": "assistant",
+            "content": format!("[tool_loop_warning]\n{reason}"),
+        }));
+    }
     messages.push(json!({
         "role": "user",
-        "content": format!("{TOOL_FOLLOWUP_PROMPT}\n\nOriginal request:\n{user_input}"),
+        "content": build_tool_followup_prompt(user_input, loop_warning_reason),
     }));
 }
 
@@ -259,6 +328,7 @@ fn append_tool_failure_followup_messages(
     tool_failure_reason: &str,
     user_input: &str,
     max_followup_tool_payload_chars: usize,
+    loop_warning_reason: Option<&str>,
 ) {
     let preface = assistant_preface.trim();
     if !preface.is_empty() {
@@ -276,15 +346,22 @@ fn append_tool_failure_followup_messages(
         "role": "assistant",
         "content": format!("[tool_failure]\n{bounded_failure}"),
     }));
+    if let Some(reason) = loop_warning_reason {
+        messages.push(json!({
+            "role": "assistant",
+            "content": format!("[tool_loop_warning]\n{reason}"),
+        }));
+    }
     messages.push(json!({
         "role": "user",
-        "content": format!("{TOOL_FOLLOWUP_PROMPT}\n\nOriginal request:\n{user_input}"),
+        "content": build_tool_followup_prompt(user_input, loop_warning_reason),
     }));
 }
 
 fn append_repeated_tool_guard_followup_messages(
     messages: &mut Vec<Value>,
     assistant_preface: &str,
+    reason: &str,
     user_input: &str,
 ) {
     let preface = assistant_preface.trim();
@@ -296,7 +373,7 @@ fn append_repeated_tool_guard_followup_messages(
     }
     messages.push(json!({
         "role": "assistant",
-        "content": "[tool_loop_guard]\nrepeated_tool_call_signature",
+        "content": format!("[tool_loop_guard]\n{reason}"),
     }));
     messages.push(json!({
         "role": "user",
@@ -339,6 +416,15 @@ fn user_requested_raw_tool_output(user_input: &str) -> bool {
     .any(|signal| normalized.contains(signal))
 }
 
+fn build_tool_followup_prompt(user_input: &str, loop_warning_reason: Option<&str>) -> String {
+    if let Some(reason) = loop_warning_reason {
+        return format!(
+            "{TOOL_FOLLOWUP_PROMPT}\n\nLoop warning:\n{reason}\nAvoid repeating the same tool call with unchanged results. Try a different tool, adjust arguments, or provide a best-effort final answer if evidence is sufficient.\n\nOriginal request:\n{user_input}"
+        );
+    }
+    format!("{TOOL_FOLLOWUP_PROMPT}\n\nOriginal request:\n{user_input}")
+}
+
 fn truncate_followup_tool_payload(label: &str, text: &str, max_chars: usize) -> String {
     let normalized = text.trim();
     let total_chars = normalized.chars().count();
@@ -351,6 +437,23 @@ fn truncate_followup_tool_payload(label: &str, text: &str, max_chars: usize) -> 
     let truncated = normalized.chars().take(keep_chars).collect::<String>();
     let removed = total_chars.saturating_sub(keep_chars);
     format!("{truncated}\n[{label}_truncated] removed_chars={removed}")
+}
+
+fn tool_round_outcome_fingerprint(turn_result: &TurnResult) -> Option<String> {
+    match turn_result {
+        TurnResult::FinalText(text) => Some(text_fingerprint("tool_final_text", text)),
+        TurnResult::ToolDenied(reason) => Some(text_fingerprint("tool_denied", reason)),
+        TurnResult::ToolError(reason) => Some(text_fingerprint("tool_error", reason)),
+        TurnResult::NeedsApproval(_) | TurnResult::ProviderError(_) => None,
+    }
+}
+
+fn text_fingerprint(label: &str, text: &str) -> String {
+    let normalized = text.trim();
+    let mut hasher = DefaultHasher::new();
+    normalized.hash(&mut hasher);
+    let digest = hasher.finish();
+    format!("{label}:{digest:016x}")
 }
 
 fn tool_intent_signature_for_turn(turn: &ProviderTurn) -> String {
@@ -385,6 +488,53 @@ impl TurnLoopPolicy {
             max_tool_steps_per_round: turn_loop.max_tool_steps_per_round.max(1),
             max_repeated_tool_call_rounds: turn_loop.max_repeated_tool_call_rounds.max(1),
             max_followup_tool_payload_chars: turn_loop.max_followup_tool_payload_chars.max(256),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct ToolLoopSupervisor {
+    last_pattern: Option<String>,
+    last_pattern_streak: usize,
+    warned_pattern: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+enum ToolLoopSupervisorVerdict {
+    Continue,
+    InjectWarning { reason: String },
+    HardStop { reason: String },
+}
+
+impl ToolLoopSupervisor {
+    fn observe_round(
+        &mut self,
+        max_repeated_rounds: usize,
+        tool_signature: &str,
+        outcome_fingerprint: &str,
+    ) -> ToolLoopSupervisorVerdict {
+        let pattern = format!("{tool_signature}::{outcome_fingerprint}");
+        if self.last_pattern.as_deref() == Some(pattern.as_str()) {
+            self.last_pattern_streak += 1;
+        } else {
+            self.last_pattern = Some(pattern.clone());
+            self.last_pattern_streak = 1;
+        }
+
+        if self.last_pattern_streak <= max_repeated_rounds {
+            return ToolLoopSupervisorVerdict::Continue;
+        }
+
+        let reason = format!(
+            "repeated_tool_call_no_progress signature_streak={} threshold={max_repeated_rounds}",
+            self.last_pattern_streak
+        );
+
+        if self.warned_pattern.as_deref() == Some(pattern.as_str()) {
+            ToolLoopSupervisorVerdict::HardStop { reason }
+        } else {
+            self.warned_pattern = Some(pattern);
+            ToolLoopSupervisorVerdict::InjectWarning { reason }
         }
     }
 }

@@ -486,7 +486,7 @@ async fn handle_turn_with_runtime_supports_multiple_tool_rounds_before_final_ans
 }
 
 #[tokio::test]
-async fn handle_turn_with_runtime_repeated_tool_signature_guard_triggers_completion() {
+async fn handle_turn_with_runtime_repeated_tool_signature_guard_warns_then_triggers_completion() {
     let repeated_tool_turn = || {
         Ok(ProviderTurn {
             assistant_text: "Reading the file again.".to_owned(),
@@ -505,6 +505,7 @@ async fn handle_turn_with_runtime_repeated_tool_signature_guard_triggers_complet
     let runtime = FakeRuntime::with_turns_and_completions(
         vec![],
         vec![
+            repeated_tool_turn(),
             repeated_tool_turn(),
             repeated_tool_turn(),
             repeated_tool_turn(),
@@ -531,7 +532,7 @@ async fn handle_turn_with_runtime_repeated_tool_signature_guard_triggers_complet
         reply,
         "I cannot access additional context, but here's what I found."
     );
-    assert_eq!(*runtime.turn_calls.lock().expect("turn calls lock"), 3);
+    assert_eq!(*runtime.turn_calls.lock().expect("turn calls lock"), 4);
     assert_eq!(
         *runtime
             .completion_calls
@@ -549,6 +550,18 @@ async fn handle_turn_with_runtime_repeated_tool_signature_guard_triggers_complet
     assert!(
         serialized.contains("[tool_loop_guard]"),
         "completion fallback payload should include loop guard marker, got: {serialized}"
+    );
+
+    let turn_payloads = runtime
+        .turn_requested_messages
+        .lock()
+        .expect("turn requests lock");
+    assert_eq!(turn_payloads.len(), 4);
+    let warning_turn_payload =
+        serde_json::to_string(&turn_payloads[3]).expect("serialize warning turn");
+    assert!(
+        warning_turn_payload.contains("[tool_loop_warning]"),
+        "warning turn payload should include loop warning marker before hard stop, got: {warning_turn_payload}"
     );
 }
 
