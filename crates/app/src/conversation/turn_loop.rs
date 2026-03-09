@@ -56,6 +56,10 @@ impl ConversationTurnLoop {
         let mut last_raw_reply = String::new();
         let policy = TurnLoopPolicy::from_config(config);
         let mut loop_supervisor = ToolLoopSupervisor::default();
+        let mut followup_payload_budget = FollowupPayloadBudget::new(
+            policy.max_followup_tool_payload_chars,
+            policy.max_followup_tool_payload_chars_total,
+        );
 
         for round_index in 0..policy.max_rounds {
             let turn = match runtime.request_turn(config, &messages).await {
@@ -141,7 +145,7 @@ impl ConversationTurnLoop {
                                 turn.assistant_text.as_str(),
                                 tool_text.as_str(),
                                 user_input,
-                                policy.max_followup_tool_payload_chars,
+                                &mut followup_payload_budget,
                                 loop_warning_reason,
                             );
                             if round_index + 1 < policy.max_rounds {
@@ -200,7 +204,7 @@ impl ConversationTurnLoop {
                                 turn.assistant_text.as_str(),
                                 reason.as_str(),
                                 user_input,
-                                policy.max_followup_tool_payload_chars,
+                                &mut followup_payload_budget,
                                 loop_warning_reason,
                             );
                             if round_index + 1 < policy.max_rounds {
@@ -259,7 +263,7 @@ impl ConversationTurnLoop {
                                 turn.assistant_text.as_str(),
                                 reason.as_str(),
                                 user_input,
-                                policy.max_followup_tool_payload_chars,
+                                &mut followup_payload_budget,
                                 loop_warning_reason,
                             );
                             if round_index + 1 < policy.max_rounds {
@@ -298,7 +302,7 @@ fn append_tool_followup_messages(
     assistant_preface: &str,
     tool_result_text: &str,
     user_input: &str,
-    max_followup_tool_payload_chars: usize,
+    followup_payload_budget: &mut FollowupPayloadBudget,
     loop_warning_reason: Option<&str>,
 ) {
     let preface = assistant_preface.trim();
@@ -308,11 +312,7 @@ fn append_tool_followup_messages(
             "content": preface,
         }));
     }
-    let bounded_result = truncate_followup_tool_payload(
-        "tool_result",
-        tool_result_text,
-        max_followup_tool_payload_chars,
-    );
+    let bounded_result = followup_payload_budget.truncate_payload("tool_result", tool_result_text);
     messages.push(json!({
         "role": "assistant",
         "content": format!("[tool_result]\n{bounded_result}"),
@@ -334,7 +334,7 @@ fn append_tool_failure_followup_messages(
     assistant_preface: &str,
     tool_failure_reason: &str,
     user_input: &str,
-    max_followup_tool_payload_chars: usize,
+    followup_payload_budget: &mut FollowupPayloadBudget,
     loop_warning_reason: Option<&str>,
 ) {
     let preface = assistant_preface.trim();
@@ -344,11 +344,8 @@ fn append_tool_failure_followup_messages(
             "content": preface,
         }));
     }
-    let bounded_failure = truncate_followup_tool_payload(
-        "tool_failure",
-        tool_failure_reason,
-        max_followup_tool_payload_chars,
-    );
+    let bounded_failure =
+        followup_payload_budget.truncate_payload("tool_failure", tool_failure_reason);
     messages.push(json!({
         "role": "assistant",
         "content": format!("[tool_failure]\n{bounded_failure}"),
@@ -447,6 +444,44 @@ fn truncate_followup_tool_payload(label: &str, text: &str, max_chars: usize) -> 
 }
 
 #[derive(Debug, Clone)]
+struct FollowupPayloadBudget {
+    per_round_max_chars: usize,
+    remaining_total_chars: usize,
+}
+
+impl FollowupPayloadBudget {
+    fn new(per_round_max_chars: usize, total_max_chars: usize) -> Self {
+        Self {
+            per_round_max_chars: per_round_max_chars.max(1),
+            remaining_total_chars: total_max_chars,
+        }
+    }
+
+    fn truncate_payload(&mut self, label: &str, text: &str) -> String {
+        let per_round_allowed = self
+            .per_round_max_chars
+            .min(self.remaining_total_chars.max(1));
+        if self.remaining_total_chars == 0 {
+            let removed = text.trim().chars().count();
+            return format!("[{label}_truncated] removed_chars={removed} budget_exhausted=true");
+        }
+
+        let bounded = truncate_followup_tool_payload(label, text, per_round_allowed);
+        let normalized = text.trim();
+        let total_chars = normalized.chars().count();
+        let consumed_chars = if total_chars <= per_round_allowed {
+            total_chars
+        } else if per_round_allowed > 80 {
+            per_round_allowed - 80
+        } else {
+            per_round_allowed
+        };
+        self.remaining_total_chars = self.remaining_total_chars.saturating_sub(consumed_chars);
+        bounded
+    }
+}
+
+#[derive(Debug, Clone)]
 struct ToolRoundOutcome {
     fingerprint: String,
     failed: bool,
@@ -510,6 +545,7 @@ struct TurnLoopPolicy {
     max_ping_pong_cycles: usize,
     max_same_tool_failure_rounds: usize,
     max_followup_tool_payload_chars: usize,
+    max_followup_tool_payload_chars_total: usize,
 }
 
 impl TurnLoopPolicy {
@@ -522,6 +558,9 @@ impl TurnLoopPolicy {
             max_ping_pong_cycles: turn_loop.max_ping_pong_cycles.max(1),
             max_same_tool_failure_rounds: turn_loop.max_same_tool_failure_rounds.max(1),
             max_followup_tool_payload_chars: turn_loop.max_followup_tool_payload_chars.max(256),
+            max_followup_tool_payload_chars_total: turn_loop
+                .max_followup_tool_payload_chars_total
+                .max(1),
         }
     }
 }

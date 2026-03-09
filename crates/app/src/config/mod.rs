@@ -286,6 +286,13 @@ model = "model-example"
                 .max_followup_tool_payload_chars,
             8_000
         );
+        assert_eq!(
+            config
+                .conversation
+                .turn_loop
+                .max_followup_tool_payload_chars_total,
+            20_000
+        );
     }
 
     #[test]
@@ -299,6 +306,7 @@ max_repeated_tool_call_rounds = 5
 max_ping_pong_cycles = 4
 max_same_tool_failure_rounds = 7
 max_followup_tool_payload_chars = 1200
+max_followup_tool_payload_chars_total = 3200
 "#;
         let parsed =
             toml::from_str::<LoongClawConfig>(raw).expect("parse turn-loop config should pass");
@@ -319,6 +327,13 @@ max_followup_tool_payload_chars = 1200
                 .turn_loop
                 .max_followup_tool_payload_chars,
             1200
+        );
+        assert_eq!(
+            parsed
+                .conversation
+                .turn_loop
+                .max_followup_tool_payload_chars_total,
+            3200
         );
     }
 

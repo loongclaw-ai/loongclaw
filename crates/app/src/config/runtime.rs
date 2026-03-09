@@ -51,6 +51,8 @@ pub struct ConversationTurnLoopConfig {
     pub max_same_tool_failure_rounds: usize,
     #[serde(default = "default_turn_loop_max_followup_tool_payload_chars")]
     pub max_followup_tool_payload_chars: usize,
+    #[serde(default = "default_turn_loop_max_followup_tool_payload_chars_total")]
+    pub max_followup_tool_payload_chars_total: usize,
 }
 
 impl Default for ConversationTurnLoopConfig {
@@ -62,6 +64,8 @@ impl Default for ConversationTurnLoopConfig {
             max_ping_pong_cycles: default_turn_loop_max_ping_pong_cycles(),
             max_same_tool_failure_rounds: default_turn_loop_max_same_tool_failure_rounds(),
             max_followup_tool_payload_chars: default_turn_loop_max_followup_tool_payload_chars(),
+            max_followup_tool_payload_chars_total:
+                default_turn_loop_max_followup_tool_payload_chars_total(),
         }
     }
 }
@@ -153,4 +157,8 @@ const fn default_turn_loop_max_same_tool_failure_rounds() -> usize {
 
 const fn default_turn_loop_max_followup_tool_payload_chars() -> usize {
     8_000
+}
+
+const fn default_turn_loop_max_followup_tool_payload_chars_total() -> usize {
+    20_000
 }

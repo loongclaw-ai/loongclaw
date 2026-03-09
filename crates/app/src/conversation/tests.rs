@@ -877,6 +877,120 @@ async fn handle_turn_with_runtime_truncates_large_tool_failure_in_followup_paylo
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_turn_with_runtime_enforces_total_followup_payload_budget_across_rounds() {
+    use super::integration_tests::TurnTestHarness;
+
+    let harness = TurnTestHarness::new();
+    std::fs::write(
+        harness.temp_dir.join("note_a.md"),
+        format!("NOTE-A-BEGIN-{}-NOTE-A-END", "a".repeat(1_200)),
+    )
+    .expect("seed note_a");
+    std::fs::write(
+        harness.temp_dir.join("note_b.md"),
+        format!("NOTE-B-BEGIN-{}-NOTE-B-END", "b".repeat(1_200)),
+    )
+    .expect("seed note_b");
+    std::fs::write(
+        harness.temp_dir.join("note_c.md"),
+        format!("NOTE-C-BEGIN-{}-NOTE-C-END", "c".repeat(1_200)),
+    )
+    .expect("seed note_c");
+
+    let runtime = FakeRuntime::with_turns(
+        vec![],
+        vec![
+            Ok(ProviderTurn {
+                assistant_text: "Reading note A.".to_owned(),
+                tool_intents: vec![ToolIntent {
+                    tool_name: "file.read".to_owned(),
+                    args_json: json!({"path": "note_a.md"}),
+                    source: "provider_tool_call".to_owned(),
+                    session_id: "session-total-budget".to_owned(),
+                    turn_id: "turn-total-budget-1".to_owned(),
+                    tool_call_id: "call-total-budget-1".to_owned(),
+                }],
+                raw_meta: Value::Null,
+            }),
+            Ok(ProviderTurn {
+                assistant_text: "Reading note B.".to_owned(),
+                tool_intents: vec![ToolIntent {
+                    tool_name: "file.read".to_owned(),
+                    args_json: json!({"path": "note_b.md"}),
+                    source: "provider_tool_call".to_owned(),
+                    session_id: "session-total-budget".to_owned(),
+                    turn_id: "turn-total-budget-2".to_owned(),
+                    tool_call_id: "call-total-budget-2".to_owned(),
+                }],
+                raw_meta: Value::Null,
+            }),
+            Ok(ProviderTurn {
+                assistant_text: "Reading note C.".to_owned(),
+                tool_intents: vec![ToolIntent {
+                    tool_name: "file.read".to_owned(),
+                    args_json: json!({"path": "note_c.md"}),
+                    source: "provider_tool_call".to_owned(),
+                    session_id: "session-total-budget".to_owned(),
+                    turn_id: "turn-total-budget-3".to_owned(),
+                    tool_call_id: "call-total-budget-3".to_owned(),
+                }],
+                raw_meta: Value::Null,
+            }),
+            Ok(ProviderTurn {
+                assistant_text: "Final synthesis after bounded context.".to_owned(),
+                tool_intents: vec![],
+                raw_meta: Value::Null,
+            }),
+        ],
+    );
+
+    let mut config = test_config();
+    config.conversation.turn_loop.max_rounds = 4;
+    config.conversation.turn_loop.max_repeated_tool_call_rounds = 8;
+    config.conversation.turn_loop.max_ping_pong_cycles = 8;
+    config.conversation.turn_loop.max_same_tool_failure_rounds = 8;
+    config
+        .conversation
+        .turn_loop
+        .max_followup_tool_payload_chars = 600;
+    config
+        .conversation
+        .turn_loop
+        .max_followup_tool_payload_chars_total = 120;
+
+    let turn_loop = ConversationTurnLoop::new();
+    let reply = turn_loop
+        .handle_turn_with_runtime(
+            &config,
+            "session-total-budget",
+            "read all notes then summarize",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            Some(&harness.kernel_ctx),
+        )
+        .await
+        .expect("total followup payload budget path should succeed");
+
+    assert_eq!(reply, "Final synthesis after bounded context.");
+    assert_eq!(*runtime.turn_calls.lock().expect("turn calls lock"), 4);
+
+    let requested_turns = runtime
+        .turn_requested_messages
+        .lock()
+        .expect("turn request lock");
+    assert_eq!(requested_turns.len(), 4);
+    let fourth_turn_payload = serde_json::to_string(&requested_turns[3]).expect("serialize turns");
+    assert!(
+        fourth_turn_payload.contains("[tool_result_truncated]"),
+        "fourth turn should still include truncation marker, got: {fourth_turn_payload}"
+    );
+    assert!(
+        fourth_turn_payload.contains("budget_exhausted=true"),
+        "fourth turn should report exhausted total payload budget, got: {fourth_turn_payload}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn handle_turn_with_runtime_turn_loop_policy_override_allows_multiple_tool_steps() {
     use super::integration_tests::TurnTestHarness;
 
