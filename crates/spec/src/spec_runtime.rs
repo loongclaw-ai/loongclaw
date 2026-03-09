@@ -51,7 +51,16 @@ struct WasmModuleCacheKey {
     artifact_path: PathBuf,
     module_size_bytes: u64,
     artifact_modified_unix_ns: Option<u128>,
+    artifact_file_identity: Option<WasmArtifactFileIdentity>,
     fuel_enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct WasmArtifactFileIdentity {
+    device_id: u64,
+    inode: u64,
+    ctime_seconds: i64,
+    ctime_nanoseconds: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -1998,16 +2007,35 @@ fn modified_unix_nanos(metadata: &fs::Metadata) -> Option<u128> {
         .map(|duration| duration.as_nanos())
 }
 
+#[cfg(unix)]
+fn wasm_artifact_file_identity(metadata: &fs::Metadata) -> Option<WasmArtifactFileIdentity> {
+    use std::os::unix::fs::MetadataExt;
+
+    Some(WasmArtifactFileIdentity {
+        device_id: metadata.dev(),
+        inode: metadata.ino(),
+        ctime_seconds: metadata.ctime(),
+        ctime_nanoseconds: metadata.ctime_nsec(),
+    })
+}
+
+#[cfg(not(unix))]
+fn wasm_artifact_file_identity(_metadata: &fs::Metadata) -> Option<WasmArtifactFileIdentity> {
+    None
+}
+
 fn build_wasm_module_cache_key(
     artifact_path: &Path,
     module_size_bytes: u64,
     artifact_modified_unix_ns: Option<u128>,
+    artifact_file_identity: Option<WasmArtifactFileIdentity>,
     fuel_enabled: bool,
 ) -> WasmModuleCacheKey {
     WasmModuleCacheKey {
         artifact_path: artifact_path.to_path_buf(),
         module_size_bytes,
         artifact_modified_unix_ns,
+        artifact_file_identity,
         fuel_enabled,
     }
 }
@@ -2023,6 +2051,7 @@ fn normalize_allowed_wasm_path_prefixes(prefixes: &[PathBuf]) -> Vec<PathBuf> {
 struct WasmArtifactBytes {
     bytes: Vec<u8>,
     modified_unix_ns: Option<u128>,
+    file_identity: Option<WasmArtifactFileIdentity>,
 }
 
 fn read_wasm_artifact_bytes(artifact_path: &Path) -> Result<WasmArtifactBytes, String> {
@@ -2044,6 +2073,7 @@ fn read_wasm_artifact_bytes(artifact_path: &Path) -> Result<WasmArtifactBytes, S
     Ok(WasmArtifactBytes {
         bytes,
         modified_unix_ns: modified_unix_nanos(&artifact_metadata),
+        file_identity: wasm_artifact_file_identity(&artifact_metadata),
     })
 }
 
@@ -2168,6 +2198,7 @@ pub fn execute_wasm_component_bridge(
         }
     };
     let artifact_modified_unix_ns = modified_unix_nanos(&artifact_metadata);
+    let artifact_file_identity = wasm_artifact_file_identity(&artifact_metadata);
     let mut module_size_bytes = artifact_metadata.len() as usize;
     if !artifact_metadata.file_type().is_file() {
         execution["status"] = Value::String("blocked".to_owned());
@@ -2205,6 +2236,7 @@ pub fn execute_wasm_component_bridge(
         &artifact_path,
         module_size_bytes as u64,
         artifact_modified_unix_ns,
+        artifact_file_identity,
         fuel_enabled,
     );
     let (cached_module, cache_lookup) = match lookup_cached_wasm_module(&initial_cache_key) {
@@ -2258,6 +2290,7 @@ pub fn execute_wasm_component_bridge(
                 artifact_bytes
                     .modified_unix_ns
                     .or(artifact_modified_unix_ns),
+                artifact_bytes.file_identity.or(artifact_file_identity),
                 fuel_enabled,
             );
 
@@ -2878,9 +2911,14 @@ impl MemoryExtensionAdapter for VectorIndexMemoryExtension {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
     use super::{
-        parse_wasm_module_cache_capacity, DEFAULT_WASM_MODULE_CACHE_CAPACITY,
-        MAX_WASM_MODULE_CACHE_CAPACITY,
+        parse_wasm_module_cache_capacity, wasm_artifact_file_identity,
+        DEFAULT_WASM_MODULE_CACHE_CAPACITY, MAX_WASM_MODULE_CACHE_CAPACITY,
     };
 
     #[test]
@@ -2913,5 +2951,30 @@ mod tests {
             parse_wasm_module_cache_capacity(Some(over_limit.as_str())),
             MAX_WASM_MODULE_CACHE_CAPACITY
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wasm_artifact_file_identity_distinguishes_different_files() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be monotonic")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("loongclaw-wasm-file-identity-{unique}"));
+        fs::create_dir_all(&base).expect("create temp dir");
+        let file_a = base.join("a.wasm");
+        let file_b = base.join("b.wasm");
+        fs::write(&file_a, b"(module)").expect("write file a");
+        fs::write(&file_b, b"(module)").expect("write file b");
+
+        let metadata_a = fs::metadata(&file_a).expect("metadata file a");
+        let metadata_b = fs::metadata(&file_b).expect("metadata file b");
+        let identity_a =
+            wasm_artifact_file_identity(&metadata_a).expect("file identity for file a exists");
+        let identity_b =
+            wasm_artifact_file_identity(&metadata_b).expect("file identity for file b exists");
+
+        assert_ne!(identity_a, identity_b);
+        let _ = fs::remove_dir_all(base);
     }
 }
