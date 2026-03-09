@@ -169,11 +169,11 @@ fn compose_assistant_reply(
             join_non_empty_lines(&[assistant_preface, inline.as_str()])
         }
         TurnResult::ToolDenied(reason) => {
-            let inline = format!("[tool_denied] {reason}");
+            let inline = format_tool_denied_reply(&reason);
             join_non_empty_lines(&[assistant_preface, inline.as_str()])
         }
         TurnResult::ToolError(reason) => {
-            let inline = format!("[tool_error] {reason}");
+            let inline = format_tool_error_reply(&reason);
             join_non_empty_lines(&[assistant_preface, inline.as_str()])
         }
         TurnResult::ProviderError(reason) => {
@@ -181,6 +181,47 @@ fn compose_assistant_reply(
             join_non_empty_lines(&[assistant_preface, inline.as_str()])
         }
     }
+}
+
+fn format_tool_denied_reply(reason: &str) -> String {
+    let normalized = normalize_tool_failure_reason(reason);
+    format!("I couldn't run that tool request because {normalized}.")
+}
+
+fn format_tool_error_reply(reason: &str) -> String {
+    let normalized = normalize_tool_failure_reason(reason);
+    format!("I tried to run that tool request, but it failed: {normalized}.")
+}
+
+fn normalize_tool_failure_reason(reason: &str) -> String {
+    let trimmed = reason.trim();
+    if trimmed.is_empty() {
+        return "the tool reported an unspecified issue".to_owned();
+    }
+
+    if trimmed == "no_kernel_context" {
+        return "this session does not have tool execution enabled".to_owned();
+    }
+
+    if trimmed == "max_tool_steps_exceeded" {
+        return "the request exceeded the maximum allowed number of tool steps".to_owned();
+    }
+
+    if let Some(tool_name) = trimmed.strip_prefix("tool_not_found:") {
+        let tool_name = tool_name.trim();
+        if !tool_name.is_empty() {
+            return format!("the requested tool `{tool_name}` is not available");
+        }
+    }
+
+    if trimmed
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-' | ':' | ' '))
+    {
+        return trimmed.replace('_', " ");
+    }
+
+    trimmed.to_owned()
 }
 
 fn join_non_empty_lines(parts: &[&str]) -> String {

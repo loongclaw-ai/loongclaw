@@ -398,12 +398,86 @@ async fn handle_turn_with_runtime_tool_denial_returns_inline_reply_even_in_propa
         "expected assistant preface, got: {reply}"
     );
     assert!(
-        reply.contains("[tool_denied]"),
-        "expected inline tool denial marker, got: {reply}"
+        reply.contains("I couldn't run that tool request because"),
+        "expected natural-language tool denial fallback, got: {reply}"
     );
     assert!(
-        reply.contains("no_kernel_context"),
+        reply.contains("tool execution enabled"),
+        "expected humanized denial reason in reply, got: {reply}"
+    );
+    assert!(
+        !reply.contains("[tool_denied]"),
+        "reply should not expose raw tool_denied marker, got: {reply}"
+    );
+    assert!(
+        !reply.contains("[tool_error]"),
+        "reply should not expose raw tool_error marker, got: {reply}"
+    );
+
+    let persisted = runtime.persisted.lock().expect("persisted lock");
+    assert_eq!(persisted.len(), 2);
+    assert_eq!(persisted[1].2, reply);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_turn_with_runtime_tool_error_returns_natural_language_fallback() {
+    use super::integration_tests::TurnTestHarness;
+
+    let harness = TurnTestHarness::new();
+    let runtime = FakeRuntime::with_turn_and_completion(
+        vec![],
+        Ok(ProviderTurn {
+            assistant_text: "Reading the file now.".to_owned(),
+            tool_intents: vec![ToolIntent {
+                tool_name: "file.read".to_owned(),
+                args_json: json!("not an object"),
+                source: "provider_tool_call".to_owned(),
+                session_id: "session-tool-error".to_owned(),
+                turn_id: "turn-tool-error".to_owned(),
+                tool_call_id: "call-tool-error".to_owned(),
+            }],
+            raw_meta: Value::Null,
+        }),
+        Ok("this completion should not be used for tool errors".to_owned()),
+    );
+
+    let orchestrator = ConversationOrchestrator::new();
+    let reply = orchestrator
+        .handle_turn_with_runtime(
+            &test_config(),
+            "session-tool-error",
+            "read note.md",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            Some(&harness.kernel_ctx),
+        )
+        .await
+        .expect("tool error should still return inline assistant text");
+
+    assert!(
+        reply.contains("Reading the file now."),
+        "expected assistant preface, got: {reply}"
+    );
+    assert!(
+        reply.contains("I tried to run that tool request, but it failed"),
+        "expected natural-language tool error fallback, got: {reply}"
+    );
+    assert!(
+        reply.contains("payload must be an object"),
         "expected denial reason in reply, got: {reply}"
+    );
+    assert!(
+        !reply.contains("[tool_error]"),
+        "reply should not expose raw tool_error marker, got: {reply}"
+    );
+
+    assert_eq!(
+        *runtime
+            .completion_calls
+            .lock()
+            .expect("completion calls lock"),
+        0,
+        "tool-error fallback should not require a second completion pass"
     );
 
     let persisted = runtime.persisted.lock().expect("persisted lock");
