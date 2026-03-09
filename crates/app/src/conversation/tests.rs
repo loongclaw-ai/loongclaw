@@ -52,14 +52,6 @@ impl FakeRuntime {
         }
     }
 
-    fn with_turn(seed_messages: Vec<Value>, turn: Result<ProviderTurn, String>) -> Self {
-        let completion = turn.as_ref().map_or_else(
-            |error| Err(error.to_owned()),
-            |value| Ok(value.assistant_text.clone()),
-        );
-        Self::with_turn_and_completion(seed_messages, turn, completion)
-    }
-
     fn with_turn_and_completion(
         seed_messages: Vec<Value>,
         turn: Result<ProviderTurn, String>,
@@ -364,7 +356,7 @@ async fn handle_turn_with_runtime_tool_turn_raw_request_skips_second_pass_comple
 
 #[tokio::test]
 async fn handle_turn_with_runtime_tool_denial_returns_inline_reply_even_in_propagate_mode() {
-    let runtime = FakeRuntime::with_turn(
+    let runtime = FakeRuntime::with_turn_and_completion(
         vec![],
         Ok(ProviderTurn {
             assistant_text: "Reading the file now.".to_owned(),
@@ -378,6 +370,7 @@ async fn handle_turn_with_runtime_tool_denial_returns_inline_reply_even_in_propa
             }],
             raw_meta: Value::Null,
         }),
+        Ok("MODEL_DENIED_REPLY".to_owned()),
     );
 
     let orchestrator = ConversationOrchestrator::new();
@@ -393,18 +386,7 @@ async fn handle_turn_with_runtime_tool_denial_returns_inline_reply_even_in_propa
         .await
         .expect("tool denial should still return inline assistant text");
 
-    assert!(
-        reply.contains("Reading the file now."),
-        "expected assistant preface, got: {reply}"
-    );
-    assert!(
-        reply.contains("I couldn't run that tool request because"),
-        "expected natural-language tool denial fallback, got: {reply}"
-    );
-    assert!(
-        reply.contains("tool execution enabled"),
-        "expected humanized denial reason in reply, got: {reply}"
-    );
+    assert_eq!(reply, "MODEL_DENIED_REPLY");
     assert!(
         !reply.contains("[tool_denied]"),
         "reply should not expose raw tool_denied marker, got: {reply}"
@@ -412,6 +394,14 @@ async fn handle_turn_with_runtime_tool_denial_returns_inline_reply_even_in_propa
     assert!(
         !reply.contains("[tool_error]"),
         "reply should not expose raw tool_error marker, got: {reply}"
+    );
+    assert_eq!(
+        *runtime
+            .completion_calls
+            .lock()
+            .expect("completion calls lock"),
+        1,
+        "tool-denied fallback should run a completion pass for language-aware output"
     );
 
     let persisted = runtime.persisted.lock().expect("persisted lock");
@@ -438,7 +428,7 @@ async fn handle_turn_with_runtime_tool_error_returns_natural_language_fallback()
             }],
             raw_meta: Value::Null,
         }),
-        Ok("this completion should not be used for tool errors".to_owned()),
+        Ok("MODEL_ERROR_REPLY".to_owned()),
     );
 
     let orchestrator = ConversationOrchestrator::new();
@@ -454,21 +444,14 @@ async fn handle_turn_with_runtime_tool_error_returns_natural_language_fallback()
         .await
         .expect("tool error should still return inline assistant text");
 
-    assert!(
-        reply.contains("Reading the file now."),
-        "expected assistant preface, got: {reply}"
-    );
-    assert!(
-        reply.contains("I tried to run that tool request, but it failed"),
-        "expected natural-language tool error fallback, got: {reply}"
-    );
-    assert!(
-        reply.contains("payload must be an object"),
-        "expected denial reason in reply, got: {reply}"
-    );
+    assert_eq!(reply, "MODEL_ERROR_REPLY");
     assert!(
         !reply.contains("[tool_error]"),
         "reply should not expose raw tool_error marker, got: {reply}"
+    );
+    assert!(
+        !reply.contains("[tool_denied]"),
+        "reply should not expose raw tool_denied marker, got: {reply}"
     );
 
     assert_eq!(
@@ -476,13 +459,70 @@ async fn handle_turn_with_runtime_tool_error_returns_natural_language_fallback()
             .completion_calls
             .lock()
             .expect("completion calls lock"),
-        0,
-        "tool-error fallback should not require a second completion pass"
+        1,
+        "tool-error fallback should run a completion pass for language-aware output"
     );
 
     let persisted = runtime.persisted.lock().expect("persisted lock");
     assert_eq!(persisted.len(), 2);
     assert_eq!(persisted[1].2, reply);
+}
+
+#[tokio::test]
+async fn handle_turn_with_runtime_tool_failure_completion_error_uses_raw_reason_without_markers() {
+    let runtime = FakeRuntime::with_turn_and_completion(
+        vec![],
+        Ok(ProviderTurn {
+            assistant_text: "Reading the file now.".to_owned(),
+            tool_intents: vec![ToolIntent {
+                tool_name: "file.read".to_owned(),
+                args_json: json!({"path": "note.md"}),
+                source: "provider_tool_call".to_owned(),
+                session_id: "session-denied-fallback".to_owned(),
+                turn_id: "turn-denied-fallback".to_owned(),
+                tool_call_id: "call-denied-fallback".to_owned(),
+            }],
+            raw_meta: Value::Null,
+        }),
+        Err("completion_unavailable".to_owned()),
+    );
+
+    let orchestrator = ConversationOrchestrator::new();
+    let reply = orchestrator
+        .handle_turn_with_runtime(
+            &test_config(),
+            "session-denied-fallback",
+            "read note.md",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            None,
+        )
+        .await
+        .expect("fallback should still return assistant text");
+
+    assert!(
+        reply.contains("Reading the file now."),
+        "expected assistant preface, got: {reply}"
+    );
+    assert!(
+        reply.contains("no_kernel_context"),
+        "expected raw denial reason when completion fails, got: {reply}"
+    );
+    assert!(
+        !reply.contains("[tool_denied]"),
+        "reply should not expose raw tool_denied marker, got: {reply}"
+    );
+    assert!(
+        !reply.contains("[tool_error]"),
+        "reply should not expose raw tool_error marker, got: {reply}"
+    );
+    assert_eq!(
+        *runtime
+            .completion_calls
+            .lock()
+            .expect("completion calls lock"),
+        1
+    );
 }
 
 #[test]

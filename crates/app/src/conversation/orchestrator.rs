@@ -54,6 +54,7 @@ impl ConversationOrchestrator {
         match provider_result {
             Ok(turn) => {
                 let had_tool_intents = !turn.tool_intents.is_empty();
+                let raw_tool_output_requested = user_requested_raw_tool_output(user_input);
                 let turn_result = TurnEngine::new(MAX_TOOL_STEPS_PER_TURN)
                     .execute_turn(&turn, kernel_ctx)
                     .await;
@@ -63,7 +64,7 @@ impl ConversationOrchestrator {
                             turn.assistant_text.as_str(),
                             tool_text.as_str(),
                         ]);
-                        if user_requested_raw_tool_output(user_input) {
+                        if raw_tool_output_requested {
                             raw_reply
                         } else {
                             let follow_up_messages = build_tool_followup_messages(
@@ -86,6 +87,64 @@ impl ConversationOrchestrator {
                                 }
                                 Err(_) => raw_reply,
                             }
+                        }
+                    }
+                    TurnResult::ToolDenied(reason)
+                        if had_tool_intents && !raw_tool_output_requested =>
+                    {
+                        let raw_reply = compose_assistant_reply(
+                            turn.assistant_text.as_str(),
+                            had_tool_intents,
+                            TurnResult::ToolDenied(reason.clone()),
+                        );
+                        let follow_up_messages = build_tool_failure_followup_messages(
+                            &messages,
+                            turn.assistant_text.as_str(),
+                            reason.as_str(),
+                            user_input,
+                        );
+                        match runtime
+                            .request_completion(config, &follow_up_messages)
+                            .await
+                        {
+                            Ok(final_reply) => {
+                                let trimmed = final_reply.trim();
+                                if trimmed.is_empty() {
+                                    raw_reply
+                                } else {
+                                    trimmed.to_owned()
+                                }
+                            }
+                            Err(_) => raw_reply,
+                        }
+                    }
+                    TurnResult::ToolError(reason)
+                        if had_tool_intents && !raw_tool_output_requested =>
+                    {
+                        let raw_reply = compose_assistant_reply(
+                            turn.assistant_text.as_str(),
+                            had_tool_intents,
+                            TurnResult::ToolError(reason.clone()),
+                        );
+                        let follow_up_messages = build_tool_failure_followup_messages(
+                            &messages,
+                            turn.assistant_text.as_str(),
+                            reason.as_str(),
+                            user_input,
+                        );
+                        match runtime
+                            .request_completion(config, &follow_up_messages)
+                            .await
+                        {
+                            Ok(final_reply) => {
+                                let trimmed = final_reply.trim();
+                                if trimmed.is_empty() {
+                                    raw_reply
+                                } else {
+                                    trimmed.to_owned()
+                                }
+                            }
+                            Err(_) => raw_reply,
                         }
                     }
                     other => compose_assistant_reply(
@@ -135,6 +194,31 @@ fn build_tool_followup_messages(
     messages
 }
 
+fn build_tool_failure_followup_messages(
+    base_messages: &[Value],
+    assistant_preface: &str,
+    tool_failure_reason: &str,
+    user_input: &str,
+) -> Vec<Value> {
+    let mut messages = base_messages.to_vec();
+    let preface = assistant_preface.trim();
+    if !preface.is_empty() {
+        messages.push(json!({
+            "role": "assistant",
+            "content": preface,
+        }));
+    }
+    messages.push(json!({
+        "role": "assistant",
+        "content": format!("[tool_failure]\n{tool_failure_reason}"),
+    }));
+    messages.push(json!({
+        "role": "user",
+        "content": format!("{TOOL_FOLLOWUP_PROMPT}\n\nOriginal request:\n{user_input}"),
+    }));
+    messages
+}
+
 fn user_requested_raw_tool_output(user_input: &str) -> bool {
     let normalized = user_input.to_ascii_lowercase();
     [
@@ -168,60 +252,13 @@ fn compose_assistant_reply(
             let inline = format!("[tool_approval_required] {reason}");
             join_non_empty_lines(&[assistant_preface, inline.as_str()])
         }
-        TurnResult::ToolDenied(reason) => {
-            let inline = format_tool_denied_reply(&reason);
-            join_non_empty_lines(&[assistant_preface, inline.as_str()])
-        }
-        TurnResult::ToolError(reason) => {
-            let inline = format_tool_error_reply(&reason);
-            join_non_empty_lines(&[assistant_preface, inline.as_str()])
-        }
+        TurnResult::ToolDenied(reason) => join_non_empty_lines(&[assistant_preface, &reason]),
+        TurnResult::ToolError(reason) => join_non_empty_lines(&[assistant_preface, &reason]),
         TurnResult::ProviderError(reason) => {
             let inline = format_provider_error_reply(&reason);
             join_non_empty_lines(&[assistant_preface, inline.as_str()])
         }
     }
-}
-
-fn format_tool_denied_reply(reason: &str) -> String {
-    let normalized = normalize_tool_failure_reason(reason);
-    format!("I couldn't run that tool request because {normalized}.")
-}
-
-fn format_tool_error_reply(reason: &str) -> String {
-    let normalized = normalize_tool_failure_reason(reason);
-    format!("I tried to run that tool request, but it failed: {normalized}.")
-}
-
-fn normalize_tool_failure_reason(reason: &str) -> String {
-    let trimmed = reason.trim();
-    if trimmed.is_empty() {
-        return "the tool reported an unspecified issue".to_owned();
-    }
-
-    if trimmed == "no_kernel_context" {
-        return "this session does not have tool execution enabled".to_owned();
-    }
-
-    if trimmed == "max_tool_steps_exceeded" {
-        return "the request exceeded the maximum allowed number of tool steps".to_owned();
-    }
-
-    if let Some(tool_name) = trimmed.strip_prefix("tool_not_found:") {
-        let tool_name = tool_name.trim();
-        if !tool_name.is_empty() {
-            return format!("the requested tool `{tool_name}` is not available");
-        }
-    }
-
-    if trimmed
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-' | ':' | ' '))
-    {
-        return trimmed.replace('_', " ");
-    }
-
-    trimmed.to_owned()
 }
 
 fn join_non_empty_lines(parts: &[&str]) -> String {
