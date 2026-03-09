@@ -31,7 +31,7 @@ pub struct LoongClawConfig {
     pub conversation: ConversationConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ConversationConfig {
     #[serde(default)]
     pub turn_loop: ConversationTurnLoopConfig,
@@ -45,14 +45,6 @@ pub struct ConversationTurnLoopConfig {
     pub max_tool_steps_per_round: usize,
     #[serde(default = "default_turn_loop_max_repeated_tool_call_rounds")]
     pub max_repeated_tool_call_rounds: usize,
-}
-
-impl Default for ConversationConfig {
-    fn default() -> Self {
-        Self {
-            turn_loop: ConversationTurnLoopConfig::default(),
-        }
-    }
 }
 
 impl Default for ConversationTurnLoopConfig {
