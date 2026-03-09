@@ -62,19 +62,31 @@ else
             echo "FAIL: ${doc_path} missing heading '# Release ${tag}'"
             ERRORS=$((ERRORS + 1))
         fi
-        if ! grep -Fxq "## Process" "$doc_path"; then
-            echo "FAIL: ${doc_path} missing section '## Process'"
+        required_sections=(
+            "## Summary"
+            "## Process"
+            "## Artifacts"
+            "## Verification"
+            "## Known Issues"
+            "## Rollback"
+            "## Detail Links"
+        )
+        for section in "${required_sections[@]}"; do
+            if ! grep -Fxq "$section" "$doc_path"; then
+                echo "FAIL: ${doc_path} missing section '$section'"
+                ERRORS=$((ERRORS + 1))
+            fi
+        done
+
+        if ! grep -Fq "| Asset |" "$doc_path"; then
+            echo "FAIL: ${doc_path} missing artifacts table header '| Asset |'"
             ERRORS=$((ERRORS + 1))
-        fi
-        if ! grep -Fxq "## Detail Links" "$doc_path"; then
-            echo "FAIL: ${doc_path} missing section '## Detail Links'"
-            ERRORS=$((ERRORS + 1))
-            continue
         fi
 
         DETAIL_LINKS_CONTENT="$(awk '/^## Detail Links$/{flag=1; next} /^## /{flag=0} flag {print}' "$doc_path")"
-        if ! printf '%s\n' "$DETAIL_LINKS_CONTENT" | grep -Eq '\[[^]]+\]\([^)]+\)'; then
-            echo "FAIL: ${doc_path} needs at least one markdown link under '## Detail Links'"
+        DETAIL_LINK_COUNT="$(printf '%s\n' "$DETAIL_LINKS_CONTENT" | grep -Eo '\[[^]]+\]\([^)]+\)' | wc -l | tr -d ' ')"
+        if [ "$DETAIL_LINK_COUNT" -lt 3 ]; then
+            echo "FAIL: ${doc_path} needs at least three markdown links under '## Detail Links'"
             ERRORS=$((ERRORS + 1))
         fi
     done <<< "$RELEASE_VERSIONS"
