@@ -37,7 +37,10 @@ pub fn build_messages_for_session(
 
     #[cfg(feature = "memory-sqlite")]
     {
-        let turns = memory::window_direct(session_id, config.memory.sliding_window)
+        let mem_config = super::memory::runtime_config::MemoryRuntimeConfig {
+            sqlite_path: Some(config.memory.resolved_sqlite_path()),
+        };
+        let turns = memory::window_direct(session_id, config.memory.sliding_window, &mem_config)
             .map_err(|error| format!("load memory window failed: {error}"))?;
         for turn in turns {
             messages.push(json!({

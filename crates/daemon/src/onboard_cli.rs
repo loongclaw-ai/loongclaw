@@ -128,9 +128,13 @@ pub(crate) async fn run_onboard_cli(options: OnboardCommandOptions) -> CliResult
 
     let path = mvp::config::write(options.output.as_deref(), &config, force_write)?;
     #[cfg(feature = "memory-sqlite")]
-    let memory_path =
-        mvp::memory::ensure_memory_db_ready(Some(config.memory.resolved_sqlite_path()))
-            .map_err(|error| format!("failed to bootstrap sqlite memory: {error}"))?;
+    let memory_path = {
+        let mem_config = mvp::memory::runtime_config::MemoryRuntimeConfig {
+            sqlite_path: Some(config.memory.resolved_sqlite_path()),
+        };
+        mvp::memory::ensure_memory_db_ready(Some(config.memory.resolved_sqlite_path()), &mem_config)
+            .map_err(|error| format!("failed to bootstrap sqlite memory: {error}"))?
+    };
 
     println!("onboarding complete");
     println!("- config: {}", path.display());

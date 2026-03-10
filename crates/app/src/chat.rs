@@ -7,6 +7,8 @@ use super::config::{self, LoongClawConfig};
 use super::conversation::{ConversationTurnLoop, ProviderErrorMode};
 #[cfg(feature = "memory-sqlite")]
 use super::memory;
+#[cfg(feature = "memory-sqlite")]
+use super::memory::runtime_config::MemoryRuntimeConfig;
 
 #[allow(clippy::print_stdout)] // CLI REPL output
 pub async fn run_cli_chat(config_path: Option<&str>, session_hint: Option<&str>) -> CliResult<()> {
@@ -19,9 +21,14 @@ pub async fn run_cli_chat(config_path: Option<&str>, session_hint: Option<&str>)
     let kernel_ctx = bootstrap_kernel_context("cli-chat", DEFAULT_TOKEN_TTL_S)?;
 
     #[cfg(feature = "memory-sqlite")]
+    let memory_config = MemoryRuntimeConfig {
+        sqlite_path: Some(config.memory.resolved_sqlite_path()),
+    };
+
+    #[cfg(feature = "memory-sqlite")]
     {
         let sqlite_path = config.memory.resolved_sqlite_path();
-        let initialized = memory::ensure_memory_db_ready(Some(sqlite_path.clone()))
+        let initialized = memory::ensure_memory_db_ready(Some(sqlite_path.clone()), &memory_config)
             .map_err(|error| format!("failed to initialize sqlite memory: {error}"))?;
         println!(
             "loongclaw chat started (config={}, memory={})",
@@ -70,6 +77,9 @@ pub async fn run_cli_chat(config_path: Option<&str>, session_hint: Option<&str>)
             continue;
         }
         if input == "/history" {
+            #[cfg(feature = "memory-sqlite")]
+            print_history(&session_id, config.memory.sliding_window, &memory_config)?;
+            #[cfg(not(feature = "memory-sqlite"))]
             print_history(&session_id, config.memory.sliding_window)?;
             continue;
         }
@@ -109,10 +119,14 @@ fn print_help() {
 }
 
 #[allow(clippy::print_stdout)] // CLI output
-fn print_history(session_id: &str, limit: usize) -> CliResult<()> {
+fn print_history(
+    session_id: &str,
+    limit: usize,
+    #[cfg(feature = "memory-sqlite")] memory_config: &MemoryRuntimeConfig,
+) -> CliResult<()> {
     #[cfg(feature = "memory-sqlite")]
     {
-        let turns = memory::window_direct(session_id, limit)
+        let turns = memory::window_direct(session_id, limit, memory_config)
             .map_err(|error| format!("load history failed: {error}"))?;
         if turns.is_empty() {
             println!("(no history yet)");

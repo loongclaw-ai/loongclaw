@@ -174,6 +174,7 @@ pub(super) fn append_turn_direct(
     session_id: &str,
     role: &str,
     content: &str,
+    config: &MemoryRuntimeConfig,
 ) -> Result<(), String> {
     let request = MemoryCoreRequest {
         operation: "append_turn".to_owned(),
@@ -183,13 +184,14 @@ pub(super) fn append_turn_direct(
             "content": content,
         }),
     };
-    super::execute_memory_core(request)?;
+    super::execute_memory_core_with_config(request, config)?;
     Ok(())
 }
 
 pub(super) fn window_direct(
     session_id: &str,
     limit: usize,
+    config: &MemoryRuntimeConfig,
 ) -> Result<Vec<ConversationTurn>, String> {
     let request = MemoryCoreRequest {
         operation: "window".to_owned(),
@@ -198,15 +200,17 @@ pub(super) fn window_direct(
             "limit": limit,
         }),
     };
-    let outcome = super::execute_memory_core(request)?;
+    let outcome = super::execute_memory_core_with_config(request, config)?;
     let turns_raw = outcome.payload.get("turns").cloned().unwrap_or(Value::Null);
     serde_json::from_value(turns_raw)
         .map_err(|error| format!("decode memory turns failed: {error}"))
 }
 
-pub(super) fn ensure_memory_db_ready(path: Option<PathBuf>) -> Result<PathBuf, String> {
-    let effective =
-        path.unwrap_or_else(|| resolve_db_path(super::runtime_config::get_memory_runtime_config()));
+pub(super) fn ensure_memory_db_ready(
+    path: Option<PathBuf>,
+    config: &MemoryRuntimeConfig,
+) -> Result<PathBuf, String> {
+    let effective = path.unwrap_or_else(|| resolve_db_path(config));
     ensure_sqlite_schema(&effective)?;
     Ok(effective)
 }

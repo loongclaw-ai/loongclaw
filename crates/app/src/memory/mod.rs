@@ -91,18 +91,30 @@ fn clear_session(
 }
 
 #[cfg(feature = "memory-sqlite")]
-pub fn append_turn_direct(session_id: &str, role: &str, content: &str) -> Result<(), String> {
-    sqlite::append_turn_direct(session_id, role, content)
+pub fn append_turn_direct(
+    session_id: &str,
+    role: &str,
+    content: &str,
+    config: &runtime_config::MemoryRuntimeConfig,
+) -> Result<(), String> {
+    sqlite::append_turn_direct(session_id, role, content, config)
 }
 
 #[cfg(feature = "memory-sqlite")]
-pub fn window_direct(session_id: &str, limit: usize) -> Result<Vec<ConversationTurn>, String> {
-    sqlite::window_direct(session_id, limit)
+pub fn window_direct(
+    session_id: &str,
+    limit: usize,
+    config: &runtime_config::MemoryRuntimeConfig,
+) -> Result<Vec<ConversationTurn>, String> {
+    sqlite::window_direct(session_id, limit, config)
 }
 
 #[cfg(feature = "memory-sqlite")]
-pub fn ensure_memory_db_ready(path: Option<PathBuf>) -> Result<PathBuf, String> {
-    sqlite::ensure_memory_db_ready(path)
+pub fn ensure_memory_db_ready(
+    path: Option<PathBuf>,
+    config: &runtime_config::MemoryRuntimeConfig,
+) -> Result<PathBuf, String> {
+    sqlite::ensure_memory_db_ready(path, config)
 }
 
 #[cfg(test)]
@@ -167,5 +179,41 @@ mod tests {
             .expect("kernel memory core execution should succeed");
 
         assert_eq!(outcome.status, "ok");
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn memory_write_read_round_trip_uses_injected_config() {
+        use std::fs;
+
+        let tmp =
+            std::env::temp_dir().join(format!("loongclaw-test-memory-{}", std::process::id()));
+        let _ = fs::create_dir_all(&tmp);
+        let db_path = tmp.join("isolated-test.sqlite3");
+        // Ensure clean state
+        let _ = fs::remove_file(&db_path);
+
+        let config = runtime_config::MemoryRuntimeConfig {
+            sqlite_path: Some(db_path.clone()),
+        };
+
+        append_turn_direct("rt-session", "user", "hello from test", &config)
+            .expect("append_turn_direct should succeed");
+
+        let turns = window_direct("rt-session", 10, &config).expect("window_direct should succeed");
+
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].role, "user");
+        assert_eq!(turns[0].content, "hello from test");
+
+        // The isolated DB was created at the injected path
+        assert!(
+            db_path.exists(),
+            "sqlite file should exist at injected path"
+        );
+
+        // Cleanup
+        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir(&tmp);
     }
 }

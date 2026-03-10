@@ -553,9 +553,14 @@ fn run_setup_cli(output: Option<&str>, force: bool) -> CliResult<()> {
             .to_str()
             .ok_or_else(|| format!("config path is not valid UTF-8: {}", path.display()))?;
         let (_, parsed) = mvp::config::load(Some(path_str))?;
-        let memory_db =
-            mvp::memory::ensure_memory_db_ready(Some(parsed.memory.resolved_sqlite_path()))
-                .map_err(|error| format!("failed to bootstrap sqlite memory: {error}"))?;
+        let mem_config = mvp::memory::runtime_config::MemoryRuntimeConfig {
+            sqlite_path: Some(parsed.memory.resolved_sqlite_path()),
+        };
+        let memory_db = mvp::memory::ensure_memory_db_ready(
+            Some(parsed.memory.resolved_sqlite_path()),
+            &mem_config,
+        )
+        .map_err(|error| format!("failed to bootstrap sqlite memory: {error}"))?;
         println!(
             "setup complete\n- config: {}\n- sqlite memory: {}",
             path.display(),

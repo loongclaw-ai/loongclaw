@@ -105,8 +105,13 @@ impl ConversationRuntime for DefaultConversationRuntime {
 
         #[cfg(feature = "memory-sqlite")]
         {
-            memory::append_turn_direct(session_id, role, content)
-                .map_err(|error| format!("persist {role} turn failed: {error}"))?;
+            memory::append_turn_direct(
+                session_id,
+                role,
+                content,
+                memory::runtime_config::get_memory_runtime_config(),
+            )
+            .map_err(|error| format!("persist {role} turn failed: {error}"))?;
         }
 
         #[cfg(not(feature = "memory-sqlite"))]
