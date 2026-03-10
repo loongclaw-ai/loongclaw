@@ -283,25 +283,24 @@ pub(super) fn format_config_validation_issues_with_locale(
     format!("invalid configuration: {details}")
 }
 
-pub(super) fn default_loongclaw_home() -> PathBuf {
+fn get_user_home() -> PathBuf {
     env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".loongclaw")
+}
+
+pub(super) fn default_loongclaw_home() -> PathBuf {
+    get_user_home().join(".loongclaw")
 }
 
 pub fn expand_path(raw: &str) -> PathBuf {
     let trimmed = raw.trim();
     if trimmed == "~" {
-        return env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."));
+        return get_user_home();
     }
     if let Some(stripped) = trimmed.strip_prefix("~/") {
-        return env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(stripped);
+        return get_user_home().join(stripped);
     }
     Path::new(trimmed).to_path_buf()
 }
@@ -555,6 +554,18 @@ mod tests {
         assert_eq!(
             parse_env_assignment("set OPENAI_API_KEY=sk-value"),
             Some(("OPENAI_API_KEY", "sk-value"))
+        );
+    }
+
+    #[test]
+    fn get_user_home_never_returns_dot_on_real_os() {
+        // On any real OS (Linux/macOS/Windows) at least one of HOME or
+        // USERPROFILE should be set.  This test documents that expectation.
+        let home = get_user_home();
+        assert_ne!(
+            home,
+            PathBuf::from("."),
+            "get_user_home() should resolve to a real directory, not \".\""
         );
     }
 }

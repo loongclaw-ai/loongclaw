@@ -8,6 +8,8 @@ use loongclaw_contracts::{MemoryCoreOutcome, MemoryCoreRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use super::runtime_config::MemoryRuntimeConfig;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationTurn {
     pub role: String,
@@ -15,7 +17,10 @@ pub struct ConversationTurn {
     pub ts: i64,
 }
 
-pub(super) fn append_turn(request: MemoryCoreRequest) -> Result<MemoryCoreOutcome, String> {
+pub(super) fn append_turn(
+    request: MemoryCoreRequest,
+    config: &MemoryRuntimeConfig,
+) -> Result<MemoryCoreOutcome, String> {
     let payload = request
         .payload
         .as_object()
@@ -37,7 +42,7 @@ pub(super) fn append_turn(request: MemoryCoreRequest) -> Result<MemoryCoreOutcom
         .and_then(Value::as_str)
         .ok_or_else(|| "memory.append_turn requires payload.content".to_owned())?;
 
-    let path = memory_db_path();
+    let path = resolve_db_path(config);
     ensure_sqlite_schema(&path)?;
     let conn = rusqlite::Connection::open(&path)
         .map_err(|error| format!("open sqlite memory db failed: {error}"))?;
@@ -61,7 +66,10 @@ pub(super) fn append_turn(request: MemoryCoreRequest) -> Result<MemoryCoreOutcom
     })
 }
 
-pub(super) fn load_window(request: MemoryCoreRequest) -> Result<MemoryCoreOutcome, String> {
+pub(super) fn load_window(
+    request: MemoryCoreRequest,
+    config: &MemoryRuntimeConfig,
+) -> Result<MemoryCoreOutcome, String> {
     let payload = request
         .payload
         .as_object()
@@ -80,7 +88,7 @@ pub(super) fn load_window(request: MemoryCoreRequest) -> Result<MemoryCoreOutcom
     let default_window = default_window_size().max(1);
     let window_limit = requested_limit.min(default_window);
 
-    let path = memory_db_path();
+    let path = resolve_db_path(config);
     ensure_sqlite_schema(&path)?;
     let conn = rusqlite::Connection::open(&path)
         .map_err(|error| format!("open sqlite memory db failed: {error}"))?;
@@ -126,7 +134,10 @@ pub(super) fn load_window(request: MemoryCoreRequest) -> Result<MemoryCoreOutcom
     })
 }
 
-pub(super) fn clear_session(request: MemoryCoreRequest) -> Result<MemoryCoreOutcome, String> {
+pub(super) fn clear_session(
+    request: MemoryCoreRequest,
+    config: &MemoryRuntimeConfig,
+) -> Result<MemoryCoreOutcome, String> {
     let payload = request
         .payload
         .as_object()
@@ -138,7 +149,7 @@ pub(super) fn clear_session(request: MemoryCoreRequest) -> Result<MemoryCoreOutc
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "memory.clear_session requires payload.session_id".to_owned())?;
 
-    let path = memory_db_path();
+    let path = resolve_db_path(config);
     ensure_sqlite_schema(&path)?;
     let conn = rusqlite::Connection::open(&path)
         .map_err(|error| format!("open sqlite memory db failed: {error}"))?;
@@ -194,7 +205,8 @@ pub(super) fn window_direct(
 }
 
 pub(super) fn ensure_memory_db_ready(path: Option<PathBuf>) -> Result<PathBuf, String> {
-    let effective = path.unwrap_or_else(memory_db_path);
+    let effective =
+        path.unwrap_or_else(|| resolve_db_path(super::runtime_config::get_memory_runtime_config()));
     ensure_sqlite_schema(&effective)?;
     Ok(effective)
 }
@@ -218,17 +230,11 @@ fn unix_ts_now() -> i64 {
         .unwrap_or_default()
 }
 
-fn memory_db_path() -> PathBuf {
-    std::env::var("LOONGCLAW_SQLITE_PATH")
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".loongclaw")
-                .join("memory.sqlite3")
-        })
+fn resolve_db_path(config: &MemoryRuntimeConfig) -> PathBuf {
+    if let Some(path) = &config.sqlite_path {
+        return path.clone();
+    }
+    crate::config::default_loongclaw_home().join("memory.sqlite3")
 }
 
 fn ensure_sqlite_schema(path: &PathBuf) -> Result<(), String> {

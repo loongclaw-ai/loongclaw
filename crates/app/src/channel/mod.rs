@@ -213,6 +213,12 @@ fn apply_runtime_env(config: &LoongClawConfig) {
         file_root: Some(config.tools.resolved_file_root()),
     };
     let _ = crate::tools::runtime_config::init_tool_runtime_config(tool_rt);
+
+    // Populate the typed memory runtime config (same pattern as tool config).
+    let memory_rt = crate::memory::runtime_config::MemoryRuntimeConfig {
+        sqlite_path: Some(config.memory.resolved_sqlite_path()),
+    };
+    let _ = crate::memory::runtime_config::init_memory_runtime_config(memory_rt);
 }
 
 #[cfg(feature = "channel-telegram")]

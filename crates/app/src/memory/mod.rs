@@ -5,6 +5,7 @@ use loongclaw_contracts::{MemoryCoreOutcome, MemoryCoreRequest};
 use serde_json::json;
 
 mod kernel_adapter;
+pub mod runtime_config;
 #[cfg(feature = "memory-sqlite")]
 mod sqlite;
 
@@ -13,10 +14,17 @@ pub use kernel_adapter::MvpMemoryAdapter;
 pub use sqlite::ConversationTurn;
 
 pub fn execute_memory_core(request: MemoryCoreRequest) -> Result<MemoryCoreOutcome, String> {
+    execute_memory_core_with_config(request, runtime_config::get_memory_runtime_config())
+}
+
+pub fn execute_memory_core_with_config(
+    request: MemoryCoreRequest,
+    config: &runtime_config::MemoryRuntimeConfig,
+) -> Result<MemoryCoreOutcome, String> {
     match request.operation.as_str() {
-        "append_turn" => append_turn(request),
-        "window" => load_window(request),
-        "clear_session" => clear_session(request),
+        "append_turn" => append_turn(request, config),
+        "window" => load_window(request, config),
+        "clear_session" => clear_session(request, config),
         _ => Ok(MemoryCoreOutcome {
             status: "ok".to_owned(),
             payload: json!({
@@ -28,10 +36,13 @@ pub fn execute_memory_core(request: MemoryCoreRequest) -> Result<MemoryCoreOutco
     }
 }
 
-fn append_turn(request: MemoryCoreRequest) -> Result<MemoryCoreOutcome, String> {
+fn append_turn(
+    request: MemoryCoreRequest,
+    config: &runtime_config::MemoryRuntimeConfig,
+) -> Result<MemoryCoreOutcome, String> {
     #[cfg(not(feature = "memory-sqlite"))]
     {
-        let _ = request;
+        let _ = (request, config);
         return Err(
             "sqlite memory is disabled in this build (enable feature `memory-sqlite`)".to_owned(),
         );
@@ -39,14 +50,17 @@ fn append_turn(request: MemoryCoreRequest) -> Result<MemoryCoreOutcome, String> 
 
     #[cfg(feature = "memory-sqlite")]
     {
-        sqlite::append_turn(request)
+        sqlite::append_turn(request, config)
     }
 }
 
-fn load_window(request: MemoryCoreRequest) -> Result<MemoryCoreOutcome, String> {
+fn load_window(
+    request: MemoryCoreRequest,
+    config: &runtime_config::MemoryRuntimeConfig,
+) -> Result<MemoryCoreOutcome, String> {
     #[cfg(not(feature = "memory-sqlite"))]
     {
-        let _ = request;
+        let _ = (request, config);
         return Err(
             "sqlite memory is disabled in this build (enable feature `memory-sqlite`)".to_owned(),
         );
@@ -54,14 +68,17 @@ fn load_window(request: MemoryCoreRequest) -> Result<MemoryCoreOutcome, String> 
 
     #[cfg(feature = "memory-sqlite")]
     {
-        sqlite::load_window(request)
+        sqlite::load_window(request, config)
     }
 }
 
-fn clear_session(request: MemoryCoreRequest) -> Result<MemoryCoreOutcome, String> {
+fn clear_session(
+    request: MemoryCoreRequest,
+    config: &runtime_config::MemoryRuntimeConfig,
+) -> Result<MemoryCoreOutcome, String> {
     #[cfg(not(feature = "memory-sqlite"))]
     {
-        let _ = request;
+        let _ = (request, config);
         return Err(
             "sqlite memory is disabled in this build (enable feature `memory-sqlite`)".to_owned(),
         );
@@ -69,7 +86,7 @@ fn clear_session(request: MemoryCoreRequest) -> Result<MemoryCoreOutcome, String
 
     #[cfg(feature = "memory-sqlite")]
     {
-        sqlite::clear_session(request)
+        sqlite::clear_session(request, config)
     }
 }
 
@@ -114,7 +131,7 @@ mod tests {
 
         let mut kernel = LoongClawKernel::new(StaticPolicyEngine::default());
 
-        kernel.register_core_memory_adapter(MvpMemoryAdapter);
+        kernel.register_core_memory_adapter(MvpMemoryAdapter::new());
         kernel
             .set_default_core_memory_adapter("mvp-memory")
             .expect("set default memory adapter");

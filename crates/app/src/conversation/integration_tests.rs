@@ -118,6 +118,20 @@ impl TurnTestHarness {
             .set_default_core_tool_adapter("mvp-tools")
             .expect("set default adapter");
 
+        #[cfg(feature = "memory-sqlite")]
+        {
+            use crate::memory::runtime_config::MemoryRuntimeConfig;
+            let memory_config = MemoryRuntimeConfig {
+                sqlite_path: Some(temp_dir.join("memory.sqlite3")),
+            };
+            kernel.register_core_memory_adapter(crate::memory::MvpMemoryAdapter::with_config(
+                memory_config,
+            ));
+            kernel
+                .set_default_core_memory_adapter("mvp-memory")
+                .expect("set default memory adapter");
+        }
+
         let token = kernel
             .issue_token("test-pack", "test-agent", 3600)
             .expect("issue token");
