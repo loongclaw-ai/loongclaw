@@ -966,6 +966,7 @@ mod tests {
             feishu: FeishuChannelConfig::default(),
             tools: ToolConfig::default(),
             memory: MemoryConfig::default(),
+            conversation: crate::config::ConversationConfig::default(),
         };
         config.provider.reasoning_effort = Some(ReasoningEffort::High);
 
@@ -1259,6 +1260,7 @@ mod tests {
             feishu: FeishuChannelConfig::default(),
             tools: ToolConfig::default(),
             memory: MemoryConfig::default(),
+            conversation: crate::config::ConversationConfig::default(),
         };
         let error = validate_provider_configuration(&config).expect_err("misconfig should fail");
         assert!(error.contains("use `kind = \"kimi_coding\"`"));
@@ -1279,6 +1281,7 @@ mod tests {
             feishu: FeishuChannelConfig::default(),
             tools: ToolConfig::default(),
             memory: MemoryConfig::default(),
+            conversation: crate::config::ConversationConfig::default(),
         };
         let error = validate_provider_configuration(&config).expect_err("invalid ua");
         assert!(error.contains("KimiCLI/"));

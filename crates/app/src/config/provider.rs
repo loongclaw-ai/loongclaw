@@ -426,7 +426,7 @@ impl ProviderKind {
             ProviderKind::Anthropic => Some("ANTHROPIC_API_KEY"),
             ProviderKind::Deepseek => Some("DEEPSEEK_API_KEY"),
             ProviderKind::Kimi => Some("MOONSHOT_API_KEY"),
-            ProviderKind::KimiCoding => Some("KIMI_API_KEY"),
+            ProviderKind::KimiCoding => Some("KIMI_CODING_API_KEY"),
             ProviderKind::Minimax => Some("MINIMAX_API_KEY"),
             ProviderKind::Ollama => None,
             ProviderKind::Openai => Some("OPENAI_API_KEY"),
@@ -440,8 +440,6 @@ impl ProviderKind {
 
     pub const fn api_key_env_aliases(self) -> &'static [&'static str] {
         match self {
-            ProviderKind::Kimi => &["KIMI_API_KEY"],
-            ProviderKind::KimiCoding => &["KIMICODE_API_KEY"],
             ProviderKind::Zhipu => &["ZHIPU_API_KEY"],
             _ => &[],
         }

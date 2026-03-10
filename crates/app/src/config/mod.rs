@@ -147,13 +147,6 @@ mod tests {
     }
 
     #[test]
-    fn provider_kind_api_key_aliases_include_kimi_alias() {
-        assert!(ProviderKind::Kimi
-            .api_key_env_aliases()
-            .contains(&"KIMI_API_KEY"));
-    }
-
-    #[test]
     fn switching_provider_kind_uses_profile_defaults() {
         let config = ProviderConfig {
             kind: ProviderKind::Openrouter,
@@ -186,7 +179,7 @@ mod tests {
         assert_eq!(config.resolved_model().as_deref(), Some("kimi-for-coding"));
         assert_eq!(
             config.default_api_key_env().as_deref(),
-            Some("KIMI_API_KEY")
+            Some("KIMI_CODING_API_KEY")
         );
         assert!(!config.model_selection_requires_fetch());
     }
@@ -313,7 +306,7 @@ kind = "kimi_coding"
         );
         assert_eq!(
             parsed.provider.default_api_key_env().as_deref(),
-            Some("KIMI_API_KEY")
+            Some("KIMI_CODING_API_KEY")
         );
     }
 
@@ -387,7 +380,7 @@ kind = "kimi_coding"
     #[test]
     fn config_validation_accepts_shell_style_env_names() {
         let mut config = LoongClawConfig::default();
-        config.provider.api_key_env = Some("KIMI_API_KEY".to_owned());
+        config.provider.api_key_env = Some("KIMI_CODING_API_KEY".to_owned());
         config.telegram.bot_token_env = Some("TELEGRAM_BOT_TOKEN".to_owned());
 
         config

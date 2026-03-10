@@ -14,6 +14,14 @@ fn parse_provider_kind_accepts_primary_and_legacy_aliases() {
         crate::onboard_cli::parse_provider_kind("volcengine_custom"),
         Some(mvp::config::ProviderKind::Volcengine)
     );
+    assert_eq!(
+        crate::onboard_cli::parse_provider_kind("kimi_coding"),
+        Some(mvp::config::ProviderKind::KimiCoding)
+    );
+    assert_eq!(
+        crate::onboard_cli::parse_provider_kind("kimi_coding_compatible"),
+        Some(mvp::config::ProviderKind::KimiCoding)
+    );
     assert_eq!(crate::onboard_cli::parse_provider_kind("unsupported"), None);
 }
 
@@ -30,6 +38,18 @@ fn provider_default_env_mapping_is_stable() {
     assert_eq!(
         crate::onboard_cli::provider_default_api_key_env(mvp::config::ProviderKind::Openrouter),
         "OPENROUTER_API_KEY"
+    );
+    assert_eq!(
+        crate::onboard_cli::provider_default_api_key_env(mvp::config::ProviderKind::KimiCoding),
+        "KIMI_CODING_API_KEY"
+    );
+}
+
+#[test]
+fn provider_kind_id_mapping_includes_kimi_coding() {
+    assert_eq!(
+        crate::onboard_cli::provider_kind_id(mvp::config::ProviderKind::KimiCoding),
+        "kimi_coding"
     );
 }
 

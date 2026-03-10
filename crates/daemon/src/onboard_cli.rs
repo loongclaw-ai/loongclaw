@@ -425,6 +425,7 @@ pub(crate) fn parse_provider_kind(raw: &str) -> Option<mvp::config::ProviderKind
         "anthropic" | "anthropic_compatible" => Some(mvp::config::ProviderKind::Anthropic),
         "deepseek" | "deepseek_compatible" => Some(mvp::config::ProviderKind::Deepseek),
         "kimi" | "kimi_compatible" => Some(mvp::config::ProviderKind::Kimi),
+        "kimi_coding" | "kimi_coding_compatible" => Some(mvp::config::ProviderKind::KimiCoding),
         "minimax" | "minimax_compatible" => Some(mvp::config::ProviderKind::Minimax),
         "ollama" | "ollama_compatible" => Some(mvp::config::ProviderKind::Ollama),
         "openai" | "openai_compatible" => Some(mvp::config::ProviderKind::Openai),
@@ -444,6 +445,7 @@ pub(crate) fn provider_default_api_key_env(kind: mvp::config::ProviderKind) -> &
         mvp::config::ProviderKind::Anthropic => "ANTHROPIC_API_KEY",
         mvp::config::ProviderKind::Deepseek => "DEEPSEEK_API_KEY",
         mvp::config::ProviderKind::Kimi => "MOONSHOT_API_KEY",
+        mvp::config::ProviderKind::KimiCoding => "KIMI_CODING_API_KEY",
         mvp::config::ProviderKind::Minimax => "MINIMAX_API_KEY",
         mvp::config::ProviderKind::Ollama => "OLLAMA_API_KEY",
         mvp::config::ProviderKind::Openai => "OPENAI_API_KEY",
@@ -460,6 +462,7 @@ pub(crate) fn provider_kind_id(kind: mvp::config::ProviderKind) -> &'static str 
         mvp::config::ProviderKind::Anthropic => "anthropic",
         mvp::config::ProviderKind::Deepseek => "deepseek",
         mvp::config::ProviderKind::Kimi => "kimi",
+        mvp::config::ProviderKind::KimiCoding => "kimi_coding",
         mvp::config::ProviderKind::Minimax => "minimax",
         mvp::config::ProviderKind::Ollama => "ollama",
         mvp::config::ProviderKind::Openai => "openai",
@@ -472,5 +475,5 @@ pub(crate) fn provider_kind_id(kind: mvp::config::ProviderKind) -> &'static str 
 }
 
 fn supported_provider_list() -> &'static str {
-    "openai, anthropic, openrouter, kimi, minimax, ollama, volcengine, xai, zai, zhipu, deepseek"
+    "openai, anthropic, openrouter, kimi, kimi_coding, minimax, ollama, volcengine, xai, zai, zhipu, deepseek"
 }
