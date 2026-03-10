@@ -51,43 +51,7 @@ pub(crate) async fn run_onboard_cli(options: OnboardCommandOptions) -> CliResult
         .as_deref()
         .map(mvp::config::expand_path)
         .unwrap_or_else(mvp::config::default_config_path);
-    let mut force_write = options.force;
-    if output_path.exists() && !force_write {
-        if options.non_interactive {
-            return Err(format!(
-                "config {} already exists (use --force to overwrite)",
-                output_path.display()
-            ));
-        }
-        let existing_path = output_path.display().to_string();
-        println!("Config file already exists: {}", existing_path);
-        println!("Options:");
-        println!("  [o] Overwrite (replace existing)");
-        println!("  [b] Backup (rename existing to .bak)");
-        println!("  [c] Cancel");
-        loop {
-            let choice = prompt_with_default("Your choice", "c")?;
-            match choice.trim().to_ascii_lowercase().as_str() {
-                "o" | "overwrite" => {
-                    force_write = true;
-                    break;
-                }
-                "b" | "backup" => {
-                    let backup_path = resolve_backup_path(&output_path)?;
-                    fs::rename(&output_path, &backup_path)
-                        .map_err(|e| format!("failed to backup config: {e}"))?;
-                    println!("Backed up existing config to: {}", backup_path.display());
-                    break;
-                }
-                "c" | "cancel" => {
-                    return Err("onboarding cancelled: config file already exists".to_owned());
-                }
-                _ => {
-                    println!("Invalid choice. Please enter 'o' (overwrite), 'b' (backup), or 'c' (cancel)");
-                }
-            }
-        }
-    }
+    let force_write = resolve_force_write(&output_path, &options)?;
 
     let mut config = mvp::config::LoongClawConfig::default();
 
@@ -522,6 +486,49 @@ pub(crate) fn provider_kind_id(kind: mvp::config::ProviderKind) -> &'static str 
 
 fn supported_provider_list() -> &'static str {
     "openai, anthropic, openrouter, kimi, kimi_coding, minimax, ollama, volcengine, xai, zai, zhipu, deepseek"
+}
+
+fn resolve_force_write(output_path: &Path, options: &OnboardCommandOptions) -> CliResult<bool> {
+    if !output_path.exists() || options.force {
+        return Ok(options.force);
+    }
+
+    if options.non_interactive {
+        return Err(format!(
+            "config {} already exists (use --force to overwrite)",
+            output_path.display()
+        ));
+    }
+
+    let existing_path = output_path.display().to_string();
+    println!("Config file already exists: {}", existing_path);
+    println!("Options:");
+    println!("  [o] Overwrite (replace existing)");
+    println!("  [b] Backup (rename existing to .bak)");
+    println!("  [c] Cancel");
+    loop {
+        let choice = prompt_with_default("Your choice", "c")?;
+        match choice.trim().to_ascii_lowercase().as_str() {
+            "o" | "overwrite" => {
+                return Ok(true);
+            }
+            "b" | "backup" => {
+                let backup_path = resolve_backup_path(output_path)?;
+                fs::rename(output_path, &backup_path)
+                    .map_err(|e| format!("failed to backup config: {e}"))?;
+                println!("Backed up existing config to: {}", backup_path.display());
+                return Ok(false);
+            }
+            "c" | "cancel" => {
+                return Err("onboarding cancelled: config file already exists".to_owned());
+            }
+            _ => {
+                println!(
+                    "Invalid choice. Please enter 'o' (overwrite), 'b' (backup), or 'c' (cancel)"
+                );
+            }
+        }
+    }
 }
 
 fn resolve_backup_path(original: &Path) -> CliResult<PathBuf> {
