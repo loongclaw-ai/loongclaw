@@ -290,7 +290,7 @@ pub(super) fn default_loongclaw_home() -> PathBuf {
         .join(".loongclaw")
 }
 
-pub(super) fn expand_path(raw: &str) -> PathBuf {
+pub fn expand_path(raw: &str) -> PathBuf {
     let trimmed = raw.trim();
     if trimmed == "~" {
         return env::var_os("HOME")
