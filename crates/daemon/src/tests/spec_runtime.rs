@@ -1984,6 +1984,139 @@ async fn execute_spec_wasm_component_bridge_blocks_when_component_sha256_mismatc
 }
 
 #[tokio::test]
+async fn execute_spec_wasm_component_bridge_blocks_when_hash_pin_required_but_missing() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be monotonic")
+        .as_nanos();
+    let plugin_root =
+        std::env::temp_dir().join(format!("loongclaw-wasm-runtime-pin-required-{unique}"));
+    fs::create_dir_all(&plugin_root).expect("create plugin root");
+
+    fs::write(
+        plugin_root.join("plugin.rs"),
+        r#"
+// LOONGCLAW_PLUGIN_START
+// {
+//   "plugin_id": "wasm-runtime-pin-required",
+//   "provider_id": "wasm-runtime-pin-required-provider",
+//   "connector_name": "wasm-runtime-pin-required-provider",
+//   "channel_id": "primary",
+//   "endpoint": "local://wasm-runtime-pin-required-provider/invoke",
+//   "capabilities": ["InvokeConnector"],
+//   "metadata": {
+//     "bridge_kind":"wasm_component",
+//     "component":"plugin.wasm",
+//     "entrypoint":"run",
+//     "version":"1.0.0"
+//   }
+// }
+// LOONGCLAW_PLUGIN_END
+"#,
+    )
+    .expect("write wasm plugin manifest");
+
+    let wasm_bytes = wat::parse_str(r#"(module (func (export "run")))"#).expect("compile wasm");
+    fs::write(plugin_root.join("plugin.wasm"), wasm_bytes).expect("write wasm module");
+
+    let spec = RunnerSpec {
+        pack: VerticalPackManifest {
+            pack_id: "spec-wasm-runtime-pin-required".to_owned(),
+            domain: "ops".to_owned(),
+            version: "0.1.0".to_owned(),
+            default_route: ExecutionRoute {
+                harness_kind: HarnessKind::EmbeddedPi,
+                adapter: Some("pi-local".to_owned()),
+            },
+            allowed_connectors: BTreeSet::new(),
+            granted_capabilities: BTreeSet::new(),
+            metadata: BTreeMap::new(),
+        },
+        agent_id: "agent-wasm-runtime-pin-required".to_owned(),
+        ttl_s: 120,
+        approval: None,
+        defaults: None,
+        self_awareness: None,
+        plugin_scan: Some(PluginScanSpec {
+            enabled: true,
+            roots: vec![plugin_root.display().to_string()],
+        }),
+        bridge_support: Some(BridgeSupportSpec {
+            enabled: true,
+            supported_bridges: vec![PluginBridgeKind::WasmComponent],
+            supported_adapter_families: Vec::new(),
+            enforce_supported: true,
+            policy_version: None,
+            expected_checksum: None,
+            expected_sha256: None,
+            execute_process_stdio: false,
+            execute_http_json: false,
+            allowed_process_commands: Vec::new(),
+            enforce_execution_success: true,
+            security_scan: Some(SecurityScanSpec {
+                enabled: true,
+                block_on_high: true,
+                profile_path: None,
+                profile_sha256: None,
+                profile_signature: None,
+                siem_export: None,
+                runtime: SecurityRuntimeExecutionSpec {
+                    execute_wasm_component: true,
+                    allowed_path_prefixes: vec![plugin_root.display().to_string()],
+                    max_component_bytes: Some(128 * 1024),
+                    fuel_limit: Some(200_000),
+                },
+                high_risk_metadata_keywords: Vec::new(),
+                wasm: WasmSecurityScanSpec {
+                    enabled: true,
+                    max_module_bytes: 128 * 1024,
+                    allow_wasi: false,
+                    blocked_import_prefixes: vec!["wasi".to_owned()],
+                    allowed_path_prefixes: vec![plugin_root.display().to_string()],
+                    require_hash_pin: true,
+                    required_sha256_by_plugin: BTreeMap::new(),
+                },
+            }),
+        }),
+        bootstrap: Some(BootstrapSpec {
+            enabled: true,
+            allow_http_json_auto_apply: Some(false),
+            allow_process_stdio_auto_apply: Some(false),
+            allow_native_ffi_auto_apply: Some(false),
+            allow_wasm_component_auto_apply: Some(true),
+            allow_mcp_server_auto_apply: Some(false),
+            enforce_ready_execution: Some(true),
+            max_tasks: Some(5),
+        }),
+        auto_provision: None,
+        hotfixes: Vec::new(),
+        operation: OperationSpec::ConnectorLegacy {
+            connector_name: "wasm-runtime-pin-required-provider".to_owned(),
+            operation: "invoke".to_owned(),
+            required_capabilities: BTreeSet::from([Capability::InvokeConnector]),
+            payload: json!({"input":"ping"}),
+        },
+    };
+
+    let report = execute_spec(spec, true).await;
+    assert_eq!(report.operation_kind, "blocked");
+    let security = report
+        .security_scan_report
+        .expect("security scan report should exist");
+    assert!(security.blocked);
+    assert!(
+        security.findings.iter().any(
+            |finding| finding.category == "wasm_sha256_pin_missing"
+                && finding.message.contains("hash pin")
+        ),
+        "expected wasm_sha256_pin_missing finding, got: {:?}",
+        security.findings
+    );
+}
+
+#[tokio::test]
 async fn execute_spec_wasm_component_bridge_blocks_artifact_outside_runtime_prefixes() {
     use std::time::{SystemTime, UNIX_EPOCH};
 
