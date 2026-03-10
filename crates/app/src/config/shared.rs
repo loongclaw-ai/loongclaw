@@ -557,15 +557,59 @@ mod tests {
         );
     }
 
+    /// Deterministic regression test for `get_user_home()` covering three
+    /// scenarios sequentially in a single test to avoid env-var races with
+    /// parallel test threads:
+    ///
+    /// 1. Real OS — at least one of HOME/USERPROFILE is set → not "."
+    /// 2. Only USERPROFILE set → should return USERPROFILE value
+    /// 3. Neither HOME nor USERPROFILE set → should return "."
     #[test]
-    fn get_user_home_never_returns_dot_on_real_os() {
-        // On any real OS (Linux/macOS/Windows) at least one of HOME or
-        // USERPROFILE should be set.  This test documents that expectation.
-        let home = get_user_home();
+    fn get_user_home_deterministic_fallback_scenarios() {
+        // Scenario 1: real OS should have at least one var set
+        let home_on_real_os = get_user_home();
         assert_ne!(
-            home,
+            home_on_real_os,
             PathBuf::from("."),
             "get_user_home() should resolve to a real directory, not \".\""
+        );
+
+        let original_home = env::var_os("HOME");
+        let original_userprofile = env::var_os("USERPROFILE");
+
+        let synthetic = PathBuf::from(if cfg!(windows) {
+            r"C:\Users\loongclaw-test-synthetic"
+        } else {
+            "/tmp/loongclaw-test-synthetic"
+        });
+
+        // Scenario 2: HOME absent, USERPROFILE present → returns USERPROFILE
+        env::remove_var("HOME");
+        env::set_var("USERPROFILE", &synthetic);
+        let result_userprofile = get_user_home();
+
+        // Scenario 3: both absent → returns "."
+        env::remove_var("USERPROFILE");
+        let result_dot = get_user_home();
+
+        // Restore original env before assertions (panic-safe ordering)
+        match original_home {
+            Some(v) => env::set_var("HOME", v),
+            None => env::remove_var("HOME"),
+        }
+        match original_userprofile {
+            Some(v) => env::set_var("USERPROFILE", v),
+            None => env::remove_var("USERPROFILE"),
+        }
+
+        assert_eq!(
+            result_userprofile, synthetic,
+            "get_user_home() should fall back to USERPROFILE when HOME is absent"
+        );
+        assert_eq!(
+            result_dot,
+            PathBuf::from("."),
+            "get_user_home() should return \".\" when both HOME and USERPROFILE are absent"
         );
     }
 }

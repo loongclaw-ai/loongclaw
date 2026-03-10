@@ -73,7 +73,9 @@ pub(crate) fn bootstrap_kernel_context(
 
     #[cfg(feature = "memory-sqlite")]
     {
-        kernel.register_core_memory_adapter(crate::memory::MvpMemoryAdapter::new());
+        let mem_config = crate::memory::runtime_config::get_memory_runtime_config().clone();
+        kernel
+            .register_core_memory_adapter(crate::memory::MvpMemoryAdapter::with_config(mem_config));
         kernel
             .set_default_core_memory_adapter("mvp-memory")
             .map_err(|e| format!("set default memory adapter failed: {e}"))?;
