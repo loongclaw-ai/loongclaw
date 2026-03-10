@@ -552,6 +552,14 @@ async fn handle_turn_with_runtime_repeated_tool_signature_guard_warns_then_trigg
         "completion fallback payload should include loop guard marker, got: {serialized}"
     );
     assert!(
+        serialized.contains("Detected tool-loop behavior across rounds."),
+        "completion fallback should include generic tool-loop guard prompt, got: {serialized}"
+    );
+    assert!(
+        serialized.contains("Loop guard reason:"),
+        "completion fallback should include loop guard reason section, got: {serialized}"
+    );
+    assert!(
         serialized.matches("[tool_failure]").count() == 4,
         "completion fallback should preserve the latest tool failure context before guard fallback, got: {serialized}"
     );
@@ -637,6 +645,10 @@ async fn handle_turn_with_runtime_ping_pong_loop_guard_triggers_completion() {
     assert!(
         completion_payload.contains("[tool_loop_guard]"),
         "completion payload should include loop guard marker, got: {completion_payload}"
+    );
+    assert!(
+        completion_payload.contains("Loop guard reason:"),
+        "completion payload should include loop guard reason section, got: {completion_payload}"
     );
     assert!(
         completion_payload.matches("[tool_failure]").count() == 5,
@@ -727,6 +739,10 @@ async fn handle_turn_with_runtime_failure_streak_guard_triggers_completion() {
     assert!(
         completion_payload.contains("[tool_loop_guard]"),
         "completion payload should include loop guard marker, got: {completion_payload}"
+    );
+    assert!(
+        completion_payload.contains("Loop guard reason:"),
+        "completion payload should include loop guard reason section, got: {completion_payload}"
     );
     assert!(
         completion_payload.matches("[tool_failure]").count() == 4,

@@ -16,7 +16,7 @@ use super::ProviderErrorMode;
 pub struct ConversationTurnLoop;
 
 const TOOL_FOLLOWUP_PROMPT: &str = "Use the tool result above to answer the original user request in natural language. Do not include raw JSON, payload wrappers, or status markers unless the user explicitly asks for raw output.";
-const REPEATED_TOOL_CALL_GUARD_PROMPT: &str = "Detected repeated identical tool calls without progress. Stop requesting the same tool again and provide the best possible natural-language answer from available context. If context is insufficient, state what is missing.";
+const TOOL_LOOP_GUARD_PROMPT: &str = "Detected tool-loop behavior across rounds. Do not repeat identical or cyclical tool calls without new evidence. Adjust strategy (different tool, arguments, or decomposition) or provide the best possible final answer and clearly state remaining gaps.";
 
 impl ConversationTurnLoop {
     pub fn new() -> Self {
@@ -396,8 +396,12 @@ fn append_repeated_tool_guard_followup_messages(
     }));
     messages.push(json!({
         "role": "user",
-        "content": format!("{REPEATED_TOOL_CALL_GUARD_PROMPT}\n\nOriginal request:\n{user_input}"),
+        "content": build_tool_loop_guard_prompt(user_input, reason),
     }));
+}
+
+fn build_tool_loop_guard_prompt(user_input: &str, reason: &str) -> String {
+    format!("{TOOL_LOOP_GUARD_PROMPT}\n\nLoop guard reason:\n{reason}\n\nOriginal request:\n{user_input}")
 }
 
 async fn request_completion_with_raw_fallback<R: ConversationRuntime + ?Sized>(
