@@ -1976,11 +1976,14 @@ async fn execute_spec_wasm_component_bridge_blocks_when_component_sha256_mismatc
 
     let report = execute_spec(spec, true).await;
     assert_eq!(report.operation_kind, "blocked");
-    assert!(report
-        .blocked_reason
-        .as_deref()
-        .expect("blocked reason should exist")
-        .contains("sha256 mismatch"));
+    let security = report
+        .security_scan_report
+        .expect("security scan report should exist");
+    assert!(security.blocked);
+    assert!(security
+        .findings
+        .iter()
+        .any(|finding| finding.category == "wasm_sha256_mismatch"));
 }
 
 #[tokio::test]
@@ -2107,10 +2110,11 @@ async fn execute_spec_wasm_component_bridge_blocks_when_hash_pin_required_but_mi
         .expect("security scan report should exist");
     assert!(security.blocked);
     assert!(
-        security.findings.iter().any(
-            |finding| finding.category == "wasm_sha256_pin_missing"
-                && finding.message.contains("hash pin")
-        ),
+        security
+            .findings
+            .iter()
+            .any(|finding| finding.category == "wasm_sha256_pin_missing"
+                && finding.message.contains("hash pin")),
         "expected wasm_sha256_pin_missing finding, got: {:?}",
         security.findings
     );
@@ -3014,6 +3018,261 @@ async fn execute_spec_security_scan_allows_clean_wasm_with_hash_pin() {
         .iter()
         .any(|finding| finding.category == "wasm_digest_observed"));
     assert!(report.integration_catalog.provider("wasm-clean").is_some());
+}
+
+#[tokio::test]
+async fn execute_spec_security_scan_allows_clean_wasm_with_metadata_hash_pin() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be monotonic")
+        .as_nanos();
+    let plugin_root =
+        std::env::temp_dir().join(format!("loongclaw-security-wasm-pass-metadata-{unique}"));
+    fs::create_dir_all(&plugin_root).expect("create plugin root");
+
+    let wasm_bytes = wat::parse_str(r#"(module (func (export "run")))"#).expect("compile wasm");
+    let digest = Sha256::digest(&wasm_bytes);
+    let digest_hex = hex_lower(&digest);
+
+    let plugin_manifest = r#"
+// LOONGCLAW_PLUGIN_START
+// {
+//   "plugin_id": "wasm-clean-metadata-pin",
+//   "provider_id": "wasm-clean-metadata-pin",
+//   "connector_name": "wasm-clean-metadata-pin",
+//   "channel_id": "primary",
+//   "endpoint": "local://wasm-clean-metadata-pin/invoke",
+//   "capabilities": ["InvokeConnector"],
+//   "metadata": {
+//     "bridge_kind":"wasm_component",
+//     "component":"plugin.wasm",
+//     "component_sha256":"__COMPONENT_SHA256__",
+//     "version":"1.0.0"
+//   }
+// }
+// LOONGCLAW_PLUGIN_END
+"#
+    .replace("__COMPONENT_SHA256__", digest_hex.as_str());
+    fs::write(plugin_root.join("plugin.rs"), plugin_manifest).expect("write plugin manifest");
+    fs::write(plugin_root.join("plugin.wasm"), wasm_bytes).expect("write wasm module");
+
+    let spec = RunnerSpec {
+        pack: VerticalPackManifest {
+            pack_id: "spec-security-wasm-pass-metadata".to_owned(),
+            domain: "ops".to_owned(),
+            version: "0.1.0".to_owned(),
+            default_route: ExecutionRoute {
+                harness_kind: HarnessKind::EmbeddedPi,
+                adapter: Some("pi-local".to_owned()),
+            },
+            allowed_connectors: BTreeSet::new(),
+            granted_capabilities: BTreeSet::new(),
+            metadata: BTreeMap::new(),
+        },
+        agent_id: "agent-security-wasm-pass-metadata".to_owned(),
+        ttl_s: 120,
+        approval: None,
+        defaults: None,
+        self_awareness: None,
+        plugin_scan: Some(PluginScanSpec {
+            enabled: true,
+            roots: vec![plugin_root.display().to_string()],
+        }),
+        bridge_support: Some(BridgeSupportSpec {
+            enabled: true,
+            supported_bridges: vec![PluginBridgeKind::WasmComponent],
+            supported_adapter_families: Vec::new(),
+            enforce_supported: true,
+            policy_version: None,
+            expected_checksum: None,
+            expected_sha256: None,
+            execute_process_stdio: false,
+            execute_http_json: false,
+            allowed_process_commands: Vec::new(),
+            enforce_execution_success: false,
+            security_scan: Some(SecurityScanSpec {
+                enabled: true,
+                block_on_high: true,
+                profile_path: None,
+                profile_sha256: None,
+                profile_signature: None,
+                siem_export: None,
+                runtime: SecurityRuntimeExecutionSpec::default(),
+                high_risk_metadata_keywords: vec!["shell".to_owned()],
+                wasm: WasmSecurityScanSpec {
+                    enabled: true,
+                    max_module_bytes: 128 * 1024,
+                    allow_wasi: false,
+                    blocked_import_prefixes: vec!["wasi".to_owned()],
+                    allowed_path_prefixes: vec![plugin_root.display().to_string()],
+                    require_hash_pin: true,
+                    required_sha256_by_plugin: BTreeMap::new(),
+                },
+            }),
+        }),
+        bootstrap: Some(BootstrapSpec {
+            enabled: true,
+            allow_http_json_auto_apply: Some(false),
+            allow_process_stdio_auto_apply: Some(false),
+            allow_native_ffi_auto_apply: Some(false),
+            allow_wasm_component_auto_apply: Some(true),
+            allow_mcp_server_auto_apply: Some(false),
+            enforce_ready_execution: Some(true),
+            max_tasks: Some(10),
+        }),
+        auto_provision: None,
+        hotfixes: Vec::new(),
+        operation: OperationSpec::Task {
+            task_id: "t-security-wasm-pass-metadata".to_owned(),
+            objective: "security scan should accept metadata hash pin".to_owned(),
+            required_capabilities: BTreeSet::new(),
+            payload: json!({}),
+        },
+    };
+
+    let report = execute_spec(spec, true).await;
+    assert_eq!(report.operation_kind, "task");
+    assert_eq!(report.outcome["outcome"]["status"], "ok");
+    let security = report
+        .security_scan_report
+        .expect("security scan report should exist");
+    assert!(!security.blocked);
+    assert_eq!(security.high_findings, 0);
+    assert!(security
+        .findings
+        .iter()
+        .any(|finding| finding.category == "wasm_digest_observed"));
+    assert!(report
+        .integration_catalog
+        .provider("wasm-clean-metadata-pin")
+        .is_some());
+}
+
+#[tokio::test]
+async fn execute_spec_security_scan_blocks_when_metadata_hash_pin_is_invalid() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be monotonic")
+        .as_nanos();
+    let plugin_root =
+        std::env::temp_dir().join(format!("loongclaw-security-wasm-invalid-pin-{unique}"));
+    fs::create_dir_all(&plugin_root).expect("create plugin root");
+
+    fs::write(
+        plugin_root.join("plugin.rs"),
+        r#"
+// LOONGCLAW_PLUGIN_START
+// {
+//   "plugin_id": "wasm-invalid-metadata-pin",
+//   "provider_id": "wasm-invalid-metadata-pin",
+//   "connector_name": "wasm-invalid-metadata-pin",
+//   "channel_id": "primary",
+//   "endpoint": "local://wasm-invalid-metadata-pin/invoke",
+//   "capabilities": ["InvokeConnector"],
+//   "metadata": {
+//     "bridge_kind":"wasm_component",
+//     "component":"plugin.wasm",
+//     "component_sha256":"sha256:deadbeef",
+//     "version":"1.0.0"
+//   }
+// }
+// LOONGCLAW_PLUGIN_END
+"#,
+    )
+    .expect("write plugin manifest");
+
+    let wasm_bytes = wat::parse_str(r#"(module (func (export "run")))"#).expect("compile wasm");
+    fs::write(plugin_root.join("plugin.wasm"), wasm_bytes).expect("write wasm module");
+
+    let spec = RunnerSpec {
+        pack: VerticalPackManifest {
+            pack_id: "spec-security-wasm-invalid-pin".to_owned(),
+            domain: "ops".to_owned(),
+            version: "0.1.0".to_owned(),
+            default_route: ExecutionRoute {
+                harness_kind: HarnessKind::EmbeddedPi,
+                adapter: Some("pi-local".to_owned()),
+            },
+            allowed_connectors: BTreeSet::new(),
+            granted_capabilities: BTreeSet::new(),
+            metadata: BTreeMap::new(),
+        },
+        agent_id: "agent-security-wasm-invalid-pin".to_owned(),
+        ttl_s: 120,
+        approval: None,
+        defaults: None,
+        self_awareness: None,
+        plugin_scan: Some(PluginScanSpec {
+            enabled: true,
+            roots: vec![plugin_root.display().to_string()],
+        }),
+        bridge_support: Some(BridgeSupportSpec {
+            enabled: true,
+            supported_bridges: vec![PluginBridgeKind::WasmComponent],
+            supported_adapter_families: Vec::new(),
+            enforce_supported: true,
+            policy_version: None,
+            expected_checksum: None,
+            expected_sha256: None,
+            execute_process_stdio: false,
+            execute_http_json: false,
+            allowed_process_commands: Vec::new(),
+            enforce_execution_success: false,
+            security_scan: Some(SecurityScanSpec {
+                enabled: true,
+                block_on_high: true,
+                profile_path: None,
+                profile_sha256: None,
+                profile_signature: None,
+                siem_export: None,
+                runtime: SecurityRuntimeExecutionSpec::default(),
+                high_risk_metadata_keywords: vec!["shell".to_owned()],
+                wasm: WasmSecurityScanSpec {
+                    enabled: true,
+                    max_module_bytes: 128 * 1024,
+                    allow_wasi: false,
+                    blocked_import_prefixes: vec!["wasi".to_owned()],
+                    allowed_path_prefixes: vec![plugin_root.display().to_string()],
+                    require_hash_pin: false,
+                    required_sha256_by_plugin: BTreeMap::new(),
+                },
+            }),
+        }),
+        bootstrap: Some(BootstrapSpec {
+            enabled: true,
+            allow_http_json_auto_apply: Some(false),
+            allow_process_stdio_auto_apply: Some(false),
+            allow_native_ffi_auto_apply: Some(false),
+            allow_wasm_component_auto_apply: Some(true),
+            allow_mcp_server_auto_apply: Some(false),
+            enforce_ready_execution: Some(true),
+            max_tasks: Some(10),
+        }),
+        auto_provision: None,
+        hotfixes: Vec::new(),
+        operation: OperationSpec::Task {
+            task_id: "t-security-wasm-invalid-pin".to_owned(),
+            objective: "security scan should block invalid metadata hash pin".to_owned(),
+            required_capabilities: BTreeSet::new(),
+            payload: json!({}),
+        },
+    };
+
+    let report = execute_spec(spec, true).await;
+    assert_eq!(report.operation_kind, "blocked");
+    let security = report
+        .security_scan_report
+        .expect("security scan report should exist");
+    assert!(security.blocked);
+    assert!(security.high_findings > 0);
+    assert!(security
+        .findings
+        .iter()
+        .any(|finding| finding.category == "wasm_sha256_pin_invalid"));
 }
 
 #[tokio::test]

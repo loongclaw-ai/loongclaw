@@ -1153,6 +1153,23 @@ fn scan_process_stdio_security(
     findings
 }
 
+fn normalize_wasm_sha256_pin(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("wasm sha256 pin must not be empty".to_owned());
+    }
+
+    let lowered = trimmed.to_ascii_lowercase();
+    let digest = lowered.strip_prefix("sha256:").unwrap_or(&lowered).trim();
+    if digest.len() != 64 || !digest.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err(
+            "wasm sha256 pin must be 64 hex characters (optional prefix `sha256:`)".to_owned(),
+        );
+    }
+
+    Ok(digest.to_owned())
+}
+
 fn scan_wasm_plugin_security(
     descriptor: &PluginDescriptor,
     policy: &WasmSecurityScanSpec,
@@ -1265,10 +1282,70 @@ fn scan_wasm_plugin_security(
     let digest = Sha256::digest(&bytes);
     let digest_hex = hex_lower(&digest);
 
-    if let Some(expected) = policy
-        .required_sha256_by_plugin
-        .get(&descriptor.manifest.plugin_id)
-    {
+    let expected_sha256 = {
+        let metadata_pin = [
+            "component_sha256",
+            "component_sha256_pin",
+            "component_sha256_hex",
+        ]
+        .iter()
+        .find_map(|key| {
+            descriptor
+                .manifest
+                .metadata
+                .get(*key)
+                .map(|value| (format!("metadata.{key}"), value.clone()))
+        });
+        let configured_pin = metadata_pin.or_else(|| {
+            policy
+                .required_sha256_by_plugin
+                .get(&descriptor.manifest.plugin_id)
+                .map(|value| {
+                    (
+                        "security_scan.wasm.required_sha256_by_plugin".to_owned(),
+                        value.clone(),
+                    )
+                })
+        });
+
+        match configured_pin {
+            Some((source, raw_pin)) => match normalize_wasm_sha256_pin(&raw_pin) {
+                Ok(pin) => Some(pin),
+                Err(reason) => {
+                    findings.push(build_security_finding(
+                        SecurityFindingSeverity::High,
+                        "wasm_sha256_pin_invalid",
+                        descriptor.manifest.plugin_id.clone(),
+                        descriptor.path.clone(),
+                        "wasm sha256 pin format is invalid",
+                        json!({
+                            "source": source,
+                            "pin": raw_pin,
+                            "reason": reason,
+                        }),
+                    ));
+                    None
+                }
+            },
+            None => {
+                if policy.require_hash_pin {
+                    findings.push(build_security_finding(
+                        SecurityFindingSeverity::High,
+                        "wasm_sha256_pin_missing",
+                        descriptor.manifest.plugin_id.clone(),
+                        descriptor.path.clone(),
+                        "wasm hash pin is required but missing for plugin",
+                        json!({
+                            "required_sha256_by_plugin": policy.required_sha256_by_plugin,
+                        }),
+                    ));
+                }
+                None
+            }
+        }
+    };
+
+    if let Some(expected) = expected_sha256 {
         if !expected.eq_ignore_ascii_case(&digest_hex) {
             findings.push(build_security_finding(
                 SecurityFindingSeverity::High,
@@ -1282,17 +1359,6 @@ fn scan_wasm_plugin_security(
                 }),
             ));
         }
-    } else if policy.require_hash_pin {
-        findings.push(build_security_finding(
-            SecurityFindingSeverity::High,
-            "wasm_sha256_pin_missing",
-            descriptor.manifest.plugin_id.clone(),
-            descriptor.path.clone(),
-            "wasm hash pin is required but missing for plugin",
-            json!({
-                "required_sha256_by_plugin": policy.required_sha256_by_plugin,
-            }),
-        ));
     }
 
     let imports = match parse_wasm_import_modules(&bytes) {
