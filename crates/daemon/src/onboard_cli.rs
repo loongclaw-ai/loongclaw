@@ -36,6 +36,13 @@ struct OnboardCheck {
     detail: String,
 }
 
+#[derive(Debug, Clone)]
+struct OnboardImportDiscovery {
+    report: mvp::migration::DiscoveryReport,
+    summary: mvp::migration::DiscoveryPlanSummary,
+    recommendation: Option<mvp::migration::PrimarySourceRecommendation>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum OnboardImportMode {
     Skip,
@@ -76,7 +83,12 @@ pub(crate) async fn run_onboard_cli(options: OnboardCommandOptions) -> CliResult
         .unwrap_or_else(mvp::config::default_config_path);
     let force_write = resolve_force_write(&output_path, &options)?;
 
-    let mut config = mvp::config::LoongClawConfig::default();
+    let import_applied = maybe_apply_onboard_import(&options, &output_path)?;
+    let mut config = if import_applied {
+        load_or_default_onboard_config(&output_path)?
+    } else {
+        mvp::config::LoongClawConfig::default()
+    };
 
     if !options.non_interactive {
         print_step_header(1, total_steps, "provider");
@@ -175,7 +187,11 @@ pub(crate) async fn run_onboard_cli(options: OnboardCommandOptions) -> CliResult
         return Err("onboarding cancelled: unresolved preflight warnings".to_owned());
     }
 
-    let path = mvp::config::write(options.output.as_deref(), &config, force_write)?;
+    let path = mvp::config::write(
+        options.output.as_deref(),
+        &config,
+        force_write || import_applied,
+    )?;
     #[cfg(feature = "memory-sqlite")]
     let memory_path = {
         let mem_config =
@@ -237,6 +253,201 @@ fn resolve_provider_selection(
             return Ok(kind);
         }
         println!("Invalid provider: {input}");
+    }
+}
+
+fn maybe_apply_onboard_import(
+    options: &OnboardCommandOptions,
+    output_path: &Path,
+) -> CliResult<bool> {
+    let Some(discovery) = discover_onboard_import_candidates()? else {
+        return Ok(false);
+    };
+
+    let strategy = if options.non_interactive {
+        let strategy = resolve_onboard_import_strategy(&discovery.summary, false)?;
+        validate_non_interactive_import_strategy(&strategy, false)?;
+        strategy
+    } else {
+        println!();
+        println!("legacy claw migration:");
+        println!(
+            "{}",
+            build_onboard_import_summary(&discovery.summary, discovery.recommendation.as_ref())
+        );
+        resolve_interactive_onboard_import_strategy(&discovery)?
+    };
+
+    let selection = match strategy.mode {
+        OnboardImportMode::Skip => return Ok(false),
+        OnboardImportMode::RecommendedSingleSource { source_id } => {
+            mvp::migration::ImportSelectionMode::RecommendedSingleSource { source_id }
+        }
+        OnboardImportMode::SelectedSingleSource { source_id } => {
+            mvp::migration::ImportSelectionMode::SelectedSingleSource { source_id }
+        }
+        OnboardImportMode::SafeProfileMerge => {
+            let primary_source_id = strategy
+                .recommended_source_id
+                .clone()
+                .ok_or_else(|| "safe profile merge requires a primary source".to_owned())?;
+            mvp::migration::ImportSelectionMode::SafeProfileMerge { primary_source_id }
+        }
+    };
+
+    let result = mvp::migration::apply_import_selection(&mvp::migration::ApplyImportSelection {
+        discovery: discovery.report,
+        output_path: output_path.to_path_buf(),
+        mode: selection,
+    })?;
+
+    println!("imported legacy claw profile");
+    println!("- primary source: {}", result.selected_primary_source_id);
+    println!("- backup: {}", result.backup_path.display());
+    println!("- manifest: {}", result.manifest_path.display());
+    if result.merged_source_ids.len() > 1 {
+        println!("- merged sources: {}", result.merged_source_ids.join(", "));
+    }
+    Ok(true)
+}
+
+fn discover_onboard_import_candidates() -> CliResult<Option<OnboardImportDiscovery>> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut sources = Vec::new();
+    for root in onboard_search_roots() {
+        if !root.exists() {
+            continue;
+        }
+        let report = mvp::migration::discover_import_sources(
+            &root,
+            mvp::migration::DiscoveryOptions::default(),
+        )?;
+        for source in report.sources {
+            let canonical = source
+                .path
+                .canonicalize()
+                .unwrap_or_else(|_| source.path.clone())
+                .display()
+                .to_string();
+            if seen.insert(canonical) {
+                sources.push(source);
+            }
+        }
+    }
+
+    if sources.is_empty() {
+        return Ok(None);
+    }
+
+    sources.sort_by(|left, right| {
+        right
+            .confidence_score
+            .cmp(&left.confidence_score)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    let report = mvp::migration::DiscoveryReport { sources };
+    let summary = mvp::migration::plan_import_sources(&report)?;
+    let recommendation = mvp::migration::recommend_primary_source(&summary).ok();
+    Ok(Some(OnboardImportDiscovery {
+        report,
+        summary,
+        recommendation,
+    }))
+}
+
+fn onboard_search_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let push_root =
+        |roots: &mut Vec<PathBuf>, seen: &mut std::collections::BTreeSet<String>, path: PathBuf| {
+            let canonical = path
+                .canonicalize()
+                .unwrap_or_else(|_| path.clone())
+                .display()
+                .to_string();
+            if seen.insert(canonical) {
+                roots.push(path);
+            }
+        };
+
+    if let Ok(cwd) = std::env::current_dir() {
+        push_root(&mut roots, &mut seen, cwd.clone());
+        if let Some(parent) = cwd.parent() {
+            push_root(&mut roots, &mut seen, parent.to_path_buf());
+        }
+    }
+    if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
+        push_root(&mut roots, &mut seen, home.clone());
+        push_root(&mut roots, &mut seen, home.join(".config"));
+    }
+    if let Some(config_parent) = mvp::config::default_loongclaw_home()
+        .parent()
+        .map(Path::to_path_buf)
+    {
+        push_root(&mut roots, &mut seen, config_parent);
+    }
+
+    roots
+}
+
+fn resolve_interactive_onboard_import_strategy(
+    discovery: &OnboardImportDiscovery,
+) -> CliResult<OnboardImportStrategy> {
+    let default_choice = if discovery.summary.plans.is_empty() {
+        "s"
+    } else {
+        "r"
+    };
+    println!("Import options:");
+    if let Some(recommendation) = discovery.recommendation.as_ref() {
+        println!("  [r] Recommended source ({})", recommendation.source_id);
+    }
+    for plan in &discovery.summary.plans {
+        println!("  [{}] Import only {}", plan.source_id, plan.source_id);
+    }
+    if discovery.summary.plans.len() > 1 {
+        println!("  [m] Safe profile merge");
+    }
+    println!("  [s] Skip import");
+
+    loop {
+        let choice = prompt_with_default("Import strategy", default_choice)?;
+        let trimmed = choice.trim().to_ascii_lowercase();
+        match trimmed.as_str() {
+            "r" => return resolve_onboard_import_strategy(&discovery.summary, false),
+            "s" | "skip" => {
+                return Ok(OnboardImportStrategy {
+                    mode: OnboardImportMode::Skip,
+                    recommended_source_id: discovery
+                        .recommendation
+                        .as_ref()
+                        .map(|recommendation| recommendation.source_id.clone()),
+                });
+            }
+            "m" | "merge" if discovery.summary.plans.len() > 1 => {
+                return resolve_onboard_import_strategy(&discovery.summary, true);
+            }
+            other
+                if discovery
+                    .summary
+                    .plans
+                    .iter()
+                    .any(|plan| plan.source_id == other) =>
+            {
+                return Ok(OnboardImportStrategy {
+                    mode: OnboardImportMode::SelectedSingleSource {
+                        source_id: other.to_owned(),
+                    },
+                    recommended_source_id: discovery
+                        .recommendation
+                        .as_ref()
+                        .map(|recommendation| recommendation.source_id.clone()),
+                });
+            }
+            _ => {
+                println!("Invalid import strategy: {trimmed}");
+            }
+        }
     }
 }
 
@@ -847,4 +1058,13 @@ fn resolve_backup_path(original: &Path) -> CliResult<PathBuf> {
 
     let timestamp = Local::now().format("%Y%m%d-%H%M%S").to_string();
     Ok(parent.join(format!("{}.toml.bak-{}", file_stem, timestamp)))
+}
+
+fn load_or_default_onboard_config(path: &Path) -> CliResult<mvp::config::LoongClawConfig> {
+    if !path.exists() {
+        return Ok(mvp::config::LoongClawConfig::default());
+    }
+    let path_string = path.display().to_string();
+    let (_, config) = mvp::config::load(Some(&path_string))?;
+    Ok(config)
 }

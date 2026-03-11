@@ -1,5 +1,5 @@
-mod orchestrator;
 mod merge;
+mod orchestrator;
 
 use std::{collections::BTreeSet, fs, path::Path};
 
@@ -10,16 +10,15 @@ use crate::{
 };
 use serde_json::Value;
 
-pub use orchestrator::{
-    apply_import_selection, discover_import_sources, merge_profile_sources,
-    plan_import_sources, recommend_primary_source, rollback_last_import,
-    ApplyImportSelection, ApplyImportSelectionResult, DiscoveredImportSource, DiscoveryOptions,
-    DiscoveryPlanSummary, DiscoveryReport, ImportSelectionMode, PlannedImportSource,
-    PrimarySourceRecommendation,
-};
 pub use merge::{
     merge_profile_entries, MergedProfilePlan, ProfileEntryLane, ProfileMergeConflict,
     ProfileMergeEntry,
+};
+pub use orchestrator::{
+    apply_import_selection, discover_import_sources, merge_profile_sources, plan_import_sources,
+    recommend_primary_source, rollback_last_import, ApplyImportSelection,
+    ApplyImportSelectionResult, DiscoveredImportSource, DiscoveryOptions, DiscoveryPlanSummary,
+    DiscoveryReport, ImportSelectionMode, PlannedImportSource, PrimarySourceRecommendation,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

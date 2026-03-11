@@ -768,12 +768,10 @@ mod tests {
             outcome.payload["result"]["prompt_owner_source_id"],
             "openclaw"
         );
-        assert!(
-            outcome.payload["result"]["merged_profile_note"]
-                .as_str()
-                .expect("merged profile note should be present")
-                .contains("region: apac")
-        );
+        assert!(outcome.payload["result"]["merged_profile_note"]
+            .as_str()
+            .expect("merged profile note should be present")
+            .contains("region: apac"));
 
         fs::remove_dir_all(&root).ok();
     }
@@ -843,22 +841,18 @@ mod tests {
 
         assert_eq!(outcome.status, "ok");
         assert_eq!(outcome.payload["mode"], "apply_selected");
-        assert!(
-            Path::new(
-                outcome.payload["result"]["backup_path"]
-                    .as_str()
-                    .expect("backup path should be present")
-            )
-            .exists()
-        );
-        assert!(
-            Path::new(
-                outcome.payload["result"]["manifest_path"]
-                    .as_str()
-                    .expect("manifest path should be present")
-            )
-            .exists()
-        );
+        assert!(Path::new(
+            outcome.payload["result"]["backup_path"]
+                .as_str()
+                .expect("backup path should be present")
+        )
+        .exists());
+        assert!(Path::new(
+            outcome.payload["result"]["manifest_path"]
+                .as_str()
+                .expect("manifest path should be present")
+        )
+        .exists());
 
         fs::remove_dir_all(&root).ok();
     }
@@ -939,11 +933,9 @@ mod tests {
         .expect("claw import rollback_last_apply should succeed");
 
         assert_eq!(rollback.status, "ok");
-        assert!(
-            rollback.payload["rolled_back"]
-                .as_bool()
-                .expect("rolled_back flag should exist")
-        );
+        assert!(rollback.payload["rolled_back"]
+            .as_bool()
+            .expect("rolled_back flag should exist"));
         assert_eq!(
             fs::read_to_string(&output_path).expect("read restored config"),
             original_body
