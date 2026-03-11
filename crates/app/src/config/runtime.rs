@@ -114,6 +114,7 @@ impl LoongClawConfig {
         issues.extend(self.provider.validate());
         issues.extend(self.telegram.validate());
         issues.extend(self.feishu.validate());
+        issues.extend(self.memory.validate());
         issues
     }
 

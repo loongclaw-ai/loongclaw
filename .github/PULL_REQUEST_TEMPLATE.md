@@ -22,6 +22,8 @@ If Track B, include design/risk notes:
 - [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - [ ] `cargo test --workspace --all-features`
 - [ ] Additional scenario/benchmark checks (if applicable)
+- [ ] If this changes config/env fallback, limits, or defaults: include before/after behavior and regression coverage for explicit path, fallback path, and boundary values
+- [ ] If tests mutate process-global env: document how state is restored or serialized
 
 ## Linked Issues
 

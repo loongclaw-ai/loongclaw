@@ -108,7 +108,7 @@ impl TelegramChannelConfig {
                 detect_telegram_token_shape: true,
             },
         ) {
-            issues.push(issue);
+            issues.push(*issue);
         }
         issues
     }
@@ -166,7 +166,7 @@ impl FeishuChannelConfig {
                 detect_telegram_token_shape: false,
             },
         ) {
-            issues.push(issue);
+            issues.push(*issue);
         }
         if let Err(issue) = validate_env_pointer_field(
             "feishu.app_secret_env",
@@ -177,7 +177,7 @@ impl FeishuChannelConfig {
                 detect_telegram_token_shape: false,
             },
         ) {
-            issues.push(issue);
+            issues.push(*issue);
         }
         if let Err(issue) = validate_env_pointer_field(
             "feishu.verification_token_env",
@@ -188,7 +188,7 @@ impl FeishuChannelConfig {
                 detect_telegram_token_shape: false,
             },
         ) {
-            issues.push(issue);
+            issues.push(*issue);
         }
         if let Err(issue) = validate_env_pointer_field(
             "feishu.encrypt_key_env",
@@ -199,7 +199,7 @@ impl FeishuChannelConfig {
                 detect_telegram_token_shape: false,
             },
         ) {
-            issues.push(issue);
+            issues.push(*issue);
         }
         issues
     }

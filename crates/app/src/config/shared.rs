@@ -46,6 +46,7 @@ pub(super) enum ConfigValidationCode {
     PercentWrapped,
     SecretLiteral,
     InvalidName,
+    NumericRange,
 }
 
 impl ConfigValidationCode {
@@ -56,6 +57,7 @@ impl ConfigValidationCode {
             ConfigValidationCode::PercentWrapped => "config.env_pointer.percent_wrapped",
             ConfigValidationCode::SecretLiteral => "config.env_pointer.secret_literal",
             ConfigValidationCode::InvalidName => "config.env_pointer.invalid_name",
+            ConfigValidationCode::NumericRange => "config.numeric_range",
         }
     }
 
@@ -76,6 +78,7 @@ impl ConfigValidationCode {
             ConfigValidationCode::InvalidName => {
                 "urn:loongclaw:problem:config.env_pointer.invalid_name"
             }
+            ConfigValidationCode::NumericRange => "urn:loongclaw:problem:config.numeric_range",
         }
     }
 
@@ -86,6 +89,7 @@ impl ConfigValidationCode {
             ConfigValidationCode::PercentWrapped => "config.env_pointer.percent_wrapped.title",
             ConfigValidationCode::SecretLiteral => "config.env_pointer.secret_literal.title",
             ConfigValidationCode::InvalidName => "config.env_pointer.invalid_name.title",
+            ConfigValidationCode::NumericRange => "config.numeric_range.title",
         }
     }
 
@@ -106,6 +110,7 @@ impl ConfigValidationCode {
             ConfigValidationCode::PercentWrapped => "Percent-Wrapped Env Pointer Notation",
             ConfigValidationCode::SecretLiteral => "Secret Literal Used In Env Pointer",
             ConfigValidationCode::InvalidName => "Invalid Env Pointer Name",
+            ConfigValidationCode::NumericRange => "Config Value Out Of Range",
         }
     }
 
@@ -126,6 +131,9 @@ impl ConfigValidationCode {
             ConfigValidationCode::InvalidName => {
                 "[{code}] {field_path} is not a valid environment variable name reference. use `{field_path}` with a name like `{example_env_name}`"
             }
+            ConfigValidationCode::NumericRange => {
+                "[{code}] {field_path} must be between {min} and {max}; got {actual_value}"
+            }
         }
     }
 }
@@ -137,6 +145,7 @@ pub(super) struct ConfigValidationIssue {
     pub inline_field_path: String,
     pub example_env_name: String,
     pub suggested_env_name: Option<String>,
+    pub message_context: BTreeMap<String, String>,
 }
 
 impl ConfigValidationIssue {
@@ -166,6 +175,7 @@ impl ConfigValidationIssue {
             .as_deref()
             .unwrap_or(self.example_env_name.as_str());
         variables.insert("suggested_env_name".to_owned(), suggested.to_owned());
+        variables.extend(self.message_context.clone());
         variables
     }
 
@@ -218,6 +228,10 @@ const EN_VALIDATION_MESSAGE_CATALOG: &[ConfigValidationCatalogEntry] = &[
         "Invalid Env Pointer Name",
     ),
     ConfigValidationCatalogEntry::new(
+        "config.numeric_range.title",
+        "Config Value Out Of Range",
+    ),
+    ConfigValidationCatalogEntry::new(
         "config.env_pointer.assignment",
         "[{code}] {field_path} expects an environment variable name, not `KEY=VALUE`. use `{field_path} = \"{suggested_env_name}\"` and place the secret value in that env var",
     ),
@@ -236,6 +250,10 @@ const EN_VALIDATION_MESSAGE_CATALOG: &[ConfigValidationCatalogEntry] = &[
     ConfigValidationCatalogEntry::new(
         "config.env_pointer.invalid_name",
         "[{code}] {field_path} is not a valid environment variable name reference. use `{field_path}` with a name like `{example_env_name}`",
+    ),
+    ConfigValidationCatalogEntry::new(
+        "config.numeric_range",
+        "[{code}] {field_path} must be between {min} and {max}; got {actual_value}",
     ),
 ];
 
@@ -309,7 +327,7 @@ pub(super) fn validate_env_pointer_field(
     field_path: &str,
     env_key: Option<&str>,
     hint: EnvPointerValidationHint<'_>,
-) -> Result<(), ConfigValidationIssue> {
+) -> Result<(), Box<ConfigValidationIssue>> {
     let Some(raw) = env_key else {
         return Ok(());
     };
@@ -319,24 +337,26 @@ pub(super) fn validate_env_pointer_field(
     }
 
     if let Some((name, _value)) = parse_env_assignment(trimmed) {
-        return Err(ConfigValidationIssue {
+        return Err(Box::new(ConfigValidationIssue {
             code: ConfigValidationCode::Assignment,
             field_path: field_path.to_owned(),
             inline_field_path: hint.inline_field_path.to_owned(),
             example_env_name: hint.example_env_name.to_owned(),
             suggested_env_name: Some(name.to_owned()),
-        });
+            message_context: BTreeMap::new(),
+        }));
     }
 
     if let Some(raw_name) = trimmed.strip_prefix('$') {
         let suggested = normalize_dollar_prefixed_env_name(raw_name, hint.example_env_name);
-        return Err(ConfigValidationIssue {
+        return Err(Box::new(ConfigValidationIssue {
             code: ConfigValidationCode::DollarPrefix,
             field_path: field_path.to_owned(),
             inline_field_path: hint.inline_field_path.to_owned(),
             example_env_name: hint.example_env_name.to_owned(),
             suggested_env_name: Some(suggested),
-        });
+            message_context: BTreeMap::new(),
+        }));
     }
 
     if let Some(raw_name) = parse_percent_wrapped_env_name(trimmed) {
@@ -345,36 +365,64 @@ pub(super) fn validate_env_pointer_field(
         } else {
             raw_name.to_owned()
         };
-        return Err(ConfigValidationIssue {
+        return Err(Box::new(ConfigValidationIssue {
             code: ConfigValidationCode::PercentWrapped,
             field_path: field_path.to_owned(),
             inline_field_path: hint.inline_field_path.to_owned(),
             example_env_name: hint.example_env_name.to_owned(),
             suggested_env_name: Some(suggested),
-        });
+            message_context: BTreeMap::new(),
+        }));
     }
 
     if looks_like_secret_literal(trimmed, hint.detect_telegram_token_shape) {
-        return Err(ConfigValidationIssue {
+        return Err(Box::new(ConfigValidationIssue {
             code: ConfigValidationCode::SecretLiteral,
             field_path: field_path.to_owned(),
             inline_field_path: hint.inline_field_path.to_owned(),
             example_env_name: hint.example_env_name.to_owned(),
             suggested_env_name: None,
-        });
+            message_context: BTreeMap::new(),
+        }));
     }
 
     if !looks_like_compatible_env_name(trimmed) {
-        return Err(ConfigValidationIssue {
+        return Err(Box::new(ConfigValidationIssue {
             code: ConfigValidationCode::InvalidName,
             field_path: field_path.to_owned(),
             inline_field_path: hint.inline_field_path.to_owned(),
             example_env_name: hint.example_env_name.to_owned(),
             suggested_env_name: Some(hint.example_env_name.to_owned()),
-        });
+            message_context: BTreeMap::new(),
+        }));
     }
 
     Ok(())
+}
+
+pub(super) fn validate_numeric_range(
+    field_path: &str,
+    actual_value: usize,
+    min: usize,
+    max: usize,
+) -> Result<(), Box<ConfigValidationIssue>> {
+    if (min..=max).contains(&actual_value) {
+        return Ok(());
+    }
+
+    let mut message_context = BTreeMap::new();
+    message_context.insert("actual_value".to_owned(), actual_value.to_string());
+    message_context.insert("min".to_owned(), min.to_string());
+    message_context.insert("max".to_owned(), max.to_string());
+
+    Err(Box::new(ConfigValidationIssue {
+        code: ConfigValidationCode::NumericRange,
+        field_path: field_path.to_owned(),
+        inline_field_path: field_path.to_owned(),
+        example_env_name: String::new(),
+        suggested_env_name: None,
+        message_context,
+    }))
 }
 
 fn looks_like_secret_literal(raw: &str, detect_telegram_token_shape: bool) -> bool {
@@ -534,6 +582,7 @@ mod tests {
             inline_field_path: "provider.api_key".to_owned(),
             example_env_name: "OPENAI_API_KEY".to_owned(),
             suggested_env_name: Some("OPENAI_API_KEY".to_owned()),
+            message_context: BTreeMap::new(),
         };
         assert_eq!(
             issue.title(ConfigValidationLocale::En),
@@ -555,6 +604,16 @@ mod tests {
             parse_env_assignment("set OPENAI_API_KEY=sk-value"),
             Some(("OPENAI_API_KEY", "sk-value"))
         );
+    }
+
+    #[test]
+    fn numeric_range_validation_reports_actual_and_bounds() {
+        let issue = validate_numeric_range("memory.sliding_window", 129, 1, 128)
+            .expect_err("out-of-range values should be rejected");
+        let rendered = issue.render(ConfigValidationLocale::En);
+        assert!(rendered.contains("memory.sliding_window"));
+        assert!(rendered.contains("between 1 and 128"));
+        assert!(rendered.contains("129"));
     }
 
     /// Deterministic regression test for `get_user_home()` covering three

@@ -2,7 +2,13 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::shared::{default_loongclaw_home, expand_path, DEFAULT_SQLITE_FILE};
+use super::shared::{
+    default_loongclaw_home, expand_path, validate_numeric_range, ConfigValidationIssue,
+    DEFAULT_SQLITE_FILE,
+};
+
+pub(crate) const MIN_MEMORY_SLIDING_WINDOW: usize = 1;
+pub(crate) const MAX_MEMORY_SLIDING_WINDOW: usize = 128;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolConfig {
@@ -50,6 +56,19 @@ impl Default for MemoryConfig {
 impl MemoryConfig {
     pub fn resolved_sqlite_path(&self) -> PathBuf {
         expand_path(&self.sqlite_path)
+    }
+
+    pub(super) fn validate(&self) -> Vec<ConfigValidationIssue> {
+        let mut issues = Vec::new();
+        if let Err(issue) = validate_numeric_range(
+            "memory.sliding_window",
+            self.sliding_window,
+            MIN_MEMORY_SLIDING_WINDOW,
+            MAX_MEMORY_SLIDING_WINDOW,
+        ) {
+            issues.push(*issue);
+        }
+        issues
     }
 }
 

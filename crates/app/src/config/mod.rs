@@ -18,6 +18,7 @@ pub use runtime::{
 pub use shared::expand_path;
 #[allow(unused_imports)]
 pub use tools_memory::{MemoryConfig, ToolConfig};
+pub(crate) use tools_memory::{MAX_MEMORY_SLIDING_WINDOW, MIN_MEMORY_SLIDING_WINDOW};
 
 #[cfg(test)]
 mod tests {
@@ -408,6 +409,31 @@ kind = "kimi_coding"
         config
             .validate()
             .expect("long compatible env names should not be mistaken for secret literals");
+    }
+
+    #[test]
+    fn config_validation_rejects_zero_memory_sliding_window() {
+        let mut config = LoongClawConfig::default();
+        config.memory.sliding_window = 0;
+
+        let error = config
+            .validate()
+            .expect_err("zero memory.sliding_window should be rejected");
+        assert!(error.contains("memory.sliding_window"));
+        assert!(error.contains("between 1 and 128"));
+    }
+
+    #[test]
+    fn config_validation_rejects_memory_sliding_window_above_adapter_cap() {
+        let mut config = LoongClawConfig::default();
+        config.memory.sliding_window = 129;
+
+        let error = config
+            .validate()
+            .expect_err("memory.sliding_window above adapter cap should be rejected");
+        assert!(error.contains("memory.sliding_window"));
+        assert!(error.contains("between 1 and 128"));
+        assert!(error.contains("129"));
     }
 
     #[test]

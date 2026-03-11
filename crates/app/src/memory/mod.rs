@@ -216,4 +216,96 @@ mod tests {
         let _ = fs::remove_file(&db_path);
         let _ = fs::remove_dir(&tmp);
     }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn memory_window_limit_semantics_cover_explicit_fallback_and_bounds() {
+        use std::fs;
+
+        use crate::test_support::ScopedEnvVar;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "loongclaw-test-memory-window-semantics-{}",
+            std::process::id()
+        ));
+        let _ = fs::create_dir_all(&tmp);
+        let db_path = tmp.join("window-semantics.sqlite3");
+        let _ = fs::remove_file(&db_path);
+
+        let config = runtime_config::MemoryRuntimeConfig {
+            sqlite_path: Some(db_path.clone()),
+        };
+
+        for idx in 0..130 {
+            append_turn_direct(
+                "window-semantics-session",
+                "user",
+                &format!("turn-{idx}"),
+                &config,
+            )
+            .expect("append_turn_direct should succeed");
+        }
+
+        {
+            let _window = ScopedEnvVar::set("LOONGCLAW_SLIDING_WINDOW", "1");
+            let turns = window_direct("window-semantics-session", 2, &config)
+                .expect("window_direct should honor the explicit limit");
+            assert_eq!(turns.len(), 2);
+            assert_eq!(turns[0].content, "turn-128");
+            assert_eq!(turns[1].content, "turn-129");
+        }
+
+        {
+            let _window = ScopedEnvVar::set("LOONGCLAW_SLIDING_WINDOW", "3");
+            let default_window = execute_memory_core_with_config(
+                MemoryCoreRequest {
+                    operation: "window".to_owned(),
+                    payload: json!({
+                        "session_id": "window-semantics-session",
+                    }),
+                },
+                &config,
+            )
+            .expect("window load without explicit limit should succeed");
+            let default_turns: Vec<ConversationTurn> = serde_json::from_value(
+                default_window
+                    .payload
+                    .get("turns")
+                    .cloned()
+                    .expect("turns payload should be present"),
+            )
+            .expect("turns payload should decode");
+            assert_eq!(default_turns.len(), 3);
+            assert_eq!(default_window.payload["limit"], json!(3));
+            assert_eq!(default_turns[0].content, "turn-127");
+            assert_eq!(default_turns[2].content, "turn-129");
+        }
+
+        {
+            let _window = ScopedEnvVar::set("LOONGCLAW_SLIDING_WINDOW", "999");
+            let capped_window = execute_memory_core_with_config(
+                MemoryCoreRequest {
+                    operation: "window".to_owned(),
+                    payload: json!({
+                        "session_id": "window-semantics-session",
+                    }),
+                },
+                &config,
+            )
+            .expect("window load without explicit limit should clamp high defaults");
+            let capped_turns: Vec<ConversationTurn> = serde_json::from_value(
+                capped_window
+                    .payload
+                    .get("turns")
+                    .cloned()
+                    .expect("turns payload should be present"),
+            )
+            .expect("turns payload should decode");
+            assert_eq!(capped_turns.len(), 128);
+            assert_eq!(capped_window.payload["limit"], json!(128));
+        }
+
+        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir(&tmp);
+    }
 }
