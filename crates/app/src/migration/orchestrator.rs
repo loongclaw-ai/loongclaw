@@ -239,7 +239,8 @@ pub fn apply_import_selection(
     let (merged_source_ids, prompt_owner_source_id, unresolved_conflicts) = match &request.mode {
         ImportSelectionMode::RecommendedSingleSource { .. }
         | ImportSelectionMode::SelectedSingleSource { .. } => {
-            let plan = plan_import_from_path(&selected_primary.path, Some(selected_primary.source))?;
+            let plan =
+                plan_import_from_path(&selected_primary.path, Some(selected_primary.source))?;
             warnings.extend(plan.warnings.clone());
             apply_import_plan(&mut config, &plan);
             (

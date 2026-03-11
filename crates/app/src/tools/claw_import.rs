@@ -53,8 +53,7 @@ pub(super) fn execute_claw_import_tool_with_config(
         .map(|value| resolve_safe_path_with_config(value, config))
         .transpose()?;
 
-    if matches!(mode, "apply" | "apply_selected" | "rollback_last_apply") && output_path.is_none()
-    {
+    if matches!(mode, "apply" | "apply_selected" | "rollback_last_apply") && output_path.is_none() {
         return Err(format!(
             "claw.import {mode} mode requires payload.output_path"
         ));
@@ -169,10 +168,8 @@ pub(super) fn execute_claw_import_tool_with_config(
     }
 
     if mode == "apply_selected" {
-        let report = migration::discover_import_sources(
-            input_path,
-            migration::DiscoveryOptions::default(),
-        )?;
+        let report =
+            migration::discover_import_sources(input_path, migration::DiscoveryOptions::default())?;
         let summary = migration::plan_import_sources(&report)?;
         let selection = parse_apply_selection_mode(payload, &summary)?;
         let result = migration::apply_import_selection(&migration::ApplyImportSelection {
@@ -361,7 +358,9 @@ fn parse_apply_selection_mode(
                     .ok()
                     .map(|recommendation| recommendation.source_id)
             })
-            .ok_or_else(|| "apply_selected requires a primary source for safe profile merge".to_owned())?;
+            .ok_or_else(|| {
+                "apply_selected requires a primary source for safe profile merge".to_owned()
+            })?;
         return Ok(migration::ImportSelectionMode::SafeProfileMerge { primary_source_id });
     }
 
