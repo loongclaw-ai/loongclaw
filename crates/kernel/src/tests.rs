@@ -25,7 +25,7 @@ use crate::{
         MemoryExtensionOutcome, MemoryExtensionRequest,
     },
     pack::VerticalPackManifest,
-    policy::{PolicyDecision, PolicyEngine, PolicyRequest, StaticPolicyEngine},
+    policy::{PolicyEngine, StaticPolicyEngine},
     policy_ext::{PolicyExtension, PolicyExtensionContext},
     runtime::{
         CoreRuntimeAdapter, RuntimeCoreOutcome, RuntimeCoreRequest, RuntimeExtensionAdapter,
@@ -957,60 +957,45 @@ enum ToolGateMode {
 }
 
 #[derive(Debug)]
-struct ToolGatePolicyEngine {
-    base: StaticPolicyEngine,
+struct ToolGatePolicyExtension {
     gated_tool: String,
     mode: ToolGateMode,
 }
 
-impl ToolGatePolicyEngine {
+impl ToolGatePolicyExtension {
     fn new(gated_tool: &str, mode: ToolGateMode) -> Self {
         Self {
-            base: StaticPolicyEngine::default(),
             gated_tool: gated_tool.to_owned(),
             mode,
         }
     }
 }
 
-impl PolicyEngine for ToolGatePolicyEngine {
-    fn issue_token(
-        &self,
-        pack: &VerticalPackManifest,
-        agent_id: &str,
-        now_epoch_s: u64,
-        ttl_s: u64,
-    ) -> Result<crate::CapabilityToken, PolicyError> {
-        self.base.issue_token(pack, agent_id, now_epoch_s, ttl_s)
+impl PolicyExtension for ToolGatePolicyExtension {
+    fn name(&self) -> &str {
+        "tool-gate"
     }
 
-    fn authorize(
-        &self,
-        token: &crate::CapabilityToken,
-        runtime_pack_id: &str,
-        now_epoch_s: u64,
-        required: &BTreeSet<Capability>,
-    ) -> Result<(), PolicyError> {
-        self.base
-            .authorize(token, runtime_pack_id, now_epoch_s, required)
-    }
-
-    fn revoke_token(&self, token_id: &str) -> Result<(), PolicyError> {
-        self.base.revoke_token(token_id)
-    }
-
-    fn check_tool_call(&self, request: &PolicyRequest) -> PolicyDecision {
-        if request.tool_name != self.gated_tool {
-            return PolicyDecision::Allow;
+    fn authorize_extension(&self, context: &PolicyExtensionContext<'_>) -> Result<(), PolicyError> {
+        let Some(params) = context.request_parameters else {
+            return Ok(());
+        };
+        let tool_name = params
+            .get("tool_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if tool_name != self.gated_tool {
+            return Ok(());
         }
-
         match self.mode {
-            ToolGateMode::Deny => {
-                PolicyDecision::Deny("blocked by deterministic policy rule".to_owned())
-            }
-            ToolGateMode::RequireApproval => {
-                PolicyDecision::RequireApproval("manual approval required for this tool".to_owned())
-            }
+            ToolGateMode::Deny => Err(PolicyError::ToolCallDenied {
+                tool_name: tool_name.to_owned(),
+                reason: "blocked by deterministic policy rule".to_owned(),
+            }),
+            ToolGateMode::RequireApproval => Err(PolicyError::ToolCallApprovalRequired {
+                tool_name: tool_name.to_owned(),
+                prompt: "manual approval required for this tool".to_owned(),
+            }),
         }
     }
 }
@@ -1501,7 +1486,7 @@ async fn tool_core_call_is_denied_when_policy_engine_rejects_rule_of_two_gate() 
     let clock: Arc<FixedClock> = Arc::new(FixedClock::new(1_700_002_000));
     let audit = Arc::new(InMemoryAuditSink::default());
     let mut kernel = LoongClawKernel::with_runtime(
-        ToolGatePolicyEngine::new("shell.exec", ToolGateMode::Deny),
+        StaticPolicyEngine::default(),
         clock.clone(),
         audit.clone(),
     );
@@ -1520,6 +1505,9 @@ async fn tool_core_call_is_denied_when_policy_engine_rejects_rule_of_two_gate() 
         })
         .expect("pack should register");
     kernel.register_core_tool_adapter(MockCoreTool);
+    kernel.register_policy_extension(
+        ToolGatePolicyExtension::new("shell.exec", ToolGateMode::Deny),
+    );
 
     let token = kernel
         .issue_token("tool-gate-deny", "agent-deny", 120)
@@ -1562,7 +1550,7 @@ async fn tool_extension_call_reports_approval_required_when_policy_requires_huma
     let clock: Arc<FixedClock> = Arc::new(FixedClock::new(1_700_003_000));
     let audit = Arc::new(InMemoryAuditSink::default());
     let mut kernel = LoongClawKernel::with_runtime(
-        ToolGatePolicyEngine::new("query_ledger", ToolGateMode::RequireApproval),
+        StaticPolicyEngine::default(),
         clock.clone(),
         audit.clone(),
     );
@@ -1582,6 +1570,9 @@ async fn tool_extension_call_reports_approval_required_when_policy_requires_huma
         .expect("pack should register");
     kernel.register_core_tool_adapter(MockCoreTool);
     kernel.register_tool_extension_adapter(MockToolExtension);
+    kernel.register_policy_extension(
+        ToolGatePolicyExtension::new("query_ledger", ToolGateMode::RequireApproval),
+    );
 
     let token = kernel
         .issue_token("tool-gate-approval", "agent-approval", 120)
