@@ -10,8 +10,9 @@ use serde::{Deserialize, Serialize};
 use crate::CliResult;
 
 use super::{
-    LegacyClawSource, MergedProfilePlan, ProfileEntryLane, ProfileMergeEntry, apply_import_plan,
-    inspect_import_path, merge_profile_entries, plan_import_from_path,
+    LegacyClawSource, MergedProfilePlan, ProfileEntryLane, ProfileMergeEntry,
+    apply_external_skill_mapping, apply_import_plan, inspect_import_path, merge_profile_entries,
+    plan_external_skill_mapping, plan_import_from_path,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +78,8 @@ pub struct ApplyImportSelection {
     pub discovery: DiscoveryReport,
     pub output_path: PathBuf,
     pub mode: ImportSelectionMode,
+    pub apply_external_skills_plan: bool,
+    pub external_skills_input_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,11 +87,14 @@ pub struct ApplyImportSelectionResult {
     pub output_path: PathBuf,
     pub backup_path: PathBuf,
     pub manifest_path: PathBuf,
+    pub external_skills_manifest_path: Option<PathBuf>,
     pub selected_primary_source_id: String,
     pub merged_source_ids: Vec<String>,
     pub prompt_owner_source_id: Option<String>,
     pub unresolved_conflicts: usize,
     pub warnings: Vec<String>,
+    pub external_skill_artifact_count: usize,
+    pub external_skill_entries_applied: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +108,30 @@ struct ImportApplyManifest {
     output_preexisted: bool,
     warnings: Vec<String>,
     unresolved_conflicts: usize,
+    #[serde(default)]
+    external_skill_artifact_count: usize,
+    #[serde(default)]
+    external_skill_entries_applied: usize,
+    #[serde(default)]
+    external_skills_manifest_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ExternalSkillsApplyManifest {
+    output_path: String,
+    input_path: String,
+    artifact_count: usize,
+    artifacts: Vec<ExternalSkillsApplyArtifact>,
+    declared_skills: Vec<String>,
+    locked_skills: Vec<String>,
+    resolved_skills: Vec<String>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ExternalSkillsApplyArtifact {
+    kind: String,
+    path: String,
 }
 
 pub fn discover_import_sources(
@@ -239,6 +269,9 @@ pub fn apply_import_selection(
 
     let mut config = load_or_default_config(Some(&request.output_path))?;
     let mut warnings = Vec::new();
+    let mut external_skill_artifact_count = 0usize;
+    let mut external_skill_entries_applied = 0usize;
+    let mut external_skill_mapping = None;
     let (merged_source_ids, prompt_owner_source_id, unresolved_conflicts) = match &request.mode {
         ImportSelectionMode::RecommendedSingleSource { .. }
         | ImportSelectionMode::SelectedSingleSource { .. } => {
@@ -291,6 +324,21 @@ pub fn apply_import_selection(
         }
     };
 
+    if request.apply_external_skills_plan {
+        let input_path = request
+            .external_skills_input_path
+            .as_deref()
+            .ok_or_else(|| {
+                "apply_external_skills_plan requires external_skills_input_path".to_owned()
+            })?;
+        let mapping = plan_external_skill_mapping(input_path);
+        external_skill_artifact_count = mapping.artifacts.len();
+        external_skill_entries_applied = apply_external_skill_mapping(&mut config, &mapping);
+        warnings.extend(mapping.warnings.clone());
+        external_skill_mapping = Some(mapping);
+    }
+    dedup_strings_in_place(&mut warnings);
+
     let state_dir = migration_state_dir(&request.output_path);
     fs::create_dir_all(&state_dir).map_err(|error| {
         format!(
@@ -320,6 +368,22 @@ pub fn apply_import_selection(
 
     let output_string = request.output_path.display().to_string();
     let written_output_path = crate::config::write(Some(&output_string), &config, true)?;
+    let external_skills_manifest_path = if let Some(mapping) = external_skill_mapping.as_ref() {
+        let external_path =
+            external_skills_manifest_path_for_output(&request.output_path, &state_dir);
+        let external_manifest = build_external_skills_apply_manifest(&written_output_path, mapping);
+        let body = serde_json::to_vec_pretty(&external_manifest)
+            .map_err(|error| format!("failed to encode external skills manifest: {error}"))?;
+        fs::write(&external_path, body).map_err(|error| {
+            format!(
+                "failed to write external skills manifest {}: {error}",
+                external_path.display()
+            )
+        })?;
+        Some(external_path)
+    } else {
+        None
+    };
 
     let manifest = ImportApplyManifest {
         session_id,
@@ -331,6 +395,11 @@ pub fn apply_import_selection(
         output_preexisted,
         warnings: warnings.clone(),
         unresolved_conflicts,
+        external_skill_artifact_count,
+        external_skill_entries_applied,
+        external_skills_manifest_path: external_skills_manifest_path
+            .as_ref()
+            .map(|path| path.display().to_string()),
     };
     let manifest_body = serde_json::to_vec_pretty(&manifest)
         .map_err(|error| format!("failed to encode import manifest: {error}"))?;
@@ -345,12 +414,43 @@ pub fn apply_import_selection(
         output_path: written_output_path,
         backup_path,
         manifest_path,
+        external_skills_manifest_path,
         selected_primary_source_id,
         merged_source_ids,
         prompt_owner_source_id,
         unresolved_conflicts,
         warnings,
+        external_skill_artifact_count,
+        external_skill_entries_applied,
     })
+}
+
+fn dedup_strings_in_place(values: &mut Vec<String>) {
+    let mut seen = BTreeSet::new();
+    values.retain(|value| seen.insert(value.clone()));
+}
+
+fn build_external_skills_apply_manifest(
+    output_path: &Path,
+    mapping: &super::ExternalSkillMappingPlan,
+) -> ExternalSkillsApplyManifest {
+    ExternalSkillsApplyManifest {
+        output_path: output_path.display().to_string(),
+        input_path: mapping.input_path.display().to_string(),
+        artifact_count: mapping.artifacts.len(),
+        artifacts: mapping
+            .artifacts
+            .iter()
+            .map(|artifact| ExternalSkillsApplyArtifact {
+                kind: artifact.kind.as_id().to_owned(),
+                path: artifact.path.display().to_string(),
+            })
+            .collect(),
+        declared_skills: mapping.declared_skills.clone(),
+        locked_skills: mapping.locked_skills.clone(),
+        resolved_skills: mapping.resolved_skills.clone(),
+        warnings: mapping.warnings.clone(),
+    }
 }
 
 pub fn rollback_last_import(output_path: &Path) -> CliResult<PathBuf> {
@@ -612,6 +712,14 @@ fn manifest_path_for_output(output_path: &Path, state_dir: &Path) -> PathBuf {
     state_dir.join(format!("{file_tag}.last-import.json"))
 }
 
+fn external_skills_manifest_path_for_output(output_path: &Path, state_dir: &Path) -> PathBuf {
+    let file_tag = output_path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| "loongclaw-config".to_owned());
+    state_dir.join(format!("{file_tag}.external-skills.json"))
+}
+
 fn backup_path_for_output(output_path: &Path, state_dir: &Path, session_id: &str) -> PathBuf {
     let file_tag = output_path
         .file_name()
@@ -845,6 +953,8 @@ mod tests {
             mode: ImportSelectionMode::RecommendedSingleSource {
                 source_id: "openclaw".to_owned(),
             },
+            apply_external_skills_plan: false,
+            external_skills_input_path: None,
         })
         .expect("apply should succeed");
 
@@ -899,6 +1009,8 @@ mod tests {
             mode: ImportSelectionMode::SafeProfileMerge {
                 primary_source_id: recommendation.source_id,
             },
+            apply_external_skills_plan: false,
+            external_skills_input_path: None,
         })
         .expect("safe profile merge should succeed");
 
@@ -960,6 +1072,8 @@ mod tests {
             mode: ImportSelectionMode::SelectedSingleSource {
                 source_id: selected_source_id.clone(),
             },
+            apply_external_skills_plan: false,
+            external_skills_input_path: None,
         })
         .expect("apply should succeed");
 
@@ -982,6 +1096,68 @@ mod tests {
                 .as_deref()
                 .is_some_and(|value| value.contains("region: west")),
             "expected selected source profile note to be imported"
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn apply_import_selection_can_attach_external_skill_mapping() {
+        let root = unique_temp_dir("loongclaw-import-apply-external-skills");
+        fs::create_dir_all(&root).expect("create fixture root");
+
+        let openclaw_root = root.join("openclaw-workspace");
+        fs::create_dir_all(&openclaw_root).expect("create openclaw root");
+        write_file(
+            &openclaw_root,
+            "SOUL.md",
+            "# Soul\n\nPrefer direct answers and keep OpenClaw style concise.\n",
+        );
+        write_file(
+            &openclaw_root,
+            "IDENTITY.md",
+            "# Identity\n\n- role: release copilot\n",
+        );
+        write_file(&root, "SKILLS.md", "# Skills\n\n- custom/skill-a\n");
+
+        let discovery = discover_import_sources(&root, DiscoveryOptions::default())
+            .expect("discovery should succeed");
+        let output_path = root.join("loongclaw.toml");
+
+        let result = apply_import_selection(&ApplyImportSelection {
+            discovery,
+            output_path: output_path.clone(),
+            mode: ImportSelectionMode::SelectedSingleSource {
+                source_id: "openclaw".to_owned(),
+            },
+            apply_external_skills_plan: true,
+            external_skills_input_path: Some(root.clone()),
+        })
+        .expect("apply should succeed");
+
+        assert_eq!(result.external_skill_artifact_count, 1);
+        assert_eq!(result.external_skill_entries_applied, 3);
+        assert!(
+            result.external_skills_manifest_path.is_some(),
+            "expected external skills manifest path"
+        );
+        let output_string = output_path.display().to_string();
+        let (_, merged_config) =
+            crate::config::load(Some(&output_string)).expect("load merged config");
+        let profile_note = merged_config
+            .memory
+            .profile_note
+            .as_deref()
+            .expect("profile note should be present");
+        assert!(profile_note.contains("Imported External Skills Artifacts"));
+        assert!(profile_note.contains("kind=skills_catalog"));
+        let external_manifest = result
+            .external_skills_manifest_path
+            .as_ref()
+            .expect("external skills manifest should be present");
+        assert!(
+            external_manifest.exists(),
+            "external skills manifest should be written"
         );
 
         fs::remove_dir_all(&root).ok();
@@ -1018,6 +1194,8 @@ mod tests {
             mode: ImportSelectionMode::RecommendedSingleSource {
                 source_id: "openclaw".to_owned(),
             },
+            apply_external_skills_plan: false,
+            external_skills_input_path: None,
         })
         .expect("apply should succeed");
 

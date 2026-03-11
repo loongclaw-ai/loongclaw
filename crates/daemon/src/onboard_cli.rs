@@ -294,6 +294,8 @@ fn maybe_apply_onboard_import(
         discovery: discovery.report,
         output_path: output_path.to_path_buf(),
         mode: selection,
+        apply_external_skills_plan: false,
+        external_skills_input_path: None,
     })?;
 
     println!("imported legacy claw profile");

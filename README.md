@@ -156,6 +156,38 @@ before the rest of first-run setup continues.
 - Advanced path: plan multiple sources, merge only the profile lane, and keep prompt/system identity single-source.
 - Safety defaults: secrets are not migrated, imported runtime identity is normalized to `LoongClaw`, and every apply creates a backup manifest with rollback support.
 
+CLI migration workflow:
+
+- Default mode is now `plan` (safe preview, no file write) when `--mode` is omitted.
+- `apply_selected` accepts both `--source-id` and alias `--selection-id`.
+- Safe merge accepts both `--primary-source-id` and alias `--primary-selection-id`.
+- `map_external_skills` builds a deterministic external-skills mapping plan.
+- `--apply-external-skills-plan` can attach that mapping into `profile_note` during `apply_selected`.
+- applying external-skills plan also writes `.loongclaw-migration/<config>.external-skills.json` for audit and replay.
+
+```bash
+# Discover and score import candidates under a root
+loongclaw import-claw --mode discover --input ~/legacy-claws
+
+# Plan all candidates and print recommendation
+loongclaw import-claw --mode plan_many --input ~/legacy-claws
+
+# Preview external skills mapping artifacts and generated profile addendum
+loongclaw import-claw --mode map_external_skills --input ~/legacy-claws
+
+# Apply one selected source to a target config
+loongclaw import-claw --mode apply_selected --input ~/legacy-claws \
+  --source-id openclaw --output ~/.loongclaw/config.toml --force
+
+# Apply selected source and also attach external-skills mapping addendum
+loongclaw import-claw --mode apply_selected --input ~/legacy-claws \
+  --source-id openclaw --output ~/.loongclaw/config.toml \
+  --apply-external-skills-plan --force
+
+# Roll back the last apply_selected/import apply for this output config
+loongclaw import-claw --mode rollback_last_apply --output ~/.loongclaw/config.toml
+```
+
 ## Key Features
 
 **Kernel and Security**

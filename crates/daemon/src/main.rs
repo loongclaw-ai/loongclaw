@@ -186,11 +186,23 @@ enum Commands {
     /// Import prompt/identity traits from another claw workspace into LoongClaw config
     ImportClaw {
         #[arg(long)]
-        input: String,
+        input: Option<String>,
         #[arg(long)]
         output: Option<String>,
         #[arg(long)]
         source: Option<String>,
+        #[arg(long, value_enum, default_value = "plan")]
+        mode: import_claw_cli::ImportClawMode,
+        #[arg(long, default_value_t = false)]
+        json: bool,
+        #[arg(long, visible_alias = "selection-id")]
+        source_id: Option<String>,
+        #[arg(long, default_value_t = false)]
+        safe_profile_merge: bool,
+        #[arg(long, visible_alias = "primary-selection-id")]
+        primary_source_id: Option<String>,
+        #[arg(long, default_value_t = false)]
+        apply_external_skills_plan: bool,
         #[arg(long, default_value_t = false)]
         force: bool,
     },
@@ -383,11 +395,23 @@ async fn main() {
             input,
             output,
             source,
+            mode,
+            json,
+            source_id,
+            safe_profile_merge,
+            primary_source_id,
+            apply_external_skills_plan,
             force,
         } => import_claw_cli::run_import_claw_cli(import_claw_cli::ImportClawCommandOptions {
             input,
             output,
             source,
+            mode,
+            json,
+            source_id,
+            safe_profile_merge,
+            primary_source_id,
+            apply_external_skills_plan,
             force,
         }),
         Commands::Doctor {

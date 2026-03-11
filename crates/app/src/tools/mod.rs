@@ -136,34 +136,68 @@ pub fn provider_tool_definitions() -> Vec<Value> {
         "type": "function",
         "function": {
             "name": "claw_import",
-            "description": "Import a legacy Claw workspace or persona into native LoongClaw config with preview or apply mode.",
+            "description": "Import, discover, plan, merge, apply, and rollback legacy Claw workspace migration into native LoongClaw config.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "input_path": {
                         "type": "string",
-                        "description": "Path to the legacy Claw workspace, config root, or portable import file."
+                        "description": "Path to the legacy Claw workspace, config root, or portable import file. Required for all modes except rollback_last_apply."
                     },
                     "mode": {
                         "type": "string",
-                        "enum": ["plan", "apply"],
-                        "description": "Use `plan` to preview the nativeized result, or `apply` to write a target config."
+                        "enum": [
+                            "plan",
+                            "apply",
+                            "discover",
+                            "plan_many",
+                            "recommend_primary",
+                            "merge_profiles",
+                            "map_external_skills",
+                            "apply_selected",
+                            "rollback_last_apply"
+                        ],
+                        "description": "Migration mode. Defaults to `plan` when omitted."
                     },
                     "source": {
                         "type": "string",
                         "enum": ["auto", "nanobot", "openclaw", "picoclaw", "zeroclaw", "nanoclaw"],
-                        "description": "Optional source hint. Defaults to automatic detection."
+                        "description": "Optional source hint for plan/apply modes. Defaults to automatic detection."
+                    },
+                    "source_id": {
+                        "type": "string",
+                        "description": "Selected source identifier for apply_selected mode."
+                    },
+                    "selection_id": {
+                        "type": "string",
+                        "description": "Alias of source_id for apply_selected mode."
+                    },
+                    "primary_source_id": {
+                        "type": "string",
+                        "description": "Primary source identifier for safe profile merge in apply_selected mode."
+                    },
+                    "primary_selection_id": {
+                        "type": "string",
+                        "description": "Alias of primary_source_id for safe profile merge in apply_selected mode."
+                    },
+                    "safe_profile_merge": {
+                        "type": "boolean",
+                        "description": "Enable safe multi-source profile merge in apply_selected mode."
+                    },
+                    "apply_external_skills_plan": {
+                        "type": "boolean",
+                        "description": "When true, apply a generated external-skills mapping addendum into profile_note during apply_selected."
                     },
                     "output_path": {
                         "type": "string",
-                        "description": "Target config path to write in apply mode."
+                        "description": "Target config path. Required in apply/apply_selected/rollback_last_apply modes."
                     },
                     "force": {
                         "type": "boolean",
                         "description": "Overwrite an existing target config when applying. Defaults to false."
                     }
                 },
-                "required": ["input_path"],
+                "required": [],
                 "additionalProperties": false
             }
         }
@@ -370,6 +404,43 @@ mod tests {
             assert_eq!(item["type"], "function");
             assert_eq!(item["function"]["parameters"]["type"], "object");
         }
+
+        let claw_import = defs
+            .iter()
+            .find(|item| {
+                item.get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(Value::as_str)
+                    == Some("claw_import")
+            })
+            .expect("claw_import definition should exist");
+        let mode_enum: Vec<&str> =
+            claw_import["function"]["parameters"]["properties"]["mode"]["enum"]
+                .as_array()
+                .expect("mode enum should be an array")
+                .iter()
+                .filter_map(Value::as_str)
+                .collect();
+        assert_eq!(
+            mode_enum,
+            vec![
+                "plan",
+                "apply",
+                "discover",
+                "plan_many",
+                "recommend_primary",
+                "merge_profiles",
+                "map_external_skills",
+                "apply_selected",
+                "rollback_last_apply"
+            ]
+        );
+        assert!(
+            claw_import["function"]["parameters"]["required"]
+                .as_array()
+                .expect("required should be an array")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -552,6 +623,14 @@ mod tests {
         assert_eq!(outcome.status, "ok");
         assert_eq!(outcome.payload["mode"], "apply");
         assert_eq!(outcome.payload["config_written"], true);
+        assert_eq!(
+            outcome.payload["next_step"]
+                .as_str()
+                .expect("next_step should be present")
+                .split_whitespace()
+                .next(),
+            Some("loongclaw")
+        );
         assert_eq!(
             outcome.payload["output_path"]
                 .as_str()
@@ -786,6 +865,72 @@ mod tests {
     }
 
     #[test]
+    fn claw_import_map_external_skills_mode_returns_mapping_plan() {
+        use std::{
+            fs,
+            path::{Path, PathBuf},
+            time::{SystemTime, UNIX_EPOCH},
+        };
+
+        fn unique_temp_dir(prefix: &str) -> PathBuf {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos();
+            std::env::temp_dir().join(format!("{prefix}-{nanos}"))
+        }
+
+        fn write_file(root: &Path, relative: &str, content: &str) {
+            let path = root.join(relative);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("create parent directory");
+            }
+            fs::write(path, content).expect("write fixture");
+        }
+
+        let root = unique_temp_dir("loongclaw-tool-import-map-external-skills");
+        fs::create_dir_all(&root).expect("create fixture root");
+        write_file(&root, "SKILLS.md", "# Skills\n\n- custom/skill-a\n");
+        fs::create_dir_all(root.join(".codex/skills")).expect("create codex skills dir");
+
+        let config = runtime_config::ToolRuntimeConfig {
+            shell_allowlist: BTreeSet::new(),
+            file_root: Some(root.clone()),
+        };
+        let outcome = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "claw.import".to_owned(),
+                payload: json!({
+                    "mode": "map_external_skills",
+                    "input_path": "."
+                }),
+            },
+            &config,
+        )
+        .expect("claw import map_external_skills should succeed");
+
+        assert_eq!(outcome.status, "ok");
+        assert_eq!(outcome.payload["mode"], "map_external_skills");
+        assert_eq!(outcome.payload["result"]["artifact_count"], 2);
+        assert_eq!(
+            outcome.payload["result"]["declared_skills"][0],
+            "custom/skill-a"
+        );
+        assert_eq!(
+            outcome.payload["result"]["resolved_skills"][0],
+            "custom/skill-a"
+        );
+        assert!(
+            outcome.payload["result"]["profile_note_addendum"]
+                .as_str()
+                .expect("profile note addendum should exist")
+                .contains("Imported External Skills Artifacts")
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
     fn claw_import_apply_selected_mode_writes_manifest_and_backup() {
         use std::{
             fs,
@@ -866,6 +1011,89 @@ mod tests {
             )
             .exists()
         );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn claw_import_apply_selected_mode_can_apply_external_skills_plan() {
+        use std::{
+            fs,
+            path::{Path, PathBuf},
+            time::{SystemTime, UNIX_EPOCH},
+        };
+
+        fn unique_temp_dir(prefix: &str) -> PathBuf {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos();
+            std::env::temp_dir().join(format!("{prefix}-{nanos}"))
+        }
+
+        fn write_file(root: &Path, relative: &str, content: &str) {
+            let path = root.join(relative);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("create parent directory");
+            }
+            fs::write(path, content).expect("write fixture");
+        }
+
+        let root = unique_temp_dir("loongclaw-tool-import-apply-selected-external");
+        fs::create_dir_all(&root).expect("create fixture root");
+
+        let openclaw_root = root.join("openclaw-workspace");
+        fs::create_dir_all(&openclaw_root).expect("create openclaw root");
+        write_file(
+            &openclaw_root,
+            "SOUL.md",
+            "# Soul\n\nPrefer direct answers and keep OpenClaw style concise.\n",
+        );
+        write_file(
+            &openclaw_root,
+            "IDENTITY.md",
+            "# Identity\n\n- role: release copilot\n- tone: steady\n",
+        );
+        write_file(&root, "SKILLS.md", "# Skills\n\n- custom/skill-a\n");
+
+        let output_path = root.join("loongclaw.toml");
+
+        let config = runtime_config::ToolRuntimeConfig {
+            shell_allowlist: BTreeSet::new(),
+            file_root: Some(root.clone()),
+        };
+        let outcome = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "claw.import".to_owned(),
+                payload: json!({
+                    "mode": "apply_selected",
+                    "input_path": ".",
+                    "output_path": "loongclaw.toml",
+                    "source_id": "openclaw",
+                    "apply_external_skills_plan": true
+                }),
+            },
+            &config,
+        )
+        .expect("claw import apply_selected with external skills should succeed");
+
+        assert_eq!(outcome.status, "ok");
+        assert_eq!(
+            outcome.payload["result"]["external_skill_artifact_count"],
+            1
+        );
+        assert_eq!(
+            outcome.payload["result"]["external_skill_entries_applied"],
+            3
+        );
+        assert!(
+            outcome.payload["result"]["external_skills_manifest_path"]
+                .as_str()
+                .is_some(),
+            "external skills manifest path should exist"
+        );
+        let raw = fs::read_to_string(&output_path).expect("read output config");
+        assert!(raw.contains("Imported External Skills Artifacts"));
 
         fs::remove_dir_all(&root).ok();
     }

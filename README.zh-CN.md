@@ -120,6 +120,40 @@ cargo install --path crates/daemon
 cargo test --workspace --all-features
 ```
 
+## 迁移与导入
+
+LoongClaw 支持从旧 claw 工作区进行发现、规划、应用与回滚：
+
+- 不传 `--mode` 时默认使用 `plan`（仅预览，不落盘）。
+- `apply_selected` 同时兼容 `--source-id` 与别名 `--selection-id`。
+- 安全合并同样兼容 `--primary-source-id` 与别名 `--primary-selection-id`。
+- `map_external_skills` 可生成可审计、可复现的外部 skills 映射计划。
+- `apply_selected` 配合 `--apply-external-skills-plan` 可把映射结果附加到 `profile_note`。
+- 应用 external-skills 计划时，会额外写入 `.loongclaw-migration/<config>.external-skills.json` 便于审计与回放。
+
+```bash
+# 扫描并评分导入候选源
+loongclaw import-claw --mode discover --input ~/legacy-claws
+
+# 规划所有候选并给出推荐主源
+loongclaw import-claw --mode plan_many --input ~/legacy-claws
+
+# 预览外部 skills 映射工件与生成的 profile addendum
+loongclaw import-claw --mode map_external_skills --input ~/legacy-claws
+
+# 选择单一来源应用到目标配置
+loongclaw import-claw --mode apply_selected --input ~/legacy-claws \
+  --source-id openclaw --output ~/.loongclaw/config.toml --force
+
+# 选择来源并附加外部 skills 映射结果
+loongclaw import-claw --mode apply_selected --input ~/legacy-claws \
+  --source-id openclaw --output ~/.loongclaw/config.toml \
+  --apply-external-skills-plan --force
+
+# 回滚最近一次 apply/import
+loongclaw import-claw --mode rollback_last_apply --output ~/.loongclaw/config.toml
+```
+
 ## 核心功能
 
 **内核与安全**

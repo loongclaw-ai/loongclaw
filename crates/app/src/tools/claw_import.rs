@@ -38,10 +38,11 @@ pub(super) fn execute_claw_import_tool_with_config(
             | "plan_many"
             | "recommend_primary"
             | "merge_profiles"
+            | "map_external_skills"
             | "rollback_last_apply"
     ) {
         return Err(format!(
-            "claw.import payload.mode must be `plan`, `apply`, `apply_selected`, `discover`, `plan_many`, `recommend_primary`, `merge_profiles`, or `rollback_last_apply`, got `{mode}`"
+            "claw.import payload.mode must be `plan`, `apply`, `apply_selected`, `discover`, `plan_many`, `recommend_primary`, `merge_profiles`, `map_external_skills`, or `rollback_last_apply`, got `{mode}`"
         ));
     }
 
@@ -168,11 +169,29 @@ pub(super) fn execute_claw_import_tool_with_config(
         });
     }
 
+    if mode == "map_external_skills" {
+        let mapping = migration::plan_external_skill_mapping(input_path.as_path());
+        return Ok(ToolCoreOutcome {
+            status: "ok".to_owned(),
+            payload: json!({
+                "adapter": "core-tools",
+                "tool_name": request.tool_name,
+                "mode": "map_external_skills",
+                "input_path": input_path.display().to_string(),
+                "result": external_skill_mapping_plan_payload(&mapping),
+            }),
+        });
+    }
+
     if mode == "apply_selected" {
         let report =
             migration::discover_import_sources(input_path, migration::DiscoveryOptions::default())?;
         let summary = migration::plan_import_sources(&report)?;
         let selection = parse_apply_selection_mode(payload, &summary)?;
+        let apply_external_skills_plan = payload
+            .get("apply_external_skills_plan")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let selected_output_path = output_path.clone().ok_or_else(|| {
             "claw.import apply_selected mode requires payload.output_path".to_owned()
         })?;
@@ -180,6 +199,12 @@ pub(super) fn execute_claw_import_tool_with_config(
             discovery: report,
             output_path: selected_output_path,
             mode: selection,
+            apply_external_skills_plan,
+            external_skills_input_path: if apply_external_skills_plan {
+                Some(input_path.to_path_buf())
+            } else {
+                None
+            },
         })?;
         return Ok(ToolCoreOutcome {
             status: "ok".to_owned(),
@@ -189,6 +214,7 @@ pub(super) fn execute_claw_import_tool_with_config(
                 "mode": "apply_selected",
                 "input_path": input_path.display().to_string(),
                 "output_path": result.output_path.display().to_string(),
+                "apply_external_skills_plan": apply_external_skills_plan,
                 "result": apply_selection_result_payload(&result),
             }),
         });
@@ -229,7 +255,7 @@ pub(super) fn execute_claw_import_tool_with_config(
             "config_toml": config_toml,
             "next_step": written_output_path
                 .as_ref()
-                .map(|path| format!("loongclawd chat --config {}", path.display())),
+                .map(|path| format!("loongclaw chat --config {}", path.display())),
         }),
     })
 }
@@ -318,15 +344,43 @@ fn merged_profile_plan_payload(plan: &migration::MergedProfilePlan) -> Value {
     })
 }
 
+fn external_skill_mapping_plan_payload(plan: &migration::ExternalSkillMappingPlan) -> Value {
+    json!({
+        "input_path": plan.input_path.display().to_string(),
+        "artifact_count": plan.artifacts.len(),
+        "artifacts": plan
+            .artifacts
+            .iter()
+            .map(|artifact| {
+                json!({
+                    "kind": artifact.kind.as_id(),
+                    "path": artifact.path.display().to_string(),
+                })
+            })
+            .collect::<Vec<_>>(),
+        "declared_skills": plan.declared_skills,
+        "locked_skills": plan.locked_skills,
+        "resolved_skills": plan.resolved_skills,
+        "profile_note_addendum": plan.profile_note_addendum,
+        "warnings": plan.warnings,
+    })
+}
+
 fn apply_selection_result_payload(result: &migration::ApplyImportSelectionResult) -> Value {
     json!({
         "output_path": result.output_path.display().to_string(),
         "backup_path": result.backup_path.display().to_string(),
         "manifest_path": result.manifest_path.display().to_string(),
+        "external_skills_manifest_path": result
+            .external_skills_manifest_path
+            .as_ref()
+            .map(|path| path.display().to_string()),
         "selected_primary_source_id": result.selected_primary_source_id,
         "merged_source_ids": result.merged_source_ids,
         "prompt_owner_source_id": result.prompt_owner_source_id,
         "unresolved_conflicts": result.unresolved_conflicts,
+        "external_skill_artifact_count": result.external_skill_artifact_count,
+        "external_skill_entries_applied": result.external_skill_entries_applied,
         "warnings": result.warnings,
     })
 }
