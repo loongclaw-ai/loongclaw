@@ -106,7 +106,7 @@ pub fn load(path: Option<&str>) -> CliResult<(PathBuf, LoongClawConfig)> {
     let config_path = path.map(expand_path).unwrap_or_else(default_config_path);
     let raw = fs::read_to_string(&config_path).map_err(|error| {
         format!(
-            "failed to read config {}: {error}. run `loongclawd setup` first",
+            "failed to read config {}: {error}. run `loongclaw setup` first",
             config_path.display()
         )
     })?;
@@ -134,7 +134,7 @@ pub fn validate_file_with_locale(
     let config_path = path.map(expand_path).unwrap_or_else(default_config_path);
     let raw = fs::read_to_string(&config_path).map_err(|error| {
         format!(
-            "failed to read config {}: {error}. run `loongclawd setup` first",
+            "failed to read config {}: {error}. run `loongclaw setup` first",
             config_path.display()
         )
     })?;
@@ -443,6 +443,15 @@ api_key_env = "$OPENAI_API_KEY"
     #[test]
     fn supported_validation_locales_stays_stable() {
         assert_eq!(supported_validation_locales(), vec!["en"]);
+    }
+
+    #[test]
+    fn load_missing_config_guides_user_to_loongclaw_setup() {
+        let missing = unique_config_path("loongclaw-config-missing");
+        let path_string = missing.display().to_string();
+
+        let error = load(Some(&path_string)).expect_err("missing config should fail");
+        assert!(error.contains("run `loongclaw setup` first"));
     }
 
     #[test]
