@@ -10,7 +10,7 @@
 <p align="center">
   <a href="https://github.com/loongclaw-ai/loongclaw/actions/workflows/ci.yml"><img src="https://github.com/loongclaw-ai/loongclaw/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT" /></a>
-  <img src="https://img.shields.io/badge/rust-edition%202021-orange.svg" alt="Rust Edition 2021" />
+  <img src="https://img.shields.io/badge/rust-edition%202024-orange.svg" alt="Rust Edition 2024" />
   <img src="https://img.shields.io/badge/version-0.1.2--pre-yellow.svg" alt="Version: 0.1.2-pre" />
 </p>
 
@@ -64,7 +64,7 @@ LoongClaw is a layered Agentic OS kernel focused on stable kernel contracts, str
 
 ### Prerequisites
 
-- Rust stable toolchain (edition 2021)
+- Rust stable toolchain (edition 2024)
 - `cargo` available in your PATH
 
 ### Install from Source
@@ -73,6 +73,8 @@ LoongClaw is a layered Agentic OS kernel focused on stable kernel contracts, str
 <summary>Linux / macOS</summary>
 
 ```bash
+git clone https://github.com/loongclaw-ai/loongclaw.git
+cd loongclaw
 ./scripts/install.sh --setup
 ```
 </details>
@@ -98,7 +100,7 @@ cargo install --path crates/daemon
 1. Generate config and bootstrap local state:
 
    ```bash
-   loongclaw setup
+   loongclaw onboard
    ```
 
 2. Set your provider API key:
