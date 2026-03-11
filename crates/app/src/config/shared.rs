@@ -619,6 +619,8 @@ mod tests {
     /// 3. Neither HOME nor USERPROFILE set → should return "."
     #[test]
     fn get_user_home_deterministic_fallback_scenarios() {
+        use crate::test_support::ScopedEnv;
+
         // Scenario 1: real OS should have at least one var set
         let home_on_real_os = get_user_home();
         assert_ne!(
@@ -627,33 +629,22 @@ mod tests {
             "get_user_home() should resolve to a real directory, not \".\""
         );
 
-        let original_home = env::var_os("HOME");
-        let original_userprofile = env::var_os("USERPROFILE");
-
         let synthetic = PathBuf::from(if cfg!(windows) {
             r"C:\Users\loongclaw-test-synthetic"
         } else {
             "/tmp/loongclaw-test-synthetic"
         });
 
+        let mut env_guard = ScopedEnv::new();
+
         // Scenario 2: HOME absent, USERPROFILE present → returns USERPROFILE
-        env::remove_var("HOME");
-        env::set_var("USERPROFILE", &synthetic);
+        env_guard.remove("HOME");
+        env_guard.set("USERPROFILE", &synthetic);
         let result_userprofile = get_user_home();
 
         // Scenario 3: both absent → returns "."
-        env::remove_var("USERPROFILE");
+        env_guard.remove("USERPROFILE");
         let result_dot = get_user_home();
-
-        // Restore original env before assertions (panic-safe ordering)
-        match original_home {
-            Some(v) => env::set_var("HOME", v),
-            None => env::remove_var("HOME"),
-        }
-        match original_userprofile {
-            Some(v) => env::set_var("USERPROFILE", v),
-            None => env::remove_var("USERPROFILE"),
-        }
 
         assert_eq!(
             result_userprofile, synthetic,
