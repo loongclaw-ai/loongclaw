@@ -36,6 +36,20 @@ struct OnboardCheck {
     detail: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OnboardImportMode {
+    Skip,
+    RecommendedSingleSource { source_id: String },
+    SelectedSingleSource { source_id: String },
+    SafeProfileMerge,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OnboardImportStrategy {
+    pub mode: OnboardImportMode,
+    pub recommended_source_id: Option<String>,
+}
+
 pub(crate) async fn run_onboard_cli(options: OnboardCommandOptions) -> CliResult<()> {
     validate_non_interactive_risk_gate(options.non_interactive, options.accept_risk)?;
     let using_prompt_override = options
@@ -577,6 +591,85 @@ pub(crate) fn validate_non_interactive_risk_gate(
         );
     }
     Ok(())
+}
+
+pub(crate) fn resolve_onboard_import_strategy(
+    summary: &mvp::migration::DiscoveryPlanSummary,
+    prefer_safe_profile_merge: bool,
+) -> CliResult<OnboardImportStrategy> {
+    let recommended_source_id = match summary.plans.len() {
+        0 => None,
+        1 => summary.plans.first().map(|plan| plan.source_id.clone()),
+        _ => Some(mvp::migration::recommend_primary_source(summary)?.source_id),
+    };
+
+    let mode = match (summary.plans.len(), prefer_safe_profile_merge) {
+        (0, _) => OnboardImportMode::Skip,
+        (_, true) if summary.plans.len() > 1 => OnboardImportMode::SafeProfileMerge,
+        _ => OnboardImportMode::RecommendedSingleSource {
+            source_id: recommended_source_id
+                .clone()
+                .ok_or_else(|| "missing recommended import source".to_owned())?,
+        },
+    };
+
+    Ok(OnboardImportStrategy {
+        mode,
+        recommended_source_id,
+    })
+}
+
+pub(crate) fn build_onboard_import_summary(
+    summary: &mvp::migration::DiscoveryPlanSummary,
+    recommendation: Option<&mvp::migration::PrimarySourceRecommendation>,
+) -> String {
+    if summary.plans.is_empty() {
+        return "No legacy claw import sources detected.".to_owned();
+    }
+
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "Detected {} legacy claw source(s).",
+        summary.plans.len()
+    ));
+
+    for plan in &summary.plans {
+        let prompt_state = if plan.prompt_addendum_present {
+            "prompt overlay"
+        } else {
+            "no prompt overlay"
+        };
+        let profile_state = if plan.profile_note_present {
+            "profile overlay"
+        } else {
+            "no profile overlay"
+        };
+        let warning_state = if plan.warning_count == 0 {
+            "no warnings".to_owned()
+        } else {
+            format!("{} warning(s)", plan.warning_count)
+        };
+        lines.push(format!(
+            "- {}: score {}, {}, {}, {}",
+            plan.source_id, plan.confidence_score, prompt_state, profile_state, warning_state
+        ));
+    }
+
+    if let Some(recommendation) = recommendation {
+        lines.push(format!(
+            "Recommended import source: {}",
+            recommendation.source_id
+        ));
+    }
+
+    if summary.plans.len() > 1 {
+        lines.push(
+            "Secondary option: safe profile merge keeps LoongClaw native prompts and merges only profile-lane traits."
+                .to_owned(),
+        );
+    }
+
+    lines.join("\n")
 }
 
 pub(crate) fn parse_provider_kind(raw: &str) -> Option<mvp::config::ProviderKind> {
