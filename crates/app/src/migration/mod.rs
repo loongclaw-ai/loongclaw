@@ -1,4 +1,5 @@
 mod orchestrator;
+mod merge;
 
 use std::{collections::BTreeSet, fs, path::Path};
 
@@ -13,6 +14,10 @@ pub use orchestrator::{
     discover_import_sources, plan_import_sources, recommend_primary_source, DiscoveredImportSource,
     DiscoveryOptions, DiscoveryPlanSummary, DiscoveryReport, PlannedImportSource,
     PrimarySourceRecommendation,
+};
+pub use merge::{
+    merge_profile_entries, MergedProfilePlan, ProfileEntryLane, ProfileMergeConflict,
+    ProfileMergeEntry,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
