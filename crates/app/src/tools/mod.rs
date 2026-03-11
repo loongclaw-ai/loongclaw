@@ -7,7 +7,9 @@ use crate::KernelContext;
 
 mod claw_import;
 mod file;
+pub mod file_policy_ext;
 mod kernel_adapter;
+pub mod policy_ext;
 pub mod runtime_config;
 mod shell;
 
