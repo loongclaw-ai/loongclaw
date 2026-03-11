@@ -101,3 +101,75 @@ fn non_interactive_requires_explicit_risk_acknowledgement() {
     crate::onboard_cli::validate_non_interactive_risk_gate(false, false)
         .expect("interactive mode should not require explicit flag");
 }
+
+#[test]
+fn onboard_import_strategy_defaults_to_recommended_single_source() {
+    let summary = mvp::migration::DiscoveryPlanSummary {
+        plans: vec![
+            mvp::migration::PlannedImportSource {
+                source: mvp::migration::LegacyClawSource::OpenClaw,
+                source_id: "openclaw".to_owned(),
+                input_path: std::path::PathBuf::from("/tmp/openclaw"),
+                confidence_score: 42,
+                prompt_addendum_present: true,
+                profile_note_present: true,
+                warning_count: 0,
+            },
+            mvp::migration::PlannedImportSource {
+                source: mvp::migration::LegacyClawSource::Nanobot,
+                source_id: "nanobot".to_owned(),
+                input_path: std::path::PathBuf::from("/tmp/nanobot"),
+                confidence_score: 18,
+                prompt_addendum_present: false,
+                profile_note_present: true,
+                warning_count: 0,
+            },
+        ],
+    };
+
+    let recommendation = crate::onboard_cli::resolve_onboard_import_strategy(&summary, false)
+        .expect("strategy should resolve");
+    assert_eq!(
+        recommendation.mode,
+        crate::onboard_cli::OnboardImportMode::RecommendedSingleSource {
+            source_id: "openclaw".to_owned()
+        }
+    );
+}
+
+#[test]
+fn onboard_import_summary_shows_safe_merge_as_secondary_option() {
+    let summary = mvp::migration::DiscoveryPlanSummary {
+        plans: vec![
+            mvp::migration::PlannedImportSource {
+                source: mvp::migration::LegacyClawSource::OpenClaw,
+                source_id: "openclaw".to_owned(),
+                input_path: std::path::PathBuf::from("/tmp/openclaw"),
+                confidence_score: 42,
+                prompt_addendum_present: true,
+                profile_note_present: true,
+                warning_count: 0,
+            },
+            mvp::migration::PlannedImportSource {
+                source: mvp::migration::LegacyClawSource::Nanobot,
+                source_id: "nanobot".to_owned(),
+                input_path: std::path::PathBuf::from("/tmp/nanobot"),
+                confidence_score: 18,
+                prompt_addendum_present: false,
+                profile_note_present: true,
+                warning_count: 1,
+            },
+        ],
+    };
+    let recommendation = mvp::migration::PrimarySourceRecommendation {
+        source: mvp::migration::LegacyClawSource::OpenClaw,
+        source_id: "openclaw".to_owned(),
+        input_path: std::path::PathBuf::from("/tmp/openclaw"),
+        reasons: vec!["contains imported prompt overlay".to_owned()],
+    };
+
+    let summary_text =
+        crate::onboard_cli::build_onboard_import_summary(&summary, Some(&recommendation));
+    assert!(summary_text.contains("Recommended import source: openclaw"));
+    assert!(summary_text.contains("safe profile merge"));
+}
