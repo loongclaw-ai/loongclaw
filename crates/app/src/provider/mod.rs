@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -22,9 +23,9 @@ use error_policy::{
 };
 use model_selection::{fetch_available_models_with_policy, resolve_request_models};
 use payload_adaptation::{
-    CompletionPayloadMode, adapt_payload_mode_for_error, build_completion_request_body,
-    build_turn_request_body, parse_provider_api_error, should_disable_tool_schema_for_error,
-    should_try_next_model_on_error,
+    CompletionPayloadMode, ProviderApiError, adapt_payload_mode_for_error,
+    build_completion_request_body, build_turn_request_body, parse_provider_api_error,
+    should_disable_tool_schema_for_error, should_try_next_model_on_error,
 };
 
 pub use shape::extract_provider_turn;
@@ -147,7 +148,6 @@ pub fn build_messages_for_session(
 pub async fn request_completion(config: &LoongClawConfig, messages: &[Value]) -> CliResult<String> {
     validate_provider_configuration(config)?;
     validate_provider_feature_gate(config)?;
-
     let endpoint = config.provider.endpoint();
     let headers = transport::build_request_headers(&config.provider)?;
     let request_policy = policy::ProviderRequestPolicy::from_config(&config.provider);
@@ -183,7 +183,6 @@ pub async fn request_turn(
 ) -> CliResult<crate::conversation::turn_engine::ProviderTurn> {
     validate_provider_configuration(config)?;
     validate_provider_feature_gate(config)?;
-
     let endpoint = config.provider.endpoint();
     let headers = transport::build_request_headers(&config.provider)?;
     let request_policy = policy::ProviderRequestPolicy::from_config(&config.provider);
@@ -242,20 +241,30 @@ struct ProviderRequestContext<'a> {
     auto_model_mode: bool,
 }
 
-async fn request_completion_with_model(
+/// Caller hook signal: `Retry` = handled, loop again; `Continue` = fall through.
+enum ErrorHookAction {
+    Retry,
+    Continue,
+}
+
+/// Generic retry loop shared by completion and turn request paths.
+async fn execute_with_retry<T>(
     config: &LoongClawConfig,
-    messages: &[Value],
     model: &str,
     request_context: &ProviderRequestContext<'_>,
-) -> Result<String, ModelRequestError> {
+    mut build_body: impl FnMut(CompletionPayloadMode) -> Value,
+    extract_result: impl Fn(&Value, usize) -> Result<T, ModelRequestError>,
+    mut on_error_hook: impl FnMut(&ProviderApiError) -> ErrorHookAction,
+) -> Result<T, ModelRequestError> {
     let mut attempt = 0usize;
     let mut backoff_ms = request_context.request_policy.initial_backoff_ms;
     let mut payload_mode = CompletionPayloadMode::default_for(&config.provider);
     let mut tried_payload_modes = vec![payload_mode];
+    let max_attempts = request_context.request_policy.max_attempts;
 
     loop {
         attempt += 1;
-        let body = build_completion_request_body(config, messages, model, payload_mode);
+        let body = build_body(payload_mode);
         let mut req = request_context
             .client
             .post(request_context.endpoint)
@@ -273,25 +282,21 @@ async fn request_completion_with_model(
                     .map_err(|error| ModelRequestError {
                         message: format!(
                             "provider response decode failed for model `{model}` on attempt {attempt}/{max_attempts}: {error}",
-                            max_attempts = request_context.request_policy.max_attempts
                         ),
                         try_next_model: false,
                     })?;
 
                 if status.is_success() {
-                    let content = shape::extract_message_content(&response_body).ok_or_else(|| {
-                        ModelRequestError {
-                            message: format!(
-                                "provider response missing choices[0].message.content for model `{model}` on attempt {attempt}/{max_attempts}: {response_body}",
-                                max_attempts = request_context.request_policy.max_attempts
-                            ),
-                            try_next_model: false,
-                        }
-                    })?;
-                    return Ok(content);
+                    return extract_result(&response_body, attempt);
                 }
 
                 let api_error = parse_provider_api_error(&response_body);
+
+                // Caller-specific error hook (e.g. tool-schema disable for turn path).
+                if matches!(on_error_hook(&api_error), ErrorHookAction::Retry) {
+                    continue;
+                }
+
                 if let Some(next_mode) =
                     adapt_payload_mode_for_error(payload_mode, &config.provider, &api_error)
                     && !tried_payload_modes.contains(&next_mode)
@@ -302,9 +307,7 @@ async fn request_completion_with_model(
                 }
 
                 let status_code = status.as_u16();
-                if attempt < request_context.request_policy.max_attempts
-                    && policy::should_retry_status(status_code)
-                {
+                if attempt < max_attempts && policy::should_retry_status(status_code) {
                     sleep(Duration::from_millis(backoff_ms)).await;
                     backoff_ms = policy::next_backoff_ms(
                         backoff_ms,
@@ -325,15 +328,12 @@ async fn request_completion_with_model(
                 return Err(ModelRequestError {
                     message: format!(
                         "provider returned status {status_code} for model `{model}` on attempt {attempt}/{max_attempts}: {response_body}",
-                        max_attempts = request_context.request_policy.max_attempts
                     ),
                     try_next_model: false,
                 });
             }
             Err(error) => {
-                if attempt < request_context.request_policy.max_attempts
-                    && policy::should_retry_error(&error)
-                {
+                if attempt < max_attempts && policy::should_retry_error(&error) {
                     sleep(Duration::from_millis(backoff_ms)).await;
                     backoff_ms = policy::next_backoff_ms(
                         backoff_ms,
@@ -344,13 +344,37 @@ async fn request_completion_with_model(
                 return Err(ModelRequestError {
                     message: format!(
                         "provider request failed for model `{model}` on attempt {attempt}/{max_attempts}: {error}",
-                        max_attempts = request_context.request_policy.max_attempts
                     ),
                     try_next_model: false,
                 });
             }
         }
     }
+}
+
+async fn request_completion_with_model(
+    config: &LoongClawConfig,
+    messages: &[Value],
+    model: &str,
+    request_context: &ProviderRequestContext<'_>,
+) -> Result<String, ModelRequestError> {
+    let max_attempts = request_context.request_policy.max_attempts;
+    execute_with_retry(
+        config,
+        model,
+        request_context,
+        |payload_mode| build_completion_request_body(config, messages, model, payload_mode),
+        |response_body, attempt| {
+            shape::extract_message_content(response_body).ok_or_else(|| ModelRequestError {
+                message: format!(
+                    "provider response missing choices[0].message.content for model `{model}` on attempt {attempt}/{max_attempts}: {response_body}",
+                ),
+                try_next_model: false,
+            })
+        },
+        |_api_error: &ProviderApiError| ErrorHookAction::Continue,
+    )
+    .await
 }
 
 async fn request_turn_with_model(
@@ -359,122 +383,44 @@ async fn request_turn_with_model(
     model: &str,
     request_context: &ProviderRequestContext<'_>,
 ) -> Result<crate::conversation::turn_engine::ProviderTurn, ModelRequestError> {
-    let mut attempt = 0usize;
-    let mut backoff_ms = request_context.request_policy.initial_backoff_ms;
-    let mut payload_mode = CompletionPayloadMode::default_for(&config.provider);
-    let mut tried_payload_modes = vec![payload_mode];
+    let max_attempts = request_context.request_policy.max_attempts;
     let tool_definitions = super::tools::provider_tool_definitions();
-    let mut include_tool_schema = !tool_definitions.is_empty();
+    let include_tool_schema = AtomicBool::new(!tool_definitions.is_empty());
 
-    loop {
-        attempt += 1;
-        let body = build_turn_request_body(
-            config,
-            messages,
-            model,
-            payload_mode,
-            include_tool_schema,
-            &tool_definitions,
-        );
-        let mut req = request_context
-            .client
-            .post(request_context.endpoint)
-            .headers(request_context.headers.clone())
-            .json(&body);
-        if let Some(auth_header) = config.provider.authorization_header() {
-            req = req.header(reqwest::header::AUTHORIZATION, auth_header);
-        }
-
-        match req.send().await {
-            Ok(response) => {
-                let status = response.status();
-                let response_body = transport::decode_response_body(response)
-                    .await
-                    .map_err(|error| ModelRequestError {
-                        message: format!(
-                            "provider response decode failed for model `{model}` on attempt {attempt}/{max_attempts}: {error}",
-                            max_attempts = request_context.request_policy.max_attempts
-                        ),
-                        try_next_model: false,
-                    })?;
-
-                if status.is_success() {
-                    let turn = shape::extract_provider_turn(&response_body).ok_or_else(|| {
-                        ModelRequestError {
-                            message: format!(
-                                "provider response missing choices[0].message for model `{model}` on attempt {attempt}/{max_attempts}: {response_body}",
-                                max_attempts = request_context.request_policy.max_attempts
-                            ),
-                            try_next_model: false,
-                        }
-                    })?;
-                    return Ok(turn);
-                }
-
-                let api_error = parse_provider_api_error(&response_body);
-                if include_tool_schema && should_disable_tool_schema_for_error(&api_error) {
-                    include_tool_schema = false;
-                    continue;
-                }
-                if let Some(next_mode) =
-                    adapt_payload_mode_for_error(payload_mode, &config.provider, &api_error)
-                    && !tried_payload_modes.contains(&next_mode)
-                {
-                    payload_mode = next_mode;
-                    tried_payload_modes.push(next_mode);
-                    continue;
-                }
-
-                let status_code = status.as_u16();
-                if attempt < request_context.request_policy.max_attempts
-                    && policy::should_retry_status(status_code)
-                {
-                    sleep(Duration::from_millis(backoff_ms)).await;
-                    backoff_ms = policy::next_backoff_ms(
-                        backoff_ms,
-                        request_context.request_policy.max_backoff_ms,
-                    );
-                    continue;
-                }
-
-                if request_context.auto_model_mode && should_try_next_model_on_error(&api_error) {
-                    return Err(ModelRequestError {
-                        message: format!(
-                            "model `{model}` rejected by provider endpoint; trying next candidate. status {status_code}: {response_body}"
-                        ),
-                        try_next_model: true,
-                    });
-                }
-
-                return Err(ModelRequestError {
-                    message: format!(
-                        "provider returned status {status_code} for model `{model}` on attempt {attempt}/{max_attempts}: {response_body}",
-                        max_attempts = request_context.request_policy.max_attempts
-                    ),
-                    try_next_model: false,
-                });
+    execute_with_retry(
+        config,
+        model,
+        request_context,
+        |payload_mode| {
+            build_turn_request_body(
+                config,
+                messages,
+                model,
+                payload_mode,
+                include_tool_schema.load(Ordering::Relaxed),
+                &tool_definitions,
+            )
+        },
+        |response_body, attempt| {
+            shape::extract_provider_turn(response_body).ok_or_else(|| ModelRequestError {
+                message: format!(
+                    "provider response missing choices[0].message for model `{model}` on attempt {attempt}/{max_attempts}: {response_body}",
+                ),
+                try_next_model: false,
+            })
+        },
+        |api_error| {
+            if include_tool_schema.load(Ordering::Relaxed)
+                && should_disable_tool_schema_for_error(api_error)
+            {
+                include_tool_schema.store(false, Ordering::Relaxed);
+                ErrorHookAction::Retry
+            } else {
+                ErrorHookAction::Continue
             }
-            Err(error) => {
-                if attempt < request_context.request_policy.max_attempts
-                    && policy::should_retry_error(&error)
-                {
-                    sleep(Duration::from_millis(backoff_ms)).await;
-                    backoff_ms = policy::next_backoff_ms(
-                        backoff_ms,
-                        request_context.request_policy.max_backoff_ms,
-                    );
-                    continue;
-                }
-                return Err(ModelRequestError {
-                    message: format!(
-                        "provider request failed for model `{model}` on attempt {attempt}/{max_attempts}: {error}",
-                        max_attempts = request_context.request_policy.max_attempts
-                    ),
-                    try_next_model: false,
-                });
-            }
-        }
-    }
+        },
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -483,22 +429,27 @@ mod tests {
     use super::payload_adaptation::{ReasoningField, TemperatureField, TokenLimitField};
     use super::*;
     use crate::config::{
-        ConversationConfig, FeishuChannelConfig, MemoryConfig, ProviderConfig, ProviderKind,
-        ReasoningEffort, ToolConfig,
+        ConversationConfig, ExternalSkillsConfig, FeishuChannelConfig, MemoryConfig,
+        ProviderConfig, ProviderKind, ReasoningEffort, ToolConfig,
     };
     use serde_json::json;
 
-    #[test]
-    fn message_builder_includes_system_prompt() {
-        let config = LoongClawConfig {
+    fn default_test_config() -> LoongClawConfig {
+        LoongClawConfig {
             provider: ProviderConfig::default(),
             cli: crate::config::CliChannelConfig::default(),
             telegram: crate::config::TelegramChannelConfig::default(),
             feishu: FeishuChannelConfig::default(),
             conversation: ConversationConfig::default(),
             tools: ToolConfig::default(),
+            external_skills: ExternalSkillsConfig::default(),
             memory: MemoryConfig::default(),
-        };
+        }
+    }
+
+    #[test]
+    fn message_builder_includes_system_prompt() {
+        let config = default_test_config();
 
         let messages =
             build_messages_for_session(&config, "noop-session", true).expect("build messages");
@@ -508,15 +459,7 @@ mod tests {
 
     #[test]
     fn build_messages_includes_capability_snapshot_block() {
-        let config = LoongClawConfig {
-            provider: ProviderConfig::default(),
-            cli: crate::config::CliChannelConfig::default(),
-            telegram: crate::config::TelegramChannelConfig::default(),
-            feishu: FeishuChannelConfig::default(),
-            conversation: ConversationConfig::default(),
-            tools: ToolConfig::default(),
-            memory: MemoryConfig::default(),
-        };
+        let config = default_test_config();
 
         let messages =
             build_messages_for_session(&config, "noop-session", true).expect("build messages");
@@ -543,15 +486,7 @@ mod tests {
     #[cfg(feature = "memory-sqlite")]
     #[test]
     fn build_messages_skips_internal_conversation_events_in_history_window() {
-        let mut config = LoongClawConfig {
-            provider: ProviderConfig::default(),
-            cli: crate::config::CliChannelConfig::default(),
-            telegram: crate::config::TelegramChannelConfig::default(),
-            feishu: FeishuChannelConfig::default(),
-            conversation: ConversationConfig::default(),
-            tools: ToolConfig::default(),
-            memory: MemoryConfig::default(),
-        };
+        let mut config = default_test_config();
 
         let session_id = format!(
             "provider-history-filter-{}",
@@ -623,15 +558,7 @@ mod tests {
     #[cfg(feature = "memory-sqlite")]
     #[test]
     fn build_messages_skips_unknown_history_roles() {
-        let mut config = LoongClawConfig {
-            provider: ProviderConfig::default(),
-            cli: crate::config::CliChannelConfig::default(),
-            telegram: crate::config::TelegramChannelConfig::default(),
-            feishu: FeishuChannelConfig::default(),
-            conversation: ConversationConfig::default(),
-            tools: ToolConfig::default(),
-            memory: MemoryConfig::default(),
-        };
+        let mut config = default_test_config();
 
         let session_id = format!(
             "provider-history-role-filter-{}",
@@ -694,15 +621,7 @@ mod tests {
 
     #[test]
     fn message_builder_uses_rendered_prompt_from_pack_metadata() {
-        let mut config = LoongClawConfig {
-            provider: ProviderConfig::default(),
-            cli: crate::config::CliChannelConfig::default(),
-            telegram: crate::config::TelegramChannelConfig::default(),
-            feishu: FeishuChannelConfig::default(),
-            tools: ToolConfig::default(),
-            memory: MemoryConfig::default(),
-            conversation: crate::config::ConversationConfig::default(),
-        };
+        let mut config = default_test_config();
         config.cli.personality = Some(crate::prompt::PromptPersonality::FriendlyCollab);
         config.cli.system_prompt = String::new();
 
@@ -716,15 +635,7 @@ mod tests {
 
     #[test]
     fn message_builder_keeps_legacy_inline_prompt_when_pack_is_disabled() {
-        let mut config = LoongClawConfig {
-            provider: ProviderConfig::default(),
-            cli: crate::config::CliChannelConfig::default(),
-            telegram: crate::config::TelegramChannelConfig::default(),
-            feishu: FeishuChannelConfig::default(),
-            tools: ToolConfig::default(),
-            memory: MemoryConfig::default(),
-            conversation: crate::config::ConversationConfig::default(),
-        };
+        let mut config = default_test_config();
         config.cli.prompt_pack_id = None;
         config.cli.personality = None;
         config.cli.system_prompt = "You are a legacy inline prompt.".to_owned();
@@ -746,15 +657,7 @@ mod tests {
         let db_path = tmp.join("provider-summary.sqlite3");
         let _ = std::fs::remove_file(&db_path);
 
-        let mut config = LoongClawConfig {
-            provider: ProviderConfig::default(),
-            cli: crate::config::CliChannelConfig::default(),
-            telegram: crate::config::TelegramChannelConfig::default(),
-            feishu: FeishuChannelConfig::default(),
-            tools: ToolConfig::default(),
-            memory: MemoryConfig::default(),
-            conversation: crate::config::ConversationConfig::default(),
-        };
+        let mut config = default_test_config();
         config.memory.sqlite_path = db_path.display().to_string();
         config.memory.profile = crate::config::MemoryProfile::WindowPlusSummary;
         config.memory.sliding_window = 2;
@@ -789,15 +692,7 @@ mod tests {
 
     #[test]
     fn completion_body_includes_reasoning_effort_when_configured() {
-        let mut config = LoongClawConfig {
-            provider: ProviderConfig::default(),
-            cli: crate::config::CliChannelConfig::default(),
-            telegram: crate::config::TelegramChannelConfig::default(),
-            feishu: FeishuChannelConfig::default(),
-            conversation: ConversationConfig::default(),
-            tools: ToolConfig::default(),
-            memory: MemoryConfig::default(),
-        };
+        let mut config = default_test_config();
         config.provider.reasoning_effort = Some(ReasoningEffort::High);
 
         let body = build_completion_request_body(
@@ -811,18 +706,8 @@ mod tests {
 
     #[test]
     fn kimi_coding_completion_body_adds_extra_body_thinking() {
-        let mut config = LoongClawConfig {
-            provider: ProviderConfig {
-                kind: ProviderKind::KimiCoding,
-                ..ProviderConfig::default()
-            },
-            cli: crate::config::CliChannelConfig::default(),
-            telegram: crate::config::TelegramChannelConfig::default(),
-            feishu: FeishuChannelConfig::default(),
-            tools: ToolConfig::default(),
-            memory: MemoryConfig::default(),
-            conversation: crate::config::ConversationConfig::default(),
-        };
+        let mut config = default_test_config();
+        config.provider.kind = ProviderKind::KimiCoding;
         config.provider.reasoning_effort = Some(ReasoningEffort::High);
 
         let body = build_completion_request_body(
@@ -852,15 +737,7 @@ mod tests {
 
     #[test]
     fn completion_body_omits_optional_fields_when_not_configured() {
-        let config = LoongClawConfig {
-            provider: ProviderConfig::default(),
-            cli: crate::config::CliChannelConfig::default(),
-            telegram: crate::config::TelegramChannelConfig::default(),
-            feishu: FeishuChannelConfig::default(),
-            conversation: ConversationConfig::default(),
-            tools: ToolConfig::default(),
-            memory: MemoryConfig::default(),
-        };
+        let config = default_test_config();
 
         let body = build_completion_request_body(
             &config,
@@ -910,15 +787,7 @@ mod tests {
     #[cfg(any(feature = "tool-file", feature = "tool-shell"))]
     #[test]
     fn turn_body_includes_tool_schema_and_auto_choice() {
-        let config = LoongClawConfig {
-            provider: ProviderConfig::default(),
-            cli: crate::config::CliChannelConfig::default(),
-            telegram: crate::config::TelegramChannelConfig::default(),
-            feishu: FeishuChannelConfig::default(),
-            conversation: ConversationConfig::default(),
-            tools: ToolConfig::default(),
-            memory: MemoryConfig::default(),
-        };
+        let config = default_test_config();
 
         let body = build_turn_request_body(
             &config,
@@ -942,6 +811,8 @@ mod tests {
 
         let mut expected = Vec::new();
         expected.push("claw_import");
+        expected.push("external_skills_fetch");
+        expected.push("external_skills_policy");
         #[cfg(feature = "tool-file")]
         {
             expected.push("file_read");
@@ -1104,41 +975,21 @@ mod tests {
 
     #[test]
     fn validate_provider_configuration_rejects_plain_kimi_on_coding_endpoint() {
-        let config = LoongClawConfig {
-            provider: ProviderConfig {
-                kind: ProviderKind::Kimi,
-                base_url: "https://api.kimi.com/coding".to_owned(),
-                chat_completions_path: "/v1/chat/completions".to_owned(),
-                ..ProviderConfig::default()
-            },
-            cli: crate::config::CliChannelConfig::default(),
-            telegram: crate::config::TelegramChannelConfig::default(),
-            feishu: FeishuChannelConfig::default(),
-            tools: ToolConfig::default(),
-            memory: MemoryConfig::default(),
-            conversation: crate::config::ConversationConfig::default(),
-        };
+        let mut config = default_test_config();
+        config.provider.kind = ProviderKind::Kimi;
+        config.provider.base_url = "https://api.kimi.com/coding".to_owned();
+        config.provider.chat_completions_path = "/v1/chat/completions".to_owned();
         let error = validate_provider_configuration(&config).expect_err("misconfig should fail");
         assert!(error.contains("use `kind = \"kimi_coding\"`"));
     }
 
     #[test]
     fn validate_provider_configuration_rejects_incompatible_kimi_coding_user_agent() {
-        let config = LoongClawConfig {
-            provider: ProviderConfig {
-                kind: ProviderKind::KimiCoding,
-                headers: [("User-Agent".to_owned(), "LoongClaw/0.1".to_owned())]
-                    .into_iter()
-                    .collect(),
-                ..ProviderConfig::default()
-            },
-            cli: crate::config::CliChannelConfig::default(),
-            telegram: crate::config::TelegramChannelConfig::default(),
-            feishu: FeishuChannelConfig::default(),
-            tools: ToolConfig::default(),
-            memory: MemoryConfig::default(),
-            conversation: crate::config::ConversationConfig::default(),
-        };
+        let mut config = default_test_config();
+        config.provider.kind = ProviderKind::KimiCoding;
+        config.provider.headers = [("User-Agent".to_owned(), "LoongClaw/0.1".to_owned())]
+            .into_iter()
+            .collect();
         let error = validate_provider_configuration(&config).expect_err("invalid ua");
         assert!(error.contains("KimiCLI/"));
     }

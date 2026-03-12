@@ -317,7 +317,7 @@ fn build_telegram_snapshot_for_account(
         transport: descriptor.transport,
         compiled,
         enabled: resolved.enabled,
-        api_base_url: Some(resolved.base_url.clone()),
+        api_base_url: Some(resolved.base_url),
         notes,
         operations: vec![operation],
     }

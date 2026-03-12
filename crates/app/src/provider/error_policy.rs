@@ -7,6 +7,7 @@ pub(super) fn provider_request_failed_for_all_models(last_error: Option<String>)
 }
 
 pub(super) fn validate_provider_feature_gate(config: &LoongClawConfig) -> CliResult<()> {
+    #[allow(clippy::wildcard_enum_match_arm)]
     match config.provider.kind {
         ProviderKind::Volcengine => {
             if !cfg!(feature = "provider-volcengine") {

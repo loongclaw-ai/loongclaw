@@ -1998,7 +1998,7 @@ pub fn execute_wasm_component_bridge(
                 "cache_total_module_bytes": cache_lookup.cache_total_module_bytes,
                 "cache_max_bytes": cache_lookup.cache_max_bytes,
                 "cache_inserted": cache_lookup.inserted,
-                "expected_sha256": expected_sha256.clone(),
+                "expected_sha256": expected_sha256,
                 "artifact_sha256": cached_module.artifact_sha256.clone(),
                 "integrity_check_required": expected_sha256.is_some(),
                 "integrity_check_passed": expected_sha256.is_none() || cached_module.artifact_sha256.is_some(),
@@ -2024,7 +2024,7 @@ pub fn execute_wasm_component_bridge(
                 "cache_total_module_bytes": cache_lookup.cache_total_module_bytes,
                 "cache_max_bytes": cache_lookup.cache_max_bytes,
                 "cache_inserted": cache_lookup.inserted,
-                "expected_sha256": expected_sha256.clone(),
+                "expected_sha256": expected_sha256,
                 "artifact_sha256": cached_module.artifact_sha256.clone(),
                 "integrity_check_required": expected_sha256.is_some(),
                 "integrity_check_passed": expected_sha256.is_none() || cached_module.artifact_sha256.is_some(),
@@ -2494,7 +2494,7 @@ impl ToolExtensionAdapter for ClawMigrationToolExtension {
                 response.entry(key.clone()).or_insert_with(|| value.clone());
             }
         } else {
-            response.insert("result".to_owned(), core_outcome.payload.clone());
+            response.insert("result".to_owned(), core_outcome.payload);
         }
         Ok(ToolExtensionOutcome {
             status: "ok".to_owned(),
@@ -2769,7 +2769,7 @@ mod tests {
         assert_eq!(cache.len(), 1);
         assert_eq!(cache.total_module_bytes(), 6);
 
-        let second = cache.insert(key_b.clone(), compiled.clone(), 6, 8, 10);
+        let second = cache.insert(key_b.clone(), compiled, 6, 8, 10);
         assert!(second.inserted);
         assert_eq!(second.evicted_entries, 1);
         assert_eq!(cache.len(), 1);

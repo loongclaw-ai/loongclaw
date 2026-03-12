@@ -1030,7 +1030,7 @@ fn validate_channel_account_integrity<'a, I>(
     let mut extra_message_variables = BTreeMap::new();
     extra_message_variables.insert(
         "requested_account_id".to_owned(),
-        normalized_default_account.clone(),
+        normalized_default_account,
     );
     extra_message_variables.insert(
         "configured_account_ids".to_owned(),

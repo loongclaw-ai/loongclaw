@@ -91,7 +91,7 @@ async fn execute_spec_process_stdio_bridge_executes_when_enabled_and_allowed() {
         },
     };
 
-    let report = execute_spec(spec, true).await;
+    let report = execute_spec(&spec, true).await;
     let runtime = &report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"];
     assert_eq!(report.operation_kind, "connector_legacy");
     assert_eq!(report.outcome["outcome"]["status"], "ok");
@@ -214,7 +214,7 @@ async fn execute_spec_process_stdio_bridge_blocks_when_command_not_allowlisted()
         },
     };
 
-    let report = execute_spec(spec, true).await;
+    let report = execute_spec(&spec, true).await;
     assert_eq!(report.operation_kind, "connector_legacy");
     assert_eq!(report.outcome["outcome"]["status"], "ok");
     assert_eq!(
@@ -321,7 +321,7 @@ async fn execute_spec_process_stdio_bridge_fails_on_invalid_json_line_response()
         },
     };
 
-    let report = execute_spec(spec, true).await;
+    let report = execute_spec(&spec, true).await;
     assert_eq!(report.operation_kind, "connector_legacy");
     assert_eq!(report.outcome["outcome"]["status"], "ok");
     assert_eq!(
@@ -436,7 +436,7 @@ async fn execute_spec_process_stdio_bridge_fails_on_response_id_mismatch() {
         },
     };
 
-    let report = execute_spec(spec, true).await;
+    let report = execute_spec(&spec, true).await;
     assert_eq!(report.operation_kind, "connector_legacy");
     assert_eq!(report.outcome["outcome"]["status"], "ok");
     assert_eq!(
@@ -545,7 +545,7 @@ async fn execute_spec_process_stdio_bridge_fails_on_response_method_mismatch() {
         },
     };
 
-    let report = execute_spec(spec, true).await;
+    let report = execute_spec(&spec, true).await;
     assert_eq!(report.operation_kind, "connector_legacy");
     assert_eq!(report.outcome["outcome"]["status"], "ok");
     assert_eq!(
@@ -653,7 +653,7 @@ async fn execute_spec_process_stdio_bridge_blocks_when_protocol_authorization_fa
         },
     };
 
-    let report = execute_spec(spec, true).await;
+    let report = execute_spec(&spec, true).await;
     assert_eq!(report.operation_kind, "connector_legacy");
     assert_eq!(report.outcome["outcome"]["status"], "ok");
     assert_eq!(
@@ -777,7 +777,7 @@ async fn execute_spec_process_stdio_bridge_fails_on_recv_timeout() {
         },
     };
 
-    let report = execute_spec(spec, true).await;
+    let report = execute_spec(&spec, true).await;
     assert_eq!(report.operation_kind, "connector_legacy");
     assert_eq!(report.outcome["outcome"]["status"], "ok");
     assert_eq!(

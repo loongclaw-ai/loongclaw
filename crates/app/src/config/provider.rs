@@ -428,6 +428,7 @@ impl ProviderKind {
     }
 
     pub const fn api_key_env_aliases(self) -> &'static [&'static str] {
+        #[allow(clippy::wildcard_enum_match_arm)]
         match self {
             ProviderKind::Zhipu => &["ZHIPU_API_KEY"],
             _ => &[],
@@ -435,6 +436,7 @@ impl ProviderKind {
     }
 
     pub const fn default_model(self) -> Option<&'static str> {
+        #[allow(clippy::wildcard_enum_match_arm)]
         match self {
             ProviderKind::KimiCoding => Some("kimi-for-coding"),
             _ => None,
@@ -442,6 +444,7 @@ impl ProviderKind {
     }
 
     pub const fn default_user_agent(self) -> Option<&'static str> {
+        #[allow(clippy::wildcard_enum_match_arm)]
         match self {
             ProviderKind::KimiCoding => Some("KimiCLI/LoongClaw"),
             _ => None,
@@ -449,6 +452,7 @@ impl ProviderKind {
     }
 
     pub const fn default_oauth_access_token_env(self) -> Option<&'static str> {
+        #[allow(clippy::wildcard_enum_match_arm)]
         match self {
             ProviderKind::Openai => Some("OPENAI_CODEX_OAUTH_TOKEN"),
             ProviderKind::Volcengine => Some("VOLCENGINE_CODING_PLAN_OAUTH_TOKEN"),
@@ -457,6 +461,7 @@ impl ProviderKind {
     }
 
     pub const fn oauth_access_token_env_aliases(self) -> &'static [&'static str] {
+        #[allow(clippy::wildcard_enum_match_arm)]
         match self {
             ProviderKind::Openai => &["OPENAI_OAUTH_ACCESS_TOKEN"],
             ProviderKind::Volcengine => &["ARK_OAUTH_ACCESS_TOKEN"],

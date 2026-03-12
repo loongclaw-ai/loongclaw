@@ -73,7 +73,7 @@ LoongClaw is a layered Agentic OS kernel focused on stable kernel contracts, str
 <summary>Linux / macOS</summary>
 
 ```bash
-./scripts/install.sh --setup
+./scripts/install.sh --onboard
 ```
 </details>
 
@@ -81,7 +81,7 @@ LoongClaw is a layered Agentic OS kernel focused on stable kernel contracts, str
 <summary>Windows (PowerShell)</summary>
 
 ```powershell
-pwsh ./scripts/install.ps1 -Setup
+pwsh ./scripts/install.ps1 -Onboard
 ```
 </details>
 
@@ -95,10 +95,10 @@ cargo install --path crates/daemon
 
 ### First Chat in Under 5 Minutes
 
-1. Generate config and bootstrap local state:
+1. Run guided onboarding:
 
    ```bash
-   loongclaw setup
+   loongclaw onboard
    ```
 
 2. Set your provider API key:
@@ -150,11 +150,75 @@ tuning without forcing everything into the system prompt.
 ## Migration And Import
 
 LoongClaw can discover legacy claw homes during onboarding and offer an import
-before the rest of first-run setup continues.
+before the rest of onboarding continues.
 
 - Recommended path: import a single highest-confidence source.
 - Advanced path: plan multiple sources, merge only the profile lane, and keep prompt/system identity single-source.
 - Safety defaults: secrets are not migrated, imported runtime identity is normalized to `LoongClaw`, and every apply creates a backup manifest with rollback support.
+
+CLI migration workflow:
+
+- Default mode is now `plan` (safe preview, no file write) when `--mode` is omitted.
+- `apply_selected` accepts both `--source-id` and alias `--selection-id`.
+- Safe merge accepts both `--primary-source-id` and alias `--primary-selection-id`.
+- `map_external_skills` builds a deterministic external-skills mapping plan.
+- `--apply-external-skills-plan` can attach that mapping into `profile_note` during `apply_selected`.
+- applying external-skills plan also writes `.loongclaw-migration/<config>.external-skills.json` for audit and replay.
+
+```bash
+# Discover and score import candidates under a root
+loongclaw import-claw --mode discover --input ~/legacy-claws
+
+# Plan all candidates and print recommendation
+loongclaw import-claw --mode plan_many --input ~/legacy-claws
+
+# Preview external skills mapping artifacts and generated profile addendum
+loongclaw import-claw --mode map_external_skills --input ~/legacy-claws
+
+# Apply one selected source to a target config
+loongclaw import-claw --mode apply_selected --input ~/legacy-claws \
+  --source-id openclaw --output ~/.loongclaw/config.toml --force
+
+# Apply selected source and also attach external-skills mapping addendum
+loongclaw import-claw --mode apply_selected --input ~/legacy-claws \
+  --source-id openclaw --output ~/.loongclaw/config.toml \
+  --apply-external-skills-plan --force
+
+# Roll back the last apply_selected/import apply for this output config
+loongclaw import-claw --mode rollback_last_apply --output ~/.loongclaw/config.toml
+```
+
+## External Skills Runtime Guardrails
+
+External skills runtime is now safety-first by default and explicitly opt-in:
+
+- `external_skills.enabled = false` by default (downloads/runtime disabled).
+- `external_skills.require_download_approval = true` by default.
+- Domain blocklist has priority over every other rule.
+- If `allowed_domains` is non-empty, only allowlisted domains can be downloaded.
+- `external_skills.fetch` blocks redirects to avoid silent cross-domain hops.
+
+Recommended config baseline:
+
+```toml
+[external_skills]
+enabled = true
+require_download_approval = true
+allowed_domains = ["skills.sh", "clawhub.io"]
+blocked_domains = ["*.evil.example"]
+```
+
+Agent-facing tools:
+
+- `external_skills_policy`
+  - `action=get` reads effective runtime policy.
+  - `action=set` updates enable/approval/domain policy at runtime (requires `policy_update_approved=true`).
+  - `action=reset` clears runtime overrides back to config defaults (requires `policy_update_approved=true`).
+- `external_skills_fetch`
+  - Requires `url`.
+  - Requires `approval_granted=true` when approval guard is enabled.
+  - Saves artifact under `<tools.file_root>/external-skills-downloads/`.
+  - Enforces allowlist/blocklist before network download.
 
 ## Key Features
 
@@ -175,11 +239,10 @@ before the rest of first-run setup continues.
 - Tool discovery across providers and scanned plugin descriptors
 
 **MVP Product Layer**
-- `setup` -- generate TOML config and bootstrap SQLite memory
 - `onboard` -- guided first-run with preflight diagnostics
 - `doctor` -- diagnostics with optional safe fixes (`--fix`) and machine-readable output (`--json`)
 - `chat` -- interactive CLI with sliding-window conversation memory
-- Core tools: `shell.exec`, `file.read`, `file.write`
+- Core tools: `shell.exec`, `file.read`, `file.write`, `external_skills.policy`, `external_skills.fetch`
 - Providers: OpenAI-compatible, Volcengine custom endpoint
 - Channels: CLI, Telegram polling, Feishu encrypted webhook
 
@@ -273,7 +336,7 @@ cargo build -p loongclaw-daemon --no-default-features --features "channel-cli,pr
 
 ## Configuration
 
-`loongclaw setup` defaults to referencing provider credentials through `provider.api_key`, so secrets stay outside the config file:
+`loongclaw onboard` defaults to referencing provider credentials through `provider.api_key`, so secrets stay outside the config file:
 
 ```toml
 [provider]

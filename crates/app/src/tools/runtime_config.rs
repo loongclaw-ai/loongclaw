@@ -4,6 +4,25 @@ use std::sync::OnceLock;
 
 use super::policy_ext::ShellPolicyDefault;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalSkillsRuntimePolicy {
+    pub enabled: bool,
+    pub require_download_approval: bool,
+    pub allowed_domains: BTreeSet<String>,
+    pub blocked_domains: BTreeSet<String>,
+}
+
+impl Default for ExternalSkillsRuntimePolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            require_download_approval: true,
+            allowed_domains: BTreeSet::new(),
+            blocked_domains: BTreeSet::new(),
+        }
+    }
+}
+
 /// Typed runtime configuration for tool executors.
 ///
 /// Replaces per-call `std::env::var` lookups with a single read from a
@@ -15,6 +34,7 @@ pub struct ToolRuntimeConfig {
     pub shell_deny: BTreeSet<String>,
     pub shell_approval_required: BTreeSet<String>,
     pub shell_default_mode: ShellPolicyDefault,
+    pub external_skills: ExternalSkillsRuntimePolicy,
 }
 
 impl Default for ToolRuntimeConfig {
@@ -28,6 +48,7 @@ impl Default for ToolRuntimeConfig {
             shell_deny: BTreeSet::new(),
             shell_approval_required: BTreeSet::new(),
             shell_default_mode: ShellPolicyDefault::Deny,
+            external_skills: ExternalSkillsRuntimePolicy::default(),
         }
     }
 }
@@ -39,12 +60,45 @@ impl ToolRuntimeConfig {
     /// `LOONGCLAW_FILE_ROOT`.
     pub fn from_env() -> Self {
         let file_root = std::env::var("LOONGCLAW_FILE_ROOT").ok().map(PathBuf::from);
+        let enabled = parse_env_bool("LOONGCLAW_EXTERNAL_SKILLS_ENABLED").unwrap_or(false);
+        let require_download_approval =
+            parse_env_bool("LOONGCLAW_EXTERNAL_SKILLS_REQUIRE_DOWNLOAD_APPROVAL").unwrap_or(true);
+        let allowed_domains = parse_env_domain_list("LOONGCLAW_EXTERNAL_SKILLS_ALLOWED_DOMAINS");
+        let blocked_domains = parse_env_domain_list("LOONGCLAW_EXTERNAL_SKILLS_BLOCKED_DOMAINS");
 
         Self {
             file_root,
+            external_skills: ExternalSkillsRuntimePolicy {
+                enabled,
+                require_download_approval,
+                allowed_domains,
+                blocked_domains,
+            },
             ..Self::default()
         }
     }
+}
+
+fn parse_env_bool(key: &str) -> Option<bool> {
+    std::env::var(key).ok().and_then(|raw| {
+        let value = raw.trim().to_ascii_lowercase();
+        match value.as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        }
+    })
+}
+
+fn parse_env_domain_list(key: &str) -> BTreeSet<String> {
+    std::env::var(key)
+        .ok()
+        .unwrap_or_default()
+        .split([',', ';', ' '])
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect()
 }
 
 static TOOL_RUNTIME_CONFIG: OnceLock<ToolRuntimeConfig> = OnceLock::new();
@@ -76,6 +130,10 @@ mod tests {
     fn tool_runtime_config_from_env_defaults() {
         let config = ToolRuntimeConfig::default();
         assert!(config.file_root.is_none());
+        assert!(!config.external_skills.enabled);
+        assert!(config.external_skills.require_download_approval);
+        assert!(config.external_skills.allowed_domains.is_empty());
+        assert!(config.external_skills.blocked_domains.is_empty());
     }
 
     /// The default allow list must mirror the serde default in `ToolConfig` so
@@ -128,5 +186,44 @@ mod tests {
                 .unwrap()
                 .contains("injected")
         );
+    }
+
+    #[test]
+    fn from_env_parses_external_skills_policy() {
+        crate::process_env::set_var("LOONGCLAW_EXTERNAL_SKILLS_ENABLED", "true");
+        crate::process_env::set_var(
+            "LOONGCLAW_EXTERNAL_SKILLS_REQUIRE_DOWNLOAD_APPROVAL",
+            "false",
+        );
+        crate::process_env::set_var(
+            "LOONGCLAW_EXTERNAL_SKILLS_ALLOWED_DOMAINS",
+            "skills.sh,clawhub.io",
+        );
+        crate::process_env::set_var(
+            "LOONGCLAW_EXTERNAL_SKILLS_BLOCKED_DOMAINS",
+            "malicious.example",
+        );
+
+        let config = ToolRuntimeConfig::from_env();
+        assert!(config.external_skills.enabled);
+        assert!(!config.external_skills.require_download_approval);
+        assert!(config.external_skills.allowed_domains.contains("skills.sh"));
+        assert!(
+            config
+                .external_skills
+                .allowed_domains
+                .contains("clawhub.io")
+        );
+        assert!(
+            config
+                .external_skills
+                .blocked_domains
+                .contains("malicious.example")
+        );
+
+        crate::process_env::remove_var("LOONGCLAW_EXTERNAL_SKILLS_ENABLED");
+        crate::process_env::remove_var("LOONGCLAW_EXTERNAL_SKILLS_REQUIRE_DOWNLOAD_APPROVAL");
+        crate::process_env::remove_var("LOONGCLAW_EXTERNAL_SKILLS_ALLOWED_DOMAINS");
+        crate::process_env::remove_var("LOONGCLAW_EXTERNAL_SKILLS_BLOCKED_DOMAINS");
     }
 }

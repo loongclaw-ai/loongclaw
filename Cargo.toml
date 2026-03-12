@@ -83,6 +83,12 @@ print_stderr = "deny"
 # Error quality
 map_err_ignore = "deny"
 
+# Exhaustiveness: catch-all match arms hide new enum variants
+wildcard_enum_match_arm = "deny"
+
+# Clone hygiene: flag unnecessary clones
+redundant_clone = "deny"
+
 # Missing docs (allow for now — large existing surface)
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"

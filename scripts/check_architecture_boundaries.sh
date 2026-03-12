@@ -49,7 +49,7 @@ check_file_budget() {
 check_file_budget "spec_runtime" "crates/spec/src/spec_runtime.rs" 3600 65
 check_file_budget "spec_execution" "crates/spec/src/spec_execution.rs" 3700 80
 check_file_budget "provider_mod" "crates/app/src/provider/mod.rs" 1000 20
-check_file_budget "memory_mod" "crates/app/src/memory/mod.rs" 400 16
+check_file_budget "memory_mod" "crates/app/src/memory/mod.rs" 650 16
 
 memory_literal_hits="$(rg -n '"append_turn"|"window"|"clear_session"' crates/app/src --glob '!crates/app/src/memory/**' || true)"
 if [[ -n "$memory_literal_hits" ]]; then

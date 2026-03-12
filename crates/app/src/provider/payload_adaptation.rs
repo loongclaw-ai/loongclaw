@@ -10,6 +10,7 @@ enum ProviderTransportMode {
 
 impl ProviderTransportMode {
     fn for_provider(provider: &ProviderConfig) -> Self {
+        #[allow(clippy::wildcard_enum_match_arm)]
         match provider.kind {
             ProviderKind::KimiCoding => Self::KimiApi,
             _ => Self::OpenAiChatCompletions,

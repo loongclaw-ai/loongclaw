@@ -705,8 +705,7 @@ async fn audit_sink_receives_core_lifecycle_events() {
 fn record_audit_event_supports_security_scan_summary() {
     let clock: Arc<FixedClock> = Arc::new(FixedClock::new(1_700_000_123));
     let audit = Arc::new(InMemoryAuditSink::default());
-    let kernel =
-        LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock.clone(), audit.clone());
+    let kernel = LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock, audit.clone());
 
     kernel
         .record_audit_event(
@@ -1381,6 +1380,7 @@ async fn plane_audit_records_resolved_default_core_adapter_names() {
 
     let snapshot = audit.snapshot();
 
+    #[allow(clippy::wildcard_enum_match_arm)]
     let connector_ext_event = snapshot
         .iter()
         .find_map(|event| match &event.kind {
@@ -1397,6 +1397,7 @@ async fn plane_audit_records_resolved_default_core_adapter_names() {
     assert_eq!(connector_ext_event.0, "shielded-bridge");
     assert_eq!(connector_ext_event.1.as_deref(), Some("grpc-core"));
 
+    #[allow(clippy::wildcard_enum_match_arm)]
     let runtime_core_event = snapshot
         .iter()
         .find_map(|event| match &event.kind {
