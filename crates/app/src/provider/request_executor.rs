@@ -164,12 +164,11 @@ where
                     runtime.provider,
                     runtime.runtime_contract,
                     &api_error,
-                ) {
-                    if !tried_payload_modes.contains(&next_mode) {
-                        payload_mode = next_mode;
-                        tried_payload_modes.push(next_mode);
-                        continue;
-                    }
+                ) && !tried_payload_modes.contains(&next_mode)
+                {
+                    payload_mode = next_mode;
+                    tried_payload_modes.push(next_mode);
+                    continue;
                 }
 
                 let status_code = status.as_u16();

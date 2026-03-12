@@ -15,7 +15,7 @@ pub(super) fn build_provider_cache_key(
             )
         })
         .collect();
-    header_pairs.sort_unstable_by(|left, right| left.cmp(right));
+    header_pairs.sort_unstable();
     let header_sig = header_pairs
         .into_iter()
         .map(|(name, value)| format!("{name}:{value}"))

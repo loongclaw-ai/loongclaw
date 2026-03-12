@@ -69,10 +69,10 @@ pub(super) fn build_completion_request_body_with_capability(
         }
     }
 
-    if capability.include_reasoning_extra_body() {
-        if let Some(extra_body) = kimi_extra_body(config.provider.reasoning_effort) {
-            body.insert("extra_body".to_owned(), extra_body);
-        }
+    if capability.include_reasoning_extra_body()
+        && let Some(extra_body) = kimi_extra_body(config.provider.reasoning_effort)
+    {
+        body.insert("extra_body".to_owned(), extra_body);
     }
 
     Value::Object(body)
@@ -118,11 +118,12 @@ pub(super) fn build_turn_request_body_with_capability(
         payload_mode,
         capability,
     );
-    if include_tool_schema && !tool_definitions.is_empty() {
-        if let Some(object) = body.as_object_mut() {
-            object.insert("tools".to_owned(), Value::Array(tool_definitions.to_vec()));
-            object.insert("tool_choice".to_owned(), json!("auto"));
-        }
+    if include_tool_schema
+        && !tool_definitions.is_empty()
+        && let Some(object) = body.as_object_mut()
+    {
+        object.insert("tools".to_owned(), Value::Array(tool_definitions.to_vec()));
+        object.insert("tool_choice".to_owned(), json!("auto"));
     }
     body
 }

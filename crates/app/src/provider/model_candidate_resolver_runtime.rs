@@ -34,27 +34,27 @@ pub(super) async fn resolve_request_models(
         .then(|| build_model_catalog_cache_key(&models_endpoint, headers, authorization_header));
     let mut stale_models = None;
 
-    if let Some(cache_key) = cache_key.as_deref() {
-        if let Some(lookup) = load_cached_model_catalog(cache_key) {
-            let cached_models = match lookup {
-                ModelCatalogCacheLookup::Fresh(models) => {
-                    let ordered = rank_model_candidates(&config.provider, &models);
-                    if !ordered.is_empty() {
-                        return Ok(prioritize_model_candidates_by_cooldown(
-                            ordered,
-                            model_candidate_cooldown_policy,
-                        ));
-                    }
-                    models
+    if let Some(cache_key) = cache_key.as_deref()
+        && let Some(lookup) = load_cached_model_catalog(cache_key)
+    {
+        let cached_models = match lookup {
+            ModelCatalogCacheLookup::Fresh(models) => {
+                let ordered = rank_model_candidates(&config.provider, &models);
+                if !ordered.is_empty() {
+                    return Ok(prioritize_model_candidates_by_cooldown(
+                        ordered,
+                        model_candidate_cooldown_policy,
+                    ));
                 }
-                ModelCatalogCacheLookup::Stale(models) => {
-                    stale_models = Some(models.clone());
-                    models
-                }
-            };
-            if stale_models.is_none() {
-                stale_models = Some(cached_models);
+                models
             }
+            ModelCatalogCacheLookup::Stale(models) => {
+                stale_models = Some(models.clone());
+                models
+            }
+        };
+        if stale_models.is_none() {
+            stale_models = Some(cached_models);
         }
     }
 

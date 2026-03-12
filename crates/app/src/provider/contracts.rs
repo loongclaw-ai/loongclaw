@@ -482,6 +482,7 @@ pub(super) fn should_disable_tool_schema_for_error(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
 pub(super) enum PayloadAdaptationAxis {
     TokenField,
     ReasoningField,
@@ -522,16 +523,15 @@ pub(super) fn classify_payload_adaptation_axis(
                 contract.unsupported_parameter_message_fragments,
             )
         })
-        || (error.param.as_deref().is_some_and(|param| {
-            contract
-                .temperature_error_parameters
-                .iter()
-                .any(|candidate| param == *candidate)
-        }) && error
-            .message
+        || (error
+            .param
             .as_deref()
-            .unwrap_or_default()
-            .contains_any_fragment(contract.temperature_default_only_fragments));
+            .is_some_and(|param| contract.temperature_error_parameters.contains(&param))
+            && error
+                .message
+                .as_deref()
+                .unwrap_or_default()
+                .contains_any_fragment(contract.temperature_default_only_fragments));
     if temperature_rejected {
         return Some(PayloadAdaptationAxis::TemperatureField);
     }
@@ -563,21 +563,16 @@ pub(super) fn should_try_next_model_on_error(
     runtime_contract: ProviderRuntimeContract,
 ) -> bool {
     let error_contract = runtime_contract.error_classification;
-    if let Some(code) = error.code.as_deref() {
-        if error_contract
-            .model_not_found_codes
-            .iter()
-            .any(|candidate| code == *candidate)
-        {
-            return true;
-        }
+    if let Some(code) = error.code.as_deref()
+        && error_contract.model_not_found_codes.contains(&code)
+    {
+        return true;
     }
-    if error.param.as_deref().is_some_and(|param| {
-        error_contract
-            .model_error_parameters
-            .iter()
-            .any(|candidate| param == *candidate)
-    }) {
+    if error
+        .param
+        .as_deref()
+        .is_some_and(|param| error_contract.model_error_parameters.contains(&param))
+    {
         return true;
     }
 

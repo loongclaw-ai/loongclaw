@@ -40,14 +40,12 @@ pub(super) fn validate_provider_configuration(config: &LoongClawConfig) -> CliRe
     if runtime_contract
         .validation
         .require_kimi_cli_user_agent_prefix
+        && let Some(user_agent) = config.provider.header_value("user-agent")
+        && !is_kimi_cli_user_agent(user_agent)
     {
-        if let Some(user_agent) = config.provider.header_value("user-agent") {
-            if !is_kimi_cli_user_agent(user_agent) {
-                return Err(format!(
-                    "kimi_coding provider requires a `User-Agent` header starting with `KimiCLI/`; got `{user_agent}`"
-                ));
-            }
-        }
+        return Err(format!(
+            "kimi_coding provider requires a `User-Agent` header starting with `KimiCLI/`; got `{user_agent}`"
+        ));
     }
 
     Ok(())

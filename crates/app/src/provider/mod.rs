@@ -1080,7 +1080,7 @@ mod tests {
 
         for expected_name in expected {
             assert!(
-                names.iter().any(|name| *name == expected_name),
+                names.contains(&expected_name),
                 "turn tool schema is missing expected tool `{expected_name}`; got={names:?}"
             );
         }
@@ -1773,11 +1773,11 @@ mod tests {
         let provider_before = before.by_provider.get("openai").copied().unwrap_or(0);
         let provider_after = after.by_provider.get("openai").copied().unwrap_or(0);
 
-        assert!(after.total_events >= before.total_events + 1);
-        assert!(after.exhausted_events >= before.exhausted_events + 1);
-        assert!(reason_after >= reason_before + 1);
-        assert!(stage_after >= stage_before + 1);
-        assert!(provider_after >= provider_before + 1);
+        assert!(after.total_events > before.total_events);
+        assert!(after.exhausted_events > before.exhausted_events);
+        assert!(reason_after > reason_before);
+        assert!(stage_after > stage_before);
+        assert!(provider_after > provider_before);
     }
 
     #[test]
@@ -1806,11 +1806,11 @@ mod tests {
         let provider_before = before.by_provider.get("kimi_coding").copied().unwrap_or(0);
         let provider_after = after.by_provider.get("kimi_coding").copied().unwrap_or(0);
 
-        assert!(after.total_events >= before.total_events + 1);
-        assert!(after.continued_events >= before.continued_events + 1);
-        assert!(reason_after >= reason_before + 1);
-        assert!(stage_after >= stage_before + 1);
-        assert!(provider_after >= provider_before + 1);
+        assert!(after.total_events > before.total_events);
+        assert!(after.continued_events > before.continued_events);
+        assert!(reason_after > reason_before);
+        assert!(stage_after > stage_before);
+        assert!(provider_after > provider_before);
     }
 
     #[test]

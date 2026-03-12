@@ -103,10 +103,10 @@ struct ModelCatalogFetchLeaderGuard {
 impl Drop for ModelCatalogFetchLeaderGuard {
     fn drop(&mut self) {
         with_model_catalog_fetches(|fetches| {
-            if let Some(existing) = fetches.get(self.key.as_str()) {
-                if Arc::ptr_eq(existing, &self.slot) {
-                    fetches.remove(self.key.as_str());
-                }
+            if let Some(existing) = fetches.get(self.key.as_str())
+                && Arc::ptr_eq(existing, &self.slot)
+            {
+                fetches.remove(self.key.as_str());
             }
         });
     }
@@ -224,11 +224,11 @@ where
                             continue;
                         }
                         let removed = with_model_catalog_fetches(|fetches| {
-                            if let Some(existing) = fetches.get(cache_key) {
-                                if (Arc::as_ptr(existing) as usize) == slot_ptr {
-                                    fetches.remove(cache_key);
-                                    return true;
-                                }
+                            if let Some(existing) = fetches.get(cache_key)
+                                && (Arc::as_ptr(existing) as usize) == slot_ptr
+                            {
+                                fetches.remove(cache_key);
+                                return true;
                             }
                             false
                         });
@@ -241,10 +241,12 @@ where
             continue;
         }
 
-        let result = fetch_models
-            .take()
-            .expect("singleflight leader fetch closure consumed")()
-        .await;
+        let Some(fetch_models) = fetch_models.take() else {
+            return Err(
+                "provider model catalog singleflight leader fetch closure missing".to_owned(),
+            );
+        };
+        let result = fetch_models().await;
         let _ = slot.sender.send(Some(result.clone()));
         drop(leader_guard);
         return result;

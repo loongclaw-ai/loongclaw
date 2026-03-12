@@ -171,10 +171,10 @@ impl ProviderProfileStateBackend for FileProviderProfileStateBackend {
         }
 
         let path = self.state_path();
-        if let Some(parent) = path.parent() {
-            if fs::create_dir_all(parent).is_err() {
-                return ProviderProfileStatePersistOutcome::Failed;
-            }
+        if let Some(parent) = path.parent()
+            && fs::create_dir_all(parent).is_err()
+        {
+            return ProviderProfileStatePersistOutcome::Failed;
         }
 
         let payload = match serde_json::to_vec_pretty(snapshot) {
@@ -183,15 +183,13 @@ impl ProviderProfileStateBackend for FileProviderProfileStateBackend {
         };
 
         let tmp_path = path.with_extension("json.tmp");
+        let path_ref = path;
         let mut persisted = false;
         if fs::write(&tmp_path, &payload).is_ok() {
-            if fs::rename(&tmp_path, &path).is_ok() {
-                persisted = true;
-            } else if fs::write(&path, &payload).is_ok() {
-                persisted = true;
-            }
-            let _ = fs::remove_file(tmp_path);
-        } else if fs::write(path, &payload).is_ok() {
+            persisted =
+                fs::rename(&tmp_path, path_ref).is_ok() || fs::write(path_ref, &payload).is_ok();
+            let _ = fs::remove_file(&tmp_path);
+        } else if fs::write(path_ref, &payload).is_ok() {
             persisted = true;
         }
         if persisted {

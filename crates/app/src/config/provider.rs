@@ -831,7 +831,7 @@ fn split_secret_candidates(raw: &str) -> Vec<String> {
     }
 
     trimmed
-        .split(|ch| matches!(ch, ',' | ';' | '\n' | '\r'))
+        .split([',', ';', '\n', '\r'])
         .map(str::trim)
         .filter(|candidate| !candidate.is_empty())
         .map(str::to_owned)
