@@ -450,6 +450,7 @@ mod tests {
 
         let config = runtime_config::ToolRuntimeConfig {
             file_root: Some(root.clone()),
+            ..runtime_config::ToolRuntimeConfig::default()
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -533,6 +534,7 @@ mod tests {
         let output_path = root.join("generated").join("loongclaw.toml");
         let config = runtime_config::ToolRuntimeConfig {
             file_root: Some(root.clone()),
+            ..runtime_config::ToolRuntimeConfig::default()
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -612,6 +614,7 @@ mod tests {
 
         let config = runtime_config::ToolRuntimeConfig {
             file_root: Some(root.clone()),
+            ..runtime_config::ToolRuntimeConfig::default()
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -682,6 +685,7 @@ mod tests {
 
         let config = runtime_config::ToolRuntimeConfig {
             file_root: Some(root.clone()),
+            ..runtime_config::ToolRuntimeConfig::default()
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -753,6 +757,7 @@ mod tests {
 
         let config = runtime_config::ToolRuntimeConfig {
             file_root: Some(root.clone()),
+            ..runtime_config::ToolRuntimeConfig::default()
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -829,6 +834,7 @@ mod tests {
 
         let config = runtime_config::ToolRuntimeConfig {
             file_root: Some(root.clone()),
+            ..runtime_config::ToolRuntimeConfig::default()
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -913,6 +919,7 @@ mod tests {
 
         let config = runtime_config::ToolRuntimeConfig {
             file_root: Some(root.clone()),
+            ..runtime_config::ToolRuntimeConfig::default()
         };
         execute_tool_core_with_config(
             ToolCoreRequest {

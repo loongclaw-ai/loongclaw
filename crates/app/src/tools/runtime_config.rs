@@ -1,13 +1,32 @@
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::OnceLock;
+
+use super::policy_ext::ShellPolicyDefault;
 
 /// Typed runtime configuration for tool executors.
 ///
 /// Replaces per-call `std::env::var` lookups with a single read from a
 /// process-wide singleton that is populated once at startup.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ToolRuntimeConfig {
     pub file_root: Option<PathBuf>,
+    pub shell_allow: BTreeSet<String>,
+    pub shell_deny: BTreeSet<String>,
+    pub shell_approval_required: BTreeSet<String>,
+    pub shell_default_mode: ShellPolicyDefault,
+}
+
+impl Default for ToolRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            file_root: None,
+            shell_allow: BTreeSet::new(),
+            shell_deny: BTreeSet::new(),
+            shell_approval_required: BTreeSet::new(),
+            shell_default_mode: ShellPolicyDefault::Deny,
+        }
+    }
 }
 
 impl ToolRuntimeConfig {
@@ -18,7 +37,10 @@ impl ToolRuntimeConfig {
     pub fn from_env() -> Self {
         let file_root = std::env::var("LOONGCLAW_FILE_ROOT").ok().map(PathBuf::from);
 
-        Self { file_root }
+        Self {
+            file_root,
+            ..Self::default()
+        }
     }
 }
 
@@ -57,6 +79,7 @@ mod tests {
     fn file_root_uses_injected_config() {
         let config = ToolRuntimeConfig {
             file_root: Some(PathBuf::from("/tmp/test-root")),
+            ..ToolRuntimeConfig::default()
         };
         assert_eq!(config.file_root, Some(PathBuf::from("/tmp/test-root")));
     }
@@ -66,6 +89,7 @@ mod tests {
     fn injected_config_overrides_global() {
         let config = ToolRuntimeConfig {
             file_root: Some(PathBuf::from("/tmp/injected-root")),
+            ..ToolRuntimeConfig::default()
         };
         let result = crate::tools::execute_tool_core_with_config(
             loongclaw_contracts::ToolCoreRequest {

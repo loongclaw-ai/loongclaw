@@ -3,12 +3,43 @@ use std::collections::BTreeSet;
 use loongclaw_contracts::PolicyError;
 use loongclaw_kernel::{PolicyExtension, PolicyExtensionContext};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellPolicyDefault {
+    Deny,
+    Allow,
+}
+
+impl ShellPolicyDefault {
+    pub fn from_str(s: &str) -> Self {
+        match s.to_ascii_lowercase().as_str() {
+            "allow" => Self::Allow,
+            _ => Self::Deny,
+        }
+    }
+}
+
 pub struct ToolPolicyExtension {
     hard_deny: BTreeSet<String>,
     approval_required: BTreeSet<String>,
+    allow: BTreeSet<String>,
+    default_mode: ShellPolicyDefault,
 }
 
 impl ToolPolicyExtension {
+    pub fn new(
+        hard_deny: BTreeSet<String>,
+        approval_required: BTreeSet<String>,
+        allow: BTreeSet<String>,
+        default_mode: ShellPolicyDefault,
+    ) -> Self {
+        Self {
+            hard_deny,
+            approval_required,
+            allow,
+            default_mode,
+        }
+    }
+
     pub fn default_rules() -> Self {
         Self {
             hard_deny: [
@@ -44,7 +75,33 @@ impl ToolPolicyExtension {
             .into_iter()
             .map(String::from)
             .collect(),
+            allow: [
+                "echo", "cat", "ls", "pwd", "dir", "where", "whoami", "hostname", "date", "head",
+                "tail", "wc", "sort", "uniq", "find", "grep", "rg", "git", "cargo", "rustc", "npm",
+                "pip",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+            default_mode: ShellPolicyDefault::Deny,
         }
+    }
+
+    /// Build from runtime config, merging user overrides with hardcoded defaults.
+    pub fn from_config(rt: &super::runtime_config::ToolRuntimeConfig) -> Self {
+        let mut ext = Self::default_rules();
+        if !rt.shell_deny.is_empty() {
+            ext.hard_deny.extend(rt.shell_deny.iter().cloned());
+        }
+        if !rt.shell_approval_required.is_empty() {
+            ext.approval_required
+                .extend(rt.shell_approval_required.iter().cloned());
+        }
+        if !rt.shell_allow.is_empty() {
+            ext.allow.extend(rt.shell_allow.iter().cloned());
+        }
+        ext.default_mode = rt.shell_default_mode;
+        ext
     }
 
     fn normalize_tool_name(raw: &str) -> &str {
@@ -100,18 +157,31 @@ impl PolicyExtension for ToolPolicyExtension {
         if self.hard_deny.contains(basename) {
             return Err(PolicyError::ToolCallDenied {
                 tool_name: tool_name.to_owned(),
-                reason: format!("command `{basename}` is blocked by default shell policy"),
+                reason: format!("command `{basename}` is blocked by shell policy"),
             });
         }
 
         if self.approval_required.contains(basename) {
             return Err(PolicyError::ToolCallApprovalRequired {
                 tool_name: tool_name.to_owned(),
-                prompt: format!("command `{basename}` requires approval by default shell policy"),
+                prompt: format!("command `{basename}` requires approval by shell policy"),
             });
         }
 
-        Ok(())
+        if self.allow.contains(basename) {
+            return Ok(());
+        }
+
+        // Default mode for unknown commands
+        match self.default_mode {
+            ShellPolicyDefault::Allow => Ok(()),
+            ShellPolicyDefault::Deny => Err(PolicyError::ToolCallDenied {
+                tool_name: tool_name.to_owned(),
+                reason: format!(
+                    "command `{basename}` is not in the allow list (default-deny policy)"
+                ),
+            }),
+        }
     }
 }
 
@@ -268,9 +338,12 @@ mod tests {
         let caps = BTreeSet::from([Capability::InvokeTool]);
         let params = json!({"tool_name": "shell.exec", "payload": {"command": "C:\\Windows\\System32\\rm.exe"}});
         let ctx = make_context(&pack, &token, &caps, Some(&params));
-        // basename is "rm.exe" which doesn't match "rm", so this is allowed.
-        // This documents current behavior — basename matching is exact.
-        assert!(ext.authorize_extension(&ctx).is_ok());
+        // basename is "rm.exe" which doesn't match "rm" in deny list,
+        // but also not in allow list — default-deny blocks it.
+        assert!(matches!(
+            ext.authorize_extension(&ctx).unwrap_err(),
+            PolicyError::ToolCallDenied { .. }
+        ));
     }
 
     #[test]
@@ -299,5 +372,45 @@ mod tests {
             ext.authorize_extension(&ctx).unwrap_err(),
             PolicyError::ToolCallDenied { .. }
         ));
+    }
+
+    #[test]
+    fn default_deny_blocks_unknown_command() {
+        let ext = ToolPolicyExtension::default_rules();
+        let pack = test_pack();
+        let token = test_token();
+        let caps = BTreeSet::from([Capability::InvokeTool]);
+        let params =
+            json!({"tool_name": "shell.exec", "payload": {"command": "some_unknown_tool"}});
+        let ctx = make_context(&pack, &token, &caps, Some(&params));
+        let err = ext.authorize_extension(&ctx).unwrap_err();
+        assert!(matches!(err, PolicyError::ToolCallDenied { .. }));
+    }
+
+    #[test]
+    fn allow_listed_command_passes() {
+        let ext = ToolPolicyExtension::default_rules();
+        let pack = test_pack();
+        let token = test_token();
+        let caps = BTreeSet::from([Capability::InvokeTool]);
+        let params = json!({"tool_name": "shell.exec", "payload": {"command": "git"}});
+        let ctx = make_context(&pack, &token, &caps, Some(&params));
+        assert!(ext.authorize_extension(&ctx).is_ok());
+    }
+
+    #[test]
+    fn allow_mode_passes_unknown_command() {
+        let ext = ToolPolicyExtension::new(
+            BTreeSet::new(),
+            BTreeSet::new(),
+            BTreeSet::new(),
+            ShellPolicyDefault::Allow,
+        );
+        let pack = test_pack();
+        let token = test_token();
+        let caps = BTreeSet::from([Capability::InvokeTool]);
+        let params = json!({"tool_name": "shell.exec", "payload": {"command": "anything"}});
+        let ctx = make_context(&pack, &token, &caps, Some(&params));
+        assert!(ext.authorize_extension(&ctx).is_ok());
     }
 }

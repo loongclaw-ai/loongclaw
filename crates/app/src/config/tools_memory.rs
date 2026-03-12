@@ -18,6 +18,22 @@ pub struct ToolConfig {
     pub shell_allowlist: Vec<String>,
     #[serde(default)]
     pub file_root: Option<String>,
+    /// Additional commands to allow (merged with built-in defaults).
+    #[serde(default)]
+    pub shell_allow: Vec<String>,
+    /// Additional commands to hard-deny (merged with built-in defaults).
+    #[serde(default)]
+    pub shell_deny: Vec<String>,
+    /// Additional commands requiring approval (merged with built-in defaults).
+    #[serde(default)]
+    pub shell_approval_required: Vec<String>,
+    /// Default policy for unknown commands: "deny" (default) or "allow".
+    #[serde(default = "default_shell_default_mode")]
+    pub shell_default_mode: String,
+}
+
+fn default_shell_default_mode() -> String {
+    "deny".to_owned()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

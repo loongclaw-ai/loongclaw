@@ -716,6 +716,27 @@ fn apply_runtime_env(config: &LoongClawConfig) {
     // on the hot path.  Ignore the error if already initialised.
     let tool_rt = crate::tools::runtime_config::ToolRuntimeConfig {
         file_root: Some(config.tools.resolved_file_root()),
+        shell_allow: config
+            .tools
+            .shell_allow
+            .iter()
+            .map(|s| s.to_ascii_lowercase())
+            .collect(),
+        shell_deny: config
+            .tools
+            .shell_deny
+            .iter()
+            .map(|s| s.to_ascii_lowercase())
+            .collect(),
+        shell_approval_required: config
+            .tools
+            .shell_approval_required
+            .iter()
+            .map(|s| s.to_ascii_lowercase())
+            .collect(),
+        shell_default_mode: crate::tools::policy_ext::ShellPolicyDefault::from_str(
+            &config.tools.shell_default_mode,
+        ),
     };
     let _ = crate::tools::runtime_config::init_tool_runtime_config(tool_rt);
 

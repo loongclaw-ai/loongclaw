@@ -96,6 +96,7 @@ impl TurnTestHarness {
         // Inject config so tests don't race on the global OnceLock
         let tool_config = ToolRuntimeConfig {
             file_root: Some(temp_dir.clone()),
+            ..ToolRuntimeConfig::default()
         };
 
         let audit = Arc::new(InMemoryAuditSink::default());
@@ -330,7 +331,7 @@ mod tests {
         match result {
             TurnResult::ToolDenied(err) => {
                 assert!(
-                    err.contains("blocked by default shell policy"),
+                    err.contains("blocked by shell policy"),
                     "expected policy-block reason, got: {err}"
                 );
             }
