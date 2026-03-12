@@ -58,7 +58,7 @@ LoongClaw is a Rust-based Agentic OS kernel with strict separation of core and b
       <img src="assets/sponsors_logo/volcengine/volcengine-logo-light-en.png" alt="Volcengine" height="44"/>
     </picture>
   </a>
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <span>&emsp;&emsp;&emsp;</span>
   <a href="https://www.feishu.cn">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="assets/sponsors_logo/feishu/feishu-logo-dark-en.png"/>

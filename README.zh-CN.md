@@ -59,7 +59,7 @@ LoongClaw 是一个基于 Rust 构建的 Agentic OS 内核，核心与业务严�
       <img src="assets/sponsors_logo/volcengine/volcengine-logo-light-zh.png" alt="火山引擎" height="44"/>
     </picture>
   </a>
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <span>&emsp;&emsp;&emsp;</span>
   <a href="https://www.feishu.cn">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="assets/sponsors_logo/feishu/feishu-logo-dark-zh.png"/>
