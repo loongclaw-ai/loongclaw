@@ -15,7 +15,10 @@ pub use channels::{
 #[allow(unused_imports)]
 pub use conversation::{ConversationConfig, ConversationTurnLoopConfig};
 #[allow(unused_imports)]
-pub use provider::{ProviderConfig, ProviderKind, ReasoningEffort};
+pub use provider::{
+    ProviderConfig, ProviderKind, ProviderProfileHealthModeConfig, ProviderProfileStateBackendKind,
+    ProviderReasoningExtraBodyModeConfig, ProviderToolSchemaModeConfig, ReasoningEffort,
+};
 #[allow(unused_imports)]
 pub use runtime::{
     AcpBackendProfilesConfig, AcpConfig, AcpConversationRoutingMode, AcpDispatchConfig,
@@ -238,6 +241,277 @@ mod tests {
     }
 
     #[test]
+    fn model_catalog_cache_ttl_default_and_clamp_are_stable() {
+        let default_cfg = ProviderConfig::default();
+        assert_eq!(default_cfg.resolved_model_catalog_cache_ttl_ms(), 30_000);
+        assert_eq!(
+            default_cfg.resolved_model_catalog_stale_if_error_ms(),
+            120_000
+        );
+        assert_eq!(default_cfg.resolved_model_catalog_cache_max_entries(), 32);
+        assert_eq!(default_cfg.resolved_model_candidate_cooldown_ms(), 300_000);
+        assert_eq!(
+            default_cfg.resolved_model_candidate_cooldown_max_ms(),
+            3_600_000
+        );
+        assert_eq!(
+            default_cfg.resolved_model_candidate_cooldown_max_entries(),
+            64
+        );
+        assert_eq!(default_cfg.resolved_profile_cooldown_ms(), 60_000);
+        assert_eq!(default_cfg.resolved_profile_cooldown_max_ms(), 3_600_000);
+        assert_eq!(
+            default_cfg.resolved_profile_auth_reject_disable_ms(),
+            21_600_000
+        );
+        assert_eq!(default_cfg.resolved_profile_state_max_entries(), 256);
+        assert_eq!(
+            default_cfg.resolved_profile_state_backend(),
+            ProviderProfileStateBackendKind::File
+        );
+        assert_eq!(
+            default_cfg.resolved_profile_health_mode_config(),
+            ProviderProfileHealthModeConfig::ProviderDefault
+        );
+        assert_eq!(
+            default_cfg.resolved_tool_schema_mode_config(),
+            ProviderToolSchemaModeConfig::ProviderDefault
+        );
+        assert_eq!(
+            default_cfg.resolved_reasoning_extra_body_mode_config(),
+            ProviderReasoningExtraBodyModeConfig::ProviderDefault
+        );
+        assert!(
+            default_cfg
+                .resolved_tool_schema_disabled_model_hints()
+                .is_empty()
+        );
+        assert!(
+            default_cfg
+                .resolved_tool_schema_strict_model_hints()
+                .is_empty()
+        );
+        assert!(
+            default_cfg
+                .resolved_reasoning_extra_body_kimi_model_hints()
+                .is_empty()
+        );
+        assert!(
+            default_cfg
+                .resolved_reasoning_extra_body_omit_model_hints()
+                .is_empty()
+        );
+        assert_eq!(default_cfg.resolved_profile_state_sqlite_path(), None);
+
+        let disabled = ProviderConfig {
+            model_catalog_cache_ttl_ms: 0,
+            ..ProviderConfig::default()
+        };
+        assert_eq!(disabled.resolved_model_catalog_cache_ttl_ms(), 0);
+
+        let no_stale_fallback = ProviderConfig {
+            model_catalog_stale_if_error_ms: 0,
+            ..ProviderConfig::default()
+        };
+        assert_eq!(
+            no_stale_fallback.resolved_model_catalog_stale_if_error_ms(),
+            0
+        );
+
+        let min_entries = ProviderConfig {
+            model_catalog_cache_max_entries: 0,
+            ..ProviderConfig::default()
+        };
+        assert_eq!(min_entries.resolved_model_catalog_cache_max_entries(), 1);
+
+        let clamped = ProviderConfig {
+            model_catalog_cache_ttl_ms: 999_999,
+            ..ProviderConfig::default()
+        };
+        assert_eq!(clamped.resolved_model_catalog_cache_ttl_ms(), 300_000);
+
+        let stale_clamped = ProviderConfig {
+            model_catalog_stale_if_error_ms: 9_999_999,
+            ..ProviderConfig::default()
+        };
+        assert_eq!(
+            stale_clamped.resolved_model_catalog_stale_if_error_ms(),
+            600_000
+        );
+
+        let max_entries_clamped = ProviderConfig {
+            model_catalog_cache_max_entries: 9_999,
+            ..ProviderConfig::default()
+        };
+        assert_eq!(
+            max_entries_clamped.resolved_model_catalog_cache_max_entries(),
+            256
+        );
+
+        let disabled_cooldown = ProviderConfig {
+            model_candidate_cooldown_ms: 0,
+            ..ProviderConfig::default()
+        };
+        assert_eq!(disabled_cooldown.resolved_model_candidate_cooldown_ms(), 0);
+
+        let cooldown_clamped = ProviderConfig {
+            model_candidate_cooldown_ms: 9_999_999,
+            ..ProviderConfig::default()
+        };
+        assert_eq!(
+            cooldown_clamped.resolved_model_candidate_cooldown_ms(),
+            3_600_000
+        );
+
+        let cooldown_max_clamped = ProviderConfig {
+            model_candidate_cooldown_max_ms: 999_999_999,
+            ..ProviderConfig::default()
+        };
+        assert_eq!(
+            cooldown_max_clamped.resolved_model_candidate_cooldown_max_ms(),
+            86_400_000
+        );
+
+        let cooldown_max_uses_base_floor = ProviderConfig {
+            model_candidate_cooldown_ms: 120_000,
+            model_candidate_cooldown_max_ms: 30_000,
+            ..ProviderConfig::default()
+        };
+        assert_eq!(
+            cooldown_max_uses_base_floor.resolved_model_candidate_cooldown_max_ms(),
+            120_000
+        );
+
+        let cooldown_entries_min = ProviderConfig {
+            model_candidate_cooldown_max_entries: 0,
+            ..ProviderConfig::default()
+        };
+        assert_eq!(
+            cooldown_entries_min.resolved_model_candidate_cooldown_max_entries(),
+            1
+        );
+
+        let cooldown_entries_clamped = ProviderConfig {
+            model_candidate_cooldown_max_entries: 99_999,
+            ..ProviderConfig::default()
+        };
+        assert_eq!(
+            cooldown_entries_clamped.resolved_model_candidate_cooldown_max_entries(),
+            512
+        );
+
+        let profile_cooldown_disabled = ProviderConfig {
+            profile_cooldown_ms: 0,
+            ..ProviderConfig::default()
+        };
+        assert_eq!(profile_cooldown_disabled.resolved_profile_cooldown_ms(), 0);
+
+        let profile_cooldown_clamped = ProviderConfig {
+            profile_cooldown_ms: 9_999_999,
+            ..ProviderConfig::default()
+        };
+        assert_eq!(
+            profile_cooldown_clamped.resolved_profile_cooldown_ms(),
+            3_600_000
+        );
+
+        let profile_cooldown_max_clamped = ProviderConfig {
+            profile_cooldown_max_ms: 999_999_999,
+            ..ProviderConfig::default()
+        };
+        assert_eq!(
+            profile_cooldown_max_clamped.resolved_profile_cooldown_max_ms(),
+            86_400_000
+        );
+
+        let profile_cooldown_max_uses_base_floor = ProviderConfig {
+            profile_cooldown_ms: 120_000,
+            profile_cooldown_max_ms: 30_000,
+            ..ProviderConfig::default()
+        };
+        assert_eq!(
+            profile_cooldown_max_uses_base_floor.resolved_profile_cooldown_max_ms(),
+            120_000
+        );
+
+        let profile_auth_disable_min = ProviderConfig {
+            profile_auth_reject_disable_ms: 10,
+            ..ProviderConfig::default()
+        };
+        assert_eq!(
+            profile_auth_disable_min.resolved_profile_auth_reject_disable_ms(),
+            60_000
+        );
+
+        let profile_auth_disable_max = ProviderConfig {
+            profile_auth_reject_disable_ms: 999_999_999,
+            ..ProviderConfig::default()
+        };
+        assert_eq!(
+            profile_auth_disable_max.resolved_profile_auth_reject_disable_ms(),
+            604_800_000
+        );
+
+        let profile_entries_min = ProviderConfig {
+            profile_state_max_entries: 0,
+            ..ProviderConfig::default()
+        };
+        assert_eq!(profile_entries_min.resolved_profile_state_max_entries(), 1);
+
+        let profile_entries_max = ProviderConfig {
+            profile_state_max_entries: 99_999,
+            ..ProviderConfig::default()
+        };
+        assert_eq!(
+            profile_entries_max.resolved_profile_state_max_entries(),
+            1024
+        );
+
+        let profile_sqlite_memory = ProviderConfig {
+            profile_state_sqlite_path: Some("memory".to_owned()),
+            ..ProviderConfig::default()
+        };
+        assert_eq!(
+            profile_sqlite_memory.resolved_profile_state_sqlite_path(),
+            Some(std::path::PathBuf::from(":memory:"))
+        );
+
+        let profile_sqlite_explicit_memory = ProviderConfig {
+            profile_state_sqlite_path: Some(":memory:".to_owned()),
+            ..ProviderConfig::default()
+        };
+        assert_eq!(
+            profile_sqlite_explicit_memory.resolved_profile_state_sqlite_path(),
+            Some(std::path::PathBuf::from(":memory:"))
+        );
+
+        let profile_sqlite_default = ProviderConfig::default();
+        let expected_default = default_loongclaw_home().join("provider-profile-state.sqlite3");
+        assert_eq!(
+            profile_sqlite_default.resolved_profile_state_sqlite_path_with_default(),
+            expected_default
+        );
+
+        let profile_health_enforce = ProviderConfig {
+            profile_health_mode: ProviderProfileHealthModeConfig::Enforce,
+            ..ProviderConfig::default()
+        };
+        assert_eq!(
+            profile_health_enforce.resolved_profile_health_mode_config(),
+            ProviderProfileHealthModeConfig::Enforce
+        );
+
+        let profile_health_observe_only = ProviderConfig {
+            profile_health_mode: ProviderProfileHealthModeConfig::ObserveOnly,
+            ..ProviderConfig::default()
+        };
+        assert_eq!(
+            profile_health_observe_only.resolved_profile_health_mode_config(),
+            ProviderProfileHealthModeConfig::ObserveOnly
+        );
+    }
+
+    #[test]
     fn openai_codex_oauth_can_override_api_key_auth() {
         let config = ProviderConfig {
             kind: ProviderKind::Openai,
@@ -405,6 +679,222 @@ kind = "kimi_coding"
     }
 
     #[test]
+    #[cfg(feature = "config-toml")]
+    fn provider_profile_health_mode_parses_from_toml() {
+        let raw = r#"
+[provider]
+kind = "openrouter"
+profile_health_mode = "enforce"
+"#;
+        let parsed =
+            toml::from_str::<LoongClawConfig>(raw).expect("parse profile health mode should pass");
+        assert_eq!(parsed.provider.kind, ProviderKind::Openrouter);
+        assert_eq!(
+            parsed.provider.resolved_profile_health_mode_config(),
+            ProviderProfileHealthModeConfig::Enforce
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "config-toml")]
+    fn provider_profile_health_mode_supports_all_config_values() {
+        let observe_only_raw = r#"
+[provider]
+kind = "openai"
+profile_health_mode = "observe_only"
+"#;
+        let observe_only = toml::from_str::<LoongClawConfig>(observe_only_raw)
+            .expect("parse observe_only profile health mode should pass");
+        assert_eq!(
+            observe_only.provider.resolved_profile_health_mode_config(),
+            ProviderProfileHealthModeConfig::ObserveOnly
+        );
+
+        let provider_default_raw = r#"
+[provider]
+kind = "openrouter"
+profile_health_mode = "provider_default"
+"#;
+        let provider_default = toml::from_str::<LoongClawConfig>(provider_default_raw)
+            .expect("parse provider_default profile health mode should pass");
+        assert_eq!(
+            provider_default
+                .provider
+                .resolved_profile_health_mode_config(),
+            ProviderProfileHealthModeConfig::ProviderDefault
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "config-toml")]
+    fn provider_tool_schema_mode_parses_from_toml() {
+        let raw = r#"
+[provider]
+kind = "openai"
+tool_schema_mode = "enabled_strict"
+"#;
+        let parsed =
+            toml::from_str::<LoongClawConfig>(raw).expect("parse tool schema mode should pass");
+        assert_eq!(parsed.provider.kind, ProviderKind::Openai);
+        assert_eq!(
+            parsed.provider.resolved_tool_schema_mode_config(),
+            ProviderToolSchemaModeConfig::EnabledStrict
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "config-toml")]
+    fn provider_tool_schema_mode_supports_all_config_values() {
+        let disabled_raw = r#"
+[provider]
+kind = "openai"
+tool_schema_mode = "disabled"
+"#;
+        let disabled = toml::from_str::<LoongClawConfig>(disabled_raw)
+            .expect("parse disabled tool schema mode should pass");
+        assert_eq!(
+            disabled.provider.resolved_tool_schema_mode_config(),
+            ProviderToolSchemaModeConfig::Disabled
+        );
+
+        let downgraded_raw = r#"
+[provider]
+kind = "openai"
+tool_schema_mode = "enabled_with_downgrade"
+"#;
+        let downgraded = toml::from_str::<LoongClawConfig>(downgraded_raw)
+            .expect("parse enabled_with_downgrade tool schema mode should pass");
+        assert_eq!(
+            downgraded.provider.resolved_tool_schema_mode_config(),
+            ProviderToolSchemaModeConfig::EnabledWithDowngrade
+        );
+
+        let provider_default_raw = r#"
+[provider]
+kind = "openai"
+tool_schema_mode = "provider_default"
+"#;
+        let provider_default = toml::from_str::<LoongClawConfig>(provider_default_raw)
+            .expect("parse provider_default tool schema mode should pass");
+        assert_eq!(
+            provider_default.provider.resolved_tool_schema_mode_config(),
+            ProviderToolSchemaModeConfig::ProviderDefault
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "config-toml")]
+    fn provider_reasoning_extra_body_mode_supports_all_config_values() {
+        let kimi_thinking_raw = r#"
+[provider]
+kind = "openai"
+reasoning_extra_body_mode = "kimi_thinking"
+"#;
+        let kimi_thinking = toml::from_str::<LoongClawConfig>(kimi_thinking_raw)
+            .expect("parse kimi_thinking reasoning mode should pass");
+        assert_eq!(
+            kimi_thinking
+                .provider
+                .resolved_reasoning_extra_body_mode_config(),
+            ProviderReasoningExtraBodyModeConfig::KimiThinking
+        );
+
+        let omit_raw = r#"
+[provider]
+kind = "openai"
+reasoning_extra_body_mode = "omit"
+"#;
+        let omit = toml::from_str::<LoongClawConfig>(omit_raw)
+            .expect("parse omit reasoning mode should pass");
+        assert_eq!(
+            omit.provider.resolved_reasoning_extra_body_mode_config(),
+            ProviderReasoningExtraBodyModeConfig::Omit
+        );
+
+        let provider_default_raw = r#"
+[provider]
+kind = "openai"
+reasoning_extra_body_mode = "provider_default"
+"#;
+        let provider_default = toml::from_str::<LoongClawConfig>(provider_default_raw)
+            .expect("parse provider_default reasoning mode should pass");
+        assert_eq!(
+            provider_default
+                .provider
+                .resolved_reasoning_extra_body_mode_config(),
+            ProviderReasoningExtraBodyModeConfig::ProviderDefault
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "config-toml")]
+    fn provider_capability_model_hints_parse_from_toml() {
+        let raw = r#"
+[provider]
+kind = "openai"
+tool_schema_disabled_model_hints = ["no-tools", "legacy-plain-text"]
+tool_schema_strict_model_hints = ["strict-schema"]
+reasoning_extra_body_kimi_model_hints = ["enable-thinking"]
+reasoning_extra_body_omit_model_hints = ["disable-thinking"]
+"#;
+        let parsed = toml::from_str::<LoongClawConfig>(raw)
+            .expect("parse provider capability model hints should pass");
+
+        assert_eq!(
+            parsed.provider.resolved_tool_schema_disabled_model_hints(),
+            vec!["no-tools", "legacy-plain-text"]
+        );
+        assert_eq!(
+            parsed.provider.resolved_tool_schema_strict_model_hints(),
+            vec!["strict-schema"]
+        );
+        assert_eq!(
+            parsed
+                .provider
+                .resolved_reasoning_extra_body_kimi_model_hints(),
+            vec!["enable-thinking"]
+        );
+        assert_eq!(
+            parsed
+                .provider
+                .resolved_reasoning_extra_body_omit_model_hints(),
+            vec!["disable-thinking"]
+        );
+    }
+
+    #[test]
+    fn provider_capability_model_hints_normalize_empty_entries() {
+        let provider = ProviderConfig {
+            tool_schema_disabled_model_hints: vec![
+                "".to_owned(),
+                "  no-tools  ".to_owned(),
+                "   ".to_owned(),
+            ],
+            tool_schema_strict_model_hints: vec![" strict-schema ".to_owned()],
+            reasoning_extra_body_kimi_model_hints: vec![" enable-thinking ".to_owned()],
+            reasoning_extra_body_omit_model_hints: vec![" disable-thinking ".to_owned()],
+            ..ProviderConfig::default()
+        };
+
+        assert_eq!(
+            provider.resolved_tool_schema_disabled_model_hints(),
+            vec!["no-tools"]
+        );
+        assert_eq!(
+            provider.resolved_tool_schema_strict_model_hints(),
+            vec!["strict-schema"]
+        );
+        assert_eq!(
+            provider.resolved_reasoning_extra_body_kimi_model_hints(),
+            vec!["enable-thinking"]
+        );
+        assert_eq!(
+            provider.resolved_reasoning_extra_body_omit_model_hints(),
+            vec!["disable-thinking"]
+        );
+    }
+
+    #[test]
     #[cfg(feature = "channel-telegram")]
     fn telegram_token_prefers_inline_secret() {
         let config = TelegramChannelConfig {
@@ -413,6 +903,28 @@ kind = "kimi_coding"
             ..TelegramChannelConfig::default()
         };
         assert_eq!(config.bot_token().as_deref(), Some("inline-token"));
+    }
+
+    #[test]
+    fn provider_api_key_candidates_support_delimited_key_pool() {
+        let config = ProviderConfig {
+            kind: ProviderKind::Ollama,
+            api_key: Some("key-a, key-b;key-c\nkey-d\r\nkey-e".to_owned()),
+            api_key_env: None,
+            ..ProviderConfig::default()
+        };
+
+        assert_eq!(
+            config.api_key_candidates(),
+            vec![
+                "key-a".to_owned(),
+                "key-b".to_owned(),
+                "key-c".to_owned(),
+                "key-d".to_owned(),
+                "key-e".to_owned()
+            ]
+        );
+        assert_eq!(config.api_key(), Some("key-a".to_owned()));
     }
 
     #[test]

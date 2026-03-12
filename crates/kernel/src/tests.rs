@@ -747,6 +747,67 @@ fn record_audit_event_supports_security_scan_summary() {
     ));
 }
 
+#[test]
+fn record_audit_event_supports_provider_failover_summary() {
+    let clock: Arc<FixedClock> = Arc::new(FixedClock::new(1_700_000_123));
+    let audit = Arc::new(InMemoryAuditSink::default());
+    let kernel = LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock, audit.clone());
+
+    kernel
+        .record_audit_event(
+            Some("agent-provider"),
+            AuditEventKind::ProviderFailover {
+                pack_id: "pack-provider".to_owned(),
+                provider_id: "openai".to_owned(),
+                reason: "rate_limited".to_owned(),
+                stage: "status_failure".to_owned(),
+                model: "gpt-5".to_owned(),
+                attempt: 2,
+                max_attempts: 3,
+                status_code: Some(429),
+                try_next_model: true,
+                auto_model_mode: true,
+                candidate_index: 1,
+                candidate_count: 4,
+            },
+        )
+        .expect("provider failover audit event should record");
+
+    let events = audit.snapshot();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_id, "evt-0000000000000001");
+    assert_eq!(events[0].timestamp_epoch_s, 1_700_000_123);
+    assert_eq!(events[0].agent_id.as_deref(), Some("agent-provider"));
+    assert!(matches!(
+        &events[0].kind,
+        AuditEventKind::ProviderFailover {
+            pack_id,
+            provider_id,
+            reason,
+            stage,
+            model,
+            attempt,
+            max_attempts,
+            status_code,
+            try_next_model,
+            auto_model_mode,
+            candidate_index,
+            candidate_count,
+        } if pack_id == "pack-provider"
+            && provider_id == "openai"
+            && reason == "rate_limited"
+            && stage == "status_failure"
+            && model == "gpt-5"
+            && *attempt == 2
+            && *max_attempts == 3
+            && *status_code == Some(429)
+            && *try_next_model
+            && *auto_model_mode
+            && *candidate_index == 1
+            && *candidate_count == 4
+    ));
+}
+
 struct MockCoreRuntime;
 
 #[async_trait]

@@ -493,6 +493,7 @@ impl ConversationRuntime for FakeRuntime {
         &self,
         _config: &LoongClawConfig,
         messages: &[Value],
+        _kernel_ctx: Option<&KernelContext>,
     ) -> CliResult<String> {
         let mut calls = self.completion_calls.lock().expect("completion calls lock");
         *calls += 1;
@@ -513,6 +514,7 @@ impl ConversationRuntime for FakeRuntime {
         &self,
         _config: &LoongClawConfig,
         messages: &[Value],
+        _kernel_ctx: Option<&KernelContext>,
     ) -> CliResult<ProviderTurn> {
         let mut calls = self.turn_calls.lock().expect("turn calls lock");
         *calls += 1;
