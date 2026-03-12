@@ -390,10 +390,8 @@ async fn load_memory_window(
         return Ok(memory::decode_window_turns(&outcome.payload));
     }
 
-    let runtime_config = memory::runtime_config::MemoryRuntimeConfig {
-        sqlite_path: Some(config.memory.resolved_sqlite_path()),
-        sliding_window: Some(config.memory.sliding_window),
-    };
+    let runtime_config =
+        memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
     let turns = memory::window_direct(session_id, config.memory.sliding_window, &runtime_config)
         .map_err(|error| format!("load memory window failed: {error}"))?;
     Ok(turns
