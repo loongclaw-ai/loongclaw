@@ -225,12 +225,7 @@ fn default_sqlite_path() -> String {
 }
 
 fn default_shell_allowlist() -> Vec<String> {
-    vec![
-        "echo".to_owned(),
-        "cat".to_owned(),
-        "ls".to_owned(),
-        "pwd".to_owned(),
-    ]
+    vec!["echo".to_owned(), "pwd".to_owned()]
 }
 
 const fn default_require_download_approval() -> bool {
