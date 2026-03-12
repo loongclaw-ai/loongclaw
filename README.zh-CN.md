@@ -260,6 +260,20 @@ chat_completions_path = "/api/v3/chat/completions"
 
 `kind = "volcengine"` 已经内置了上面的火山默认 endpoint，所以只有在你希望把这些值明确写进配置时，才需要额外保留 `base_url` 和 `chat_completions_path`。
 
+### 工具策略
+
+Shell 执行默认采用**未知命令拒绝**策略——只有明确列入允许名单的命令才能运行。
+文件访问默认沙箱为进程工作目录。
+
+```toml
+[tools]
+shell_default_mode = "deny"                          # "deny" | "allow"
+shell_allow = ["echo", "ls", "git", "cargo"]         # 允许的命令
+shell_deny = []                                      # 硬拒绝的命令
+shell_approval_required = []                         # 需要用户确认的命令
+# file_root = "/home/user/project"                   # 默认为 CWD
+```
+
 验证配置：
 
 ```bash

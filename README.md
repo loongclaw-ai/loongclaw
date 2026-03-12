@@ -297,6 +297,22 @@ chat_completions_path = "/api/v3/chat/completions"
 
 `kind = "volcengine"` already applies the Volcengine defaults above, so `base_url` and `chat_completions_path` are only needed when you want the config to spell them out explicitly.
 
+### Tool policy
+
+Shell execution defaults to **deny-unknown** — only explicitly allowed commands run.
+File access is sandboxed to the working directory by default.
+
+```toml
+[tools]
+shell_default_mode = "deny"                          # "deny" | "allow"
+shell_allow = ["echo", "ls", "git", "cargo"]         # permitted commands
+shell_deny = []                                      # hard-blocked commands
+shell_approval_required = []                         # require user approval
+# file_root = "/home/user/project"                   # defaults to CWD
+```
+
+See [Tool Policy Configuration](docs/configuration/tool-policy.md) for the full reference.
+
 Validate your config:
 
 ```bash
