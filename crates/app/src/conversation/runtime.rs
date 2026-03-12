@@ -188,12 +188,14 @@ pub trait ConversationRuntime: Send + Sync {
         &self,
         config: &LoongClawConfig,
         messages: &[Value],
+        kernel_ctx: Option<&KernelContext>,
     ) -> CliResult<String>;
 
     async fn request_turn(
         &self,
         config: &LoongClawConfig,
         messages: &[Value],
+        kernel_ctx: Option<&KernelContext>,
     ) -> CliResult<ProviderTurn>;
 
     async fn persist_turn(
@@ -305,16 +307,18 @@ where
         &self,
         config: &LoongClawConfig,
         messages: &[Value],
+        kernel_ctx: Option<&KernelContext>,
     ) -> CliResult<String> {
-        provider::request_completion(config, messages).await
+        provider::request_completion(config, messages, kernel_ctx).await
     }
 
     async fn request_turn(
         &self,
         config: &LoongClawConfig,
         messages: &[Value],
+        kernel_ctx: Option<&KernelContext>,
     ) -> CliResult<ProviderTurn> {
-        provider::request_turn(config, messages).await
+        provider::request_turn(config, messages, kernel_ctx).await
     }
 
     async fn persist_turn(

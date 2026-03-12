@@ -483,6 +483,40 @@ chat_completions_path = "/api/v3/chat/completions"
 
 `kind = "volcengine"` already applies the Volcengine defaults above, so `base_url` and `chat_completions_path` are only needed when you want the config to spell them out explicitly.
 
+Provider model-catalog cache tuning:
+
+```toml
+[provider]
+model = "auto"
+# Fresh cache window for /v1/models (default: 30000, max: 300000; set 0 to disable cache)
+model_catalog_cache_ttl_ms = 30000
+# Extra stale window used only when model-list fetch fails (default: 120000, max: 600000)
+model_catalog_stale_if_error_ms = 120000
+# Cache entry capacity for model catalogs (default: 32, range: 1-256)
+model_catalog_cache_max_entries = 32
+# Base cooldown window for model candidates rejected as incompatible (default: 300000, max: 3600000; set 0 to disable)
+model_candidate_cooldown_ms = 300000
+# Exponential backoff cap for repeated candidate failures (default: 3600000, max: 86400000)
+model_candidate_cooldown_max_ms = 3600000
+# Cache entry capacity for model candidate cooldown state (default: 64, range: 1-512)
+model_candidate_cooldown_max_entries = 64
+# Base cooldown for auth profiles after transient failures (default: 60000, max: 3600000; set 0 to disable)
+profile_cooldown_ms = 60000
+# Max cooldown cap for repeated profile failures (default: 3600000, max: 86400000)
+profile_cooldown_max_ms = 3600000
+# Disable window for auth-rejected profiles (default: 21600000, range: 60000-604800000)
+profile_auth_reject_disable_ms = 21600000
+# In-memory profile-state capacity per runtime namespace (default: 256, range: 1-1024)
+profile_state_max_entries = 256
+# Profile-state persistence backend ("file" or "sqlite", default: "file")
+profile_state_backend = "file"
+# Profile health enforcement mode ("provider_default", "enforce", "observe_only"; default: "provider_default")
+# provider_default currently maps openrouter -> observe_only, others -> enforce
+profile_health_mode = "provider_default"
+# Optional sqlite file path when backend = "sqlite" (defaults to ~/.loongclaw/provider-profile-state.sqlite3)
+profile_state_sqlite_path = "~/.loongclaw/provider-profile-state.sqlite3"
+```
+
 Validate your config:
 
 ```bash
