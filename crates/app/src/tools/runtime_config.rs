@@ -32,6 +32,7 @@ pub struct ToolRuntimeConfig {
     pub web_fetch_max_bytes: usize,
     pub web_fetch_max_redirects: u8,
     pub web_fetch_timeout_secs: u64,
+    pub external_skills: ExternalSkillsRuntimePolicy,
 }
 
 impl Default for ToolRuntimeConfig {
@@ -42,9 +43,9 @@ impl Default for ToolRuntimeConfig {
             web_fetch_max_bytes: 1_048_576,
             web_fetch_max_redirects: 10,
             web_fetch_timeout_secs: 30,
+            external_skills: ExternalSkillsRuntimePolicy::default(),
         }
     }
-    pub external_skills: ExternalSkillsRuntimePolicy,
 }
 
 impl ToolRuntimeConfig {
@@ -166,13 +167,13 @@ mod tests {
         let config = ToolRuntimeConfig {
             shell_allowlist: BTreeSet::from(["git".to_owned(), "cargo".to_owned()]),
             file_root: Some(PathBuf::from("/tmp/test-root")),
-            ..ToolRuntimeConfig::default()
             external_skills: ExternalSkillsRuntimePolicy {
                 enabled: true,
                 require_download_approval: false,
                 allowed_domains: BTreeSet::from(["skills.sh".to_owned()]),
                 blocked_domains: BTreeSet::new(),
             },
+            ..ToolRuntimeConfig::default()
         };
         assert!(config.shell_allowlist.contains("git"));
         assert!(config.shell_allowlist.contains("cargo"));
@@ -199,8 +200,8 @@ mod tests {
         let config = ToolRuntimeConfig {
             shell_allowlist: BTreeSet::from(["echo".to_owned()]),
             file_root: Some(PathBuf::from("/tmp/injected-root")),
-            ..ToolRuntimeConfig::default()
             external_skills: ExternalSkillsRuntimePolicy::default(),
+            ..ToolRuntimeConfig::default()
         };
         let result = crate::tools::execute_tool_core_with_config(
             loongclaw_contracts::ToolCoreRequest {

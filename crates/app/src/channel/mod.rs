@@ -748,7 +748,6 @@ fn apply_runtime_env(config: &LoongClawConfig) {
             .map(|s| s.to_ascii_lowercase())
             .collect(),
         file_root: Some(config.tools.resolved_file_root()),
-        ..crate::tools::runtime_config::ToolRuntimeConfig::default()
         external_skills: crate::tools::runtime_config::ExternalSkillsRuntimePolicy {
             enabled: config.external_skills.enabled,
             require_download_approval: config.external_skills.require_download_approval,
@@ -763,6 +762,7 @@ fn apply_runtime_env(config: &LoongClawConfig) {
                 .into_iter()
                 .collect(),
         },
+        ..crate::tools::runtime_config::ToolRuntimeConfig::default()
     };
     let _ = crate::tools::runtime_config::init_tool_runtime_config(tool_rt);
 

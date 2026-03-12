@@ -56,18 +56,6 @@ pub fn canonical_tool_name(raw: &str) -> &str {
 }
 
 pub fn is_known_tool_name(raw: &str) -> bool {
-    let canonical = canonical_tool_name(raw);
-    if matches!(
-        canonical,
-        "claw.import" | "shell.exec" | "file.read" | "file.write"
-    ) {
-        return true;
-    }
-    #[cfg(feature = "tool-webfetch")]
-    if canonical == "web.fetch" {
-        return true;
-    }
-    false
     matches!(
         canonical_tool_name(raw),
         "claw.import"
@@ -76,6 +64,7 @@ pub fn is_known_tool_name(raw: &str) -> bool {
             | "shell.exec"
             | "file.read"
             | "file.write"
+            | "web.fetch"
     )
 }
 
@@ -567,23 +556,16 @@ mod tests {
             snapshot.contains("- web.fetch: Fetch web content with SSRF protection and extraction")
         );
 
-        // Verify sorted order: claw.import < file.read < file.write < shell.exec < web.fetch
+        // Verify sorted order: claw.import < external_skills.* < file.* < shell.exec < web.fetch
         let lines: Vec<&str> = snapshot.lines().skip(1).collect();
-        assert_eq!(lines.len(), 5);
-        assert!(lines[0].starts_with("- claw.import"));
-        assert!(lines[1].starts_with("- file.read"));
-        assert!(lines[2].starts_with("- file.write"));
-        assert!(lines[3].starts_with("- shell.exec"));
-        assert!(lines[4].starts_with("- web.fetch"));
-        // Verify sorted order: claw.import < external_skills.* < file.* < shell.exec
-        let lines: Vec<&str> = snapshot.lines().skip(1).collect();
-        assert_eq!(lines.len(), 6);
+        assert_eq!(lines.len(), 7);
         assert!(lines[0].starts_with("- claw.import"));
         assert!(lines[1].starts_with("- external_skills.fetch"));
         assert!(lines[2].starts_with("- external_skills.policy"));
         assert!(lines[3].starts_with("- file.read"));
         assert!(lines[4].starts_with("- file.write"));
         assert!(lines[5].starts_with("- shell.exec"));
+        assert!(lines[6].starts_with("- web.fetch"));
     }
 
     #[cfg(all(
@@ -594,8 +576,7 @@ mod tests {
     #[test]
     fn tool_registry_returns_all_known_tools() {
         let entries = tool_registry();
-        assert_eq!(entries.len(), 5);
-        assert_eq!(entries.len(), 6);
+        assert_eq!(entries.len(), 7);
         let names: Vec<&str> = entries.iter().map(|e| e.name).collect();
         assert!(names.contains(&"claw.import"));
         assert!(names.contains(&"external_skills.fetch"));
@@ -614,8 +595,7 @@ mod tests {
     #[test]
     fn provider_tool_definitions_are_stable_and_complete() {
         let defs = provider_tool_definitions();
-        assert_eq!(defs.len(), 5);
-        assert_eq!(defs.len(), 6);
+        assert_eq!(defs.len(), 7);
 
         let names: Vec<&str> = defs
             .iter()
@@ -627,15 +607,12 @@ mod tests {
             names,
             vec![
                 "claw_import",
-                "file_read",
-                "file_write",
-                "shell_exec",
-                "web_fetch"
                 "external_skills_fetch",
                 "external_skills_policy",
                 "file_read",
                 "file_write",
-                "shell_exec"
+                "shell_exec",
+                "web_fetch"
             ]
         );
 
@@ -777,8 +754,8 @@ mod tests {
         let config = runtime_config::ToolRuntimeConfig {
             shell_allowlist: BTreeSet::new(),
             file_root: Some(root.clone()),
-            ..runtime_config::ToolRuntimeConfig::default()
             external_skills: Default::default(),
+            ..runtime_config::ToolRuntimeConfig::default()
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -863,8 +840,8 @@ mod tests {
         let config = runtime_config::ToolRuntimeConfig {
             shell_allowlist: BTreeSet::new(),
             file_root: Some(root.clone()),
-            ..runtime_config::ToolRuntimeConfig::default()
             external_skills: Default::default(),
+            ..runtime_config::ToolRuntimeConfig::default()
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -953,8 +930,8 @@ mod tests {
         let config = runtime_config::ToolRuntimeConfig {
             shell_allowlist: BTreeSet::new(),
             file_root: Some(root.clone()),
-            ..runtime_config::ToolRuntimeConfig::default()
             external_skills: Default::default(),
+            ..runtime_config::ToolRuntimeConfig::default()
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -1026,8 +1003,8 @@ mod tests {
         let config = runtime_config::ToolRuntimeConfig {
             shell_allowlist: BTreeSet::new(),
             file_root: Some(root.clone()),
-            ..runtime_config::ToolRuntimeConfig::default()
             external_skills: Default::default(),
+            ..runtime_config::ToolRuntimeConfig::default()
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -1100,8 +1077,8 @@ mod tests {
         let config = runtime_config::ToolRuntimeConfig {
             shell_allowlist: BTreeSet::new(),
             file_root: Some(root.clone()),
-            ..runtime_config::ToolRuntimeConfig::default()
             external_skills: Default::default(),
+            ..runtime_config::ToolRuntimeConfig::default()
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -1164,6 +1141,7 @@ mod tests {
             shell_allowlist: BTreeSet::new(),
             file_root: Some(root.clone()),
             external_skills: Default::default(),
+            ..runtime_config::ToolRuntimeConfig::default()
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -1246,8 +1224,8 @@ mod tests {
         let config = runtime_config::ToolRuntimeConfig {
             shell_allowlist: BTreeSet::new(),
             file_root: Some(root.clone()),
-            ..runtime_config::ToolRuntimeConfig::default()
             external_skills: Default::default(),
+            ..runtime_config::ToolRuntimeConfig::default()
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -1332,6 +1310,7 @@ mod tests {
             shell_allowlist: BTreeSet::new(),
             file_root: Some(root.clone()),
             external_skills: Default::default(),
+            ..runtime_config::ToolRuntimeConfig::default()
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -1417,8 +1396,8 @@ mod tests {
         let config = runtime_config::ToolRuntimeConfig {
             shell_allowlist: BTreeSet::new(),
             file_root: Some(root.clone()),
-            ..runtime_config::ToolRuntimeConfig::default()
             external_skills: Default::default(),
+            ..runtime_config::ToolRuntimeConfig::default()
         };
         execute_tool_core_with_config(
             ToolCoreRequest {

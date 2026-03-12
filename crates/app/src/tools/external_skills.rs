@@ -597,6 +597,7 @@ mod tests {
                 allowed_domains: BTreeSet::new(),
                 blocked_domains: BTreeSet::new(),
             },
+            ..ToolRuntimeConfig::default()
         }
     }
 
