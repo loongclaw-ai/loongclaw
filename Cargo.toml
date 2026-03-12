@@ -28,6 +28,9 @@ thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net", "io-util", "io-std", "process"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 futures-util = "0.3"
+url = "2.5.8"
+ipnet = "2.12"
+scraper = "0.25"
 sha2 = "0.10"
 wasmparser = "0.245"
 base64 = "0.22"

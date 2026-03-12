@@ -762,6 +762,7 @@ fn apply_runtime_env(config: &LoongClawConfig) {
                 .into_iter()
                 .collect(),
         },
+        ..crate::tools::runtime_config::ToolRuntimeConfig::default()
     };
     let _ = crate::tools::runtime_config::init_tool_runtime_config(tool_rt);
 

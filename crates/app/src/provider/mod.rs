@@ -917,7 +917,11 @@ mod tests {
         assert_eq!(user_agent, "KimiCLI/custom");
     }
 
-    #[cfg(any(feature = "tool-file", feature = "tool-shell"))]
+    #[cfg(any(
+        feature = "tool-file",
+        feature = "tool-shell",
+        feature = "tool-webfetch"
+    ))]
     #[test]
     fn turn_body_includes_tool_schema_and_auto_choice() {
         let config = LoongClawConfig {
@@ -963,6 +967,10 @@ mod tests {
         #[cfg(feature = "tool-shell")]
         {
             expected.push("shell_exec");
+        }
+        #[cfg(feature = "tool-webfetch")]
+        {
+            expected.push("web_fetch");
         }
 
         assert_eq!(names, expected);

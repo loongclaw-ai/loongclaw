@@ -10,7 +10,7 @@
 <p align="center">
   <a href="https://github.com/loongclaw-ai/loongclaw/actions/workflows/ci.yml"><img src="https://github.com/loongclaw-ai/loongclaw/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT" /></a>
-  <img src="https://img.shields.io/badge/rust-edition%202021-orange.svg" alt="Rust Edition 2021" />
+  <img src="https://img.shields.io/badge/rust-edition%202024-orange.svg" alt="Rust Edition 2024" />
   <img src="https://img.shields.io/badge/version-0.1.2--pre-yellow.svg" alt="Version: 0.1.2-pre" />
 </p>
 
@@ -63,7 +63,7 @@ LoongClaw 是一个基于Rust构建的 Agentic OS 内核，专注于稳定且轻
 
 ### 前置条件
 
-- Rust 稳定工具链（edition 2021）
+- Rust 稳定工具链（edition 2024）
 - `cargo` 在 PATH 中可用
 
 ### 从源码安装

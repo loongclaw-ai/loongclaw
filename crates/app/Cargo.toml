@@ -6,7 +6,7 @@ license.workspace = true
 authors.workspace = true
 
 [features]
-default = ["channel-cli", "channel-telegram", "channel-feishu", "config-toml", "memory-sqlite", "tool-shell", "tool-file", "provider-openai", "provider-volcengine"]
+default = ["channel-cli", "channel-telegram", "channel-feishu", "config-toml", "memory-sqlite", "tool-shell", "tool-file", "tool-webfetch", "provider-openai", "provider-volcengine"]
 channel-cli = []
 channel-telegram = []
 channel-feishu = ["dep:axum", "dep:aes", "dep:cbc"]
@@ -16,6 +16,7 @@ config-toml = ["dep:toml"]
 memory-sqlite = ["dep:rusqlite"]
 tool-shell = []
 tool-file = []
+tool-webfetch = ["dep:url", "dep:ipnet", "dep:scraper"]
 
 [dependencies]
 loongclaw-contracts = { path = "../contracts" }
@@ -32,6 +33,9 @@ rusqlite = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 aes = { version = "0.8", optional = true }
 cbc = { version = "0.1", optional = true }
+url = { workspace = true, optional = true }
+ipnet = { workspace = true, optional = true }
+scraper = { workspace = true, optional = true }
 
 [lints]
 workspace = true

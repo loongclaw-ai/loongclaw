@@ -25,11 +25,27 @@ impl Default for ExternalSkillsRuntimePolicy {
 ///
 /// Replaces per-call `std::env::var` lookups with a single read from a
 /// process-wide singleton that is populated once at startup.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ToolRuntimeConfig {
     pub shell_allowlist: BTreeSet<String>,
     pub file_root: Option<PathBuf>,
+    pub web_fetch_max_bytes: usize,
+    pub web_fetch_max_redirects: u8,
+    pub web_fetch_timeout_secs: u64,
     pub external_skills: ExternalSkillsRuntimePolicy,
+}
+
+impl Default for ToolRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            shell_allowlist: BTreeSet::new(),
+            file_root: None,
+            web_fetch_max_bytes: 1_048_576,
+            web_fetch_max_redirects: 10,
+            web_fetch_timeout_secs: 30,
+            external_skills: ExternalSkillsRuntimePolicy::default(),
+        }
+    }
 }
 
 impl ToolRuntimeConfig {
@@ -54,9 +70,25 @@ impl ToolRuntimeConfig {
         let allowed_domains = parse_env_domain_list("LOONGCLAW_EXTERNAL_SKILLS_ALLOWED_DOMAINS");
         let blocked_domains = parse_env_domain_list("LOONGCLAW_EXTERNAL_SKILLS_BLOCKED_DOMAINS");
 
+        let web_fetch_max_bytes = std::env::var("LOONGCLAW_WEB_FETCH_MAX_BYTES")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(1_048_576);
+        let web_fetch_max_redirects = std::env::var("LOONGCLAW_WEB_FETCH_MAX_REDIRECTS")
+            .ok()
+            .and_then(|v| v.parse::<u8>().ok())
+            .unwrap_or(10);
+        let web_fetch_timeout_secs = std::env::var("LOONGCLAW_WEB_FETCH_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(30);
+
         Self {
             shell_allowlist,
             file_root,
+            web_fetch_max_bytes,
+            web_fetch_max_redirects,
+            web_fetch_timeout_secs,
             external_skills: ExternalSkillsRuntimePolicy {
                 enabled,
                 require_download_approval,
@@ -119,6 +151,9 @@ mod tests {
         let config = ToolRuntimeConfig::default();
         assert!(config.shell_allowlist.is_empty());
         assert!(config.file_root.is_none());
+        assert_eq!(config.web_fetch_max_bytes, 1_048_576);
+        assert_eq!(config.web_fetch_max_redirects, 10);
+        assert_eq!(config.web_fetch_timeout_secs, 30);
         assert!(!config.external_skills.enabled);
         assert!(config.external_skills.require_download_approval);
         assert!(config.external_skills.allowed_domains.is_empty());
@@ -138,6 +173,7 @@ mod tests {
                 allowed_domains: BTreeSet::from(["skills.sh".to_owned()]),
                 blocked_domains: BTreeSet::new(),
             },
+            ..ToolRuntimeConfig::default()
         };
         assert!(config.shell_allowlist.contains("git"));
         assert!(config.shell_allowlist.contains("cargo"));
@@ -165,6 +201,7 @@ mod tests {
             shell_allowlist: BTreeSet::from(["echo".to_owned()]),
             file_root: Some(PathBuf::from("/tmp/injected-root")),
             external_skills: ExternalSkillsRuntimePolicy::default(),
+            ..ToolRuntimeConfig::default()
         };
         let result = crate::tools::execute_tool_core_with_config(
             loongclaw_contracts::ToolCoreRequest {
