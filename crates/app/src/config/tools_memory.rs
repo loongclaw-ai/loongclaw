@@ -307,7 +307,7 @@ mod tests {
     #[cfg(feature = "config-toml")]
     fn tool_config_shell_allow_defaults_to_four_initial_commands() {
         let config: ToolConfig = toml::from_str("").expect("empty toml");
-        let mut allow = config.shell_allow.clone();
+        let mut allow = config.shell_allow;
         allow.sort();
         assert_eq!(allow, vec!["cargo", "echo", "git", "ls"]);
     }

@@ -229,7 +229,7 @@ mod tests {
     fn short_keyword_match_avoids_product_false_positive() {
         let policy = LaneArbiterPolicy::default();
         let decision = policy.decide("review product launch notes and summarize user feedback");
-        assert_eq!(decision.risk_score, 0);
+        assert_eq!(decision.routing_score, 0);
         assert_eq!(decision.lane, ExecutionLane::Fast);
     }
 
@@ -237,7 +237,7 @@ mod tests {
     fn short_keyword_match_preserves_prod_signal_with_boundaries() {
         let policy = LaneArbiterPolicy::default();
         let decision = policy.decide("deploy the patch to prod after smoke tests");
-        assert_eq!(decision.risk_score, 4);
+        assert_eq!(decision.routing_score, 4);
         assert_eq!(decision.lane, ExecutionLane::Safe);
     }
 }

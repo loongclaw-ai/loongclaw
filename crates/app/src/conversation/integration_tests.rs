@@ -486,7 +486,10 @@ mod tests {
                     "expected 'requires approval' in reason, got: {err}"
                 );
             }
-            other => panic!("expected NeedsApproval, got: {other:?}"),
+            other @ (TurnResult::FinalText(_)
+            | TurnResult::ToolDenied(_)
+            | TurnResult::ToolError(_)
+            | TurnResult::ProviderError(_)) => panic!("expected NeedsApproval, got: {other:?}"),
         }
     }
 
@@ -509,7 +512,12 @@ mod tests {
                     "expected 'FilesystemWrite' in reason, got: {err}"
                 );
             }
-            other => panic!("expected ToolDenied with FilesystemWrite, got: {other:?}"),
+            other @ (TurnResult::FinalText(_)
+            | TurnResult::NeedsApproval(_)
+            | TurnResult::ToolError(_)
+            | TurnResult::ProviderError(_)) => {
+                panic!("expected ToolDenied with FilesystemWrite, got: {other:?}")
+            }
         }
     }
 }

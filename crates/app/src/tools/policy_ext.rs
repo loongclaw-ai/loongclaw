@@ -427,6 +427,7 @@ mod tests {
             shell_deny: deny.iter().map(|s| s.to_string()).collect(),
             shell_approval_required: approval.iter().map(|s| s.to_string()).collect(),
             shell_default_mode: mode,
+            ..super::super::runtime_config::ToolRuntimeConfig::default()
         }
     }
 
@@ -454,7 +455,14 @@ mod tests {
                     "expected default-deny reason, got: {reason}"
                 );
             }
-            other => panic!("expected ToolCallDenied, got {other:?}"),
+            other @ (PolicyError::ExpiredToken { .. }
+            | PolicyError::MissingCapability { .. }
+            | PolicyError::PackMismatch { .. }
+            | PolicyError::RevokedToken { .. }
+            | PolicyError::ExtensionDenied { .. }
+            | PolicyError::ToolCallApprovalRequired { .. }) => {
+                panic!("expected ToolCallDenied, got {other:?}")
+            }
         }
     }
 
@@ -497,7 +505,14 @@ mod tests {
                     "expected explicit-deny reason, got: {reason}"
                 );
             }
-            other => panic!("expected ToolCallDenied, got {other:?}"),
+            other @ (PolicyError::ExpiredToken { .. }
+            | PolicyError::MissingCapability { .. }
+            | PolicyError::PackMismatch { .. }
+            | PolicyError::RevokedToken { .. }
+            | PolicyError::ExtensionDenied { .. }
+            | PolicyError::ToolCallApprovalRequired { .. }) => {
+                panic!("expected ToolCallDenied, got {other:?}")
+            }
         }
 
         // ls → allowed
@@ -516,7 +531,14 @@ mod tests {
                     "expected default-deny reason, got: {reason}"
                 );
             }
-            other => panic!("expected ToolCallDenied, got {other:?}"),
+            other @ (PolicyError::ExpiredToken { .. }
+            | PolicyError::MissingCapability { .. }
+            | PolicyError::PackMismatch { .. }
+            | PolicyError::RevokedToken { .. }
+            | PolicyError::ExtensionDenied { .. }
+            | PolicyError::ToolCallApprovalRequired { .. }) => {
+                panic!("expected ToolCallDenied, got {other:?}")
+            }
         }
     }
 

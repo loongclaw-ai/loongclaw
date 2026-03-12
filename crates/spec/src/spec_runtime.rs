@@ -2552,14 +2552,15 @@ impl MemoryExtensionAdapter for VectorIndexMemoryExtension {
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::BTreeMap, path::Path, sync::Arc};
+    #[cfg(unix)]
     use std::{
-        collections::BTreeMap,
         fs,
-        path::Path,
-        sync::Arc,
         time::{SystemTime, UNIX_EPOCH},
     };
 
+    #[cfg(unix)]
+    use super::wasm_artifact_file_identity;
     use super::wasm_runtime_policy::{
         DEFAULT_WASM_MODULE_CACHE_CAPACITY, DEFAULT_WASM_MODULE_CACHE_MAX_BYTES,
         MAX_WASM_MODULE_CACHE_CAPACITY, MAX_WASM_MODULE_CACHE_MAX_BYTES,
@@ -2569,7 +2570,7 @@ mod tests {
     };
     use super::{
         BridgeRuntimePolicy, WasmModuleCache, build_wasm_module_cache_key, compile_wasm_module,
-        normalize_sha256_pin, resolve_expected_wasm_sha256, wasm_artifact_file_identity,
+        normalize_sha256_pin, resolve_expected_wasm_sha256,
     };
 
     const EMPTY_WASM_MODULE: [u8; 8] = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];

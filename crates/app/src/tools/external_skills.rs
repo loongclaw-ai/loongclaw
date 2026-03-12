@@ -589,7 +589,6 @@ mod tests {
 
     fn base_runtime_config() -> ToolRuntimeConfig {
         ToolRuntimeConfig {
-            shell_allowlist: BTreeSet::new(),
             file_root: Some(std::env::temp_dir().join("loongclaw-ext-skills-tests")),
             external_skills: ExternalSkillsRuntimePolicy {
                 enabled: false,
@@ -597,6 +596,7 @@ mod tests {
                 allowed_domains: BTreeSet::new(),
                 blocked_domains: BTreeSet::new(),
             },
+            ..ToolRuntimeConfig::default()
         }
     }
 

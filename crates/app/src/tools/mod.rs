@@ -1095,9 +1095,8 @@ mod tests {
         fs::create_dir_all(root.join(".codex/skills")).expect("create codex skills dir");
 
         let config = runtime_config::ToolRuntimeConfig {
-            shell_allowlist: BTreeSet::new(),
             file_root: Some(root.clone()),
-            external_skills: Default::default(),
+            ..runtime_config::ToolRuntimeConfig::default()
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -1261,9 +1260,8 @@ mod tests {
         let output_path = root.join("loongclaw.toml");
 
         let config = runtime_config::ToolRuntimeConfig {
-            shell_allowlist: BTreeSet::new(),
             file_root: Some(root.clone()),
-            external_skills: Default::default(),
+            ..runtime_config::ToolRuntimeConfig::default()
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
