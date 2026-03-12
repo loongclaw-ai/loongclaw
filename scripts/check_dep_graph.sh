@@ -19,12 +19,14 @@ violations=0
 
 # Extract workspace-internal dependency edges from cargo metadata.
 # Output: "from_crate -> to_crate" lines for loongclaw-* packages only.
+PREFIX="loongclaw-"
 edges="$(cargo metadata --format-version 1 2>/dev/null \
   | python3 -c '
 import json, sys
+PREFIX = "loongclaw-"
 meta = json.load(sys.stdin)
-ws_ids = {p["id"] for p in meta["packages"] if p["name"].startswith("loongclaw-")}
-ws_names = {p["id"]: p["name"].removeprefix("loongclaw-") for p in meta["packages"] if p["id"] in ws_ids}
+ws_ids = {p["id"] for p in meta["packages"] if p["name"].startswith(PREFIX)}
+ws_names = {p["id"]: p["name"][len(PREFIX):] for p in meta["packages"] if p["id"] in ws_ids}
 for node in meta["resolve"]["nodes"]:
     if node["id"] not in ws_ids:
         continue
