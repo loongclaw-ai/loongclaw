@@ -44,7 +44,7 @@ impl ToolRuntimeConfig {
     pub fn from_env() -> Self {
         let shell_allowlist = std::env::var("LOONGCLAW_SHELL_ALLOWLIST")
             .ok()
-            .unwrap_or_else(|| "echo,cat,ls,pwd".to_owned())
+            .unwrap_or_else(|| "echo,pwd".to_owned())
             .split([',', ';', ' '])
             .map(str::trim)
             .filter(|v| !v.is_empty())
@@ -171,7 +171,7 @@ mod tests {
     #[test]
     fn from_env_parses_default_allowlist() {
         // When the env var is not set, from_env falls back to the hardcoded
-        // defaults: echo, cat, ls, pwd.
+        // defaults: echo, pwd.
         let config = ToolRuntimeConfig::from_env();
         // We can't guarantee the env var is unset in all CI environments,
         // but the parser itself should produce a non-empty set either way.
