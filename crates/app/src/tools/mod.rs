@@ -676,7 +676,9 @@ mod tests {
 
         let snapshot = capability_snapshot_with_config(&config);
         assert!(snapshot.contains("[available_external_skills]"));
-        assert!(snapshot.contains("- demo-skill: Use this skill for explicit verification."));
+        assert!(snapshot.contains(
+            "- demo-skill: installed managed external skill; use external_skills.inspect or external_skills.invoke for details"
+        ));
 
         fs::remove_dir_all(&root).ok();
     }
