@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::config::{
     FeishuChannelConfig, MemoryConfig, ProviderConfig, ReasoningEffort, ToolConfig,
