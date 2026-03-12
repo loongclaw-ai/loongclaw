@@ -12,44 +12,44 @@ pub enum ExecutionLane {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaneDecision {
     pub lane: ExecutionLane,
-    pub routing_score: u32,
+    pub risk_score: u32,
     pub complexity_score: u32,
     pub reasons: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LaneArbiterPolicy {
-    #[serde(default = "default_safe_lane_routing_threshold")]
-    pub safe_lane_routing_threshold: u32,
+    #[serde(default = "default_safe_lane_risk_threshold")]
+    pub safe_lane_risk_threshold: u32,
     #[serde(default = "default_safe_lane_complexity_threshold")]
     pub safe_lane_complexity_threshold: u32,
     #[serde(default = "default_fast_lane_max_input_chars")]
     pub fast_lane_max_input_chars: usize,
-    #[serde(default = "default_high_complexity_keywords")]
-    pub high_complexity_keywords: BTreeSet<String>,
+    #[serde(default = "default_high_risk_keywords")]
+    pub high_risk_keywords: BTreeSet<String>,
 }
 
 impl Default for LaneArbiterPolicy {
     fn default() -> Self {
         Self {
-            safe_lane_routing_threshold: default_safe_lane_routing_threshold(),
+            safe_lane_risk_threshold: default_safe_lane_risk_threshold(),
             safe_lane_complexity_threshold: default_safe_lane_complexity_threshold(),
             fast_lane_max_input_chars: default_fast_lane_max_input_chars(),
-            high_complexity_keywords: default_high_complexity_keywords(),
+            high_risk_keywords: default_high_risk_keywords(),
         }
     }
 }
 
 impl LaneArbiterPolicy {
     pub fn decide(&self, user_input: &str) -> LaneDecision {
-        let routing_score = self.routing_score(user_input);
+        let risk_score = self.risk_score(user_input);
         let complexity_score = self.complexity_score(user_input);
         let mut reasons = Vec::new();
 
-        if routing_score >= self.safe_lane_routing_threshold {
+        if risk_score >= self.safe_lane_risk_threshold {
             reasons.push(format!(
-                "routing_score_exceeded score={routing_score} threshold={}",
-                self.safe_lane_routing_threshold
+                "risk_score_exceeded score={risk_score} threshold={}",
+                self.safe_lane_risk_threshold
             ));
         }
         if complexity_score >= self.safe_lane_complexity_threshold {
@@ -74,15 +74,15 @@ impl LaneArbiterPolicy {
 
         LaneDecision {
             lane,
-            routing_score,
+            risk_score,
             complexity_score,
             reasons,
         }
     }
 
-    fn routing_score(&self, user_input: &str) -> u32 {
+    fn risk_score(&self, user_input: &str) -> u32 {
         let normalized = user_input.to_ascii_lowercase();
-        self.high_complexity_keywords
+        self.high_risk_keywords
             .iter()
             .filter(|keyword| keyword_matches_risk_signal(normalized.as_str(), keyword))
             .count()
@@ -123,7 +123,7 @@ impl LaneArbiterPolicy {
     }
 }
 
-const fn default_safe_lane_routing_threshold() -> u32 {
+const fn default_safe_lane_risk_threshold() -> u32 {
     4
 }
 
@@ -135,7 +135,7 @@ const fn default_fast_lane_max_input_chars() -> usize {
     400
 }
 
-fn default_high_complexity_keywords() -> BTreeSet<String> {
+fn default_high_risk_keywords() -> BTreeSet<String> {
     [
         "drop table",
         "delete",
@@ -193,7 +193,7 @@ mod tests {
     }
 
     #[test]
-    fn high_complexity_keywords_route_to_safe_lane() {
+    fn high_risk_keywords_route_to_safe_lane() {
         let policy = LaneArbiterPolicy::default();
         let decision = policy.decide("connect to production and deploy the update");
         assert_eq!(decision.lane, ExecutionLane::Safe);
@@ -201,7 +201,7 @@ mod tests {
             decision
                 .reasons
                 .iter()
-                .any(|reason| reason.contains("routing_score_exceeded")),
+                .any(|reason| reason.contains("risk_score_exceeded")),
             "expected routing reason, got: {:?}",
             decision.reasons
         );
@@ -229,7 +229,7 @@ mod tests {
     fn short_keyword_match_avoids_product_false_positive() {
         let policy = LaneArbiterPolicy::default();
         let decision = policy.decide("review product launch notes and summarize user feedback");
-        assert_eq!(decision.routing_score, 0);
+        assert_eq!(decision.risk_score, 0);
         assert_eq!(decision.lane, ExecutionLane::Fast);
     }
 
@@ -237,7 +237,7 @@ mod tests {
     fn short_keyword_match_preserves_prod_signal_with_boundaries() {
         let policy = LaneArbiterPolicy::default();
         let decision = policy.decide("deploy the patch to prod after smoke tests");
-        assert_eq!(decision.routing_score, 4);
+        assert_eq!(decision.risk_score, 4);
         assert_eq!(decision.lane, ExecutionLane::Safe);
     }
 }
