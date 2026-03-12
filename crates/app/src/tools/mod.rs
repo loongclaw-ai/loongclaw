@@ -10,6 +10,7 @@ mod file;
 mod kernel_adapter;
 pub mod runtime_config;
 mod shell;
+mod web_fetch;
 
 pub use kernel_adapter::MvpToolAdapter;
 
@@ -46,15 +47,24 @@ pub fn canonical_tool_name(raw: &str) -> &str {
         "file_read" => "file.read",
         "file_write" => "file.write",
         "shell_exec" | "shell" => "shell.exec",
+        "web_fetch" => "web.fetch",
         other => other,
     }
 }
 
 pub fn is_known_tool_name(raw: &str) -> bool {
-    matches!(
-        canonical_tool_name(raw),
+    let canonical = canonical_tool_name(raw);
+    if matches!(
+        canonical,
         "claw.import" | "shell.exec" | "file.read" | "file.write"
-    )
+    ) {
+        return true;
+    }
+    #[cfg(feature = "tool-webfetch")]
+    if canonical == "web.fetch" {
+        return true;
+    }
+    false
 }
 
 pub fn execute_tool_core_with_config(
@@ -71,6 +81,7 @@ pub fn execute_tool_core_with_config(
         "shell.exec" => shell::execute_shell_tool_with_config(request, config),
         "file.read" => file::execute_file_read_tool_with_config(request, config),
         "file.write" => file::execute_file_write_tool_with_config(request, config),
+        "web.fetch" => web_fetch::execute_web_fetch_tool_with_config(request, config),
         _ => Err(format!(
             "tool_not_found: unknown tool `{}`",
             request.tool_name
@@ -108,6 +119,13 @@ pub fn tool_registry() -> Vec<ToolRegistryEntry> {
         entries.push(ToolRegistryEntry {
             name: "shell.exec",
             description: "Execute shell commands",
+        });
+    }
+    #[cfg(feature = "tool-webfetch")]
+    {
+        entries.push(ToolRegistryEntry {
+            name: "web.fetch",
+            description: "Fetch web content with SSRF protection and extraction",
         });
     }
     entries.sort_by_key(|entry| entry.name);
@@ -254,6 +272,51 @@ pub fn provider_tool_definitions() -> Vec<Value> {
         }));
     }
 
+    #[cfg(feature = "tool-webfetch")]
+    {
+        tools.push(json!({
+            "type": "function",
+            "function": {
+                "name": "web_fetch",
+                "description": "Fetch a web page over HTTP/HTTPS with SSRF checks and return extracted text/markdown.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "URL to fetch. Only http/https allowed."
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["auto", "markdown", "text", "raw"],
+                            "description": "Output mode. auto defaults to markdown for HTML."
+                        },
+                        "max_bytes": {
+                            "type": "integer",
+                            "minimum": 1024,
+                            "maximum": 8388608,
+                            "description": "Maximum response bytes to read."
+                        },
+                        "max_redirects": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 20,
+                            "description": "Maximum redirects to follow."
+                        },
+                        "timeout_seconds": {
+                            "type": "integer",
+                            "minimum": 5,
+                            "maximum": 120,
+                            "description": "Request timeout in seconds."
+                        }
+                    },
+                    "required": ["url"],
+                    "additionalProperties": false
+                }
+            }
+        }));
+    }
+
     tools.sort_by(|left, right| tool_function_name(left).cmp(tool_function_name(right)));
     tools
 }
@@ -298,6 +361,20 @@ fn _shape_examples() -> BTreeMap<&'static str, Value> {
                 "create_dirs": true
             }),
         ),
+        (
+            "web.fetch",
+            json!({
+                "url": "https://example.com",
+                "mode": "auto"
+            }),
+        ),
+        (
+            "web.fetch",
+            json!({
+                "url": "https://example.com",
+                "mode": "auto"
+            }),
+        ),
     ])
 }
 
@@ -315,7 +392,11 @@ mod tests {
         assert_eq!(snapshot, snapshot2);
     }
 
-    #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
+    #[cfg(all(
+        feature = "tool-file",
+        feature = "tool-shell",
+        feature = "tool-webfetch"
+    ))]
     #[test]
     fn capability_snapshot_lists_all_tools_when_all_features_enabled() {
         let snapshot = capability_snapshot();
@@ -327,33 +408,46 @@ mod tests {
         assert!(snapshot.contains("- file.read: Read file contents"));
         assert!(snapshot.contains("- file.write: Write file contents"));
         assert!(snapshot.contains("- shell.exec: Execute shell commands"));
+        assert!(
+            snapshot.contains("- web.fetch: Fetch web content with SSRF protection and extraction")
+        );
 
-        // Verify sorted order: claw.import < file.read < file.write < shell.exec
+        // Verify sorted order: claw.import < file.read < file.write < shell.exec < web.fetch
         let lines: Vec<&str> = snapshot.lines().skip(1).collect();
-        assert_eq!(lines.len(), 4);
+        assert_eq!(lines.len(), 5);
         assert!(lines[0].starts_with("- claw.import"));
         assert!(lines[1].starts_with("- file.read"));
         assert!(lines[2].starts_with("- file.write"));
         assert!(lines[3].starts_with("- shell.exec"));
+        assert!(lines[4].starts_with("- web.fetch"));
     }
 
-    #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
+    #[cfg(all(
+        feature = "tool-file",
+        feature = "tool-shell",
+        feature = "tool-webfetch"
+    ))]
     #[test]
     fn tool_registry_returns_all_known_tools() {
         let entries = tool_registry();
-        assert_eq!(entries.len(), 4);
+        assert_eq!(entries.len(), 5);
         let names: Vec<&str> = entries.iter().map(|e| e.name).collect();
         assert!(names.contains(&"claw.import"));
         assert!(names.contains(&"shell.exec"));
         assert!(names.contains(&"file.read"));
         assert!(names.contains(&"file.write"));
+        assert!(names.contains(&"web.fetch"));
     }
 
-    #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
+    #[cfg(all(
+        feature = "tool-file",
+        feature = "tool-shell",
+        feature = "tool-webfetch"
+    ))]
     #[test]
     fn provider_tool_definitions_are_stable_and_complete() {
         let defs = provider_tool_definitions();
-        assert_eq!(defs.len(), 4);
+        assert_eq!(defs.len(), 5);
 
         let names: Vec<&str> = defs
             .iter()
@@ -363,7 +457,13 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            vec!["claw_import", "file_read", "file_write", "shell_exec"]
+            vec![
+                "claw_import",
+                "file_read",
+                "file_write",
+                "shell_exec",
+                "web_fetch"
+            ]
         );
 
         for item in &defs {
@@ -379,6 +479,7 @@ mod tests {
         assert_eq!(canonical_tool_name("file_write"), "file.write");
         assert_eq!(canonical_tool_name("shell_exec"), "shell.exec");
         assert_eq!(canonical_tool_name("shell"), "shell.exec");
+        assert_eq!(canonical_tool_name("web_fetch"), "web.fetch");
         assert_eq!(canonical_tool_name("file.read"), "file.read");
     }
 
@@ -393,6 +494,11 @@ mod tests {
         assert!(is_known_tool_name("shell.exec"));
         assert!(is_known_tool_name("shell_exec"));
         assert!(is_known_tool_name("shell"));
+        #[cfg(feature = "tool-webfetch")]
+        {
+            assert!(is_known_tool_name("web.fetch"));
+            assert!(is_known_tool_name("web_fetch"));
+        }
         assert!(!is_known_tool_name("nonexistent.tool"));
     }
 
@@ -449,6 +555,7 @@ mod tests {
         let config = runtime_config::ToolRuntimeConfig {
             shell_allowlist: BTreeSet::new(),
             file_root: Some(root.clone()),
+            ..runtime_config::ToolRuntimeConfig::default()
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -533,6 +640,7 @@ mod tests {
         let config = runtime_config::ToolRuntimeConfig {
             shell_allowlist: BTreeSet::new(),
             file_root: Some(root.clone()),
+            ..runtime_config::ToolRuntimeConfig::default()
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -613,6 +721,7 @@ mod tests {
         let config = runtime_config::ToolRuntimeConfig {
             shell_allowlist: BTreeSet::new(),
             file_root: Some(root.clone()),
+            ..runtime_config::ToolRuntimeConfig::default()
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -684,6 +793,7 @@ mod tests {
         let config = runtime_config::ToolRuntimeConfig {
             shell_allowlist: BTreeSet::new(),
             file_root: Some(root.clone()),
+            ..runtime_config::ToolRuntimeConfig::default()
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -756,6 +866,7 @@ mod tests {
         let config = runtime_config::ToolRuntimeConfig {
             shell_allowlist: BTreeSet::new(),
             file_root: Some(root.clone()),
+            ..runtime_config::ToolRuntimeConfig::default()
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -833,6 +944,7 @@ mod tests {
         let config = runtime_config::ToolRuntimeConfig {
             shell_allowlist: BTreeSet::new(),
             file_root: Some(root.clone()),
+            ..runtime_config::ToolRuntimeConfig::default()
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -918,6 +1030,7 @@ mod tests {
         let config = runtime_config::ToolRuntimeConfig {
             shell_allowlist: BTreeSet::new(),
             file_root: Some(root.clone()),
+            ..runtime_config::ToolRuntimeConfig::default()
         };
         execute_tool_core_with_config(
             ToolCoreRequest {

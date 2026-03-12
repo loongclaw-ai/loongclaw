@@ -409,6 +409,7 @@ fn export_runtime_env(config: &LoongClawConfig) {
             .map(|s| s.to_ascii_lowercase())
             .collect(),
         file_root: Some(config.tools.resolved_file_root()),
+        ..crate::tools::runtime_config::ToolRuntimeConfig::default()
     };
     let _ = crate::tools::runtime_config::init_tool_runtime_config(tool_rt);
 

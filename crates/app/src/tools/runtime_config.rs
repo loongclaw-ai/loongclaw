@@ -6,10 +6,25 @@ use std::sync::OnceLock;
 ///
 /// Replaces per-call `std::env::var` lookups with a single read from a
 /// process-wide singleton that is populated once at startup.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ToolRuntimeConfig {
     pub shell_allowlist: BTreeSet<String>,
     pub file_root: Option<PathBuf>,
+    pub web_fetch_max_bytes: usize,
+    pub web_fetch_max_redirects: u8,
+    pub web_fetch_timeout_secs: u64,
+}
+
+impl Default for ToolRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            shell_allowlist: BTreeSet::new(),
+            file_root: None,
+            web_fetch_max_bytes: 1_048_576,
+            web_fetch_max_redirects: 10,
+            web_fetch_timeout_secs: 30,
+        }
+    }
 }
 
 impl ToolRuntimeConfig {
@@ -29,9 +44,25 @@ impl ToolRuntimeConfig {
 
         let file_root = std::env::var("LOONGCLAW_FILE_ROOT").ok().map(PathBuf::from);
 
+        let web_fetch_max_bytes = std::env::var("LOONGCLAW_WEB_FETCH_MAX_BYTES")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(1_048_576);
+        let web_fetch_max_redirects = std::env::var("LOONGCLAW_WEB_FETCH_MAX_REDIRECTS")
+            .ok()
+            .and_then(|v| v.parse::<u8>().ok())
+            .unwrap_or(10);
+        let web_fetch_timeout_secs = std::env::var("LOONGCLAW_WEB_FETCH_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(30);
+
         Self {
             shell_allowlist,
             file_root,
+            web_fetch_max_bytes,
+            web_fetch_max_redirects,
+            web_fetch_timeout_secs,
         }
     }
 }
@@ -66,6 +97,9 @@ mod tests {
         let config = ToolRuntimeConfig::default();
         assert!(config.shell_allowlist.is_empty());
         assert!(config.file_root.is_none());
+        assert_eq!(config.web_fetch_max_bytes, 1_048_576);
+        assert_eq!(config.web_fetch_max_redirects, 10);
+        assert_eq!(config.web_fetch_timeout_secs, 30);
     }
 
     #[test]
@@ -75,6 +109,7 @@ mod tests {
         let config = ToolRuntimeConfig {
             shell_allowlist: BTreeSet::from(["git".to_owned(), "cargo".to_owned()]),
             file_root: Some(PathBuf::from("/tmp/test-root")),
+            ..ToolRuntimeConfig::default()
         };
         assert!(config.shell_allowlist.contains("git"));
         assert!(config.shell_allowlist.contains("cargo"));
@@ -98,6 +133,7 @@ mod tests {
         let config = ToolRuntimeConfig {
             shell_allowlist: BTreeSet::from(["echo".to_owned()]),
             file_root: Some(PathBuf::from("/tmp/injected-root")),
+            ..ToolRuntimeConfig::default()
         };
         let result = crate::tools::execute_tool_core_with_config(
             loongclaw_contracts::ToolCoreRequest {
