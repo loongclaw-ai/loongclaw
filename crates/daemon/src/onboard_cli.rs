@@ -171,7 +171,7 @@ pub(crate) async fn run_onboard_cli(options: OnboardCommandOptions) -> CliResult
         }
         if has_failures {
             return Err(
-                "onboard preflight failed. rerun with --skip-model-probe if your provider blocks model listing during setup"
+                "onboard preflight failed. rerun with --skip-model-probe if your provider blocks model listing during onboarding"
                     .to_owned(),
             );
         }
@@ -294,6 +294,8 @@ fn maybe_apply_onboard_import(
         discovery: discovery.report,
         output_path: output_path.to_path_buf(),
         mode: selection,
+        apply_external_skills_plan: false,
+        external_skills_input_path: None,
     })?;
 
     println!("imported legacy claw profile");

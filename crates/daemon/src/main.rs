@@ -5,6 +5,8 @@ use std::{collections::BTreeSet, fs, path::Path, sync::Arc};
 
 #[cfg(test)]
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+#[cfg(test)]
+use clap::CommandFactory;
 use clap::{Parser, Subcommand, ValueEnum};
 #[cfg(test)]
 use kernel::{AuditEventKind, ExecutionRoute, HarnessKind, PluginBridgeKind, VerticalPackManifest};
@@ -138,13 +140,6 @@ enum Commands {
         #[arg(long, default_value_t = 1.5)]
         min_speedup_ratio: f64,
     },
-    /// Generate a beginner-friendly TOML config and bootstrap local state
-    Setup {
-        #[arg(long)]
-        output: Option<String>,
-        #[arg(long, default_value_t = false)]
-        force: bool,
-    },
     /// Validate config semantics and report structured diagnostics
     ValidateConfig {
         #[arg(long)]
@@ -158,7 +153,7 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         fail_on_diagnostics: bool,
     },
-    /// Guided onboarding for fast first-chat setup with preflight diagnostics
+    /// Guided onboarding for a fast first chat with preflight diagnostics
     Onboard {
         #[arg(long)]
         output: Option<String>,
@@ -186,15 +181,27 @@ enum Commands {
     /// Import prompt/identity traits from another claw workspace into LoongClaw config
     ImportClaw {
         #[arg(long)]
-        input: String,
+        input: Option<String>,
         #[arg(long)]
         output: Option<String>,
         #[arg(long)]
         source: Option<String>,
+        #[arg(long, value_enum, default_value = "plan")]
+        mode: import_claw_cli::ImportClawMode,
+        #[arg(long, default_value_t = false)]
+        json: bool,
+        #[arg(long, visible_alias = "selection-id")]
+        source_id: Option<String>,
+        #[arg(long, default_value_t = false)]
+        safe_profile_merge: bool,
+        #[arg(long, visible_alias = "primary-selection-id")]
+        primary_source_id: Option<String>,
+        #[arg(long, default_value_t = false)]
+        apply_external_skills_plan: bool,
         #[arg(long, default_value_t = false)]
         force: bool,
     },
-    /// Run setup diagnostics and optionally apply safe config/path fixes
+    /// Run configuration diagnostics and optionally apply safe config/path fixes
     Doctor {
         #[arg(long)]
         config: Option<String>,
@@ -337,7 +344,6 @@ async fn main() {
             enforce_gate,
             min_speedup_ratio,
         ),
-        Commands::Setup { output, force } => run_setup_cli(output.as_deref(), force),
         Commands::ValidateConfig {
             config,
             json,
@@ -383,11 +389,23 @@ async fn main() {
             input,
             output,
             source,
+            mode,
+            json,
+            source_id,
+            safe_profile_merge,
+            primary_source_id,
+            apply_external_skills_plan,
             force,
         } => import_claw_cli::run_import_claw_cli(import_claw_cli::ImportClawCommandOptions {
             input,
             output,
             source,
+            mode,
+            json,
+            source_id,
+            safe_profile_merge,
+            primary_source_id,
+            apply_external_skills_plan,
             force,
         }),
         Commands::Doctor {
@@ -627,35 +645,6 @@ async fn run_spec_cli(spec_path: &str, print_audit: bool) -> CliResult<()> {
     let pretty = serde_json::to_string_pretty(&report)
         .map_err(|error| format!("serialize spec run report failed: {error}"))?;
     println!("{pretty}");
-    Ok(())
-}
-
-fn run_setup_cli(output: Option<&str>, force: bool) -> CliResult<()> {
-    let path = mvp::config::write_template(output, force)?;
-    #[cfg(feature = "memory-sqlite")]
-    {
-        let path_str = path
-            .to_str()
-            .ok_or_else(|| format!("config path is not valid UTF-8: {}", path.display()))?;
-        let (_, parsed) = mvp::config::load(Some(path_str))?;
-        let mem_config =
-            mvp::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&parsed.memory);
-        let memory_db = mvp::memory::ensure_memory_db_ready(
-            Some(parsed.memory.resolved_sqlite_path()),
-            &mem_config,
-        )
-        .map_err(|error| format!("failed to bootstrap sqlite memory: {error}"))?;
-        println!(
-            "setup complete\n- config: {}\n- sqlite memory: {}",
-            path.display(),
-            memory_db.display()
-        );
-    }
-    #[cfg(not(feature = "memory-sqlite"))]
-    {
-        println!("setup complete\n- config: {}", path.display());
-    }
-    println!("next step: loongclaw chat --config {}", path.display());
     Ok(())
 }
 
@@ -1067,6 +1056,30 @@ fn write_json_file<T: Serialize>(path: &str, value: &T) -> CliResult<()> {
 #[cfg(test)]
 mod cli_tests {
     use super::*;
+
+    #[test]
+    fn root_help_uses_onboarding_language() {
+        let mut command = Cli::command();
+        let mut rendered = Vec::new();
+        command
+            .write_long_help(&mut rendered)
+            .expect("render root help");
+        let help = String::from_utf8(rendered).expect("help is valid utf-8");
+
+        assert!(help.contains("onboarding"));
+        assert!(!help.contains("setup"));
+    }
+
+    #[test]
+    fn setup_subcommand_is_removed() {
+        let error = Cli::try_parse_from(["loongclaw", "setup"])
+            .expect_err("`setup` should no longer parse as a valid subcommand");
+        assert!(
+            error
+                .to_string()
+                .contains("unrecognized subcommand 'setup'")
+        );
+    }
 
     #[test]
     fn safe_lane_summary_cli_rejects_zero_limit() {

@@ -72,7 +72,7 @@ LoongClaw 是一个基于Rust构建的 Agentic OS 内核，专注于稳定且轻
 <summary>Linux / macOS</summary>
 
 ```bash
-./scripts/install.sh --setup
+./scripts/install.sh --onboard
 ```
 </details>
 
@@ -80,7 +80,7 @@ LoongClaw 是一个基于Rust构建的 Agentic OS 内核，专注于稳定且轻
 <summary>Windows (PowerShell)</summary>
 
 ```powershell
-pwsh ./scripts/install.ps1 -Setup
+pwsh ./scripts/install.ps1 -Onboard
 ```
 </details>
 
@@ -94,10 +94,10 @@ cargo install --path crates/daemon
 
 ### 5 分钟内开始首次对话
 
-1. 生成配置并引导本地状态：
+1. 运行引导式首次配置：
 
    ```bash
-   loongclaw setup
+   loongclaw onboard
    ```
 
 2. 设置 provider API 密钥：
@@ -120,6 +120,72 @@ cargo install --path crates/daemon
 cargo test --workspace --all-features
 ```
 
+## 迁移与导入
+
+LoongClaw 支持从旧 claw 工作区进行发现、规划、应用与回滚：
+
+- 不传 `--mode` 时默认使用 `plan`（仅预览，不落盘）。
+- `apply_selected` 同时兼容 `--source-id` 与别名 `--selection-id`。
+- 安全合并同样兼容 `--primary-source-id` 与别名 `--primary-selection-id`。
+- `map_external_skills` 可生成可审计、可复现的外部 skills 映射计划。
+- `apply_selected` 配合 `--apply-external-skills-plan` 可把映射结果附加到 `profile_note`。
+- 应用 external-skills 计划时，会额外写入 `.loongclaw-migration/<config>.external-skills.json` 便于审计与回放。
+
+```bash
+# 扫描并评分导入候选源
+loongclaw import-claw --mode discover --input ~/legacy-claws
+
+# 规划所有候选并给出推荐主源
+loongclaw import-claw --mode plan_many --input ~/legacy-claws
+
+# 预览外部 skills 映射工件与生成的 profile addendum
+loongclaw import-claw --mode map_external_skills --input ~/legacy-claws
+
+# 选择单一来源应用到目标配置
+loongclaw import-claw --mode apply_selected --input ~/legacy-claws \
+  --source-id openclaw --output ~/.loongclaw/config.toml --force
+
+# 选择来源并附加外部 skills 映射结果
+loongclaw import-claw --mode apply_selected --input ~/legacy-claws \
+  --source-id openclaw --output ~/.loongclaw/config.toml \
+  --apply-external-skills-plan --force
+
+# 回滚最近一次 apply/import
+loongclaw import-claw --mode rollback_last_apply --output ~/.loongclaw/config.toml
+```
+
+## External Skills 运行时安全护栏
+
+external skills 运行时采用默认安全关闭策略，必须显式开启：
+
+- `external_skills.enabled = false`（默认禁用下载/挂载）。
+- `external_skills.require_download_approval = true`（默认每次下载都需授权）。
+- 域名黑名单优先级最高，命中即拒绝。
+- 当 `allowed_domains` 非空时，仅允许白名单域名下载。
+- `external_skills.fetch` 默认拒绝 HTTP 重定向，避免静默跨域跳转。
+
+推荐配置基线：
+
+```toml
+[external_skills]
+enabled = true
+require_download_approval = true
+allowed_domains = ["skills.sh", "clawhub.io"]
+blocked_domains = ["*.evil.example"]
+```
+
+面向 agent 的工具：
+
+- `external_skills_policy`
+  - `action=get`：读取当前生效策略。
+  - `action=set`：在运行时更新开关、授权门禁、域名白/黑名单（必须带 `policy_update_approved=true`）。
+  - `action=reset`：清除运行时覆盖，回到配置文件默认值（必须带 `policy_update_approved=true`）。
+- `external_skills_fetch`
+  - 必填 `url`。
+  - 当授权门禁开启时必须传 `approval_granted=true`。
+  - 下载文件落在 `<tools.file_root>/external-skills-downloads/`。
+  - 下载前强制执行白/黑名单校验。
+
 ## 核心功能
 
 **内核与安全**
@@ -139,11 +205,10 @@ cargo test --workspace --all-features
 - 自动发现 provider 和已扫描插件中的可用工具
 
 **MVP 产品层**
-- `setup` -- 生成 TOML 配置并引导 SQLite 内存
 - `onboard` -- 引导式首次运行，带预检诊断
 - `doctor` -- 诊断工具，可选安全修复 (`--fix`) 和机器可读输出 (`--json`)
 - `chat` -- 交互式 CLI，滑动窗口对话记忆
-- 核心工具：`shell.exec`、`file.read`、`file.write`
+- 核心工具：`shell.exec`、`file.read`、`file.write`、`external_skills.policy`、`external_skills.fetch`
 - Provider：OpenAI 兼容、火山引擎自定义端点
 - 通道：CLI、Telegram 轮询、飞书加密 webhook
 
@@ -236,7 +301,7 @@ cargo build -p loongclaw-daemon --no-default-features --features "channel-cli,pr
 
 ## 配置
 
-`loongclaw setup` 默认通过 `provider.api_key` 引用 provider 凭据，这样密钥不会直接落在配置文件里：
+`loongclaw onboard` 默认通过 `provider.api_key` 引用 provider 凭据，这样密钥不会直接落在配置文件里：
 
 ```toml
 [provider]

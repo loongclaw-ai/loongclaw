@@ -1,7 +1,11 @@
 mod merge;
 mod orchestrator;
 
-use std::{collections::BTreeSet, fs, path::Path};
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use crate::{
     CliResult,
@@ -64,6 +68,86 @@ pub struct ImportPlan {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternalSkillArtifactKind {
+    SkillsCatalog,
+    SkillsLock,
+    CodexSkillsDir,
+    ClaudeSkillsDir,
+    SkillsDir,
+}
+
+impl ExternalSkillArtifactKind {
+    pub fn as_id(self) -> &'static str {
+        match self {
+            Self::SkillsCatalog => "skills_catalog",
+            Self::SkillsLock => "skills_lock",
+            Self::CodexSkillsDir => "codex_skills_dir",
+            Self::ClaudeSkillsDir => "claude_skills_dir",
+            Self::SkillsDir => "skills_dir",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalSkillArtifact {
+    pub kind: ExternalSkillArtifactKind,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ExternalSkillMappingPlan {
+    pub input_path: PathBuf,
+    pub artifacts: Vec<ExternalSkillArtifact>,
+    pub declared_skills: Vec<String>,
+    pub locked_skills: Vec<String>,
+    pub resolved_skills: Vec<String>,
+    pub profile_note_addendum: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+pub fn plan_external_skill_mapping(input_path: &Path) -> ExternalSkillMappingPlan {
+    let artifacts = detect_external_skill_artifacts(input_path);
+    let mut warnings = artifacts
+        .iter()
+        .map(external_skill_warning)
+        .collect::<Vec<_>>();
+    let declared_skills = collect_declared_skills(&artifacts, &mut warnings);
+    let locked_skills = collect_locked_skills(&artifacts, &mut warnings);
+    let resolved_skills = merge_resolved_skills(&declared_skills, &locked_skills);
+    ExternalSkillMappingPlan {
+        input_path: input_path.to_path_buf(),
+        profile_note_addendum: render_external_skill_profile_note_addendum(
+            &artifacts,
+            &declared_skills,
+            &locked_skills,
+            &resolved_skills,
+        ),
+        artifacts,
+        declared_skills,
+        locked_skills,
+        resolved_skills,
+        warnings,
+    }
+}
+
+pub fn apply_external_skill_mapping(
+    config: &mut LoongClawConfig,
+    plan: &ExternalSkillMappingPlan,
+) -> usize {
+    let Some(addendum) = plan.profile_note_addendum.as_deref() else {
+        return 0;
+    };
+    let Some(merged) = merge_profile_note_addendum(config.memory.profile_note.as_deref(), addendum)
+    else {
+        return 0;
+    };
+
+    config.memory.profile = MemoryProfile::ProfilePlusWindow;
+    config.memory.profile_note = Some(merged);
+    trimmed_bullet_line_count(addendum)
+}
+
 pub fn plan_import_from_path(
     input_path: &Path,
     hint: Option<LegacyClawSource>,
@@ -112,6 +196,10 @@ pub fn plan_import_from_path(
         }
     }
 
+    for warning in build_external_skill_warnings(input_path) {
+        warnings.push(warning);
+    }
+
     if prompt_blocks.is_empty()
         && profile_blocks.is_empty()
         && warnings.is_empty()
@@ -152,8 +240,9 @@ pub(crate) fn inspect_import_path(
     input_path: &Path,
     hint: Option<LegacyClawSource>,
 ) -> CliResult<Option<ImportPathInspection>> {
+    let external_skill_artifacts = detect_external_skill_artifacts(input_path);
     let files = collect_import_files(input_path)?;
-    if files.is_empty() {
+    if files.is_empty() && external_skill_artifacts.is_empty() {
         return Ok(None);
     }
 
@@ -162,6 +251,17 @@ pub(crate) fn inspect_import_path(
     let mut custom_prompt_files = 0usize;
     let mut custom_profile_files = 0usize;
     let mut warning_count = 0usize;
+
+    if !external_skill_artifacts.is_empty() {
+        found_files.extend(external_skill_artifacts.iter().map(|artifact| {
+            format!(
+                "external_skill:{}:{}",
+                artifact.kind.as_id(),
+                artifact.path.display()
+            )
+        }));
+        warning_count = warning_count.saturating_add(external_skill_artifacts.len());
+    }
 
     for file in files {
         found_files.push(file.label.clone());
@@ -467,6 +567,372 @@ fn heartbeat_has_active_tasks(content: &str) -> bool {
         .any(|line| line.starts_with("- ") && line.len() > 2)
 }
 
+fn build_external_skill_warnings(input_path: &Path) -> Vec<String> {
+    plan_external_skill_mapping(input_path).warnings
+}
+
+fn detect_external_skill_artifacts(input_path: &Path) -> Vec<ExternalSkillArtifact> {
+    let mut artifacts = Vec::new();
+    let mut seen = BTreeSet::new();
+    for root in external_skill_probe_roots(input_path) {
+        for (relative, kind) in [
+            ("SKILLS.md", ExternalSkillArtifactKind::SkillsCatalog),
+            ("skills-lock.json", ExternalSkillArtifactKind::SkillsLock),
+            (".codex/skills", ExternalSkillArtifactKind::CodexSkillsDir),
+            (".claude/skills", ExternalSkillArtifactKind::ClaudeSkillsDir),
+            ("skills", ExternalSkillArtifactKind::SkillsDir),
+        ] {
+            let path = root.join(relative);
+            if path.is_file() || path.is_dir() {
+                let canonical = path.canonicalize().unwrap_or(path);
+                let key = canonical.display().to_string();
+                if seen.insert(key) {
+                    artifacts.push(ExternalSkillArtifact {
+                        kind,
+                        path: canonical,
+                    });
+                }
+            }
+        }
+    }
+    artifacts.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then_with(|| left.kind.as_id().cmp(right.kind.as_id()))
+    });
+    artifacts
+}
+
+fn external_skill_probe_roots(input_path: &Path) -> Vec<PathBuf> {
+    let mut roots = BTreeSet::new();
+    if input_path.is_file() {
+        if let Some(parent) = input_path.parent() {
+            roots.insert(parent.to_path_buf());
+        }
+    } else {
+        roots.insert(input_path.to_path_buf());
+        let workspace_root = input_path.join("workspace");
+        if workspace_root.is_dir() {
+            roots.insert(workspace_root);
+        }
+    }
+    roots.into_iter().collect()
+}
+
+fn external_skill_warning(artifact: &ExternalSkillArtifact) -> String {
+    format!(
+        "detected external skills artifact `{}` ({}); LoongClaw imports prompt/profile content but does not auto-wire external skill runtimes",
+        artifact.path.display(),
+        artifact.kind.as_id()
+    )
+}
+
+fn collect_declared_skills(
+    artifacts: &[ExternalSkillArtifact],
+    warnings: &mut Vec<String>,
+) -> Vec<String> {
+    let mut collected = BTreeSet::new();
+    for artifact in artifacts {
+        match artifact.kind {
+            ExternalSkillArtifactKind::SkillsCatalog => {
+                let content = match fs::read_to_string(&artifact.path) {
+                    Ok(content) => content,
+                    Err(error) => {
+                        warnings.push(format!(
+                            "failed to read declared skills catalog {}: {error}",
+                            artifact.path.display()
+                        ));
+                        continue;
+                    }
+                };
+                for skill in parse_skills_markdown_entries(&content) {
+                    collected.insert(skill);
+                }
+            }
+            ExternalSkillArtifactKind::CodexSkillsDir
+            | ExternalSkillArtifactKind::ClaudeSkillsDir
+            | ExternalSkillArtifactKind::SkillsDir => {
+                for skill in list_directory_skill_entries(&artifact.path, warnings) {
+                    collected.insert(skill);
+                }
+            }
+            ExternalSkillArtifactKind::SkillsLock => {}
+        }
+    }
+    collected.into_iter().collect()
+}
+
+fn collect_locked_skills(
+    artifacts: &[ExternalSkillArtifact],
+    warnings: &mut Vec<String>,
+) -> Vec<String> {
+    let mut collected = BTreeSet::new();
+    for artifact in artifacts {
+        if artifact.kind != ExternalSkillArtifactKind::SkillsLock {
+            continue;
+        }
+
+        let content = match fs::read_to_string(&artifact.path) {
+            Ok(content) => content,
+            Err(error) => {
+                warnings.push(format!(
+                    "failed to read skills lock {}: {error}",
+                    artifact.path.display()
+                ));
+                continue;
+            }
+        };
+        let value = match serde_json::from_str::<Value>(&content) {
+            Ok(value) => value,
+            Err(error) => {
+                warnings.push(format!(
+                    "failed to parse skills lock {}: {error}",
+                    artifact.path.display()
+                ));
+                continue;
+            }
+        };
+        for skill in parse_skills_lock_entries(&value) {
+            collected.insert(skill);
+        }
+    }
+    collected.into_iter().collect()
+}
+
+fn merge_resolved_skills(declared: &[String], locked: &[String]) -> Vec<String> {
+    let mut resolved = BTreeSet::new();
+    for skill in declared.iter().chain(locked.iter()) {
+        resolved.insert(skill.clone());
+    }
+    resolved.into_iter().collect()
+}
+
+fn parse_skills_markdown_entries(content: &str) -> Vec<String> {
+    let mut skills = BTreeSet::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        let candidate = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+            .map(str::trim);
+        let Some(raw_entry) = candidate else {
+            continue;
+        };
+        if let Some(skill) = normalize_skill_reference(raw_entry) {
+            skills.insert(skill);
+        }
+    }
+    skills.into_iter().collect()
+}
+
+fn list_directory_skill_entries(path: &Path, warnings: &mut Vec<String>) -> Vec<String> {
+    if !path.is_dir() {
+        return Vec::new();
+    }
+    let entries = match fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) => {
+            warnings.push(format!(
+                "failed to enumerate skills directory {}: {error}",
+                path.display()
+            ));
+            return Vec::new();
+        }
+    };
+
+    let mut skills = BTreeSet::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                warnings.push(format!(
+                    "failed to read skills directory entry under {}: {error}",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+        let entry_path = entry.path();
+        if !entry_path.is_dir() {
+            continue;
+        }
+        if let Some(skill) = entry_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(normalize_skill_reference)
+        {
+            skills.insert(skill);
+        }
+    }
+    skills.into_iter().collect()
+}
+
+fn parse_skills_lock_entries(value: &Value) -> Vec<String> {
+    let mut skills = BTreeSet::new();
+    extract_skill_refs_from_lock_value(value, &mut skills);
+    skills.into_iter().collect()
+}
+
+fn extract_skill_refs_from_lock_value(value: &Value, skills: &mut BTreeSet<String>) {
+    match value {
+        Value::Object(object) => {
+            for (key, nested) in object {
+                match key.as_str() {
+                    "skills" | "skill" | "skill_id" | "skillId" | "id" | "name" | "slug" => {
+                        collect_skill_refs_from_value(nested, skills);
+                    }
+                    _ => extract_skill_refs_from_lock_value(nested, skills),
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                extract_skill_refs_from_lock_value(item, skills);
+            }
+        }
+        Value::String(raw) => {
+            if let Some(skill) = normalize_skill_reference(raw) {
+                skills.insert(skill);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_skill_refs_from_value(value: &Value, skills: &mut BTreeSet<String>) {
+    match value {
+        Value::String(raw) => {
+            if let Some(skill) = normalize_skill_reference(raw) {
+                skills.insert(skill);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_skill_refs_from_value(item, skills);
+            }
+        }
+        Value::Object(object) => {
+            for nested in object.values() {
+                collect_skill_refs_from_value(nested, skills);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_skill_reference(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let unwrapped = trimmed.trim_matches('`').trim();
+    let mut candidate = if unwrapped.starts_with('[') {
+        unwrapped
+            .strip_prefix('[')
+            .and_then(|rest| rest.split_once(']'))
+            .map(|(label, _)| label)
+            .unwrap_or(unwrapped)
+    } else {
+        unwrapped
+    };
+
+    if let Some((head, _)) = candidate.split_once("](") {
+        candidate = head;
+    }
+    if let Some((head, _)) = candidate.split_once(char::is_whitespace) {
+        candidate = head;
+    }
+    let normalized = candidate
+        .trim_matches(|ch: char| matches!(ch, ',' | ';' | '.' | '"' | '\'' | ')' | '('))
+        .trim();
+    if normalized.is_empty() {
+        return None;
+    }
+    if normalized.starts_with('#') {
+        return None;
+    }
+    if normalized.len() > 120 {
+        return None;
+    }
+
+    let canonical = normalized.to_ascii_lowercase();
+    if canonical
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '/' | '.'))
+    {
+        return Some(canonical);
+    }
+    None
+}
+
+fn render_external_skill_profile_note_addendum(
+    artifacts: &[ExternalSkillArtifact],
+    declared_skills: &[String],
+    locked_skills: &[String],
+    resolved_skills: &[String],
+) -> Option<String> {
+    if artifacts.is_empty() {
+        return None;
+    }
+
+    let mut lines = vec!["## Imported External Skills Artifacts".to_owned()];
+    for artifact in artifacts {
+        lines.push(format!(
+            "- kind={} path={}",
+            artifact.kind.as_id(),
+            artifact.path.display()
+        ));
+    }
+    if !declared_skills.is_empty() {
+        lines.push("## Imported External Skills Declared".to_owned());
+        for skill in declared_skills {
+            lines.push(format!("- skill={skill} source=declared"));
+        }
+    }
+    if !locked_skills.is_empty() {
+        lines.push("## Imported External Skills Locked".to_owned());
+        for skill in locked_skills {
+            lines.push(format!("- skill={skill} source=lock"));
+        }
+    }
+    if !resolved_skills.is_empty() {
+        lines.push("## Imported External Skills Resolved".to_owned());
+        for skill in resolved_skills {
+            lines.push(format!("- skill={skill} source=resolved"));
+        }
+    }
+    Some(lines.join("\n"))
+}
+
+fn merge_profile_note_addendum(existing: Option<&str>, addendum: &str) -> Option<String> {
+    let trimmed_addendum = addendum.trim();
+    if trimmed_addendum.is_empty() {
+        return None;
+    }
+
+    match existing {
+        None => Some(trimmed_addendum.to_owned()),
+        Some(current) => {
+            if current.contains(trimmed_addendum) {
+                return None;
+            }
+            if current.trim().is_empty() {
+                return Some(trimmed_addendum.to_owned());
+            }
+            Some(format!("{}\n\n{trimmed_addendum}", current.trim_end()))
+        }
+    }
+}
+
+fn trimmed_bullet_line_count(content: &str) -> usize {
+    content
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("- "))
+        .count()
+}
+
 fn render_aieos_profile_note(content: &str) -> CliResult<Option<String>> {
     let value = serde_json::from_str::<Value>(content)
         .map_err(|error| format!("failed to parse imported identity.json: {error}"))?;
@@ -749,6 +1215,91 @@ mod tests {
         assert!(note.contains("Nova"));
         assert!(note.contains("LoongClaw Labs"));
         assert!(note.contains("privacy first"));
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn external_skill_artifacts_emit_warnings_in_import_plan() {
+        let root = unique_temp_dir("loongclaw-import-external-skill-warning");
+        fs::create_dir_all(&root).expect("create fixture root");
+        write_file(
+            &root,
+            "SOUL.md",
+            "# Soul\n\nPrefer concise shell output with clear reasoning.\n",
+        );
+        write_file(&root, "SKILLS.md", "# Skills\n\n- custom/skill-a\n");
+        fs::create_dir_all(root.join(".codex/skills")).expect("create skills dir");
+
+        let plan = plan_import_from_path(&root, Some(LegacyClawSource::Unknown))
+            .expect("plan should succeed");
+        assert!(
+            plan.warnings
+                .iter()
+                .any(|warning| warning.contains("external skills artifact")),
+            "expected at least one external skills warning"
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn plan_external_skill_mapping_builds_profile_note_addendum() {
+        let root = unique_temp_dir("loongclaw-import-external-skill-map");
+        fs::create_dir_all(&root).expect("create fixture root");
+        write_file(&root, "SKILLS.md", "# Skills\n\n- custom/skill-a\n");
+        fs::create_dir_all(root.join(".codex/skills")).expect("create codex skills dir");
+        write_file(
+            &root,
+            "skills-lock.json",
+            "{ \"version\": 1, \"skills\": [\"custom/skill-a\"] }\n",
+        );
+
+        let mapping = plan_external_skill_mapping(&root);
+        assert_eq!(mapping.input_path, root);
+        assert_eq!(mapping.artifacts.len(), 3);
+        assert_eq!(mapping.warnings.len(), 3);
+        assert_eq!(mapping.declared_skills, vec!["custom/skill-a".to_owned()]);
+        assert_eq!(mapping.locked_skills, vec!["custom/skill-a".to_owned()]);
+        assert_eq!(mapping.resolved_skills, vec!["custom/skill-a".to_owned()]);
+        let addendum = mapping
+            .profile_note_addendum
+            .as_deref()
+            .expect("profile note addendum should exist");
+        assert!(addendum.contains("Imported External Skills Artifacts"));
+        assert!(addendum.contains("kind=skills_catalog"));
+        assert!(addendum.contains("kind=skills_lock"));
+        assert!(addendum.contains("kind=codex_skills_dir"));
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn apply_external_skill_mapping_appends_profile_note_once() {
+        let root = unique_temp_dir("loongclaw-import-external-skill-apply");
+        fs::create_dir_all(&root).expect("create fixture root");
+        write_file(&root, "SKILLS.md", "# Skills\n\n- custom/skill-a\n");
+
+        let plan = plan_external_skill_mapping(&root);
+        let mut config = LoongClawConfig::default();
+        config.memory.profile_note = Some("## Imported IDENTITY.md\n- tone steady".to_owned());
+
+        let first_applied = apply_external_skill_mapping(&mut config, &plan);
+        assert_eq!(first_applied, 3);
+        let first_note = config
+            .memory
+            .profile_note
+            .clone()
+            .expect("profile note should exist");
+        assert!(first_note.contains("Imported External Skills Artifacts"));
+
+        let second_applied = apply_external_skill_mapping(&mut config, &plan);
+        assert_eq!(second_applied, 0, "duplicate addendum should not re-append");
+        assert_eq!(
+            config.memory.profile_note.as_deref(),
+            Some(first_note.as_str()),
+            "profile note should remain stable after duplicate apply"
+        );
 
         fs::remove_dir_all(&root).ok();
     }

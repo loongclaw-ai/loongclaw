@@ -13,7 +13,7 @@ use super::{
         default_loongclaw_home as shared_default_loongclaw_home, expand_path,
         format_config_validation_issues,
     },
-    tools_memory::{MemoryConfig, ToolConfig},
+    tools_memory::{ExternalSkillsConfig, MemoryConfig, ToolConfig},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -67,6 +67,8 @@ pub struct LoongClawConfig {
     #[serde(default)]
     pub tools: ToolConfig,
     #[serde(default)]
+    pub external_skills: ExternalSkillsConfig,
+    #[serde(default)]
     pub memory: MemoryConfig,
 }
 
@@ -107,7 +109,7 @@ pub fn load(path: Option<&str>) -> CliResult<(PathBuf, LoongClawConfig)> {
     let config_path = path.map(expand_path).unwrap_or_else(default_config_path);
     let raw = fs::read_to_string(&config_path).map_err(|error| {
         format!(
-            "failed to read config {}: {error}. run `loongclaw setup` first",
+            "failed to read config {}: {error}. run `loongclaw onboard` first",
             config_path.display()
         )
     })?;
@@ -135,7 +137,7 @@ pub fn validate_file_with_locale(
     let config_path = path.map(expand_path).unwrap_or_else(default_config_path);
     let raw = fs::read_to_string(&config_path).map_err(|error| {
         format!(
-            "failed to read config {}: {error}. run `loongclaw setup` first",
+            "failed to read config {}: {error}. run `loongclaw onboard` first",
             config_path.display()
         )
     })?;
@@ -343,6 +345,33 @@ bot_token_env = "123456789:telegram-inline-secret-literal"
 
     #[test]
     #[cfg(feature = "config-toml")]
+    fn write_template_includes_tool_result_payload_summary_limit_default() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        let temp_dir =
+            std::env::temp_dir().join(format!("loongclaw-template-tool-summary-limit-{unique}"));
+        std::fs::create_dir_all(&temp_dir).expect("create temp directory");
+        let config_path = temp_dir.join("config.toml");
+
+        write_template(Some(config_path.to_string_lossy().as_ref()), true)
+            .expect("write template should succeed");
+
+        let raw = std::fs::read_to_string(&config_path).expect("read template");
+        assert!(raw.contains("[conversation]"));
+        assert!(raw.contains("tool_result_payload_summary_limit_chars = 2048"));
+        assert!(raw.contains("safe_lane_health_truncation_warn_threshold = 0.3"));
+        assert!(raw.contains("safe_lane_health_truncation_critical_threshold = 0.6"));
+        assert!(raw.contains("safe_lane_health_verify_failure_warn_threshold = 0.4"));
+        assert!(raw.contains("safe_lane_health_replan_warn_threshold = 0.5"));
+
+        std::fs::remove_file(&config_path).ok();
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    #[cfg(feature = "config-toml")]
     fn validate_file_returns_structured_diagnostics() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -473,12 +502,12 @@ api_key_env = "$OPENAI_API_KEY"
     }
 
     #[test]
-    fn load_missing_config_guides_user_to_loongclaw_setup() {
+    fn load_missing_config_guides_user_to_loongclaw_onboard() {
         let missing = unique_config_path("loongclaw-config-missing");
         let path_string = missing.display().to_string();
 
         let error = load(Some(&path_string)).expect_err("missing config should fail");
-        assert!(error.contains("run `loongclaw setup` first"));
+        assert!(error.contains("run `loongclaw onboard` first"));
     }
 
     #[test]
@@ -622,6 +651,29 @@ api_key_env = "{secret}"
 
         let raw = fs::read_to_string(&path).expect("read written config");
         assert!(!raw.contains("api_key_env = \"OPENAI_API_KEY\""));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    #[cfg(feature = "config-toml")]
+    fn write_default_config_keeps_external_skills_guardrails() {
+        let path = unique_config_path("loongclaw-config-runtime-external-skills");
+        let path_string = path.display().to_string();
+
+        write(Some(&path_string), &LoongClawConfig::default(), true)
+            .expect("default config write should pass");
+
+        let raw = fs::read_to_string(&path).expect("read written config");
+        assert!(raw.contains("[external_skills]"));
+        assert!(raw.contains("enabled = false"));
+        assert!(raw.contains("require_download_approval = true"));
+
+        let (_, loaded) = load(Some(&path_string)).expect("config load should pass");
+        assert!(!loaded.external_skills.enabled);
+        assert!(loaded.external_skills.require_download_approval);
+        assert!(loaded.external_skills.allowed_domains.is_empty());
+        assert!(loaded.external_skills.blocked_domains.is_empty());
 
         let _ = fs::remove_file(path);
     }

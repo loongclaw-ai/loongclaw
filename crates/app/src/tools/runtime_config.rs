@@ -2,6 +2,25 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalSkillsRuntimePolicy {
+    pub enabled: bool,
+    pub require_download_approval: bool,
+    pub allowed_domains: BTreeSet<String>,
+    pub blocked_domains: BTreeSet<String>,
+}
+
+impl Default for ExternalSkillsRuntimePolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            require_download_approval: true,
+            allowed_domains: BTreeSet::new(),
+            blocked_domains: BTreeSet::new(),
+        }
+    }
+}
+
 /// Typed runtime configuration for tool executors.
 ///
 /// Replaces per-call `std::env::var` lookups with a single read from a
@@ -25,6 +44,7 @@ impl Default for ToolRuntimeConfig {
             web_fetch_timeout_secs: 30,
         }
     }
+    pub external_skills: ExternalSkillsRuntimePolicy,
 }
 
 impl ToolRuntimeConfig {
@@ -43,6 +63,11 @@ impl ToolRuntimeConfig {
             .collect();
 
         let file_root = std::env::var("LOONGCLAW_FILE_ROOT").ok().map(PathBuf::from);
+        let enabled = parse_env_bool("LOONGCLAW_EXTERNAL_SKILLS_ENABLED").unwrap_or(false);
+        let require_download_approval =
+            parse_env_bool("LOONGCLAW_EXTERNAL_SKILLS_REQUIRE_DOWNLOAD_APPROVAL").unwrap_or(true);
+        let allowed_domains = parse_env_domain_list("LOONGCLAW_EXTERNAL_SKILLS_ALLOWED_DOMAINS");
+        let blocked_domains = parse_env_domain_list("LOONGCLAW_EXTERNAL_SKILLS_BLOCKED_DOMAINS");
 
         let web_fetch_max_bytes = std::env::var("LOONGCLAW_WEB_FETCH_MAX_BYTES")
             .ok()
@@ -63,8 +88,36 @@ impl ToolRuntimeConfig {
             web_fetch_max_bytes,
             web_fetch_max_redirects,
             web_fetch_timeout_secs,
+            external_skills: ExternalSkillsRuntimePolicy {
+                enabled,
+                require_download_approval,
+                allowed_domains,
+                blocked_domains,
+            },
         }
     }
+}
+
+fn parse_env_bool(key: &str) -> Option<bool> {
+    std::env::var(key).ok().and_then(|raw| {
+        let value = raw.trim().to_ascii_lowercase();
+        match value.as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        }
+    })
+}
+
+fn parse_env_domain_list(key: &str) -> BTreeSet<String> {
+    std::env::var(key)
+        .ok()
+        .unwrap_or_default()
+        .split([',', ';', ' '])
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect()
 }
 
 static TOOL_RUNTIME_CONFIG: OnceLock<ToolRuntimeConfig> = OnceLock::new();
@@ -100,6 +153,10 @@ mod tests {
         assert_eq!(config.web_fetch_max_bytes, 1_048_576);
         assert_eq!(config.web_fetch_max_redirects, 10);
         assert_eq!(config.web_fetch_timeout_secs, 30);
+        assert!(!config.external_skills.enabled);
+        assert!(config.external_skills.require_download_approval);
+        assert!(config.external_skills.allowed_domains.is_empty());
+        assert!(config.external_skills.blocked_domains.is_empty());
     }
 
     #[test]
@@ -110,11 +167,20 @@ mod tests {
             shell_allowlist: BTreeSet::from(["git".to_owned(), "cargo".to_owned()]),
             file_root: Some(PathBuf::from("/tmp/test-root")),
             ..ToolRuntimeConfig::default()
+            external_skills: ExternalSkillsRuntimePolicy {
+                enabled: true,
+                require_download_approval: false,
+                allowed_domains: BTreeSet::from(["skills.sh".to_owned()]),
+                blocked_domains: BTreeSet::new(),
+            },
         };
         assert!(config.shell_allowlist.contains("git"));
         assert!(config.shell_allowlist.contains("cargo"));
         assert!(!config.shell_allowlist.contains("echo"));
         assert_eq!(config.file_root, Some(PathBuf::from("/tmp/test-root")));
+        assert!(config.external_skills.enabled);
+        assert!(!config.external_skills.require_download_approval);
+        assert!(config.external_skills.allowed_domains.contains("skills.sh"));
     }
 
     #[test]
@@ -134,6 +200,7 @@ mod tests {
             shell_allowlist: BTreeSet::from(["echo".to_owned()]),
             file_root: Some(PathBuf::from("/tmp/injected-root")),
             ..ToolRuntimeConfig::default()
+            external_skills: ExternalSkillsRuntimePolicy::default(),
         };
         let result = crate::tools::execute_tool_core_with_config(
             loongclaw_contracts::ToolCoreRequest {
@@ -150,5 +217,44 @@ mod tests {
                 .unwrap()
                 .contains("injected")
         );
+    }
+
+    #[test]
+    fn from_env_parses_external_skills_policy() {
+        crate::process_env::set_var("LOONGCLAW_EXTERNAL_SKILLS_ENABLED", "true");
+        crate::process_env::set_var(
+            "LOONGCLAW_EXTERNAL_SKILLS_REQUIRE_DOWNLOAD_APPROVAL",
+            "false",
+        );
+        crate::process_env::set_var(
+            "LOONGCLAW_EXTERNAL_SKILLS_ALLOWED_DOMAINS",
+            "skills.sh,clawhub.io",
+        );
+        crate::process_env::set_var(
+            "LOONGCLAW_EXTERNAL_SKILLS_BLOCKED_DOMAINS",
+            "malicious.example",
+        );
+
+        let config = ToolRuntimeConfig::from_env();
+        assert!(config.external_skills.enabled);
+        assert!(!config.external_skills.require_download_approval);
+        assert!(config.external_skills.allowed_domains.contains("skills.sh"));
+        assert!(
+            config
+                .external_skills
+                .allowed_domains
+                .contains("clawhub.io")
+        );
+        assert!(
+            config
+                .external_skills
+                .blocked_domains
+                .contains("malicious.example")
+        );
+
+        crate::process_env::remove_var("LOONGCLAW_EXTERNAL_SKILLS_ENABLED");
+        crate::process_env::remove_var("LOONGCLAW_EXTERNAL_SKILLS_REQUIRE_DOWNLOAD_APPROVAL");
+        crate::process_env::remove_var("LOONGCLAW_EXTERNAL_SKILLS_ALLOWED_DOMAINS");
+        crate::process_env::remove_var("LOONGCLAW_EXTERNAL_SKILLS_BLOCKED_DOMAINS");
     }
 }

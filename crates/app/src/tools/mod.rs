@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use crate::KernelContext;
 
 mod claw_import;
+mod external_skills;
 mod file;
 mod kernel_adapter;
 pub mod runtime_config;
@@ -44,6 +45,8 @@ pub fn execute_tool_core(request: ToolCoreRequest) -> Result<ToolCoreOutcome, St
 pub fn canonical_tool_name(raw: &str) -> &str {
     match raw {
         "claw_import" | "import_claw" => "claw.import",
+        "external_skills_policy" => "external_skills.policy",
+        "external_skills_fetch" => "external_skills.fetch",
         "file_read" => "file.read",
         "file_write" => "file.write",
         "shell_exec" | "shell" => "shell.exec",
@@ -65,6 +68,15 @@ pub fn is_known_tool_name(raw: &str) -> bool {
         return true;
     }
     false
+    matches!(
+        canonical_tool_name(raw),
+        "claw.import"
+            | "external_skills.policy"
+            | "external_skills.fetch"
+            | "shell.exec"
+            | "file.read"
+            | "file.write"
+    )
 }
 
 pub fn execute_tool_core_with_config(
@@ -78,6 +90,12 @@ pub fn execute_tool_core_with_config(
     };
     match canonical_name {
         "claw.import" => claw_import::execute_claw_import_tool_with_config(request, config),
+        "external_skills.policy" => {
+            external_skills::execute_external_skills_policy_tool_with_config(request, config)
+        }
+        "external_skills.fetch" => {
+            external_skills::execute_external_skills_fetch_tool_with_config(request, config)
+        }
         "shell.exec" => shell::execute_shell_tool_with_config(request, config),
         "file.read" => file::execute_file_read_tool_with_config(request, config),
         "file.write" => file::execute_file_write_tool_with_config(request, config),
@@ -102,6 +120,14 @@ pub fn tool_registry() -> Vec<ToolRegistryEntry> {
     entries.push(ToolRegistryEntry {
         name: "claw.import",
         description: "Import legacy Claw configs into native LoongClaw settings",
+    });
+    entries.push(ToolRegistryEntry {
+        name: "external_skills.fetch",
+        description: "Download external skills artifacts with domain policy and approval guards",
+    });
+    entries.push(ToolRegistryEntry {
+        name: "external_skills.policy",
+        description: "Read/update external skills domain allow/block policy at runtime",
     });
     #[cfg(feature = "tool-file")]
     {
@@ -154,34 +180,143 @@ pub fn provider_tool_definitions() -> Vec<Value> {
         "type": "function",
         "function": {
             "name": "claw_import",
-            "description": "Import a legacy Claw workspace or persona into native LoongClaw config with preview or apply mode.",
+            "description": "Import, discover, plan, merge, apply, and rollback legacy Claw workspace migration into native LoongClaw config.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "input_path": {
                         "type": "string",
-                        "description": "Path to the legacy Claw workspace, config root, or portable import file."
+                        "description": "Path to the legacy Claw workspace, config root, or portable import file. Required for all modes except rollback_last_apply."
                     },
                     "mode": {
                         "type": "string",
-                        "enum": ["plan", "apply"],
-                        "description": "Use `plan` to preview the nativeized result, or `apply` to write a target config."
+                        "enum": [
+                            "plan",
+                            "apply",
+                            "discover",
+                            "plan_many",
+                            "recommend_primary",
+                            "merge_profiles",
+                            "map_external_skills",
+                            "apply_selected",
+                            "rollback_last_apply"
+                        ],
+                        "description": "Migration mode. Defaults to `plan` when omitted."
                     },
                     "source": {
                         "type": "string",
                         "enum": ["auto", "nanobot", "openclaw", "picoclaw", "zeroclaw", "nanoclaw"],
-                        "description": "Optional source hint. Defaults to automatic detection."
+                        "description": "Optional source hint for plan/apply modes. Defaults to automatic detection."
+                    },
+                    "source_id": {
+                        "type": "string",
+                        "description": "Selected source identifier for apply_selected mode."
+                    },
+                    "selection_id": {
+                        "type": "string",
+                        "description": "Alias of source_id for apply_selected mode."
+                    },
+                    "primary_source_id": {
+                        "type": "string",
+                        "description": "Primary source identifier for safe profile merge in apply_selected mode."
+                    },
+                    "primary_selection_id": {
+                        "type": "string",
+                        "description": "Alias of primary_source_id for safe profile merge in apply_selected mode."
+                    },
+                    "safe_profile_merge": {
+                        "type": "boolean",
+                        "description": "Enable safe multi-source profile merge in apply_selected mode."
+                    },
+                    "apply_external_skills_plan": {
+                        "type": "boolean",
+                        "description": "When true, apply a generated external-skills mapping addendum into profile_note during apply_selected."
                     },
                     "output_path": {
                         "type": "string",
-                        "description": "Target config path to write in apply mode."
+                        "description": "Target config path. Required in apply/apply_selected/rollback_last_apply modes."
                     },
                     "force": {
                         "type": "boolean",
                         "description": "Overwrite an existing target config when applying. Defaults to false."
                     }
                 },
-                "required": ["input_path"],
+                "required": [],
+                "additionalProperties": false
+            }
+        }
+    }));
+
+    tools.push(json!({
+        "type": "function",
+        "function": {
+            "name": "external_skills_policy",
+            "description": "Get, set, or reset runtime policy for external skills downloads (enabled flag, approval gate, domain allowlist/blocklist).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["get", "set", "reset"],
+                        "description": "Policy action. Defaults to `get`."
+                    },
+                    "policy_update_approved": {
+                        "type": "boolean",
+                        "description": "Explicit user authorization for policy updates. Required for `set` and `reset`."
+                    },
+                    "enabled": {
+                        "type": "boolean",
+                        "description": "Whether external skills runtime/download is enabled."
+                    },
+                    "require_download_approval": {
+                        "type": "boolean",
+                        "description": "When true, every external skills download requires explicit approval_granted=true."
+                    },
+                    "allowed_domains": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional domain allowlist (supports exact domains and wildcard forms like *.example.com). Empty list means allow all domains unless blocked."
+                    },
+                    "blocked_domains": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional domain blocklist (supports exact domains and wildcard forms like *.example.com). Blocklist always takes precedence."
+                    }
+                },
+                "required": [],
+                "additionalProperties": false
+            }
+        }
+    }));
+
+    tools.push(json!({
+        "type": "function",
+        "function": {
+            "name": "external_skills_fetch",
+            "description": "Download an external skill artifact with strict domain policy checks and explicit approval gating.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "HTTPS URL to download."
+                    },
+                    "approval_granted": {
+                        "type": "boolean",
+                        "description": "Explicit user authorization for this download. Required when require_download_approval=true."
+                    },
+                    "save_as": {
+                        "type": "string",
+                        "description": "Optional output filename (stored under configured file root / external-skills-downloads)."
+                    },
+                    "max_bytes": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20971520,
+                        "description": "Maximum download size in bytes. Defaults to 5242880 and is capped at 20971520."
+                    }
+                },
+                "required": ["url"],
                 "additionalProperties": false
             }
         }
@@ -347,6 +482,24 @@ fn _shape_examples() -> BTreeMap<&'static str, Value> {
             }),
         ),
         (
+            "external_skills.policy",
+            json!({
+                "action": "set",
+                "policy_update_approved": true,
+                "enabled": true,
+                "require_download_approval": true,
+                "allowed_domains": ["skills.sh"],
+                "blocked_domains": ["*.evil.example"]
+            }),
+        ),
+        (
+            "external_skills.fetch",
+            json!({
+                "url": "https://skills.sh/packages/demo-skill.tar.gz",
+                "approval_granted": true
+            }),
+        ),
+        (
             "file.read",
             json!({
                 "path": "README.md",
@@ -405,6 +558,8 @@ mod tests {
                 "- claw.import: Import legacy Claw configs into native LoongClaw settings"
             )
         );
+        assert!(snapshot.contains("- external_skills.fetch: Download external skills artifacts with domain policy and approval guards"));
+        assert!(snapshot.contains("- external_skills.policy: Read/update external skills domain allow/block policy at runtime"));
         assert!(snapshot.contains("- file.read: Read file contents"));
         assert!(snapshot.contains("- file.write: Write file contents"));
         assert!(snapshot.contains("- shell.exec: Execute shell commands"));
@@ -420,6 +575,15 @@ mod tests {
         assert!(lines[2].starts_with("- file.write"));
         assert!(lines[3].starts_with("- shell.exec"));
         assert!(lines[4].starts_with("- web.fetch"));
+        // Verify sorted order: claw.import < external_skills.* < file.* < shell.exec
+        let lines: Vec<&str> = snapshot.lines().skip(1).collect();
+        assert_eq!(lines.len(), 6);
+        assert!(lines[0].starts_with("- claw.import"));
+        assert!(lines[1].starts_with("- external_skills.fetch"));
+        assert!(lines[2].starts_with("- external_skills.policy"));
+        assert!(lines[3].starts_with("- file.read"));
+        assert!(lines[4].starts_with("- file.write"));
+        assert!(lines[5].starts_with("- shell.exec"));
     }
 
     #[cfg(all(
@@ -431,8 +595,11 @@ mod tests {
     fn tool_registry_returns_all_known_tools() {
         let entries = tool_registry();
         assert_eq!(entries.len(), 5);
+        assert_eq!(entries.len(), 6);
         let names: Vec<&str> = entries.iter().map(|e| e.name).collect();
         assert!(names.contains(&"claw.import"));
+        assert!(names.contains(&"external_skills.fetch"));
+        assert!(names.contains(&"external_skills.policy"));
         assert!(names.contains(&"shell.exec"));
         assert!(names.contains(&"file.read"));
         assert!(names.contains(&"file.write"));
@@ -448,6 +615,7 @@ mod tests {
     fn provider_tool_definitions_are_stable_and_complete() {
         let defs = provider_tool_definitions();
         assert_eq!(defs.len(), 5);
+        assert_eq!(defs.len(), 6);
 
         let names: Vec<&str> = defs
             .iter()
@@ -463,6 +631,11 @@ mod tests {
                 "file_write",
                 "shell_exec",
                 "web_fetch"
+                "external_skills_fetch",
+                "external_skills_policy",
+                "file_read",
+                "file_write",
+                "shell_exec"
             ]
         );
 
@@ -470,11 +643,56 @@ mod tests {
             assert_eq!(item["type"], "function");
             assert_eq!(item["function"]["parameters"]["type"], "object");
         }
+
+        let claw_import = defs
+            .iter()
+            .find(|item| {
+                item.get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(Value::as_str)
+                    == Some("claw_import")
+            })
+            .expect("claw_import definition should exist");
+        let mode_enum: Vec<&str> =
+            claw_import["function"]["parameters"]["properties"]["mode"]["enum"]
+                .as_array()
+                .expect("mode enum should be an array")
+                .iter()
+                .filter_map(Value::as_str)
+                .collect();
+        assert_eq!(
+            mode_enum,
+            vec![
+                "plan",
+                "apply",
+                "discover",
+                "plan_many",
+                "recommend_primary",
+                "merge_profiles",
+                "map_external_skills",
+                "apply_selected",
+                "rollback_last_apply"
+            ]
+        );
+        assert!(
+            claw_import["function"]["parameters"]["required"]
+                .as_array()
+                .expect("required should be an array")
+                .is_empty()
+        );
     }
 
     #[test]
     fn canonical_tool_name_maps_known_aliases() {
         assert_eq!(canonical_tool_name("claw_import"), "claw.import");
+        assert_eq!(
+            canonical_tool_name("external_skills_policy"),
+            "external_skills.policy"
+        );
+        assert_eq!(
+            canonical_tool_name("external_skills_fetch"),
+            "external_skills.fetch"
+        );
         assert_eq!(canonical_tool_name("file_read"), "file.read");
         assert_eq!(canonical_tool_name("file_write"), "file.write");
         assert_eq!(canonical_tool_name("shell_exec"), "shell.exec");
@@ -487,6 +705,10 @@ mod tests {
     fn is_known_tool_name_accepts_canonical_and_alias_forms() {
         assert!(is_known_tool_name("claw.import"));
         assert!(is_known_tool_name("claw_import"));
+        assert!(is_known_tool_name("external_skills.policy"));
+        assert!(is_known_tool_name("external_skills_policy"));
+        assert!(is_known_tool_name("external_skills.fetch"));
+        assert!(is_known_tool_name("external_skills_fetch"));
         assert!(is_known_tool_name("file.read"));
         assert!(is_known_tool_name("file_read"));
         assert!(is_known_tool_name("file.write"));
@@ -556,6 +778,7 @@ mod tests {
             shell_allowlist: BTreeSet::new(),
             file_root: Some(root.clone()),
             ..runtime_config::ToolRuntimeConfig::default()
+            external_skills: Default::default(),
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -641,6 +864,7 @@ mod tests {
             shell_allowlist: BTreeSet::new(),
             file_root: Some(root.clone()),
             ..runtime_config::ToolRuntimeConfig::default()
+            external_skills: Default::default(),
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -660,6 +884,14 @@ mod tests {
         assert_eq!(outcome.status, "ok");
         assert_eq!(outcome.payload["mode"], "apply");
         assert_eq!(outcome.payload["config_written"], true);
+        assert_eq!(
+            outcome.payload["next_step"]
+                .as_str()
+                .expect("next_step should be present")
+                .split_whitespace()
+                .next(),
+            Some("loongclaw")
+        );
         assert_eq!(
             outcome.payload["output_path"]
                 .as_str()
@@ -722,6 +954,7 @@ mod tests {
             shell_allowlist: BTreeSet::new(),
             file_root: Some(root.clone()),
             ..runtime_config::ToolRuntimeConfig::default()
+            external_skills: Default::default(),
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -794,6 +1027,7 @@ mod tests {
             shell_allowlist: BTreeSet::new(),
             file_root: Some(root.clone()),
             ..runtime_config::ToolRuntimeConfig::default()
+            external_skills: Default::default(),
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -867,6 +1101,7 @@ mod tests {
             shell_allowlist: BTreeSet::new(),
             file_root: Some(root.clone()),
             ..runtime_config::ToolRuntimeConfig::default()
+            external_skills: Default::default(),
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -891,6 +1126,73 @@ mod tests {
                 .as_str()
                 .expect("merged profile note should be present")
                 .contains("region: apac")
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn claw_import_map_external_skills_mode_returns_mapping_plan() {
+        use std::{
+            fs,
+            path::{Path, PathBuf},
+            time::{SystemTime, UNIX_EPOCH},
+        };
+
+        fn unique_temp_dir(prefix: &str) -> PathBuf {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos();
+            std::env::temp_dir().join(format!("{prefix}-{nanos}"))
+        }
+
+        fn write_file(root: &Path, relative: &str, content: &str) {
+            let path = root.join(relative);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("create parent directory");
+            }
+            fs::write(path, content).expect("write fixture");
+        }
+
+        let root = unique_temp_dir("loongclaw-tool-import-map-external-skills");
+        fs::create_dir_all(&root).expect("create fixture root");
+        write_file(&root, "SKILLS.md", "# Skills\n\n- custom/skill-a\n");
+        fs::create_dir_all(root.join(".codex/skills")).expect("create codex skills dir");
+
+        let config = runtime_config::ToolRuntimeConfig {
+            shell_allowlist: BTreeSet::new(),
+            file_root: Some(root.clone()),
+            external_skills: Default::default(),
+        };
+        let outcome = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "claw.import".to_owned(),
+                payload: json!({
+                    "mode": "map_external_skills",
+                    "input_path": "."
+                }),
+            },
+            &config,
+        )
+        .expect("claw import map_external_skills should succeed");
+
+        assert_eq!(outcome.status, "ok");
+        assert_eq!(outcome.payload["mode"], "map_external_skills");
+        assert_eq!(outcome.payload["result"]["artifact_count"], 2);
+        assert_eq!(
+            outcome.payload["result"]["declared_skills"][0],
+            "custom/skill-a"
+        );
+        assert_eq!(
+            outcome.payload["result"]["resolved_skills"][0],
+            "custom/skill-a"
+        );
+        assert!(
+            outcome.payload["result"]["profile_note_addendum"]
+                .as_str()
+                .expect("profile note addendum should exist")
+                .contains("Imported External Skills Artifacts")
         );
 
         fs::remove_dir_all(&root).ok();
@@ -945,6 +1247,7 @@ mod tests {
             shell_allowlist: BTreeSet::new(),
             file_root: Some(root.clone()),
             ..runtime_config::ToolRuntimeConfig::default()
+            external_skills: Default::default(),
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -978,6 +1281,90 @@ mod tests {
             )
             .exists()
         );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn claw_import_apply_selected_mode_can_apply_external_skills_plan() {
+        use std::{
+            fs,
+            path::{Path, PathBuf},
+            time::{SystemTime, UNIX_EPOCH},
+        };
+
+        fn unique_temp_dir(prefix: &str) -> PathBuf {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos();
+            std::env::temp_dir().join(format!("{prefix}-{nanos}"))
+        }
+
+        fn write_file(root: &Path, relative: &str, content: &str) {
+            let path = root.join(relative);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("create parent directory");
+            }
+            fs::write(path, content).expect("write fixture");
+        }
+
+        let root = unique_temp_dir("loongclaw-tool-import-apply-selected-external");
+        fs::create_dir_all(&root).expect("create fixture root");
+
+        let openclaw_root = root.join("openclaw-workspace");
+        fs::create_dir_all(&openclaw_root).expect("create openclaw root");
+        write_file(
+            &openclaw_root,
+            "SOUL.md",
+            "# Soul\n\nPrefer direct answers and keep OpenClaw style concise.\n",
+        );
+        write_file(
+            &openclaw_root,
+            "IDENTITY.md",
+            "# Identity\n\n- role: release copilot\n- tone: steady\n",
+        );
+        write_file(&root, "SKILLS.md", "# Skills\n\n- custom/skill-a\n");
+
+        let output_path = root.join("loongclaw.toml");
+
+        let config = runtime_config::ToolRuntimeConfig {
+            shell_allowlist: BTreeSet::new(),
+            file_root: Some(root.clone()),
+            external_skills: Default::default(),
+        };
+        let outcome = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "claw.import".to_owned(),
+                payload: json!({
+                    "mode": "apply_selected",
+                    "input_path": ".",
+                    "output_path": "loongclaw.toml",
+                    "source_id": "openclaw",
+                    "apply_external_skills_plan": true
+                }),
+            },
+            &config,
+        )
+        .expect("claw import apply_selected with external skills should succeed");
+
+        assert_eq!(outcome.status, "ok");
+        assert_eq!(
+            outcome.payload["result"]["external_skill_artifact_count"],
+            1
+        );
+        assert_eq!(
+            outcome.payload["result"]["external_skill_entries_applied"],
+            3
+        );
+        assert!(
+            outcome.payload["result"]["external_skills_manifest_path"]
+                .as_str()
+                .is_some(),
+            "external skills manifest path should exist"
+        );
+        let raw = fs::read_to_string(&output_path).expect("read output config");
+        assert!(raw.contains("Imported External Skills Artifacts"));
 
         fs::remove_dir_all(&root).ok();
     }
@@ -1031,6 +1418,7 @@ mod tests {
             shell_allowlist: BTreeSet::new(),
             file_root: Some(root.clone()),
             ..runtime_config::ToolRuntimeConfig::default()
+            external_skills: Default::default(),
         };
         execute_tool_core_with_config(
             ToolCoreRequest {
