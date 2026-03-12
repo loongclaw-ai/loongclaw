@@ -571,8 +571,9 @@ mod tests {
 
         assert!(system_content.contains("[available_external_skills]"));
         assert!(
-            system_content
-                .contains("- demo-skill: Use this skill for provider prompt verification.")
+            system_content.contains(
+                "- demo-skill: installed managed external skill; use external_skills.inspect or external_skills.invoke for details"
+            )
         );
 
         std::fs::remove_dir_all(root).ok();
