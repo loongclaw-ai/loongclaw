@@ -134,7 +134,7 @@ fn resolve_safe_file_path_with_config(
     } else {
         root.join(candidate)
     };
-    let normalized = normalize_without_fs_access(&combined);
+    let normalized = super::normalize_without_fs(&combined);
     resolve_path_within_root(&root, &normalized)
 }
 
@@ -144,7 +144,7 @@ fn canonicalize_or_fallback(path: PathBuf) -> Result<PathBuf, String> {
         return fs::canonicalize(&path)
             .map_err(|error| format!("failed to canonicalize {}: {error}", path.display()));
     }
-    Ok(normalize_without_fs_access(&path))
+    Ok(super::normalize_without_fs(&path))
 }
 
 #[cfg(feature = "tool-file")]
@@ -217,28 +217,6 @@ fn split_existing_ancestor(path: &Path) -> Result<(PathBuf, Vec<OsString>), Stri
         };
         cursor = parent.to_path_buf();
     }
-}
-
-#[cfg(feature = "tool-file")]
-fn normalize_without_fs_access(path: &Path) -> PathBuf {
-    let mut parts = Vec::new();
-    for component in path.components() {
-        use std::path::Component;
-        match component {
-            Component::ParentDir => {
-                parts.pop();
-            }
-            Component::CurDir => {}
-            Component::RootDir | Component::Prefix(_) | Component::Normal(_) => {
-                parts.push(component.as_os_str().to_owned());
-            }
-        }
-    }
-    let mut normalized = PathBuf::new();
-    for part in parts {
-        normalized.push(part);
-    }
-    normalized
 }
 
 #[cfg(all(test, feature = "tool-file"))]

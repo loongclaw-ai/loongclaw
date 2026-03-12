@@ -25,7 +25,9 @@ pub use runtime::{
 #[allow(unused_imports)]
 pub use shared::expand_path;
 #[allow(unused_imports)]
-pub use tools_memory::{MemoryBackendKind, MemoryConfig, MemoryMode, MemoryProfile, ToolConfig};
+pub use tools_memory::{
+    DEFAULT_SHELL_ALLOW, MemoryBackendKind, MemoryConfig, MemoryMode, MemoryProfile, ToolConfig,
+};
 
 #[cfg(test)]
 mod tests {

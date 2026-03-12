@@ -1,4 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
 use loongclaw_contracts::{Capability, ToolCoreOutcome, ToolCoreRequest};
 use serde_json::{Value, json};
@@ -15,31 +17,88 @@ mod shell;
 
 pub use kernel_adapter::MvpToolAdapter;
 
-/// Execute a tool request, optionally routing through the kernel for
+/// Execute a tool request, routing through the kernel for
 /// policy enforcement and audit recording.
 ///
-/// When `kernel_ctx` is `Some`, the request is dispatched via
-/// `kernel.execute_tool_core` which enforces `InvokeTool` capability
-/// and records audit events.  When `None`, the request falls through
-/// to the direct `execute_tool_core` path.
+/// All requests are dispatched via `kernel.execute_tool_core` which
+/// enforces `InvokeTool` capability, runs policy extensions, and records
+/// audit events.  Callers must always supply a `KernelContext`.
 pub async fn execute_tool(
     request: ToolCoreRequest,
-    kernel_ctx: Option<&KernelContext>,
+    kernel_ctx: &KernelContext,
 ) -> Result<ToolCoreOutcome, String> {
-    match kernel_ctx {
-        Some(ctx) => {
-            let caps = BTreeSet::from([Capability::InvokeTool]);
-            ctx.kernel
-                .execute_tool_core(ctx.pack_id(), &ctx.token, &caps, None, request)
-                .await
-                .map_err(|e| format!("{e}"))
-        }
-        None => execute_tool_core(request),
-    }
+    let caps = BTreeSet::from([Capability::InvokeTool]);
+    kernel_ctx
+        .kernel
+        .execute_tool_core(
+            kernel_ctx.pack_id(),
+            &kernel_ctx.token,
+            &caps,
+            None,
+            request,
+        )
+        .await
+        .map_err(|e| format!("{e}"))
 }
 
 pub fn execute_tool_core(request: ToolCoreRequest) -> Result<ToolCoreOutcome, String> {
     execute_tool_core_with_config(request, runtime_config::get_tool_runtime_config())
+}
+
+/// Normalize a path by resolving `.` and `..` components without filesystem access.
+///
+/// - `Prefix` and `RootDir` are tracked separately so `..` can never "eat" them.
+/// - `..` past the filesystem root (or volume root on Windows) is silently dropped.
+/// - Relative paths preserve leading `..` components (e.g. `../../foo` stays as-is).
+///
+/// All three path-handling modules (`file`, `claw_import`, `file_policy_ext`) use
+/// this single implementation to avoid divergence.
+pub(super) fn normalize_without_fs(path: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let mut parts: Vec<OsString> = Vec::new();
+    let mut prefix: Option<OsString> = None;
+    let mut has_root = false;
+
+    for component in path.components() {
+        match component {
+            Component::Prefix(value) => prefix = Some(value.as_os_str().to_owned()),
+            Component::RootDir => has_root = true,
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if let Some(last) = parts.last() {
+                    if last != ".." {
+                        let _ = parts.pop();
+                    } else if !has_root {
+                        parts.push(OsString::from(".."));
+                    }
+                } else if !has_root {
+                    parts.push(OsString::from(".."));
+                }
+            }
+            Component::Normal(value) => parts.push(value.to_owned()),
+        }
+    }
+
+    let mut normalized = PathBuf::new();
+    if let Some(prefix) = prefix {
+        normalized.push(prefix);
+    }
+    if has_root {
+        normalized.push(Path::new(std::path::MAIN_SEPARATOR_STR));
+    }
+    for part in parts {
+        normalized.push(part);
+    }
+    if normalized.as_os_str().is_empty() {
+        if has_root {
+            PathBuf::from(std::path::MAIN_SEPARATOR_STR)
+        } else {
+            PathBuf::from(".")
+        }
+    } else {
+        normalized
+    }
 }
 
 pub fn canonical_tool_name(raw: &str) -> &str {
@@ -1049,7 +1108,7 @@ mod tests {
             tool_name: "echo".to_owned(),
             payload: json!({"msg": "hello"}),
         };
-        let outcome = execute_tool(request, Some(&ctx))
+        let outcome = execute_tool(request, &ctx)
             .await
             .expect("tool call via kernel should succeed");
         assert_eq!(outcome.status, "ok");
@@ -1131,7 +1190,7 @@ mod tests {
             tool_name: "echo".to_owned(),
             payload: json!({"msg": "hello"}),
         };
-        let err = execute_tool(request, Some(&ctx))
+        let err = execute_tool(request, &ctx)
             .await
             .expect_err("should be denied without InvokeTool capability");
 

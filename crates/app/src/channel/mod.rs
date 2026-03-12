@@ -734,7 +734,7 @@ fn apply_runtime_env(config: &LoongClawConfig) {
             .iter()
             .map(|s| s.to_ascii_lowercase())
             .collect(),
-        shell_default_mode: crate::tools::policy_ext::ShellPolicyDefault::from_str(
+        shell_default_mode: crate::tools::policy_ext::ShellPolicyDefault::parse(
             &config.tools.shell_default_mode,
         ),
     };

@@ -21,7 +21,10 @@ impl Default for ToolRuntimeConfig {
     fn default() -> Self {
         Self {
             file_root: None,
-            shell_allow: BTreeSet::new(),
+            shell_allow: crate::config::DEFAULT_SHELL_ALLOW
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect(),
             shell_deny: BTreeSet::new(),
             shell_approval_required: BTreeSet::new(),
             shell_default_mode: ShellPolicyDefault::Deny,
@@ -73,6 +76,25 @@ mod tests {
     fn tool_runtime_config_from_env_defaults() {
         let config = ToolRuntimeConfig::default();
         assert!(config.file_root.is_none());
+    }
+
+    /// The default allow list must mirror the serde default in `ToolConfig` so
+    /// that the runtime fallback path and a freshly-parsed config file agree.
+    #[test]
+    fn default_shell_allow_contains_four_initial_commands() {
+        let config = ToolRuntimeConfig::default();
+        let mut allow: Vec<_> = config.shell_allow.iter().cloned().collect();
+        allow.sort();
+        assert_eq!(allow, vec!["cargo", "echo", "git", "ls"]);
+    }
+
+    /// Deny and approval-required start empty so users are not forced to carry
+    /// any hardcoded restriction they did not opt into.
+    #[test]
+    fn default_deny_and_approval_are_empty() {
+        let config = ToolRuntimeConfig::default();
+        assert!(config.shell_deny.is_empty());
+        assert!(config.shell_approval_required.is_empty());
     }
 
     #[test]

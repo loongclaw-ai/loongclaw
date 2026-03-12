@@ -12,14 +12,6 @@ impl FilePolicyExtension {
         Self { file_root }
     }
 
-    fn normalize_tool_name(raw: &str) -> &str {
-        match raw {
-            "file_read" => "file.read",
-            "file_write" => "file.write",
-            other => other,
-        }
-    }
-
     fn required_capability(tool_name: &str) -> Option<Capability> {
         match tool_name {
             "file.read" | "claw.import" => Some(Capability::FilesystemRead),
@@ -36,28 +28,9 @@ impl FilePolicyExtension {
         } else {
             root.join(candidate)
         };
-        let normalized = normalize_without_fs(&combined);
+        let normalized = super::normalize_without_fs(&combined);
         !normalized.starts_with(root)
     }
-}
-
-/// Normalize a path by resolving `.` and `..` components without touching the filesystem.
-///
-/// Note: `ParentDir` past the root is silently dropped (pop on empty vec is a no-op).
-/// This is intentionally conservative — the result stays within or at the root.
-/// The adapter layer's `canonicalize` check provides the authoritative escape guard.
-fn normalize_without_fs(path: &Path) -> PathBuf {
-    let mut components = Vec::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::ParentDir => {
-                components.pop();
-            }
-            std::path::Component::CurDir => {}
-            other => components.push(other),
-        }
-    }
-    components.iter().collect()
 }
 
 impl PolicyExtension for FilePolicyExtension {
@@ -75,7 +48,7 @@ impl PolicyExtension for FilePolicyExtension {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        let tool_name = Self::normalize_tool_name(raw_tool_name);
+        let tool_name = super::canonical_tool_name(raw_tool_name);
 
         let Some(required_cap) = Self::required_capability(tool_name) else {
             return Ok(());
@@ -91,9 +64,15 @@ impl PolicyExtension for FilePolicyExtension {
         }
 
         if let Some(ref root) = self.file_root {
+            // claw.import uses `input_path`; all other file tools use `path`.
+            let path_key = if tool_name == "claw.import" {
+                "input_path"
+            } else {
+                "path"
+            };
             let raw_path = params
                 .get("payload")
-                .and_then(|p| p.get("path"))
+                .and_then(|p| p.get(path_key))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
 
@@ -247,7 +226,7 @@ mod tests {
         let pack = test_pack();
         let token = token_with_caps(BTreeSet::from([Capability::InvokeTool]));
         let caps = BTreeSet::from([Capability::InvokeTool]);
-        let params = json!({"tool_name": "claw.import", "payload": {"path": "config.toml"}});
+        let params = json!({"tool_name": "claw.import", "payload": {"input_path": "config.toml"}});
         let ctx = make_context(&pack, &token, &caps, Some(&params));
         assert!(matches!(
             ext.authorize_extension(&ctx).unwrap_err(),
@@ -264,7 +243,7 @@ mod tests {
             Capability::FilesystemRead,
         ]));
         let caps = BTreeSet::from([Capability::InvokeTool]);
-        let params = json!({"tool_name": "claw.import", "payload": {"path": "config.toml"}});
+        let params = json!({"tool_name": "claw.import", "payload": {"input_path": "config.toml"}});
         let ctx = make_context(&pack, &token, &caps, Some(&params));
         assert!(ext.authorize_extension(&ctx).is_ok());
     }
@@ -295,6 +274,58 @@ mod tests {
         let params = json!({"tool_name": "file.read", "payload": {"path": "../../etc/passwd"}});
         let ctx = make_context(&pack, &token, &caps, Some(&params));
         // No file_root means no escape check — allowed
+        assert!(ext.authorize_extension(&ctx).is_ok());
+    }
+
+    #[test]
+    fn denies_absolute_path_outside_root() {
+        let ext = FilePolicyExtension::new(Some(PathBuf::from("/home/user/project")));
+        let pack = test_pack();
+        let token = token_with_caps(BTreeSet::from([
+            Capability::InvokeTool,
+            Capability::FilesystemRead,
+        ]));
+        let caps = BTreeSet::from([Capability::InvokeTool]);
+        // Absolute path to a completely different location — must be denied
+        let params = json!({"tool_name": "file.read", "payload": {"path": "/etc/passwd"}});
+        let ctx = make_context(&pack, &token, &caps, Some(&params));
+        assert!(matches!(
+            ext.authorize_extension(&ctx).unwrap_err(),
+            PolicyError::ExtensionDenied { .. }
+        ));
+    }
+
+    #[test]
+    fn claw_import_sandbox_uses_input_path_key() {
+        let ext = FilePolicyExtension::new(Some(PathBuf::from("/home/user/project")));
+        let pack = test_pack();
+        let token = token_with_caps(BTreeSet::from([
+            Capability::InvokeTool,
+            Capability::FilesystemRead,
+        ]));
+        let caps = BTreeSet::from([Capability::InvokeTool]);
+        // input_path escapes the root — must be denied
+        let params =
+            json!({"tool_name": "claw.import", "payload": {"input_path": "../../etc/passwd"}});
+        let ctx = make_context(&pack, &token, &caps, Some(&params));
+        assert!(matches!(
+            ext.authorize_extension(&ctx).unwrap_err(),
+            PolicyError::ExtensionDenied { .. }
+        ));
+    }
+
+    #[test]
+    fn claw_import_within_root_allowed() {
+        let ext = FilePolicyExtension::new(Some(PathBuf::from("/home/user/project")));
+        let pack = test_pack();
+        let token = token_with_caps(BTreeSet::from([
+            Capability::InvokeTool,
+            Capability::FilesystemRead,
+        ]));
+        let caps = BTreeSet::from([Capability::InvokeTool]);
+        let params =
+            json!({"tool_name": "claw.import", "payload": {"input_path": "subdir/config.toml"}});
+        let ctx = make_context(&pack, &token, &caps, Some(&params));
         assert!(ext.authorize_extension(&ctx).is_ok());
     }
 }

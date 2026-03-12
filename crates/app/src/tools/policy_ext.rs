@@ -10,7 +10,7 @@ pub enum ShellPolicyDefault {
 }
 
 impl ShellPolicyDefault {
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s.to_ascii_lowercase().as_str() {
             "allow" => Self::Allow,
             _ => Self::Deny,
@@ -40,76 +40,14 @@ impl ToolPolicyExtension {
         }
     }
 
-    pub fn default_rules() -> Self {
-        Self {
-            hard_deny: [
-                "rm", "dd", "mkfs", "shutdown", "reboot", "poweroff", "halt", "init",
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect(),
-            approval_required: [
-                "bash",
-                "sh",
-                "zsh",
-                "fish",
-                "sudo",
-                "su",
-                "curl",
-                "wget",
-                "ssh",
-                "scp",
-                "sftp",
-                "nc",
-                "ncat",
-                "netcat",
-                "python",
-                "python3",
-                "node",
-                "perl",
-                "ruby",
-                "php",
-                "pwsh",
-                "powershell",
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect(),
-            allow: [
-                "echo", "cat", "ls", "pwd", "dir", "where", "whoami", "hostname", "date", "head",
-                "tail", "wc", "sort", "uniq", "find", "grep", "rg", "git", "cargo", "rustc", "npm",
-                "pip",
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect(),
-            default_mode: ShellPolicyDefault::Deny,
-        }
-    }
-
-    /// Build from runtime config, merging user overrides with hardcoded defaults.
+    /// Build from runtime config. All lists come exclusively from the config;
+    /// there are no hidden hardcoded entries that cannot be removed by the user.
     pub fn from_config(rt: &super::runtime_config::ToolRuntimeConfig) -> Self {
-        let mut ext = Self::default_rules();
-        if !rt.shell_deny.is_empty() {
-            ext.hard_deny.extend(rt.shell_deny.iter().cloned());
-        }
-        if !rt.shell_approval_required.is_empty() {
-            ext.approval_required
-                .extend(rt.shell_approval_required.iter().cloned());
-        }
-        if !rt.shell_allow.is_empty() {
-            ext.allow.extend(rt.shell_allow.iter().cloned());
-        }
-        ext.default_mode = rt.shell_default_mode;
-        ext
-    }
-
-    fn normalize_tool_name(raw: &str) -> &str {
-        match raw {
-            "shell_exec" | "shell" => "shell.exec",
-            "file_read" => "file.read",
-            "file_write" => "file.write",
-            other => other,
+        Self {
+            hard_deny: rt.shell_deny.clone(),
+            approval_required: rt.shell_approval_required.clone(),
+            allow: rt.shell_allow.clone(),
+            default_mode: rt.shell_default_mode,
         }
     }
 }
@@ -129,7 +67,7 @@ impl PolicyExtension for ToolPolicyExtension {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        let tool_name = Self::normalize_tool_name(raw_tool_name);
+        let tool_name = super::canonical_tool_name(raw_tool_name);
 
         if tool_name != "shell.exec" {
             return Ok(());
@@ -238,7 +176,12 @@ mod tests {
 
     #[test]
     fn denies_destructive_shell_commands() {
-        let ext = ToolPolicyExtension::default_rules();
+        let ext = ToolPolicyExtension::new(
+            BTreeSet::from(["rm".to_owned()]),
+            BTreeSet::new(),
+            BTreeSet::new(),
+            ShellPolicyDefault::Deny,
+        );
         let pack = test_pack();
         let token = test_token();
         let caps = BTreeSet::from([Capability::InvokeTool]);
@@ -254,7 +197,12 @@ mod tests {
 
     #[test]
     fn requires_approval_for_high_risk_commands() {
-        let ext = ToolPolicyExtension::default_rules();
+        let ext = ToolPolicyExtension::new(
+            BTreeSet::new(),
+            BTreeSet::from(["curl".to_owned()]),
+            BTreeSet::new(),
+            ShellPolicyDefault::Deny,
+        );
         let pack = test_pack();
         let token = test_token();
         let caps = BTreeSet::from([Capability::InvokeTool]);
@@ -270,7 +218,12 @@ mod tests {
 
     #[test]
     fn allows_safe_shell_commands() {
-        let ext = ToolPolicyExtension::default_rules();
+        let ext = ToolPolicyExtension::new(
+            BTreeSet::new(),
+            BTreeSet::new(),
+            BTreeSet::from(["echo".to_owned()]),
+            ShellPolicyDefault::Deny,
+        );
         let pack = test_pack();
         let token = test_token();
         let caps = BTreeSet::from([Capability::InvokeTool]);
@@ -281,7 +234,12 @@ mod tests {
 
     #[test]
     fn normalizes_underscore_shell_alias() {
-        let ext = ToolPolicyExtension::default_rules();
+        let ext = ToolPolicyExtension::new(
+            BTreeSet::new(),
+            BTreeSet::from(["curl".to_owned()]),
+            BTreeSet::new(),
+            ShellPolicyDefault::Deny,
+        );
         let pack = test_pack();
         let token = test_token();
         let caps = BTreeSet::from([Capability::InvokeTool]);
@@ -296,7 +254,12 @@ mod tests {
 
     #[test]
     fn keeps_non_shell_tools_allowed() {
-        let ext = ToolPolicyExtension::default_rules();
+        let ext = ToolPolicyExtension::new(
+            BTreeSet::new(),
+            BTreeSet::new(),
+            BTreeSet::new(),
+            ShellPolicyDefault::Deny,
+        );
         let pack = test_pack();
         let token = test_token();
         let caps = BTreeSet::from([Capability::InvokeTool]);
@@ -307,7 +270,12 @@ mod tests {
 
     #[test]
     fn allows_when_no_request_parameters() {
-        let ext = ToolPolicyExtension::default_rules();
+        let ext = ToolPolicyExtension::new(
+            BTreeSet::new(),
+            BTreeSet::new(),
+            BTreeSet::new(),
+            ShellPolicyDefault::Deny,
+        );
         let pack = test_pack();
         let token = test_token();
         let caps = BTreeSet::from([Capability::InvokeTool]);
@@ -317,7 +285,12 @@ mod tests {
 
     #[test]
     fn denies_absolute_path_command() {
-        let ext = ToolPolicyExtension::default_rules();
+        let ext = ToolPolicyExtension::new(
+            BTreeSet::from(["rm".to_owned()]),
+            BTreeSet::new(),
+            BTreeSet::new(),
+            ShellPolicyDefault::Deny,
+        );
         let pack = test_pack();
         let token = test_token();
         let caps = BTreeSet::from([Capability::InvokeTool]);
@@ -332,14 +305,18 @@ mod tests {
 
     #[test]
     fn denies_windows_absolute_path_command() {
-        let ext = ToolPolicyExtension::default_rules();
+        // "rm.exe" is not in any list; default-deny mode blocks it.
+        let ext = ToolPolicyExtension::new(
+            BTreeSet::new(),
+            BTreeSet::new(),
+            BTreeSet::new(),
+            ShellPolicyDefault::Deny,
+        );
         let pack = test_pack();
         let token = test_token();
         let caps = BTreeSet::from([Capability::InvokeTool]);
         let params = json!({"tool_name": "shell.exec", "payload": {"command": "C:\\Windows\\System32\\rm.exe"}});
         let ctx = make_context(&pack, &token, &caps, Some(&params));
-        // basename is "rm.exe" which doesn't match "rm" in deny list,
-        // but also not in allow list — default-deny blocks it.
         assert!(matches!(
             ext.authorize_extension(&ctx).unwrap_err(),
             PolicyError::ToolCallDenied { .. }
@@ -348,7 +325,12 @@ mod tests {
 
     #[test]
     fn normalizes_bare_shell_alias() {
-        let ext = ToolPolicyExtension::default_rules();
+        let ext = ToolPolicyExtension::new(
+            BTreeSet::from(["rm".to_owned()]),
+            BTreeSet::new(),
+            BTreeSet::new(),
+            ShellPolicyDefault::Deny,
+        );
         let pack = test_pack();
         let token = test_token();
         let caps = BTreeSet::from([Capability::InvokeTool]);
@@ -362,7 +344,12 @@ mod tests {
 
     #[test]
     fn case_insensitive_command_matching() {
-        let ext = ToolPolicyExtension::default_rules();
+        let ext = ToolPolicyExtension::new(
+            BTreeSet::from(["rm".to_owned()]),
+            BTreeSet::new(),
+            BTreeSet::new(),
+            ShellPolicyDefault::Deny,
+        );
         let pack = test_pack();
         let token = test_token();
         let caps = BTreeSet::from([Capability::InvokeTool]);
@@ -376,7 +363,12 @@ mod tests {
 
     #[test]
     fn default_deny_blocks_unknown_command() {
-        let ext = ToolPolicyExtension::default_rules();
+        let ext = ToolPolicyExtension::new(
+            BTreeSet::new(),
+            BTreeSet::new(),
+            BTreeSet::new(),
+            ShellPolicyDefault::Deny,
+        );
         let pack = test_pack();
         let token = test_token();
         let caps = BTreeSet::from([Capability::InvokeTool]);
@@ -389,7 +381,12 @@ mod tests {
 
     #[test]
     fn allow_listed_command_passes() {
-        let ext = ToolPolicyExtension::default_rules();
+        let ext = ToolPolicyExtension::new(
+            BTreeSet::new(),
+            BTreeSet::new(),
+            BTreeSet::from(["git".to_owned()]),
+            ShellPolicyDefault::Deny,
+        );
         let pack = test_pack();
         let token = test_token();
         let caps = BTreeSet::from([Capability::InvokeTool]);
@@ -410,6 +407,148 @@ mod tests {
         let token = test_token();
         let caps = BTreeSet::from([Capability::InvokeTool]);
         let params = json!({"tool_name": "shell.exec", "payload": {"command": "anything"}});
+        let ctx = make_context(&pack, &token, &caps, Some(&params));
+        assert!(ext.authorize_extension(&ctx).is_ok());
+    }
+
+    // ── from_config tests ────────────────────────────────────────────────────
+    // These tests verify that from_config uses the runtime config values
+    // exclusively, with no hidden hardcoded entries.
+
+    fn make_rt(
+        allow: &[&str],
+        deny: &[&str],
+        approval: &[&str],
+        mode: ShellPolicyDefault,
+    ) -> super::super::runtime_config::ToolRuntimeConfig {
+        super::super::runtime_config::ToolRuntimeConfig {
+            file_root: None,
+            shell_allow: allow.iter().map(|s| s.to_string()).collect(),
+            shell_deny: deny.iter().map(|s| s.to_string()).collect(),
+            shell_approval_required: approval.iter().map(|s| s.to_string()).collect(),
+            shell_default_mode: mode,
+        }
+    }
+
+    fn shell_params(command: &str) -> serde_json::Value {
+        json!({"tool_name": "shell.exec", "payload": {"command": command}})
+    }
+
+    /// `from_config` with an empty deny list does NOT explicitly deny `rm`;
+    /// `rm` is only blocked by the default-deny fallback, not a deny entry.
+    #[test]
+    fn from_config_empty_deny_rm_hits_default_deny_not_explicit_deny() {
+        let rt = make_rt(&[], &[], &[], ShellPolicyDefault::Deny);
+        let ext = ToolPolicyExtension::from_config(&rt);
+        let pack = test_pack();
+        let token = test_token();
+        let caps = BTreeSet::from([Capability::InvokeTool]);
+        let params = shell_params("rm");
+        let ctx = make_context(&pack, &token, &caps, Some(&params));
+        // Blocked — but because of default-deny, not an explicit deny entry.
+        let err = ext.authorize_extension(&ctx).unwrap_err();
+        match err {
+            PolicyError::ToolCallDenied { reason, .. } => {
+                assert!(
+                    reason.contains("not in the allow list"),
+                    "expected default-deny reason, got: {reason}"
+                );
+            }
+            other => panic!("expected ToolCallDenied, got {other:?}"),
+        }
+    }
+
+    /// With an empty allow list, `echo` (a default-allow command in config
+    /// defaults) must be denied when the user explicitly sets allow = [].
+    #[test]
+    fn from_config_empty_allow_echo_is_denied() {
+        let rt = make_rt(&[], &[], &[], ShellPolicyDefault::Deny);
+        let ext = ToolPolicyExtension::from_config(&rt);
+        let pack = test_pack();
+        let token = test_token();
+        let caps = BTreeSet::from([Capability::InvokeTool]);
+        let params = shell_params("echo");
+        let ctx = make_context(&pack, &token, &caps, Some(&params));
+        assert!(
+            ext.authorize_extension(&ctx).is_err(),
+            "echo must be denied when allow list is empty"
+        );
+    }
+
+    /// User-supplied deny list is used verbatim: a command listed in deny is
+    /// explicitly denied, and a command NOT in the list is not.
+    #[test]
+    fn from_config_user_deny_list_is_exact() {
+        let rt = make_rt(&["ls"], &["custom_danger"], &[], ShellPolicyDefault::Deny);
+        let ext = ToolPolicyExtension::from_config(&rt);
+        let pack = test_pack();
+        let token = test_token();
+        let caps = BTreeSet::from([Capability::InvokeTool]);
+
+        // custom_danger → explicit deny: reason must say "blocked by shell policy",
+        // not "not in the allow list" (which would indicate default-deny, not explicit deny).
+        let params = shell_params("custom_danger");
+        let ctx = make_context(&pack, &token, &caps, Some(&params));
+        let err = ext.authorize_extension(&ctx).unwrap_err();
+        match err {
+            PolicyError::ToolCallDenied { reason, .. } => {
+                assert!(
+                    reason.contains("blocked by shell policy"),
+                    "expected explicit-deny reason, got: {reason}"
+                );
+            }
+            other => panic!("expected ToolCallDenied, got {other:?}"),
+        }
+
+        // ls → allowed
+        let params = shell_params("ls");
+        let ctx = make_context(&pack, &token, &caps, Some(&params));
+        assert!(ext.authorize_extension(&ctx).is_ok());
+
+        // unknown_cmd → not in any list, hits default-deny (NOT explicit deny)
+        let params = shell_params("unknown_cmd");
+        let ctx = make_context(&pack, &token, &caps, Some(&params));
+        let err = ext.authorize_extension(&ctx).unwrap_err();
+        match err {
+            PolicyError::ToolCallDenied { reason, .. } => {
+                assert!(
+                    reason.contains("not in the allow list"),
+                    "expected default-deny reason, got: {reason}"
+                );
+            }
+            other => panic!("expected ToolCallDenied, got {other:?}"),
+        }
+    }
+
+    /// User-supplied approval list is used verbatim.
+    #[test]
+    fn from_config_user_approval_list_is_exact() {
+        let rt = make_rt(&[], &[], &["custom_risky"], ShellPolicyDefault::Deny);
+        let ext = ToolPolicyExtension::from_config(&rt);
+        let pack = test_pack();
+        let token = test_token();
+        let caps = BTreeSet::from([Capability::InvokeTool]);
+        let params = shell_params("custom_risky");
+        let ctx = make_context(&pack, &token, &caps, Some(&params));
+        assert!(
+            matches!(
+                ext.authorize_extension(&ctx).unwrap_err(),
+                PolicyError::ToolCallApprovalRequired { .. }
+            ),
+            "expected approval required"
+        );
+    }
+
+    /// With `shell_default_mode = allow`, unknown commands pass even with
+    /// empty allow/deny/approval lists.
+    #[test]
+    fn from_config_allow_mode_passes_unknown() {
+        let rt = make_rt(&[], &[], &[], ShellPolicyDefault::Allow);
+        let ext = ToolPolicyExtension::from_config(&rt);
+        let pack = test_pack();
+        let token = test_token();
+        let caps = BTreeSet::from([Capability::InvokeTool]);
+        let params = shell_params("anything_unknown");
         let ctx = make_context(&pack, &token, &caps, Some(&params));
         assert!(ext.authorize_extension(&ctx).is_ok());
     }
