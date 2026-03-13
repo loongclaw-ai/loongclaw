@@ -306,19 +306,24 @@ fn build_channel_surface_checks(
                 ) else {
                     continue;
                 };
-                checks.push(DoctorCheck {
-                    name: scoped_doctor_check_name(spec.config_name, snapshot, scoped),
-                    level: doctor_check_level_for_health(operation.health),
-                    detail: operation.detail.clone(),
-                });
-
-                if let Some(runtime_name) = spec.runtime_name
-                    && operation.health == mvp::channel::ChannelOperationHealth::Ready
-                {
-                    checks.push(build_channel_runtime_check(
-                        scoped_doctor_check_name(runtime_name, snapshot, scoped).as_str(),
-                        operation,
-                    ));
+                for check in spec.checks {
+                    match check.trigger {
+                        mvp::channel::ChannelDoctorCheckTrigger::OperationHealth => {
+                            checks.push(DoctorCheck {
+                                name: scoped_doctor_check_name(check.name, snapshot, scoped),
+                                level: doctor_check_level_for_health(operation.health),
+                                detail: operation.detail.clone(),
+                            });
+                        }
+                        mvp::channel::ChannelDoctorCheckTrigger::ReadyRuntime => {
+                            if operation.health == mvp::channel::ChannelOperationHealth::Ready {
+                                checks.push(build_channel_runtime_check(
+                                    scoped_doctor_check_name(check.name, snapshot, scoped).as_str(),
+                                    operation,
+                                ));
+                            }
+                        }
+                    }
                 }
             }
         }

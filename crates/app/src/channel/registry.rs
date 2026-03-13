@@ -57,9 +57,20 @@ impl ChannelCapability {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelDoctorCheckTrigger {
+    OperationHealth,
+    ReadyRuntime,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChannelDoctorCheckSpec {
+    pub name: &'static str,
+    pub trigger: ChannelDoctorCheckTrigger,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChannelDoctorOperationSpec {
-    pub config_name: &'static str,
-    pub runtime_name: Option<&'static str>,
+    pub checks: &'static [ChannelDoctorCheckSpec],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -171,10 +182,9 @@ struct ChannelRuntimeDescriptor {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ChannelRegistryDoctorOperationDescriptor {
-    operation_id: &'static str,
-    config_name: &'static str,
-    runtime_name: Option<&'static str>,
+struct ChannelRegistryOperationDescriptor {
+    operation: ChannelCatalogOperation,
+    doctor_checks: &'static [ChannelDoctorCheckSpec],
 }
 
 type ChannelSnapshotBuilder =
@@ -189,8 +199,7 @@ struct ChannelRegistryDescriptor {
     label: &'static str,
     aliases: &'static [&'static str],
     transport: &'static str,
-    operations: &'static [ChannelCatalogOperation],
-    doctor_operations: &'static [ChannelRegistryDoctorOperationDescriptor],
+    operations: &'static [ChannelRegistryOperationDescriptor],
 }
 
 const TELEGRAM_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
@@ -201,19 +210,27 @@ const TELEGRAM_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperatio
     tracks_runtime: true,
 };
 
-const TELEGRAM_OPERATIONS: &[ChannelCatalogOperation] = &[TELEGRAM_SERVE_OPERATION];
+const TELEGRAM_SERVE_DOCTOR_CHECKS: &[ChannelDoctorCheckSpec] = &[
+    ChannelDoctorCheckSpec {
+        name: "telegram channel",
+        trigger: ChannelDoctorCheckTrigger::OperationHealth,
+    },
+    ChannelDoctorCheckSpec {
+        name: "telegram channel runtime",
+        trigger: ChannelDoctorCheckTrigger::ReadyRuntime,
+    },
+];
+const TELEGRAM_OPERATIONS: &[ChannelRegistryOperationDescriptor] =
+    &[ChannelRegistryOperationDescriptor {
+        operation: TELEGRAM_SERVE_OPERATION,
+        doctor_checks: TELEGRAM_SERVE_DOCTOR_CHECKS,
+    }];
 const TELEGRAM_CAPABILITIES: &[ChannelCapability] = &[
     ChannelCapability::RuntimeBacked,
     ChannelCapability::MultiAccount,
     ChannelCapability::Serve,
     ChannelCapability::RuntimeTracking,
 ];
-const TELEGRAM_DOCTOR_OPERATIONS: &[ChannelRegistryDoctorOperationDescriptor] =
-    &[ChannelRegistryDoctorOperationDescriptor {
-        operation_id: "serve",
-        config_name: "telegram channel",
-        runtime_name: Some("telegram channel runtime"),
-    }];
 
 const FEISHU_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: "send",
@@ -231,26 +248,36 @@ const FEISHU_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation 
     tracks_runtime: true,
 };
 
-const FEISHU_OPERATIONS: &[ChannelCatalogOperation] =
-    &[FEISHU_SEND_OPERATION, FEISHU_SERVE_OPERATION];
+const FEISHU_SEND_DOCTOR_CHECKS: &[ChannelDoctorCheckSpec] = &[ChannelDoctorCheckSpec {
+    name: "feishu channel",
+    trigger: ChannelDoctorCheckTrigger::OperationHealth,
+}];
+const FEISHU_SERVE_DOCTOR_CHECKS: &[ChannelDoctorCheckSpec] = &[
+    ChannelDoctorCheckSpec {
+        name: "feishu webhook verification",
+        trigger: ChannelDoctorCheckTrigger::OperationHealth,
+    },
+    ChannelDoctorCheckSpec {
+        name: "feishu webhook runtime",
+        trigger: ChannelDoctorCheckTrigger::ReadyRuntime,
+    },
+];
+const FEISHU_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
+    ChannelRegistryOperationDescriptor {
+        operation: FEISHU_SEND_OPERATION,
+        doctor_checks: FEISHU_SEND_DOCTOR_CHECKS,
+    },
+    ChannelRegistryOperationDescriptor {
+        operation: FEISHU_SERVE_OPERATION,
+        doctor_checks: FEISHU_SERVE_DOCTOR_CHECKS,
+    },
+];
 const FEISHU_CAPABILITIES: &[ChannelCapability] = &[
     ChannelCapability::RuntimeBacked,
     ChannelCapability::MultiAccount,
     ChannelCapability::Send,
     ChannelCapability::Serve,
     ChannelCapability::RuntimeTracking,
-];
-const FEISHU_DOCTOR_OPERATIONS: &[ChannelRegistryDoctorOperationDescriptor] = &[
-    ChannelRegistryDoctorOperationDescriptor {
-        operation_id: "send",
-        config_name: "feishu channel",
-        runtime_name: None,
-    },
-    ChannelRegistryDoctorOperationDescriptor {
-        operation_id: "serve",
-        config_name: "feishu webhook verification",
-        runtime_name: Some("feishu webhook runtime"),
-    },
 ];
 
 const DISCORD_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
@@ -269,14 +296,21 @@ const DISCORD_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation
     tracks_runtime: true,
 };
 
-const DISCORD_OPERATIONS: &[ChannelCatalogOperation] =
-    &[DISCORD_SEND_OPERATION, DISCORD_SERVE_OPERATION];
+const DISCORD_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
+    ChannelRegistryOperationDescriptor {
+        operation: DISCORD_SEND_OPERATION,
+        doctor_checks: &[],
+    },
+    ChannelRegistryOperationDescriptor {
+        operation: DISCORD_SERVE_OPERATION,
+        doctor_checks: &[],
+    },
+];
 const DISCORD_CAPABILITIES: &[ChannelCapability] = &[
     ChannelCapability::Send,
     ChannelCapability::Serve,
     ChannelCapability::RuntimeTracking,
 ];
-const DISCORD_DOCTOR_OPERATIONS: &[ChannelRegistryDoctorOperationDescriptor] = &[];
 
 const SLACK_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: "send",
@@ -294,13 +328,21 @@ const SLACK_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     tracks_runtime: true,
 };
 
-const SLACK_OPERATIONS: &[ChannelCatalogOperation] = &[SLACK_SEND_OPERATION, SLACK_SERVE_OPERATION];
+const SLACK_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
+    ChannelRegistryOperationDescriptor {
+        operation: SLACK_SEND_OPERATION,
+        doctor_checks: &[],
+    },
+    ChannelRegistryOperationDescriptor {
+        operation: SLACK_SERVE_OPERATION,
+        doctor_checks: &[],
+    },
+];
 const SLACK_CAPABILITIES: &[ChannelCapability] = &[
     ChannelCapability::Send,
     ChannelCapability::Serve,
     ChannelCapability::RuntimeTracking,
 ];
-const SLACK_DOCTOR_OPERATIONS: &[ChannelRegistryDoctorOperationDescriptor] = &[];
 
 const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
     ChannelRegistryDescriptor {
@@ -315,7 +357,6 @@ const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
         aliases: &[],
         transport: "telegram_bot_api_polling",
         operations: TELEGRAM_OPERATIONS,
-        doctor_operations: TELEGRAM_DOCTOR_OPERATIONS,
     },
     ChannelRegistryDescriptor {
         id: "feishu",
@@ -329,7 +370,6 @@ const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
         aliases: &["lark"],
         transport: "feishu_openapi_webhook",
         operations: FEISHU_OPERATIONS,
-        doctor_operations: FEISHU_DOCTOR_OPERATIONS,
     },
     ChannelRegistryDescriptor {
         id: "discord",
@@ -340,7 +380,6 @@ const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
         aliases: &["discord-bot"],
         transport: "discord_gateway",
         operations: DISCORD_OPERATIONS,
-        doctor_operations: DISCORD_DOCTOR_OPERATIONS,
     },
     ChannelRegistryDescriptor {
         id: "slack",
@@ -351,7 +390,6 @@ const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
         aliases: &["slack-bot"],
         transport: "slack_events_api",
         operations: SLACK_OPERATIONS,
-        doctor_operations: SLACK_DOCTOR_OPERATIONS,
     },
 ];
 
@@ -381,7 +419,11 @@ fn channel_catalog_entry_from_descriptor(
         capabilities: descriptor.capabilities.to_vec(),
         aliases: descriptor.aliases.to_vec(),
         transport: descriptor.transport,
-        operations: descriptor.operations.to_vec(),
+        operations: descriptor
+            .operations
+            .iter()
+            .map(|descriptor| descriptor.operation)
+            .collect(),
     }
 }
 
@@ -404,14 +446,16 @@ pub fn resolve_channel_doctor_operation_spec(
     raw_channel_id: &str,
     operation_id: &str,
 ) -> Option<ChannelDoctorOperationSpec> {
-    find_channel_registry_descriptor(raw_channel_id)?
-        .doctor_operations
+    let descriptor = find_channel_registry_descriptor(raw_channel_id)?
+        .operations
         .iter()
-        .find(|descriptor| descriptor.operation_id == operation_id)
-        .map(|descriptor| ChannelDoctorOperationSpec {
-            config_name: descriptor.config_name,
-            runtime_name: descriptor.runtime_name,
-        })
+        .find(|descriptor| descriptor.operation.id == operation_id)?;
+    if descriptor.doctor_checks.is_empty() {
+        return None;
+    }
+    Some(ChannelDoctorOperationSpec {
+        checks: descriptor.doctor_checks,
+    })
 }
 
 pub fn catalog_only_channel_entries(
@@ -1108,18 +1152,54 @@ mod tests {
     fn resolve_channel_doctor_operation_spec_uses_registry_metadata() {
         let telegram =
             resolve_channel_doctor_operation_spec("telegram", "serve").expect("telegram spec");
-        assert_eq!(telegram.config_name, "telegram channel");
-        assert_eq!(telegram.runtime_name, Some("telegram channel runtime"));
+        assert_eq!(
+            telegram
+                .checks
+                .iter()
+                .map(|check| (check.name, check.trigger))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "telegram channel",
+                    ChannelDoctorCheckTrigger::OperationHealth,
+                ),
+                (
+                    "telegram channel runtime",
+                    ChannelDoctorCheckTrigger::ReadyRuntime,
+                ),
+            ]
+        );
 
         let feishu_send =
             resolve_channel_doctor_operation_spec("feishu", "send").expect("feishu send spec");
-        assert_eq!(feishu_send.config_name, "feishu channel");
-        assert_eq!(feishu_send.runtime_name, None);
+        assert_eq!(
+            feishu_send
+                .checks
+                .iter()
+                .map(|check| (check.name, check.trigger))
+                .collect::<Vec<_>>(),
+            vec![("feishu channel", ChannelDoctorCheckTrigger::OperationHealth)]
+        );
 
         let lark_serve =
             resolve_channel_doctor_operation_spec("lark", "serve").expect("lark serve spec");
-        assert_eq!(lark_serve.config_name, "feishu webhook verification");
-        assert_eq!(lark_serve.runtime_name, Some("feishu webhook runtime"));
+        assert_eq!(
+            lark_serve
+                .checks
+                .iter()
+                .map(|check| (check.name, check.trigger))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "feishu webhook verification",
+                    ChannelDoctorCheckTrigger::OperationHealth,
+                ),
+                (
+                    "feishu webhook runtime",
+                    ChannelDoctorCheckTrigger::ReadyRuntime,
+                ),
+            ]
+        );
 
         assert_eq!(
             resolve_channel_doctor_operation_spec("discord", "serve"),

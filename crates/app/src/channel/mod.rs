@@ -41,9 +41,10 @@ mod telegram;
 
 pub use registry::{
     ChannelCapability, ChannelCatalogEntry, ChannelCatalogImplementationStatus,
-    ChannelCatalogOperation, ChannelCatalogOperationAvailability, ChannelDoctorOperationSpec,
-    ChannelInventory, ChannelOperationHealth, ChannelOperationStatus, ChannelStatusSnapshot,
-    ChannelSurface, catalog_only_channel_entries, channel_inventory, channel_status_snapshots,
+    ChannelCatalogOperation, ChannelCatalogOperationAvailability, ChannelDoctorCheckSpec,
+    ChannelDoctorCheckTrigger, ChannelDoctorOperationSpec, ChannelInventory,
+    ChannelOperationHealth, ChannelOperationStatus, ChannelStatusSnapshot, ChannelSurface,
+    catalog_only_channel_entries, channel_inventory, channel_status_snapshots,
     list_channel_catalog, normalize_channel_catalog_id, normalize_channel_platform,
     resolve_channel_catalog_entry, resolve_channel_doctor_operation_spec,
 };
