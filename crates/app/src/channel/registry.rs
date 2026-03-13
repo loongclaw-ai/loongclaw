@@ -17,10 +17,27 @@ pub struct ChannelCatalogOperation {
     pub tracks_runtime: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelCatalogImplementationStatus {
+    RuntimeBacked,
+    Stub,
+}
+
+impl ChannelCatalogImplementationStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RuntimeBacked => "runtime_backed",
+            Self::Stub => "stub",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ChannelCatalogEntry {
     pub id: &'static str,
     pub label: &'static str,
+    pub implementation_status: ChannelCatalogImplementationStatus,
     pub aliases: Vec<&'static str>,
     pub transport: &'static str,
     pub operations: Vec<ChannelCatalogOperation>,
@@ -90,6 +107,7 @@ impl ChannelStatusSnapshot {
 struct ChannelRegistryDescriptor {
     id: &'static str,
     runtime_platform: Option<ChannelPlatform>,
+    implementation_status: ChannelCatalogImplementationStatus,
     label: &'static str,
     aliases: &'static [&'static str],
     transport: &'static str,
@@ -159,6 +177,7 @@ const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
     ChannelRegistryDescriptor {
         id: "telegram",
         runtime_platform: Some(ChannelPlatform::Telegram),
+        implementation_status: ChannelCatalogImplementationStatus::RuntimeBacked,
         label: "Telegram",
         aliases: &[],
         transport: "telegram_bot_api_polling",
@@ -167,6 +186,7 @@ const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
     ChannelRegistryDescriptor {
         id: "feishu",
         runtime_platform: Some(ChannelPlatform::Feishu),
+        implementation_status: ChannelCatalogImplementationStatus::RuntimeBacked,
         label: "Feishu/Lark",
         aliases: &["lark"],
         transport: "feishu_openapi_webhook",
@@ -175,6 +195,7 @@ const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
     ChannelRegistryDescriptor {
         id: "discord",
         runtime_platform: None,
+        implementation_status: ChannelCatalogImplementationStatus::Stub,
         label: "Discord",
         aliases: &["discord-bot"],
         transport: "discord_gateway",
@@ -183,6 +204,7 @@ const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
     ChannelRegistryDescriptor {
         id: "slack",
         runtime_platform: None,
+        implementation_status: ChannelCatalogImplementationStatus::Stub,
         label: "Slack",
         aliases: &["slack-bot"],
         transport: "slack_events_api",
@@ -196,6 +218,7 @@ pub fn list_channel_catalog() -> Vec<ChannelCatalogEntry> {
         .map(|descriptor| ChannelCatalogEntry {
             id: descriptor.id,
             label: descriptor.label,
+            implementation_status: descriptor.implementation_status,
             aliases: descriptor.aliases.to_vec(),
             transport: descriptor.transport,
             operations: descriptor.operations.to_vec(),
@@ -813,6 +836,10 @@ mod tests {
             .find(|entry| entry.id == "feishu")
             .expect("feishu catalog entry");
 
+        assert_eq!(
+            feishu.implementation_status,
+            ChannelCatalogImplementationStatus::RuntimeBacked
+        );
         assert_eq!(feishu.aliases, vec!["lark"]);
         assert_eq!(feishu.operations.len(), 2);
         assert_eq!(feishu.operations[0].command, "feishu-send");
@@ -831,12 +858,20 @@ mod tests {
             .find(|entry| entry.id == "slack")
             .expect("slack catalog entry");
 
+        assert_eq!(
+            discord.implementation_status,
+            ChannelCatalogImplementationStatus::Stub
+        );
         assert_eq!(discord.transport, "discord_gateway");
         assert_eq!(discord.aliases, vec!["discord-bot"]);
         assert_eq!(discord.operations.len(), 2);
         assert_eq!(discord.operations[0].command, "discord-send");
         assert_eq!(discord.operations[1].command, "discord-serve");
 
+        assert_eq!(
+            slack.implementation_status,
+            ChannelCatalogImplementationStatus::Stub
+        );
         assert_eq!(slack.transport, "slack_events_api");
         assert_eq!(slack.aliases, vec!["slack-bot"]);
         assert_eq!(slack.operations.len(), 2);
@@ -869,6 +904,7 @@ mod tests {
             ChannelCatalogEntry {
                 id: "telegram",
                 label: "Telegram",
+                implementation_status: ChannelCatalogImplementationStatus::RuntimeBacked,
                 aliases: vec![],
                 transport: "telegram_bot_api_polling",
                 operations: vec![ChannelCatalogOperation {
@@ -881,6 +917,7 @@ mod tests {
             ChannelCatalogEntry {
                 id: "discord",
                 label: "Discord",
+                implementation_status: ChannelCatalogImplementationStatus::Stub,
                 aliases: vec![],
                 transport: "discord_gateway",
                 operations: vec![ChannelCatalogOperation {
@@ -919,6 +956,10 @@ mod tests {
 
         assert_eq!(catalog_only.len(), 1);
         assert_eq!(catalog_only[0].id, "discord");
+        assert_eq!(
+            catalog_only[0].implementation_status,
+            ChannelCatalogImplementationStatus::Stub
+        );
         assert_eq!(catalog_only[0].operations[0].command, "discord-send");
     }
 

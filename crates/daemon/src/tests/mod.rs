@@ -156,10 +156,14 @@ fn render_channel_snapshots_text_reports_catalog_only_channels() {
     let rendered = render_channel_snapshots_text("/tmp/loongclaw.toml", &snapshots, &catalog_only);
 
     assert!(rendered.contains("catalog-only channels:"));
-    assert!(rendered.contains("Discord [discord] aliases=discord-bot transport=discord_gateway"));
+    assert!(rendered.contains(
+        "Discord [discord] implementation_status=stub aliases=discord-bot transport=discord_gateway"
+    ));
     assert!(rendered.contains("catalog op send (discord-send) tracks_runtime=false"));
     assert!(rendered.contains("catalog op serve (discord-serve) tracks_runtime=true"));
-    assert!(rendered.contains("Slack [slack] aliases=slack-bot transport=slack_events_api"));
+    assert!(rendered.contains(
+        "Slack [slack] implementation_status=stub aliases=slack-bot transport=slack_events_api"
+    ));
     assert!(rendered.contains("catalog op send (slack-send) tracks_runtime=false"));
     assert!(rendered.contains("catalog op serve (slack-serve) tracks_runtime=true"));
 }

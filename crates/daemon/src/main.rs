@@ -1078,8 +1078,12 @@ fn render_channel_snapshots_text(
                 entry.aliases.join(",")
             };
             lines.push(format!(
-                "{} [{}] aliases={} transport={}",
-                entry.label, entry.id, aliases, entry.transport
+                "{} [{}] implementation_status={} aliases={} transport={}",
+                entry.label,
+                entry.id,
+                entry.implementation_status.as_str(),
+                aliases,
+                entry.transport
             ));
             for operation in &entry.operations {
                 lines.push(format!(
