@@ -1,15 +1,11 @@
-<h1 align="center">🐉 LoongClaw</h1>
+# 🐉 LoongClaw - Originated from the East, here to benefit the world
 
-<p align="center">
+<p align="left">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/logo/loongclaw-logo-dark.png" />
     <source media="(prefers-color-scheme: light)" srcset="assets/logo/loongclaw-logo-light.png" />
-    <img src="assets/logo/loongclaw-logo-light.png" alt="LoongClaw" width="560" />
+    <img src="assets/logo/loongclaw-logo-light.png" alt="LoongClaw" width="720" />
   </picture>
-</p>
-
-<p align="center">
-  <strong>Originated from the East, here to benefit the world</strong>
 </p>
 
 <p align="center">

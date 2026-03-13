@@ -1,15 +1,11 @@
-<h1 align="center">🐉 LoongClaw</h1>
+# 🐉 LoongClaw - 发轫于东，以会群友
 
-<p align="center">
+<p align="left">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/logo/loongclaw-logo-dark.png" />
     <source media="(prefers-color-scheme: light)" srcset="assets/logo/loongclaw-logo-light.png" />
-    <img src="assets/logo/loongclaw-logo-light.png" alt="LoongClaw" width="560" />
+    <img src="assets/logo/loongclaw-logo-light.png" alt="LoongClaw" width="720" />
   </picture>
-</p>
-
-<p align="center">
-  <strong>发轫于东，以会群友</strong>
 </p>
 
 <p align="center">
