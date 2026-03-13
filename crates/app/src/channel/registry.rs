@@ -3,8 +3,9 @@ use std::{collections::BTreeSet, path::Path};
 use serde::Serialize;
 
 use crate::config::{
-    ChannelDefaultAccountSelectionSource, LoongClawConfig, ResolvedFeishuChannelConfig,
-    ResolvedTelegramChannelConfig,
+    ChannelDefaultAccountSelectionSource, FEISHU_APP_ID_ENV, FEISHU_APP_SECRET_ENV,
+    FEISHU_ENCRYPT_KEY_ENV, FEISHU_VERIFICATION_TOKEN_ENV, LoongClawConfig,
+    ResolvedFeishuChannelConfig, ResolvedTelegramChannelConfig, TELEGRAM_BOT_TOKEN_ENV,
 };
 
 use super::{ChannelOperationRuntime, ChannelPlatform, runtime_state};
@@ -16,6 +17,16 @@ pub struct ChannelCatalogOperation {
     pub command: &'static str,
     pub availability: ChannelCatalogOperationAvailability,
     pub tracks_runtime: bool,
+    pub requirements: &'static [ChannelCatalogOperationRequirement],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ChannelCatalogOperationRequirement {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub config_paths: &'static [&'static str],
+    pub env_pointer_paths: &'static [&'static str],
+    pub default_env_var: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -208,7 +219,47 @@ const TELEGRAM_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperatio
     command: "telegram-serve",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: true,
+    requirements: TELEGRAM_SERVE_REQUIREMENTS,
 };
+
+const TELEGRAM_ENABLED_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "enabled",
+        label: "channel enabled",
+        config_paths: &["telegram.enabled", "telegram.accounts.<account>.enabled"],
+        env_pointer_paths: &[],
+        default_env_var: None,
+    };
+const TELEGRAM_BOT_TOKEN_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "bot_token",
+        label: "bot token",
+        config_paths: &[
+            "telegram.bot_token",
+            "telegram.accounts.<account>.bot_token",
+        ],
+        env_pointer_paths: &[
+            "telegram.bot_token_env",
+            "telegram.accounts.<account>.bot_token_env",
+        ],
+        default_env_var: Some(TELEGRAM_BOT_TOKEN_ENV),
+    };
+const TELEGRAM_ALLOWED_CHAT_IDS_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "allowed_chat_ids",
+        label: "allowed chat ids",
+        config_paths: &[
+            "telegram.allowed_chat_ids",
+            "telegram.accounts.<account>.allowed_chat_ids",
+        ],
+        env_pointer_paths: &[],
+        default_env_var: None,
+    };
+const TELEGRAM_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
+    TELEGRAM_ENABLED_REQUIREMENT,
+    TELEGRAM_BOT_TOKEN_REQUIREMENT,
+    TELEGRAM_ALLOWED_CHAT_IDS_REQUIREMENT,
+];
 
 const TELEGRAM_SERVE_DOCTOR_CHECKS: &[ChannelDoctorCheckSpec] = &[
     ChannelDoctorCheckSpec {
@@ -238,6 +289,7 @@ const FEISHU_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     command: "feishu-send",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
+    requirements: FEISHU_SEND_REQUIREMENTS,
 };
 
 const FEISHU_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
@@ -246,7 +298,88 @@ const FEISHU_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation 
     command: "feishu-serve",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: true,
+    requirements: FEISHU_SERVE_REQUIREMENTS,
 };
+
+const FEISHU_ENABLED_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "enabled",
+        label: "channel enabled",
+        config_paths: &["feishu.enabled", "feishu.accounts.<account>.enabled"],
+        env_pointer_paths: &[],
+        default_env_var: None,
+    };
+const FEISHU_APP_ID_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "app_id",
+        label: "app id",
+        config_paths: &["feishu.app_id", "feishu.accounts.<account>.app_id"],
+        env_pointer_paths: &["feishu.app_id_env", "feishu.accounts.<account>.app_id_env"],
+        default_env_var: Some(FEISHU_APP_ID_ENV),
+    };
+const FEISHU_APP_SECRET_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "app_secret",
+        label: "app secret",
+        config_paths: &["feishu.app_secret", "feishu.accounts.<account>.app_secret"],
+        env_pointer_paths: &[
+            "feishu.app_secret_env",
+            "feishu.accounts.<account>.app_secret_env",
+        ],
+        default_env_var: Some(FEISHU_APP_SECRET_ENV),
+    };
+const FEISHU_ALLOWED_CHAT_IDS_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "allowed_chat_ids",
+        label: "allowed chat ids",
+        config_paths: &[
+            "feishu.allowed_chat_ids",
+            "feishu.accounts.<account>.allowed_chat_ids",
+        ],
+        env_pointer_paths: &[],
+        default_env_var: None,
+    };
+const FEISHU_VERIFICATION_TOKEN_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "verification_token",
+        label: "verification token",
+        config_paths: &[
+            "feishu.verification_token",
+            "feishu.accounts.<account>.verification_token",
+        ],
+        env_pointer_paths: &[
+            "feishu.verification_token_env",
+            "feishu.accounts.<account>.verification_token_env",
+        ],
+        default_env_var: Some(FEISHU_VERIFICATION_TOKEN_ENV),
+    };
+const FEISHU_ENCRYPT_KEY_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "encrypt_key",
+        label: "encrypt key",
+        config_paths: &[
+            "feishu.encrypt_key",
+            "feishu.accounts.<account>.encrypt_key",
+        ],
+        env_pointer_paths: &[
+            "feishu.encrypt_key_env",
+            "feishu.accounts.<account>.encrypt_key_env",
+        ],
+        default_env_var: Some(FEISHU_ENCRYPT_KEY_ENV),
+    };
+const FEISHU_SEND_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
+    FEISHU_ENABLED_REQUIREMENT,
+    FEISHU_APP_ID_REQUIREMENT,
+    FEISHU_APP_SECRET_REQUIREMENT,
+];
+const FEISHU_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
+    FEISHU_ENABLED_REQUIREMENT,
+    FEISHU_APP_ID_REQUIREMENT,
+    FEISHU_APP_SECRET_REQUIREMENT,
+    FEISHU_ALLOWED_CHAT_IDS_REQUIREMENT,
+    FEISHU_VERIFICATION_TOKEN_REQUIREMENT,
+    FEISHU_ENCRYPT_KEY_REQUIREMENT,
+];
 
 const FEISHU_SEND_DOCTOR_CHECKS: &[ChannelDoctorCheckSpec] = &[ChannelDoctorCheckSpec {
     name: "feishu channel",
@@ -286,6 +419,7 @@ const DISCORD_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation 
     command: "discord-send",
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: false,
+    requirements: &[],
 };
 
 const DISCORD_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
@@ -294,6 +428,7 @@ const DISCORD_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation
     command: "discord-serve",
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: true,
+    requirements: &[],
 };
 
 const DISCORD_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
@@ -318,6 +453,7 @@ const SLACK_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     command: "slack-send",
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: false,
+    requirements: &[],
 };
 
 const SLACK_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
@@ -326,6 +462,7 @@ const SLACK_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     command: "slack-serve",
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: true,
+    requirements: &[],
 };
 
 const SLACK_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
@@ -1325,6 +1462,82 @@ mod tests {
     }
 
     #[test]
+    fn channel_catalog_operations_expose_requirement_metadata() {
+        let catalog = list_channel_catalog();
+        let telegram = catalog
+            .iter()
+            .find(|entry| entry.id == "telegram")
+            .expect("telegram catalog entry");
+        let feishu = catalog
+            .iter()
+            .find(|entry| entry.id == "feishu")
+            .expect("feishu catalog entry");
+        let discord = catalog
+            .iter()
+            .find(|entry| entry.id == "discord")
+            .expect("discord catalog entry");
+
+        assert_eq!(
+            telegram.operations[0]
+                .requirements
+                .iter()
+                .map(|requirement| requirement.id)
+                .collect::<Vec<_>>(),
+            vec!["enabled", "bot_token", "allowed_chat_ids"]
+        );
+        assert_eq!(
+            telegram.operations[0].requirements[1].default_env_var,
+            Some("TELEGRAM_BOT_TOKEN")
+        );
+        assert_eq!(
+            telegram.operations[0].requirements[1].env_pointer_paths,
+            &[
+                "telegram.bot_token_env",
+                "telegram.accounts.<account>.bot_token_env",
+            ]
+        );
+
+        assert_eq!(
+            feishu.operations[0]
+                .requirements
+                .iter()
+                .map(|requirement| requirement.id)
+                .collect::<Vec<_>>(),
+            vec!["enabled", "app_id", "app_secret"]
+        );
+        assert_eq!(
+            feishu.operations[1]
+                .requirements
+                .iter()
+                .map(|requirement| requirement.id)
+                .collect::<Vec<_>>(),
+            vec![
+                "enabled",
+                "app_id",
+                "app_secret",
+                "allowed_chat_ids",
+                "verification_token",
+                "encrypt_key",
+            ]
+        );
+        assert_eq!(
+            feishu.operations[1].requirements[4].default_env_var,
+            Some("FEISHU_VERIFICATION_TOKEN")
+        );
+        assert_eq!(
+            feishu.operations[1].requirements[5].default_env_var,
+            Some("FEISHU_ENCRYPT_KEY")
+        );
+
+        assert!(
+            discord
+                .operations
+                .iter()
+                .all(|operation| operation.requirements.is_empty())
+        );
+    }
+
+    #[test]
     fn catalog_only_channel_entries_include_stub_surfaces_for_default_config() {
         let config = LoongClawConfig::default();
         let snapshots = channel_status_snapshots(&config);
@@ -1433,6 +1646,7 @@ mod tests {
                     command: "telegram-serve",
                     availability: ChannelCatalogOperationAvailability::Implemented,
                     tracks_runtime: true,
+                    requirements: &[],
                 }],
             },
             ChannelCatalogEntry {
@@ -1452,6 +1666,7 @@ mod tests {
                     command: "discord-send",
                     availability: ChannelCatalogOperationAvailability::Stub,
                     tracks_runtime: false,
+                    requirements: &[],
                 }],
             },
         ];

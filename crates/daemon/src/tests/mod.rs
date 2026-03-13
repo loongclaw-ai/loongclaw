@@ -88,8 +88,13 @@ fn render_channel_surfaces_text_reports_aliases_and_operation_health() {
     assert!(rendered.contains("configured_accounts=1"));
     assert!(rendered.contains("aliases=lark"));
     assert!(rendered.contains("account=feishu:cli_a1b2c3"));
-    assert!(rendered.contains("op send (feishu-send) ready"));
-    assert!(rendered.contains("op serve (feishu-serve) misconfigured"));
+    assert!(
+        rendered
+            .contains("op send (feishu-send) ready: ready requirements=enabled,app_id,app_secret")
+    );
+    assert!(rendered.contains(
+        "op serve (feishu-serve) misconfigured: allowed_chat_ids is empty; verification_token is missing; encrypt_key is missing requirements=enabled,app_id,app_secret,allowed_chat_ids,verification_token,encrypt_key"
+    ));
     assert!(rendered.contains("running=false"));
 }
 
@@ -164,21 +169,86 @@ fn render_channel_surfaces_text_reports_catalog_only_channels() {
     assert!(rendered.contains(
         "Discord [discord] implementation_status=stub capabilities=send,serve,runtime_tracking aliases=discord-bot transport=discord_gateway"
     ));
-    assert!(
-        rendered.contains("catalog op send (discord-send) availability=stub tracks_runtime=false")
-    );
-    assert!(
-        rendered.contains("catalog op serve (discord-serve) availability=stub tracks_runtime=true")
-    );
+    assert!(rendered.contains(
+        "catalog op send (discord-send) availability=stub tracks_runtime=false requirements=-"
+    ));
+    assert!(rendered.contains(
+        "catalog op serve (discord-serve) availability=stub tracks_runtime=true requirements=-"
+    ));
     assert!(rendered.contains(
         "Slack [slack] implementation_status=stub capabilities=send,serve,runtime_tracking aliases=slack-bot transport=slack_events_api"
     ));
+    assert!(rendered.contains(
+        "catalog op send (slack-send) availability=stub tracks_runtime=false requirements=-"
+    ));
+    assert!(rendered.contains(
+        "catalog op serve (slack-serve) availability=stub tracks_runtime=true requirements=-"
+    ));
+}
+
+#[test]
+fn build_channels_cli_json_payload_includes_operation_requirement_metadata() {
+    let config = mvp::config::LoongClawConfig::default();
+    let inventory = mvp::channel::channel_inventory(&config);
+    let payload = build_channels_cli_json_payload("/tmp/loongclaw.toml", &inventory);
+    let encoded = serde_json::to_value(&payload).expect("serialize payload");
+    let surfaces = encoded["channel_surfaces"]
+        .as_array()
+        .expect("channel surfaces array");
+
     assert!(
-        rendered.contains("catalog op send (slack-send) availability=stub tracks_runtime=false")
+        encoded["channel_catalog"]
+            .as_array()
+            .expect("channel catalog array")
+            .iter()
+            .any(|entry| {
+                entry.get("id").and_then(serde_json::Value::as_str) == Some("telegram")
+                    && entry
+                        .get("operations")
+                        .and_then(serde_json::Value::as_array)
+                        .and_then(|operations| operations.first())
+                        .and_then(|operation| operation.get("requirements"))
+                        .and_then(serde_json::Value::as_array)
+                        .map(|requirements| {
+                            requirements
+                                .iter()
+                                .filter_map(|item| item.get("id"))
+                                .filter_map(serde_json::Value::as_str)
+                                .collect::<Vec<_>>()
+                        })
+                        == Some(vec!["enabled", "bot_token", "allowed_chat_ids"])
+            })
     );
-    assert!(
-        rendered.contains("catalog op serve (slack-serve) availability=stub tracks_runtime=true")
-    );
+
+    assert!(surfaces.iter().any(|surface| {
+        surface
+            .get("catalog")
+            .and_then(|catalog| catalog.get("id"))
+            .and_then(serde_json::Value::as_str)
+            == Some("feishu")
+            && surface
+                .get("catalog")
+                .and_then(|catalog| catalog.get("operations"))
+                .and_then(serde_json::Value::as_array)
+                .and_then(|operations| operations.get(1))
+                .and_then(|operation| operation.get("requirements"))
+                .and_then(serde_json::Value::as_array)
+                .map(|requirements| {
+                    requirements
+                        .iter()
+                        .filter_map(|item| item.get("id"))
+                        .filter_map(serde_json::Value::as_str)
+                        .collect::<Vec<_>>()
+                })
+                == Some(vec![
+                    "enabled",
+                    "app_id",
+                    "app_secret",
+                    "allowed_chat_ids",
+                    "verification_token",
+                    "encrypt_key",
+                ])
+    }));
 }
 
 #[test]

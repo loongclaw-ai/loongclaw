@@ -1055,12 +1055,22 @@ fn render_channel_surfaces_text(
                 lines.push(format!("    note: {note}"));
             }
             for operation in &snapshot.operations {
+                let requirement_ids = surface
+                    .catalog
+                    .operations
+                    .iter()
+                    .find(|catalog_operation| catalog_operation.id == operation.id)
+                    .map(|catalog_operation| {
+                        render_channel_operation_requirement_ids(catalog_operation.requirements)
+                    })
+                    .unwrap_or_else(|| "-".to_owned());
                 lines.push(format!(
-                    "    op {} ({}) {}: {}",
+                    "    op {} ({}) {}: {} requirements={}",
                     operation.id,
                     operation.command,
                     operation.health.as_str(),
-                    operation.detail
+                    operation.detail,
+                    requirement_ids,
                 ));
                 if let Some(runtime) = &operation.runtime {
                     lines.push(format!(
@@ -1107,16 +1117,30 @@ fn render_channel_surfaces_text(
             push_channel_surface_header(&mut lines, surface);
             for operation in &surface.catalog.operations {
                 lines.push(format!(
-                    "  catalog op {} ({}) availability={} tracks_runtime={}",
+                    "  catalog op {} ({}) availability={} tracks_runtime={} requirements={}",
                     operation.id,
                     operation.command,
                     operation.availability.as_str(),
-                    operation.tracks_runtime
+                    operation.tracks_runtime,
+                    render_channel_operation_requirement_ids(operation.requirements)
                 ));
             }
         }
     }
     lines.join("\n")
+}
+
+fn render_channel_operation_requirement_ids(
+    requirements: &[mvp::channel::ChannelCatalogOperationRequirement],
+) -> String {
+    if requirements.is_empty() {
+        return "-".to_owned();
+    }
+    requirements
+        .iter()
+        .map(|requirement| requirement.id)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn push_channel_surface_header(lines: &mut Vec<String>, surface: &mvp::channel::ChannelSurface) {

@@ -13,11 +13,11 @@ use super::shared::{
     read_secret_prefer_inline, validate_env_pointer_field,
 };
 
-const TELEGRAM_BOT_TOKEN_ENV: &str = "TELEGRAM_BOT_TOKEN";
-const FEISHU_APP_ID_ENV: &str = "FEISHU_APP_ID";
-const FEISHU_APP_SECRET_ENV: &str = "FEISHU_APP_SECRET";
-const FEISHU_VERIFICATION_TOKEN_ENV: &str = "FEISHU_VERIFICATION_TOKEN";
-const FEISHU_ENCRYPT_KEY_ENV: &str = "FEISHU_ENCRYPT_KEY";
+pub(crate) const TELEGRAM_BOT_TOKEN_ENV: &str = "TELEGRAM_BOT_TOKEN";
+pub(crate) const FEISHU_APP_ID_ENV: &str = "FEISHU_APP_ID";
+pub(crate) const FEISHU_APP_SECRET_ENV: &str = "FEISHU_APP_SECRET";
+pub(crate) const FEISHU_VERIFICATION_TOKEN_ENV: &str = "FEISHU_VERIFICATION_TOKEN";
+pub(crate) const FEISHU_ENCRYPT_KEY_ENV: &str = "FEISHU_ENCRYPT_KEY";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CliChannelConfig {
