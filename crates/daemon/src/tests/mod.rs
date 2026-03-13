@@ -218,3 +218,53 @@ fn build_channels_cli_json_payload_includes_full_channel_catalog() {
             })
     );
 }
+
+#[test]
+fn build_channels_cli_json_payload_includes_grouped_channel_surfaces() {
+    let config = mvp::config::LoongClawConfig::default();
+    let inventory = mvp::channel::channel_inventory(&config);
+    let payload = build_channels_cli_json_payload("/tmp/loongclaw.toml", &inventory);
+    let encoded = serde_json::to_value(&payload).expect("serialize payload");
+
+    assert_eq!(
+        encoded
+            .get("channel_surfaces")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(4)
+    );
+
+    let surfaces = encoded["channel_surfaces"]
+        .as_array()
+        .expect("channel surfaces array");
+
+    assert!(surfaces.iter().any(|surface| {
+        surface
+            .get("catalog")
+            .and_then(|catalog| catalog.get("id"))
+            .and_then(serde_json::Value::as_str)
+            == Some("telegram")
+            && surface
+                .get("default_configured_account_id")
+                .and_then(serde_json::Value::as_str)
+                == Some("default")
+            && surface
+                .get("configured_accounts")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len)
+                == Some(1)
+    }));
+
+    assert!(surfaces.iter().any(|surface| {
+        surface
+            .get("catalog")
+            .and_then(|catalog| catalog.get("id"))
+            .and_then(serde_json::Value::as_str)
+            == Some("discord")
+            && surface
+                .get("configured_accounts")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len)
+                == Some(0)
+    }));
+}

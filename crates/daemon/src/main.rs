@@ -989,6 +989,7 @@ struct ChannelsCliJsonPayload {
     channels: Vec<mvp::channel::ChannelStatusSnapshot>,
     catalog_only_channels: Vec<mvp::channel::ChannelCatalogEntry>,
     channel_catalog: Vec<mvp::channel::ChannelCatalogEntry>,
+    channel_surfaces: Vec<mvp::channel::ChannelSurface>,
 }
 
 fn build_channels_cli_json_payload(
@@ -1000,6 +1001,7 @@ fn build_channels_cli_json_payload(
         channels: inventory.channels.clone(),
         catalog_only_channels: inventory.catalog_only_channels.clone(),
         channel_catalog: inventory.channel_catalog.clone(),
+        channel_surfaces: inventory.channel_surfaces.clone(),
     }
 }
 
