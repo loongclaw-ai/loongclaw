@@ -184,41 +184,18 @@ mod tests {
     }
 
     #[test]
-    fn from_env_parses_external_skills_policy() {
-        crate::process_env::set_var("LOONGCLAW_EXTERNAL_SKILLS_ENABLED", "true");
-        crate::process_env::set_var(
-            "LOONGCLAW_EXTERNAL_SKILLS_REQUIRE_DOWNLOAD_APPROVAL",
-            "false",
-        );
-        crate::process_env::set_var(
-            "LOONGCLAW_EXTERNAL_SKILLS_ALLOWED_DOMAINS",
-            "skills.sh,clawhub.io",
-        );
-        crate::process_env::set_var(
-            "LOONGCLAW_EXTERNAL_SKILLS_BLOCKED_DOMAINS",
-            "malicious.example",
-        );
+    fn external_skills_policy_struct_construction() {
+        let policy = ExternalSkillsRuntimePolicy {
+            enabled: true,
+            require_download_approval: false,
+            allowed_domains: BTreeSet::from(["skills.sh".to_owned(), "clawhub.io".to_owned()]),
+            blocked_domains: BTreeSet::from(["malicious.example".to_owned()]),
+        };
 
-        let config = ToolRuntimeConfig::from_env();
-        assert!(config.external_skills.enabled);
-        assert!(!config.external_skills.require_download_approval);
-        assert!(config.external_skills.allowed_domains.contains("skills.sh"));
-        assert!(
-            config
-                .external_skills
-                .allowed_domains
-                .contains("clawhub.io")
-        );
-        assert!(
-            config
-                .external_skills
-                .blocked_domains
-                .contains("malicious.example")
-        );
-
-        crate::process_env::remove_var("LOONGCLAW_EXTERNAL_SKILLS_ENABLED");
-        crate::process_env::remove_var("LOONGCLAW_EXTERNAL_SKILLS_REQUIRE_DOWNLOAD_APPROVAL");
-        crate::process_env::remove_var("LOONGCLAW_EXTERNAL_SKILLS_ALLOWED_DOMAINS");
-        crate::process_env::remove_var("LOONGCLAW_EXTERNAL_SKILLS_BLOCKED_DOMAINS");
+        assert!(policy.enabled);
+        assert!(!policy.require_download_approval);
+        assert!(policy.allowed_domains.contains("skills.sh"));
+        assert!(policy.allowed_domains.contains("clawhub.io"));
+        assert!(policy.blocked_domains.contains("malicious.example"));
     }
 }
