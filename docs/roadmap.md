@@ -209,6 +209,8 @@ Delivered in current baseline:
     session lifecycle metadata and finalized as durable cancelled failures at the next safe
     turn-loop checkpoint
   - explicit recovery of overdue queued or running async delegate children into durable failed terminal state
+  - batch `session_cancel` / `session_recover` targeting with `session_ids`, `dry_run` preview,
+    and per-target result classification while preserving legacy single-target response shape
   - synchronous `delegate` orchestration with timeout/error mapping
   - asynchronous `delegate_async` queueing with immediate child session id return as the durable handle
   - daemon `run-turn` one-shot worker for delegated child execution

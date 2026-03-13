@@ -511,6 +511,15 @@ mod tests {
             .as_object()
             .expect("session_recover properties");
         assert!(recover_properties.contains_key("session_id"));
+        assert!(recover_properties.contains_key("session_ids"));
+        assert!(recover_properties.contains_key("dry_run"));
+        assert_eq!(
+            session_recover["function"]["parameters"]["oneOf"]
+                .as_array()
+                .expect("session_recover oneOf")
+                .len(),
+            2
+        );
 
         let session_cancel = defs
             .iter()
@@ -520,6 +529,15 @@ mod tests {
             .as_object()
             .expect("session_cancel properties");
         assert!(cancel_properties.contains_key("session_id"));
+        assert!(cancel_properties.contains_key("session_ids"));
+        assert!(cancel_properties.contains_key("dry_run"));
+        assert_eq!(
+            session_cancel["function"]["parameters"]["oneOf"]
+                .as_array()
+                .expect("session_cancel oneOf")
+                .len(),
+            2
+        );
 
         let sessions_list = defs
             .iter()

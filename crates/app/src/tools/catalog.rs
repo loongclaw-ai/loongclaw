@@ -524,10 +524,25 @@ fn session_recover_definition(descriptor: &ToolDescriptor) -> Value {
                 "properties": {
                     "session_id": {
                         "type": "string",
-                        "description": "Visible delegate child session identifier to recover when it is still queued and overdue."
+                        "description": "Visible delegate child session identifier to recover."
+                    },
+                    "session_ids": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "minItems": 1,
+                        "description": "Visible delegate child session identifiers to recover in one request."
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "When true, preview which targets are recoverable without mutating state."
                     }
                 },
-                "required": ["session_id"],
+                "oneOf": [
+                    { "required": ["session_id"] },
+                    { "required": ["session_ids"] }
+                ],
                 "additionalProperties": false
             }
         }
@@ -546,9 +561,24 @@ fn session_cancel_definition(descriptor: &ToolDescriptor) -> Value {
                     "session_id": {
                         "type": "string",
                         "description": "Visible async delegate child session identifier to cancel."
+                    },
+                    "session_ids": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "minItems": 1,
+                        "description": "Visible async delegate child session identifiers to cancel in one request."
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "When true, preview which targets are cancellable without mutating state."
                     }
                 },
-                "required": ["session_id"],
+                "oneOf": [
+                    { "required": ["session_id"] },
+                    { "required": ["session_ids"] }
+                ],
                 "additionalProperties": false
             }
         }

@@ -1,5 +1,8 @@
 #[cfg(feature = "memory-sqlite")]
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    collections::BTreeMap,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use loongclaw_contracts::{ToolCoreOutcome, ToolCoreRequest};
 use serde_json::{json, Value};
@@ -93,6 +96,21 @@ impl SessionsListRequest {
 
 #[cfg(feature = "memory-sqlite")]
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionMutationRequest {
+    session_ids: Vec<String>,
+    dry_run: bool,
+    legacy_single: bool,
+}
+
+#[cfg(feature = "memory-sqlite")]
+impl SessionMutationRequest {
+    fn use_legacy_single_response(&self) -> bool {
+        self.legacy_single && !self.dry_run
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct SessionRecoverPlan {
     expected_state: SessionState,
     recovery_kind: &'static str,
@@ -109,6 +127,23 @@ struct SessionRecoverPlan {
 enum SessionCancelPlan {
     Queued,
     Running,
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[derive(Debug, Clone, PartialEq)]
+struct SessionToolActionOutcome {
+    inspection: Value,
+    action: Value,
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[derive(Debug, Clone, PartialEq)]
+struct SessionBatchResultRecord {
+    session_id: String,
+    result: &'static str,
+    message: Option<String>,
+    action: Option<Value>,
+    inspection: Option<Value>,
 }
 
 #[cfg(test)]
@@ -343,104 +378,66 @@ fn execute_session_recover(
     config: &MemoryRuntimeConfig,
     tool_config: &ToolConfig,
 ) -> Result<ToolCoreOutcome, String> {
-    let target_session_id = required_payload_string(&payload, "session_id")?;
-    let repo = SessionRepository::new(config)?;
-    ensure_visible(
-        &repo,
-        current_session_id,
-        &target_session_id,
-        tool_config.sessions.visibility,
-    )?;
-    let snapshot = inspect_visible_session_with_policies(
-        &target_session_id,
-        current_session_id,
-        config,
-        tool_config,
-        10,
-    )?;
-    let recover_plan = build_session_recover_plan(&snapshot, current_unix_ts())?;
-    let recovery_error = session_recovery_error(&recover_plan);
-    let outcome = crate::tools::delegate::delegate_error_outcome(
-        snapshot.session.session_id.clone(),
-        snapshot.session.label.clone(),
-        recovery_error.clone(),
-        recover_plan.elapsed_seconds.saturating_mul(1_000),
-    );
-    let event_payload_json = match recover_plan.recovery_kind {
-        RECOVERY_KIND_QUEUED_ASYNC_OVERDUE_MARKED_FAILED => {
-            build_queued_async_overdue_recovery_payload(
-                snapshot.session.label.as_deref(),
-                recover_plan
-                    .queued_at
-                    .expect("queued async overdue recovery requires queued_at"),
-                recover_plan.elapsed_seconds,
-                recover_plan.timeout_seconds,
-                recover_plan.deadline_at,
-                &recovery_error,
-            )
+    let request = parse_session_mutation_request(&payload)?;
+    if request.use_legacy_single_response() {
+        let target_session_id = request
+            .session_ids
+            .first()
+            .expect("legacy single request requires one session id");
+        let repo = SessionRepository::new(config)?;
+        ensure_visible(
+            &repo,
+            current_session_id,
+            target_session_id,
+            tool_config.sessions.visibility,
+        )?;
+        let snapshot = inspect_visible_session_with_policies(
+            target_session_id,
+            current_session_id,
+            config,
+            tool_config,
+            10,
+        )?;
+        let recover_plan = build_session_recover_plan(&snapshot, current_unix_ts())?;
+        let outcome = apply_session_recover_plan(
+            &repo,
+            target_session_id,
+            current_session_id,
+            config,
+            tool_config,
+            &snapshot,
+            &recover_plan,
+        )?;
+        let mut payload = outcome.inspection;
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("recovery_action".to_owned(), outcome.action);
         }
-        RECOVERY_KIND_RUNNING_ASYNC_OVERDUE_MARKED_FAILED => {
-            build_running_async_overdue_recovery_payload(
-                snapshot.session.label.as_deref(),
-                recover_plan.queued_at,
-                recover_plan.started_at,
-                recover_plan.reference,
-                recover_plan.elapsed_seconds,
-                recover_plan.timeout_seconds,
-                recover_plan.deadline_at,
-                &recovery_error,
-            )
-        }
-        other => unreachable!("unsupported session recovery kind `{other}`"),
-    };
-    let finalized = repo.finalize_session_terminal_if_current(
-        &target_session_id,
-        recover_plan.expected_state,
-        crate::session::repository::FinalizeSessionTerminalRequest {
-            state: SessionState::Failed,
-            last_error: Some(recovery_error.clone()),
-            event_kind: RECOVERY_EVENT_KIND.to_owned(),
-            actor_session_id: Some(current_session_id.to_owned()),
-            event_payload_json,
-            outcome_status: outcome.status.clone(),
-            outcome_payload_json: outcome.payload.clone(),
-        },
-    )?;
-    if finalized.is_none() {
-        let latest = repo
-            .load_session_summary_with_legacy_fallback(&target_session_id)?
-            .ok_or_else(|| format!("session_not_found: `{target_session_id}`"))?;
-        return Err(format!(
-            "session_recover_state_changed: session `{target_session_id}` is no longer recoverable from state `{}`",
-            latest.state.as_str()
-        ));
+        return Ok(ToolCoreOutcome {
+            status: "ok".to_owned(),
+            payload,
+        });
     }
-    let recovered_snapshot = inspect_visible_session_with_policies(
-        &target_session_id,
-        current_session_id,
-        config,
-        tool_config,
-        10,
-    )?;
-    let mut payload = session_inspection_payload(recovered_snapshot);
-    if let Some(object) = payload.as_object_mut() {
-        object.insert(
-            "recovery_action".to_owned(),
-            json!({
-                "kind": recover_plan.recovery_kind,
-                "previous_state": recover_plan.expected_state.as_str(),
-                "next_state": "failed",
-                "reference": recover_plan.reference,
-                "elapsed_seconds": recover_plan.elapsed_seconds,
-                "timeout_seconds": recover_plan.timeout_seconds,
-                "deadline_at": recover_plan.deadline_at,
-            }),
-        );
+
+    let mut results = Vec::with_capacity(request.session_ids.len());
+    for target_session_id in &request.session_ids {
+        results.push(execute_session_recover_batch_result(
+            target_session_id,
+            current_session_id,
+            config,
+            tool_config,
+            request.dry_run,
+        )?);
     }
 
     Ok(ToolCoreOutcome {
         status: "ok".to_owned(),
-        payload,
+        payload: session_batch_payload(
+            "session_recover",
+            current_session_id,
+            request.dry_run,
+            request.session_ids.len(),
+            results,
+        ),
     })
 }
 
@@ -451,133 +448,67 @@ fn execute_session_cancel(
     config: &MemoryRuntimeConfig,
     tool_config: &ToolConfig,
 ) -> Result<ToolCoreOutcome, String> {
-    let target_session_id = required_payload_string(&payload, "session_id")?;
-    let repo = SessionRepository::new(config)?;
-    ensure_visible(
-        &repo,
-        current_session_id,
-        &target_session_id,
-        tool_config.sessions.visibility,
-    )?;
-    let snapshot = inspect_visible_session_with_policies(
-        &target_session_id,
-        current_session_id,
-        config,
-        tool_config,
-        10,
-    )?;
-
-    match build_session_cancel_plan(&snapshot)? {
-        SessionCancelPlan::Queued => {
-            let cancel_error = delegate_cancelled_error(DELEGATE_CANCEL_REASON_OPERATOR_REQUESTED);
-            let outcome = crate::tools::delegate::delegate_error_outcome(
-                snapshot.session.session_id.clone(),
-                snapshot.session.label.clone(),
-                cancel_error.clone(),
-                0,
-            );
-            let finalized = repo.finalize_session_terminal_if_current(
-                &target_session_id,
-                SessionState::Ready,
-                crate::session::repository::FinalizeSessionTerminalRequest {
-                    state: SessionState::Failed,
-                    last_error: Some(cancel_error),
-                    event_kind: DELEGATE_CANCELLED_EVENT_KIND.to_owned(),
-                    actor_session_id: Some(current_session_id.to_owned()),
-                    event_payload_json: json!({
-                        "reference": "queued",
-                        "cancel_reason": DELEGATE_CANCEL_REASON_OPERATOR_REQUESTED,
-                    }),
-                    outcome_status: outcome.status.clone(),
-                    outcome_payload_json: outcome.payload.clone(),
-                },
-            )?;
-            if finalized.is_none() {
-                let latest = repo
-                    .load_session_summary_with_legacy_fallback(&target_session_id)?
-                    .ok_or_else(|| format!("session_not_found: `{target_session_id}`"))?;
-                return Err(format!(
-                    "session_cancel_state_changed: session `{target_session_id}` is no longer cancellable from state `{}`",
-                    latest.state.as_str()
-                ));
-            }
-
-            let cancelled_snapshot = inspect_visible_session_with_policies(
-                &target_session_id,
-                current_session_id,
-                config,
-                tool_config,
-                10,
-            )?;
-            let mut response_payload = session_inspection_payload(cancelled_snapshot);
-            if let Some(object) = response_payload.as_object_mut() {
-                object.insert(
-                    "cancel_action".to_owned(),
-                    json!({
-                        "kind": "queued_async_cancelled",
-                        "previous_state": "ready",
-                        "next_state": "failed",
-                        "reference": "queued",
-                        "reason": DELEGATE_CANCEL_REASON_OPERATOR_REQUESTED,
-                    }),
-                );
-            }
-            Ok(ToolCoreOutcome {
-                status: "ok".to_owned(),
-                payload: response_payload,
-            })
+    let request = parse_session_mutation_request(&payload)?;
+    if request.use_legacy_single_response() {
+        let target_session_id = request
+            .session_ids
+            .first()
+            .expect("legacy single request requires one session id");
+        let repo = SessionRepository::new(config)?;
+        ensure_visible(
+            &repo,
+            current_session_id,
+            target_session_id,
+            tool_config.sessions.visibility,
+        )?;
+        let snapshot = inspect_visible_session_with_policies(
+            target_session_id,
+            current_session_id,
+            config,
+            tool_config,
+            10,
+        )?;
+        let cancel_plan = build_session_cancel_plan(&snapshot)?;
+        let outcome = apply_session_cancel_plan(
+            &repo,
+            target_session_id,
+            current_session_id,
+            config,
+            tool_config,
+            &snapshot,
+            cancel_plan,
+        )?;
+        let mut payload = outcome.inspection;
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("cancel_action".to_owned(), outcome.action);
         }
-        SessionCancelPlan::Running => {
-            let requested = repo.transition_session_with_event_if_current(
-                &target_session_id,
-                crate::session::repository::TransitionSessionWithEventIfCurrentRequest {
-                    expected_state: SessionState::Running,
-                    next_state: SessionState::Running,
-                    last_error: None,
-                    event_kind: DELEGATE_CANCEL_REQUESTED_EVENT_KIND.to_owned(),
-                    actor_session_id: Some(current_session_id.to_owned()),
-                    event_payload_json: json!({
-                        "reference": "running",
-                        "cancel_reason": DELEGATE_CANCEL_REASON_OPERATOR_REQUESTED,
-                    }),
-                },
-            )?;
-            if requested.is_none() {
-                let latest = repo
-                    .load_session_summary_with_legacy_fallback(&target_session_id)?
-                    .ok_or_else(|| format!("session_not_found: `{target_session_id}`"))?;
-                return Err(format!(
-                    "session_cancel_state_changed: session `{target_session_id}` is no longer cancellable from state `{}`",
-                    latest.state.as_str()
-                ));
-            }
-
-            let requested_snapshot = inspect_visible_session_with_policies(
-                &target_session_id,
-                current_session_id,
-                config,
-                tool_config,
-                10,
-            )?;
-            let mut response_payload = session_inspection_payload(requested_snapshot);
-            if let Some(object) = response_payload.as_object_mut() {
-                object.insert(
-                    "cancel_action".to_owned(),
-                    json!({
-                        "kind": "running_async_cancel_requested",
-                        "previous_state": "running",
-                        "next_state": "running",
-                        "reference": "running",
-                        "reason": DELEGATE_CANCEL_REASON_OPERATOR_REQUESTED,
-                    }),
-                );
-            }
-            Ok(ToolCoreOutcome {
-                status: "ok".to_owned(),
-                payload: response_payload,
-            })
-        }
+        return Ok(ToolCoreOutcome {
+            status: "ok".to_owned(),
+            payload,
+        });
     }
+
+    let mut results = Vec::with_capacity(request.session_ids.len());
+    for target_session_id in &request.session_ids {
+        results.push(execute_session_cancel_batch_result(
+            target_session_id,
+            current_session_id,
+            config,
+            tool_config,
+            request.dry_run,
+        )?);
+    }
+
+    Ok(ToolCoreOutcome {
+        status: "ok".to_owned(),
+        payload: session_batch_payload(
+            "session_cancel",
+            current_session_id,
+            request.dry_run,
+            request.session_ids.len(),
+            results,
+        ),
+    })
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -726,6 +657,202 @@ fn session_terminal_outcome_missing_reason(
 }
 
 #[cfg(feature = "memory-sqlite")]
+fn execute_session_recover_batch_result(
+    target_session_id: &str,
+    current_session_id: &str,
+    config: &MemoryRuntimeConfig,
+    tool_config: &ToolConfig,
+    dry_run: bool,
+) -> Result<SessionBatchResultRecord, String> {
+    let repo = SessionRepository::new(config)?;
+    if let Err(error) = ensure_visible(
+        &repo,
+        current_session_id,
+        target_session_id,
+        tool_config.sessions.visibility,
+    ) {
+        return Ok(session_batch_result(
+            target_session_id.to_owned(),
+            "skipped_not_visible",
+            Some(error),
+            None,
+            None,
+        ));
+    }
+
+    let snapshot = match inspect_visible_session_with_policies(
+        target_session_id,
+        current_session_id,
+        config,
+        tool_config,
+        10,
+    ) {
+        Ok(snapshot) => snapshot,
+        Err(error) if is_session_visibility_skip_error(&error) => {
+            return Ok(session_batch_result(
+                target_session_id.to_owned(),
+                "skipped_not_visible",
+                Some(error),
+                None,
+                None,
+            ));
+        }
+        Err(error) => return Err(error),
+    };
+    let inspection = session_inspection_payload(snapshot.clone());
+    let recover_plan = match build_session_recover_plan(&snapshot, current_unix_ts()) {
+        Ok(plan) => plan,
+        Err(error) => {
+            return Ok(session_batch_result(
+                target_session_id.to_owned(),
+                "skipped_not_recoverable",
+                Some(error),
+                None,
+                Some(inspection),
+            ));
+        }
+    };
+    let action = session_recovery_action_json(&recover_plan);
+    if dry_run {
+        return Ok(session_batch_result(
+            target_session_id.to_owned(),
+            "would_apply",
+            None,
+            Some(action),
+            Some(inspection),
+        ));
+    }
+
+    match apply_session_recover_plan(
+        &repo,
+        target_session_id,
+        current_session_id,
+        config,
+        tool_config,
+        &snapshot,
+        &recover_plan,
+    ) {
+        Ok(outcome) => Ok(session_batch_result(
+            target_session_id.to_owned(),
+            "applied",
+            None,
+            Some(outcome.action),
+            Some(outcome.inspection),
+        )),
+        Err(error) if error.starts_with("session_recover_state_changed:") => {
+            Ok(session_batch_result(
+                target_session_id.to_owned(),
+                "skipped_state_changed",
+                Some(error),
+                Some(action),
+                inspect_visible_session_with_policies(
+                    target_session_id,
+                    current_session_id,
+                    config,
+                    tool_config,
+                    10,
+                )
+                .ok()
+                .map(session_inspection_payload),
+            ))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn apply_session_recover_plan(
+    repo: &SessionRepository,
+    target_session_id: &str,
+    current_session_id: &str,
+    config: &MemoryRuntimeConfig,
+    tool_config: &ToolConfig,
+    snapshot: &SessionInspectionSnapshot,
+    recover_plan: &SessionRecoverPlan,
+) -> Result<SessionToolActionOutcome, String> {
+    let recovery_error = session_recovery_error(recover_plan);
+    let outcome = crate::tools::delegate::delegate_error_outcome(
+        snapshot.session.session_id.clone(),
+        snapshot.session.label.clone(),
+        recovery_error.clone(),
+        recover_plan.elapsed_seconds.saturating_mul(1_000),
+    );
+    let event_payload_json = match recover_plan.recovery_kind {
+        RECOVERY_KIND_QUEUED_ASYNC_OVERDUE_MARKED_FAILED => {
+            build_queued_async_overdue_recovery_payload(
+                snapshot.session.label.as_deref(),
+                recover_plan
+                    .queued_at
+                    .expect("queued async overdue recovery requires queued_at"),
+                recover_plan.elapsed_seconds,
+                recover_plan.timeout_seconds,
+                recover_plan.deadline_at,
+                &recovery_error,
+            )
+        }
+        RECOVERY_KIND_RUNNING_ASYNC_OVERDUE_MARKED_FAILED => {
+            build_running_async_overdue_recovery_payload(
+                snapshot.session.label.as_deref(),
+                recover_plan.queued_at,
+                recover_plan.started_at,
+                recover_plan.reference,
+                recover_plan.elapsed_seconds,
+                recover_plan.timeout_seconds,
+                recover_plan.deadline_at,
+                &recovery_error,
+            )
+        }
+        other => unreachable!("unsupported session recovery kind `{other}`"),
+    };
+    let finalized = repo.finalize_session_terminal_if_current(
+        target_session_id,
+        recover_plan.expected_state,
+        crate::session::repository::FinalizeSessionTerminalRequest {
+            state: SessionState::Failed,
+            last_error: Some(recovery_error.clone()),
+            event_kind: RECOVERY_EVENT_KIND.to_owned(),
+            actor_session_id: Some(current_session_id.to_owned()),
+            event_payload_json,
+            outcome_status: outcome.status.clone(),
+            outcome_payload_json: outcome.payload.clone(),
+        },
+    )?;
+    if finalized.is_none() {
+        let latest = repo
+            .load_session_summary_with_legacy_fallback(target_session_id)?
+            .ok_or_else(|| format!("session_not_found: `{target_session_id}`"))?;
+        return Err(format!(
+            "session_recover_state_changed: session `{target_session_id}` is no longer recoverable from state `{}`",
+            latest.state.as_str()
+        ));
+    }
+    let recovered_snapshot = inspect_visible_session_with_policies(
+        target_session_id,
+        current_session_id,
+        config,
+        tool_config,
+        10,
+    )?;
+    Ok(SessionToolActionOutcome {
+        inspection: session_inspection_payload(recovered_snapshot),
+        action: session_recovery_action_json(recover_plan),
+    })
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn session_recovery_action_json(plan: &SessionRecoverPlan) -> Value {
+    json!({
+        "kind": plan.recovery_kind,
+        "previous_state": plan.expected_state.as_str(),
+        "next_state": "failed",
+        "reference": plan.reference,
+        "elapsed_seconds": plan.elapsed_seconds,
+        "timeout_seconds": plan.timeout_seconds,
+        "deadline_at": plan.deadline_at,
+    })
+}
+
+#[cfg(feature = "memory-sqlite")]
 fn build_session_recover_plan(
     snapshot: &SessionInspectionSnapshot,
     now_ts: i64,
@@ -826,6 +953,227 @@ fn session_recovery_error(plan: &SessionRecoverPlan) -> String {
             plan.elapsed_seconds, plan.timeout_seconds
         ),
         other => unreachable!("unsupported session recovery kind `{other}`"),
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn execute_session_cancel_batch_result(
+    target_session_id: &str,
+    current_session_id: &str,
+    config: &MemoryRuntimeConfig,
+    tool_config: &ToolConfig,
+    dry_run: bool,
+) -> Result<SessionBatchResultRecord, String> {
+    let repo = SessionRepository::new(config)?;
+    if let Err(error) = ensure_visible(
+        &repo,
+        current_session_id,
+        target_session_id,
+        tool_config.sessions.visibility,
+    ) {
+        return Ok(session_batch_result(
+            target_session_id.to_owned(),
+            "skipped_not_visible",
+            Some(error),
+            None,
+            None,
+        ));
+    }
+
+    let snapshot = match inspect_visible_session_with_policies(
+        target_session_id,
+        current_session_id,
+        config,
+        tool_config,
+        10,
+    ) {
+        Ok(snapshot) => snapshot,
+        Err(error) if is_session_visibility_skip_error(&error) => {
+            return Ok(session_batch_result(
+                target_session_id.to_owned(),
+                "skipped_not_visible",
+                Some(error),
+                None,
+                None,
+            ));
+        }
+        Err(error) => return Err(error),
+    };
+    let inspection = session_inspection_payload(snapshot.clone());
+    let cancel_plan = match build_session_cancel_plan(&snapshot) {
+        Ok(plan) => plan,
+        Err(error) => {
+            return Ok(session_batch_result(
+                target_session_id.to_owned(),
+                "skipped_not_cancellable",
+                Some(error),
+                None,
+                Some(inspection),
+            ));
+        }
+    };
+    let action = session_cancel_action_json(&cancel_plan);
+    if dry_run {
+        return Ok(session_batch_result(
+            target_session_id.to_owned(),
+            "would_apply",
+            None,
+            Some(action),
+            Some(inspection),
+        ));
+    }
+
+    match apply_session_cancel_plan(
+        &repo,
+        target_session_id,
+        current_session_id,
+        config,
+        tool_config,
+        &snapshot,
+        cancel_plan,
+    ) {
+        Ok(outcome) => Ok(session_batch_result(
+            target_session_id.to_owned(),
+            "applied",
+            None,
+            Some(outcome.action),
+            Some(outcome.inspection),
+        )),
+        Err(error) if error.starts_with("session_cancel_state_changed:") => {
+            Ok(session_batch_result(
+                target_session_id.to_owned(),
+                "skipped_state_changed",
+                Some(error),
+                Some(action),
+                inspect_visible_session_with_policies(
+                    target_session_id,
+                    current_session_id,
+                    config,
+                    tool_config,
+                    10,
+                )
+                .ok()
+                .map(session_inspection_payload),
+            ))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn apply_session_cancel_plan(
+    repo: &SessionRepository,
+    target_session_id: &str,
+    current_session_id: &str,
+    config: &MemoryRuntimeConfig,
+    tool_config: &ToolConfig,
+    snapshot: &SessionInspectionSnapshot,
+    cancel_plan: SessionCancelPlan,
+) -> Result<SessionToolActionOutcome, String> {
+    match cancel_plan {
+        SessionCancelPlan::Queued => {
+            let cancel_error = delegate_cancelled_error(DELEGATE_CANCEL_REASON_OPERATOR_REQUESTED);
+            let outcome = crate::tools::delegate::delegate_error_outcome(
+                snapshot.session.session_id.clone(),
+                snapshot.session.label.clone(),
+                cancel_error.clone(),
+                0,
+            );
+            let finalized = repo.finalize_session_terminal_if_current(
+                target_session_id,
+                SessionState::Ready,
+                crate::session::repository::FinalizeSessionTerminalRequest {
+                    state: SessionState::Failed,
+                    last_error: Some(cancel_error),
+                    event_kind: DELEGATE_CANCELLED_EVENT_KIND.to_owned(),
+                    actor_session_id: Some(current_session_id.to_owned()),
+                    event_payload_json: json!({
+                        "reference": "queued",
+                        "cancel_reason": DELEGATE_CANCEL_REASON_OPERATOR_REQUESTED,
+                    }),
+                    outcome_status: outcome.status.clone(),
+                    outcome_payload_json: outcome.payload.clone(),
+                },
+            )?;
+            if finalized.is_none() {
+                let latest = repo
+                    .load_session_summary_with_legacy_fallback(target_session_id)?
+                    .ok_or_else(|| format!("session_not_found: `{target_session_id}`"))?;
+                return Err(format!(
+                    "session_cancel_state_changed: session `{target_session_id}` is no longer cancellable from state `{}`",
+                    latest.state.as_str()
+                ));
+            }
+
+            let cancelled_snapshot = inspect_visible_session_with_policies(
+                target_session_id,
+                current_session_id,
+                config,
+                tool_config,
+                10,
+            )?;
+            Ok(SessionToolActionOutcome {
+                inspection: session_inspection_payload(cancelled_snapshot),
+                action: session_cancel_action_json(&SessionCancelPlan::Queued),
+            })
+        }
+        SessionCancelPlan::Running => {
+            let requested = repo.transition_session_with_event_if_current(
+                target_session_id,
+                crate::session::repository::TransitionSessionWithEventIfCurrentRequest {
+                    expected_state: SessionState::Running,
+                    next_state: SessionState::Running,
+                    last_error: None,
+                    event_kind: DELEGATE_CANCEL_REQUESTED_EVENT_KIND.to_owned(),
+                    actor_session_id: Some(current_session_id.to_owned()),
+                    event_payload_json: json!({
+                        "reference": "running",
+                        "cancel_reason": DELEGATE_CANCEL_REASON_OPERATOR_REQUESTED,
+                    }),
+                },
+            )?;
+            if requested.is_none() {
+                let latest = repo
+                    .load_session_summary_with_legacy_fallback(target_session_id)?
+                    .ok_or_else(|| format!("session_not_found: `{target_session_id}`"))?;
+                return Err(format!(
+                    "session_cancel_state_changed: session `{target_session_id}` is no longer cancellable from state `{}`",
+                    latest.state.as_str()
+                ));
+            }
+
+            let requested_snapshot = inspect_visible_session_with_policies(
+                target_session_id,
+                current_session_id,
+                config,
+                tool_config,
+                10,
+            )?;
+            Ok(SessionToolActionOutcome {
+                inspection: session_inspection_payload(requested_snapshot),
+                action: session_cancel_action_json(&SessionCancelPlan::Running),
+            })
+        }
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn session_cancel_action_json(plan: &SessionCancelPlan) -> Value {
+    match plan {
+        SessionCancelPlan::Queued => json!({
+            "kind": "queued_async_cancelled",
+            "previous_state": "ready",
+            "next_state": "failed",
+            "reference": "queued",
+            "reason": DELEGATE_CANCEL_REASON_OPERATOR_REQUESTED,
+        }),
+        SessionCancelPlan::Running => json!({
+            "kind": "running_async_cancel_requested",
+            "previous_state": "running",
+            "next_state": "running",
+            "reference": "running",
+            "reason": DELEGATE_CANCEL_REASON_OPERATOR_REQUESTED,
+        }),
     }
 }
 
@@ -1088,6 +1436,36 @@ fn normalize_required_session_id(session_id: &str) -> Result<String, String> {
     Ok(trimmed.to_owned())
 }
 
+#[cfg(feature = "memory-sqlite")]
+fn parse_session_mutation_request(payload: &Value) -> Result<SessionMutationRequest, String> {
+    let single = optional_payload_string(payload, "session_id");
+    let batch = optional_payload_string_array(payload, "session_ids")?;
+    let dry_run = payload
+        .get("dry_run")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    match (single, batch) {
+        (Some(session_id), None) => Ok(SessionMutationRequest {
+            session_ids: vec![normalize_required_session_id(&session_id)?],
+            dry_run,
+            legacy_single: true,
+        }),
+        (None, Some(session_ids)) => Ok(SessionMutationRequest {
+            session_ids,
+            dry_run,
+            legacy_single: false,
+        }),
+        (Some(_), Some(_)) => Err(
+            "session tool requires exactly one of payload.session_id or payload.session_ids"
+                .to_owned(),
+        ),
+        (None, None) => {
+            Err("session tool requires payload.session_id or payload.session_ids".to_owned())
+        }
+    }
+}
+
 fn optional_payload_limit(payload: &Value, field: &str, default: usize, max: usize) -> usize {
     payload
         .get(field)
@@ -1162,6 +1540,97 @@ fn optional_payload_string(payload: &Value, field: &str) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn optional_payload_string_array(
+    payload: &Value,
+    field: &str,
+) -> Result<Option<Vec<String>>, String> {
+    let Some(value) = payload.get(field) else {
+        return Ok(None);
+    };
+    let values = value.as_array().ok_or_else(|| {
+        format!("session tool requires payload.{field} to be a non-empty array of strings")
+    })?;
+    if values.is_empty() {
+        return Err(format!(
+            "session tool requires payload.{field} to be a non-empty array of strings"
+        ));
+    }
+
+    let mut session_ids = Vec::with_capacity(values.len());
+    for value in values {
+        let Some(session_id) = value.as_str() else {
+            return Err(format!(
+                "session tool requires payload.{field} to be a non-empty array of strings"
+            ));
+        };
+        let trimmed = session_id.trim();
+        if trimmed.is_empty() {
+            return Err(format!(
+                "session tool requires payload.{field} to be a non-empty array of strings"
+            ));
+        }
+        session_ids.push(trimmed.to_owned());
+    }
+    Ok(Some(session_ids))
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn session_batch_payload(
+    tool: &str,
+    current_session_id: &str,
+    dry_run: bool,
+    requested_count: usize,
+    results: Vec<SessionBatchResultRecord>,
+) -> Value {
+    let mut result_counts = BTreeMap::<&'static str, usize>::new();
+    for result in &results {
+        *result_counts.entry(result.result).or_default() += 1;
+    }
+
+    json!({
+        "tool": tool,
+        "current_session_id": current_session_id,
+        "dry_run": dry_run,
+        "requested_count": requested_count,
+        "result_counts": result_counts,
+        "results": results.into_iter().map(session_batch_result_json).collect::<Vec<_>>(),
+    })
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn session_batch_result(
+    session_id: String,
+    result: &'static str,
+    message: Option<String>,
+    action: Option<Value>,
+    inspection: Option<Value>,
+) -> SessionBatchResultRecord {
+    SessionBatchResultRecord {
+        session_id,
+        result,
+        message,
+        action,
+        inspection,
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn session_batch_result_json(result: SessionBatchResultRecord) -> Value {
+    json!({
+        "session_id": result.session_id,
+        "result": result.result,
+        "message": result.message,
+        "action": result.action,
+        "inspection": result.inspection,
+    })
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn is_session_visibility_skip_error(error: &str) -> bool {
+    error.starts_with("visibility_denied:") || error.starts_with("session_not_found:")
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -1288,6 +1757,15 @@ mod tests {
             )
             .expect("update session event ts");
         assert!(updated > 0, "expected at least one updated event row");
+    }
+
+    fn batch_result<'a>(payload: &'a Value, session_id: &str) -> &'a Value {
+        payload["results"]
+            .as_array()
+            .expect("results array")
+            .iter()
+            .find(|item| item.get("session_id").and_then(Value::as_str) == Some(session_id))
+            .unwrap_or_else(|| panic!("missing batch result for session `{session_id}`"))
     }
 
     #[test]
@@ -2151,6 +2629,315 @@ mod tests {
     }
 
     #[test]
+    fn session_recover_batch_dry_run_reports_mixed_results_without_mutation() {
+        let config = isolated_memory_config("session-recover-batch-dry-run");
+        let repo = SessionRepository::new(&config).expect("repository");
+        repo.create_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create root");
+        repo.create_session(NewSessionRecord {
+            session_id: "overdue-child".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Overdue".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create overdue child");
+        repo.create_session(NewSessionRecord {
+            session_id: "fresh-child".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Fresh".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create fresh child");
+        repo.create_session(NewSessionRecord {
+            session_id: "hidden-root".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Hidden".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create hidden root");
+        repo.append_event(NewSessionEvent {
+            session_id: "overdue-child".to_owned(),
+            event_kind: "delegate_queued".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "task": "research",
+                "timeout_seconds": 30
+            }),
+        })
+        .expect("append overdue queued");
+        repo.append_event(NewSessionEvent {
+            session_id: "fresh-child".to_owned(),
+            event_kind: "delegate_queued".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "task": "research",
+                "timeout_seconds": 60
+            }),
+        })
+        .expect("append fresh queued");
+        overwrite_session_event_ts(
+            &config,
+            "overdue-child",
+            "delegate_queued",
+            super::current_unix_ts() - 90,
+        );
+
+        let outcome = execute_session_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "session_recover".to_owned(),
+                payload: json!({
+                    "session_ids": ["overdue-child", "fresh-child", "hidden-root"],
+                    "dry_run": true
+                }),
+            },
+            "root-session",
+            &config,
+        )
+        .expect("session_recover batch dry_run outcome");
+
+        assert_eq!(outcome.status, "ok");
+        assert_eq!(outcome.payload["tool"], "session_recover");
+        assert_eq!(outcome.payload["dry_run"], true);
+        assert_eq!(outcome.payload["requested_count"], 3);
+        assert_eq!(outcome.payload["result_counts"]["would_apply"], 1);
+        assert_eq!(
+            outcome.payload["result_counts"]["skipped_not_recoverable"],
+            1
+        );
+        assert_eq!(outcome.payload["result_counts"]["skipped_not_visible"], 1);
+
+        let overdue = batch_result(&outcome.payload, "overdue-child");
+        assert_eq!(overdue["result"], "would_apply");
+        assert_eq!(
+            overdue["action"]["kind"],
+            "queued_async_overdue_marked_failed"
+        );
+        assert_eq!(overdue["inspection"]["session"]["state"], "ready");
+
+        let fresh = batch_result(&outcome.payload, "fresh-child");
+        assert_eq!(fresh["result"], "skipped_not_recoverable");
+        assert!(fresh["message"]
+            .as_str()
+            .expect("fresh batch message")
+            .contains("session_recover_not_recoverable"));
+        assert_eq!(fresh["inspection"]["session"]["state"], "ready");
+
+        let hidden = batch_result(&outcome.payload, "hidden-root");
+        assert_eq!(hidden["result"], "skipped_not_visible");
+        assert!(hidden["message"]
+            .as_str()
+            .expect("hidden batch message")
+            .contains("visibility_denied"));
+        assert!(hidden["inspection"].is_null());
+
+        assert_eq!(
+            repo.load_session_summary_with_legacy_fallback("overdue-child")
+                .expect("load overdue summary")
+                .expect("overdue session")
+                .state,
+            SessionState::Ready
+        );
+        assert!(repo
+            .load_terminal_outcome("overdue-child")
+            .expect("load overdue outcome")
+            .is_none());
+    }
+
+    #[test]
+    fn session_recover_batch_apply_reports_partial_success() {
+        let config = isolated_memory_config("session-recover-batch-apply");
+        let repo = SessionRepository::new(&config).expect("repository");
+        repo.create_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create root");
+        repo.create_session(NewSessionRecord {
+            session_id: "queued-overdue".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Queued Overdue".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create queued overdue");
+        repo.create_session(NewSessionRecord {
+            session_id: "running-overdue".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Running Overdue".to_owned()),
+            state: SessionState::Running,
+        })
+        .expect("create running overdue");
+        repo.create_session(NewSessionRecord {
+            session_id: "fresh-child".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Fresh".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create fresh child");
+        repo.append_event(NewSessionEvent {
+            session_id: "queued-overdue".to_owned(),
+            event_kind: "delegate_queued".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "task": "queued work",
+                "timeout_seconds": 30
+            }),
+        })
+        .expect("append queued overdue event");
+        repo.append_event(NewSessionEvent {
+            session_id: "running-overdue".to_owned(),
+            event_kind: "delegate_queued".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "task": "running work",
+                "timeout_seconds": 30
+            }),
+        })
+        .expect("append running queued event");
+        repo.append_event(NewSessionEvent {
+            session_id: "running-overdue".to_owned(),
+            event_kind: "delegate_started".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "task": "running work",
+                "timeout_seconds": 30
+            }),
+        })
+        .expect("append running started event");
+        repo.append_event(NewSessionEvent {
+            session_id: "fresh-child".to_owned(),
+            event_kind: "delegate_queued".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "task": "fresh work",
+                "timeout_seconds": 60
+            }),
+        })
+        .expect("append fresh event");
+        overwrite_session_event_ts(
+            &config,
+            "queued-overdue",
+            "delegate_queued",
+            super::current_unix_ts() - 90,
+        );
+        overwrite_session_event_ts(
+            &config,
+            "running-overdue",
+            "delegate_queued",
+            super::current_unix_ts() - 120,
+        );
+        overwrite_session_event_ts(
+            &config,
+            "running-overdue",
+            "delegate_started",
+            super::current_unix_ts() - 90,
+        );
+
+        let outcome = execute_session_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "session_recover".to_owned(),
+                payload: json!({
+                    "session_ids": ["queued-overdue", "running-overdue", "fresh-child"]
+                }),
+            },
+            "root-session",
+            &config,
+        )
+        .expect("session_recover batch apply outcome");
+
+        assert_eq!(outcome.status, "ok");
+        assert_eq!(outcome.payload["tool"], "session_recover");
+        assert_eq!(outcome.payload["dry_run"], false);
+        assert_eq!(outcome.payload["requested_count"], 3);
+        assert_eq!(outcome.payload["result_counts"]["applied"], 2);
+        assert_eq!(
+            outcome.payload["result_counts"]["skipped_not_recoverable"],
+            1
+        );
+
+        let queued = batch_result(&outcome.payload, "queued-overdue");
+        assert_eq!(queued["result"], "applied");
+        assert_eq!(queued["inspection"]["session"]["state"], "failed");
+        assert_eq!(
+            queued["action"]["kind"],
+            "queued_async_overdue_marked_failed"
+        );
+        assert_eq!(
+            queued["inspection"]["delegate_lifecycle"]["phase"],
+            "failed"
+        );
+
+        let running = batch_result(&outcome.payload, "running-overdue");
+        assert_eq!(running["result"], "applied");
+        assert_eq!(running["inspection"]["session"]["state"], "failed");
+        assert_eq!(
+            running["action"]["kind"],
+            "running_async_overdue_marked_failed"
+        );
+        assert_eq!(running["action"]["reference"], "started");
+        assert_eq!(
+            running["inspection"]["recent_events"]
+                .as_array()
+                .expect("running recent events")
+                .last()
+                .expect("running latest event")["event_kind"],
+            "delegate_recovery_applied"
+        );
+
+        let fresh = batch_result(&outcome.payload, "fresh-child");
+        assert_eq!(fresh["result"], "skipped_not_recoverable");
+        assert_eq!(fresh["inspection"]["session"]["state"], "ready");
+
+        assert_eq!(
+            repo.load_session_summary_with_legacy_fallback("queued-overdue")
+                .expect("load queued summary")
+                .expect("queued session")
+                .state,
+            SessionState::Failed
+        );
+        assert_eq!(
+            repo.load_session_summary_with_legacy_fallback("running-overdue")
+                .expect("load running summary")
+                .expect("running session")
+                .state,
+            SessionState::Failed
+        );
+        assert_eq!(
+            repo.load_session_summary_with_legacy_fallback("fresh-child")
+                .expect("load fresh summary")
+                .expect("fresh session")
+                .state,
+            SessionState::Ready
+        );
+        assert!(repo
+            .load_terminal_outcome("queued-overdue")
+            .expect("load queued outcome")
+            .is_some());
+        assert!(repo
+            .load_terminal_outcome("running-overdue")
+            .expect("load running outcome")
+            .is_some());
+        assert!(repo
+            .load_terminal_outcome("fresh-child")
+            .expect("load fresh outcome")
+            .is_none());
+    }
+
+    #[test]
     fn session_cancel_cancels_queued_async_child() {
         let config = isolated_memory_config("session-cancel-queued");
         let repo = SessionRepository::new(&config).expect("repository");
@@ -2283,6 +3070,282 @@ mod tests {
             outcome.payload["delegate_lifecycle"]["cancellation"]["state"],
             "requested"
         );
+    }
+
+    #[test]
+    fn session_cancel_batch_dry_run_reports_mixed_results_without_mutation() {
+        let config = isolated_memory_config("session-cancel-batch-dry-run");
+        let repo = SessionRepository::new(&config).expect("repository");
+        repo.create_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create root");
+        repo.create_session(NewSessionRecord {
+            session_id: "queued-child".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Queued".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create queued child");
+        repo.create_session(NewSessionRecord {
+            session_id: "running-child".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Running".to_owned()),
+            state: SessionState::Running,
+        })
+        .expect("create running child");
+        repo.create_session(NewSessionRecord {
+            session_id: "completed-child".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Completed".to_owned()),
+            state: SessionState::Completed,
+        })
+        .expect("create completed child");
+        repo.create_session(NewSessionRecord {
+            session_id: "hidden-root".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Hidden".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create hidden root");
+        repo.append_event(NewSessionEvent {
+            session_id: "queued-child".to_owned(),
+            event_kind: "delegate_queued".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "task": "queued work",
+                "timeout_seconds": 60
+            }),
+        })
+        .expect("append queued child event");
+        repo.append_event(NewSessionEvent {
+            session_id: "running-child".to_owned(),
+            event_kind: "delegate_queued".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "task": "running work",
+                "timeout_seconds": 60
+            }),
+        })
+        .expect("append running queued event");
+        repo.append_event(NewSessionEvent {
+            session_id: "running-child".to_owned(),
+            event_kind: "delegate_started".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "task": "running work",
+                "timeout_seconds": 60
+            }),
+        })
+        .expect("append running started event");
+
+        let outcome = execute_session_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "session_cancel".to_owned(),
+                payload: json!({
+                    "session_ids": ["queued-child", "running-child", "completed-child", "hidden-root"],
+                    "dry_run": true
+                }),
+            },
+            "root-session",
+            &config,
+        )
+        .expect("session_cancel batch dry_run outcome");
+
+        assert_eq!(outcome.status, "ok");
+        assert_eq!(outcome.payload["tool"], "session_cancel");
+        assert_eq!(outcome.payload["dry_run"], true);
+        assert_eq!(outcome.payload["requested_count"], 4);
+        assert_eq!(outcome.payload["result_counts"]["would_apply"], 2);
+        assert_eq!(
+            outcome.payload["result_counts"]["skipped_not_cancellable"],
+            1
+        );
+        assert_eq!(outcome.payload["result_counts"]["skipped_not_visible"], 1);
+
+        let queued = batch_result(&outcome.payload, "queued-child");
+        assert_eq!(queued["result"], "would_apply");
+        assert_eq!(queued["action"]["kind"], "queued_async_cancelled");
+        assert_eq!(queued["inspection"]["session"]["state"], "ready");
+
+        let running = batch_result(&outcome.payload, "running-child");
+        assert_eq!(running["result"], "would_apply");
+        assert_eq!(running["action"]["kind"], "running_async_cancel_requested");
+        assert_eq!(running["inspection"]["session"]["state"], "running");
+
+        let completed = batch_result(&outcome.payload, "completed-child");
+        assert_eq!(completed["result"], "skipped_not_cancellable");
+        assert_eq!(completed["inspection"]["session"]["state"], "completed");
+
+        let hidden = batch_result(&outcome.payload, "hidden-root");
+        assert_eq!(hidden["result"], "skipped_not_visible");
+        assert!(hidden["inspection"].is_null());
+
+        assert_eq!(
+            repo.load_session_summary_with_legacy_fallback("queued-child")
+                .expect("load queued summary")
+                .expect("queued session")
+                .state,
+            SessionState::Ready
+        );
+        assert_eq!(
+            repo.load_session_summary_with_legacy_fallback("running-child")
+                .expect("load running summary")
+                .expect("running session")
+                .state,
+            SessionState::Running
+        );
+        assert!(repo
+            .load_terminal_outcome("queued-child")
+            .expect("load queued outcome")
+            .is_none());
+    }
+
+    #[test]
+    fn session_cancel_batch_apply_reports_partial_success() {
+        let config = isolated_memory_config("session-cancel-batch-apply");
+        let repo = SessionRepository::new(&config).expect("repository");
+        repo.create_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create root");
+        repo.create_session(NewSessionRecord {
+            session_id: "queued-child".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Queued".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create queued child");
+        repo.create_session(NewSessionRecord {
+            session_id: "running-child".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Running".to_owned()),
+            state: SessionState::Running,
+        })
+        .expect("create running child");
+        repo.create_session(NewSessionRecord {
+            session_id: "completed-child".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Completed".to_owned()),
+            state: SessionState::Completed,
+        })
+        .expect("create completed child");
+        repo.append_event(NewSessionEvent {
+            session_id: "queued-child".to_owned(),
+            event_kind: "delegate_queued".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "task": "queued work",
+                "timeout_seconds": 60
+            }),
+        })
+        .expect("append queued child event");
+        repo.append_event(NewSessionEvent {
+            session_id: "running-child".to_owned(),
+            event_kind: "delegate_queued".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "task": "running work",
+                "timeout_seconds": 60
+            }),
+        })
+        .expect("append running queued event");
+        repo.append_event(NewSessionEvent {
+            session_id: "running-child".to_owned(),
+            event_kind: "delegate_started".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "task": "running work",
+                "timeout_seconds": 60
+            }),
+        })
+        .expect("append running started event");
+
+        let outcome = execute_session_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "session_cancel".to_owned(),
+                payload: json!({
+                    "session_ids": ["queued-child", "running-child", "completed-child"]
+                }),
+            },
+            "root-session",
+            &config,
+        )
+        .expect("session_cancel batch apply outcome");
+
+        assert_eq!(outcome.status, "ok");
+        assert_eq!(outcome.payload["tool"], "session_cancel");
+        assert_eq!(outcome.payload["dry_run"], false);
+        assert_eq!(outcome.payload["requested_count"], 3);
+        assert_eq!(outcome.payload["result_counts"]["applied"], 2);
+        assert_eq!(
+            outcome.payload["result_counts"]["skipped_not_cancellable"],
+            1
+        );
+
+        let queued = batch_result(&outcome.payload, "queued-child");
+        assert_eq!(queued["result"], "applied");
+        assert_eq!(queued["inspection"]["session"]["state"], "failed");
+        assert_eq!(queued["action"]["kind"], "queued_async_cancelled");
+        assert_eq!(
+            queued["inspection"]["recent_events"]
+                .as_array()
+                .expect("queued recent events")
+                .last()
+                .expect("queued latest event")["event_kind"],
+            "delegate_cancelled"
+        );
+
+        let running = batch_result(&outcome.payload, "running-child");
+        assert_eq!(running["result"], "applied");
+        assert_eq!(running["inspection"]["session"]["state"], "running");
+        assert_eq!(running["action"]["kind"], "running_async_cancel_requested");
+        assert_eq!(
+            running["inspection"]["delegate_lifecycle"]["cancellation"]["state"],
+            "requested"
+        );
+
+        let completed = batch_result(&outcome.payload, "completed-child");
+        assert_eq!(completed["result"], "skipped_not_cancellable");
+        assert_eq!(completed["inspection"]["session"]["state"], "completed");
+
+        assert_eq!(
+            repo.load_session_summary_with_legacy_fallback("queued-child")
+                .expect("load queued summary")
+                .expect("queued session")
+                .state,
+            SessionState::Failed
+        );
+        assert_eq!(
+            repo.load_session_summary_with_legacy_fallback("running-child")
+                .expect("load running summary")
+                .expect("running session")
+                .state,
+            SessionState::Running
+        );
+        assert!(repo
+            .load_terminal_outcome("queued-child")
+            .expect("load queued outcome")
+            .is_some());
+        assert!(repo
+            .load_terminal_outcome("running-child")
+            .expect("load running outcome")
+            .is_none());
     }
 
     #[test]
