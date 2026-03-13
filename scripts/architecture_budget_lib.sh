@@ -61,6 +61,10 @@ architecture_hotspot_rows() {
     IFS='|' read -r file max_lines max_functions <<EOF_SPEC
 $spec
 EOF_SPEC
+    if [[ ! -f "$file" ]]; then
+      echo "missing hotspot file: $file" >&2
+      return 1
+    fi
     lines="$(architecture_file_line_count "$file")"
     functions="$(architecture_file_function_count "$file")"
     line_status="ok"

@@ -109,6 +109,7 @@ hotspot_breach=0
 boundary_breach=0
 hotspot_count=0
 boundary_count=0
+hotspot_rows="$(architecture_hotspot_rows)" || exit 1
 
 while IFS='|' read -r key file lines max_lines line_status functions max_functions fn_status; do
   [[ -z "$key" ]] && continue
@@ -126,7 +127,7 @@ while IFS='|' read -r key file lines max_lines line_status functions max_functio
     "$key" "$file" "$lines" "$max_lines" "$line_headroom" "$functions" "$max_functions" "$fn_headroom" \
     "${prev_lines:-n/a}" "$line_growth" "$growth_status" "${prev_functions:-n/a}" >>"$tmp_hotspots"
 done <<EOF_HOTSPOTS
-$(architecture_hotspot_rows)
+${hotspot_rows}
 EOF_HOTSPOTS
 
 while IFS= read -r boundary_key; do

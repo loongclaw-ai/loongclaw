@@ -49,6 +49,8 @@ while IFS= read -r version; do
     expected_trace_suffix="$(release_trace_expected_suffix "$tag" "$trace_id")"
     if [[ "$trace_path" != .docs/traces/* ]]; then
       echo "invalid Trace path in ${doc_path}: ${trace_path}" >&2
+    elif ! release_trace_path_segments_safe "$trace_path"; then
+      echo "invalid Trace path in ${doc_path}: ${trace_path}" >&2
     elif [[ "$trace_basename" != *"-post-release-"* ]]; then
       echo "Trace path basename must include -post-release- in ${doc_path}: ${trace_basename}" >&2
     else

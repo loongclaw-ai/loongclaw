@@ -12,6 +12,7 @@ if [[ "$STRICT" != "true" && "$STRICT" != "false" ]]; then
 fi
 
 violations=0
+hotspot_rows="$(architecture_hotspot_rows)" || exit 1
 
 while IFS='|' read -r key file lines max_lines line_status functions max_functions fn_status; do
   if [[ "$line_status" == "over" ]]; then
@@ -23,7 +24,7 @@ while IFS='|' read -r key file lines max_lines line_status functions max_functio
   printf '[arch] %-16s lines=%4s/%-4s (%s) fns=%3s/%-3s (%s) file=%s\n' \
     "$key" "$lines" "$max_lines" "$line_status" "$functions" "$max_functions" "$fn_status" "$file"
 done <<EOF_ROWS
-$(architecture_hotspot_rows)
+${hotspot_rows}
 EOF_ROWS
 
 while IFS= read -r boundary_key; do

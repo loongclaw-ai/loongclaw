@@ -195,6 +195,48 @@ run_bootstrap_fails_on_inconsistent_trace_identity_test() {
   assert_contains "$output_file" "Trace path basename must end with"
 }
 
+run_bootstrap_fails_on_trace_path_traversal_test() {
+  local fixture
+  fixture="$(make_fixture_repo)"
+  trap 'rm -rf "$fixture"' RETURN
+
+  local output_file="$fixture/bootstrap-traversal.txt"
+  local release_doc="$fixture/docs/releases/v0.1.2.md"
+
+  perl -0pi -e 's#- Trace path: `\.docs/traces/20260309T053941Z-post-release-v0\.1\.2-020e2a67`#- Trace path: `.docs/traces/../outside/20260309T053941Z-post-release-v0.1.2-020e2a67`#' "$release_doc"
+
+  if LOONGCLAW_RELEASE_ARTIFACTS_REPO_ROOT="$fixture" "$SCRIPT_UNDER_TEST" >"$output_file" 2>&1; then
+    echo "expected bootstrap to fail on trace path traversal" >&2
+    cat "$output_file" >&2
+    exit 1
+  fi
+
+  assert_contains "$output_file" "invalid Trace path"
+}
+
+run_strict_doc_check_fails_on_trace_path_traversal_test() {
+  local fixture
+  fixture="$(make_fixture_repo)"
+  trap 'rm -rf "$fixture"' RETURN
+
+  local strict_output="$fixture/strict-trace-traversal.txt"
+  local release_doc="$fixture/docs/releases/v0.1.2.md"
+
+  perl -0pi -e 's#- Trace path: `\.docs/traces/20260309T053941Z-post-release-v0\.1\.2-020e2a67`#- Trace path: `.docs/traces/../outside/20260309T053941Z-post-release-v0.1.2-020e2a67`#' "$release_doc"
+  perl -0pi -e 's#- Trace directory: `\.docs/traces/20260309T053941Z-post-release-v0\.1\.2-020e2a67`#- Trace directory: `.docs/traces/../outside/20260309T053941Z-post-release-v0.1.2-020e2a67`#' "$release_doc"
+
+  if (
+    cd "$fixture" &&
+      LOONGCLAW_RELEASE_DOCS_STRICT=1 scripts/check-docs.sh >"$strict_output" 2>&1
+  ); then
+    echo "expected strict doc check to fail on trace path traversal" >&2
+    cat "$strict_output" >&2
+    exit 1
+  fi
+
+  assert_contains "$strict_output" "Trace path must stay under .docs/traces/"
+}
+
 run_trace_latest_pointer_consistency_test() {
   local fixture
   fixture="$(make_fixture_repo)"
@@ -318,6 +360,8 @@ run_bootstrap_roundtrip_test
 run_release_doc_linkage_consistency_test
 run_trace_identity_consistency_test
 run_bootstrap_fails_on_inconsistent_trace_identity_test
+run_bootstrap_fails_on_trace_path_traversal_test
+run_strict_doc_check_fails_on_trace_path_traversal_test
 run_trace_latest_pointer_consistency_test
 run_trace_by_tag_pointer_consistency_test
 run_trace_index_record_consistency_test

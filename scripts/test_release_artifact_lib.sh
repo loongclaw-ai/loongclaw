@@ -74,6 +74,22 @@ EOF
     echo "expected release_trace_path_matches_contract to reject mismatched trace id" >&2
     exit 1
   fi
+
+  if release_trace_path_matches_contract \
+    "v0.1.2" \
+    "020e2a67" \
+    ".docs/traces/../outside/20260309T053941Z-post-release-v0.1.2-020e2a67"; then
+    echo "expected release_trace_path_matches_contract to reject traversal segments" >&2
+    exit 1
+  fi
+
+  if release_trace_path_matches_contract \
+    "v0.1.2" \
+    "020e2a67" \
+    ".docs/traces/./20260309T053941Z-post-release-v0.1.2-020e2a67"; then
+    echo "expected release_trace_path_matches_contract to reject dot path segments" >&2
+    exit 1
+  fi
 }
 
 run_release_artifact_lib_tests

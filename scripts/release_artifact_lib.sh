@@ -64,12 +64,24 @@ release_trace_expected_suffix() {
   printf -- '-%s-%s\n' "$tag" "$trace_id"
 }
 
+release_trace_path_segments_safe() {
+  local trace_path="${1:?trace_path is required}"
+  local segment
+  local IFS='/'
+  read -r -a segments <<< "$trace_path"
+  for segment in "${segments[@]}"; do
+    [[ -n "$segment" ]] || return 1
+    [[ "$segment" != "." && "$segment" != ".." ]] || return 1
+  done
+}
+
 release_trace_path_matches_contract() {
   local tag="${1:?tag is required}"
   local trace_id="${2:?trace_id is required}"
   local trace_path="${3:?trace_path is required}"
 
   [[ "$trace_path" == .docs/traces/* ]] || return 1
+  release_trace_path_segments_safe "$trace_path" || return 1
   local trace_basename
   trace_basename="$(basename "$trace_path")"
   [[ "$trace_basename" == *"-post-release-"* ]] || return 1

@@ -142,6 +142,8 @@ else
                 expected_trace_suffix="$(release_trace_expected_suffix "$tag" "$trace_id_field")"
                 if [[ "$trace_path_field" != .docs/traces/* ]]; then
                     echo "FAIL: ${doc_path} Trace path must stay under .docs/traces/: ${trace_path_field}"
+                elif ! release_trace_path_segments_safe "$trace_path_field"; then
+                    echo "FAIL: ${doc_path} Trace path must stay under .docs/traces/ without '.' or '..' segments: ${trace_path_field}"
                 elif [[ "$trace_path_basename" != *"-post-release-"* ]]; then
                     echo "FAIL: ${doc_path} Trace path basename must include -post-release-"
                 else
