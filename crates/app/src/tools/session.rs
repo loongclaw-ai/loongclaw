@@ -5308,18 +5308,12 @@ mod tests {
         assert_eq!(outcome.payload["dry_run"], true);
         assert_eq!(outcome.payload["requested_count"], 4);
         assert_eq!(outcome.payload["result_counts"]["would_apply"], 1);
-        assert_eq!(
-            outcome.payload["result_counts"]["skipped_not_archived"],
-            1
-        );
+        assert_eq!(outcome.payload["result_counts"]["skipped_not_archived"], 1);
         assert_eq!(
             outcome.payload["result_counts"]["skipped_not_archivable"],
             1
         );
-        assert_eq!(
-            outcome.payload["result_counts"]["skipped_not_visible"],
-            1
-        );
+        assert_eq!(outcome.payload["result_counts"]["skipped_not_visible"], 1);
 
         let ready = batch_result(&outcome.payload, "ready-to-unarchive");
         assert_eq!(ready["result"], "would_apply");
@@ -5435,18 +5429,12 @@ mod tests {
         assert_eq!(outcome.payload["dry_run"], false);
         assert_eq!(outcome.payload["requested_count"], 4);
         assert_eq!(outcome.payload["result_counts"]["applied"], 1);
-        assert_eq!(
-            outcome.payload["result_counts"]["skipped_not_archived"],
-            1
-        );
+        assert_eq!(outcome.payload["result_counts"]["skipped_not_archived"], 1);
         assert_eq!(
             outcome.payload["result_counts"]["skipped_not_archivable"],
             1
         );
-        assert_eq!(
-            outcome.payload["result_counts"]["skipped_not_visible"],
-            1
-        );
+        assert_eq!(outcome.payload["result_counts"]["skipped_not_visible"], 1);
 
         let ready = batch_result(&outcome.payload, "ready-to-unarchive");
         assert_eq!(ready["result"], "applied");
