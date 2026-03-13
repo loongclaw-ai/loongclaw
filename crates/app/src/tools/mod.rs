@@ -74,7 +74,7 @@ pub fn execute_app_tool_with_config(
     };
     match canonical_name {
         "sessions_list" | "sessions_history" | "session_status" | "session_events"
-        | "session_cancel" | "session_recover" => session::execute_session_tool_with_policies(
+        | "session_cancel" | "session_archive" | "session_recover" => session::execute_session_tool_with_policies(
             request,
             current_session_id,
             memory_config,

@@ -102,6 +102,7 @@ pub struct SessionSummaryRecord {
     pub state: SessionState,
     pub created_at: i64,
     pub updated_at: i64,
+    pub archived_at: Option<i64>,
     pub turn_count: usize,
     pub last_turn_at: Option<i64>,
     pub last_error: Option<String>,
@@ -556,9 +557,16 @@ impl SessionRepository {
                     s.created_at,
                     s.updated_at,
                     s.last_error,
+                    archived.archived_at,
                     COUNT(t.id) AS turn_count,
                     MAX(t.ts) AS last_turn_at
                  FROM sessions s
+                 LEFT JOIN (
+                    SELECT session_id, MAX(ts) AS archived_at
+                    FROM session_events
+                    WHERE event_kind = 'session_archived'
+                    GROUP BY session_id
+                 ) archived ON archived.session_id = s.session_id
                  JOIN visible v ON v.session_id = s.session_id
                  LEFT JOIN turns t ON t.session_id = s.session_id
                  GROUP BY
@@ -569,7 +577,8 @@ impl SessionRepository {
                     s.state,
                     s.created_at,
                     s.updated_at,
-                    s.last_error
+                    s.last_error,
+                    archived.archived_at
                  ORDER BY s.updated_at DESC, s.session_id ASC",
             )
             .map_err(|error| format!("prepare visible session query failed: {error}"))?;
@@ -584,8 +593,9 @@ impl SessionRepository {
                     created_at: row.get(5)?,
                     updated_at: row.get(6)?,
                     last_error: row.get(7)?,
-                    turn_count: row.get(8)?,
-                    last_turn_at: row.get(9)?,
+                    archived_at: row.get(8)?,
+                    turn_count: row.get(9)?,
+                    last_turn_at: row.get(10)?,
                 })
             })
             .map_err(|error| format!("query visible sessions failed: {error}"))?;
@@ -979,9 +989,16 @@ impl SessionRepository {
                     s.created_at,
                     s.updated_at,
                     s.last_error,
+                    archived.archived_at,
                     COUNT(t.id) AS turn_count,
                     MAX(t.ts) AS last_turn_at
                  FROM sessions s
+                 LEFT JOIN (
+                    SELECT session_id, MAX(ts) AS archived_at
+                    FROM session_events
+                    WHERE event_kind = 'session_archived'
+                    GROUP BY session_id
+                 ) archived ON archived.session_id = s.session_id
                  LEFT JOIN turns t ON t.session_id = s.session_id
                  WHERE s.session_id = ?1
                  GROUP BY
@@ -992,7 +1009,8 @@ impl SessionRepository {
                     s.state,
                     s.created_at,
                     s.updated_at,
-                    s.last_error",
+                    s.last_error,
+                    archived.archived_at",
                 params![session_id],
                 |row| {
                     Ok(RawSessionSummaryRecord {
@@ -1004,8 +1022,9 @@ impl SessionRepository {
                         created_at: row.get(5)?,
                         updated_at: row.get(6)?,
                         last_error: row.get(7)?,
-                        turn_count: row.get(8)?,
-                        last_turn_at: row.get(9)?,
+                        archived_at: row.get(8)?,
+                        turn_count: row.get(9)?,
+                        last_turn_at: row.get(10)?,
                     })
                 },
             )
@@ -1259,6 +1278,7 @@ impl SessionRepository {
             state: SessionState::Ready,
             created_at,
             updated_at,
+            archived_at: None,
             turn_count: turn_count.max(0) as usize,
             last_turn_at: Some(updated_at),
             last_error: None,
@@ -1288,6 +1308,7 @@ struct RawSessionSummaryRecord {
     created_at: i64,
     updated_at: i64,
     last_error: Option<String>,
+    archived_at: Option<i64>,
     turn_count: i64,
     last_turn_at: Option<i64>,
 }
@@ -1335,6 +1356,7 @@ impl SessionSummaryRecord {
             state: SessionState::from_db(&raw.state)?,
             created_at: raw.created_at,
             updated_at: raw.updated_at,
+            archived_at: raw.archived_at,
             turn_count: raw.turn_count.max(0) as usize,
             last_turn_at: raw.last_turn_at,
             last_error: raw.last_error,

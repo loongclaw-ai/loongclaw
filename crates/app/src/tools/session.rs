@@ -138,6 +138,12 @@ enum SessionCancelPlan {
 }
 
 #[cfg(feature = "memory-sqlite")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionArchivePlan {
+    expected_state: SessionState,
+}
+
+#[cfg(feature = "memory-sqlite")]
 #[derive(Debug, Clone, PartialEq)]
 struct SessionToolActionOutcome {
     inspection: Value,
@@ -208,6 +214,9 @@ pub fn execute_session_tool_with_policies(
             }
             "session_cancel" => {
                 execute_session_cancel(request.payload, current_session_id, config, tool_config)
+            }
+            "session_archive" => {
+                execute_session_archive(request.payload, current_session_id, config, tool_config)
             }
             "session_recover" => {
                 execute_session_recover(request.payload, current_session_id, config, tool_config)
@@ -603,6 +612,139 @@ fn execute_session_cancel(
 }
 
 #[cfg(feature = "memory-sqlite")]
+fn execute_session_archive(
+    payload: Value,
+    current_session_id: &str,
+    config: &MemoryRuntimeConfig,
+    tool_config: &ToolConfig,
+) -> Result<ToolCoreOutcome, String> {
+    let request = parse_session_mutation_request(&payload)?;
+    if !request.use_legacy_single_response() {
+        return Err(
+            "session_archive batch mode is not implemented yet; use payload.session_id"
+                .to_owned(),
+        );
+    }
+
+    let target_session_id = request
+        .target
+        .session_ids
+        .first()
+        .expect("legacy single request requires one session id");
+    let repo = SessionRepository::new(config)?;
+    ensure_visible(
+        &repo,
+        current_session_id,
+        target_session_id,
+        tool_config.sessions.visibility,
+    )?;
+    let snapshot = inspect_visible_session_with_policies(
+        target_session_id,
+        current_session_id,
+        config,
+        tool_config,
+        10,
+    )?;
+    let archive_plan = build_session_archive_plan(&snapshot)?;
+    let outcome = apply_session_archive_plan(
+        &repo,
+        target_session_id,
+        current_session_id,
+        config,
+        tool_config,
+        &snapshot,
+        &archive_plan,
+    )?;
+    let mut payload = outcome.inspection;
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("archive_action".to_owned(), outcome.action);
+    }
+    Ok(ToolCoreOutcome {
+        status: "ok".to_owned(),
+        payload,
+    })
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn build_session_archive_plan(
+    snapshot: &SessionInspectionSnapshot,
+) -> Result<SessionArchivePlan, String> {
+    if snapshot.session.archived_at.is_some() {
+        return Err(format!(
+            "session_archive_not_archivable: session `{}` is already archived",
+            snapshot.session.session_id
+        ));
+    }
+    if !session_state_is_terminal(snapshot.session.state) {
+        return Err(format!(
+            "session_archive_not_archivable: session `{}` is not terminal",
+            snapshot.session.session_id
+        ));
+    }
+
+    Ok(SessionArchivePlan {
+        expected_state: snapshot.session.state,
+    })
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn apply_session_archive_plan(
+    repo: &SessionRepository,
+    target_session_id: &str,
+    current_session_id: &str,
+    config: &MemoryRuntimeConfig,
+    tool_config: &ToolConfig,
+    snapshot: &SessionInspectionSnapshot,
+    archive_plan: &SessionArchivePlan,
+) -> Result<SessionToolActionOutcome, String> {
+    let transitioned = repo.transition_session_with_event_if_current(
+        target_session_id,
+        crate::session::repository::TransitionSessionWithEventIfCurrentRequest {
+            expected_state: archive_plan.expected_state,
+            next_state: archive_plan.expected_state,
+            last_error: snapshot.session.last_error.clone(),
+            event_kind: "session_archived".to_owned(),
+            actor_session_id: Some(current_session_id.to_owned()),
+            event_payload_json: json!({
+                "previous_state": archive_plan.expected_state.as_str(),
+                "hides_from_sessions_list": true,
+            }),
+        },
+    )?;
+    if transitioned.is_none() {
+        let latest = repo
+            .load_session_summary_with_legacy_fallback(target_session_id)?
+            .ok_or_else(|| format!("session_not_found: `{target_session_id}`"))?;
+        return Err(format!(
+            "session_archive_state_changed: session `{target_session_id}` is no longer archivable from state `{}`",
+            latest.state.as_str()
+        ));
+    }
+
+    let archived_snapshot = inspect_visible_session_with_policies(
+        target_session_id,
+        current_session_id,
+        config,
+        tool_config,
+        10,
+    )?;
+    Ok(SessionToolActionOutcome {
+        inspection: session_inspection_payload(archived_snapshot),
+        action: session_archive_action_json(archive_plan),
+    })
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn session_archive_action_json(plan: &SessionArchivePlan) -> Value {
+    json!({
+        "kind": "session_archived",
+        "previous_state": plan.expected_state.as_str(),
+        "next_state": plan.expected_state.as_str(),
+        "hides_from_sessions_list": true,
+    })
+}
+
+#[cfg(feature = "memory-sqlite")]
 pub(super) fn inspect_visible_session_with_policies(
     target_session_id: &str,
     current_session_id: &str,
@@ -939,6 +1081,8 @@ pub(super) fn session_inspection_payload(snapshot: SessionInspectionSnapshot) ->
             "state": snapshot.session.state.as_str(),
             "created_at": snapshot.session.created_at,
             "updated_at": snapshot.session.updated_at,
+            "archived": snapshot.session.archived_at.is_some(),
+            "archived_at": snapshot.session.archived_at,
             "last_error": snapshot.session.last_error,
         },
         "terminal_outcome_state": terminal_outcome_state,
@@ -2167,6 +2311,8 @@ fn session_summary_json(session: SessionSummaryRecord) -> Value {
         "state": session.state.as_str(),
         "created_at": session.created_at,
         "updated_at": session.updated_at,
+        "archived": session.archived_at.is_some(),
+        "archived_at": session.archived_at,
         "turn_count": session.turn_count,
         "last_turn_at": session.last_turn_at,
         "last_error": session.last_error,
@@ -2230,8 +2376,8 @@ mod tests {
     use crate::memory::append_turn_direct;
     use crate::memory::runtime_config::MemoryRuntimeConfig;
     use crate::session::repository::{
-        NewSessionEvent, NewSessionRecord, SessionEventRecord, SessionKind, SessionRepository,
-        SessionState, SessionSummaryRecord,
+        FinalizeSessionTerminalRequest, NewSessionEvent, NewSessionRecord, SessionEventRecord,
+        SessionKind, SessionRepository, SessionState, SessionSummaryRecord,
     };
 
     use super::{execute_session_tool_with_config, execute_session_tool_with_policies};
@@ -3947,6 +4093,7 @@ mod tests {
             state: SessionState::Ready,
             created_at: 100,
             updated_at: 100,
+            archived_at: None,
             turn_count: 0,
             last_turn_at: None,
             last_error: None,
@@ -4343,6 +4490,80 @@ mod tests {
             child["inspection"]["terminal_outcome_state"],
             "not_terminal"
         );
+    }
+
+    #[test]
+    fn session_archive_archives_terminal_visible_session() {
+        let config = isolated_memory_config("session-archive-single");
+        let repo = SessionRepository::new(&config).expect("repository");
+        repo.create_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create root");
+        repo.create_session(NewSessionRecord {
+            session_id: "child-session".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Child".to_owned()),
+            state: SessionState::Running,
+        })
+        .expect("create child");
+        repo.finalize_session_terminal(
+            "child-session",
+            FinalizeSessionTerminalRequest {
+                state: SessionState::Completed,
+                last_error: None,
+                event_kind: "delegate_completed".to_owned(),
+                actor_session_id: Some("root-session".to_owned()),
+                event_payload_json: json!({
+                    "result": "ok"
+                }),
+                outcome_status: "ok".to_owned(),
+                outcome_payload_json: json!({
+                    "child_session_id": "child-session",
+                    "result": "ok"
+                }),
+            },
+        )
+        .expect("finalize child");
+
+        let outcome = execute_session_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "session_archive".to_owned(),
+                payload: json!({
+                    "session_id": "child-session"
+                }),
+            },
+            "root-session",
+            &config,
+        )
+        .expect("session_archive outcome");
+
+        assert_eq!(outcome.status, "ok");
+        assert_eq!(outcome.payload["session"]["session_id"], "child-session");
+        assert_eq!(outcome.payload["session"]["state"], "completed");
+        assert_eq!(outcome.payload["session"]["archived"], true);
+        assert!(outcome.payload["session"]["archived_at"].is_number());
+        assert_eq!(outcome.payload["archive_action"]["kind"], "session_archived");
+
+        let status = execute_session_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "session_status".to_owned(),
+                payload: json!({
+                    "session_id": "child-session"
+                }),
+            },
+            "root-session",
+            &config,
+        )
+        .expect("session_status outcome");
+
+        assert_eq!(status.payload["session"]["archived"], true);
+        assert!(status.payload["session"]["archived_at"].is_number());
     }
 
     #[test]
