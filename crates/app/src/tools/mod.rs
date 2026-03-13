@@ -539,6 +539,23 @@ mod tests {
             2
         );
 
+        let session_status = defs
+            .iter()
+            .find(|item| item["function"]["name"] == "session_status")
+            .expect("session_status definition");
+        let status_properties = session_status["function"]["parameters"]["properties"]
+            .as_object()
+            .expect("session_status properties");
+        assert!(status_properties.contains_key("session_id"));
+        assert!(status_properties.contains_key("session_ids"));
+        assert_eq!(
+            session_status["function"]["parameters"]["oneOf"]
+                .as_array()
+                .expect("session_status oneOf")
+                .len(),
+            2
+        );
+
         let sessions_list = defs
             .iter()
             .find(|item| item["function"]["name"] == "sessions_list")

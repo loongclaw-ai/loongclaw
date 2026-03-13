@@ -96,16 +96,22 @@ impl SessionsListRequest {
 
 #[cfg(feature = "memory-sqlite")]
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SessionMutationRequest {
+struct SessionTargetRequest {
     session_ids: Vec<String>,
-    dry_run: bool,
     legacy_single: bool,
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionMutationRequest {
+    target: SessionTargetRequest,
+    dry_run: bool,
 }
 
 #[cfg(feature = "memory-sqlite")]
 impl SessionMutationRequest {
     fn use_legacy_single_response(&self) -> bool {
-        self.legacy_single && !self.dry_run
+        self.target.legacy_single && !self.dry_run
     }
 }
 
@@ -356,18 +362,44 @@ fn execute_session_status(
     config: &MemoryRuntimeConfig,
     tool_config: &ToolConfig,
 ) -> Result<ToolCoreOutcome, String> {
-    let target_session_id = required_payload_string(&payload, "session_id")?;
-    let snapshot = inspect_visible_session_with_policies(
-        &target_session_id,
-        current_session_id,
-        config,
-        tool_config,
-        5,
-    )?;
+    let request = parse_session_target_request(&payload)?;
+    if request.legacy_single {
+        let target_session_id = request
+            .session_ids
+            .first()
+            .expect("legacy single request requires one session id");
+        let snapshot = inspect_visible_session_with_policies(
+            target_session_id,
+            current_session_id,
+            config,
+            tool_config,
+            5,
+        )?;
+
+        return Ok(ToolCoreOutcome {
+            status: "ok".to_owned(),
+            payload: session_inspection_payload(snapshot),
+        });
+    }
+
+    let mut results = Vec::with_capacity(request.session_ids.len());
+    for target_session_id in &request.session_ids {
+        results.push(execute_session_status_batch_result(
+            target_session_id,
+            current_session_id,
+            config,
+            tool_config,
+        )?);
+    }
 
     Ok(ToolCoreOutcome {
         status: "ok".to_owned(),
-        payload: session_inspection_payload(snapshot),
+        payload: session_batch_payload_without_dry_run(
+            "session_status",
+            current_session_id,
+            request.session_ids.len(),
+            results,
+        ),
     })
 }
 
@@ -381,6 +413,7 @@ fn execute_session_recover(
     let request = parse_session_mutation_request(&payload)?;
     if request.use_legacy_single_response() {
         let target_session_id = request
+            .target
             .session_ids
             .first()
             .expect("legacy single request requires one session id");
@@ -418,8 +451,8 @@ fn execute_session_recover(
         });
     }
 
-    let mut results = Vec::with_capacity(request.session_ids.len());
-    for target_session_id in &request.session_ids {
+    let mut results = Vec::with_capacity(request.target.session_ids.len());
+    for target_session_id in &request.target.session_ids {
         results.push(execute_session_recover_batch_result(
             target_session_id,
             current_session_id,
@@ -435,7 +468,7 @@ fn execute_session_recover(
             "session_recover",
             current_session_id,
             request.dry_run,
-            request.session_ids.len(),
+            request.target.session_ids.len(),
             results,
         ),
     })
@@ -451,6 +484,7 @@ fn execute_session_cancel(
     let request = parse_session_mutation_request(&payload)?;
     if request.use_legacy_single_response() {
         let target_session_id = request
+            .target
             .session_ids
             .first()
             .expect("legacy single request requires one session id");
@@ -488,8 +522,8 @@ fn execute_session_cancel(
         });
     }
 
-    let mut results = Vec::with_capacity(request.session_ids.len());
-    for target_session_id in &request.session_ids {
+    let mut results = Vec::with_capacity(request.target.session_ids.len());
+    for target_session_id in &request.target.session_ids {
         results.push(execute_session_cancel_batch_result(
             target_session_id,
             current_session_id,
@@ -505,7 +539,7 @@ fn execute_session_cancel(
             "session_cancel",
             current_session_id,
             request.dry_run,
-            request.session_ids.len(),
+            request.target.session_ids.len(),
             results,
         ),
     })
@@ -654,6 +688,58 @@ fn session_terminal_outcome_missing_reason(
     recovery: Option<&SessionRecoveryRecord>,
 ) -> Option<String> {
     recovery.map(|recovery| recovery.kind.clone())
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn execute_session_status_batch_result(
+    target_session_id: &str,
+    current_session_id: &str,
+    config: &MemoryRuntimeConfig,
+    tool_config: &ToolConfig,
+) -> Result<SessionBatchResultRecord, String> {
+    let repo = SessionRepository::new(config)?;
+    if let Err(error) = ensure_visible(
+        &repo,
+        current_session_id,
+        target_session_id,
+        tool_config.sessions.visibility,
+    ) {
+        return Ok(session_batch_result(
+            target_session_id.to_owned(),
+            "skipped_not_visible",
+            Some(error),
+            None,
+            None,
+        ));
+    }
+
+    let snapshot = match inspect_visible_session_with_policies(
+        target_session_id,
+        current_session_id,
+        config,
+        tool_config,
+        5,
+    ) {
+        Ok(snapshot) => snapshot,
+        Err(error) if is_session_visibility_skip_error(&error) => {
+            return Ok(session_batch_result(
+                target_session_id.to_owned(),
+                "skipped_not_visible",
+                Some(error),
+                None,
+                None,
+            ));
+        }
+        Err(error) => return Err(error),
+    };
+
+    Ok(session_batch_result(
+        target_session_id.to_owned(),
+        "ok",
+        None,
+        None,
+        Some(session_inspection_payload(snapshot)),
+    ))
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -1437,23 +1523,17 @@ fn normalize_required_session_id(session_id: &str) -> Result<String, String> {
 }
 
 #[cfg(feature = "memory-sqlite")]
-fn parse_session_mutation_request(payload: &Value) -> Result<SessionMutationRequest, String> {
+fn parse_session_target_request(payload: &Value) -> Result<SessionTargetRequest, String> {
     let single = optional_payload_string(payload, "session_id");
     let batch = optional_payload_string_array(payload, "session_ids")?;
-    let dry_run = payload
-        .get("dry_run")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
 
     match (single, batch) {
-        (Some(session_id), None) => Ok(SessionMutationRequest {
+        (Some(session_id), None) => Ok(SessionTargetRequest {
             session_ids: vec![normalize_required_session_id(&session_id)?],
-            dry_run,
             legacy_single: true,
         }),
-        (None, Some(session_ids)) => Ok(SessionMutationRequest {
+        (None, Some(session_ids)) => Ok(SessionTargetRequest {
             session_ids,
-            dry_run,
             legacy_single: false,
         }),
         (Some(_), Some(_)) => Err(
@@ -1464,6 +1544,18 @@ fn parse_session_mutation_request(payload: &Value) -> Result<SessionMutationRequ
             Err("session tool requires payload.session_id or payload.session_ids".to_owned())
         }
     }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn parse_session_mutation_request(payload: &Value) -> Result<SessionMutationRequest, String> {
+    let dry_run = payload
+        .get("dry_run")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Ok(SessionMutationRequest {
+        target: parse_session_target_request(payload)?,
+        dry_run,
+    })
 }
 
 fn optional_payload_limit(payload: &Value, field: &str, default: usize, max: usize) -> usize {
@@ -1585,19 +1677,58 @@ fn session_batch_payload(
     requested_count: usize,
     results: Vec<SessionBatchResultRecord>,
 ) -> Value {
+    session_batch_payload_with_optional_dry_run(
+        tool,
+        current_session_id,
+        requested_count,
+        results,
+        Some(dry_run),
+    )
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn session_batch_payload_without_dry_run(
+    tool: &str,
+    current_session_id: &str,
+    requested_count: usize,
+    results: Vec<SessionBatchResultRecord>,
+) -> Value {
+    session_batch_payload_with_optional_dry_run(
+        tool,
+        current_session_id,
+        requested_count,
+        results,
+        None,
+    )
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn session_batch_payload_with_optional_dry_run(
+    tool: &str,
+    current_session_id: &str,
+    requested_count: usize,
+    results: Vec<SessionBatchResultRecord>,
+    dry_run: Option<bool>,
+) -> Value {
     let mut result_counts = BTreeMap::<&'static str, usize>::new();
     for result in &results {
         *result_counts.entry(result.result).or_default() += 1;
     }
 
-    json!({
+    let mut payload = json!({
         "tool": tool,
         "current_session_id": current_session_id,
-        "dry_run": dry_run,
         "requested_count": requested_count,
         "result_counts": result_counts,
         "results": results.into_iter().map(session_batch_result_json).collect::<Vec<_>>(),
-    })
+    });
+    if let Some(dry_run) = dry_run {
+        payload
+            .as_object_mut()
+            .expect("session batch payload object")
+            .insert("dry_run".to_owned(), Value::Bool(dry_run));
+    }
+    payload
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -3738,6 +3869,99 @@ mod tests {
             "grandchild-session"
         );
         assert_eq!(outcome.payload["session"]["kind"], "delegate_child");
+    }
+
+    #[test]
+    fn session_status_batch_returns_mixed_visible_and_hidden_results() {
+        let config = isolated_memory_config("session-status-batch");
+        let repo = SessionRepository::new(&config).expect("repository");
+        repo.create_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create root");
+        repo.create_session(NewSessionRecord {
+            session_id: "child-session".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Child".to_owned()),
+            state: SessionState::Running,
+        })
+        .expect("create child");
+        repo.create_session(NewSessionRecord {
+            session_id: "grandchild-session".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("child-session".to_owned()),
+            label: Some("Grandchild".to_owned()),
+            state: SessionState::Completed,
+        })
+        .expect("create grandchild");
+        repo.create_session(NewSessionRecord {
+            session_id: "hidden-root".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Hidden".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create hidden root");
+
+        let outcome = execute_session_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "session_status".to_owned(),
+                payload: json!({
+                    "session_ids": ["hidden-root", "grandchild-session", "child-session"]
+                }),
+            },
+            "root-session",
+            &config,
+        )
+        .expect("session_status batch outcome");
+
+        assert_eq!(outcome.status, "ok");
+        assert_eq!(outcome.payload["tool"], "session_status");
+        assert_eq!(outcome.payload["requested_count"], 3);
+        assert_eq!(outcome.payload["result_counts"]["ok"], 2);
+        assert_eq!(outcome.payload["result_counts"]["skipped_not_visible"], 1);
+
+        let results = outcome.payload["results"]
+            .as_array()
+            .expect("batch results array");
+        let ids: Vec<&str> = results
+            .iter()
+            .filter_map(|item| item.get("session_id"))
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["hidden-root", "grandchild-session", "child-session"]
+        );
+
+        let hidden = batch_result(&outcome.payload, "hidden-root");
+        assert_eq!(hidden["result"], "skipped_not_visible");
+        assert!(hidden["inspection"].is_null());
+        assert!(hidden["message"]
+            .as_str()
+            .expect("hidden message")
+            .contains("visibility_denied"));
+
+        let grandchild = batch_result(&outcome.payload, "grandchild-session");
+        assert_eq!(grandchild["result"], "ok");
+        assert_eq!(grandchild["inspection"]["session"]["state"], "completed");
+        assert_eq!(
+            grandchild["inspection"]["session"]["session_id"],
+            "grandchild-session"
+        );
+
+        let child = batch_result(&outcome.payload, "child-session");
+        assert_eq!(child["result"], "ok");
+        assert_eq!(child["inspection"]["session"]["state"], "running");
+        assert_eq!(
+            child["inspection"]["terminal_outcome_state"],
+            "not_terminal"
+        );
     }
 
     #[test]

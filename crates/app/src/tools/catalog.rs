@@ -504,9 +504,20 @@ fn session_status_definition(descriptor: &ToolDescriptor) -> Value {
                     "session_id": {
                         "type": "string",
                         "description": "Visible session identifier to inspect."
+                    },
+                    "session_ids": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "minItems": 1,
+                        "description": "Visible session identifiers to inspect in one request."
                     }
                 },
-                "required": ["session_id"],
+                "oneOf": [
+                    { "required": ["session_id"] },
+                    { "required": ["session_ids"] }
+                ],
                 "additionalProperties": false
             }
         }
