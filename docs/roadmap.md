@@ -1,6 +1,6 @@
 # LoongClaw Roadmap
 
-Last updated: 2026-03-08
+Last updated: 2026-03-12
 
 This roadmap is execution-focused. Every stage has:
 
@@ -196,6 +196,20 @@ Delivered in current baseline:
 - active `http_json` runtime execution lane (no longer plan-only):
   - timeout-controlled request execution
   - structured runtime evidence (`status_code`, `response_json`)
+- app-layer session and delegation tool surface:
+  - per-session runtime tool views derived from config
+  - sqlite-backed session registry and session event history
+  - durable terminal outcomes for delegated child sessions
+  - `sessions_list`, `sessions_history`, `session_status`, `session_events`, and `session_wait`
+    with optional incremental event-tail return via `after_id`, draining unseen events through the
+    current cursor and terminal completion
+  - synchronous `delegate` orchestration with timeout/error mapping
+  - asynchronous `delegate_async` queueing with immediate child session id return as the durable handle
+  - daemon `run-turn` one-shot worker for delegated child execution
+  - lineage-based nested delegation bounded by `tools.delegate.max_depth`
+  - descendant session visibility for delegate chains
+  - delegated-child self-inspection via `session_status` and `sessions_history` without `sessions_list`
+  - legacy current-session fallback from `turns` without historical backfill
 
 Planned deliverables:
 

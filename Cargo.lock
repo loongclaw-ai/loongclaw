@@ -1220,6 +1220,7 @@ dependencies = [
  "axum",
  "base64",
  "cbc",
+ "futures-util",
  "loongclaw-contracts",
  "loongclaw-kernel",
  "reqwest",
@@ -1257,12 +1258,14 @@ dependencies = [
 name = "loongclaw-daemon"
 version = "0.1.2"
 dependencies = [
+ "async-trait",
  "base64",
  "chrono",
  "clap",
  "ed25519-dalek",
  "loongclaw-app",
  "loongclaw-bench",
+ "loongclaw-contracts",
  "loongclaw-kernel",
  "loongclaw-spec",
  "serde",

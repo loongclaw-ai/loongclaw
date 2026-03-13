@@ -7,11 +7,13 @@ use loongclaw_kernel::{
     StaticPolicyEngine, SystemClock, VerticalPackManifest,
 };
 
+use crate::config::LoongClawConfig;
+
 /// Default pack identifier used by MVP entry points.
 const MVP_PACK_ID: &str = "dev-automation";
 
 /// Default token TTL (24 hours) for long-running MVP entry points.
-pub(crate) const DEFAULT_TOKEN_TTL_S: u64 = 86400;
+pub const DEFAULT_TOKEN_TTL_S: u64 = 86400;
 
 /// Kernel execution context for policy-gated MVP operations.
 ///
@@ -25,6 +27,13 @@ pub struct KernelContext {
     pub token: CapabilityToken,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct KernelRuntimeConfig {
+    #[cfg(feature = "memory-sqlite")]
+    pub memory: crate::memory::runtime_config::MemoryRuntimeConfig,
+    pub tools: crate::tools::runtime_config::ToolRuntimeConfig,
+}
+
 impl KernelContext {
     pub fn pack_id(&self) -> &str {
         &self.token.pack_id
@@ -35,14 +44,63 @@ impl KernelContext {
     }
 }
 
+impl KernelRuntimeConfig {
+    pub fn from_global_runtime() -> Self {
+        Self {
+            #[cfg(feature = "memory-sqlite")]
+            memory: crate::memory::runtime_config::get_memory_runtime_config().clone(),
+            tools: crate::tools::runtime_config::get_tool_runtime_config().clone(),
+        }
+    }
+
+    pub fn from_config(config: &LoongClawConfig) -> Self {
+        Self {
+            #[cfg(feature = "memory-sqlite")]
+            memory: crate::memory::runtime_config::MemoryRuntimeConfig {
+                sqlite_path: Some(config.memory.resolved_sqlite_path()),
+            },
+            tools: crate::tools::runtime_config::ToolRuntimeConfig {
+                shell_allowlist: config
+                    .tools
+                    .shell_allowlist
+                    .iter()
+                    .map(|value| value.to_ascii_lowercase())
+                    .collect(),
+                file_root: Some(config.tools.resolved_file_root()),
+            },
+        }
+    }
+}
+
 /// Bootstrap a minimal kernel suitable for MVP entry points.
 ///
 /// Registers a default pack manifest with `InvokeTool`, `MemoryRead`, and
 /// `MemoryWrite` capabilities, then issues a long-lived token for the given
 /// `agent_id`.
-pub(crate) fn bootstrap_kernel_context(
+pub fn bootstrap_kernel_context(agent_id: &str, ttl_s: u64) -> Result<KernelContext, String> {
+    bootstrap_kernel_context_with_runtime(
+        agent_id,
+        ttl_s,
+        &KernelRuntimeConfig::from_global_runtime(),
+    )
+}
+
+pub fn bootstrap_kernel_context_for_config(
     agent_id: &str,
     ttl_s: u64,
+    config: &LoongClawConfig,
+) -> Result<KernelContext, String> {
+    bootstrap_kernel_context_with_runtime(
+        agent_id,
+        ttl_s,
+        &KernelRuntimeConfig::from_config(config),
+    )
+}
+
+fn bootstrap_kernel_context_with_runtime(
+    agent_id: &str,
+    ttl_s: u64,
+    runtime: &KernelRuntimeConfig,
 ) -> Result<KernelContext, String> {
     let mut kernel = LoongClawKernel::with_runtime(
         StaticPolicyEngine::default(),
@@ -73,15 +131,17 @@ pub(crate) fn bootstrap_kernel_context(
 
     #[cfg(feature = "memory-sqlite")]
     {
-        let mem_config = crate::memory::runtime_config::get_memory_runtime_config().clone();
-        kernel
-            .register_core_memory_adapter(crate::memory::MvpMemoryAdapter::with_config(mem_config));
+        kernel.register_core_memory_adapter(crate::memory::MvpMemoryAdapter::with_config(
+            runtime.memory.clone(),
+        ));
         kernel
             .set_default_core_memory_adapter("mvp-memory")
             .map_err(|e| format!("set default memory adapter failed: {e}"))?;
     }
 
-    kernel.register_core_tool_adapter(crate::tools::MvpToolAdapter::new());
+    kernel.register_core_tool_adapter(crate::tools::MvpToolAdapter::with_config(
+        runtime.tools.clone(),
+    ));
     kernel
         .set_default_core_tool_adapter("mvp-tools")
         .map_err(|e| format!("set default tool adapter failed: {e}"))?;

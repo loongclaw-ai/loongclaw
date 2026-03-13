@@ -17,7 +17,9 @@ pub use runtime::{
 #[allow(unused_imports)]
 pub use shared::expand_path;
 #[allow(unused_imports)]
-pub use tools_memory::{MemoryConfig, ToolConfig};
+pub use tools_memory::{
+    DelegateToolConfig, MemoryConfig, SessionToolConfig, SessionVisibility, ToolConfig,
+};
 
 #[cfg(test)]
 mod tests {

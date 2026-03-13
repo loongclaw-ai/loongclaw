@@ -21,6 +21,7 @@ tool-file = []
 loongclaw-contracts = { path = "../contracts" }
 loongclaw-kernel = { path = "../kernel" }
 async-trait.workspace = true
+futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml = { workspace = true, optional = true }

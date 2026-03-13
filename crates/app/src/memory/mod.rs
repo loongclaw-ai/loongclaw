@@ -216,4 +216,54 @@ mod tests {
         let _ = fs::remove_file(&db_path);
         let _ = fs::remove_dir(&tmp);
     }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn transcript_window_excludes_session_events() {
+        use std::fs;
+
+        use crate::session::repository::{
+            NewSessionEvent, NewSessionRecord, SessionKind, SessionRepository, SessionState,
+        };
+
+        let tmp = std::env::temp_dir().join(format!(
+            "loongclaw-test-memory-session-events-{}",
+            std::process::id()
+        ));
+        let _ = fs::create_dir_all(&tmp);
+        let db_path = tmp.join("session-events.sqlite3");
+        let _ = fs::remove_file(&db_path);
+
+        let config = runtime_config::MemoryRuntimeConfig {
+            sqlite_path: Some(db_path.clone()),
+        };
+
+        let repo = SessionRepository::new(&config).expect("session repository");
+        repo.create_session(NewSessionRecord {
+            session_id: "session-a".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Session A".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create session");
+        repo.append_event(NewSessionEvent {
+            session_id: "session-a".to_owned(),
+            event_kind: "delegate_started".to_owned(),
+            actor_session_id: None,
+            payload_json: json!({"note": "control-plane event"}),
+        })
+        .expect("append session event");
+
+        append_turn_direct("session-a", "user", "hello from transcript", &config)
+            .expect("append transcript turn");
+
+        let turns = window_direct("session-a", 10, &config).expect("window turns");
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].role, "user");
+        assert_eq!(turns[0].content, "hello from transcript");
+
+        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir(&tmp);
+    }
 }

@@ -1,10 +1,11 @@
 use std::io::{self, Write};
 
-use crate::context::{bootstrap_kernel_context, DEFAULT_TOKEN_TTL_S};
+use crate::context::{bootstrap_kernel_context_for_config, DEFAULT_TOKEN_TTL_S};
+use crate::tools::runtime_tool_view_for_config;
 use crate::CliResult;
 
 use super::config::{self, LoongClawConfig};
-use super::conversation::{ConversationTurnLoop, ProviderErrorMode};
+use super::conversation::{ConversationTurnLoop, ProviderErrorMode, SessionContext};
 #[cfg(feature = "memory-sqlite")]
 use super::memory;
 #[cfg(feature = "memory-sqlite")]
@@ -17,8 +18,8 @@ pub async fn run_cli_chat(config_path: Option<&str>, session_hint: Option<&str>)
         return Err("CLI channel is disabled by config.cli.enabled=false".to_owned());
     }
 
-    export_runtime_env(&config);
-    let kernel_ctx = bootstrap_kernel_context("cli-chat", DEFAULT_TOKEN_TTL_S)?;
+    crate::runtime_env::initialize_runtime_environment(&config, Some(&resolved_path));
+    let kernel_ctx = bootstrap_kernel_context_for_config("cli-chat", DEFAULT_TOKEN_TTL_S, &config)?;
 
     #[cfg(feature = "memory-sqlite")]
     let memory_config = MemoryRuntimeConfig {
@@ -49,6 +50,10 @@ pub async fn run_cli_chat(config_path: Option<&str>, session_hint: Option<&str>)
         .filter(|value| !value.is_empty())
         .unwrap_or("default")
         .to_owned();
+    let session_context = SessionContext::root_with_tool_view(
+        &session_id,
+        runtime_tool_view_for_config(&config.tools),
+    );
     println!("session={session_id} (type /help for commands, /exit to quit)");
     let turn_loop = ConversationTurnLoop::new();
 
@@ -85,9 +90,9 @@ pub async fn run_cli_chat(config_path: Option<&str>, session_hint: Option<&str>)
         }
 
         let assistant_text = turn_loop
-            .handle_turn(
+            .handle_turn_in_session(
                 &config,
-                &session_id,
+                &session_context,
                 input,
                 ProviderErrorMode::InlineMessage,
                 Some(&kernel_ctx),
@@ -144,42 +149,4 @@ fn print_history(
         println!("history unavailable: memory-sqlite feature disabled");
         Ok(())
     }
-}
-
-fn export_runtime_env(config: &LoongClawConfig) {
-    std::env::set_var(
-        "LOONGCLAW_SQLITE_PATH",
-        config.memory.resolved_sqlite_path().display().to_string(),
-    );
-    std::env::set_var(
-        "LOONGCLAW_SLIDING_WINDOW",
-        config.memory.sliding_window.to_string(),
-    );
-    std::env::set_var(
-        "LOONGCLAW_SHELL_ALLOWLIST",
-        config.tools.shell_allowlist.join(","),
-    );
-    std::env::set_var(
-        "LOONGCLAW_FILE_ROOT",
-        config.tools.resolved_file_root().display().to_string(),
-    );
-
-    // Populate the typed tool runtime config so executors never hit env vars
-    // on the hot path.  Ignore the error if already initialised (e.g. tests).
-    let tool_rt = crate::tools::runtime_config::ToolRuntimeConfig {
-        shell_allowlist: config
-            .tools
-            .shell_allowlist
-            .iter()
-            .map(|s| s.to_ascii_lowercase())
-            .collect(),
-        file_root: Some(config.tools.resolved_file_root()),
-    };
-    let _ = crate::tools::runtime_config::init_tool_runtime_config(tool_rt);
-
-    // Populate the typed memory runtime config (same pattern as tool config).
-    let memory_rt = crate::memory::runtime_config::MemoryRuntimeConfig {
-        sqlite_path: Some(config.memory.resolved_sqlite_path()),
-    };
-    let _ = crate::memory::runtime_config::init_memory_runtime_config(memory_rt);
 }

@@ -5,6 +5,8 @@ pub mod context;
 pub mod conversation;
 pub mod memory;
 pub mod provider;
+pub mod runtime_env;
+pub mod session;
 pub mod tools;
 
 pub use context::KernelContext;

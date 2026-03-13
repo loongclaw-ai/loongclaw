@@ -203,6 +203,19 @@ enum Commands {
         #[arg(long)]
         session: Option<String>,
     },
+    /// Execute exactly one conversation turn and exit
+    RunTurn {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        input: String,
+        #[arg(long)]
+        timeout_seconds: Option<u64>,
+        #[arg(long, default_value_t = false)]
+        delegate_child: bool,
+    },
     /// Run Telegram channel polling/response loop
     TelegramServe {
         #[arg(long)]
@@ -237,6 +250,18 @@ enum ValidateConfigOutput {
     Text,
     Json,
     ProblemJson,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct RunTurnDelegateOutcome {
+    status: String,
+    payload: Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum RunTurnResult {
+    Reply(String),
+    DelegateOutcome(RunTurnDelegateOutcome),
 }
 
 #[tokio::main]
@@ -352,6 +377,22 @@ async fn main() {
         Commands::ListModels { config, json } => run_list_models_cli(config.as_deref(), json).await,
         Commands::Chat { config, session } => {
             run_chat_cli(config.as_deref(), session.as_deref()).await
+        }
+        Commands::RunTurn {
+            config,
+            session,
+            input,
+            timeout_seconds,
+            delegate_child,
+        } => {
+            run_turn_cli(
+                config.as_deref(),
+                &session,
+                &input,
+                timeout_seconds,
+                delegate_child,
+            )
+            .await
         }
         Commands::TelegramServe { config, once } => {
             run_telegram_serve_cli(config.as_deref(), once).await
@@ -702,6 +743,92 @@ async fn run_list_models_cli(config_path: Option<&str>, as_json: bool) -> CliRes
 
 async fn run_chat_cli(config_path: Option<&str>, session: Option<&str>) -> CliResult<()> {
     mvp::chat::run_cli_chat(config_path, session).await
+}
+
+fn resolve_run_turn_config_path(config_path: Option<&str>) -> Option<String> {
+    config_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            std::env::var("LOONGCLAW_CONFIG_PATH")
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+        })
+}
+
+async fn run_turn_cli(
+    config_path: Option<&str>,
+    session: &str,
+    input: &str,
+    timeout_seconds: Option<u64>,
+    delegate_child: bool,
+) -> CliResult<()> {
+    let result =
+        execute_run_turn(config_path, session, input, timeout_seconds, delegate_child).await?;
+
+    match result {
+        RunTurnResult::Reply(reply) => {
+            println!("{reply}");
+        }
+        RunTurnResult::DelegateOutcome(outcome) => {
+            let payload = json!({
+                "status": outcome.status,
+                "payload": outcome.payload,
+            });
+            let pretty = serde_json::to_string_pretty(&payload).map_err(|error| {
+                format!("serialize run-turn delegate-child output failed: {error}")
+            })?;
+            println!("{pretty}");
+        }
+    }
+    Ok(())
+}
+
+async fn execute_run_turn(
+    config_path: Option<&str>,
+    session: &str,
+    input: &str,
+    timeout_seconds: Option<u64>,
+    delegate_child: bool,
+) -> CliResult<RunTurnResult> {
+    let resolved_config_path = resolve_run_turn_config_path(config_path);
+    let (resolved_path, config) = mvp::config::load(resolved_config_path.as_deref())?;
+    mvp::runtime_env::initialize_runtime_environment(&config, Some(&resolved_path));
+    let kernel_ctx = mvp::context::bootstrap_kernel_context_for_config(
+        "daemon-run-turn",
+        mvp::context::DEFAULT_TOKEN_TTL_S,
+        &config,
+    )?;
+
+    if delegate_child {
+        let timeout_seconds = timeout_seconds.unwrap_or(config.tools.delegate.timeout_seconds);
+        let outcome = mvp::conversation::run_delegate_child_turn(
+            &mvp::conversation::ConversationTurnLoop::new(),
+            &config,
+            session,
+            input,
+            timeout_seconds,
+            Some(&kernel_ctx),
+        )
+        .await?;
+        return Ok(RunTurnResult::DelegateOutcome(RunTurnDelegateOutcome {
+            status: outcome.status,
+            payload: outcome.payload,
+        }));
+    }
+
+    let reply = mvp::conversation::ConversationTurnLoop::new()
+        .handle_turn(
+            &config,
+            session,
+            input,
+            mvp::conversation::ProviderErrorMode::Propagate,
+            Some(&kernel_ctx),
+        )
+        .await?;
+    Ok(RunTurnResult::Reply(reply))
 }
 
 async fn run_telegram_serve_cli(config_path: Option<&str>, once: bool) -> CliResult<()> {

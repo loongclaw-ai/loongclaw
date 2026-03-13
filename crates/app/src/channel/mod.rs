@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use tokio::time::sleep;
 
 #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
-use crate::context::{bootstrap_kernel_context, DEFAULT_TOKEN_TTL_S};
+use crate::context::{bootstrap_kernel_context_for_config, DEFAULT_TOKEN_TTL_S};
 use crate::CliResult;
 #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
 use crate::KernelContext;
@@ -15,7 +15,9 @@ use crate::KernelContext;
 #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
 use super::config::LoongClawConfig;
 #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
-use super::conversation::{ConversationTurnLoop, ProviderErrorMode};
+use super::conversation::{ConversationTurnLoop, ProviderErrorMode, SessionContext};
+#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+use crate::tools::runtime_tool_view_for_config;
 
 #[cfg(feature = "channel-feishu")]
 mod feishu;
@@ -59,8 +61,9 @@ pub async fn run_telegram_channel(config_path: Option<&str>, once: bool) -> CliR
             return Err("telegram channel is disabled by config.telegram.enabled=false".to_owned());
         }
         validate_telegram_security_config(&config)?;
-        apply_runtime_env(&config);
-        let kernel_ctx = bootstrap_kernel_context("channel-telegram", DEFAULT_TOKEN_TTL_S)?;
+        crate::runtime_env::initialize_runtime_environment(&config, Some(&resolved_path));
+        let kernel_ctx =
+            bootstrap_kernel_context_for_config("channel-telegram", DEFAULT_TOKEN_TTL_S, &config)?;
 
         let token = config.telegram.bot_token().ok_or_else(|| {
             "telegram bot token missing (set telegram.bot_token or env)".to_owned()
@@ -116,7 +119,7 @@ pub async fn run_feishu_send(
         if !config.feishu.enabled {
             return Err("feishu channel is disabled by config.feishu.enabled=false".to_owned());
         }
-        apply_runtime_env(&config);
+        crate::runtime_env::initialize_runtime_environment(&config, Some(&resolved_path));
 
         feishu::run_feishu_send(&config, receive_id, text, as_card).await?;
 
@@ -151,8 +154,9 @@ pub async fn run_feishu_channel(
             return Err("feishu channel is disabled by config.feishu.enabled=false".to_owned());
         }
         validate_feishu_security_config(&config)?;
-        apply_runtime_env(&config);
-        let kernel_ctx = bootstrap_kernel_context("channel-feishu", DEFAULT_TOKEN_TTL_S)?;
+        crate::runtime_env::initialize_runtime_environment(&config, Some(&resolved_path));
+        let kernel_ctx =
+            bootstrap_kernel_context_for_config("channel-feishu", DEFAULT_TOKEN_TTL_S, &config)?;
 
         feishu::run_feishu_channel(
             &config,
@@ -171,54 +175,19 @@ pub(super) async fn process_inbound_with_provider(
     message: &ChannelInboundMessage,
     kernel_ctx: Option<&KernelContext>,
 ) -> CliResult<String> {
+    let session_context = SessionContext::root_with_tool_view(
+        &message.session_id,
+        runtime_tool_view_for_config(&config.tools),
+    );
     ConversationTurnLoop::new()
-        .handle_turn(
+        .handle_turn_in_session(
             config,
-            &message.session_id,
+            &session_context,
             &message.text,
             ProviderErrorMode::Propagate,
             kernel_ctx,
         )
         .await
-}
-
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
-fn apply_runtime_env(config: &LoongClawConfig) {
-    std::env::set_var(
-        "LOONGCLAW_SQLITE_PATH",
-        config.memory.resolved_sqlite_path().display().to_string(),
-    );
-    std::env::set_var(
-        "LOONGCLAW_SLIDING_WINDOW",
-        config.memory.sliding_window.to_string(),
-    );
-    std::env::set_var(
-        "LOONGCLAW_SHELL_ALLOWLIST",
-        config.tools.shell_allowlist.join(","),
-    );
-    std::env::set_var(
-        "LOONGCLAW_FILE_ROOT",
-        config.tools.resolved_file_root().display().to_string(),
-    );
-
-    // Populate the typed tool runtime config so executors never hit env vars
-    // on the hot path.  Ignore the error if already initialised.
-    let tool_rt = crate::tools::runtime_config::ToolRuntimeConfig {
-        shell_allowlist: config
-            .tools
-            .shell_allowlist
-            .iter()
-            .map(|s| s.to_ascii_lowercase())
-            .collect(),
-        file_root: Some(config.tools.resolved_file_root()),
-    };
-    let _ = crate::tools::runtime_config::init_tool_runtime_config(tool_rt);
-
-    // Populate the typed memory runtime config (same pattern as tool config).
-    let memory_rt = crate::memory::runtime_config::MemoryRuntimeConfig {
-        sqlite_path: Some(config.memory.resolved_sqlite_path()),
-    };
-    let _ = crate::memory::runtime_config::init_memory_runtime_config(memory_rt);
 }
 
 #[cfg(feature = "channel-telegram")]

@@ -3,6 +3,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio::time::sleep;
 
+use crate::tools::ToolView;
 use crate::CliResult;
 
 use super::config::{LoongClawConfig, ProviderConfig, ProviderKind, ReasoningEffort};
@@ -19,11 +20,12 @@ pub fn build_messages_for_session(
     config: &LoongClawConfig,
     session_id: &str,
     include_system_prompt: bool,
+    tool_view: &ToolView,
 ) -> CliResult<Vec<Value>> {
     let mut messages = Vec::new();
     if include_system_prompt {
         let system = config.cli.system_prompt.trim();
-        let snapshot = super::tools::capability_snapshot();
+        let snapshot = super::tools::capability_snapshot_for_view(tool_view);
         let content = if system.is_empty() {
             snapshot
         } else {
@@ -98,6 +100,7 @@ pub async fn request_completion(config: &LoongClawConfig, messages: &[Value]) ->
 pub async fn request_turn(
     config: &LoongClawConfig,
     messages: &[Value],
+    tool_view: &ToolView,
 ) -> CliResult<crate::conversation::turn_engine::ProviderTurn> {
     validate_provider_configuration(config)?;
     validate_provider_feature_gate(config)?;
@@ -114,6 +117,7 @@ pub async fn request_turn(
         match request_turn_with_model(
             config,
             messages,
+            tool_view,
             model,
             auto_model_mode,
             &endpoint,
@@ -681,6 +685,7 @@ async fn request_completion_with_model(
 async fn request_turn_with_model(
     config: &LoongClawConfig,
     messages: &[Value],
+    tool_view: &ToolView,
     model: &str,
     auto_model_mode: bool,
     endpoint: &str,
@@ -692,7 +697,11 @@ async fn request_turn_with_model(
     let mut backoff_ms = request_policy.initial_backoff_ms;
     let mut payload_mode = CompletionPayloadMode::default_for(&config.provider);
     let mut tried_payload_modes = vec![payload_mode];
-    let tool_definitions = super::tools::provider_tool_definitions();
+    let tool_definitions = super::tools::try_provider_tool_definitions_for_view(tool_view)
+        .map_err(|message| ModelRequestError {
+            message,
+            try_next_model: false,
+        })?;
     let mut include_tool_schema = !tool_definitions.is_empty();
 
     loop {
@@ -895,8 +904,13 @@ mod tests {
             conversation: crate::config::ConversationConfig::default(),
         };
 
-        let messages =
-            build_messages_for_session(&config, "noop-session", true).expect("build messages");
+        let messages = build_messages_for_session(
+            &config,
+            "noop-session",
+            true,
+            &crate::tools::runtime_tool_view(),
+        )
+        .expect("build messages");
         assert!(!messages.is_empty());
         assert_eq!(messages[0]["role"], "system");
     }
@@ -913,8 +927,13 @@ mod tests {
             conversation: crate::config::ConversationConfig::default(),
         };
 
-        let messages =
-            build_messages_for_session(&config, "noop-session", true).expect("build messages");
+        let messages = build_messages_for_session(
+            &config,
+            "noop-session",
+            true,
+            &crate::tools::runtime_tool_view(),
+        )
+        .expect("build messages");
         assert!(!messages.is_empty());
         let system_content = messages[0]["content"].as_str().expect("system content");
         assert!(
@@ -933,6 +952,29 @@ mod tests {
             system_content.contains("- file.write: Write file contents"),
             "system prompt should list file.write tool"
         );
+    }
+
+    #[test]
+    fn build_messages_respect_restricted_tool_view() {
+        let config = LoongClawConfig {
+            provider: ProviderConfig::default(),
+            cli: crate::config::CliChannelConfig::default(),
+            telegram: crate::config::TelegramChannelConfig::default(),
+            feishu: FeishuChannelConfig::default(),
+            tools: ToolConfig::default(),
+            memory: MemoryConfig::default(),
+            conversation: crate::config::ConversationConfig::default(),
+        };
+        let view = crate::tools::ToolView::from_tool_names(["file.read"]);
+
+        let messages = build_messages_for_session(&config, "noop-session", true, &view)
+            .expect("build messages");
+        assert!(!messages.is_empty());
+        let system_content = messages[0]["content"].as_str().expect("system content");
+        assert!(system_content.contains("[available_tools]"));
+        assert!(system_content.contains("- file.read: Read file contents"));
+        assert!(!system_content.contains("- file.write: Write file contents"));
+        assert!(!system_content.contains("- shell.exec: Execute shell commands"));
     }
 
     #[test]
@@ -1089,11 +1131,18 @@ mod tests {
             .collect();
 
         let mut expected = Vec::new();
+        expected.push("delegate");
+        expected.push("delegate_async");
         #[cfg(feature = "tool-file")]
         {
             expected.push("file_read");
             expected.push("file_write");
         }
+        expected.push("session_events");
+        expected.push("session_status");
+        expected.push("session_wait");
+        expected.push("sessions_history");
+        expected.push("sessions_list");
         #[cfg(feature = "tool-shell")]
         {
             expected.push("shell_exec");
@@ -1101,6 +1150,82 @@ mod tests {
 
         assert_eq!(names, expected);
         assert_eq!(body["tool_choice"], "auto");
+    }
+
+    #[test]
+    fn build_turn_request_body_respects_restricted_tool_view() {
+        let config = LoongClawConfig {
+            provider: ProviderConfig::default(),
+            cli: crate::config::CliChannelConfig::default(),
+            telegram: crate::config::TelegramChannelConfig::default(),
+            feishu: FeishuChannelConfig::default(),
+            tools: ToolConfig::default(),
+            memory: MemoryConfig::default(),
+            conversation: crate::config::ConversationConfig::default(),
+        };
+        let view = crate::tools::planned_delegate_child_tool_view();
+        let tool_definitions =
+            crate::tools::try_provider_tool_definitions_for_view(&view).expect("tool defs");
+
+        let body = build_turn_request_body(
+            &config,
+            &[],
+            "model-latest",
+            CompletionPayloadMode::default_for(&config.provider),
+            true,
+            &tool_definitions,
+        );
+        let tools = body
+            .get("tools")
+            .and_then(|value| value.as_array())
+            .expect("tools array in turn body");
+        let names: Vec<&str> = tools
+            .iter()
+            .filter_map(|item| item.get("function"))
+            .filter_map(|function| function.get("name"))
+            .filter_map(Value::as_str)
+            .collect();
+
+        assert!(names.contains(&"file_read"));
+        assert!(names.contains(&"file_write"));
+        assert!(!names.contains(&"session_events"));
+        assert!(names.contains(&"session_status"));
+        assert!(names.contains(&"sessions_history"));
+        assert!(!names.contains(&"session_wait"));
+        assert!(!names.contains(&"shell_exec"));
+        assert!(!names.contains(&"delegate"));
+        assert!(!names.contains(&"delegate_async"));
+        assert!(!names.contains(&"sessions_list"));
+    }
+
+    #[test]
+    fn delegate_async_appears_in_root_turn_request_body() {
+        let config = LoongClawConfig {
+            provider: ProviderConfig::default(),
+            cli: crate::config::CliChannelConfig::default(),
+            telegram: crate::config::TelegramChannelConfig::default(),
+            feishu: FeishuChannelConfig::default(),
+            tools: ToolConfig::default(),
+            memory: MemoryConfig::default(),
+            conversation: crate::config::ConversationConfig::default(),
+        };
+        let tool_definitions = crate::tools::provider_tool_definitions();
+        let body = build_turn_request_body(
+            &config,
+            &[],
+            "model-latest",
+            CompletionPayloadMode::default_for(&config.provider),
+            true,
+            &tool_definitions,
+        );
+        let tools = body["tools"].as_array().expect("tools array");
+        let names: Vec<&str> = tools
+            .iter()
+            .filter_map(|item| item.get("function"))
+            .filter_map(|function| function.get("name"))
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(names.contains(&"delegate_async"));
     }
 
     #[test]

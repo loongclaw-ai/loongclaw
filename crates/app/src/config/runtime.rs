@@ -320,14 +320,20 @@ fn template_secret_usage_comment() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_config_path(prefix: &str) -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(1);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time should move forward")
             .as_nanos();
-        std::env::temp_dir().join(format!("{prefix}-{nanos}.toml"))
+        let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "{prefix}-{nanos}-{}-{counter}.toml",
+            std::process::id()
+        ))
     }
 
     #[test]
@@ -562,5 +568,26 @@ api_key_env = "{secret}"
         assert!(error.contains("already exists"));
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    #[cfg(feature = "config-toml")]
+    fn tool_config_round_trips_session_and_delegate_settings() {
+        let mut config = LoongClawConfig::default();
+        config.tools.sessions.visibility = crate::config::tools_memory::SessionVisibility::SelfOnly;
+        config.tools.sessions.list_limit = 12;
+        config.tools.sessions.history_limit = 34;
+        config.tools.delegate.enabled = false;
+        config.tools.delegate.max_depth = 2;
+        config.tools.delegate.timeout_seconds = 90;
+        config.tools.delegate.allow_shell_in_child = true;
+        config.tools.delegate.child_tool_allowlist =
+            vec!["file.read".to_owned(), "shell.exec".to_owned()];
+
+        let encoded = encode_toml_config(&config).expect("encode config");
+        let parsed = toml::from_str::<LoongClawConfig>(&encoded).expect("parse encoded config");
+
+        assert_eq!(parsed.tools.sessions, config.tools.sessions);
+        assert_eq!(parsed.tools.delegate, config.tools.delegate);
     }
 }
