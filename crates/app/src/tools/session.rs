@@ -86,6 +86,7 @@ struct SessionsListRequest {
     kind: Option<SessionKind>,
     parent_session_id: Option<String>,
     overdue_only: bool,
+    include_archived: bool,
     include_delegate_lifecycle: bool,
 }
 
@@ -296,6 +297,9 @@ fn execute_sessions_list(
     }
     if let Some(parent_session_id) = request.parent_session_id.as_deref() {
         sessions.retain(|session| session.parent_session_id.as_deref() == Some(parent_session_id));
+    }
+    if !request.include_archived {
+        sessions.retain(|session| session.archived_at.is_none());
     }
 
     let mut listed_sessions = Vec::new();
@@ -2011,6 +2015,10 @@ fn parse_sessions_list_request(
             .get("overdue_only")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        include_archived: payload
+            .get("include_archived")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         include_delegate_lifecycle: payload
             .get("include_delegate_lifecycle")
             .and_then(Value::as_bool)
@@ -2297,6 +2305,7 @@ fn sessions_list_filters_json(request: &SessionsListRequest) -> Value {
         "kind": request.kind.map(SessionKind::as_str),
         "parent_session_id": request.parent_session_id.clone(),
         "overdue_only": request.overdue_only,
+        "include_archived": request.include_archived,
         "include_delegate_lifecycle": request.effective_include_delegate_lifecycle(),
     })
 }
@@ -2592,6 +2601,153 @@ mod tests {
         assert_eq!(ids, vec!["child-running"]);
         assert_eq!(outcome.payload["matched_count"], 1);
         assert_eq!(outcome.payload["returned_count"], 1);
+    }
+
+    #[test]
+    fn sessions_list_excludes_archived_sessions_by_default() {
+        let config = isolated_memory_config("sessions-list-excludes-archived");
+        let repo = SessionRepository::new(&config).expect("repository");
+        repo.create_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create root");
+        repo.create_session(NewSessionRecord {
+            session_id: "archived-child".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Archived".to_owned()),
+            state: SessionState::Running,
+        })
+        .expect("create archived child");
+        repo.create_session(NewSessionRecord {
+            session_id: "visible-child".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Visible".to_owned()),
+            state: SessionState::Running,
+        })
+        .expect("create visible child");
+        for session_id in ["archived-child", "visible-child"] {
+            repo.finalize_session_terminal(
+                session_id,
+                FinalizeSessionTerminalRequest {
+                    state: SessionState::Completed,
+                    last_error: None,
+                    event_kind: "delegate_completed".to_owned(),
+                    actor_session_id: Some("root-session".to_owned()),
+                    event_payload_json: json!({ "result": "ok" }),
+                    outcome_status: "ok".to_owned(),
+                    outcome_payload_json: json!({ "child_session_id": session_id }),
+                },
+            )
+            .expect("finalize child");
+        }
+
+        execute_session_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "session_archive".to_owned(),
+                payload: json!({
+                    "session_id": "archived-child"
+                }),
+            },
+            "root-session",
+            &config,
+        )
+        .expect("archive child");
+
+        let outcome = execute_session_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "sessions_list".to_owned(),
+                payload: json!({}),
+            },
+            "root-session",
+            &config,
+        )
+        .expect("sessions_list outcome");
+
+        let sessions = outcome.payload["sessions"]
+            .as_array()
+            .expect("sessions array");
+        let ids: Vec<&str> = sessions
+            .iter()
+            .filter_map(|item: &Value| item.get("session_id"))
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(ids.contains(&"root-session"));
+        assert!(ids.contains(&"visible-child"));
+        assert!(!ids.contains(&"archived-child"));
+    }
+
+    #[test]
+    fn sessions_list_can_include_archived_sessions_when_requested() {
+        let config = isolated_memory_config("sessions-list-include-archived");
+        let repo = SessionRepository::new(&config).expect("repository");
+        repo.create_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create root");
+        repo.create_session(NewSessionRecord {
+            session_id: "archived-child".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Archived".to_owned()),
+            state: SessionState::Running,
+        })
+        .expect("create archived child");
+        repo.finalize_session_terminal(
+            "archived-child",
+            FinalizeSessionTerminalRequest {
+                state: SessionState::Completed,
+                last_error: None,
+                event_kind: "delegate_completed".to_owned(),
+                actor_session_id: Some("root-session".to_owned()),
+                event_payload_json: json!({ "result": "ok" }),
+                outcome_status: "ok".to_owned(),
+                outcome_payload_json: json!({ "child_session_id": "archived-child" }),
+            },
+        )
+        .expect("finalize child");
+        execute_session_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "session_archive".to_owned(),
+                payload: json!({
+                    "session_id": "archived-child"
+                }),
+            },
+            "root-session",
+            &config,
+        )
+        .expect("archive child");
+
+        let outcome = execute_session_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "sessions_list".to_owned(),
+                payload: json!({
+                    "include_archived": true
+                }),
+            },
+            "root-session",
+            &config,
+        )
+        .expect("sessions_list outcome");
+
+        let archived = outcome.payload["sessions"]
+            .as_array()
+            .expect("sessions array")
+            .iter()
+            .find(|item| item["session_id"] == "archived-child")
+            .expect("archived session");
+        assert_eq!(outcome.payload["filters"]["include_archived"], true);
+        assert_eq!(archived["archived"], true);
+        assert!(archived["archived_at"].is_number());
     }
 
     #[test]

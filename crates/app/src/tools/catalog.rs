@@ -180,6 +180,15 @@ pub fn tool_catalog() -> ToolCatalog {
         provider_definition_builder: session_recover_definition,
     });
     descriptors.push(ToolDescriptor {
+        name: "session_archive",
+        provider_name: "session_archive",
+        aliases: &[],
+        description: "Archive a visible terminal session from default session listings",
+        execution_kind: ToolExecutionKind::App,
+        availability: ToolAvailability::Runtime,
+        provider_definition_builder: session_archive_definition,
+    });
+    descriptors.push(ToolDescriptor {
         name: "session_cancel",
         provider_name: "session_cancel",
         aliases: &[],
@@ -306,7 +315,7 @@ pub fn delegate_child_tool_view_for_config_with_delegate(
 fn tool_is_enabled_for_runtime_view(tool_name: &str, config: &ToolConfig) -> bool {
     match tool_name {
         "sessions_list" | "sessions_history" | "session_status" | "session_events"
-        | "session_cancel" | "session_recover" | "session_wait" => config.sessions.enabled,
+        | "session_archive" | "session_cancel" | "session_recover" | "session_wait" => config.sessions.enabled,
         "sessions_send" => config.messages.enabled,
         "delegate" | "delegate_async" => config.delegate.enabled,
         _ => true,
@@ -431,6 +440,10 @@ fn sessions_list_definition(descriptor: &ToolDescriptor) -> Value {
                     "overdue_only": {
                         "type": "boolean",
                         "description": "When true, only return async delegate children whose lifecycle staleness is overdue."
+                    },
+                    "include_archived": {
+                        "type": "boolean",
+                        "description": "When true, include archived visible sessions in the returned list."
                     },
                     "include_delegate_lifecycle": {
                         "type": "boolean",
@@ -564,6 +577,27 @@ fn session_recover_definition(descriptor: &ToolDescriptor) -> Value {
                     { "required": ["session_id"] },
                     { "required": ["session_ids"] }
                 ],
+                "additionalProperties": false
+            }
+        }
+    })
+}
+
+fn session_archive_definition(descriptor: &ToolDescriptor) -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": descriptor.provider_name,
+            "description": descriptor.description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Visible terminal session identifier to archive."
+                    }
+                },
+                "required": ["session_id"],
                 "additionalProperties": false
             }
         }
