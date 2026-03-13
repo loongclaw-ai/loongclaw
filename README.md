@@ -1,4 +1,4 @@
-<h1 align="center">🐉 LoongClaw - A Rust-based Agentic OS Kernel</h1>
+# 🐉 LoongClaw - A Rust-based Agentic OS Kernel
 
 <p align="center">
   <picture>
@@ -8,9 +8,7 @@
   </picture>
 </p>
 
-<p align="center">
-  <strong>Originated from the East, here to benefit the world</strong>
-</p>
+<h3 align="center"><em>"Originated from the East, here to benefit the world"</em></h3>
 
 <p align="center">
   <a href="https://github.com/loongclaw-ai/loongclaw/actions/workflows/ci.yml?branch=dev"><img src="https://img.shields.io/github/actions/workflow/status/loongclaw-ai/loongclaw/ci.yml?branch=dev&label=build" alt="Build" /></a>

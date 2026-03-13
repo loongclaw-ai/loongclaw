@@ -1,4 +1,4 @@
-<h1 align="center">🐉 LoongClaw - 基于 Rust 构建的 Agentic OS 内核</h1>
+# 🐉 LoongClaw - 基于 Rust 构建的 Agentic OS 内核
 
 <p align="center">
   <picture>
@@ -8,9 +8,7 @@
   </picture>
 </p>
 
-<p align="center">
-  <strong>发轫于东，以会群友</strong>
-</p>
+<h3 align="center"><em>“发轫于东，以会群友”</em></h3>
 
 <p align="center">
   <a href="https://github.com/loongclaw-ai/loongclaw/actions/workflows/ci.yml?branch=dev"><img src="https://img.shields.io/github/actions/workflow/status/loongclaw-ai/loongclaw/ci.yml?branch=dev&label=build" alt="Build" /></a>
