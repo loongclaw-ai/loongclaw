@@ -74,12 +74,14 @@ pub fn execute_app_tool_with_config(
     };
     match canonical_name {
         "sessions_list" | "sessions_history" | "session_status" | "session_events"
-        | "session_cancel" | "session_archive" | "session_recover" => session::execute_session_tool_with_policies(
-            request,
-            current_session_id,
-            memory_config,
-            tool_config,
-        ),
+        | "session_cancel" | "session_archive" | "session_recover" => {
+            session::execute_session_tool_with_policies(
+                request,
+                current_session_id,
+                memory_config,
+                tool_config,
+            )
+        }
         "sessions_send" => Err("app_tool_not_implemented: sessions_send".to_owned()),
         "session_wait" => Err("app_tool_not_implemented: session_wait".to_owned()),
         "delegate" => Err("app_tool_not_implemented: delegate".to_owned()),

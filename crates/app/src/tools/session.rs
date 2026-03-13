@@ -801,8 +801,9 @@ fn execute_session_archive_batch_result(
     let inspection = session_inspection_payload(snapshot.clone());
     let archive_plan = match build_session_archive_plan(&snapshot) {
         Ok(plan) => plan,
-        Err(error) if error.starts_with("session_archive_not_archivable:")
-            && error.contains("already archived") =>
+        Err(error)
+            if error.starts_with("session_archive_not_archivable:")
+                && error.contains("already archived") =>
         {
             return Ok(session_batch_result(
                 target_session_id.to_owned(),
@@ -4836,7 +4837,10 @@ mod tests {
         assert_eq!(outcome.payload["session"]["state"], "completed");
         assert_eq!(outcome.payload["session"]["archived"], true);
         assert!(outcome.payload["session"]["archived_at"].is_number());
-        assert_eq!(outcome.payload["archive_action"]["kind"], "session_archived");
+        assert_eq!(
+            outcome.payload["archive_action"]["kind"],
+            "session_archived"
+        );
 
         let status = execute_session_tool_with_config(
             ToolCoreRequest {
@@ -4936,8 +4940,14 @@ mod tests {
         assert_eq!(outcome.payload["dry_run"], true);
         assert_eq!(outcome.payload["requested_count"], 3);
         assert_eq!(outcome.payload["result_counts"]["would_apply"], 1);
-        assert_eq!(outcome.payload["result_counts"]["skipped_already_archived"], 1);
-        assert_eq!(outcome.payload["result_counts"]["skipped_not_archivable"], 1);
+        assert_eq!(
+            outcome.payload["result_counts"]["skipped_already_archived"],
+            1
+        );
+        assert_eq!(
+            outcome.payload["result_counts"]["skipped_not_archivable"],
+            1
+        );
 
         let ready = batch_result(&outcome.payload, "ready-to-archive");
         assert_eq!(ready["result"], "would_apply");
@@ -5042,8 +5052,14 @@ mod tests {
         assert_eq!(outcome.payload["dry_run"], false);
         assert_eq!(outcome.payload["requested_count"], 3);
         assert_eq!(outcome.payload["result_counts"]["applied"], 1);
-        assert_eq!(outcome.payload["result_counts"]["skipped_already_archived"], 1);
-        assert_eq!(outcome.payload["result_counts"]["skipped_not_archivable"], 1);
+        assert_eq!(
+            outcome.payload["result_counts"]["skipped_already_archived"],
+            1
+        );
+        assert_eq!(
+            outcome.payload["result_counts"]["skipped_not_archivable"],
+            1
+        );
 
         let ready = batch_result(&outcome.payload, "ready-to-archive");
         assert_eq!(ready["result"], "applied");
@@ -5066,20 +5082,18 @@ mod tests {
         assert_eq!(running["result"], "skipped_not_archivable");
         assert_eq!(running["inspection"]["session"]["state"], "running");
 
-        assert!(
-            repo.load_session_summary_with_legacy_fallback("ready-to-archive")
-                .expect("load ready summary")
-                .expect("ready session")
-                .archived_at
-                .is_some()
-        );
-        assert!(
-            repo.load_session_summary_with_legacy_fallback("already-archived")
-                .expect("load archived summary")
-                .expect("archived session")
-                .archived_at
-                .is_some()
-        );
+        assert!(repo
+            .load_session_summary_with_legacy_fallback("ready-to-archive")
+            .expect("load ready summary")
+            .expect("ready session")
+            .archived_at
+            .is_some());
+        assert!(repo
+            .load_session_summary_with_legacy_fallback("already-archived")
+            .expect("load archived summary")
+            .expect("archived session")
+            .archived_at
+            .is_some());
         assert_eq!(
             repo.load_session_summary_with_legacy_fallback("running-child")
                 .expect("load running summary")
