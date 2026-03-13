@@ -1,11 +1,15 @@
-# 🐉 LoongClaw - 发轫于东，以会群友
+<h1 align="center">🐉 LoongClaw - 基于 Rust 构建的 Agentic OS 内核</h1>
 
-<p align="left">
+<p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/logo/loongclaw-logo-dark.png" />
     <source media="(prefers-color-scheme: light)" srcset="assets/logo/loongclaw-logo-light.png" />
-    <img src="assets/logo/loongclaw-logo-light.png" alt="LoongClaw" width="720" />
+    <img src="assets/logo/loongclaw-logo-light.png" alt="LoongClaw" width="800" />
   </picture>
+</p>
+
+<p align="center">
+  <strong>发轫于东，以会群友</strong>
 </p>
 
 <p align="center">

@@ -1,11 +1,15 @@
-# 🐉 LoongClaw - Originated from the East, here to benefit the world
+<h1 align="center">🐉 LoongClaw - A Rust-based Agentic OS Kernel</h1>
 
-<p align="left">
+<p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/logo/loongclaw-logo-dark.png" />
     <source media="(prefers-color-scheme: light)" srcset="assets/logo/loongclaw-logo-light.png" />
-    <img src="assets/logo/loongclaw-logo-light.png" alt="LoongClaw" width="720" />
+    <img src="assets/logo/loongclaw-logo-light.png" alt="LoongClaw" width="800" />
   </picture>
+</p>
+
+<p align="center">
+  <strong>Originated from the East, here to benefit the world</strong>
 </p>
 
 <p align="center">
