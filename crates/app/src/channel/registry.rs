@@ -104,9 +104,18 @@ impl ChannelStatusSnapshot {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct ChannelRuntimeDescriptor {
+    platform: ChannelPlatform,
+    snapshot_builder: ChannelSnapshotBuilder,
+}
+
+type ChannelSnapshotBuilder =
+    fn(&ChannelRegistryDescriptor, &LoongClawConfig, &Path, u64) -> Vec<ChannelStatusSnapshot>;
+
+#[derive(Debug, Clone, Copy)]
 struct ChannelRegistryDescriptor {
     id: &'static str,
-    runtime_platform: Option<ChannelPlatform>,
+    runtime: Option<ChannelRuntimeDescriptor>,
     implementation_status: ChannelCatalogImplementationStatus,
     label: &'static str,
     aliases: &'static [&'static str],
@@ -176,7 +185,10 @@ const SLACK_OPERATIONS: &[ChannelCatalogOperation] = &[SLACK_SEND_OPERATION, SLA
 const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
     ChannelRegistryDescriptor {
         id: "telegram",
-        runtime_platform: Some(ChannelPlatform::Telegram),
+        runtime: Some(ChannelRuntimeDescriptor {
+            platform: ChannelPlatform::Telegram,
+            snapshot_builder: build_telegram_snapshots,
+        }),
         implementation_status: ChannelCatalogImplementationStatus::RuntimeBacked,
         label: "Telegram",
         aliases: &[],
@@ -185,7 +197,10 @@ const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
     },
     ChannelRegistryDescriptor {
         id: "feishu",
-        runtime_platform: Some(ChannelPlatform::Feishu),
+        runtime: Some(ChannelRuntimeDescriptor {
+            platform: ChannelPlatform::Feishu,
+            snapshot_builder: build_feishu_snapshots,
+        }),
         implementation_status: ChannelCatalogImplementationStatus::RuntimeBacked,
         label: "Feishu/Lark",
         aliases: &["lark"],
@@ -194,7 +209,7 @@ const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
     },
     ChannelRegistryDescriptor {
         id: "discord",
-        runtime_platform: None,
+        runtime: None,
         implementation_status: ChannelCatalogImplementationStatus::Stub,
         label: "Discord",
         aliases: &["discord-bot"],
@@ -203,7 +218,7 @@ const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
     },
     ChannelRegistryDescriptor {
         id: "slack",
-        runtime_platform: None,
+        runtime: None,
         implementation_status: ChannelCatalogImplementationStatus::Stub,
         label: "Slack",
         aliases: &["slack-bot"],
@@ -279,7 +294,8 @@ fn catalog_only_channel_entries_from(
 }
 
 pub fn normalize_channel_platform(raw: &str) -> Option<ChannelPlatform> {
-    find_channel_registry_descriptor(raw).and_then(|descriptor| descriptor.runtime_platform)
+    find_channel_registry_descriptor(raw)
+        .and_then(|descriptor| descriptor.runtime.map(|runtime| runtime.platform))
 }
 
 pub fn channel_status_snapshots(config: &LoongClawConfig) -> Vec<ChannelStatusSnapshot> {
@@ -296,28 +312,25 @@ fn channel_status_snapshots_with_now(
     now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
     let mut snapshots = Vec::new();
-    for descriptor in CHANNEL_REGISTRY {
-        match descriptor.runtime_platform {
-            Some(ChannelPlatform::Telegram) => {
-                snapshots.extend(build_telegram_snapshots(
-                    descriptor,
-                    config,
-                    runtime_dir,
-                    now_ms,
-                ));
-            }
-            Some(ChannelPlatform::Feishu) => {
-                snapshots.extend(build_feishu_snapshots(
-                    descriptor,
-                    config,
-                    runtime_dir,
-                    now_ms,
-                ));
-            }
-            None => {}
-        }
+    for descriptor in runtime_backed_channel_registry_descriptors() {
+        let Some(runtime) = descriptor.runtime else {
+            continue;
+        };
+        snapshots.extend((runtime.snapshot_builder)(
+            descriptor,
+            config,
+            runtime_dir,
+            now_ms,
+        ));
     }
     snapshots
+}
+
+fn runtime_backed_channel_registry_descriptors() -> Vec<&'static ChannelRegistryDescriptor> {
+    CHANNEL_REGISTRY
+        .iter()
+        .filter(|descriptor| descriptor.runtime.is_some())
+        .collect()
 }
 
 fn build_telegram_snapshots(
@@ -850,6 +863,24 @@ mod tests {
         assert_eq!(normalize_channel_catalog_id("discord-bot"), Some("discord"));
         assert_eq!(normalize_channel_catalog_id("slack"), Some("slack"));
         assert_eq!(normalize_channel_catalog_id("unknown"), None);
+    }
+
+    #[test]
+    fn runtime_backed_channel_registry_descriptors_only_include_runtime_backed_surfaces() {
+        let runtime_backed = runtime_backed_channel_registry_descriptors();
+
+        assert_eq!(
+            runtime_backed
+                .iter()
+                .map(|descriptor| descriptor.id)
+                .collect::<Vec<_>>(),
+            vec!["telegram", "feishu"]
+        );
+        assert!(
+            runtime_backed
+                .iter()
+                .all(|descriptor| descriptor.runtime.is_some())
+        );
     }
 
     #[test]
