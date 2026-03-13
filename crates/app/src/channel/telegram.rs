@@ -137,11 +137,24 @@ impl TelegramAdapter {
         }
     }
 
+    fn abort_all_typing_handles(&self) {
+        let mut handles = self.typing_handles_guard();
+        for (_, handle) in handles.drain() {
+            handle.abort();
+        }
+    }
+
     fn typing_handles_guard(&self) -> MutexGuard<'_, HashMap<i64, tokio::task::JoinHandle<()>>> {
         match self.typing_handles.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         }
+    }
+}
+
+impl Drop for TelegramAdapter {
+    fn drop(&mut self) {
+        self.abort_all_typing_handles();
     }
 }
 
@@ -601,6 +614,35 @@ mod tests {
             .stop_typing(&target)
             .await
             .expect("stop typing should succeed");
+    }
+
+    #[tokio::test]
+    async fn telegram_adapter_drop_aborts_active_typing_handles() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let dropped_for_task = Arc::clone(&dropped);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let handle = tokio::spawn(async move {
+            let _flag = DropFlag(dropped_for_task);
+            let _ = started_tx.send(());
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+
+        let adapter = test_adapter();
+        adapter
+            .typing_handles
+            .lock()
+            .expect("typing handles lock")
+            .insert(123, handle);
+
+        started_rx.await.expect("typing task should start");
+
+        drop(adapter);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "dropping the adapter should abort active typing handles"
+        );
     }
 
     #[tokio::test]
