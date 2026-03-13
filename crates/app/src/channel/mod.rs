@@ -40,9 +40,9 @@ mod runtime_state;
 mod telegram;
 
 pub use registry::{
-    ChannelCatalogEntry, ChannelCatalogOperation, ChannelOperationHealth, ChannelOperationStatus,
-    ChannelStatusSnapshot, channel_status_snapshots, list_channel_catalog,
-    normalize_channel_platform,
+    ChannelCatalogEntry, ChannelCatalogOperation, ChannelDoctorCheckSpec, ChannelOperationHealth,
+    ChannelOperationStatus, ChannelStatusSnapshot, channel_doctor_check_spec,
+    channel_status_snapshots, list_channel_catalog, normalize_channel_platform,
 };
 pub use runtime_state::ChannelOperationRuntime;
 use runtime_state::ChannelOperationRuntimeTracker;

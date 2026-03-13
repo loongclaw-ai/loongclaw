@@ -17,6 +17,12 @@ pub struct ChannelCatalogOperation {
     pub tracks_runtime: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChannelDoctorCheckSpec {
+    pub config_name: &'static str,
+    pub runtime_name: Option<&'static str>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ChannelCatalogEntry {
     pub id: &'static str,
@@ -87,38 +93,68 @@ impl ChannelStatusSnapshot {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct ChannelOperationDescriptor {
+    catalog: ChannelCatalogOperation,
+    doctor_check: Option<ChannelDoctorCheckSpec>,
+}
+
+impl ChannelOperationDescriptor {
+    fn catalog(self) -> ChannelCatalogOperation {
+        self.catalog
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 struct ChannelRegistryDescriptor {
     platform: ChannelPlatform,
     label: &'static str,
     aliases: &'static [&'static str],
     transport: &'static str,
-    operations: &'static [ChannelCatalogOperation],
+    operations: &'static [ChannelOperationDescriptor],
 }
 
-const TELEGRAM_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
-    id: "serve",
-    label: "reply loop",
-    command: "telegram-serve",
-    tracks_runtime: true,
+const TELEGRAM_SERVE_OPERATION: ChannelOperationDescriptor = ChannelOperationDescriptor {
+    catalog: ChannelCatalogOperation {
+        id: "serve",
+        label: "reply loop",
+        command: "telegram-serve",
+        tracks_runtime: true,
+    },
+    doctor_check: Some(ChannelDoctorCheckSpec {
+        config_name: "telegram channel",
+        runtime_name: Some("telegram channel runtime"),
+    }),
 };
 
-const TELEGRAM_OPERATIONS: &[ChannelCatalogOperation] = &[TELEGRAM_SERVE_OPERATION];
+const TELEGRAM_OPERATIONS: &[ChannelOperationDescriptor] = &[TELEGRAM_SERVE_OPERATION];
 
-const FEISHU_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
-    id: "send",
-    label: "direct send",
-    command: "feishu-send",
-    tracks_runtime: false,
+const FEISHU_SEND_OPERATION: ChannelOperationDescriptor = ChannelOperationDescriptor {
+    catalog: ChannelCatalogOperation {
+        id: "send",
+        label: "direct send",
+        command: "feishu-send",
+        tracks_runtime: false,
+    },
+    doctor_check: Some(ChannelDoctorCheckSpec {
+        config_name: "feishu direct send",
+        runtime_name: None,
+    }),
 };
 
-const FEISHU_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
-    id: "serve",
-    label: "webhook reply server",
-    command: "feishu-serve",
-    tracks_runtime: true,
+const FEISHU_SERVE_OPERATION: ChannelOperationDescriptor = ChannelOperationDescriptor {
+    catalog: ChannelCatalogOperation {
+        id: "serve",
+        label: "webhook reply server",
+        command: "feishu-serve",
+        tracks_runtime: true,
+    },
+    doctor_check: Some(ChannelDoctorCheckSpec {
+        config_name: "feishu webhook verification",
+        runtime_name: Some("feishu webhook runtime"),
+    }),
 };
 
-const FEISHU_OPERATIONS: &[ChannelCatalogOperation] =
+const FEISHU_OPERATIONS: &[ChannelOperationDescriptor] =
     &[FEISHU_SEND_OPERATION, FEISHU_SERVE_OPERATION];
 
 const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
@@ -146,9 +182,29 @@ pub fn list_channel_catalog() -> Vec<ChannelCatalogEntry> {
             label: descriptor.label,
             aliases: descriptor.aliases.to_vec(),
             transport: descriptor.transport,
-            operations: descriptor.operations.to_vec(),
+            operations: descriptor
+                .operations
+                .iter()
+                .map(|entry| entry.catalog)
+                .collect(),
         })
         .collect()
+}
+
+pub fn channel_doctor_check_spec(
+    channel_id: &str,
+    operation_id: &str,
+) -> Option<ChannelDoctorCheckSpec> {
+    CHANNEL_REGISTRY.iter().find_map(|descriptor| {
+        if descriptor.platform.as_str() != channel_id {
+            return None;
+        }
+        descriptor
+            .operations
+            .iter()
+            .find(|entry| entry.catalog.id == operation_id)
+            .and_then(|entry| entry.doctor_check)
+    })
 }
 
 pub fn normalize_channel_platform(raw: &str) -> Option<ChannelPlatform> {
@@ -268,22 +324,22 @@ fn build_telegram_snapshot_for_account(
 
     let operation = if !compiled {
         unsupported_operation(
-            TELEGRAM_SERVE_OPERATION,
+            TELEGRAM_SERVE_OPERATION.catalog(),
             "binary built without feature `channel-telegram`".to_owned(),
         )
     } else if !resolved.enabled {
         disabled_operation(
-            TELEGRAM_SERVE_OPERATION,
+            TELEGRAM_SERVE_OPERATION.catalog(),
             "disabled by telegram account configuration".to_owned(),
         )
     } else if !issues.is_empty() {
-        misconfigured_operation(TELEGRAM_SERVE_OPERATION, issues)
+        misconfigured_operation(TELEGRAM_SERVE_OPERATION.catalog(), issues)
     } else {
-        ready_operation(TELEGRAM_SERVE_OPERATION)
+        ready_operation(TELEGRAM_SERVE_OPERATION.catalog())
     };
     let operation = attach_runtime(
         ChannelPlatform::Telegram,
-        TELEGRAM_SERVE_OPERATION,
+        TELEGRAM_SERVE_OPERATION.catalog(),
         operation,
         resolved.account.id.as_str(),
         resolved.account.label.as_str(),
@@ -411,38 +467,38 @@ fn build_feishu_snapshot_for_account(
 
     let send_operation = if !compiled {
         unsupported_operation(
-            FEISHU_SEND_OPERATION,
+            FEISHU_SEND_OPERATION.catalog(),
             "binary built without feature `channel-feishu`".to_owned(),
         )
     } else if !resolved.enabled {
         disabled_operation(
-            FEISHU_SEND_OPERATION,
+            FEISHU_SEND_OPERATION.catalog(),
             "disabled by feishu account configuration".to_owned(),
         )
     } else if !send_issues.is_empty() {
-        misconfigured_operation(FEISHU_SEND_OPERATION, send_issues)
+        misconfigured_operation(FEISHU_SEND_OPERATION.catalog(), send_issues)
     } else {
-        ready_operation(FEISHU_SEND_OPERATION)
+        ready_operation(FEISHU_SEND_OPERATION.catalog())
     };
 
     let serve_operation = if !compiled {
         unsupported_operation(
-            FEISHU_SERVE_OPERATION,
+            FEISHU_SERVE_OPERATION.catalog(),
             "binary built without feature `channel-feishu`".to_owned(),
         )
     } else if !resolved.enabled {
         disabled_operation(
-            FEISHU_SERVE_OPERATION,
+            FEISHU_SERVE_OPERATION.catalog(),
             "disabled by feishu account configuration".to_owned(),
         )
     } else if !serve_issues.is_empty() {
-        misconfigured_operation(FEISHU_SERVE_OPERATION, serve_issues)
+        misconfigured_operation(FEISHU_SERVE_OPERATION.catalog(), serve_issues)
     } else {
-        ready_operation(FEISHU_SERVE_OPERATION)
+        ready_operation(FEISHU_SERVE_OPERATION.catalog())
     };
     let send_operation = attach_runtime(
         ChannelPlatform::Feishu,
-        FEISHU_SEND_OPERATION,
+        FEISHU_SEND_OPERATION.catalog(),
         send_operation,
         resolved.account.id.as_str(),
         resolved.account.label.as_str(),
@@ -451,7 +507,7 @@ fn build_feishu_snapshot_for_account(
     );
     let serve_operation = attach_runtime(
         ChannelPlatform::Feishu,
-        FEISHU_SERVE_OPERATION,
+        FEISHU_SERVE_OPERATION.catalog(),
         serve_operation,
         resolved.account.id.as_str(),
         resolved.account.label.as_str(),
@@ -515,11 +571,11 @@ fn build_invalid_telegram_snapshot(
 ) -> ChannelStatusSnapshot {
     let operation = if !compiled {
         unsupported_operation(
-            TELEGRAM_SERVE_OPERATION,
+            TELEGRAM_SERVE_OPERATION.catalog(),
             "binary built without feature `channel-telegram`".to_owned(),
         )
     } else {
-        misconfigured_operation(TELEGRAM_SERVE_OPERATION, vec![error.clone()])
+        misconfigured_operation(TELEGRAM_SERVE_OPERATION.catalog(), vec![error.clone()])
     };
 
     let mut notes = vec![
@@ -561,19 +617,19 @@ fn build_invalid_feishu_snapshot(
 ) -> ChannelStatusSnapshot {
     let send_operation = if !compiled {
         unsupported_operation(
-            FEISHU_SEND_OPERATION,
+            FEISHU_SEND_OPERATION.catalog(),
             "binary built without feature `channel-feishu`".to_owned(),
         )
     } else {
-        misconfigured_operation(FEISHU_SEND_OPERATION, vec![error.clone()])
+        misconfigured_operation(FEISHU_SEND_OPERATION.catalog(), vec![error.clone()])
     };
     let serve_operation = if !compiled {
         unsupported_operation(
-            FEISHU_SERVE_OPERATION,
+            FEISHU_SERVE_OPERATION.catalog(),
             "binary built without feature `channel-feishu`".to_owned(),
         )
     } else {
-        misconfigured_operation(FEISHU_SERVE_OPERATION, vec![error.clone()])
+        misconfigured_operation(FEISHU_SERVE_OPERATION.catalog(), vec![error.clone()])
     };
 
     let mut notes = vec![
@@ -742,6 +798,32 @@ mod tests {
         assert_eq!(feishu.operations.len(), 2);
         assert_eq!(feishu.operations[0].command, "feishu-send");
         assert_eq!(feishu.operations[1].command, "feishu-serve");
+    }
+
+    #[test]
+    fn channel_doctor_check_spec_uses_operation_specific_labels() {
+        assert_eq!(
+            channel_doctor_check_spec("telegram", "serve"),
+            Some(ChannelDoctorCheckSpec {
+                config_name: "telegram channel",
+                runtime_name: Some("telegram channel runtime"),
+            })
+        );
+        assert_eq!(
+            channel_doctor_check_spec("feishu", "send"),
+            Some(ChannelDoctorCheckSpec {
+                config_name: "feishu direct send",
+                runtime_name: None,
+            })
+        );
+        assert_eq!(
+            channel_doctor_check_spec("feishu", "serve"),
+            Some(ChannelDoctorCheckSpec {
+                config_name: "feishu webhook verification",
+                runtime_name: Some("feishu webhook runtime"),
+            })
+        );
+        assert_eq!(channel_doctor_check_spec("feishu", "missing"), None);
     }
 
     #[test]
