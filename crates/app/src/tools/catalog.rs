@@ -198,6 +198,15 @@ pub fn tool_catalog() -> ToolCatalog {
         provider_definition_builder: session_wait_definition,
     });
     descriptors.push(ToolDescriptor {
+        name: "sessions_send",
+        provider_name: "sessions_send",
+        aliases: &[],
+        description: "Send an outbound text message to a known channel-backed root session",
+        execution_kind: ToolExecutionKind::App,
+        availability: ToolAvailability::Runtime,
+        provider_definition_builder: sessions_send_definition,
+    });
+    descriptors.push(ToolDescriptor {
         name: "delegate",
         provider_name: "delegate",
         aliases: &[],
@@ -298,6 +307,7 @@ fn tool_is_enabled_for_runtime_view(tool_name: &str, config: &ToolConfig) -> boo
     match tool_name {
         "sessions_list" | "sessions_history" | "session_status" | "session_events"
         | "session_cancel" | "session_recover" | "session_wait" => config.sessions.enabled,
+        "sessions_send" => config.messages.enabled,
         "delegate" | "delegate_async" => config.delegate.enabled,
         _ => true,
     }
@@ -632,6 +642,31 @@ fn session_wait_definition(descriptor: &ToolDescriptor) -> Value {
                     { "required": ["session_id"] },
                     { "required": ["session_ids"] }
                 ],
+                "additionalProperties": false
+            }
+        }
+    })
+}
+
+fn sessions_send_definition(descriptor: &ToolDescriptor) -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": descriptor.provider_name,
+            "description": descriptor.description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Known Telegram or Feishu root session identifier to receive the outbound text message."
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "Outbound plain-text message content."
+                    }
+                },
+                "required": ["session_id", "text"],
                 "additionalProperties": false
             }
         }

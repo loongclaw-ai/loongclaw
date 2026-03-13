@@ -18,7 +18,8 @@ pub use runtime::{
 pub use shared::expand_path;
 #[allow(unused_imports)]
 pub use tools_memory::{
-    DelegateToolConfig, MemoryConfig, SessionToolConfig, SessionVisibility, ToolConfig,
+    DelegateToolConfig, MemoryConfig, MessageToolConfig, SessionToolConfig, SessionVisibility,
+    ToolConfig,
 };
 
 #[cfg(test)]

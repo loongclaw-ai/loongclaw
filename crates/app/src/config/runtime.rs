@@ -577,6 +577,7 @@ api_key_env = "{secret}"
         config.tools.sessions.visibility = crate::config::tools_memory::SessionVisibility::SelfOnly;
         config.tools.sessions.list_limit = 12;
         config.tools.sessions.history_limit = 34;
+        config.tools.messages.enabled = true;
         config.tools.delegate.enabled = false;
         config.tools.delegate.max_depth = 2;
         config.tools.delegate.timeout_seconds = 90;
@@ -588,6 +589,7 @@ api_key_env = "{secret}"
         let parsed = toml::from_str::<LoongClawConfig>(&encoded).expect("parse encoded config");
 
         assert_eq!(parsed.tools.sessions, config.tools.sessions);
+        assert_eq!(parsed.tools.messages, config.tools.messages);
         assert_eq!(parsed.tools.delegate, config.tools.delegate);
     }
 }

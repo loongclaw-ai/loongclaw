@@ -13,6 +13,8 @@ pub struct ToolConfig {
     #[serde(default)]
     pub sessions: SessionToolConfig,
     #[serde(default)]
+    pub messages: MessageToolConfig,
+    #[serde(default)]
     pub delegate: DelegateToolConfig,
 }
 
@@ -35,6 +37,12 @@ pub struct SessionToolConfig {
     pub list_limit: usize,
     #[serde(default = "default_session_history_limit")]
     pub history_limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MessageToolConfig {
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -65,6 +73,7 @@ impl Default for ToolConfig {
             shell_allowlist: default_shell_allowlist(),
             file_root: None,
             sessions: SessionToolConfig::default(),
+            messages: MessageToolConfig::default(),
             delegate: DelegateToolConfig::default(),
         }
     }
@@ -87,6 +96,12 @@ impl Default for SessionToolConfig {
             list_limit: default_session_list_limit(),
             history_limit: default_session_history_limit(),
         }
+    }
+}
+
+impl Default for MessageToolConfig {
+    fn default() -> Self {
+        Self { enabled: false }
     }
 }
 
@@ -172,6 +187,8 @@ mod tests {
         assert_eq!(config.sessions.visibility, SessionVisibility::Children);
         assert_eq!(config.sessions.list_limit, 100);
         assert_eq!(config.sessions.history_limit, 200);
+        assert!(!config.messages.enabled);
+        assert!(!crate::tools::runtime_tool_view_for_config(&config).contains("sessions_send"));
         assert!(config.delegate.enabled);
         assert_eq!(config.delegate.max_depth, 1);
         assert_eq!(config.delegate.timeout_seconds, 60);
@@ -199,5 +216,21 @@ allow_shell_in_child = true
             SessionVisibility::Children
         );
         assert!(parsed.tools.delegate.allow_shell_in_child);
+    }
+
+    #[cfg(feature = "config-toml")]
+    #[test]
+    fn tool_config_parses_messages_enabled() {
+        let raw = r#"
+[tools.messages]
+enabled = true
+"#;
+        let parsed =
+            toml::from_str::<crate::config::LoongClawConfig>(raw).expect("parse tool config");
+        assert!(crate::tools::runtime_tool_view_for_config(&parsed.tools).contains("sessions_send"));
+        assert!(
+            !crate::tools::delegate_child_tool_view_for_config(&parsed.tools)
+                .contains("sessions_send")
+        );
     }
 }

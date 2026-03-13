@@ -79,6 +79,7 @@ pub fn execute_app_tool_with_config(
             memory_config,
             tool_config,
         ),
+        "sessions_send" => Err("app_tool_not_implemented: sessions_send".to_owned()),
         "session_wait" => Err("app_tool_not_implemented: session_wait".to_owned()),
         "delegate" => Err("app_tool_not_implemented: delegate".to_owned()),
         _ => Err(format!(
@@ -701,6 +702,45 @@ mod tests {
             .filter_map(Value::as_str)
             .collect();
         assert_eq!(names, vec!["delegate", "delegate_async", "file_read"]);
+    }
+
+    #[cfg(feature = "config-toml")]
+    #[test]
+    fn runtime_tool_view_exposes_sessions_send_only_when_messages_enabled() {
+        let raw = r#"
+[tools.messages]
+enabled = true
+"#;
+        let parsed =
+            toml::from_str::<crate::config::LoongClawConfig>(raw).expect("parse tool config");
+        let root_view = runtime_tool_view_for_config(&parsed.tools);
+        assert!(root_view.contains("sessions_send"));
+
+        let child_view = delegate_child_tool_view_for_config(&parsed.tools);
+        assert!(!child_view.contains("sessions_send"));
+    }
+
+    #[cfg(feature = "config-toml")]
+    #[test]
+    fn provider_tool_definitions_include_sessions_send_when_enabled() {
+        let raw = r#"
+[tools.messages]
+enabled = true
+"#;
+        let parsed =
+            toml::from_str::<crate::config::LoongClawConfig>(raw).expect("parse tool config");
+        let defs =
+            try_provider_tool_definitions_for_view(&runtime_tool_view_for_config(&parsed.tools))
+                .expect("runtime-visible tool schemas");
+        let sessions_send = defs
+            .iter()
+            .find(|item| item["function"]["name"] == "sessions_send")
+            .expect("sessions_send definition");
+        let properties = sessions_send["function"]["parameters"]["properties"]
+            .as_object()
+            .expect("sessions_send properties");
+        assert!(properties.contains_key("session_id"));
+        assert!(properties.contains_key("text"));
     }
 
     // --- Kernel-routed tool tests ---
