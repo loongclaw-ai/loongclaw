@@ -427,9 +427,14 @@ mod tests {
             .as_object()
             .expect("session_archive properties");
         assert!(archive_properties.contains_key("session_id"));
+        assert!(archive_properties.contains_key("session_ids"));
+        assert!(archive_properties.contains_key("dry_run"));
         assert_eq!(
-            session_archive["function"]["parameters"]["required"],
-            json!(["session_id"])
+            session_archive["function"]["parameters"]["oneOf"]
+                .as_array()
+                .expect("session_archive oneOf")
+                .len(),
+            2
         );
 
         let session_status = defs

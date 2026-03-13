@@ -595,9 +595,24 @@ fn session_archive_definition(descriptor: &ToolDescriptor) -> Value {
                     "session_id": {
                         "type": "string",
                         "description": "Visible terminal session identifier to archive."
+                    },
+                    "session_ids": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "minItems": 1,
+                        "description": "Visible terminal session identifiers to archive in one request."
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "When true, preview which targets are archivable without mutating state."
                     }
                 },
-                "required": ["session_id"],
+                "oneOf": [
+                    { "required": ["session_id"] },
+                    { "required": ["session_ids"] }
+                ],
                 "additionalProperties": false
             }
         }
