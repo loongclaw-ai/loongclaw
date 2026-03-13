@@ -9,6 +9,7 @@ mod catalog;
 pub(crate) mod delegate;
 mod file;
 mod kernel_adapter;
+mod memory;
 pub(crate) mod messaging;
 pub mod runtime_config;
 mod session;
@@ -82,6 +83,12 @@ pub fn execute_app_tool_with_config(
                 tool_config,
             )
         }
+        "memory_search" => memory::execute_memory_search_tool_with_policies(
+            request.payload,
+            current_session_id,
+            memory_config,
+            tool_config,
+        ),
         "sessions_send" => Err("app_tool_not_implemented: sessions_send".to_owned()),
         "session_wait" => Err("app_tool_not_implemented: session_wait".to_owned()),
         "delegate" => Err("app_tool_not_implemented: delegate".to_owned()),
