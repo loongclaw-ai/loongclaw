@@ -72,7 +72,7 @@ fn register_builtin_adapters(kernel: &mut LoongClawKernel<StaticPolicyEngine>) {
     kernel.register_harness_adapter(EmbeddedPiHarness {
         seen: Mutex::new(Vec::new()),
     });
-    kernel.register_connector(WebhookConnector);
+    kernel.register_core_connector_adapter(WebhookConnector);
     kernel.register_core_connector_adapter(CrmCoreConnector);
     kernel.register_core_connector_adapter(CrmGrpcCoreConnector);
     kernel.register_connector_extension_adapter(ShieldedConnectorExtension);

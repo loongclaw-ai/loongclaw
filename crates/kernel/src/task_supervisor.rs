@@ -25,6 +25,12 @@ impl TaskSupervisor {
         matches!(self.state, TaskState::Runnable(_))
     }
 
+    /// Clone the current state before attempting a guarded transition so
+    /// rejected transitions leave the supervisor unchanged.
+    fn take_state(&self) -> TaskState {
+        self.state.clone()
+    }
+
     /// Execute the task through the kernel, tracking state transitions.
     pub async fn execute<P: PolicyEngine>(
         &mut self,
@@ -32,42 +38,47 @@ impl TaskSupervisor {
         pack_id: &str,
         token: &CapabilityToken,
     ) -> Result<KernelDispatch, Fault> {
-        // Extract intent from Runnable state
-        #[allow(clippy::wildcard_enum_match_arm)]
-        let intent = match std::mem::replace(
-            &mut self.state,
-            TaskState::InSend {
-                task_id: String::new(),
-            },
-        ) {
-            TaskState::Runnable(intent) => intent,
-            other => {
-                self.state = other;
+        // Clone the intent before transitioning, since we need it for the
+        // kernel call and transition_to_in_send consumes it.
+        let intent = match &self.state {
+            TaskState::Runnable(intent) => intent.clone(),
+            TaskState::InSend { .. }
+            | TaskState::InReply { .. }
+            | TaskState::Completed(_)
+            | TaskState::Faulted(_) => {
                 return Err(Fault::ProtocolViolation {
                     detail: "task is not in Runnable state".to_owned(),
                 });
             }
         };
 
-        let task_id = intent.task_id.clone();
-        self.state = TaskState::InSend {
-            task_id: task_id.clone(),
-        };
+        // Runnable -> InSend (guarded transition)
+        let taken = self.take_state();
+        self.state = taken
+            .transition_to_in_send()
+            .map_err(|detail| Fault::ProtocolViolation { detail })?;
 
-        // Transition to InReply
-        self.state = TaskState::InReply {
-            task_id: task_id.clone(),
-        };
+        // InSend -> InReply (guarded transition)
+        let taken = self.take_state();
+        self.state = taken
+            .transition_to_in_reply()
+            .map_err(|detail| Fault::ProtocolViolation { detail })?;
 
         // Execute through kernel
         match kernel.execute_task(pack_id, token, intent).await {
             Ok(dispatch) => {
-                self.state = TaskState::Completed(dispatch.outcome.clone());
+                // InReply -> Completed (guarded transition)
+                let taken = self.take_state();
+                self.state = taken
+                    .transition_to_completed(dispatch.outcome.clone())
+                    .map_err(|detail| Fault::ProtocolViolation { detail })?;
                 Ok(dispatch)
             }
             Err(kernel_err) => {
                 let fault = Fault::from_kernel_error(kernel_err);
-                self.state = TaskState::Faulted(fault.clone());
+                // Any non-terminal -> Faulted
+                let taken = self.take_state();
+                self.state = taken.transition_to_faulted(fault.clone());
                 Err(fault)
             }
         }
@@ -77,5 +88,45 @@ impl TaskSupervisor {
     #[cfg(test)]
     pub fn force_state(&mut self, state: TaskState) {
         self.state = state;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use serde_json::json;
+
+    use super::TaskSupervisor;
+    use crate::contracts::{Capability, TaskIntent};
+    use loongclaw_contracts::{Fault, TaskState};
+
+    fn sample_intent() -> TaskIntent {
+        TaskIntent {
+            task_id: "supervised-guard".to_owned(),
+            objective: "exercise guarded transition".to_owned(),
+            required_capabilities: BTreeSet::from([Capability::InvokeTool]),
+            payload: json!({}),
+        }
+    }
+
+    #[test]
+    fn take_state_does_not_poison_supervisor_when_transition_is_rejected() {
+        let supervisor = TaskSupervisor::new(sample_intent());
+
+        let error = supervisor
+            .take_state()
+            .transition_to_in_reply()
+            .expect_err("Runnable cannot transition directly to InReply");
+
+        assert!(error.contains("cannot move to InReply"));
+        assert!(matches!(
+            supervisor.state(),
+            TaskState::Runnable(intent) if intent.task_id == "supervised-guard"
+        ));
+        assert!(!matches!(
+            supervisor.state(),
+            TaskState::Faulted(Fault::ProtocolViolation { .. })
+        ));
     }
 }

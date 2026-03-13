@@ -690,9 +690,10 @@ async fn run_demo() -> CliResult<()> {
     );
 
     let connector_dispatch = kernel
-        .invoke_connector(
+        .execute_connector_core(
             DEFAULT_PACK_ID,
             &token,
+            None,
             ConnectorCommand {
                 connector_name: "webhook".to_owned(),
                 operation: "notify".to_owned(),
@@ -747,9 +748,10 @@ async fn invoke_connector_cli(operation: &str, payload_raw: &str) -> CliResult<(
         .map_err(|error| format!("token issue failed: {error}"))?;
 
     let dispatch = kernel
-        .invoke_connector(
+        .execute_connector_core(
             DEFAULT_PACK_ID,
             &token,
+            None,
             ConnectorCommand {
                 connector_name: "webhook".to_owned(),
                 operation: operation.to_owned(),
@@ -796,9 +798,10 @@ async fn run_audit_demo() -> CliResult<()> {
     fixed_clock.advance_by(5);
 
     let _ = kernel
-        .invoke_connector(
+        .execute_connector_core(
             DEFAULT_PACK_ID,
             &token,
+            None,
             ConnectorCommand {
                 connector_name: "webhook".to_owned(),
                 operation: "notify".to_owned(),

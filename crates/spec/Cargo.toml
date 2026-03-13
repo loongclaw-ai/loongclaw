@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[features]
+test-hooks = []
+
 [dependencies]
 async-trait.workspace = true
 kernel = { package = "loongclaw-kernel", path = "../kernel" }

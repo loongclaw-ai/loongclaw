@@ -10,10 +10,7 @@ use std::{
 use crate::{
     audit::{AuditEvent, AuditEventKind, AuditSink, ExecutionPlane, NoopAuditSink, PlaneTier},
     clock::{Clock, SystemClock},
-    connector::{
-        ConnectorAdapter, ConnectorExtensionAdapter, ConnectorPlane, ConnectorRegistry,
-        CoreConnectorAdapter,
-    },
+    connector::{ConnectorExtensionAdapter, ConnectorPlane, CoreConnectorAdapter},
     contracts::{
         Capability, CapabilityToken, ConnectorCommand, ConnectorOutcome, HarnessRequest, TaskIntent,
     },
@@ -65,7 +62,6 @@ pub struct LoongClawKernel<P: PolicyEngine> {
     packs: BTreeMap<String, VerticalPackManifest>,
     namespaces: BTreeMap<String, loongclaw_contracts::Namespace>,
     harness: HarnessBroker,
-    connectors: ConnectorRegistry,
     connector_plane: ConnectorPlane,
     runtime_plane: RuntimePlane,
     tool_plane: ToolPlane,
@@ -89,7 +85,6 @@ impl<P: PolicyEngine> LoongClawKernel<P> {
             packs: BTreeMap::new(),
             namespaces: BTreeMap::new(),
             harness: HarnessBroker::new(),
-            connectors: ConnectorRegistry::new(),
             connector_plane: ConnectorPlane::new(),
             runtime_plane: RuntimePlane::new(),
             tool_plane: ToolPlane::new(),
@@ -128,10 +123,6 @@ impl<P: PolicyEngine> LoongClawKernel<P> {
 
     pub fn register_harness_adapter<A: HarnessAdapter + 'static>(&mut self, adapter: A) {
         self.harness.register(adapter);
-    }
-
-    pub fn register_connector<A: ConnectorAdapter + 'static>(&mut self, connector: A) {
-        self.connectors.register(connector);
     }
 
     pub fn register_core_connector_adapter<A: CoreConnectorAdapter + 'static>(
@@ -298,50 +289,6 @@ impl<P: PolicyEngine> LoongClawKernel<P> {
 
         Ok(KernelDispatch {
             adapter_route: route,
-            outcome,
-        })
-    }
-
-    pub async fn invoke_connector(
-        &self,
-        pack_id: &str,
-        token: &CapabilityToken,
-        command: ConnectorCommand,
-    ) -> Result<ConnectorDispatch, KernelError> {
-        let pack = self.get_pack(pack_id)?;
-        self.assert_connector_allowed(pack, &command.connector_name)?;
-        let now = self.authorize_pack_operation(pack, token, &command.required_capabilities)?;
-
-        let connector_name = command.connector_name.clone();
-        let operation = command.operation.clone();
-        let required_capabilities = command.required_capabilities.clone();
-        let outcome = self.connectors.invoke(command).await?;
-
-        self.audit.record(self.new_event(
-            now,
-            Some(token.agent_id.clone()),
-            AuditEventKind::ConnectorInvoked {
-                pack_id: pack.pack_id.clone(),
-                connector_name: connector_name.clone(),
-                operation: operation.clone(),
-                required_capabilities: required_capabilities.iter().copied().collect(),
-            },
-        ))?;
-
-        self.record_plane_invocation(PlaneInvocationRecord {
-            timestamp_epoch_s: now,
-            agent_id: &token.agent_id,
-            pack_id: &pack.pack_id,
-            plane: ExecutionPlane::Connector,
-            tier: PlaneTier::Legacy,
-            primary_adapter: connector_name.clone(),
-            delegated_core_adapter: None,
-            operation,
-            required_capabilities: &required_capabilities,
-        })?;
-
-        Ok(ConnectorDispatch {
-            connector_name,
             outcome,
         })
     }

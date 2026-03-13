@@ -786,37 +786,6 @@ fn channel_message_acp_turn_provenance(message: &ChannelInboundMessage) -> AcpTu
 
 #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
 fn apply_runtime_env(config: &LoongClawConfig) {
-    crate::memory::runtime_config::apply_memory_runtime_env(&config.memory);
-    crate::process_env::set_var(
-        "LOONGCLAW_SHELL_ALLOWLIST",
-        config.tools.shell_allowlist.join(","),
-    );
-    crate::process_env::set_var(
-        "LOONGCLAW_FILE_ROOT",
-        config.tools.resolved_file_root().display().to_string(),
-    );
-    crate::process_env::set_var(
-        "LOONGCLAW_EXTERNAL_SKILLS_ENABLED",
-        config.external_skills.enabled.to_string(),
-    );
-    crate::process_env::set_var(
-        "LOONGCLAW_EXTERNAL_SKILLS_REQUIRE_DOWNLOAD_APPROVAL",
-        config.external_skills.require_download_approval.to_string(),
-    );
-    crate::process_env::set_var(
-        "LOONGCLAW_EXTERNAL_SKILLS_ALLOWED_DOMAINS",
-        config
-            .external_skills
-            .normalized_allowed_domains()
-            .join(","),
-    );
-    crate::process_env::set_var(
-        "LOONGCLAW_EXTERNAL_SKILLS_BLOCKED_DOMAINS",
-        config
-            .external_skills
-            .normalized_blocked_domains()
-            .join(","),
-    );
     // Populate the typed tool runtime config so executors never hit env vars
     // on the hot path.  Ignore the error if already initialised.
     let tool_rt = crate::tools::runtime_config::ToolRuntimeConfig {

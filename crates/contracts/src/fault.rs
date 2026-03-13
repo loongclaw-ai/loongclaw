@@ -20,11 +20,6 @@ pub enum Fault {
         token_id: String,
         capability: Capability,
     },
-    BudgetExhausted {
-        resource: String,
-        limit: u64,
-        used: u64,
-    },
     TokenExpired {
         token_id: String,
         expires_at_epoch_s: u64,
@@ -49,13 +44,6 @@ impl fmt::Display for Fault {
                     f,
                     "capability violation: token {token_id} missing {capability:?}"
                 )
-            }
-            Self::BudgetExhausted {
-                resource,
-                limit,
-                used,
-            } => {
-                write!(f, "budget exhausted: {resource} used {used}/{limit}")
             }
             Self::TokenExpired {
                 token_id,

@@ -1053,7 +1053,7 @@ fn register_dynamic_catalog_connectors(
     };
 
     for provider in snapshot {
-        kernel.register_connector(DynamicCatalogConnector {
+        kernel.register_core_connector_adapter(DynamicCatalogConnector {
             connector_name: provider.connector_name,
             provider_id: provider.provider_id,
             catalog: catalog.clone(),
@@ -1129,9 +1129,10 @@ async fn execute_spec_operation(
             payload,
         } => {
             let dispatch = kernel
-                .invoke_connector(
+                .execute_connector_core(
                     pack_id,
                     token,
+                    Some(connector_name.as_str()),
                     ConnectorCommand {
                         connector_name: connector_name.clone(),
                         operation: operation.clone(),

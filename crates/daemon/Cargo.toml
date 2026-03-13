@@ -36,6 +36,7 @@ path = "src/main.rs"
 [dev-dependencies]
 base64.workspace = true
 ed25519-dalek.workspace = true
+loongclaw-spec = { path = "../spec", features = ["test-hooks"] }
 sha2.workspace = true
 wat = "1"
 

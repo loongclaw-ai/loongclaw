@@ -34,6 +34,7 @@ impl ConnectorProtocolContext {
             method: self.request_method.clone(),
             id: self.request_id.clone(),
             payload,
+            version: PROTOCOL_VERSION,
         }
     }
 }
@@ -54,7 +55,6 @@ pub fn authorize_connector_protocol_context(context: &mut ConnectorProtocolConte
         .authorize(
             &resolved_route,
             &RouteAuthorizationRequest {
-                authenticated: true,
                 capabilities: context.capabilities.clone(),
             },
         )

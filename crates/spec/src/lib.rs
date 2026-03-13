@@ -1,7 +1,6 @@
-use std::{
-    collections::BTreeMap,
-    sync::{Mutex, OnceLock},
-};
+use std::sync::OnceLock;
+#[cfg(any(test, feature = "test-hooks"))]
+use std::{collections::BTreeMap, sync::Mutex};
 
 pub mod kernel_bootstrap;
 pub mod programmatic;
@@ -20,5 +19,6 @@ pub const DEFAULT_PACK_ID: &str = "dev-automation";
 pub const DEFAULT_AGENT_ID: &str = "agent-dev-01";
 pub static BUNDLED_APPROVAL_RISK_PROFILE: OnceLock<ApprovalRiskProfile> = OnceLock::new();
 pub static BUNDLED_SECURITY_SCAN_PROFILE: OnceLock<SecurityScanProfile> = OnceLock::new();
+#[cfg(any(test, feature = "test-hooks"))]
 pub static WEBHOOK_TEST_RETRY_STATE: OnceLock<Mutex<BTreeMap<String, usize>>> = OnceLock::new();
 pub type CliResult<T> = Result<T, String>;
