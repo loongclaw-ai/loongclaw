@@ -108,6 +108,14 @@ pub struct ChannelInventory {
     pub channels: Vec<ChannelStatusSnapshot>,
     pub catalog_only_channels: Vec<ChannelCatalogEntry>,
     pub channel_catalog: Vec<ChannelCatalogEntry>,
+    pub channel_surfaces: Vec<ChannelSurface>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ChannelSurface {
+    pub catalog: ChannelCatalogEntry,
+    pub configured_accounts: Vec<ChannelStatusSnapshot>,
+    pub default_configured_account_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -329,11 +337,38 @@ fn channel_inventory_with_now(
     let channel_catalog = list_channel_catalog();
     let channels = channel_status_snapshots_with_now(config, runtime_dir, now_ms);
     let catalog_only_channels = catalog_only_channel_entries_from(&channel_catalog, &channels);
+    let channel_surfaces = build_channel_surfaces(&channel_catalog, &channels);
     ChannelInventory {
         channels,
         catalog_only_channels,
         channel_catalog,
+        channel_surfaces,
     }
+}
+
+fn build_channel_surfaces(
+    channel_catalog: &[ChannelCatalogEntry],
+    channels: &[ChannelStatusSnapshot],
+) -> Vec<ChannelSurface> {
+    channel_catalog
+        .iter()
+        .map(|catalog| {
+            let configured_accounts = channels
+                .iter()
+                .filter(|snapshot| snapshot.id == catalog.id)
+                .cloned()
+                .collect::<Vec<_>>();
+            let default_configured_account_id = configured_accounts
+                .iter()
+                .find(|snapshot| snapshot.is_default_account)
+                .map(|snapshot| snapshot.configured_account_id.clone());
+            ChannelSurface {
+                catalog: catalog.clone(),
+                configured_accounts,
+                default_configured_account_id,
+            }
+        })
+        .collect()
 }
 
 fn channel_status_snapshots_with_now(
@@ -1026,6 +1061,45 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["telegram", "feishu", "discord", "slack"]
         );
+    }
+
+    #[test]
+    fn channel_inventory_exposes_grouped_channel_surfaces() {
+        let config = LoongClawConfig::default();
+        let inventory = channel_inventory(&config);
+
+        assert_eq!(
+            inventory
+                .channel_surfaces
+                .iter()
+                .map(|surface| surface.catalog.id)
+                .collect::<Vec<_>>(),
+            vec!["telegram", "feishu", "discord", "slack"]
+        );
+
+        let telegram = inventory
+            .channel_surfaces
+            .iter()
+            .find(|surface| surface.catalog.id == "telegram")
+            .expect("telegram surface");
+        assert_eq!(telegram.configured_accounts.len(), 1);
+        assert_eq!(
+            telegram.default_configured_account_id.as_deref(),
+            Some("default")
+        );
+        assert_eq!(telegram.configured_accounts[0].id, "telegram");
+
+        let discord = inventory
+            .channel_surfaces
+            .iter()
+            .find(|surface| surface.catalog.id == "discord")
+            .expect("discord surface");
+        assert_eq!(
+            discord.catalog.implementation_status,
+            ChannelCatalogImplementationStatus::Stub
+        );
+        assert!(discord.configured_accounts.is_empty());
+        assert_eq!(discord.default_configured_account_id, None);
     }
 
     #[test]
