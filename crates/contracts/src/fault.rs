@@ -10,6 +10,7 @@ use crate::errors::{KernelError, PolicyError};
 /// Unlike `KernelError` (which covers all kernel operations including setup),
 /// `Fault` represents runtime dispatch failures that callers can match on
 /// to decide recovery strategy.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Fault {
     Panic {

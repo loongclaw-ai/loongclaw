@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::contracts::{Capability, CapabilityToken, ExecutionRoute};
 
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExecutionPlane {
     Connector,
@@ -10,6 +11,7 @@ pub enum ExecutionPlane {
     Memory,
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlaneTier {
     Legacy,
@@ -17,6 +19,7 @@ pub enum PlaneTier {
     Extension,
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuditEventKind {
     TokenIssued {

@@ -280,8 +280,13 @@ pub async fn execute_spec(spec: &RunnerSpec, include_audit: bool) -> SpecRunRepo
 
         if blocked_reason.is_none() {
             for pending in pending_absorb_inputs {
-                let absorb = scanner.absorb(&mut integration_catalog, &mut pack, &pending);
-                plugin_absorb_reports.push(absorb);
+                match scanner.absorb(&mut integration_catalog, &mut pack, &pending) {
+                    Ok(absorb) => plugin_absorb_reports.push(absorb),
+                    Err(error) => {
+                        blocked_reason = Some(format!("plugin absorb failed: {error}"));
+                        break;
+                    }
+                }
             }
         }
     }

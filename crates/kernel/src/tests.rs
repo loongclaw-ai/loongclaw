@@ -1682,6 +1682,39 @@ async fn tool_extension_call_reports_approval_required_when_policy_requires_huma
     ));
 }
 
+#[test]
+fn record_tool_call_denial_audits_extension_denied_errors() {
+    let clock: Arc<FixedClock> = Arc::new(FixedClock::new(1_700_004_000));
+    let audit = Arc::new(InMemoryAuditSink::default());
+    let mut kernel =
+        LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock, audit.clone());
+    let pack = sample_pack();
+    kernel
+        .register_pack(pack.clone())
+        .expect("pack should register");
+    let token = kernel
+        .issue_token(&pack.pack_id, "agent-extension-denied", 120)
+        .expect("token should issue");
+    let error = PolicyError::ExtensionDenied {
+        extension: "policy".to_owned(),
+        reason: "unexpected policy decision for tool `shell.exec`".to_owned(),
+    };
+
+    kernel
+        .record_tool_call_denial(&pack, &token, 1_700_004_000, &error)
+        .expect("audit record should succeed");
+
+    let events = audit.snapshot();
+    assert_eq!(events.len(), 2);
+    assert!(matches!(
+        &events[1].kind,
+        AuditEventKind::AuthorizationDenied { pack_id, token_id, reason }
+            if pack_id == &pack.pack_id
+                && token_id == &token.token_id
+                && reason.contains("unexpected policy decision for tool `shell.exec`")
+    ));
+}
+
 #[tokio::test]
 async fn generation_revoke_below_threshold_denies_old_tokens() {
     let clock = Arc::new(FixedClock::new(1_000_000));
