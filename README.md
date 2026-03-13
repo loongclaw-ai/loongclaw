@@ -1,12 +1,16 @@
+<h1 align="center">🐉 LoongClaw</h1>
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/logo/loongclaw-logo-dark.png" />
     <source media="(prefers-color-scheme: light)" srcset="assets/logo/loongclaw-logo-light.png" />
-    <img src="assets/logo/loongclaw-logo-light.png" alt="LoongClaw" width="400" />
+    <img src="assets/logo/loongclaw-logo-light.png" alt="LoongClaw" width="560" />
   </picture>
 </p>
 
-<h3 align="center">We are the Loong -- Originated from the East, here to benefit the world.</h3>
+<p align="center">
+  <strong>Originated from the East, here to benefit the world</strong>
+</p>
 
 <p align="center">
   <a href="https://github.com/loongclaw-ai/loongclaw/actions/workflows/ci.yml?branch=dev"><img src="https://img.shields.io/github/actions/workflow/status/loongclaw-ai/loongclaw/ci.yml?branch=dev&label=build" alt="Build" /></a>
