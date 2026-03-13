@@ -14,7 +14,7 @@ Product specs describe **what** the product does from the user's perspective, no
 As an operator using LoongClaw's tool-calling runtime, I want to inspect active sessions and delegate focused subtasks into child sessions so that I can keep orchestration explicit, auditable, and bounded.
 
 ## Acceptance Criteria
-- [x] Root sessions expose `sessions_list`, `sessions_history`, `session_status`, `session_events`, `session_archive`, `session_unarchive`, `session_cancel`, `session_recover`, `session_wait`, `sessions_send`, `delegate`, and `delegate_async` when enabled in config.
+- [x] Root sessions expose `sessions_list`, `sessions_history`, `session_status`, `session_events`, `memory_search`, `session_archive`, `session_unarchive`, `session_cancel`, `session_recover`, `session_wait`, `sessions_send`, `delegate`, and `delegate_async` when enabled in config.
 - [x] Delegated child sessions run with a restricted tool surface derived from config rather than inheriting the full root tool set.
 - [x] Delegated child sessions can use `session_status` and `sessions_history` for self-inspection only, and never gain `sessions_list`.
 - [x] Nested delegation is bounded by `tools.delegate.max_depth` and enforced from session lineage, not by ad-hoc one-off checks.
@@ -38,13 +38,16 @@ As an operator using LoongClaw's tool-calling runtime, I want to inspect active 
 - [x] `session_archive` accepts either `session_id` or `session_ids`, supports `dry_run` preview, and returns per-target classifications for batch or preview flows while preserving the legacy single-target response shape.
 - [x] `session_unarchive` accepts either `session_id` or `session_ids`, supports `dry_run` preview, and returns per-target classifications for batch or preview flows while preserving the legacy single-target response shape.
 - [x] `sessions_send` can send plain outbound text to a known channel-backed root session (`telegram:<chat_id>` or `feishu:<chat_id>`), recording a non-transcript control event without executing a target-side provider turn or mutating transcript rows.
+- [x] `memory_search` can search persisted transcript turns across the caller's visible session scope, or within explicitly targeted visible sessions, and return structured recent-first match snippets without searching control-plane `session_events`.
 
 ## Current Limits
 - `delegate_async` uses a subprocess one-shot worker (`loongclawd run-turn`) rather than a durable queue or resident worker pool.
 - Child session inspection is self-only. A delegated child cannot browse descendants or list the session tree even when nested delegation is enabled.
 - `sessions_send` is intentionally narrow: only known root sessions backed by currently supported Telegram or Feishu targets are eligible.
+- `memory_search` is transcript text search only. It does not claim embedding-based, vector, BM25, hybrid, or semantic memory recall in this phase.
 - `session_archive` only applies to already-terminal visible sessions; it is inventory cleanup, not route shutdown, transcript deletion, or true session close.
 - `session_unarchive` only applies to already-archived terminal visible sessions; it restores default listing visibility, not execution, routing, or a new live session epoch.
+- `memory_search` only searches persisted transcript rows in `turns`; it does not search `session_events`, external knowledge stores, or detached long-term memory documents.
 - `session_cancel` cancels queued async children immediately, but running cancellation is cooperative at turn-loop checkpoints rather than hard process preemption.
 - `session_recover` only handles overdue async delegate children in `ready` or `running`; it is an operator-driven recovery path, not hard kill, retry, or automatic restart recovery.
 - Batch remediation is best-effort per target. Mixed applicability returns structured per-target results rather than an atomic all-or-nothing transaction.
