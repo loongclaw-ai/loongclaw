@@ -17,6 +17,15 @@ pub struct ConversationTurn {
     pub ts: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TranscriptSearchMatch {
+    pub turn_id: i64,
+    pub session_id: String,
+    pub role: String,
+    pub content_snippet: String,
+    pub ts: i64,
+}
+
 pub(super) fn append_turn(
     request: MemoryCoreRequest,
     config: &MemoryRuntimeConfig,
@@ -206,6 +215,82 @@ pub(super) fn window_direct(
         .map_err(|error| format!("decode memory turns failed: {error}"))
 }
 
+pub(super) fn search_transcript_direct(
+    session_ids: &[String],
+    query: &str,
+    limit: usize,
+    excerpt_chars: usize,
+    config: &MemoryRuntimeConfig,
+) -> Result<Vec<TranscriptSearchMatch>, String> {
+    if session_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let normalized_query = query.trim();
+    if normalized_query.is_empty() {
+        return Err("memory.search_transcript requires a non-empty query".to_owned());
+    }
+
+    let search_limit = clamp_search_limit(limit);
+    let excerpt_limit = clamp_excerpt_chars(excerpt_chars);
+    let path = resolve_db_path(config);
+    ensure_sqlite_schema(&path)?;
+    let conn = rusqlite::Connection::open(&path)
+        .map_err(|error| format!("open sqlite memory db failed: {error}"))?;
+
+    let mut session_placeholders = Vec::with_capacity(session_ids.len());
+    for offset in 0..session_ids.len() {
+        session_placeholders.push(format!("?{}", offset + 2));
+    }
+    let limit_placeholder = session_ids.len() + 2;
+    let sql = format!(
+        "SELECT id, session_id, role, content, ts
+         FROM turns
+         WHERE content LIKE ?1
+           AND session_id IN ({})
+         ORDER BY ts DESC, id DESC
+         LIMIT ?{}",
+        session_placeholders.join(", "),
+        limit_placeholder
+    );
+
+    let mut params = Vec::with_capacity(session_ids.len() + 2);
+    params.push(rusqlite::types::Value::from(format!("%{normalized_query}%")));
+    params.extend(
+        session_ids
+            .iter()
+            .cloned()
+            .map(rusqlite::types::Value::from),
+    );
+    params.push(rusqlite::types::Value::from(search_limit as i64));
+
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|error| format!("prepare transcript search query failed: {error}"))?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params_from_iter(params),
+            |row| -> rusqlite::Result<TranscriptSearchMatch> {
+                let content: String = row.get(3)?;
+                Ok(TranscriptSearchMatch {
+                    turn_id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    role: row.get(2)?,
+                    content_snippet: build_excerpt(&content, normalized_query, excerpt_limit),
+                    ts: row.get(4)?,
+                })
+            },
+        )
+        .map_err(|error| format!("query transcript search failed: {error}"))?;
+
+    let mut matches = Vec::new();
+    for row in rows {
+        matches
+            .push(row.map_err(|error| format!("decode transcript search row failed: {error}"))?);
+    }
+    Ok(matches)
+}
+
 pub(super) fn ensure_memory_db_ready(
     path: Option<PathBuf>,
     config: &MemoryRuntimeConfig,
@@ -225,6 +310,47 @@ fn default_window_size() -> usize {
 
 fn default_window_size_u64() -> u64 {
     default_window_size() as u64
+}
+
+fn clamp_search_limit(limit: usize) -> usize {
+    limit.clamp(1, 100)
+}
+
+fn clamp_excerpt_chars(excerpt_chars: usize) -> usize {
+    excerpt_chars.clamp(40, 400)
+}
+
+fn build_excerpt(content: &str, query: &str, excerpt_chars: usize) -> String {
+    if content.chars().count() <= excerpt_chars {
+        return content.to_owned();
+    }
+
+    let content_lower = content.to_lowercase();
+    let query_lower = query.to_lowercase();
+    let match_start = content_lower.find(&query_lower).unwrap_or(0);
+    let match_end = match_start.saturating_add(query_lower.len());
+
+    let mut start = match_start.saturating_sub(excerpt_chars / 2);
+    let mut end = start.saturating_add(excerpt_chars).min(content.len());
+    if end < match_end {
+        end = match_end.min(content.len());
+        start = end.saturating_sub(excerpt_chars);
+    }
+    while start > 0 && !content.is_char_boundary(start) {
+        start -= 1;
+    }
+    while end < content.len() && !content.is_char_boundary(end) {
+        end += 1;
+    }
+
+    let mut snippet = content[start..end].to_owned();
+    if start > 0 {
+        snippet.insert_str(0, "...");
+    }
+    if end < content.len() {
+        snippet.push_str("...");
+    }
+    snippet
 }
 
 fn unix_ts_now() -> i64 {

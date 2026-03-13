@@ -11,7 +11,7 @@ mod sqlite;
 
 pub use kernel_adapter::MvpMemoryAdapter;
 #[cfg(feature = "memory-sqlite")]
-pub use sqlite::ConversationTurn;
+pub use sqlite::{ConversationTurn, TranscriptSearchMatch};
 
 pub fn execute_memory_core(request: MemoryCoreRequest) -> Result<MemoryCoreOutcome, String> {
     execute_memory_core_with_config(request, runtime_config::get_memory_runtime_config())
@@ -115,6 +115,17 @@ pub fn ensure_memory_db_ready(
     config: &runtime_config::MemoryRuntimeConfig,
 ) -> Result<PathBuf, String> {
     sqlite::ensure_memory_db_ready(path, config)
+}
+
+#[cfg(feature = "memory-sqlite")]
+pub fn search_transcript_direct(
+    session_ids: &[String],
+    query: &str,
+    limit: usize,
+    excerpt_chars: usize,
+    config: &runtime_config::MemoryRuntimeConfig,
+) -> Result<Vec<TranscriptSearchMatch>, String> {
+    sqlite::search_transcript_direct(session_ids, query, limit, excerpt_chars, config)
 }
 
 #[cfg(test)]
@@ -262,6 +273,130 @@ mod tests {
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0].role, "user");
         assert_eq!(turns[0].content, "hello from transcript");
+
+        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir(&tmp);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn search_transcript_direct_returns_recent_matching_turns() {
+        use std::fs;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "loongclaw-test-memory-search-{}",
+            std::process::id()
+        ));
+        let _ = fs::create_dir_all(&tmp);
+        let db_path = tmp.join("search.sqlite3");
+        let _ = fs::remove_file(&db_path);
+
+        let config = runtime_config::MemoryRuntimeConfig {
+            sqlite_path: Some(db_path.clone()),
+        };
+
+        append_turn_direct("session-a", "user", "first timeout budget note", &config)
+            .expect("append first match");
+        append_turn_direct("session-b", "assistant", "no relevant text here", &config)
+            .expect("append unrelated turn");
+        append_turn_direct("session-a", "assistant", "latest timeout budget update", &config)
+            .expect("append latest match");
+
+        let matches = search_transcript_direct(
+            &["session-a".to_owned(), "session-b".to_owned()],
+            "timeout budget",
+            20,
+            120,
+            &config,
+        )
+        .expect("search transcript");
+
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].session_id, "session-a");
+        assert_eq!(matches[0].role, "assistant");
+        assert!(
+            matches[0].content_snippet.contains("timeout budget"),
+            "snippet should contain query"
+        );
+        assert!(
+            matches[0].turn_id > matches[1].turn_id,
+            "results should be newest first"
+        );
+
+        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir(&tmp);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn search_transcript_direct_excludes_non_matching_turns() {
+        use std::fs;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "loongclaw-test-memory-search-miss-{}",
+            std::process::id()
+        ));
+        let _ = fs::create_dir_all(&tmp);
+        let db_path = tmp.join("search-miss.sqlite3");
+        let _ = fs::remove_file(&db_path);
+
+        let config = runtime_config::MemoryRuntimeConfig {
+            sqlite_path: Some(db_path.clone()),
+        };
+
+        append_turn_direct("session-a", "user", "archive inventory", &config)
+            .expect("append turn");
+
+        let matches =
+            search_transcript_direct(&["session-a".to_owned()], "timeout budget", 20, 120, &config)
+                .expect("search transcript");
+
+        assert!(matches.is_empty(), "non-matching turns should be excluded");
+
+        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir(&tmp);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn search_transcript_direct_clamps_limit_and_excerpt() {
+        use std::fs;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "loongclaw-test-memory-search-clamp-{}",
+            std::process::id()
+        ));
+        let _ = fs::create_dir_all(&tmp);
+        let db_path = tmp.join("search-clamp.sqlite3");
+        let _ = fs::remove_file(&db_path);
+
+        let config = runtime_config::MemoryRuntimeConfig {
+            sqlite_path: Some(db_path.clone()),
+        };
+        let long_prefix = "prefix ".repeat(20);
+        let long_suffix = " suffix".repeat(20);
+        let long_match = format!("{long_prefix}timeout budget{long_suffix}");
+
+        append_turn_direct("session-a", "user", "timeout budget alpha", &config)
+            .expect("append alpha");
+        append_turn_direct("session-a", "assistant", "timeout budget beta", &config)
+            .expect("append beta");
+        append_turn_direct("session-a", "assistant", &long_match, &config)
+            .expect("append long match");
+
+        let matches =
+            search_transcript_direct(&["session-a".to_owned()], "timeout budget", 0, 12, &config)
+                .expect("search transcript");
+
+        assert_eq!(matches.len(), 1, "limit should clamp to at least one");
+        assert!(
+            matches[0].content_snippet.len() <= 406,
+            "excerpt should clamp instead of returning the full long content"
+        );
+        assert!(
+            matches[0].content_snippet.contains("timeout budget"),
+            "snippet should preserve the matching phrase"
+        );
 
         let _ = fs::remove_file(&db_path);
         let _ = fs::remove_dir(&tmp);
