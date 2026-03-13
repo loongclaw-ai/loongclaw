@@ -31,42 +31,27 @@ pub struct OutboundFrame {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProtocolRoute {
-    Initialize,
-    Ping,
-    ToolsList,
     ToolsCall,
-    ResourcesList,
-    ResourcesRead,
     Custom(String),
 }
 
 impl ProtocolRoute {
     pub fn from_method(method: &str) -> Self {
         match method {
-            "initialize" => Self::Initialize,
-            "ping" => Self::Ping,
-            "tools/list" => Self::ToolsList,
             "tools/call" => Self::ToolsCall,
-            "resources/list" => Self::ResourcesList,
-            "resources/read" => Self::ResourcesRead,
             other => Self::Custom(other.to_owned()),
         }
     }
 
     pub fn method(&self) -> &str {
         match self {
-            Self::Initialize => "initialize",
-            Self::Ping => "ping",
-            Self::ToolsList => "tools/list",
             Self::ToolsCall => "tools/call",
-            Self::ResourcesList => "resources/list",
-            Self::ResourcesRead => "resources/read",
             Self::Custom(method) => method,
         }
     }
 
     pub fn is_standard(&self) -> bool {
-        !matches!(self, Self::Custom(_))
+        matches!(self, Self::ToolsCall)
     }
 }
 
@@ -141,21 +126,7 @@ impl ProtocolRouter {
         validate_method_name(method)?;
         let route = ProtocolRoute::from_method(method);
         match route {
-            ProtocolRoute::Initialize | ProtocolRoute::Ping => Ok(ResolvedRoute {
-                route,
-                policy: RoutePolicy {
-                    allow_anonymous: true,
-                    required_capability: None,
-                },
-            }),
-            ProtocolRoute::ToolsList | ProtocolRoute::ResourcesList => Ok(ResolvedRoute {
-                route,
-                policy: RoutePolicy {
-                    allow_anonymous: true,
-                    required_capability: Some("discover".to_owned()),
-                },
-            }),
-            ProtocolRoute::ToolsCall | ProtocolRoute::ResourcesRead => Ok(ResolvedRoute {
+            ProtocolRoute::ToolsCall => Ok(ResolvedRoute {
                 route,
                 policy: RoutePolicy {
                     allow_anonymous: false,
@@ -185,12 +156,6 @@ impl ProtocolRouter {
         resolved: &ResolvedRoute,
         request: &RouteAuthorizationRequest,
     ) -> Result<RouteAuthorizationDecision, RouteAuthorizationError> {
-        if !request.authenticated && !resolved.policy.allow_anonymous {
-            return Err(RouteAuthorizationError::AuthenticationRequired {
-                method: resolved.method().to_owned(),
-            });
-        }
-
         if let Some(required) = &resolved.policy.required_capability {
             let normalized_required = normalize_capability(required);
             let has_required = request.capabilities.iter().any(|capability| {
@@ -219,7 +184,6 @@ pub enum RouterError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteAuthorizationRequest {
-    pub authenticated: bool,
     pub capabilities: BTreeSet<String>,
 }
 
@@ -230,8 +194,6 @@ pub enum RouteAuthorizationDecision {
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum RouteAuthorizationError {
-    #[error("authentication required for method: {method}")]
-    AuthenticationRequired { method: String },
     #[error("missing capability `{required_capability}` for method: {method}")]
     MissingCapability {
         method: String,
@@ -483,12 +445,17 @@ mod tests {
             ProtocolRoute::ToolsCall
         );
         assert_eq!(
-            ProtocolRoute::from_method("resources/read"),
-            ProtocolRoute::ResourcesRead
-        );
-        assert_eq!(
             ProtocolRoute::from_method("custom/x"),
             ProtocolRoute::Custom("custom/x".to_owned())
+        );
+        // Previously-standard routes now map to Custom
+        assert_eq!(
+            ProtocolRoute::from_method("initialize"),
+            ProtocolRoute::Custom("initialize".to_owned())
+        );
+        assert_eq!(
+            ProtocolRoute::from_method("ping"),
+            ProtocolRoute::Custom("ping".to_owned())
         );
     }
 
@@ -538,7 +505,7 @@ mod tests {
     }
 
     #[test]
-    fn authorize_denies_when_authentication_is_required() {
+    fn authorize_denies_when_capability_is_missing() {
         let router = ProtocolRouter::default();
         let resolved = router
             .resolve("tools/call")
@@ -547,38 +514,16 @@ mod tests {
             .authorize(
                 &resolved,
                 &RouteAuthorizationRequest {
-                    authenticated: false,
-                    capabilities: BTreeSet::new(),
-                },
-            )
-            .expect_err("tools/call should require authentication");
-        assert!(matches!(
-            error,
-            RouteAuthorizationError::AuthenticationRequired { method } if method == "tools/call"
-        ));
-    }
-
-    #[test]
-    fn authorize_denies_when_capability_is_missing() {
-        let router = ProtocolRouter::default();
-        let resolved = router
-            .resolve("resources/read")
-            .expect("standard route should resolve");
-        let error = router
-            .authorize(
-                &resolved,
-                &RouteAuthorizationRequest {
-                    authenticated: true,
                     capabilities: BTreeSet::from(["discover".to_owned()]),
                 },
             )
-            .expect_err("resources/read should require invoke");
+            .expect_err("tools/call should require invoke");
         assert!(matches!(
             error,
             RouteAuthorizationError::MissingCapability {
                 method,
                 required_capability
-            } if method == "resources/read" && required_capability == "invoke"
+            } if method == "tools/call" && required_capability == "invoke"
         ));
     }
 
@@ -586,13 +531,12 @@ mod tests {
     fn authorize_allows_when_capability_matches() {
         let router = ProtocolRouter::default();
         let resolved = router
-            .resolve("resources/read")
+            .resolve("tools/call")
             .expect("standard route should resolve");
         let decision = router
             .authorize(
                 &resolved,
                 &RouteAuthorizationRequest {
-                    authenticated: true,
                     capabilities: BTreeSet::from([" invoke ".to_owned()]),
                 },
             )
@@ -610,7 +554,6 @@ mod tests {
             .authorize(
                 &resolved,
                 &RouteAuthorizationRequest {
-                    authenticated: true,
                     capabilities: BTreeSet::from(["*".to_owned()]),
                 },
             )
