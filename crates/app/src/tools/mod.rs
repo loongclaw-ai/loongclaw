@@ -197,8 +197,12 @@ pub fn capability_snapshot_for_view(view: &ToolView) -> String {
 /// The output shape matches OpenAI-compatible `tools=[{type:function,...}]`.
 /// Order is deterministic for stable prompting/tests.
 pub fn provider_tool_definitions() -> Vec<Value> {
-    try_provider_tool_definitions_for_view(&runtime_tool_view())
-        .expect("runtime tool view should always be advertisable")
+    let catalog = tool_catalog();
+    runtime_tool_view()
+        .iter(&catalog)
+        .filter(|descriptor| descriptor.availability == ToolAvailability::Runtime)
+        .map(ToolDescriptor::provider_definition)
+        .collect()
 }
 
 pub fn try_provider_tool_definitions_for_view(view: &ToolView) -> Result<Vec<Value>, String> {

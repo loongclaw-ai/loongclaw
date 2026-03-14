@@ -171,6 +171,37 @@ struct SessionWaitTargetState {
     latest_inspection: Option<SessionInspectionSnapshot>,
 }
 
+#[cfg(feature = "memory-sqlite")]
+fn set_session_batch_result(
+    results: &mut [Option<SessionBatchResultRecord>],
+    index: usize,
+    result: SessionBatchResultRecord,
+) -> Result<(), String> {
+    let Some(slot) = results.get_mut(index) else {
+        return Err(format!(
+            "session_wait_internal_error: result slot `{index}` is out of bounds"
+        ));
+    };
+    *slot = Some(result);
+    Ok(())
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn collect_session_batch_results(
+    results: Vec<Option<SessionBatchResultRecord>>,
+) -> Result<Vec<SessionBatchResultRecord>, String> {
+    let mut collected = Vec::with_capacity(results.len());
+    for (index, result) in results.into_iter().enumerate() {
+        let Some(result) = result else {
+            return Err(format!(
+                "session_wait_internal_error: missing batch result at index `{index}`"
+            ));
+        };
+        collected.push(result);
+    }
+    Ok(collected)
+}
+
 #[cfg(test)]
 pub fn execute_session_tool_with_config(
     request: ToolCoreRequest,
@@ -246,10 +277,7 @@ pub(super) async fn wait_for_session_tool_with_policies(
     let event_limit = tool_config.sessions.history_limit.min(50);
 
     if request.legacy_single {
-        let target_session_id = request
-            .session_ids
-            .first()
-            .expect("legacy single request requires one session id");
+        let target_session_id = legacy_single_session_id(&request.session_ids)?;
         return wait_for_single_session_with_policies(
             target_session_id,
             current_session_id,
@@ -434,10 +462,7 @@ fn execute_session_status(
 ) -> Result<ToolCoreOutcome, String> {
     let request = parse_session_target_request(&payload)?;
     if request.legacy_single {
-        let target_session_id = request
-            .session_ids
-            .first()
-            .expect("legacy single request requires one session id");
+        let target_session_id = legacy_single_session_id(&request.session_ids)?;
         let snapshot = inspect_visible_session_with_policies(
             target_session_id,
             current_session_id,
@@ -482,11 +507,7 @@ fn execute_session_recover(
 ) -> Result<ToolCoreOutcome, String> {
     let request = parse_session_mutation_request(&payload)?;
     if request.use_legacy_single_response() {
-        let target_session_id = request
-            .target
-            .session_ids
-            .first()
-            .expect("legacy single request requires one session id");
+        let target_session_id = legacy_single_session_id(&request.target.session_ids)?;
         let repo = SessionRepository::new(config)?;
         ensure_visible(
             &repo,
@@ -553,11 +574,7 @@ fn execute_session_cancel(
 ) -> Result<ToolCoreOutcome, String> {
     let request = parse_session_mutation_request(&payload)?;
     if request.use_legacy_single_response() {
-        let target_session_id = request
-            .target
-            .session_ids
-            .first()
-            .expect("legacy single request requires one session id");
+        let target_session_id = legacy_single_session_id(&request.target.session_ids)?;
         let repo = SessionRepository::new(config)?;
         ensure_visible(
             &repo,
@@ -624,11 +641,7 @@ fn execute_session_archive(
 ) -> Result<ToolCoreOutcome, String> {
     let request = parse_session_mutation_request(&payload)?;
     if request.use_legacy_single_response() {
-        let target_session_id = request
-            .target
-            .session_ids
-            .first()
-            .expect("legacy single request requires one session id");
+        let target_session_id = legacy_single_session_id(&request.target.session_ids)?;
         let repo = SessionRepository::new(config)?;
         ensure_visible(
             &repo,
@@ -989,13 +1002,17 @@ async fn wait_for_session_batch_with_policies(
             &target_session_id,
             tool_config.sessions.visibility,
         ) {
-            results[index] = Some(session_batch_result(
-                target_session_id,
-                "skipped_not_visible",
-                Some(error),
-                None,
-                None,
-            ));
+            set_session_batch_result(
+                &mut results,
+                index,
+                session_batch_result(
+                    target_session_id,
+                    "skipped_not_visible",
+                    Some(error),
+                    None,
+                    None,
+                ),
+            )?;
             continue;
         }
         pending.push(SessionWaitTargetState {
@@ -1023,13 +1040,17 @@ async fn wait_for_session_batch_with_policies(
             ) {
                 Ok(observation) => observation,
                 Err(error) if is_session_visibility_skip_error(&error) => {
-                    results[target.index] = Some(session_batch_result(
-                        target.session_id,
-                        "skipped_not_visible",
-                        Some(error),
-                        None,
-                        None,
-                    ));
+                    set_session_batch_result(
+                        &mut results,
+                        target.index,
+                        session_batch_result(
+                            target.session_id,
+                            "skipped_not_visible",
+                            Some(error),
+                            None,
+                            None,
+                        ),
+                    )?;
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -1041,24 +1062,28 @@ async fn wait_for_session_batch_with_policies(
             target.observed_events.extend(observation.tail_events);
             target.latest_inspection = Some(snapshot.clone());
             if session_state_is_terminal(snapshot.session.state) {
-                results[target.index] = Some(session_batch_result(
-                    target.session_id,
-                    "ok",
-                    None,
-                    None,
-                    Some(wait_payload(
-                        snapshot,
-                        "completed",
-                        after_id,
-                        timeout_ms,
-                        if after_id.is_some() {
-                            std::mem::take(&mut target.observed_events)
-                        } else {
-                            Vec::new()
-                        },
-                        target.next_after_id,
-                    )),
-                ));
+                set_session_batch_result(
+                    &mut results,
+                    target.index,
+                    session_batch_result(
+                        target.session_id,
+                        "ok",
+                        None,
+                        None,
+                        Some(wait_payload(
+                            snapshot,
+                            "completed",
+                            after_id,
+                            timeout_ms,
+                            if after_id.is_some() {
+                                std::mem::take(&mut target.observed_events)
+                            } else {
+                                Vec::new()
+                            },
+                            target.next_after_id,
+                        )),
+                    ),
+                )?;
                 continue;
             }
             next_pending.push(target);
@@ -1066,16 +1091,14 @@ async fn wait_for_session_batch_with_policies(
         pending = next_pending;
 
         if pending.is_empty() {
+            let results = collect_session_batch_results(results)?;
             return Ok(ToolCoreOutcome {
                 status: "ok".to_owned(),
                 payload: session_wait_batch_payload(
                     current_session_id,
                     after_id,
                     timeout_ms,
-                    results
-                        .into_iter()
-                        .map(|result| result.expect("batch wait result"))
-                        .collect::<Vec<_>>(),
+                    results,
                 ),
             });
         }
@@ -1083,40 +1106,44 @@ async fn wait_for_session_batch_with_policies(
         let elapsed_ms = started_at.elapsed().as_millis() as u64;
         if elapsed_ms >= timeout_ms {
             for mut target in pending.into_iter() {
-                let snapshot = target
-                    .latest_inspection
-                    .take()
-                    .expect("pending batch wait target inspection");
-                results[target.index] = Some(session_batch_result(
-                    target.session_id,
-                    "timeout",
-                    None,
-                    None,
-                    Some(wait_payload(
-                        snapshot,
+                let snapshot = target.latest_inspection.take().ok_or_else(|| {
+                    format!(
+                        "session_wait_internal_error: missing pending inspection for `{}`",
+                        target.session_id
+                    )
+                })?;
+                set_session_batch_result(
+                    &mut results,
+                    target.index,
+                    session_batch_result(
+                        target.session_id,
                         "timeout",
-                        after_id,
-                        timeout_ms,
-                        if after_id.is_some() {
-                            target.observed_events
-                        } else {
-                            Vec::new()
-                        },
-                        target.next_after_id,
-                    )),
-                ));
+                        None,
+                        None,
+                        Some(wait_payload(
+                            snapshot,
+                            "timeout",
+                            after_id,
+                            timeout_ms,
+                            if after_id.is_some() {
+                                target.observed_events
+                            } else {
+                                Vec::new()
+                            },
+                            target.next_after_id,
+                        )),
+                    ),
+                )?;
             }
 
+            let results = collect_session_batch_results(results)?;
             return Ok(ToolCoreOutcome {
                 status: "ok".to_owned(),
                 payload: session_wait_batch_payload(
                     current_session_id,
                     after_id,
                     timeout_ms,
-                    results
-                        .into_iter()
-                        .map(|result| result.expect("batch wait result"))
-                        .collect::<Vec<_>>(),
+                    results,
                 ),
             });
         }
@@ -1428,11 +1455,14 @@ fn apply_session_recover_plan(
     );
     let event_payload_json = match recover_plan.recovery_kind {
         RECOVERY_KIND_QUEUED_ASYNC_OVERDUE_MARKED_FAILED => {
+            let Some(queued_at) = recover_plan.queued_at else {
+                return Err(format!(
+                    "session_recover_not_recoverable: session `{target_session_id}` is missing queued timestamp"
+                ));
+            };
             build_queued_async_overdue_recovery_payload(
                 snapshot.session.label.as_deref(),
-                recover_plan
-                    .queued_at
-                    .expect("queued async overdue recovery requires queued_at"),
+                queued_at,
                 recover_plan.elapsed_seconds,
                 recover_plan.timeout_seconds,
                 recover_plan.deadline_at,
@@ -1451,7 +1481,11 @@ fn apply_session_recover_plan(
                 &recovery_error,
             )
         }
-        other => unreachable!("unsupported session recovery kind `{other}`"),
+        other => {
+            return Err(format!(
+                "session_recover_not_supported: unsupported recovery kind `{other}`"
+            ));
+        }
     };
     let finalized = repo.finalize_session_terminal_if_current(
         target_session_id,
@@ -1601,7 +1635,7 @@ fn session_recovery_error(plan: &SessionRecoverPlan) -> String {
             "delegate_async_running_overdue_marked_failed: running delegate child exceeded timeout after {}s (threshold {}s)",
             plan.elapsed_seconds, plan.timeout_seconds
         ),
-        other => unreachable!("unsupported session recovery kind `{other}`"),
+        other => format!("session_recover_unsupported_kind: unsupported session recovery kind `{other}`"),
     }
 }
 
@@ -2121,6 +2155,13 @@ fn parse_session_mutation_request(payload: &Value) -> Result<SessionMutationRequ
     })
 }
 
+#[cfg(feature = "memory-sqlite")]
+fn legacy_single_session_id(session_ids: &[String]) -> Result<&str, String> {
+    session_ids.first().map(String::as_str).ok_or_else(|| {
+        "session_tool_internal_error: legacy single request missing session id".to_owned()
+    })
+}
+
 fn optional_payload_limit(payload: &Value, field: &str, default: usize, max: usize) -> usize {
     payload
         .get(field)
@@ -2290,10 +2331,9 @@ fn session_batch_payload_with_optional_dry_run(
         "results": results.into_iter().map(session_batch_result_json).collect::<Vec<_>>(),
     });
     if let Some(dry_run) = dry_run {
-        payload
-            .as_object_mut()
-            .expect("session batch payload object")
-            .insert("dry_run".to_owned(), Value::Bool(dry_run));
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("dry_run".to_owned(), Value::Bool(dry_run));
+        }
     }
     payload
 }
@@ -2311,17 +2351,13 @@ fn session_wait_batch_payload(
         results.len(),
         results,
     );
-    payload
-        .as_object_mut()
-        .expect("session wait batch payload object")
-        .insert("timeout_ms".to_owned(), Value::from(timeout_ms));
-    payload
-        .as_object_mut()
-        .expect("session wait batch payload object")
-        .insert(
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("timeout_ms".to_owned(), Value::from(timeout_ms));
+        object.insert(
             "after_id".to_owned(),
             after_id.map(Value::from).unwrap_or(Value::Null),
         );
+    }
     payload
 }
 
@@ -2469,15 +2505,14 @@ fn session_summary_json_with_delegate_lifecycle(
 ) -> Value {
     let mut payload = session_summary_json(session);
     if include_delegate_lifecycle {
-        payload
-            .as_object_mut()
-            .expect("session summary json object")
-            .insert(
+        if let Some(object) = payload.as_object_mut() {
+            object.insert(
                 "delegate_lifecycle".to_owned(),
                 delegate_lifecycle
                     .map(session_delegate_lifecycle_json)
                     .unwrap_or(Value::Null),
             );
+        }
     }
     payload
 }

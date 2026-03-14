@@ -3957,7 +3957,7 @@ async fn handle_turn_with_runtime_uses_session_tool_view_from_runtime() {
             .lock()
             .expect("built tool views lock")
             .as_slice(),
-        &[child_view.clone()]
+        std::slice::from_ref(&child_view)
     );
     assert_eq!(
         runtime

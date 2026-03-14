@@ -222,10 +222,10 @@ pub(crate) async fn send_text_to_known_session(
                 })?;
                 let adapter = telegram::TelegramAdapter::new(config, token);
                 adapter.send_text(target, text).await?;
-                return Ok(ChannelSendReceipt {
+                Ok(ChannelSendReceipt {
                     channel: "telegram",
                     target: chat_id.to_string(),
-                });
+                })
             }
         }
         "feishu" => {
@@ -257,10 +257,10 @@ pub(crate) async fn send_text_to_known_session(
                     ));
                 }
                 feishu::run_feishu_send(config, target, text, false).await?;
-                return Ok(ChannelSendReceipt {
+                Ok(ChannelSendReceipt {
                     channel: "feishu",
                     target: target.to_owned(),
-                });
+                })
             }
         }
         _ => Err(format!("sessions_send_channel_unsupported: `{session_id}`")),

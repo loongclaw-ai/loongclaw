@@ -29,6 +29,7 @@ reqwest.workspace = true
 sha2.workspace = true
 tokio.workspace = true
 base64.workspace = true
+tracing.workspace = true
 rusqlite = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 aes = { version = "0.8", optional = true }

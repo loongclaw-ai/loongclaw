@@ -31,6 +31,7 @@ futures-util = "0.3"
 sha2 = "0.10"
 wasmparser = "0.245"
 base64 = "0.22"
+tracing = "0.1"
 ed25519-dalek = "2.2"
 wasmtime = { version = "42.0.1", default-features = false, features = ["std", "runtime", "cranelift"] }
 rusqlite = { version = "0.38", features = ["bundled"] }
