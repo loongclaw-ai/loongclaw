@@ -13,6 +13,17 @@ Thanks for contributing. This guide defines the baseline workflow for external a
 - Convention checks require the `convention-engineering` skill script at
   `~/.claude/skills/convention-engineering/scripts/main.go` (see `Taskfile.yml`).
 
+## Harness Engineering
+
+LoongClaw uses a progressive-disclosure documentation harness to keep the repo agent-legible. When your changes affect architecture, security, reliability, or other documented domains, update the relevant docs. See [Harness Engineering](docs/design-docs/harness-engineering.md) for the full model.
+
+**Before pushing**, verify:
+- `CLAUDE.md` and `AGENTS.md` are mirrored (identical content)
+- Quality scores in `docs/QUALITY_SCORE.md` reflect current state
+- Tech debt in `docs/tech-debt-tracker.md` is up to date
+
+Agent skills at `skills/*.skill` (zip archives) can automate these checks. Install for your platform — e.g., `unzip skills/update-harness.skill -d ~/.claude/skills/update-harness/` for Claude Code.
+
 ## Contribution Tracks
 
 LoongClaw uses two tracks for OSS contribution risk.

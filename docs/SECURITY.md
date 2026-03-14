@@ -47,34 +47,9 @@ CapabilityToken → PolicyEngine → PolicyExtensionChain → Execution → Audi
 
 25 workspace clippy denies prevent common agent anti-patterns. See [Harness Engineering](design-docs/harness-engineering.md) for the full list.
 
-## Critical Security Gaps
-
-These are tracked in the [Tech Debt Tracker](tech-debt-tracker.md):
-
-| Priority | Gap | TD ID |
-|----------|-----|-------|
-| High | Policy engine only gates `shell.exec` | TD-002 |
-| High | Audit events in-memory only | TD-006 |
-| High | No HMAC chain on audit events | TD-007 |
-| Medium | Membrane field never checked | TD-003 |
-| Medium | Namespace struct not enforced | TD-005 |
-| Medium | No WASM fuel metering | TD-013 |
-| Medium | Plugin scanner logic absent | TD-012 |
-
-## Research Decisions
-
-Security-related decisions from the research repository:
-
-| ID | Decision | Status |
-|----|----------|--------|
-| D-001 | Zircon-style capability model | Partially implemented |
-| D-013 | Three-tier capability negotiation | Research |
-| D-015 | OAuth 2.1 external + capability internal | Research |
-| D-025 | Per-invocation plugin isolation | Research |
-| D-030 | Zero-capability-default WASI injection | Research |
-
 ## See Also
 
-- [Harness Engineering](design-docs/harness-engineering.md) — backpressure and constraint model
+- [Tech Debt Tracker](tech-debt-tracker.md) — known security gaps and their tracking IDs
+- [Design Docs Index](design-docs/index.md) — security-related design decisions
 - [Layered Kernel Design](design-docs/layered-kernel-design.md) — L1 security layer specification
 - [Core Beliefs](design-docs/core-beliefs.md) — principle #3: capability-gated by default

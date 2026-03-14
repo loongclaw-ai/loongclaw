@@ -68,13 +68,7 @@ cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
 Runs CI-parity cargo checks before each commit.
 Use `task verify` for the stricter local superset (architecture, conventions, docs, deny).
 
-## 7. Harness Maintenance
-
-Skills are at `skills/*.skill` (zip archives). If not installed, extract and install for your platform.
-Example: `unzip skills/update-harness.skill -d ~/.claude/skills/update-harness/`
-Run the `update-harness` skill before pushing to verify mirrors, docs, and quality scores.
-
-## 8. Pitfalls
+## 7. Pitfalls
 
 - No `unwrap()`, `expect()`, `panic!()`, `todo!()`, `[]` indexing, or `println!` — use `?`, `.get()`, and proper logging. The workspace denies all of these at compile time.
 - Policy engine only gates `shell.exec` — `file.read`/`file.write` bypass it entirely (TD-002). Don't assume all tools are policy-checked.
@@ -85,7 +79,7 @@ Run the `update-harness` skill before pushing to verify mirrors, docs, and quali
 - `BTreeMap` not `HashMap` everywhere — deterministic ordering is intentional.
 - `docs/exec-plans/` (agent working memory) and `docs/plans/` (durable phase plans) are local only — not committed to git.
 
-## 9. Where to Look Next
+## 8. Where to Look Next
 
 | Need | Go to |
 |------|-------|
@@ -105,5 +99,4 @@ Run the `update-harness` skill before pushing to verify mirrors, docs, and quali
 | Product requirements | `docs/product-specs/` |
 | LLM-optimized references | `docs/references/` |
 | Auto-generated artifacts | `docs/generated/` |
-| Agent skills | `skills/*.skill` |
 | Contributing recipes | `CONTRIBUTING.md` |
