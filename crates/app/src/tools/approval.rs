@@ -28,6 +28,7 @@ struct ApprovalRequestsListRequest {
     integrity_status: Option<ApprovalExecutionIntegrityStatus>,
     needs_attention: Option<bool>,
     attention_reason: Option<ApprovalAttentionReason>,
+    recommended_action: Option<ApprovalRecommendedAction>,
     prioritize_attention: bool,
     limit: usize,
 }
@@ -66,6 +67,27 @@ impl ApprovalAttentionReason {
         match self {
             Self::IntegrityGap => "integrity_gap",
             Self::ExecutionFailed => "execution_failed",
+        }
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApprovalRecommendedAction {
+    InspectExecutionEventStream,
+    InspectReplayPersistence,
+    InspectToolExecutionFailure,
+    InspectApprovalIntegrity,
+}
+
+#[cfg(feature = "memory-sqlite")]
+impl ApprovalRecommendedAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::InspectExecutionEventStream => "inspect_execution_event_stream",
+            Self::InspectReplayPersistence => "inspect_replay_persistence",
+            Self::InspectToolExecutionFailure => "inspect_tool_execution_failure",
+            Self::InspectApprovalIntegrity => "inspect_approval_integrity",
         }
     }
 }
@@ -271,6 +293,13 @@ fn execute_approval_requests_list(
                 == Some(attention_reason)
         });
     }
+    if let Some(recommended_action) = request.recommended_action {
+        request_summaries.retain(|item| {
+            item.get("execution_integrity")
+                .and_then(approval_request_recommended_action_from_json)
+                == Some(recommended_action)
+        });
+    }
     if request.prioritize_attention {
         request_summaries.sort_by(|left, right| {
             approval_request_attention_priority(left)
@@ -296,6 +325,7 @@ fn execute_approval_requests_list(
                 "integrity_status": request.integrity_status.map(ApprovalExecutionIntegrityStatus::as_str),
                 "needs_attention": request.needs_attention,
                 "attention_reason": request.attention_reason.map(ApprovalAttentionReason::as_str),
+                "recommended_action": request.recommended_action.map(ApprovalRecommendedAction::as_str),
                 "prioritize_attention": request.prioritize_attention,
                 "limit": request.limit,
             },
@@ -431,6 +461,12 @@ fn approval_request_list_integrity_summary_json(requests: &[Value]) -> Value {
         ("integrity_gap".to_owned(), 0usize),
         ("execution_failed".to_owned(), 0usize),
     ]);
+    let mut recommended_action_counts = BTreeMap::from([
+        ("inspect_execution_event_stream".to_owned(), 0usize),
+        ("inspect_replay_persistence".to_owned(), 0usize),
+        ("inspect_tool_execution_failure".to_owned(), 0usize),
+        ("inspect_approval_integrity".to_owned(), 0usize),
+    ]);
 
     for request in requests {
         let execution_integrity = request.get("execution_integrity").unwrap_or(&Value::Null);
@@ -458,6 +494,14 @@ fn approval_request_list_integrity_summary_json(requests: &[Value]) -> Value {
             {
                 *counts_by_reason.entry(reason.to_owned()).or_default() += 1;
             }
+            if let Some(action) = execution_integrity
+                .get("recommended_action")
+                .and_then(Value::as_str)
+            {
+                *recommended_action_counts
+                    .entry(action.to_owned())
+                    .or_default() += 1;
+            }
         }
     }
 
@@ -467,6 +511,7 @@ fn approval_request_list_integrity_summary_json(requests: &[Value]) -> Value {
         "attention_summary": {
             "needs_attention_count": needs_attention_count,
             "counts_by_reason": counts_by_reason,
+            "recommended_action_counts": recommended_action_counts,
         },
     })
 }
@@ -666,6 +711,8 @@ fn approval_request_execution_integrity_json(
         } else {
             (false, Value::Null)
         };
+    let recommended_action =
+        approval_request_recommended_action_json(status, gap.as_str(), execution_error.is_null());
 
     json!({
         "status": status.as_str(),
@@ -675,6 +722,7 @@ fn approval_request_execution_integrity_json(
         "evidence_complete": evidence_complete,
         "needs_attention": needs_attention,
         "attention_reason": attention_reason,
+        "recommended_action": recommended_action,
     })
 }
 
@@ -798,6 +846,53 @@ fn approval_request_attention_reason_from_json(
 }
 
 #[cfg(feature = "memory-sqlite")]
+fn approval_request_recommended_action_json(
+    status: ApprovalExecutionIntegrityStatus,
+    gap: Option<&str>,
+    execution_error_is_null: bool,
+) -> Value {
+    match status {
+        ApprovalExecutionIntegrityStatus::Incomplete => match gap {
+            Some("started_event_missing")
+            | Some("terminal_event_missing")
+            | Some("execution_events_missing") => Value::String(
+                ApprovalRecommendedAction::InspectExecutionEventStream
+                    .as_str()
+                    .to_owned(),
+            ),
+            Some("replay_decision_and_outcome_missing")
+            | Some("replay_decision_missing")
+            | Some("replay_outcome_missing") => Value::String(
+                ApprovalRecommendedAction::InspectReplayPersistence
+                    .as_str()
+                    .to_owned(),
+            ),
+            Some(_) | None => Value::String(
+                ApprovalRecommendedAction::InspectApprovalIntegrity
+                    .as_str()
+                    .to_owned(),
+            ),
+        },
+        ApprovalExecutionIntegrityStatus::Complete if !execution_error_is_null => Value::String(
+            ApprovalRecommendedAction::InspectToolExecutionFailure
+                .as_str()
+                .to_owned(),
+        ),
+        _ => Value::Null,
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn approval_request_recommended_action_from_json(
+    execution_integrity: &Value,
+) -> Option<ApprovalRecommendedAction> {
+    execution_integrity
+        .get("recommended_action")
+        .and_then(Value::as_str)
+        .and_then(|value| parse_approval_recommended_action(value).ok())
+}
+
+#[cfg(feature = "memory-sqlite")]
 fn approval_request_attention_priority(request: &Value) -> u8 {
     let execution_integrity = request.get("execution_integrity").unwrap_or(&Value::Null);
     if execution_integrity
@@ -847,6 +942,10 @@ fn parse_approval_requests_list_request(
         )?,
         needs_attention: payload.get("needs_attention").and_then(Value::as_bool),
         attention_reason: optional_payload_approval_attention_reason(payload, "attention_reason")?,
+        recommended_action: optional_payload_approval_recommended_action(
+            payload,
+            "recommended_action",
+        )?,
         prioritize_attention: payload
             .get("prioritize_attention")
             .and_then(Value::as_bool)
@@ -965,6 +1064,16 @@ fn optional_payload_approval_attention_reason(
 }
 
 #[cfg(feature = "memory-sqlite")]
+fn optional_payload_approval_recommended_action(
+    payload: &Value,
+    field: &str,
+) -> Result<Option<ApprovalRecommendedAction>, String> {
+    optional_payload_string(payload, field)
+        .map(|value| parse_approval_recommended_action(value.as_str()))
+        .transpose()
+}
+
+#[cfg(feature = "memory-sqlite")]
 fn parse_approval_request_status(value: &str) -> Result<ApprovalRequestStatus, String> {
     match value {
         "pending" => Ok(ApprovalRequestStatus::Pending),
@@ -1002,6 +1111,23 @@ fn parse_approval_attention_reason(value: &str) -> Result<ApprovalAttentionReaso
         "execution_failed" => Ok(ApprovalAttentionReason::ExecutionFailed),
         _ => Err(format!(
             "approval_requests_list_invalid_request: unknown attention_reason `{value}`"
+        )),
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn parse_approval_recommended_action(value: &str) -> Result<ApprovalRecommendedAction, String> {
+    match value {
+        "inspect_execution_event_stream" => {
+            Ok(ApprovalRecommendedAction::InspectExecutionEventStream)
+        }
+        "inspect_replay_persistence" => Ok(ApprovalRecommendedAction::InspectReplayPersistence),
+        "inspect_tool_execution_failure" => {
+            Ok(ApprovalRecommendedAction::InspectToolExecutionFailure)
+        }
+        "inspect_approval_integrity" => Ok(ApprovalRecommendedAction::InspectApprovalIntegrity),
+        _ => Err(format!(
+            "approval_requests_list_invalid_request: unknown recommended_action `{value}`"
         )),
     }
 }
@@ -1199,6 +1325,10 @@ mod tests {
             root_request["execution_integrity"]["attention_reason"],
             Value::Null
         );
+        assert_eq!(
+            root_request["execution_integrity"]["recommended_action"],
+            Value::Null
+        );
     }
 
     #[cfg(feature = "memory-sqlite")]
@@ -1271,6 +1401,7 @@ mod tests {
         assert_eq!(integrity["integrity_error"], Value::Null);
         assert_eq!(integrity["needs_attention"], false);
         assert_eq!(integrity["attention_reason"], Value::Null);
+        assert_eq!(integrity["recommended_action"], Value::Null);
     }
 
     #[cfg(feature = "memory-sqlite")]
@@ -1665,6 +1796,43 @@ mod tests {
             execution_failed_requests[0]["execution_integrity"]["attention_reason"],
             "execution_failed"
         );
+        assert_eq!(
+            execution_failed_requests[0]["execution_integrity"]["recommended_action"],
+            "inspect_tool_execution_failure"
+        );
+
+        let replay_persistence_outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "recommended_action": "inspect_replay_persistence",
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome for recommended_action");
+
+        assert_eq!(
+            replay_persistence_outcome.payload["filter"]["recommended_action"],
+            "inspect_replay_persistence"
+        );
+        assert_eq!(replay_persistence_outcome.payload["matched_count"], 1);
+        assert_eq!(replay_persistence_outcome.payload["returned_count"], 1);
+        let replay_persistence_requests = replay_persistence_outcome.payload["requests"]
+            .as_array()
+            .expect("recommended_action requests array");
+        assert_eq!(replay_persistence_requests.len(), 1);
+        assert_eq!(
+            replay_persistence_requests[0]["approval_request_id"],
+            "apr-attention-integrity-gap"
+        );
+        assert_eq!(
+            replay_persistence_requests[0]["execution_integrity"]["recommended_action"],
+            "inspect_replay_persistence"
+        );
     }
 
     #[cfg(feature = "memory-sqlite")]
@@ -1874,6 +2042,13 @@ mod tests {
             "session_cancel",
             "governed_tool_requires_per_call_approval",
         );
+        seed_request(
+            &repo,
+            "apr-summary-missing-events",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+        );
 
         transition_request_status(
             &repo,
@@ -1902,6 +2077,13 @@ mod tests {
             ApprovalRequestStatus::Pending,
             ApprovalRequestStatus::Executed,
             Some("tool failed for domain reasons"),
+        );
+        transition_request_status(
+            &repo,
+            "apr-summary-missing-events",
+            ApprovalRequestStatus::Pending,
+            ApprovalRequestStatus::Executed,
+            Some("approval request executed without persisted execution events"),
         );
 
         repo.append_event(crate::session::repository::NewSessionEvent {
@@ -2002,18 +2184,36 @@ mod tests {
         assert_eq!(summary["counts_by_status"]["not_started"], 1);
         assert_eq!(summary["counts_by_status"]["in_progress"], 1);
         assert_eq!(summary["counts_by_status"]["complete"], 2);
-        assert_eq!(summary["counts_by_status"]["incomplete"], 1);
+        assert_eq!(summary["counts_by_status"]["incomplete"], 2);
+        assert_eq!(
+            summary["incomplete_gap_counts"]["execution_events_missing"],
+            1
+        );
         assert_eq!(
             summary["incomplete_gap_counts"]["replay_outcome_missing"],
             1
         );
-        assert_eq!(summary["attention_summary"]["needs_attention_count"], 2);
+        assert_eq!(summary["attention_summary"]["needs_attention_count"], 3);
         assert_eq!(
             summary["attention_summary"]["counts_by_reason"]["integrity_gap"],
-            1
+            2
         );
         assert_eq!(
             summary["attention_summary"]["counts_by_reason"]["execution_failed"],
+            1
+        );
+        assert_eq!(
+            summary["attention_summary"]["recommended_action_counts"]
+                ["inspect_execution_event_stream"],
+            1
+        );
+        assert_eq!(
+            summary["attention_summary"]["recommended_action_counts"]["inspect_replay_persistence"],
+            1
+        );
+        assert_eq!(
+            summary["attention_summary"]["recommended_action_counts"]
+                ["inspect_tool_execution_failure"],
             1
         );
     }
@@ -2041,6 +2241,32 @@ mod tests {
         assert!(
             error.contains("approval_requests_list_invalid_request: unknown attention_reason"),
             "expected attention_reason validation error, got: {error}"
+        );
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn approval_request_tool_query_list_rejects_unknown_recommended_action() {
+        let config = isolated_memory_config("approval-query-list-invalid-recommended-action");
+        let repo = SessionRepository::new(&config).expect("repository");
+        seed_session(&repo, "root-session", SessionKind::Root, None);
+
+        let error = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "recommended_action": "broken",
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect_err("unknown recommended_action should be rejected");
+
+        assert!(
+            error.contains("approval_requests_list_invalid_request: unknown recommended_action"),
+            "expected recommended_action validation error, got: {error}"
         );
     }
 
@@ -2134,6 +2360,10 @@ mod tests {
             request["execution_integrity"]["attention_reason"],
             Value::Null
         );
+        assert_eq!(
+            request["execution_integrity"]["recommended_action"],
+            Value::Null
+        );
     }
 
     #[cfg(feature = "memory-sqlite")]
@@ -2206,11 +2436,59 @@ mod tests {
         assert_eq!(integrity["execution_error"], Value::Null);
         assert_eq!(integrity["needs_attention"], true);
         assert_eq!(integrity["attention_reason"], "integrity_gap");
+        assert_eq!(
+            integrity["recommended_action"],
+            "inspect_replay_persistence"
+        );
         assert!(
             integrity["integrity_error"]
                 .as_str()
                 .is_some_and(|error| error.contains("persist assistant turn via kernel failed")),
             "expected replay outcome persistence integrity error, got: {integrity}"
+        );
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn approval_request_tool_query_status_recommends_event_stream_investigation_for_missing_execution_events(
+    ) {
+        let config = isolated_memory_config("approval-query-status-missing-execution-events");
+        let repo = SessionRepository::new(&config).expect("repository");
+        seed_session(&repo, "root-session", SessionKind::Root, None);
+        seed_request(
+            &repo,
+            "apr-visible-missing-events",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+        );
+        transition_request_status(
+            &repo,
+            "apr-visible-missing-events",
+            ApprovalRequestStatus::Pending,
+            ApprovalRequestStatus::Executed,
+            Some("approval request executed without persisted execution events"),
+        );
+
+        let outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_request_status".to_owned(),
+                payload: json!({
+                    "approval_request_id": "apr-visible-missing-events",
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_request_status outcome");
+
+        let integrity = &outcome.payload["approval_request"]["execution_integrity"];
+        assert_eq!(integrity["status"], "incomplete");
+        assert_eq!(integrity["gap"], "execution_events_missing");
+        assert_eq!(
+            integrity["recommended_action"],
+            "inspect_execution_event_stream"
         );
     }
 
@@ -2274,6 +2552,10 @@ mod tests {
         );
         assert_eq!(integrity["needs_attention"], true);
         assert_eq!(integrity["attention_reason"], "execution_failed");
+        assert_eq!(
+            integrity["recommended_action"],
+            "inspect_tool_execution_failure"
+        );
     }
 
     #[cfg(feature = "memory-sqlite")]
