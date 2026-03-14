@@ -1189,9 +1189,14 @@ model = "deepseek-chat"
     );
     assert_eq!(imported.provider.model, "deepseek-chat");
     assert_eq!(
-        imported.provider.api_key_env.as_deref(),
-        Some("DEEPSEEK_API_KEY"),
-        "source-path-selected provider should retain its provider-specific credential binding"
+        imported.provider.api_key.as_deref(),
+        Some("${DEEPSEEK_API_KEY}"),
+        "source-path-selected provider should retain its provider-specific credential binding in canonical inline-env form"
+    );
+    assert_eq!(
+        imported.provider.authorization_header().as_deref(),
+        Some("Bearer deepseek-test-key"),
+        "source-path-selected provider should still resolve the imported credential binding at runtime"
     );
 }
 
@@ -1292,8 +1297,13 @@ requires_openai_auth = true
         mvp::config::ProviderWireApi::Responses
     );
     assert_eq!(
-        imported.provider.api_key_env.as_deref(),
-        Some("OPENAI_API_KEY")
+        imported.provider.api_key.as_deref(),
+        Some("${OPENAI_API_KEY}"),
+        "codex import should persist OpenAI auth in canonical inline-env form"
+    );
+    assert!(
+        imported.provider.api_key_env.is_none(),
+        "codex import should not keep the legacy api_key_env pointer once the canonical inline-env reference is written"
     );
 
     let models = mvp::provider::fetch_available_models(&imported)
@@ -1662,6 +1672,60 @@ fn import_cli_provider_selection_accepts_manual_choice_for_unresolved_recommende
 }
 
 #[test]
+fn import_cli_preview_json_reports_provider_profiles_and_active_provider() {
+    let payload = crate::import_cli::render_import_preview_json(&[sample_import_candidate()])
+        .expect("preview json should serialize");
+
+    assert!(
+        payload.contains("\"provider_profiles\""),
+        "preview json should expose retained provider profiles: {payload}"
+    );
+    assert!(
+        payload.contains("\"active_provider\""),
+        "preview json should expose the active provider candidate: {payload}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn import_cli_apply_supplements_existing_provider_profiles_without_replacing_active_provider()
+{
+    let temp_root = unique_temp_dir("provider-profile-supplement");
+    std::fs::create_dir_all(&temp_root).expect("create temp dir");
+    let output_path = temp_root.join("config.toml");
+
+    let mut base = mvp::config::LoongClawConfig::default();
+    base.provider.kind = mvp::config::ProviderKind::Openai;
+    base.provider.model = "gpt-5".to_owned();
+    base.provider.api_key_env = Some("OPENAI_API_KEY".to_owned());
+    mvp::config::write(Some(output_path.to_string_lossy().as_ref()), &base, true)
+        .expect("write base config");
+
+    let candidate = import_candidate_with_provider(
+        crate::migration::types::ImportSourceKind::Environment,
+        "your current environment",
+        mvp::config::ProviderKind::Deepseek,
+        "deepseek-chat",
+        "DEEPSEEK_API_KEY",
+    );
+
+    crate::import_cli::apply_import_candidate(
+        &output_path,
+        true,
+        std::slice::from_ref(&candidate),
+        &candidate,
+        None,
+    )
+    .expect("provider supplement import should apply");
+
+    let (_, imported) = mvp::config::load(Some(output_path.to_string_lossy().as_ref()))
+        .expect("load imported config");
+    assert_eq!(imported.active_provider_id(), Some("openai"));
+    assert_eq!(imported.provider.kind, mvp::config::ProviderKind::Openai);
+    assert!(imported.providers.contains_key("openai"));
+    assert!(imported.providers.contains_key("deepseek"));
+}
+
+#[test]
 fn import_cli_apply_summary_surfaces_transport_summary() {
     let mut candidate = sample_import_candidate();
     candidate.config.provider.kind = mvp::config::ProviderKind::Deepseek;
@@ -1682,5 +1746,52 @@ fn import_cli_apply_summary_surfaces_transport_summary() {
             .iter()
             .any(|line| { line == "- transport: responses compatibility mode with chat fallback" }),
         "import apply summary should make the resolved provider transport explicit: {lines:#?}"
+    );
+}
+
+#[test]
+fn import_cli_apply_summary_reports_active_provider_and_saved_profiles() {
+    let mut candidate = sample_import_candidate();
+    candidate.config.provider.kind = mvp::config::ProviderKind::Deepseek;
+    candidate.config.provider.model = "deepseek-chat".to_owned();
+
+    let mut resolved = mvp::config::LoongClawConfig::default();
+    resolved.provider.kind = mvp::config::ProviderKind::Openai;
+    resolved.provider.model = "gpt-5".to_owned();
+    resolved.active_provider = Some("openai".to_owned());
+    resolved.providers.insert(
+        "openai".to_owned(),
+        mvp::config::ProviderProfileConfig::from_provider(resolved.provider.clone()),
+    );
+    resolved.providers.insert(
+        "deepseek".to_owned(),
+        mvp::config::ProviderProfileConfig::from_provider(mvp::config::ProviderConfig {
+            kind: mvp::config::ProviderKind::Deepseek,
+            model: "deepseek-chat".to_owned(),
+            api_key_env: Some("DEEPSEEK_API_KEY".to_owned()),
+            ..mvp::config::ProviderConfig::default()
+        }),
+    );
+
+    let lines = crate::import_cli::render_import_apply_summary_lines_for_width(
+        std::path::Path::new("/tmp/loongclaw-config.toml"),
+        &candidate,
+        &[crate::migration::types::SetupDomainKind::Provider],
+        &resolved,
+        true,
+        90,
+    );
+
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("- active provider: OpenAI")),
+        "import apply summary should tell the user which provider remains active after supplementing: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("- saved provider profiles: openai, deepseek")),
+        "import apply summary should show retained provider profiles after supplementing: {lines:#?}"
     );
 }

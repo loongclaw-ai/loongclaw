@@ -222,7 +222,7 @@ impl GuidedOnboardStep {
         match self {
             GuidedOnboardStep::Provider => "provider",
             GuidedOnboardStep::Model => "model",
-            GuidedOnboardStep::CredentialEnv => "credential env",
+            GuidedOnboardStep::CredentialEnv => "credential source",
             GuidedOnboardStep::SystemPrompt => "system prompt",
             GuidedOnboardStep::Review => "review",
         }
@@ -364,6 +364,7 @@ pub(crate) struct OnboardingSuccessSummary {
     pub(crate) config_path: String,
     pub(crate) config_status: Option<String>,
     pub(crate) provider: String,
+    pub(crate) saved_provider_profiles: Vec<String>,
     pub(crate) model: String,
     pub(crate) transport: String,
     pub(crate) credential: Option<OnboardingCredentialSummary>,
@@ -1062,6 +1063,10 @@ fn normalize_provider_credential_env_name(raw: &str) -> Option<String> {
         return None;
     }
     Some(trimmed.to_owned())
+}
+
+fn render_provider_credential_source_value(raw: Option<&str>) -> Option<String> {
+    normalize_provider_credential_env_name(raw?).map(|env_name| format!("${{{env_name}}}"))
 }
 
 pub(crate) fn preferred_api_key_env_default(config: &mvp::config::LoongClawConfig) -> String {
@@ -2191,7 +2196,7 @@ fn render_onboard_review_lines_with_guidance_and_style(
             width,
         ));
     }
-    lines.extend(render_onboard_review_digest_lines(config));
+    lines.extend(render_onboard_review_digest_lines(config, width));
     let review_candidate = build_onboard_review_candidate_with_selected_context(
         config,
         workspace_guidance,
@@ -2254,8 +2259,8 @@ fn build_onboarding_success_summary_with_memory(
         import_source: import_source.map(str::to_owned),
         config_path,
         config_status: config_status.map(str::to_owned),
-        provider: crate::provider_presentation::guided_provider_label(config.provider.kind)
-            .to_owned(),
+        provider: crate::provider_presentation::active_provider_label(config),
+        saved_provider_profiles: crate::provider_presentation::saved_provider_profile_ids(config),
         model: config.provider.model.clone(),
         transport: config.provider.transport_readiness().summary,
         credential: summarize_provider_credential(&config.provider),
@@ -2335,11 +2340,14 @@ fn render_onboarding_success_summary_with_width_and_style(
             width,
         ));
     }
-    lines.extend(mvp::presentation::render_wrapped_text_line(
-        "- provider: ",
-        &summary.provider,
-        width,
-    ));
+    lines.extend(
+        crate::provider_presentation::render_provider_profile_state_lines_from_parts(
+            &summary.provider,
+            &summary.saved_provider_profiles,
+            width,
+            Some("- provider: "),
+        ),
+    );
     lines.extend(mvp::presentation::render_wrapped_text_line(
         "- model: ",
         &summary.model,
@@ -2526,28 +2534,32 @@ fn render_api_key_env_selection_default_hint_line(
     suggested_env: &str,
     prompt_default: &str,
 ) -> String {
-    let prompt_default = prompt_default.trim();
-    let suggested_env = suggested_env.trim();
+    let prompt_default = render_provider_credential_source_value(Some(prompt_default))
+        .unwrap_or_else(|| prompt_default.trim().to_owned());
+    let suggested_env = render_provider_credential_source_value(Some(suggested_env))
+        .unwrap_or_else(|| suggested_env.trim().to_owned());
     let current_env = config
         .provider
         .api_key_env
         .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
+        .and_then(|value| render_provider_credential_source_value(Some(value)));
 
     if prompt_default.is_empty() {
         return render_default_input_hint_line("leave this blank");
     }
 
-    if current_env.is_some_and(|current_env| current_env == prompt_default) {
-        return render_default_input_hint_line("keep current env");
+    if current_env
+        .as_deref()
+        .is_some_and(|current_env| current_env == prompt_default)
+    {
+        return render_default_input_hint_line("keep current source");
     }
 
     if !suggested_env.is_empty() && prompt_default == suggested_env {
-        return render_default_input_hint_line(format!("use suggested env: {prompt_default}"));
+        return render_default_input_hint_line(format!("use suggested source: {prompt_default}"));
     }
 
-    render_default_input_hint_line(format!("use prefilled env: {prompt_default}"))
+    render_default_input_hint_line(format!("use prefilled source: {prompt_default}"))
 }
 
 fn render_system_prompt_selection_default_hint_line(
@@ -2678,7 +2690,7 @@ fn render_onboard_shortcut_screen_lines_with_style(
             onboard_starting_point_label(None, source)
         ));
     }
-    context_lines.extend(render_onboard_review_digest_lines(config));
+    context_lines.extend(render_onboard_review_digest_lines(config, width));
     context_lines.push(shortcut_kind.summary_line().to_owned());
 
     render_onboard_choice_screen(
@@ -3474,13 +3486,14 @@ fn render_api_key_env_selection_screen_lines_with_style(
         .provider
         .api_key_env
         .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .and_then(|value| render_provider_credential_source_value(Some(value)))
     {
-        context_lines.push(format!("- current env: {current_env}"));
+        context_lines.push(format!("- current source: {current_env}"));
     }
-    if !default_api_key_env.trim().is_empty() {
-        context_lines.push(format!("- suggested env: {}", default_api_key_env.trim()));
+    if let Some(suggested_source) =
+        render_provider_credential_source_value(Some(default_api_key_env))
+    {
+        context_lines.push(format!("- suggested source: {suggested_source}"));
     }
 
     let mut hint_lines = vec![render_api_key_env_selection_default_hint_line(
@@ -3494,7 +3507,7 @@ fn render_api_key_env_selection_screen_lines_with_style(
 
     render_onboard_input_screen(
         width,
-        "choose credential env",
+        "choose credential source",
         GuidedOnboardStep::CredentialEnv,
         context_lines,
         hint_lines,
@@ -3602,18 +3615,25 @@ fn render_existing_config_write_screen_lines_with_style(
     )
 }
 
-fn render_onboard_review_digest_lines(config: &mvp::config::LoongClawConfig) -> Vec<String> {
-    let mut lines = vec![
-        format!(
-            "- provider: {}",
-            crate::provider_presentation::guided_provider_label(config.provider.kind)
-        ),
-        format!("- model: {}", config.provider.model),
-        format!(
-            "- transport: {}",
-            config.provider.transport_readiness().summary
-        ),
-    ];
+fn render_onboard_review_digest_lines(
+    config: &mvp::config::LoongClawConfig,
+    width: usize,
+) -> Vec<String> {
+    let mut lines = crate::provider_presentation::render_provider_profile_state_lines(
+        config,
+        width,
+        Some("- provider: "),
+    );
+    lines.extend(mvp::presentation::render_wrapped_text_line(
+        "- model: ",
+        &config.provider.model,
+        width,
+    ));
+    lines.extend(mvp::presentation::render_wrapped_text_line(
+        "- transport: ",
+        &config.provider.transport_readiness().summary,
+        width,
+    ));
 
     if let Some(credential_line) = render_onboard_review_credential_line(&config.provider) {
         lines.push(credential_line);
@@ -3624,7 +3644,15 @@ fn render_onboard_review_digest_lines(config: &mvp::config::LoongClawConfig) -> 
         .filter(|channel| channel != "cli")
         .collect::<Vec<_>>();
     if !enabled_channels.is_empty() {
-        lines.push(format!("- channels: {}", enabled_channels.join(", ")));
+        let channels = enabled_channels
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        lines.extend(mvp::presentation::render_wrapped_csv_line(
+            "- channels: ",
+            &channels,
+            width,
+        ));
     }
 
     lines
@@ -3652,10 +3680,10 @@ fn summarize_provider_credential(
     if let Some(oauth_env) = provider
         .oauth_access_token_env
         .as_deref()
-        .and_then(normalize_provider_credential_env_name)
+        .and_then(|value| render_provider_credential_source_value(Some(value)))
     {
         return Some(OnboardingCredentialSummary {
-            label: "oauth env",
+            label: "credential source",
             value: oauth_env,
         });
     }
@@ -3673,15 +3701,15 @@ fn summarize_provider_credential(
     provider
         .api_key_env
         .as_deref()
-        .and_then(normalize_provider_credential_env_name)
+        .and_then(|value| render_provider_credential_source_value(Some(value)))
         .or_else(|| {
             provider
                 .kind
                 .default_api_key_env()
-                .and_then(normalize_provider_credential_env_name)
+                .and_then(|value| render_provider_credential_source_value(Some(value)))
         })
         .map(|api_key_env| OnboardingCredentialSummary {
-            label: "credential env",
+            label: "credential source",
             value: api_key_env,
         })
 }

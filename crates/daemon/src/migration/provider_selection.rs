@@ -6,11 +6,13 @@ use super::{ImportCandidate, ImportSourceKind, PreviewStatus, SetupDomainKind};
 pub(crate) struct ProviderSelectionPlan {
     pub(crate) imported_choices: Vec<ImportedProviderChoice>,
     pub(crate) default_kind: Option<mvp::config::ProviderKind>,
+    pub(crate) default_profile_id: Option<String>,
     pub(crate) requires_explicit_choice: bool,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ImportedProviderChoice {
+    pub(crate) profile_id: String,
     pub(crate) kind: mvp::config::ProviderKind,
     pub(crate) source: String,
     pub(crate) summary: String,
@@ -46,6 +48,7 @@ pub(crate) fn build_provider_selection_plan_for_candidate(
         };
 
         let incoming = ImportedProviderChoice {
+            profile_id: candidate.config.provider.inferred_profile_id(),
             kind: candidate.config.provider.kind,
             source: candidate.source.clone(),
             summary: provider_domain.summary.clone(),
@@ -76,11 +79,18 @@ pub(crate) fn build_provider_selection_plan_for_candidate(
     if let Some(kind) = default_kind {
         imported_choices.sort_by_key(|choice| choice.kind != kind);
     }
+    let default_profile_id = default_kind.and_then(|kind| {
+        imported_choices
+            .iter()
+            .find(|choice| choice.kind == kind)
+            .map(|choice| choice.profile_id.clone())
+    });
 
     ProviderSelectionPlan {
         requires_explicit_choice: default_kind.is_none() && imported_choices.len() > 1,
         imported_choices,
         default_kind,
+        default_profile_id,
     }
 }
 
@@ -104,6 +114,34 @@ pub(crate) fn resolve_provider_config_from_selection(
 
 fn fresh_provider_config_for_kind(kind: mvp::config::ProviderKind) -> mvp::config::ProviderConfig {
     mvp::config::ProviderConfig::fresh_for_kind(kind)
+}
+
+pub(crate) fn resolve_choice_by_selector<'a>(
+    plan: &'a ProviderSelectionPlan,
+    selector: &str,
+) -> Option<&'a ImportedProviderChoice> {
+    let normalized = selector.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+    if let Some(choice) = plan
+        .imported_choices
+        .iter()
+        .find(|choice| choice.profile_id.eq_ignore_ascii_case(&normalized))
+    {
+        return Some(choice);
+    }
+
+    let kind = mvp::config::ProviderKind::parse(&normalized)?;
+    let mut matches = plan
+        .imported_choices
+        .iter()
+        .filter(|choice| choice.kind == kind);
+    let first = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(first)
 }
 
 fn provider_choice_status_rank(status: PreviewStatus) -> u8 {

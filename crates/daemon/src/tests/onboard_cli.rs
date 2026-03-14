@@ -1627,6 +1627,7 @@ fn onboard_provider_selection_screen_shows_default_enter_choice_when_provider_is
     let plan = crate::migration::ProviderSelectionPlan {
         imported_choices: vec![
             crate::migration::ImportedProviderChoice {
+                profile_id: "openai".to_owned(),
                 kind: mvp::config::ProviderKind::Openai,
                 source: "Codex config at ~/.codex/config.toml".to_owned(),
                 summary: "OpenAI · openai/gpt-5.1-codex · credentials resolved".to_owned(),
@@ -1638,6 +1639,7 @@ fn onboard_provider_selection_screen_shows_default_enter_choice_when_provider_is
                 },
             },
             crate::migration::ImportedProviderChoice {
+                profile_id: "deepseek".to_owned(),
                 kind: mvp::config::ProviderKind::Deepseek,
                 source: "your current environment".to_owned(),
                 summary: "DeepSeek · deepseek-chat · credentials resolved".to_owned(),
@@ -1650,6 +1652,7 @@ fn onboard_provider_selection_screen_shows_default_enter_choice_when_provider_is
             },
         ],
         default_kind: Some(mvp::config::ProviderKind::Openai),
+        default_profile_id: Some("openai".to_owned()),
         requires_explicit_choice: false,
     };
 
@@ -1668,6 +1671,7 @@ fn onboard_provider_selection_screen_wraps_long_choice_details() {
     let plan = crate::migration::ProviderSelectionPlan {
         imported_choices: vec![
             crate::migration::ImportedProviderChoice {
+                profile_id: "openai".to_owned(),
                 kind: mvp::config::ProviderKind::Openai,
                 source: "Codex config at ~/.codex/agents/loongclaw/config.toml".to_owned(),
                 summary: "OpenAI · openai/gpt-5.1-codex · credentials resolved".to_owned(),
@@ -1679,6 +1683,7 @@ fn onboard_provider_selection_screen_wraps_long_choice_details() {
                 },
             },
             crate::migration::ImportedProviderChoice {
+                profile_id: "deepseek".to_owned(),
                 kind: mvp::config::ProviderKind::Deepseek,
                 source: "your current environment".to_owned(),
                 summary: "DeepSeek · deepseek-chat · credentials resolved".to_owned(),
@@ -1691,6 +1696,7 @@ fn onboard_provider_selection_screen_wraps_long_choice_details() {
             },
         ],
         default_kind: None,
+        default_profile_id: None,
         requires_explicit_choice: true,
     };
 
@@ -1720,6 +1726,7 @@ fn onboard_provider_selection_screen_wraps_long_choice_details() {
 fn onboard_provider_selection_screen_surfaces_responses_transport_for_choices() {
     let plan = crate::migration::ProviderSelectionPlan {
         imported_choices: vec![crate::migration::ImportedProviderChoice {
+            profile_id: "deepseek".to_owned(),
             kind: mvp::config::ProviderKind::Deepseek,
             source: "Codex config at ~/.codex/config.toml".to_owned(),
             summary: "DeepSeek · deepseek-chat · credentials resolved".to_owned(),
@@ -1732,6 +1739,7 @@ fn onboard_provider_selection_screen_surfaces_responses_transport_for_choices() 
             },
         }],
         default_kind: Some(mvp::config::ProviderKind::Deepseek),
+        default_profile_id: Some("deepseek".to_owned()),
         requires_explicit_choice: false,
     };
 
@@ -1930,6 +1938,7 @@ fn onboard_detected_setup_shortcut_is_limited_to_interactive_import_flow_with_de
     let default_provider_plan = crate::migration::ProviderSelectionPlan {
         imported_choices: Vec::new(),
         default_kind: Some(mvp::config::ProviderKind::Openai),
+        default_profile_id: Some("openai".to_owned()),
         requires_explicit_choice: false,
     };
 
@@ -1956,6 +1965,7 @@ fn onboard_detected_setup_shortcut_is_limited_to_interactive_import_flow_with_de
     let explicit_choice_plan = crate::migration::ProviderSelectionPlan {
         imported_choices: Vec::new(),
         default_kind: None,
+        default_profile_id: None,
         requires_explicit_choice: true,
     };
     assert!(
@@ -2667,13 +2677,13 @@ fn onboard_api_key_env_screen_explains_suggested_env_and_blank_behavior() {
         "credential-env screen should start with the compact LOONGCLAW step header: {lines:#?}"
     );
     assert!(
-        lines.iter().any(|line| line == "choose credential env"),
+        lines.iter().any(|line| line == "choose credential source"),
         "credential-env screen should use a focused title: {lines:#?}"
     );
     assert!(
         lines
             .iter()
-            .any(|line| line == "step 3 of 5 · credential env"),
+            .any(|line| line == "step 3 of 5 · credential source"),
         "credential-env screen should include guided progress context inside the screen: {lines:#?}"
     );
     assert!(
@@ -2683,13 +2693,13 @@ fn onboard_api_key_env_screen_explains_suggested_env_and_blank_behavior() {
     assert!(
         lines
             .iter()
-            .any(|line| line.contains("- suggested env: OPENAI_API_KEY")),
+            .any(|line| line.contains("- suggested source: ${OPENAI_API_KEY}")),
         "credential-env screen should surface the suggested env var name: {lines:#?}"
     );
     assert!(
         lines
             .iter()
-            .any(|line| line == "- press Enter to use suggested env: OPENAI_API_KEY"),
+            .any(|line| line == "- press Enter to use suggested source: ${OPENAI_API_KEY}"),
         "credential-env screen should state that Enter uses the suggested env when no current env is set: {lines:#?}"
     );
     assert!(
@@ -2716,13 +2726,13 @@ fn onboard_api_key_env_screen_shows_prefilled_env_when_enter_default_is_overridd
     assert!(
         lines
             .iter()
-            .any(|line| line == "- press Enter to use prefilled env: TEAM_OPENAI_KEY"),
+            .any(|line| line == "- press Enter to use prefilled source: ${TEAM_OPENAI_KEY}"),
         "credential-env screen should surface the actual prefilled env when it differs from both the current and suggested env: {lines:#?}"
     );
     assert!(
         lines
             .iter()
-            .all(|line| line != "- press Enter to keep current env"),
+            .all(|line| line != "- press Enter to keep current source"),
         "credential-env screen should not claim Enter keeps the current env when another env is prefilled: {lines:#?}"
     );
 }
@@ -2745,7 +2755,9 @@ fn onboard_api_key_env_screen_wraps_long_unbroken_env_names() {
         "credential-env screen should split long env tokens instead of letting them overflow narrow widths: {lines:#?}"
     );
     assert!(
-        lines.iter().any(|line| line.starts_with("- current env: ")),
+        lines
+            .iter()
+            .any(|line| line.starts_with("- current source: ")),
         "credential-env screen should keep the current-env label visible while wrapping long values: {lines:#?}"
     );
 }
@@ -2769,7 +2781,7 @@ fn onboard_api_key_env_screen_wraps_progress_line_on_narrow_width() {
         "narrow credential-env screen should keep the step label on the first wrapped line: {lines:#?}"
     );
     assert!(
-        lines.iter().any(|line| line == "credential env"),
+        lines.iter().any(|line| line == "credential source"),
         "narrow credential-env screen should continue the wrapped progress line on a second line: {lines:#?}"
     );
 }
@@ -3854,7 +3866,7 @@ fn onboard_review_lines_include_core_setup_summary_for_fresh_setup() {
     assert!(
         lines
             .iter()
-            .any(|line| line.contains("- credential env: OPENAI_API_KEY")),
+            .any(|line| line.contains("- credential source: ${OPENAI_API_KEY}")),
         "review should keep the suggested credential env visible for fresh setup flows: {lines:#?}"
     );
 }
@@ -3870,14 +3882,51 @@ fn onboard_review_lines_prefer_oauth_env_over_api_key_env_when_both_are_configur
     assert!(
         lines
             .iter()
-            .any(|line| line.contains("- oauth env: OPENAI_CODEX_OAUTH_TOKEN")),
+            .any(|line| line.contains("- credential source: ${OPENAI_CODEX_OAUTH_TOKEN}")),
         "review should reflect the higher-priority oauth credential path when both bindings exist: {lines:#?}"
     );
     assert!(
         lines
             .iter()
-            .all(|line| !line.contains("- credential env: OPENAI_API_KEY")),
+            .all(|line| !line.contains("- credential source: ${OPENAI_API_KEY}")),
         "review should not keep advertising the api key env as primary once oauth is configured: {lines:#?}"
+    );
+}
+
+#[test]
+fn onboard_review_lines_include_active_provider_and_saved_profiles_when_multiple_profiles_exist() {
+    let mut config = mvp::config::LoongClawConfig::default();
+    config.provider.kind = mvp::config::ProviderKind::Openai;
+    config.provider.model = "gpt-5".to_owned();
+    config.active_provider = Some("openai".to_owned());
+    config.providers.insert(
+        "openai".to_owned(),
+        mvp::config::ProviderProfileConfig::from_provider(config.provider.clone()),
+    );
+    config.providers.insert(
+        "deepseek".to_owned(),
+        mvp::config::ProviderProfileConfig::from_provider(mvp::config::ProviderConfig {
+            kind: mvp::config::ProviderKind::Deepseek,
+            model: "deepseek-chat".to_owned(),
+            api_key_env: Some("DEEPSEEK_API_KEY".to_owned()),
+            ..mvp::config::ProviderConfig::default()
+        }),
+    );
+
+    let lines =
+        crate::onboard_cli::render_onboard_review_lines_with_guidance(&config, None, &[], 80);
+
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("- active provider: OpenAI")),
+        "review should make the active provider explicit once multiple provider profiles exist: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("- saved provider profiles: openai, deepseek")),
+        "review should summarize retained provider profiles instead of implying only one survives: {lines:#?}"
     );
 }
 
@@ -4114,13 +4163,13 @@ fn onboarding_success_summary_prefers_oauth_env_over_api_key_env_when_both_are_c
     assert!(
         lines
             .iter()
-            .any(|line| line == "- oauth env: OPENAI_CODEX_OAUTH_TOKEN"),
+            .any(|line| line == "- credential source: ${OPENAI_CODEX_OAUTH_TOKEN}"),
         "success summary should surface the primary oauth binding when oauth and api key envs both exist: {lines:#?}"
     );
     assert!(
         lines
             .iter()
-            .all(|line| line != "- credential env: OPENAI_API_KEY"),
+            .all(|line| line != "- credential source: ${OPENAI_API_KEY}"),
         "success summary should not keep the api key env as the primary credential line once oauth is configured: {lines:#?}"
     );
 }
@@ -4132,11 +4181,12 @@ fn onboarding_success_summary_reports_existing_config_kept() {
         config_path: "/tmp/loongclaw-config.toml".to_owned(),
         config_status: Some("existing config kept; no changes were needed".to_owned()),
         provider: "openai".to_owned(),
+        saved_provider_profiles: Vec::new(),
         model: "auto".to_owned(),
         transport: "chat_completions compatibility mode".to_owned(),
         credential: Some(crate::onboard_cli::OnboardingCredentialSummary {
-            label: "credential env",
-            value: "OPENAI_API_KEY".to_owned(),
+            label: "credential source",
+            value: "${OPENAI_API_KEY}".to_owned(),
         }),
         memory_path: None,
         channels: vec!["cli".to_owned()],
@@ -4159,17 +4209,54 @@ fn onboarding_success_summary_reports_existing_config_kept() {
 }
 
 #[test]
+fn onboarding_success_summary_reports_active_provider_and_saved_profiles() {
+    let mut config = mvp::config::LoongClawConfig::default();
+    config.provider.kind = mvp::config::ProviderKind::Openai;
+    config.provider.model = "gpt-5".to_owned();
+    config.active_provider = Some("openai".to_owned());
+    config.providers.insert(
+        "openai".to_owned(),
+        mvp::config::ProviderProfileConfig::from_provider(config.provider.clone()),
+    );
+    config.providers.insert(
+        "deepseek".to_owned(),
+        mvp::config::ProviderProfileConfig::from_provider(mvp::config::ProviderConfig {
+            kind: mvp::config::ProviderKind::Deepseek,
+            model: "deepseek-chat".to_owned(),
+            api_key_env: Some("DEEPSEEK_API_KEY".to_owned()),
+            ..mvp::config::ProviderConfig::default()
+        }),
+    );
+
+    let path = PathBuf::from("/tmp/loongclaw-config.toml");
+    let summary = crate::onboard_cli::build_onboarding_success_summary(&path, &config, None);
+    let lines = crate::onboard_cli::render_onboarding_success_summary_with_width(&summary, 80);
+
+    assert!(
+        lines.iter().any(|line| line == "- active provider: OpenAI"),
+        "success summary should tell the user which provider remains active after saving multiple profiles: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "- saved provider profiles: openai, deepseek"),
+        "success summary should summarize retained provider profiles once onboarding saves more than one: {lines:#?}"
+    );
+}
+
+#[test]
 fn onboarding_success_summary_groups_domain_outcomes_by_decision() {
     let summary = crate::onboard_cli::OnboardingSuccessSummary {
         import_source: Some("suggested starting point".to_owned()),
         config_path: "/tmp/loongclaw-config.toml".to_owned(),
         config_status: None,
         provider: "openai".to_owned(),
+        saved_provider_profiles: Vec::new(),
         model: "openai/gpt-5.1-codex".to_owned(),
         transport: "chat_completions compatibility mode".to_owned(),
         credential: Some(crate::onboard_cli::OnboardingCredentialSummary {
-            label: "credential env",
-            value: "OPENAI_API_KEY".to_owned(),
+            label: "credential source",
+            value: "${OPENAI_API_KEY}".to_owned(),
         }),
         memory_path: None,
         channels: vec!["cli".to_owned()],
@@ -4223,11 +4310,12 @@ fn onboarding_success_summary_wraps_domain_outcomes_for_narrow_width() {
         config_path: "/tmp/loongclaw-config.toml".to_owned(),
         config_status: None,
         provider: "openai".to_owned(),
+        saved_provider_profiles: Vec::new(),
         model: "openai/gpt-5.1-codex".to_owned(),
         transport: "chat_completions compatibility mode".to_owned(),
         credential: Some(crate::onboard_cli::OnboardingCredentialSummary {
-            label: "credential env",
-            value: "OPENAI_API_KEY".to_owned(),
+            label: "credential source",
+            value: "${OPENAI_API_KEY}".to_owned(),
         }),
         memory_path: None,
         channels: vec!["cli".to_owned()],

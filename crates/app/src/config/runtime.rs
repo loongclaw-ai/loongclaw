@@ -12,7 +12,7 @@ use crate::CliResult;
 use super::{
     channels::{CliChannelConfig, FeishuChannelConfig, TelegramChannelConfig},
     conversation::ConversationConfig,
-    provider::ProviderConfig,
+    provider::{ProviderConfig, ProviderProfileConfig},
     shared::{
         ConfigValidationIssue, ConfigValidationLocale, DEFAULT_CONFIG_FILE,
         default_loongclaw_home as shared_default_loongclaw_home, expand_path,
@@ -57,10 +57,16 @@ impl ConfigValidationDiagnostic {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LoongClawConfig {
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub provider: ProviderConfig,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub providers: BTreeMap<String, ProviderProfileConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_provider: Option<String>,
     #[serde(default)]
     pub cli: CliChannelConfig,
     #[serde(default)]
@@ -77,6 +83,25 @@ pub struct LoongClawConfig {
     pub memory: MemoryConfig,
     #[serde(default)]
     pub acp: AcpConfig,
+}
+
+impl Default for LoongClawConfig {
+    fn default() -> Self {
+        Self {
+            provider: ProviderConfig::default(),
+            providers: BTreeMap::new(),
+            active_provider: None,
+            last_provider: None,
+            cli: CliChannelConfig::default(),
+            telegram: TelegramChannelConfig::default(),
+            feishu: FeishuChannelConfig::default(),
+            conversation: ConversationConfig::default(),
+            tools: ToolConfig::default(),
+            external_skills: ExternalSkillsConfig::default(),
+            memory: MemoryConfig::default(),
+            acp: AcpConfig::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -502,6 +527,33 @@ fn normalize_optional_string(raw: Option<&str>) -> Option<String> {
         .map(|value| value.to_owned())
 }
 
+fn normalize_provider_profile_id(raw: &str) -> Option<String> {
+    normalize_dispatch_channel_id(raw)
+}
+
+fn canonical_env_reference(env_name: &str) -> Option<String> {
+    let trimmed = env_name.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(format!("${{{trimmed}}}"))
+}
+
+fn canonicalize_provider_profile_for_encoding(profile: &mut ProviderProfileConfig) {
+    if profile.provider.api_key.is_none()
+        && let Some(api_key_env) = profile.provider.api_key_env.as_deref()
+    {
+        profile.provider.api_key = canonical_env_reference(api_key_env);
+    }
+    if profile.provider.oauth_access_token.is_none()
+        && let Some(oauth_env) = profile.provider.oauth_access_token_env.as_deref()
+    {
+        profile.provider.oauth_access_token = canonical_env_reference(oauth_env);
+    }
+    profile.provider.api_key_env = None;
+    profile.provider.oauth_access_token_env = None;
+}
+
 fn normalize_acp_agent_id(raw: &str) -> Option<String> {
     let normalized = raw.trim().to_ascii_lowercase();
     let mut chars = normalized.chars();
@@ -571,7 +623,17 @@ pub(crate) fn normalize_dispatch_account_id(raw: &str) -> Option<String> {
 impl LoongClawConfig {
     fn collect_validation_issues(&self) -> Vec<ConfigValidationIssue> {
         let mut issues = Vec::new();
-        issues.extend(self.provider.validate());
+        if self.providers.is_empty() {
+            issues.extend(self.provider.validate());
+        } else {
+            for (profile_id, profile) in &self.providers {
+                issues.extend(
+                    profile
+                        .provider
+                        .validate_with_field_prefix(format!("providers.{profile_id}").as_str()),
+                );
+            }
+        }
         issues.extend(super::channels::collect_channel_validation_issues(self));
         issues.extend(self.memory.validate());
         issues.extend(self.tools.validate());
@@ -606,6 +668,122 @@ impl LoongClawConfig {
 
     pub fn enabled_service_channel_ids(&self) -> Vec<String> {
         super::channels::enabled_service_channel_ids(self)
+    }
+
+    pub fn active_provider_id(&self) -> Option<&str> {
+        if let Some(active_provider) = self.active_provider.as_deref() {
+            let trimmed = active_provider.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed);
+            }
+        }
+        if self.providers.is_empty() {
+            return Some(self.provider.kind.profile().id);
+        }
+        self.providers.keys().next().map(String::as_str)
+    }
+
+    pub fn last_provider_id(&self) -> Option<&str> {
+        self.last_provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+
+    pub fn set_active_provider_profile(
+        &mut self,
+        profile_id: impl Into<String>,
+        profile: ProviderProfileConfig,
+    ) {
+        let profile_id = normalize_provider_profile_id(profile_id.into().as_str())
+            .unwrap_or_else(|| profile.provider.inferred_profile_id());
+        self.provider = profile.provider.clone();
+        self.providers.insert(profile_id.clone(), profile);
+        self.active_provider = Some(profile_id);
+    }
+
+    fn normalize_provider_profiles(&mut self) {
+        let normalized_last_provider = self
+            .last_provider
+            .as_deref()
+            .and_then(normalize_provider_profile_id);
+
+        if self.providers.is_empty() {
+            let active_provider = self
+                .active_provider
+                .as_deref()
+                .and_then(normalize_provider_profile_id)
+                .unwrap_or_else(|| self.provider.inferred_profile_id());
+            let mut active_profile = ProviderProfileConfig::from_provider(self.provider.clone());
+            active_profile.default_for_kind = true;
+            self.providers
+                .insert(active_provider.clone(), active_profile);
+            self.active_provider = Some(active_provider);
+            self.last_provider = normalized_last_provider;
+            return;
+        }
+
+        let mut normalized_profiles = BTreeMap::new();
+        for (profile_id, profile) in &self.providers {
+            let normalized_profile_id = normalize_provider_profile_id(profile_id.as_str())
+                .unwrap_or_else(|| profile.provider.inferred_profile_id());
+            normalized_profiles.insert(normalized_profile_id, profile.clone());
+        }
+        self.providers = normalized_profiles;
+
+        let active_provider = self
+            .active_provider
+            .as_deref()
+            .and_then(normalize_provider_profile_id)
+            .filter(|profile_id| self.providers.contains_key(profile_id))
+            .or_else(|| {
+                let legacy_profile_id = self.provider.inferred_profile_id();
+                self.providers
+                    .contains_key(&legacy_profile_id)
+                    .then_some(legacy_profile_id)
+            })
+            .or_else(|| self.providers.keys().next().cloned())
+            .expect("provider profile normalization requires at least one provider");
+        self.active_provider = Some(active_provider.clone());
+        self.last_provider =
+            normalized_last_provider.filter(|profile_id| self.providers.contains_key(profile_id));
+        if let Some(active_profile) = self.providers.get(&active_provider) {
+            self.provider = active_profile.provider.clone();
+        }
+    }
+
+    fn clone_for_encoding(&self) -> Self {
+        let mut cloned = self.clone();
+        let active_provider = cloned
+            .active_provider
+            .as_deref()
+            .and_then(normalize_provider_profile_id)
+            .unwrap_or_else(|| cloned.provider.inferred_profile_id());
+        let mut active_profile = cloned
+            .providers
+            .remove(&active_provider)
+            .unwrap_or_else(|| ProviderProfileConfig::from_provider(cloned.provider.clone()));
+        active_profile.provider = cloned.provider.clone();
+        if !cloned
+            .providers
+            .values()
+            .any(|profile| profile.provider.kind == active_profile.provider.kind)
+        {
+            active_profile.default_for_kind = true;
+        }
+        canonicalize_provider_profile_for_encoding(&mut active_profile);
+        for profile in cloned.providers.values_mut() {
+            canonicalize_provider_profile_for_encoding(profile);
+        }
+        cloned
+            .providers
+            .insert(active_provider.clone(), active_profile);
+        cloned.active_provider = Some(active_provider);
+        cloned.last_provider = cloned
+            .last_provider
+            .as_deref()
+            .and_then(normalize_provider_profile_id);
+        cloned
     }
 }
 
@@ -730,8 +908,10 @@ fn parse_toml_config(raw: &str) -> CliResult<LoongClawConfig> {
 
 #[cfg(feature = "config-toml")]
 fn parse_toml_config_without_validation(raw: &str) -> CliResult<LoongClawConfig> {
-    toml::from_str::<LoongClawConfig>(raw)
-        .map_err(|error| format!("failed to parse TOML config: {error}"))
+    let mut config = toml::from_str::<LoongClawConfig>(raw)
+        .map_err(|error| format!("failed to parse TOML config: {error}"))?;
+    config.normalize_provider_profiles();
+    Ok(config)
 }
 
 #[cfg(not(feature = "config-toml"))]
@@ -746,7 +926,9 @@ fn parse_toml_config_without_validation(_raw: &str) -> CliResult<LoongClawConfig
 
 #[cfg(feature = "config-toml")]
 fn encode_toml_config(config: &LoongClawConfig) -> CliResult<String> {
-    toml::to_string_pretty(config).map_err(|error| format!("failed to encode TOML config: {error}"))
+    let encoded = config.clone_for_encoding();
+    toml::to_string_pretty(&encoded)
+        .map_err(|error| format!("failed to encode TOML config: {error}"))
 }
 
 #[cfg(not(feature = "config-toml"))]
@@ -756,8 +938,8 @@ fn encode_toml_config(_config: &LoongClawConfig) -> CliResult<String> {
 
 fn template_secret_usage_comment() -> &'static str {
     "# Secret configuration notes:\n\
-# - Preferred provider credential form: `provider.api_key = \"${PROVIDER_API_KEY}\"`.\n\
-# - `provider.api_key` also accepts direct literals and explicit env refs like `$VAR`, `env:VAR`, and `%VAR%`.\n\
+# - Preferred provider credential form: `providers.<profile_id>.api_key = \"${PROVIDER_API_KEY}\"`.\n\
+# - `providers.<profile_id>.api_key` also accepts direct literals and explicit env refs like `$VAR`, `env:VAR`, and `%VAR%`.\n\
 # - Legacy `*_env` fields stay supported for compatibility, but new configs should prefer the non-`_env` fields.\n\
 \n"
 }
@@ -765,6 +947,7 @@ fn template_secret_usage_comment() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ProviderKind;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_config_path(prefix: &str) -> PathBuf {
@@ -796,7 +979,7 @@ bot_token_env = "123456789:telegram-inline-secret-literal"
 
         let error = load(Some(config_path.to_string_lossy().as_ref()))
             .expect_err("load should fail for misplaced secret literals");
-        assert!(error.contains("provider.api_key_env"));
+        assert!(error.contains("providers.openai.api_key_env"));
         assert!(error.contains("telegram.bot_token_env"));
 
         std::fs::remove_file(&config_path).ok();
@@ -840,7 +1023,7 @@ bot_token_env = "123456789:telegram-inline-secret-literal"
             .expect("write template should succeed");
 
         let raw = std::fs::read_to_string(&config_path).expect("read template");
-        assert!(raw.contains("provider.api_key = \"${PROVIDER_API_KEY}\""));
+        assert!(raw.contains("providers.<profile_id>.api_key = \"${PROVIDER_API_KEY}\""));
         assert!(!raw.contains("provider.api_key_env = \"PROVIDER_API_KEY\""));
 
         std::fs::remove_file(&config_path).ok();
@@ -908,10 +1091,10 @@ api_key_env = "$OPENAI_API_KEY"
             "config.env_pointer.dollar_prefix"
         );
         assert_eq!(diagnostics[0].message_locale, "en");
-        assert_eq!(diagnostics[0].field_path, "provider.api_key_env");
+        assert_eq!(diagnostics[0].field_path, "providers.openai.api_key_env");
         assert_eq!(
             diagnostics[0].message_variables.get("field_path"),
-            Some(&"provider.api_key_env".to_owned())
+            Some(&"providers.openai.api_key_env".to_owned())
         );
         assert_eq!(
             diagnostics[0].message_variables.get("code"),
@@ -1146,6 +1329,32 @@ api_key_env = "{secret}"
 
     #[test]
     #[cfg(feature = "config-toml")]
+    fn load_legacy_provider_table_populates_active_provider_profile_storage() {
+        let path = unique_config_path("loongclaw-config-legacy-provider");
+        let raw = r#"
+[provider]
+kind = "deepseek"
+model = "deepseek-chat"
+api_key = "${DEEPSEEK_API_KEY}"
+"#;
+        fs::write(&path, raw).expect("write legacy config");
+
+        let (_, loaded) = load(Some(path.to_string_lossy().as_ref())).expect("config load");
+        assert_eq!(loaded.active_provider_id(), Some("deepseek"));
+        assert_eq!(loaded.providers.len(), 1);
+        let profile = loaded
+            .providers
+            .get("deepseek")
+            .expect("deepseek provider profile");
+        assert_eq!(profile.provider.kind, ProviderKind::Deepseek);
+        assert_eq!(profile.provider.model, "deepseek-chat");
+        assert_eq!(loaded.provider.kind, ProviderKind::Deepseek);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    #[cfg(feature = "config-toml")]
     fn write_default_config_omits_legacy_provider_api_key_env_field() {
         let path = unique_config_path("loongclaw-config-runtime-default");
         let path_string = path.display().to_string();
@@ -1155,6 +1364,40 @@ api_key_env = "{secret}"
 
         let raw = fs::read_to_string(&path).expect("read written config");
         assert!(!raw.contains("api_key_env = \"OPENAI_API_KEY\""));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    #[cfg(feature = "config-toml")]
+    fn write_default_config_uses_provider_profiles_and_active_provider() {
+        let path = unique_config_path("loongclaw-config-runtime-profiles");
+        let path_string = path.display().to_string();
+
+        write(Some(&path_string), &LoongClawConfig::default(), true)
+            .expect("default config write should pass");
+
+        let raw = fs::read_to_string(&path).expect("read written config");
+        assert!(raw.contains("active_provider = \"openai\""));
+        assert!(raw.contains("[providers.openai]"));
+        assert!(!raw.contains("\n[provider]\n"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    #[cfg(feature = "config-toml")]
+    fn write_canonicalizes_provider_env_pointers_to_inline_env_references() {
+        let path = unique_config_path("loongclaw-config-runtime-canonical-provider-env");
+        let path_string = path.display().to_string();
+        let mut config = LoongClawConfig::default();
+        config.provider.api_key_env = Some("OPENAI_API_KEY".to_owned());
+
+        write(Some(&path_string), &config, true).expect("config write should pass");
+
+        let raw = fs::read_to_string(&path).expect("read written config");
+        assert!(raw.contains("api_key = \"${OPENAI_API_KEY}\""));
+        assert!(!raw.contains("api_key_env = "));
 
         let _ = fs::remove_file(path);
     }

@@ -13,11 +13,7 @@ use rusqlite::Connection;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use super::super::config::{
-    CliChannelConfig, ConversationConfig, ExternalSkillsConfig, FeishuChannelConfig,
-    LoongClawConfig, MemoryConfig, MemoryProfile, MemorySystemKind, ProviderConfig,
-    TelegramChannelConfig, ToolConfig,
-};
+use super::super::config::{LoongClawConfig, MemoryProfile, MemorySystemKind, ProviderConfig};
 use super::persistence::format_provider_error_reply;
 use super::runtime::DefaultConversationRuntime;
 use super::*;
@@ -990,14 +986,7 @@ impl ConversationRuntime for FakeRuntime {
 fn test_config() -> LoongClawConfig {
     LoongClawConfig {
         provider: ProviderConfig::default(),
-        cli: CliChannelConfig::default(),
-        telegram: TelegramChannelConfig::default(),
-        feishu: FeishuChannelConfig::default(),
-        conversation: ConversationConfig::default(),
-        tools: ToolConfig::default(),
-        external_skills: ExternalSkillsConfig::default(),
-        memory: MemoryConfig::default(),
-        acp: crate::config::AcpConfig::default(),
+        ..LoongClawConfig::default()
     }
 }
 

@@ -27,7 +27,7 @@ pub(crate) use planner::{
 #[allow(unused_imports)]
 pub(crate) use provider_selection::{
     ImportedProviderChoice, ProviderSelectionPlan, build_provider_selection_plan_for_candidate,
-    resolve_provider_config_from_selection,
+    resolve_choice_by_selector, resolve_provider_config_from_selection,
 };
 #[allow(unused_imports)]
 pub(crate) use types::{

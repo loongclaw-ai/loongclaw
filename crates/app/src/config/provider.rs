@@ -376,6 +376,32 @@ pub struct ProviderConfig {
     pub reasoning_extra_body_omit_model_hints: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProviderProfileConfig {
+    #[serde(default)]
+    pub default_for_kind: bool,
+    #[serde(flatten)]
+    pub provider: ProviderConfig,
+}
+
+impl Default for ProviderProfileConfig {
+    fn default() -> Self {
+        Self {
+            default_for_kind: false,
+            provider: ProviderConfig::default(),
+        }
+    }
+}
+
+impl ProviderProfileConfig {
+    pub fn from_provider(provider: ProviderConfig) -> Self {
+        Self {
+            default_for_kind: false,
+            provider,
+        }
+    }
+}
+
 impl Default for ProviderConfig {
     fn default() -> Self {
         Self {
@@ -659,31 +685,42 @@ impl ProviderConfig {
     }
 
     pub(super) fn validate(&self) -> Vec<ConfigValidationIssue> {
+        self.validate_with_field_prefix("provider")
+    }
+
+    pub(super) fn validate_with_field_prefix(
+        &self,
+        field_prefix: &str,
+    ) -> Vec<ConfigValidationIssue> {
         let mut issues = Vec::new();
+        let api_key_env_field_path = format!("{field_prefix}.api_key_env");
+        let api_key_inline_field_path = format!("{field_prefix}.api_key");
         let api_key_example = self
             .kind
             .default_api_key_env()
             .unwrap_or("PROVIDER_API_KEY");
         if let Err(issue) = validate_env_pointer_field(
-            "provider.api_key_env",
+            api_key_env_field_path.as_str(),
             self.api_key_env.as_deref(),
             EnvPointerValidationHint {
-                inline_field_path: "provider.api_key",
+                inline_field_path: api_key_inline_field_path.as_str(),
                 example_env_name: api_key_example,
                 detect_telegram_token_shape: false,
             },
         ) {
             issues.push(*issue);
         }
+        let oauth_env_field_path = format!("{field_prefix}.oauth_access_token_env");
+        let oauth_inline_field_path = format!("{field_prefix}.oauth_access_token");
         let oauth_example = self
             .kind
             .default_oauth_access_token_env()
             .unwrap_or("PROVIDER_OAUTH_ACCESS_TOKEN");
         if let Err(issue) = validate_env_pointer_field(
-            "provider.oauth_access_token_env",
+            oauth_env_field_path.as_str(),
             self.oauth_access_token_env.as_deref(),
             EnvPointerValidationHint {
-                inline_field_path: "provider.oauth_access_token",
+                inline_field_path: oauth_inline_field_path.as_str(),
                 example_env_name: oauth_example,
                 detect_telegram_token_shape: false,
             },
@@ -1225,6 +1262,10 @@ impl ProviderConfig {
             .iter()
             .find(|(key, _)| key.eq_ignore_ascii_case(name))
             .map(|(_, value)| value.as_str())
+    }
+
+    pub fn inferred_profile_id(&self) -> String {
+        self.kind.profile().id.to_owned()
     }
 
     pub fn has_unresolved_custom_base_url(&self) -> bool {
