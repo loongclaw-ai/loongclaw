@@ -6,6 +6,7 @@ pub mod context;
 pub mod conversation;
 pub mod memory;
 pub mod migration;
+pub mod presentation;
 pub mod prompt;
 pub mod provider;
 pub mod runtime_env;

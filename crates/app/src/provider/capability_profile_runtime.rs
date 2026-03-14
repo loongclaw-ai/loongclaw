@@ -70,10 +70,14 @@ impl ProviderCapabilityProfile {
     }
 }
 
-fn normalize_model_hint_values<'a>(hints: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+fn normalize_model_hint_values<T, I>(hints: I) -> Vec<String>
+where
+    I: IntoIterator<Item = T>,
+    T: AsRef<str>,
+{
     let mut normalized = Vec::new();
     for hint in hints {
-        let lowercased = hint.trim().to_ascii_lowercase();
+        let lowercased = hint.as_ref().trim().to_ascii_lowercase();
         if lowercased.is_empty() || normalized.iter().any(|existing| existing == &lowercased) {
             continue;
         }

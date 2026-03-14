@@ -57,7 +57,7 @@ impl ConfigValidationDiagnostic {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct LoongClawConfig {
     #[serde(default)]
     pub provider: ProviderConfig,
@@ -79,7 +79,7 @@ pub struct LoongClawConfig {
     pub acp: AcpConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AcpConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -413,13 +413,13 @@ impl AcpDispatchThreadRoutingMode {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct AcpBackendProfilesConfig {
     #[serde(default)]
     pub acpx: Option<AcpxBackendConfig>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct AcpxBackendConfig {
     #[serde(default)]
     pub command: Option<String>,
@@ -463,7 +463,7 @@ impl AcpxBackendConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AcpxMcpServerConfig {
     pub command: String,
     #[serde(default)]
@@ -572,8 +572,7 @@ impl LoongClawConfig {
     fn collect_validation_issues(&self) -> Vec<ConfigValidationIssue> {
         let mut issues = Vec::new();
         issues.extend(self.provider.validate());
-        issues.extend(self.telegram.validate());
-        issues.extend(self.feishu.validate());
+        issues.extend(super::channels::collect_channel_validation_issues(self));
         issues.extend(self.memory.validate());
         issues.extend(self.tools.validate());
         issues
@@ -599,6 +598,14 @@ impl LoongClawConfig {
             .iter()
             .map(|issue| ConfigValidationDiagnostic::from_issue(issue, locale))
             .collect()
+    }
+
+    pub fn enabled_channel_ids(&self) -> Vec<String> {
+        super::channels::enabled_channel_ids(self)
+    }
+
+    pub fn enabled_service_channel_ids(&self) -> Vec<String> {
+        super::channels::enabled_service_channel_ids(self)
     }
 }
 

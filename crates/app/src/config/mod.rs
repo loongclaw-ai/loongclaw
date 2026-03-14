@@ -8,9 +8,10 @@ mod tools_memory;
 #[allow(unused_imports)]
 pub use channels::{
     ChannelAcpConfig, ChannelDefaultAccountSelection, ChannelDefaultAccountSelectionSource,
-    ChannelResolvedAccountRoute, CliChannelConfig, FeishuAccountConfig, FeishuChannelConfig,
-    FeishuDomain, ResolvedFeishuChannelConfig, ResolvedTelegramChannelConfig,
-    TelegramAccountConfig, TelegramChannelConfig,
+    ChannelDescriptor, ChannelResolvedAccountRoute, ChannelRuntimeKind, CliChannelConfig,
+    FeishuAccountConfig, FeishuChannelConfig, FeishuDomain, ResolvedFeishuChannelConfig,
+    ResolvedTelegramChannelConfig, TelegramAccountConfig, TelegramChannelConfig,
+    channel_descriptor, service_channel_descriptors,
 };
 pub(crate) use channels::{
     FEISHU_APP_ID_ENV, FEISHU_APP_SECRET_ENV, FEISHU_ENCRYPT_KEY_ENV,
@@ -22,8 +23,9 @@ pub use conversation::{ConversationConfig, ConversationTurnLoopConfig};
 pub use provider::{
     ProviderAuthScheme, ProviderConfig, ProviderFeatureFamily, ProviderKind,
     ProviderProfileHealthModeConfig, ProviderProfileStateBackendKind, ProviderProtocolFamily,
-    ProviderReasoningExtraBodyModeConfig, ProviderToolSchemaModeConfig, ReasoningEffort,
-    parse_provider_kind_id,
+    ProviderReasoningExtraBodyModeConfig, ProviderToolSchemaModeConfig, ProviderTransportFallback,
+    ProviderTransportPolicy, ProviderTransportReadiness, ProviderTransportReadinessLevel,
+    ProviderWireApi, ReasoningEffort, parse_provider_kind_id,
 };
 #[allow(unused_imports)]
 pub use runtime::{
@@ -35,7 +37,7 @@ pub use runtime::{
 };
 pub(crate) use runtime::{normalize_dispatch_account_id, normalize_dispatch_channel_id};
 #[allow(unused_imports)]
-pub use shared::expand_path;
+pub use shared::{CLI_COMMAND_NAME, expand_path};
 #[allow(unused_imports)]
 pub use tools_memory::{
     DEFAULT_SHELL_ALLOW, ExternalSkillsConfig, MemoryBackendKind, MemoryConfig, MemoryIngestMode,
@@ -58,6 +60,54 @@ mod tests {
             config.endpoint(),
             "https://api.openai.com/v1/chat/completions"
         );
+    }
+
+    #[test]
+    fn channel_descriptor_lookup_reports_shared_metadata() {
+        let cli = channel_descriptor("cli").expect("cli descriptor");
+        assert_eq!(cli.id, "cli");
+        assert_eq!(cli.surface_label, "cli channel");
+        assert_eq!(cli.runtime_kind, ChannelRuntimeKind::Interactive);
+        assert_eq!(cli.serve_subcommand, None);
+
+        let telegram = channel_descriptor("telegram").expect("telegram descriptor");
+        assert_eq!(telegram.id, "telegram");
+        assert_eq!(telegram.surface_label, "telegram channel");
+        assert_eq!(telegram.runtime_kind, ChannelRuntimeKind::Service);
+        assert_eq!(telegram.serve_subcommand, Some("telegram-serve"));
+
+        let feishu = channel_descriptor("feishu").expect("feishu descriptor");
+        assert_eq!(feishu.id, "feishu");
+        assert_eq!(feishu.surface_label, "feishu channel");
+        assert_eq!(feishu.runtime_kind, ChannelRuntimeKind::Service);
+        assert_eq!(feishu.serve_subcommand, Some("feishu-serve"));
+
+        assert!(channel_descriptor("unknown").is_none());
+    }
+
+    #[test]
+    fn enabled_channel_views_follow_shared_catalog_order() {
+        let mut config = LoongClawConfig::default();
+        assert_eq!(config.enabled_channel_ids(), vec!["cli"]);
+        assert!(config.enabled_service_channel_ids().is_empty());
+
+        config.telegram.enabled = true;
+        config.feishu.enabled = true;
+
+        assert_eq!(
+            config.enabled_channel_ids(),
+            vec!["cli", "telegram", "feishu"]
+        );
+        assert_eq!(
+            config.enabled_service_channel_ids(),
+            vec!["telegram", "feishu"]
+        );
+
+        let service_ids = service_channel_descriptors()
+            .into_iter()
+            .map(|descriptor| descriptor.id)
+            .collect::<Vec<_>>();
+        assert_eq!(service_ids, vec!["telegram", "feishu"]);
     }
 
     #[test]

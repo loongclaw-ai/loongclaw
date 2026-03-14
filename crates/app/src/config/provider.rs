@@ -1,14 +1,10 @@
-use std::{
-    collections::BTreeMap,
-    env,
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeMap, env, path::PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
 use super::shared::{
     ConfigValidationIssue, EnvPointerValidationHint, default_loongclaw_home, expand_path,
-    parse_explicit_env_reference, read_secret_prefer_inline, validate_env_pointer_field,
+    parse_explicit_env_reference, validate_env_pointer_field,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +55,62 @@ pub enum ProviderFeatureFamily {
     Anthropic,
     Bedrock,
     Volcengine,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderWireApi {
+    #[default]
+    ChatCompletions,
+    Responses,
+}
+
+impl ProviderWireApi {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ChatCompletions => "chat_completions",
+            Self::Responses => "responses",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "chat_completions" => Some(Self::ChatCompletions),
+            "responses" => Some(Self::Responses),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderTransportReadinessLevel {
+    Ready,
+    Review,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderTransportReadiness {
+    pub level: ProviderTransportReadinessLevel,
+    pub summary: String,
+    pub detail: String,
+    pub auto_fallback_to_chat_completions: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProviderTransportFallback {
+    pub wire_api: ProviderWireApi,
+    pub endpoint: String,
+    pub provider: ProviderConfig,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProviderTransportPolicy {
+    pub request_wire_api: ProviderWireApi,
+    pub request_endpoint: String,
+    pub models_endpoint: String,
+    pub readiness: ProviderTransportReadiness,
+    pub fallback: Option<ProviderTransportFallback>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -230,7 +282,7 @@ pub enum ProviderReasoningExtraBodyModeConfig {
     KimiThinking,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ProviderConfig {
     #[serde(default)]
     pub kind: ProviderKind,
@@ -240,6 +292,8 @@ pub struct ProviderConfig {
     pub base_url: String,
     #[serde(skip_serializing, default)]
     pub base_url_explicit: bool,
+    #[serde(default)]
+    pub wire_api: ProviderWireApi,
     #[serde(default = "default_openai_chat_path")]
     pub chat_completions_path: String,
     #[serde(skip_serializing, default)]
@@ -282,28 +336,30 @@ pub struct ProviderConfig {
     pub retry_initial_backoff_ms: u64,
     #[serde(default = "default_provider_retry_max_backoff_ms")]
     pub retry_max_backoff_ms: u64,
-    #[serde(default = "default_provider_model_catalog_cache_ttl_ms")]
+    #[serde(default = "default_model_catalog_cache_ttl_ms")]
     pub model_catalog_cache_ttl_ms: u64,
-    #[serde(default = "default_provider_model_catalog_stale_if_error_ms")]
+    #[serde(default = "default_model_catalog_stale_if_error_ms")]
     pub model_catalog_stale_if_error_ms: u64,
-    #[serde(default = "default_provider_model_catalog_cache_max_entries")]
+    #[serde(default = "default_model_catalog_cache_max_entries")]
     pub model_catalog_cache_max_entries: usize,
-    #[serde(default = "default_provider_model_candidate_cooldown_ms")]
+    #[serde(default = "default_model_candidate_cooldown_ms")]
     pub model_candidate_cooldown_ms: u64,
-    #[serde(default = "default_provider_model_candidate_cooldown_max_ms")]
+    #[serde(default = "default_model_candidate_cooldown_max_ms")]
     pub model_candidate_cooldown_max_ms: u64,
-    #[serde(default = "default_provider_model_candidate_cooldown_max_entries")]
+    #[serde(default = "default_model_candidate_cooldown_max_entries")]
     pub model_candidate_cooldown_max_entries: usize,
-    #[serde(default = "default_provider_profile_cooldown_ms")]
+    #[serde(default = "default_profile_cooldown_ms")]
     pub profile_cooldown_ms: u64,
-    #[serde(default = "default_provider_profile_cooldown_max_ms")]
+    #[serde(default = "default_profile_cooldown_max_ms")]
     pub profile_cooldown_max_ms: u64,
-    #[serde(default = "default_provider_profile_auth_reject_disable_ms")]
+    #[serde(default = "default_profile_auth_reject_disable_ms")]
     pub profile_auth_reject_disable_ms: u64,
-    #[serde(default = "default_provider_profile_state_max_entries")]
+    #[serde(default = "default_profile_state_max_entries")]
     pub profile_state_max_entries: usize,
     #[serde(default)]
     pub profile_state_backend: ProviderProfileStateBackendKind,
+    #[serde(default)]
+    pub profile_state_sqlite_path: Option<String>,
     #[serde(default)]
     pub profile_health_mode: ProviderProfileHealthModeConfig,
     #[serde(default)]
@@ -318,8 +374,6 @@ pub struct ProviderConfig {
     pub reasoning_extra_body_kimi_model_hints: Vec<String>,
     #[serde(default)]
     pub reasoning_extra_body_omit_model_hints: Vec<String>,
-    #[serde(default)]
-    pub profile_state_sqlite_path: Option<String>,
 }
 
 impl Default for ProviderConfig {
@@ -329,6 +383,7 @@ impl Default for ProviderConfig {
             model: default_provider_model(),
             base_url: default_provider_base_url(),
             base_url_explicit: false,
+            wire_api: ProviderWireApi::ChatCompletions,
             chat_completions_path: default_openai_chat_path(),
             chat_completions_path_explicit: false,
             endpoint: None,
@@ -350,26 +405,25 @@ impl Default for ProviderConfig {
             retry_max_attempts: default_provider_retry_max_attempts(),
             retry_initial_backoff_ms: default_provider_retry_initial_backoff_ms(),
             retry_max_backoff_ms: default_provider_retry_max_backoff_ms(),
-            model_catalog_cache_ttl_ms: default_provider_model_catalog_cache_ttl_ms(),
-            model_catalog_stale_if_error_ms: default_provider_model_catalog_stale_if_error_ms(),
-            model_catalog_cache_max_entries: default_provider_model_catalog_cache_max_entries(),
-            model_candidate_cooldown_ms: default_provider_model_candidate_cooldown_ms(),
-            model_candidate_cooldown_max_ms: default_provider_model_candidate_cooldown_max_ms(),
-            model_candidate_cooldown_max_entries:
-                default_provider_model_candidate_cooldown_max_entries(),
-            profile_cooldown_ms: default_provider_profile_cooldown_ms(),
-            profile_cooldown_max_ms: default_provider_profile_cooldown_max_ms(),
-            profile_auth_reject_disable_ms: default_provider_profile_auth_reject_disable_ms(),
-            profile_state_max_entries: default_provider_profile_state_max_entries(),
-            profile_state_backend: ProviderProfileStateBackendKind::File,
-            profile_health_mode: ProviderProfileHealthModeConfig::ProviderDefault,
-            tool_schema_mode: ProviderToolSchemaModeConfig::ProviderDefault,
-            reasoning_extra_body_mode: ProviderReasoningExtraBodyModeConfig::ProviderDefault,
+            model_catalog_cache_ttl_ms: default_model_catalog_cache_ttl_ms(),
+            model_catalog_stale_if_error_ms: default_model_catalog_stale_if_error_ms(),
+            model_catalog_cache_max_entries: default_model_catalog_cache_max_entries(),
+            model_candidate_cooldown_ms: default_model_candidate_cooldown_ms(),
+            model_candidate_cooldown_max_ms: default_model_candidate_cooldown_max_ms(),
+            model_candidate_cooldown_max_entries: default_model_candidate_cooldown_max_entries(),
+            profile_cooldown_ms: default_profile_cooldown_ms(),
+            profile_cooldown_max_ms: default_profile_cooldown_max_ms(),
+            profile_auth_reject_disable_ms: default_profile_auth_reject_disable_ms(),
+            profile_state_max_entries: default_profile_state_max_entries(),
+            profile_state_backend: ProviderProfileStateBackendKind::default(),
+            profile_state_sqlite_path: None,
+            profile_health_mode: ProviderProfileHealthModeConfig::default(),
+            tool_schema_mode: ProviderToolSchemaModeConfig::default(),
+            reasoning_extra_body_mode: ProviderReasoningExtraBodyModeConfig::default(),
             tool_schema_disabled_model_hints: Vec::new(),
             tool_schema_strict_model_hints: Vec::new(),
             reasoning_extra_body_kimi_model_hints: Vec::new(),
             reasoning_extra_body_omit_model_hints: Vec::new(),
-            profile_state_sqlite_path: None,
         }
     }
 }
@@ -387,6 +441,8 @@ impl<'de> Deserialize<'de> for ProviderConfig {
             model: String,
             #[serde(default)]
             base_url: Option<String>,
+            #[serde(default)]
+            wire_api: ProviderWireApi,
             #[serde(default)]
             chat_completions_path: Option<String>,
             #[serde(default)]
@@ -490,6 +546,7 @@ impl<'de> Deserialize<'de> for ProviderConfig {
             model: raw.model,
             base_url,
             base_url_explicit,
+            wire_api: raw.wire_api,
             chat_completions_path,
             chat_completions_path_explicit,
             endpoint: raw.endpoint,
@@ -594,6 +651,13 @@ impl ProviderConfig {
         self.oauth_access_token_env = oauth_access_token_env;
     }
 
+    pub fn fresh_for_kind(kind: ProviderKind) -> Self {
+        let mut provider = Self::default();
+        provider.set_kind(kind);
+        provider.model = kind.default_model().unwrap_or("auto").to_owned();
+        provider.selection_baseline()
+    }
+
     pub(super) fn validate(&self) -> Vec<ConfigValidationIssue> {
         let mut issues = Vec::new();
         let api_key_example = self
@@ -659,10 +723,14 @@ impl ProviderConfig {
         );
         let resolved_chat_path =
             maybe_normalize_custom_chat_path(self.kind, &resolved_base_url, &resolved_chat_path);
+        let resolved_request_path = match self.wire_api {
+            ProviderWireApi::ChatCompletions => resolved_chat_path,
+            ProviderWireApi::Responses => derive_responses_path(&resolved_chat_path),
+        };
         join_base_with_path(
             &resolved_base_url,
-            &resolved_chat_path,
-            default_openai_chat_path().as_str(),
+            &resolved_request_path,
+            default_request_path_for_wire_api(self.wire_api).as_str(),
         )
     }
 
@@ -683,10 +751,14 @@ impl ProviderConfig {
         );
         let resolved_chat_path =
             maybe_normalize_custom_chat_path(self.kind, &resolved_base_url, &resolved_chat_path);
+        let request_path = match self.wire_api {
+            ProviderWireApi::ChatCompletions => resolved_chat_path,
+            ProviderWireApi::Responses => derive_responses_path(&resolved_chat_path),
+        };
         let models_path = profile
             .models_path
             .map(normalize_api_path)
-            .unwrap_or_else(|| derive_models_path(&resolved_chat_path));
+            .unwrap_or_else(|| derive_models_path(&request_path));
         join_base_with_path(&resolved_base_url, &models_path, "/v1/models")
     }
 
@@ -759,6 +831,114 @@ impl ProviderConfig {
         }
     }
 
+    pub fn transport_policy(&self) -> ProviderTransportPolicy {
+        let request_endpoint = self.endpoint();
+        let models_endpoint = self.models_endpoint();
+        let fallback = self.build_responses_fallback();
+
+        let readiness = match self.wire_api {
+            ProviderWireApi::ChatCompletions => ProviderTransportReadiness {
+                level: ProviderTransportReadinessLevel::Ready,
+                summary: "chat_completions compatibility mode".to_owned(),
+                detail: format!(
+                    "`{}` uses the broadly compatible chat-completions transport at {}",
+                    self.kind.profile().id,
+                    request_endpoint
+                ),
+                auto_fallback_to_chat_completions: false,
+            },
+            ProviderWireApi::Responses => {
+                if self.kind == ProviderKind::KimiCoding {
+                    ProviderTransportReadiness {
+                        level: ProviderTransportReadinessLevel::Unsupported,
+                        summary: "responses unsupported for kimi_coding".to_owned(),
+                        detail:
+                            "kimi_coding currently supports only chat_completions; switch wire_api to `chat_completions`"
+                                .to_owned(),
+                        auto_fallback_to_chat_completions: false,
+                    }
+                } else if self.kind == ProviderKind::Openai
+                    && !self.uses_explicit_endpoint_override()
+                    && self.base_url_is_profile_default_like()
+                    && self.chat_completions_path_is_profile_default_like()
+                {
+                    ProviderTransportReadiness {
+                        level: ProviderTransportReadinessLevel::Ready,
+                        summary: "responses native mode".to_owned(),
+                        detail: format!(
+                            "native OpenAI Responses endpoint {} is configured",
+                            request_endpoint
+                        ),
+                        auto_fallback_to_chat_completions: false,
+                    }
+                } else if let Some(fallback) = fallback.as_ref() {
+                    ProviderTransportReadiness {
+                        level: ProviderTransportReadinessLevel::Review,
+                        summary: "responses compatibility mode with chat fallback".to_owned(),
+                        detail: format!(
+                            "Responses endpoint {} is running in compatibility mode; LoongClaw will retry chat_completions automatically via {} if Responses is rejected",
+                            request_endpoint, fallback.endpoint
+                        ),
+                        auto_fallback_to_chat_completions: true,
+                    }
+                } else {
+                    ProviderTransportReadiness {
+                        level: ProviderTransportReadinessLevel::Review,
+                        summary: "responses custom endpoint needs review".to_owned(),
+                        detail: format!(
+                            "Responses uses an explicit endpoint override ({}); verify it accepts Responses or switch to chat_completions manually",
+                            request_endpoint
+                        ),
+                        auto_fallback_to_chat_completions: false,
+                    }
+                }
+            }
+        };
+
+        ProviderTransportPolicy {
+            request_wire_api: self.wire_api,
+            request_endpoint,
+            models_endpoint,
+            readiness,
+            fallback,
+        }
+    }
+
+    pub fn transport_readiness(&self) -> ProviderTransportReadiness {
+        self.transport_policy().readiness
+    }
+
+    pub fn preview_transport_summary(&self) -> Option<String> {
+        match self.wire_api {
+            ProviderWireApi::Responses => Some(self.transport_readiness().summary),
+            ProviderWireApi::ChatCompletions => None,
+        }
+    }
+
+    pub fn responses_fallback_provider(&self) -> Option<Self> {
+        self.transport_policy()
+            .fallback
+            .map(|fallback| fallback.provider)
+    }
+
+    fn build_responses_fallback(&self) -> Option<ProviderTransportFallback> {
+        if self.wire_api != ProviderWireApi::Responses
+            || self.kind == ProviderKind::KimiCoding
+            || self.uses_explicit_endpoint_override()
+        {
+            return None;
+        }
+
+        let mut fallback = self.clone();
+        fallback.wire_api = ProviderWireApi::ChatCompletions;
+        fallback.endpoint = None;
+        Some(ProviderTransportFallback {
+            wire_api: ProviderWireApi::ChatCompletions,
+            endpoint: fallback.endpoint(),
+            provider: fallback,
+        })
+    }
+
     pub fn explicit_model(&self) -> Option<String> {
         let trimmed = self.model.trim();
         if !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("auto") {
@@ -808,104 +988,54 @@ impl ProviderConfig {
     }
 
     pub fn resolved_model_catalog_cache_ttl_ms(&self) -> u64 {
-        // Keep cache freshness bounded while allowing zero to explicitly disable.
-        self.model_catalog_cache_ttl_ms.min(300_000)
+        clamp_non_negative_u64(self.model_catalog_cache_ttl_ms, 300_000)
     }
 
     pub fn resolved_model_catalog_stale_if_error_ms(&self) -> u64 {
-        // Bound stale fallback windows to avoid serving very old model catalogs.
-        self.model_catalog_stale_if_error_ms.min(600_000)
+        clamp_non_negative_u64(self.model_catalog_stale_if_error_ms, 600_000)
     }
 
     pub fn resolved_model_catalog_cache_max_entries(&self) -> usize {
-        // Bound cache memory growth with a hard floor/ceiling.
-        self.model_catalog_cache_max_entries.clamp(1, 256)
+        clamp_usize_at_least_one(self.model_catalog_cache_max_entries, 256)
     }
 
     pub fn resolved_model_candidate_cooldown_ms(&self) -> u64 {
-        // Allow zero to disable cooldown while bounding long-lived suppression.
-        self.model_candidate_cooldown_ms.min(3_600_000)
-    }
-
-    pub fn resolved_model_candidate_cooldown_max_entries(&self) -> usize {
-        // Bound runtime memory usage for model cooldown tracking.
-        self.model_candidate_cooldown_max_entries.clamp(1, 512)
+        clamp_non_negative_u64(self.model_candidate_cooldown_ms, 3_600_000)
     }
 
     pub fn resolved_model_candidate_cooldown_max_ms(&self) -> u64 {
-        // Keep backoff caps bounded while ensuring cap is never lower than base cooldown.
-        self.model_candidate_cooldown_max_ms
-            .max(self.resolved_model_candidate_cooldown_ms())
-            .min(86_400_000)
+        let base = self.resolved_model_candidate_cooldown_ms();
+        clamp_u64_with_floor(self.model_candidate_cooldown_max_ms, 86_400_000, base)
+    }
+
+    pub fn resolved_model_candidate_cooldown_max_entries(&self) -> usize {
+        clamp_usize_at_least_one(self.model_candidate_cooldown_max_entries, 512)
     }
 
     pub fn resolved_profile_cooldown_ms(&self) -> u64 {
-        // Allow zero to disable profile-level cooldown while keeping upper bounds sane.
-        self.profile_cooldown_ms.min(3_600_000)
+        clamp_non_negative_u64(self.profile_cooldown_ms, 3_600_000)
     }
 
     pub fn resolved_profile_cooldown_max_ms(&self) -> u64 {
-        // Cap profile cooldown windows while ensuring max is never below base cooldown.
-        self.profile_cooldown_max_ms
-            .max(self.resolved_profile_cooldown_ms())
-            .min(86_400_000)
+        let base = self.resolved_profile_cooldown_ms();
+        clamp_u64_with_floor(self.profile_cooldown_max_ms, 86_400_000, base)
     }
 
     pub fn resolved_profile_auth_reject_disable_ms(&self) -> u64 {
-        // Keep auth-rejection disable windows bounded between 1 minute and 7 days.
         self.profile_auth_reject_disable_ms
             .clamp(60_000, 604_800_000)
     }
 
     pub fn resolved_profile_state_max_entries(&self) -> usize {
-        // Bound memory usage for profile health state tracking.
-        self.profile_state_max_entries.clamp(1, 1024)
+        clamp_usize_at_least_one(self.profile_state_max_entries, 1024)
     }
 
-    pub const fn resolved_profile_state_backend(&self) -> ProviderProfileStateBackendKind {
+    pub fn resolved_profile_state_backend(&self) -> ProviderProfileStateBackendKind {
         self.profile_state_backend
     }
 
-    pub const fn resolved_profile_health_mode_config(&self) -> ProviderProfileHealthModeConfig {
-        self.profile_health_mode
-    }
-
-    pub const fn resolved_tool_schema_mode_config(&self) -> ProviderToolSchemaModeConfig {
-        self.tool_schema_mode
-    }
-
-    pub const fn resolved_reasoning_extra_body_mode_config(
-        &self,
-    ) -> ProviderReasoningExtraBodyModeConfig {
-        self.reasoning_extra_body_mode
-    }
-
-    pub fn resolved_tool_schema_disabled_model_hints(&self) -> Vec<&str> {
-        normalized_model_hints(&self.tool_schema_disabled_model_hints)
-    }
-
-    pub fn resolved_tool_schema_strict_model_hints(&self) -> Vec<&str> {
-        normalized_model_hints(&self.tool_schema_strict_model_hints)
-    }
-
-    pub fn resolved_reasoning_extra_body_kimi_model_hints(&self) -> Vec<&str> {
-        normalized_model_hints(&self.reasoning_extra_body_kimi_model_hints)
-    }
-
-    pub fn resolved_reasoning_extra_body_omit_model_hints(&self) -> Vec<&str> {
-        normalized_model_hints(&self.reasoning_extra_body_omit_model_hints)
-    }
-
     pub fn resolved_profile_state_sqlite_path(&self) -> Option<PathBuf> {
-        let candidate = non_empty(self.profile_state_sqlite_path.as_deref())?;
-        if candidate.eq_ignore_ascii_case("memory") {
-            return Some(PathBuf::from(":memory:"));
-        }
-        let path = Path::new(candidate);
-        if path == Path::new(":memory:") {
-            return Some(PathBuf::from(":memory:"));
-        }
-        Some(expand_path(candidate))
+        normalize_sqlite_path(self.profile_state_sqlite_path.as_deref())
     }
 
     pub fn resolved_profile_state_sqlite_path_with_default(&self) -> PathBuf {
@@ -913,15 +1043,92 @@ impl ProviderConfig {
             .unwrap_or_else(|| default_loongclaw_home().join("provider-profile-state.sqlite3"))
     }
 
+    pub fn resolved_profile_health_mode_config(&self) -> ProviderProfileHealthModeConfig {
+        self.profile_health_mode
+    }
+
+    pub fn resolved_tool_schema_mode_config(&self) -> ProviderToolSchemaModeConfig {
+        self.tool_schema_mode
+    }
+
+    pub fn resolved_reasoning_extra_body_mode_config(
+        &self,
+    ) -> ProviderReasoningExtraBodyModeConfig {
+        self.reasoning_extra_body_mode
+    }
+
+    pub fn resolved_tool_schema_disabled_model_hints(&self) -> Vec<String> {
+        normalize_hint_values(&self.tool_schema_disabled_model_hints)
+    }
+
+    pub fn resolved_tool_schema_strict_model_hints(&self) -> Vec<String> {
+        normalize_hint_values(&self.tool_schema_strict_model_hints)
+    }
+
+    pub fn resolved_reasoning_extra_body_kimi_model_hints(&self) -> Vec<String> {
+        normalize_hint_values(&self.reasoning_extra_body_kimi_model_hints)
+    }
+
+    pub fn resolved_reasoning_extra_body_omit_model_hints(&self) -> Vec<String> {
+        normalize_hint_values(&self.reasoning_extra_body_omit_model_hints)
+    }
+
+    pub fn selection_baseline(&self) -> Self {
+        let profile = self.kind.profile();
+        let mut baseline = Self::default();
+        baseline.kind = self.kind;
+        baseline.model = self.model.clone();
+        baseline.base_url = profile.base_url.to_owned();
+        baseline.wire_api = self.wire_api;
+        baseline.chat_completions_path = profile.chat_completions_path.to_owned();
+        baseline.api_key_env = self.kind.default_api_key_env().map(str::to_owned);
+        baseline.oauth_access_token_env = self
+            .kind
+            .default_oauth_access_token_env()
+            .map(str::to_owned);
+        baseline
+    }
+
+    pub fn has_only_selection_changes(&self) -> bool {
+        self == &self.selection_baseline()
+    }
+
+    pub fn differs_from_default(&self) -> bool {
+        self != &Self::default()
+    }
+
+    pub fn base_url_is_profile_default_like(&self) -> bool {
+        let profile = self.kind.profile();
+        self.base_url.trim().is_empty()
+            || is_same_base_url(self.base_url.as_str(), profile.base_url)
+    }
+
+    pub fn chat_completions_path_is_profile_default_like(&self) -> bool {
+        let profile = self.kind.profile();
+        self.chat_completions_path.trim().is_empty()
+            || is_same_chat_path(
+                self.chat_completions_path.as_str(),
+                profile.chat_completions_path,
+            )
+    }
+
     pub fn oauth_access_token(&self) -> Option<String> {
         if let Some(raw) = self.oauth_access_token.as_deref() {
             let value = raw.trim();
             if !value.is_empty() {
-                return Some(value.to_owned());
+                return match resolve_inline_secret(value) {
+                    InlineSecretResolution::Resolved(secret) => Some(secret),
+                    InlineSecretResolution::ExplicitEnvMissing => None,
+                    InlineSecretResolution::NotInlineEnvReference => Some(value.to_owned()),
+                };
             }
         }
 
         first_non_empty_env_value(&self.oauth_access_token_env_names())
+    }
+
+    fn uses_explicit_endpoint_override(&self) -> bool {
+        self.endpoint_explicit && non_empty(self.endpoint.as_deref()).is_some()
     }
 
     fn resolve_base_url(&self, profile_default: &str, openai_default: &str) -> String {
@@ -973,26 +1180,14 @@ impl ProviderConfig {
     }
 
     pub fn api_key_candidates(&self) -> Vec<String> {
-        let mut candidates = Vec::new();
-        let mut push_candidates = |raw: &str| {
-            for candidate in split_secret_candidates(raw) {
-                if candidates.iter().any(|existing| existing == &candidate) {
-                    continue;
-                }
-                candidates.push(candidate);
-            }
-        };
-
         if let Some(raw) = self.api_key.as_deref() {
-            let trimmed = raw.trim();
-            if !trimmed.is_empty() {
-                if parse_explicit_env_reference(trimmed).is_some() {
-                    if let Some(resolved) = read_secret_prefer_inline(Some(trimmed), None) {
-                        push_candidates(resolved.as_str());
-                    }
-                    return candidates;
-                }
-                push_candidates(trimmed);
+            let value = raw.trim();
+            if !value.is_empty() {
+                return match resolve_inline_secret(value) {
+                    InlineSecretResolution::Resolved(secret) => split_secret_candidates(&secret),
+                    InlineSecretResolution::ExplicitEnvMissing => Vec::new(),
+                    InlineSecretResolution::NotInlineEnvReference => split_secret_candidates(value),
+                };
             }
         }
 
@@ -1003,17 +1198,7 @@ impl ProviderConfig {
             push_unique_env_key(&mut env_keys, Some(alias));
         }
 
-        for key in env_keys {
-            if let Ok(value) = env::var(&key) {
-                push_candidates(value.as_str());
-            }
-            let plural_key = format!("{key}S");
-            if let Ok(value) = env::var(plural_key) {
-                push_candidates(value.as_str());
-            }
-        }
-
-        candidates
+        collect_non_empty_env_values(&env_keys)
     }
 
     pub fn credential_env_names(&self) -> Vec<String> {
@@ -1449,6 +1634,54 @@ impl ProviderKind {
         self.profile().id
     }
 
+    pub fn display_name(self) -> &'static str {
+        match self {
+            ProviderKind::Anthropic => "Anthropic",
+            ProviderKind::Bedrock => "Bedrock",
+            ProviderKind::Byteplus => "BytePlus",
+            ProviderKind::ByteplusCoding => "BytePlus Coding",
+            ProviderKind::Cerebras => "Cerebras",
+            ProviderKind::CloudflareAiGateway => "Cloudflare AI Gateway",
+            ProviderKind::Cohere => "Cohere",
+            ProviderKind::Custom => "Custom",
+            ProviderKind::Deepseek => "DeepSeek",
+            ProviderKind::Fireworks => "Fireworks",
+            ProviderKind::Gemini => "Gemini",
+            ProviderKind::Groq => "Groq",
+            ProviderKind::Kimi => "Kimi",
+            ProviderKind::KimiCoding => "Kimi Coding",
+            ProviderKind::Mistral => "Mistral",
+            ProviderKind::Minimax => "MiniMax",
+            ProviderKind::Novita => "Novita",
+            ProviderKind::Nvidia => "NVIDIA",
+            ProviderKind::Llamacpp => "llama.cpp",
+            ProviderKind::LmStudio => "LM Studio",
+            ProviderKind::Ollama => "Ollama",
+            ProviderKind::Openai => "OpenAI",
+            ProviderKind::Openrouter => "OpenRouter",
+            ProviderKind::Perplexity => "Perplexity",
+            ProviderKind::Qianfan => "Qianfan",
+            ProviderKind::Qwen => "Qwen",
+            ProviderKind::Sambanova => "SambaNova",
+            ProviderKind::Sglang => "SGLang",
+            ProviderKind::Siliconflow => "SiliconFlow",
+            ProviderKind::Stepfun => "StepFun",
+            ProviderKind::Together => "Together",
+            ProviderKind::Venice => "Venice",
+            ProviderKind::VercelAiGateway => "Vercel AI Gateway",
+            ProviderKind::Vllm => "vLLM",
+            ProviderKind::Volcengine => "Volcengine",
+            ProviderKind::VolcengineCoding => "Volcengine Coding",
+            ProviderKind::Xai => "xAI",
+            ProviderKind::Zai => "Z.ai",
+            ProviderKind::Zhipu => "Zhipu",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        parse_provider_kind_id(raw)
+    }
+
     pub fn profile(self) -> &'static ProviderProfile {
         let [
             anthropic,
@@ -1636,6 +1869,13 @@ impl ProviderKind {
             )
         } else {
             None
+        }
+    }
+
+    pub const fn default_model(self) -> Option<&'static str> {
+        match self {
+            ProviderKind::KimiCoding => Some("kimi-for-coding"),
+            _ => None,
         }
     }
 }
@@ -2421,6 +2661,17 @@ fn default_openai_chat_path() -> String {
     "/v1/chat/completions".to_owned()
 }
 
+fn default_openai_responses_path() -> String {
+    "/v1/responses".to_owned()
+}
+
+fn default_request_path_for_wire_api(wire_api: ProviderWireApi) -> String {
+    match wire_api {
+        ProviderWireApi::ChatCompletions => default_openai_chat_path(),
+        ProviderWireApi::Responses => default_openai_responses_path(),
+    }
+}
+
 const fn default_temperature() -> f64 {
     0.2
 }
@@ -2441,56 +2692,56 @@ const fn default_provider_retry_max_backoff_ms() -> u64 {
     3_000
 }
 
-const fn default_provider_model_catalog_cache_ttl_ms() -> u64 {
+const fn default_model_catalog_cache_ttl_ms() -> u64 {
     30_000
 }
 
-const fn default_provider_model_catalog_stale_if_error_ms() -> u64 {
+const fn default_model_catalog_stale_if_error_ms() -> u64 {
     120_000
 }
 
-const fn default_provider_model_catalog_cache_max_entries() -> usize {
+const fn default_model_catalog_cache_max_entries() -> usize {
     32
 }
 
-const fn default_provider_model_candidate_cooldown_ms() -> u64 {
+const fn default_model_candidate_cooldown_ms() -> u64 {
     300_000
 }
 
-const fn default_provider_model_candidate_cooldown_max_ms() -> u64 {
+const fn default_model_candidate_cooldown_max_ms() -> u64 {
     3_600_000
 }
 
-const fn default_provider_model_candidate_cooldown_max_entries() -> usize {
+const fn default_model_candidate_cooldown_max_entries() -> usize {
     64
 }
 
-const fn default_provider_profile_cooldown_ms() -> u64 {
+const fn default_profile_cooldown_ms() -> u64 {
     60_000
 }
 
-const fn default_provider_profile_cooldown_max_ms() -> u64 {
+const fn default_profile_cooldown_max_ms() -> u64 {
     3_600_000
 }
 
-const fn default_provider_profile_auth_reject_disable_ms() -> u64 {
+const fn default_profile_auth_reject_disable_ms() -> u64 {
     21_600_000
 }
 
-const fn default_provider_profile_state_max_entries() -> usize {
+const fn default_profile_state_max_entries() -> usize {
     256
 }
 
-fn first_non_empty_env_value(keys: &[String]) -> Option<String> {
+fn collect_non_empty_env_values(keys: &[String]) -> Vec<String> {
+    let mut values = Vec::new();
     for key in keys {
         if let Ok(value) = env::var(key) {
-            let trimmed = value.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_owned());
+            for candidate in split_secret_candidates(&value) {
+                push_unique_value(&mut values, &candidate);
             }
         }
     }
-    None
+    values
 }
 
 fn first_non_empty_env_name(keys: &[String]) -> Option<String> {
@@ -2519,28 +2770,6 @@ fn push_unique_env_key(keys: &mut Vec<String>, maybe_key: Option<&str>) {
     keys.push(trimmed.to_owned());
 }
 
-fn normalized_model_hints(hints: &[String]) -> Vec<&str> {
-    hints
-        .iter()
-        .map(|hint| hint.trim())
-        .filter(|hint| !hint.is_empty())
-        .collect()
-}
-
-fn split_secret_candidates(raw: &str) -> Vec<String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Vec::new();
-    }
-
-    trimmed
-        .split([',', ';', '\n', '\r'])
-        .map(str::trim)
-        .filter(|candidate| !candidate.is_empty())
-        .map(str::to_owned)
-        .collect()
-}
-
 fn non_empty(value: Option<&str>) -> Option<&str> {
     let raw = value?;
     let trimmed = raw.trim();
@@ -2553,6 +2782,85 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
 fn is_absolute_url(value: &str) -> bool {
     let trimmed = value.trim();
     trimmed.starts_with("http://") || trimmed.starts_with("https://")
+}
+
+fn clamp_non_negative_u64(value: u64, max: u64) -> u64 {
+    if value == 0 { 0 } else { value.min(max) }
+}
+
+fn clamp_u64_with_floor(value: u64, max: u64, floor: u64) -> u64 {
+    value.clamp(floor, max)
+}
+
+fn clamp_usize_at_least_one(value: usize, max: usize) -> usize {
+    value.clamp(1, max)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum InlineSecretResolution {
+    Resolved(String),
+    ExplicitEnvMissing,
+    NotInlineEnvReference,
+}
+
+fn resolve_inline_secret(raw: &str) -> InlineSecretResolution {
+    let Some(env_key) = parse_explicit_env_reference(raw) else {
+        return InlineSecretResolution::NotInlineEnvReference;
+    };
+    match env::var(env_key) {
+        Ok(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                InlineSecretResolution::ExplicitEnvMissing
+            } else {
+                InlineSecretResolution::Resolved(trimmed.to_owned())
+            }
+        }
+        Err(_) => InlineSecretResolution::ExplicitEnvMissing,
+    }
+}
+
+fn split_secret_candidates(raw: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    for value in raw.split([',', ';', '\n', '\r']) {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        push_unique_value(&mut values, trimmed);
+    }
+    values
+}
+
+fn push_unique_value(values: &mut Vec<String>, raw: &str) {
+    if values.iter().any(|existing| existing == raw) {
+        return;
+    }
+    values.push(raw.to_owned());
+}
+
+fn normalize_hint_values(values: &[String]) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for raw in values {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let lowercased = trimmed.to_ascii_lowercase();
+        if normalized.iter().any(|existing| existing == &lowercased) {
+            continue;
+        }
+        normalized.push(lowercased);
+    }
+    normalized
+}
+
+fn normalize_sqlite_path(raw: Option<&str>) -> Option<PathBuf> {
+    let trimmed = non_empty(raw)?;
+    if trimmed.eq_ignore_ascii_case("memory") || trimmed == ":memory:" {
+        return Some(PathBuf::from(":memory:"));
+    }
+    Some(expand_path(trimmed))
 }
 
 fn normalize_api_path(path: &str) -> String {
@@ -2597,8 +2905,33 @@ fn derive_models_path(chat_path: &str) -> String {
         let prefix = if prefix.is_empty() { "" } else { prefix };
         return format!("{prefix}/models");
     }
+    if let Some(prefix) = normalized.strip_suffix("/responses") {
+        let prefix = if prefix.is_empty() { "" } else { prefix };
+        return format!("{prefix}/models");
+    }
 
     "/v1/models".to_owned()
+}
+
+fn derive_responses_path(chat_path: &str) -> String {
+    let normalized = normalize_api_path(chat_path);
+    if normalized.is_empty() {
+        return default_openai_responses_path();
+    }
+
+    if let Some(prefix) = normalized.strip_suffix("/chat/completions") {
+        let prefix = if prefix.is_empty() { "" } else { prefix };
+        return format!("{prefix}/responses");
+    }
+    if let Some(prefix) = normalized.strip_suffix("/completions") {
+        let prefix = if prefix.is_empty() { "" } else { prefix };
+        return format!("{prefix}/responses");
+    }
+    if normalized.ends_with("/responses") {
+        return normalized;
+    }
+
+    default_openai_responses_path()
 }
 
 #[cfg(test)]

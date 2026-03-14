@@ -97,7 +97,7 @@ fn default_shell_allow() -> Vec<String> {
         .collect()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExternalSkillsConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -113,7 +113,7 @@ pub struct ExternalSkillsConfig {
     pub auto_expose_installed: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MemoryConfig {
     #[serde(default)]
     pub backend: MemoryBackendKind,

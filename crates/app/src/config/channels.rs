@@ -8,6 +8,7 @@ use crate::prompt::{
     render_system_prompt,
 };
 
+use super::runtime::LoongClawConfig;
 use super::shared::{
     ConfigValidationCode, ConfigValidationIssue, EnvPointerValidationHint,
     read_secret_prefer_inline, validate_env_pointer_field,
@@ -19,7 +20,141 @@ pub(crate) const FEISHU_APP_SECRET_ENV: &str = "FEISHU_APP_SECRET";
 pub(crate) const FEISHU_VERIFICATION_TOKEN_ENV: &str = "FEISHU_VERIFICATION_TOKEN";
 pub(crate) const FEISHU_ENCRYPT_KEY_ENV: &str = "FEISHU_ENCRYPT_KEY";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelRuntimeKind {
+    Interactive,
+    Service,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChannelDescriptor {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub surface_label: &'static str,
+    pub runtime_kind: ChannelRuntimeKind,
+    pub serve_subcommand: Option<&'static str>,
+}
+
+#[derive(Clone, Copy)]
+struct ChannelCatalogEntry {
+    descriptor: &'static ChannelDescriptor,
+    is_enabled: fn(&LoongClawConfig) -> bool,
+    collect_validation_issues: fn(&LoongClawConfig) -> Vec<ConfigValidationIssue>,
+}
+
+const CLI_CHANNEL_DESCRIPTOR: ChannelDescriptor = ChannelDescriptor {
+    id: "cli",
+    label: "cli",
+    surface_label: "cli channel",
+    runtime_kind: ChannelRuntimeKind::Interactive,
+    serve_subcommand: None,
+};
+
+const TELEGRAM_CHANNEL_DESCRIPTOR: ChannelDescriptor = ChannelDescriptor {
+    id: "telegram",
+    label: "telegram",
+    surface_label: "telegram channel",
+    runtime_kind: ChannelRuntimeKind::Service,
+    serve_subcommand: Some("telegram-serve"),
+};
+
+const FEISHU_CHANNEL_DESCRIPTOR: ChannelDescriptor = ChannelDescriptor {
+    id: "feishu",
+    label: "feishu",
+    surface_label: "feishu channel",
+    runtime_kind: ChannelRuntimeKind::Service,
+    serve_subcommand: Some("feishu-serve"),
+};
+
+const CHANNEL_CATALOG: [ChannelCatalogEntry; 3] = [
+    ChannelCatalogEntry {
+        descriptor: &CLI_CHANNEL_DESCRIPTOR,
+        is_enabled: cli_is_enabled,
+        collect_validation_issues: collect_cli_validation_issues,
+    },
+    ChannelCatalogEntry {
+        descriptor: &TELEGRAM_CHANNEL_DESCRIPTOR,
+        is_enabled: telegram_is_enabled,
+        collect_validation_issues: collect_telegram_validation_issues,
+    },
+    ChannelCatalogEntry {
+        descriptor: &FEISHU_CHANNEL_DESCRIPTOR,
+        is_enabled: feishu_is_enabled,
+        collect_validation_issues: collect_feishu_validation_issues,
+    },
+];
+
+pub fn channel_descriptor(id: &str) -> Option<&'static ChannelDescriptor> {
+    CHANNEL_CATALOG
+        .iter()
+        .map(|channel| channel.descriptor)
+        .find(|descriptor| descriptor.id == id)
+}
+
+pub fn service_channel_descriptors() -> Vec<&'static ChannelDescriptor> {
+    CHANNEL_CATALOG
+        .iter()
+        .map(|channel| channel.descriptor)
+        .filter(|descriptor| descriptor.runtime_kind == ChannelRuntimeKind::Service)
+        .collect()
+}
+
+pub(super) fn enabled_channel_ids(config: &LoongClawConfig) -> Vec<String> {
+    enabled_channel_ids_for_runtime_kind(config, None)
+}
+
+pub(super) fn enabled_service_channel_ids(config: &LoongClawConfig) -> Vec<String> {
+    enabled_channel_ids_for_runtime_kind(config, Some(ChannelRuntimeKind::Service))
+}
+
+fn enabled_channel_ids_for_runtime_kind(
+    config: &LoongClawConfig,
+    runtime_kind: Option<ChannelRuntimeKind>,
+) -> Vec<String> {
+    CHANNEL_CATALOG
+        .iter()
+        .filter(|channel| {
+            (channel.is_enabled)(config)
+                && runtime_kind.is_none_or(|kind| channel.descriptor.runtime_kind == kind)
+        })
+        .map(|channel| channel.descriptor.id.to_owned())
+        .collect()
+}
+
+pub(super) fn collect_channel_validation_issues(
+    config: &LoongClawConfig,
+) -> Vec<ConfigValidationIssue> {
+    CHANNEL_CATALOG
+        .iter()
+        .flat_map(|channel| (channel.collect_validation_issues)(config))
+        .collect()
+}
+
+fn cli_is_enabled(config: &LoongClawConfig) -> bool {
+    config.cli.enabled
+}
+
+fn telegram_is_enabled(config: &LoongClawConfig) -> bool {
+    config.telegram.enabled
+}
+
+fn feishu_is_enabled(config: &LoongClawConfig) -> bool {
+    config.feishu.enabled
+}
+
+fn collect_cli_validation_issues(_config: &LoongClawConfig) -> Vec<ConfigValidationIssue> {
+    Vec::new()
+}
+
+fn collect_telegram_validation_issues(config: &LoongClawConfig) -> Vec<ConfigValidationIssue> {
+    config.telegram.validate()
+}
+
+fn collect_feishu_validation_issues(config: &LoongClawConfig) -> Vec<ConfigValidationIssue> {
+    config.feishu.validate()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CliChannelConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -53,7 +188,7 @@ impl ChannelAcpConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TelegramChannelConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -162,7 +297,7 @@ impl ChannelResolvedAccountRoute {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TelegramAccountConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
@@ -202,7 +337,7 @@ impl ResolvedTelegramChannelConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FeishuAccountConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
@@ -296,7 +431,7 @@ impl ResolvedFeishuChannelConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FeishuChannelConfig {
     #[serde(default)]
     pub enabled: bool,

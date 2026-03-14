@@ -9,6 +9,10 @@ use crate::conversation::turn_engine::{ProviderTurn, ToolIntent};
 use crate::tools;
 
 pub fn extract_provider_turn(body: &Value) -> Option<ProviderTurn> {
+    if let Some(turn) = extract_responses_provider_turn(body) {
+        return Some(turn);
+    }
+
     if let Some(message) = openai_message(body) {
         let mut assistant_text = message_content(message).unwrap_or_default();
         let mut raw_meta = message.clone();
@@ -61,6 +65,10 @@ pub fn extract_provider_turn(body: &Value) -> Option<ProviderTurn> {
 }
 
 pub(super) fn extract_message_content(body: &Value) -> Option<String> {
+    if let Some(content) = extract_responses_message_content(body) {
+        return Some(content);
+    }
+
     openai_message(body)
         .or_else(|| bedrock_message(body))
         .and_then(message_content_value)
@@ -235,6 +243,100 @@ fn normalize_bedrock_content_block(block: &Value) -> Option<Value> {
         "name": name,
         "input": tool_use.get("input").cloned().unwrap_or_else(|| json!({}))
     }))
+}
+
+fn extract_responses_provider_turn(body: &Value) -> Option<ProviderTurn> {
+    let output = response_output_items(body)?;
+    let assistant_text = extract_responses_message_content(body).unwrap_or_default();
+    let tool_intents = output
+        .iter()
+        .filter_map(response_tool_intent_from_item)
+        .collect::<Vec<_>>();
+
+    if assistant_text.is_empty() && tool_intents.is_empty() {
+        return None;
+    }
+
+    Some(ProviderTurn {
+        assistant_text,
+        tool_intents,
+        raw_meta: body.clone(),
+    })
+}
+
+fn extract_responses_message_content(body: &Value) -> Option<String> {
+    if let Some(text) = body.get("output_text").and_then(Value::as_str) {
+        return normalize_text(text);
+    }
+
+    let output = response_output_items(body)?;
+    let mut merged = Vec::new();
+    for item in output {
+        if item.get("type").and_then(Value::as_str) != Some("message") {
+            continue;
+        }
+        let Some(content) = item.get("content") else {
+            continue;
+        };
+        if let Some(text) = extract_content_text(content) {
+            merged.push(text);
+        }
+    }
+
+    if merged.is_empty() {
+        return None;
+    }
+    normalize_text(&merged.join("\n"))
+}
+
+fn response_output_items(body: &Value) -> Option<&[Value]> {
+    body.get("output")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+}
+
+fn response_tool_intent_from_item(item: &Value) -> Option<ToolIntent> {
+    let item_type = item.get("type").and_then(Value::as_str).unwrap_or_default();
+    if item_type != "function_call" && item_type != "tool_call" {
+        return None;
+    }
+
+    let raw_tool_name = item.get("name").and_then(Value::as_str).or_else(|| {
+        item.get("function")
+            .and_then(|function| function.get("name"))
+            .and_then(Value::as_str)
+    })?;
+    let args_str = item
+        .get("arguments")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            item.get("function")
+                .and_then(|function| function.get("arguments"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or("{}");
+    let args_json = match serde_json::from_str::<Value>(args_str) {
+        Ok(value) => value,
+        Err(e) => json!({
+            "_parse_error": format!("{e}"),
+            "_raw_arguments": args_str
+        }),
+    };
+    let tool_call_id = item
+        .get("call_id")
+        .and_then(Value::as_str)
+        .or_else(|| item.get("id").and_then(Value::as_str))
+        .unwrap_or("")
+        .to_owned();
+
+    Some(ToolIntent {
+        tool_name: tools::canonical_tool_name(raw_tool_name).to_owned(),
+        args_json,
+        source: "provider_tool_call".to_owned(),
+        session_id: String::new(),
+        turn_id: String::new(),
+        tool_call_id,
+    })
 }
 
 fn extract_content_text(content: &Value) -> Option<String> {
@@ -1084,6 +1186,33 @@ mod tests {
     }
 
     #[test]
+    fn extract_provider_turn_supports_responses_function_calls() {
+        let body = serde_json::json!({
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "Reading the file."}
+                    ]
+                },
+                {
+                    "type": "function_call",
+                    "name": "file_read",
+                    "arguments": "{\"path\":\"README.md\"}",
+                    "call_id": "call_resp_1"
+                }
+            ]
+        });
+        let turn = extract_provider_turn(&body).expect("responses turn");
+        assert_eq!(turn.assistant_text, "Reading the file.");
+        assert_eq!(turn.tool_intents.len(), 1);
+        assert_eq!(turn.tool_intents[0].tool_name, "file.read");
+        assert_eq!(turn.tool_intents[0].args_json, json!({"path": "README.md"}));
+        assert_eq!(turn.tool_intents[0].tool_call_id, "call_resp_1");
+    }
+
+    #[test]
     fn extract_provider_turn_parses_inline_shell_function_block() {
         let body = serde_json::json!({
             "choices": [{
@@ -1450,6 +1579,22 @@ mod tests {
         });
         let content = extract_message_content(&body).expect("content");
         assert_eq!(content, "hello world");
+    }
+
+    #[test]
+    fn extract_message_content_supports_responses_output_shape() {
+        let body = json!({
+            "output": [{
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "output_text", "text": "line1"},
+                    {"type": "output_text", "text": {"value": "line2"}}
+                ]
+            }]
+        });
+        let content = extract_message_content(&body).expect("responses content");
+        assert_eq!(content, "line1\nline2");
     }
 
     #[test]

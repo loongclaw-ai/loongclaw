@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ConversationConfig {
     #[serde(default)]
     pub context_engine: Option<String>,
@@ -184,7 +184,7 @@ impl Default for ConversationConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConversationTurnLoopConfig {
     #[serde(default = "default_turn_loop_max_rounds")]
     pub max_rounds: usize,
