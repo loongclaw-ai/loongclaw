@@ -13,6 +13,7 @@ pub fn extract_provider_turn(body: &Value) -> Option<ProviderTurn> {
         .and_then(|choice| choice.get("message"))?;
 
     let mut assistant_text = message_content(message).unwrap_or_default();
+    let mut raw_meta = message.clone();
 
     let mut tool_intents: Vec<ToolIntent> = message
         .get("tool_calls")
@@ -53,18 +54,28 @@ pub fn extract_provider_turn(body: &Value) -> Option<ProviderTurn> {
         })
         .unwrap_or_default();
 
-    if tool_intents.is_empty()
-        && let Some((cleaned_text, inline_tool_intents)) =
-            extract_inline_function_call_turn(assistant_text.as_str())
-    {
-        assistant_text = cleaned_text;
-        tool_intents = inline_tool_intents;
+    if tool_intents.is_empty() {
+        match extract_inline_function_call_turn(assistant_text.as_str()) {
+            InlineFunctionParseResult::Parsed {
+                cleaned_text,
+                tool_intents: inline_tool_intents,
+                telemetry,
+            } => {
+                assistant_text = cleaned_text;
+                tool_intents = inline_tool_intents;
+                attach_inline_function_parse_telemetry(&mut raw_meta, telemetry);
+            }
+            InlineFunctionParseResult::Malformed { telemetry } => {
+                attach_inline_function_parse_telemetry(&mut raw_meta, telemetry);
+            }
+            InlineFunctionParseResult::Absent => {}
+        }
     }
 
     Some(ProviderTurn {
         assistant_text,
         tool_intents,
-        raw_meta: message.clone(),
+        raw_meta,
     })
 }
 
@@ -127,31 +138,157 @@ fn normalize_text(raw: &str) -> Option<String> {
     Some(trimmed.to_owned())
 }
 
-fn extract_inline_function_call_turn(text: &str) -> Option<(String, Vec<ToolIntent>)> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InlineFunctionParseTelemetry {
+    status: &'static str,
+    tool_count: usize,
+    error_code: Option<&'static str>,
+}
+
+impl InlineFunctionParseTelemetry {
+    fn parsed(tool_count: usize) -> Self {
+        Self {
+            status: "parsed",
+            tool_count,
+            error_code: None,
+        }
+    }
+
+    fn malformed(tool_count: usize, error_code: InlineFunctionParseError) -> Self {
+        Self {
+            status: "malformed",
+            tool_count,
+            error_code: Some(error_code.as_str()),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum InlineFunctionParseResult {
+    Parsed {
+        cleaned_text: String,
+        tool_intents: Vec<ToolIntent>,
+        telemetry: InlineFunctionParseTelemetry,
+    },
+    Malformed {
+        telemetry: InlineFunctionParseTelemetry,
+    },
+    Absent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InlineFunctionParseError {
+    MissingFunctionHeaderClose,
+    EmptyFunctionName,
+    MissingFunctionClose,
+    MissingParameterOpen,
+    MissingParameterHeaderClose,
+    EmptyParameterName,
+    MissingParameterClose,
+}
+
+impl InlineFunctionParseError {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::MissingFunctionHeaderClose => "missing_function_header_close",
+            Self::EmptyFunctionName => "empty_function_name",
+            Self::MissingFunctionClose => "missing_function_close",
+            Self::MissingParameterOpen => "missing_parameter_open",
+            Self::MissingParameterHeaderClose => "missing_parameter_header_close",
+            Self::EmptyParameterName => "empty_parameter_name",
+            Self::MissingParameterClose => "missing_parameter_close",
+        }
+    }
+}
+
+fn attach_inline_function_parse_telemetry(
+    raw_meta: &mut Value,
+    telemetry: InlineFunctionParseTelemetry,
+) {
+    let Some(message) = raw_meta.as_object_mut() else {
+        return;
+    };
+
+    let mut inline_function = serde_json::Map::new();
+    inline_function.insert(
+        "status".to_owned(),
+        Value::String(telemetry.status.to_owned()),
+    );
+    inline_function.insert(
+        "tool_count".to_owned(),
+        Value::from(telemetry.tool_count as u64),
+    );
+    if let Some(error_code) = telemetry.error_code {
+        inline_function.insert(
+            "error_code".to_owned(),
+            Value::String(error_code.to_owned()),
+        );
+    }
+
+    let mut provider_parse = serde_json::Map::new();
+    provider_parse.insert("inline_function".to_owned(), Value::Object(inline_function));
+    message.insert(
+        "loongclaw_provider_parse".to_owned(),
+        Value::Object(provider_parse),
+    );
+}
+
+fn extract_inline_function_call_turn(text: &str) -> InlineFunctionParseResult {
     const FUNCTION_OPEN: &str = "<function=";
     const FUNCTION_CLOSE: &str = "</function>";
 
     let mut cursor = 0usize;
     let mut cleaned = String::new();
     let mut tool_intents = Vec::new();
+    let mut found_inline_function = false;
 
     while let Some(relative_start) = text[cursor..].find(FUNCTION_OPEN) {
+        found_inline_function = true;
         let start = cursor + relative_start;
         cleaned.push_str(&text[cursor..start]);
 
         let name_start = start + FUNCTION_OPEN.len();
         let header_remainder = &text[name_start..];
-        let header_end = header_remainder.find('>')?;
+        let Some(header_end) = header_remainder.find('>') else {
+            return InlineFunctionParseResult::Malformed {
+                telemetry: InlineFunctionParseTelemetry::malformed(
+                    tool_intents.len(),
+                    InlineFunctionParseError::MissingFunctionHeaderClose,
+                ),
+            };
+        };
         let raw_tool_name = header_remainder[..header_end].trim();
         if raw_tool_name.is_empty() {
-            return None;
+            return InlineFunctionParseResult::Malformed {
+                telemetry: InlineFunctionParseTelemetry::malformed(
+                    tool_intents.len(),
+                    InlineFunctionParseError::EmptyFunctionName,
+                ),
+            };
         }
 
         let body_start = name_start + header_end + 1;
         let body_remainder = &text[body_start..];
-        let body_end = body_remainder.find(FUNCTION_CLOSE)?;
+        let Some(body_end) = body_remainder.find(FUNCTION_CLOSE) else {
+            return InlineFunctionParseResult::Malformed {
+                telemetry: InlineFunctionParseTelemetry::malformed(
+                    tool_intents.len(),
+                    InlineFunctionParseError::MissingFunctionClose,
+                ),
+            };
+        };
         let function_body = &body_remainder[..body_end];
-        let args_json = parse_inline_function_parameters(function_body)?;
+        let args_json = match parse_inline_function_parameters(function_body) {
+            Ok(args_json) => args_json,
+            Err(error_code) => {
+                return InlineFunctionParseResult::Malformed {
+                    telemetry: InlineFunctionParseTelemetry::malformed(
+                        tool_intents.len(),
+                        error_code,
+                    ),
+                };
+            }
+        };
 
         tool_intents.push(ToolIntent {
             tool_name: tools::canonical_tool_name(raw_tool_name).to_owned(),
@@ -165,18 +302,20 @@ fn extract_inline_function_call_turn(text: &str) -> Option<(String, Vec<ToolInte
         cursor = body_start + body_end + FUNCTION_CLOSE.len();
     }
 
-    if tool_intents.is_empty() {
-        return None;
+    if !found_inline_function {
+        return InlineFunctionParseResult::Absent;
     }
 
     cleaned.push_str(&text[cursor..]);
-    Some((
-        normalize_text(cleaned.as_str()).unwrap_or_default(),
+    let telemetry = InlineFunctionParseTelemetry::parsed(tool_intents.len());
+    InlineFunctionParseResult::Parsed {
+        cleaned_text: normalize_text(cleaned.as_str()).unwrap_or_default(),
         tool_intents,
-    ))
+        telemetry,
+    }
 }
 
-fn parse_inline_function_parameters(body: &str) -> Option<Value> {
+fn parse_inline_function_parameters(body: &str) -> Result<Value, InlineFunctionParseError> {
     const PARAMETER_OPEN: &str = "<parameter=";
     const PARAMETER_CLOSE: &str = "</parameter>";
 
@@ -193,30 +332,43 @@ fn parse_inline_function_parameters(body: &str) -> Option<Value> {
 
         let remainder = &body[cursor..];
         if !remainder.starts_with(PARAMETER_OPEN) {
-            return None;
+            return Err(InlineFunctionParseError::MissingParameterOpen);
         }
 
         let name_start = cursor + PARAMETER_OPEN.len();
         let name_remainder = &body[name_start..];
-        let name_end = name_remainder.find('>')?;
+        let Some(name_end) = name_remainder.find('>') else {
+            return Err(InlineFunctionParseError::MissingParameterHeaderClose);
+        };
         let parameter_name = name_remainder[..name_end].trim();
         if parameter_name.is_empty() {
-            return None;
+            return Err(InlineFunctionParseError::EmptyParameterName);
         }
 
         let value_start = name_start + name_end + 1;
         let value_remainder = &body[value_start..];
-        let value_end = value_remainder.find(PARAMETER_CLOSE)?;
+        let Some(value_end) = value_remainder.find(PARAMETER_CLOSE) else {
+            return Err(InlineFunctionParseError::MissingParameterClose);
+        };
         let raw_value = &value_remainder[..value_end];
         payload.insert(
             parameter_name.to_owned(),
-            Value::String(decode_inline_xml_text(raw_value).trim().to_owned()),
+            parse_inline_parameter_value(raw_value),
         );
 
         cursor = value_start + value_end + PARAMETER_CLOSE.len();
     }
 
-    Some(Value::Object(payload))
+    Ok(Value::Object(payload))
+}
+
+fn parse_inline_parameter_value(raw_value: &str) -> Value {
+    let decoded = decode_inline_xml_text(raw_value);
+    let trimmed = decoded.trim();
+    if trimmed.is_empty() {
+        return Value::String(String::new());
+    }
+    serde_json::from_str::<Value>(trimmed).unwrap_or_else(|_| Value::String(trimmed.to_owned()))
 }
 
 fn decode_inline_xml_text(raw: &str) -> String {
@@ -439,6 +591,14 @@ mod tests {
             turn.tool_intents[0].args_json,
             json!({"command":"ls /root"})
         );
+        assert_eq!(
+            turn.raw_meta["loongclaw_provider_parse"]["inline_function"]["status"],
+            "parsed"
+        );
+        assert_eq!(
+            turn.raw_meta["loongclaw_provider_parse"]["inline_function"]["tool_count"],
+            1
+        );
     }
 
     #[test]
@@ -461,6 +621,55 @@ mod tests {
         assert_eq!(
             turn.tool_intents[0].args_json,
             json!({"skill_id":"home-assistant-1-0-0","action":"get_states"})
+        );
+    }
+
+    #[test]
+    fn extract_provider_turn_recovers_inline_parameter_json_types() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": "让我按结构化参数重试。\n<function=shell.exec><parameter=command>\"echo\"</parameter><parameter=args>[\"hello\",\"world\"]</parameter><parameter=timeout_ms>3000</parameter><parameter=login>false</parameter></function>"
+                }
+            }]
+        });
+
+        let turn = extract_provider_turn(&body).expect("turn");
+        assert_eq!(turn.tool_intents.len(), 1);
+        assert_eq!(
+            turn.tool_intents[0].args_json,
+            json!({
+                "command": "echo",
+                "args": ["hello", "world"],
+                "timeout_ms": 3000,
+                "login": false
+            })
+        );
+    }
+
+    #[test]
+    fn extract_provider_turn_records_malformed_inline_function_telemetry() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": "让我重试。\n<function=shell.exec><parameter=command>ls /root</parameter>"
+                }
+            }]
+        });
+
+        let turn = extract_provider_turn(&body).expect("turn");
+        assert_eq!(
+            turn.assistant_text,
+            "让我重试。\n<function=shell.exec><parameter=command>ls /root</parameter>"
+        );
+        assert!(turn.tool_intents.is_empty());
+        assert_eq!(
+            turn.raw_meta["loongclaw_provider_parse"]["inline_function"]["status"],
+            "malformed"
+        );
+        assert_eq!(
+            turn.raw_meta["loongclaw_provider_parse"]["inline_function"]["error_code"],
+            "missing_function_close"
         );
     }
 
