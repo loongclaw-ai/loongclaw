@@ -5,11 +5,16 @@ use loongclaw_kernel::{PolicyExtension, PolicyExtensionContext};
 
 pub struct FilePolicyExtension {
     file_root: Option<PathBuf>,
+    canon_root: Option<PathBuf>,
 }
 
 impl FilePolicyExtension {
     pub fn new(file_root: Option<PathBuf>) -> Self {
-        Self { file_root }
+        let canon_root = file_root.as_ref().and_then(|r| r.canonicalize().ok());
+        Self {
+            file_root,
+            canon_root,
+        }
     }
 
     fn required_capability(tool_name: &str) -> Option<Capability> {
@@ -20,16 +25,36 @@ impl FilePolicyExtension {
         }
     }
 
-    /// Check whether `raw_path` escapes `root`.
+    /// Check whether `raw_path` escapes the configured file root.
     ///
-    /// Attempts filesystem-aware canonicalization first so that symbolic links
-    /// pointing outside the sandbox are caught at the policy layer (defense in
-    /// depth — the execution layer still performs its own `canonicalize()`).
+    /// Uses a layered strategy with filesystem-aware canonicalization so that
+    /// symbolic links pointing outside the sandbox are caught at the policy
+    /// layer (defense in depth — the execution layer still performs its own
+    /// `canonicalize()`).
     ///
-    /// Falls back to pure path normalization when the path (or its parent)
-    /// does not exist yet, which is the normal case for `file.write` to a new
-    /// file.
-    fn path_escapes_root(root: &Path, raw_path: &str) -> bool {
+    /// Layers:
+    /// 1. Full `canonicalize` — works when the entire path already exists.
+    /// 2. Symlink detection — if the path is a symlink whose target cannot be
+    ///    canonicalized (dangling), read the link target and check it directly.
+    /// 3. Parent `canonicalize` + file name — handles `file.write "new.txt"`
+    ///    where the leaf does not exist yet.
+    /// 4. Pure path normalization — neither path nor parent exists on disk.
+    ///
+    /// # Known limitations
+    ///
+    /// - **TOCTOU**: A race exists between this check and the actual file
+    ///   operation. The execution layer's own `canonicalize()` serves as the
+    ///   final defense.
+    /// - **Deep intermediate symlinks**: If an intermediate directory component
+    ///   is a dangling symlink (e.g. `root/a/b/file` where `a` is a symlink
+    ///   and `b` does not exist under the target), layer 4 cannot detect the
+    ///   escape. The execution layer catches this at open time.
+    fn path_escapes_root(&self, raw_path: &str) -> bool {
+        let root = match self.file_root.as_deref() {
+            Some(r) => r,
+            None => return false,
+        };
+
         let candidate = Path::new(raw_path);
         let combined = if candidate.is_absolute() {
             candidate.to_path_buf()
@@ -37,12 +62,28 @@ impl FilePolicyExtension {
             root.join(candidate)
         };
 
-        // Canonicalize root once so the comparison base is consistent.
-        let canon_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        // Effective root: prefer cached canonicalized form, fall back to raw.
+        let effective_root = self.canon_root.as_deref().unwrap_or(root);
 
         // 1. Try full canonicalize (works when the path already exists).
         if let Ok(canon) = combined.canonicalize() {
-            return !canon.starts_with(&canon_root);
+            return !canon.starts_with(effective_root);
+        }
+
+        // 1.5. Path is a symlink but canonicalize failed (dangling target) —
+        //      read the link target and check whether it escapes.
+        if combined.is_symlink() {
+            if let Ok(target) = std::fs::read_link(&combined) {
+                let resolved = if target.is_absolute() {
+                    target
+                } else {
+                    combined.parent().unwrap_or(Path::new("")).join(&target)
+                };
+                let normalized_target = super::normalize_without_fs(&resolved);
+                return !normalized_target.starts_with(effective_root);
+            }
+            // Cannot read the link — conservatively deny.
+            return true;
         }
 
         // 2. Path doesn't exist — canonicalize the parent directory instead,
@@ -50,12 +91,12 @@ impl FilePolicyExtension {
         if let (Some(parent), Some(file_name)) = (combined.parent(), combined.file_name())
             && let Ok(canon_parent) = parent.canonicalize()
         {
-            return !canon_parent.join(file_name).starts_with(&canon_root);
+            return !canon_parent.join(file_name).starts_with(effective_root);
         }
 
         // 3. Neither path nor parent exists — fall back to pure normalization.
         let normalized = super::normalize_without_fs(&combined);
-        !normalized.starts_with(root)
+        !normalized.starts_with(effective_root)
     }
 }
 
@@ -102,7 +143,7 @@ impl PolicyExtension for FilePolicyExtension {
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
 
-            if !raw_path.is_empty() && Self::path_escapes_root(root, raw_path) {
+            if !raw_path.is_empty() && self.path_escapes_root(raw_path) {
                 return Err(PolicyError::ExtensionDenied {
                     extension: self.name().to_owned(),
                     reason: format!("path `{raw_path}` escapes file root `{}`", root.display()),
@@ -352,5 +393,104 @@ mod tests {
             json!({"tool_name": "claw.import", "payload": {"input_path": "subdir/config.toml"}});
         let ctx = make_context(&pack, &token, &caps, Some(&params));
         assert!(ext.authorize_extension(&ctx).is_ok());
+    }
+
+    // ── Symlink-aware filesystem tests ──────────────────────────────────
+
+    /// Try to create a symlink, returning `false` if the OS does not support
+    /// it without elevated privileges (Windows without Developer Mode).
+    fn try_symlink(original: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(original, link).is_ok()
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_file(original, link).is_ok()
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (original, link);
+            false
+        }
+    }
+
+    /// Try to create a directory symlink (needed on Windows for dir targets).
+    fn try_symlink_dir(original: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(original, link).is_ok()
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_dir(original, link).is_ok()
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (original, link);
+            false
+        }
+    }
+
+    #[test]
+    fn denies_symlink_pointing_outside_root() {
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret.txt");
+        std::fs::write(&secret, "sensitive").unwrap();
+
+        let root_dir = tempfile::tempdir().unwrap();
+        let link = root_dir.path().join("escape_link");
+        if !try_symlink(&secret, &link) {
+            return; // symlinks not supported — skip
+        }
+
+        let ext = FilePolicyExtension::new(Some(root_dir.path().to_path_buf()));
+        assert!(ext.path_escapes_root(link.to_str().unwrap()));
+    }
+
+    #[test]
+    fn denies_dangling_symlink_pointing_outside_root() {
+        let root_dir = tempfile::tempdir().unwrap();
+        let link = root_dir.path().join("dangling_link");
+        // Target does not exist and is outside root.
+        let nonexistent_outside = PathBuf::from("/tmp/loongclaw_nonexistent_target_xyzzy");
+        if !try_symlink(&nonexistent_outside, &link) {
+            return;
+        }
+
+        let ext = FilePolicyExtension::new(Some(root_dir.path().to_path_buf()));
+        assert!(ext.path_escapes_root(link.to_str().unwrap()));
+    }
+
+    #[test]
+    fn allows_symlink_within_root() {
+        let root_dir = tempfile::tempdir().unwrap();
+        let real_file = root_dir.path().join("real.txt");
+        std::fs::write(&real_file, "ok").unwrap();
+
+        let link = root_dir.path().join("internal_link");
+        if !try_symlink(&real_file, &link) {
+            return;
+        }
+
+        let ext = FilePolicyExtension::new(Some(root_dir.path().to_path_buf()));
+        assert!(!ext.path_escapes_root(link.to_str().unwrap()));
+    }
+
+    #[test]
+    fn denies_symlink_in_parent_directory() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(outside.path().join("sub")).unwrap();
+        std::fs::write(outside.path().join("sub/target.txt"), "sensitive").unwrap();
+
+        let root_dir = tempfile::tempdir().unwrap();
+        let link_dir = root_dir.path().join("linked_dir");
+        if !try_symlink_dir(outside.path(), &link_dir) {
+            return;
+        }
+
+        let ext = FilePolicyExtension::new(Some(root_dir.path().to_path_buf()));
+        let escape_path = link_dir.join("sub").join("target.txt");
+        assert!(ext.path_escapes_root(escape_path.to_str().unwrap()));
     }
 }
