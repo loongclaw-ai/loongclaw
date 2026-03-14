@@ -17,6 +17,7 @@ mod file;
 pub mod file_policy_ext;
 mod kernel_adapter;
 pub(crate) mod messaging;
+mod provider_switch;
 pub mod runtime_config;
 mod session;
 mod shell;
@@ -224,6 +225,9 @@ pub fn execute_tool_core_with_config(
         "shell.exec" => shell::execute_shell_tool_with_config(request, config),
         "file.read" => file::execute_file_read_tool_with_config(request, config),
         "file.write" => file::execute_file_write_tool_with_config(request, config),
+        "provider.switch" => {
+            provider_switch::execute_provider_switch_tool_with_config(request, config)
+        }
         _ => Err(format!(
             "tool_not_found: unknown tool `{}`",
             request.tool_name
@@ -419,6 +423,7 @@ mod tests {
 
         let config = runtime_config::ToolRuntimeConfig {
             file_root: Some(root.clone()),
+            config_path: None,
             external_skills: runtime_config::ExternalSkillsRuntimePolicy {
                 enabled: true,
                 require_download_approval: true,
@@ -485,6 +490,8 @@ mod tests {
         ));
         assert!(snapshot.contains("- file.read: Read file contents"));
         assert!(snapshot.contains("- file.write: Write file contents"));
+            "- provider.switch: Inspect current provider state or switch the default provider profile for subsequent turns"
+        ));
         assert!(snapshot.contains(
             "- session_archive: Archive a visible terminal session from default session listings"
         ));
@@ -510,9 +517,9 @@ mod tests {
         );
         assert!(snapshot.contains("- shell.exec: Execute shell commands"));
 
-        // Verify sorted order: claw.import < delegate* < external_skills.* < file.* < session_* < sessions_* < shell.exec
+        // Verify sorted order: claw.import < delegate* < external_skills.* < file.* < provider.switch < session_* < sessions_* < shell.exec
         let lines: Vec<&str> = snapshot.lines().skip(1).collect();
-        assert_eq!(lines.len(), 21);
+        assert_eq!(lines.len(), 22);
         assert!(lines[0].starts_with("- claw.import"));
         assert!(lines[1].starts_with("- delegate"));
         assert!(lines[2].starts_with("- delegate_async"));
@@ -525,15 +532,16 @@ mod tests {
         assert!(lines[9].starts_with("- external_skills.remove"));
         assert!(lines[10].starts_with("- file.read"));
         assert!(lines[11].starts_with("- file.write"));
-        assert!(lines[12].starts_with("- session_archive"));
-        assert!(lines[13].starts_with("- session_cancel"));
-        assert!(lines[14].starts_with("- session_events"));
-        assert!(lines[15].starts_with("- session_recover"));
-        assert!(lines[16].starts_with("- session_status"));
-        assert!(lines[17].starts_with("- session_wait"));
-        assert!(lines[18].starts_with("- sessions_history"));
-        assert!(lines[19].starts_with("- sessions_list"));
-        assert!(lines[20].starts_with("- shell.exec"));
+        assert!(lines[12].starts_with("- provider.switch"));
+        assert!(lines[13].starts_with("- session_archive"));
+        assert!(lines[14].starts_with("- session_cancel"));
+        assert!(lines[15].starts_with("- session_events"));
+        assert!(lines[16].starts_with("- session_recover"));
+        assert!(lines[17].starts_with("- session_status"));
+        assert!(lines[18].starts_with("- session_wait"));
+        assert!(lines[19].starts_with("- sessions_history"));
+        assert!(lines[20].starts_with("- sessions_list"));
+        assert!(lines[21].starts_with("- shell.exec"));
     }
 
     #[cfg(all(
@@ -544,7 +552,7 @@ mod tests {
     #[test]
     fn tool_registry_returns_all_known_tools() {
         let entries = tool_registry();
-        assert_eq!(entries.len(), 21);
+        assert_eq!(entries.len(), 22);
         let names: Vec<&str> = entries.iter().map(|e| e.name).collect();
         assert!(names.contains(&"claw.import"));
         assert!(names.contains(&"delegate"));
@@ -559,6 +567,7 @@ mod tests {
         assert!(names.contains(&"shell.exec"));
         assert!(names.contains(&"file.read"));
         assert!(names.contains(&"file.write"));
+        assert!(names.contains(&"provider.switch"));
         assert!(names.contains(&"session_archive"));
         assert!(names.contains(&"session_cancel"));
         assert!(names.contains(&"session_events"));
@@ -603,7 +612,7 @@ mod tests {
         let defs = try_provider_tool_definitions_for_view(&planned_root_tool_view())
             .expect("all tools should now be advertisable");
 
-        assert_eq!(defs.len(), 22);
+        assert_eq!(defs.len(), 23);
     }
 
     #[cfg(feature = "memory-sqlite")]
@@ -699,7 +708,7 @@ mod tests {
     #[test]
     fn provider_tool_definitions_are_stable_and_complete() {
         let defs = provider_tool_definitions();
-        assert_eq!(defs.len(), 21);
+        assert_eq!(defs.len(), 22);
 
         let names: Vec<&str> = defs
             .iter()
@@ -722,6 +731,7 @@ mod tests {
                 "external_skills_remove",
                 "file_read",
                 "file_write",
+                "provider_switch",
                 "session_archive",
                 "session_cancel",
                 "session_events",
@@ -864,6 +874,7 @@ mod tests {
         );
         assert_eq!(canonical_tool_name("file_read"), "file.read");
         assert_eq!(canonical_tool_name("file_write"), "file.write");
+        assert_eq!(canonical_tool_name("provider_switch"), "provider.switch");
         assert_eq!(canonical_tool_name("shell_exec"), "shell.exec");
         assert_eq!(canonical_tool_name("shell"), "shell.exec");
         assert_eq!(canonical_tool_name("file.read"), "file.read");
@@ -891,10 +902,242 @@ mod tests {
         assert!(is_known_tool_name("file_read"));
         assert!(is_known_tool_name("file.write"));
         assert!(is_known_tool_name("file_write"));
+        assert!(is_known_tool_name("provider.switch"));
+        assert!(is_known_tool_name("provider_switch"));
         assert!(is_known_tool_name("shell.exec"));
         assert!(is_known_tool_name("shell_exec"));
         assert!(is_known_tool_name("shell"));
         assert!(!is_known_tool_name("nonexistent.tool"));
+    }
+
+    #[test]
+    fn provider_switch_tool_updates_target_config_and_reports_active_profile() {
+        use std::{
+            fs,
+            path::PathBuf,
+            time::{SystemTime, UNIX_EPOCH},
+        };
+
+        fn unique_temp_dir(prefix: &str) -> PathBuf {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos();
+            std::env::temp_dir().join(format!("{prefix}-{nanos}"))
+        }
+
+        let root = unique_temp_dir("loongclaw-tool-provider-switch");
+        fs::create_dir_all(&root).expect("create fixture root");
+        let config_path = root.join("loongclaw.toml");
+
+        let mut config = crate::config::LoongClawConfig::default();
+        let mut openai =
+            crate::config::ProviderConfig::fresh_for_kind(crate::config::ProviderKind::Openai);
+        openai.model = "gpt-5".to_owned();
+        config.set_active_provider_profile(
+            "openai-gpt-5",
+            crate::config::ProviderProfileConfig {
+                default_for_kind: true,
+                provider: openai.clone(),
+            },
+        );
+        let mut deepseek =
+            crate::config::ProviderConfig::fresh_for_kind(crate::config::ProviderKind::Deepseek);
+        deepseek.model = "deepseek-chat".to_owned();
+        config.providers.insert(
+            "deepseek-chat".to_owned(),
+            crate::config::ProviderProfileConfig {
+                default_for_kind: true,
+                provider: deepseek,
+            },
+        );
+        config.provider = openai;
+        config.active_provider = Some("openai-gpt-5".to_owned());
+        fs::write(
+            &config_path,
+            crate::config::render(&config).expect("render provider config"),
+        )
+        .expect("write provider config");
+
+        let runtime_config = runtime_config::ToolRuntimeConfig {
+            shell_allowlist: BTreeSet::new(),
+            file_root: Some(root.clone()),
+            config_path: Some(config_path.clone()),
+            external_skills: Default::default(),
+        };
+        let outcome = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "provider.switch".to_owned(),
+                payload: json!({
+                    "selector": "deepseek",
+                    "config_path": "loongclaw.toml"
+                }),
+            },
+            &runtime_config,
+        )
+        .expect("provider switch should succeed");
+
+        assert_eq!(outcome.status, "ok");
+        assert_eq!(outcome.payload["tool_name"], "provider.switch");
+        assert_eq!(outcome.payload["changed"], true);
+        assert_eq!(outcome.payload["previous_active_provider"], "openai-gpt-5");
+        assert_eq!(outcome.payload["active_provider"], "deepseek-chat");
+
+        let (_, reloaded) =
+            crate::config::load(Some(config_path.to_str().expect("utf8 config path")))
+                .expect("load");
+        assert_eq!(reloaded.active_provider_id(), Some("deepseek-chat"));
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn provider_switch_tool_accepts_unique_model_selector() {
+        use std::{
+            fs,
+            path::PathBuf,
+            time::{SystemTime, UNIX_EPOCH},
+        };
+
+        fn unique_temp_dir(prefix: &str) -> PathBuf {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos();
+            std::env::temp_dir().join(format!("{prefix}-{nanos}"))
+        }
+
+        let root = unique_temp_dir("loongclaw-tool-provider-switch-model");
+        fs::create_dir_all(&root).expect("create fixture root");
+        let config_path = root.join("loongclaw.toml");
+
+        let mut config = crate::config::LoongClawConfig::default();
+        let mut openai =
+            crate::config::ProviderConfig::fresh_for_kind(crate::config::ProviderKind::Openai);
+        openai.model = "gpt-5".to_owned();
+        config.set_active_provider_profile(
+            "openai-main",
+            crate::config::ProviderProfileConfig {
+                default_for_kind: true,
+                provider: openai.clone(),
+            },
+        );
+        let mut deepseek =
+            crate::config::ProviderConfig::fresh_for_kind(crate::config::ProviderKind::Deepseek);
+        deepseek.model = "deepseek-chat".to_owned();
+        config.providers.insert(
+            "deepseek-cn".to_owned(),
+            crate::config::ProviderProfileConfig {
+                default_for_kind: true,
+                provider: deepseek,
+            },
+        );
+        config.provider = openai;
+        config.active_provider = Some("openai-main".to_owned());
+        fs::write(
+            &config_path,
+            crate::config::render(&config).expect("render provider config"),
+        )
+        .expect("write provider config");
+
+        let runtime_config = runtime_config::ToolRuntimeConfig {
+            shell_allowlist: BTreeSet::new(),
+            file_root: Some(root.clone()),
+            config_path: Some(config_path.clone()),
+            external_skills: Default::default(),
+        };
+        let outcome = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "provider.switch".to_owned(),
+                payload: json!({
+                    "selector": "deepseek-chat"
+                }),
+            },
+            &runtime_config,
+        )
+        .expect("provider switch by model should succeed");
+
+        assert_eq!(outcome.status, "ok");
+        assert_eq!(outcome.payload["changed"], true);
+        assert_eq!(outcome.payload["previous_active_provider"], "openai-main");
+        assert_eq!(outcome.payload["active_provider"], "deepseek-cn");
+
+        let (_, reloaded) =
+            crate::config::load(Some(config_path.to_str().expect("utf8 config path")))
+                .expect("load");
+        assert_eq!(reloaded.active_provider_id(), Some("deepseek-cn"));
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn provider_switch_without_selector_reports_current_provider_state() {
+        use std::{
+            fs,
+            path::PathBuf,
+            time::{SystemTime, UNIX_EPOCH},
+        };
+
+        fn unique_temp_dir(prefix: &str) -> PathBuf {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos();
+            std::env::temp_dir().join(format!("{prefix}-{nanos}"))
+        }
+
+        let root = unique_temp_dir("loongclaw-tool-provider-switch-inspect");
+        fs::create_dir_all(&root).expect("create fixture root");
+        let config_path = root.join("loongclaw.toml");
+
+        let mut config = crate::config::LoongClawConfig::default();
+        let mut openai =
+            crate::config::ProviderConfig::fresh_for_kind(crate::config::ProviderKind::Openai);
+        openai.model = "gpt-5".to_owned();
+        config.set_active_provider_profile(
+            "openai-gpt-5",
+            crate::config::ProviderProfileConfig {
+                default_for_kind: true,
+                provider: openai.clone(),
+            },
+        );
+        fs::write(
+            &config_path,
+            crate::config::render(&config).expect("render provider config"),
+        )
+        .expect("write provider config");
+
+        let runtime_config = runtime_config::ToolRuntimeConfig {
+            shell_allowlist: BTreeSet::new(),
+            file_root: Some(root.clone()),
+            config_path: Some(config_path.clone()),
+            external_skills: Default::default(),
+        };
+        let outcome = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "provider.switch".to_owned(),
+                payload: json!({}),
+            },
+            &runtime_config,
+        )
+        .expect("provider switch inspect should succeed");
+
+        assert_eq!(outcome.status, "ok");
+        assert_eq!(outcome.payload["changed"], false);
+        assert_eq!(outcome.payload["active_provider"], "openai-gpt-5");
+        assert_eq!(outcome.payload["selector"], Value::Null);
+        assert_eq!(outcome.payload["profiles"][0]["profile_id"], "openai-gpt-5");
+        assert_eq!(
+            outcome.payload["profiles"][0]["accepted_selectors"],
+            json!(["openai-gpt-5", "gpt-5", "openai"])
+        );
+
+        let (_, reloaded) =
+            crate::config::load(Some(config_path.to_str().expect("utf8 config path")))
+                .expect("load");
+        assert_eq!(reloaded.active_provider_id(), Some("openai-gpt-5"));
+
+        fs::remove_dir_all(&root).ok();
     }
 
     #[test]

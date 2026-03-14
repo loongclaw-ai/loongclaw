@@ -52,6 +52,8 @@ struct FakeRuntime {
     built_tool_views: Mutex<Vec<crate::tools::ToolView>>,
     turn_requested_tool_views: Mutex<Vec<crate::tools::ToolView>>,
     build_context_calls: Mutex<Vec<(String, bool)>>,
+    turn_requested_provider_ids: Mutex<Vec<String>>,
+    completion_requested_provider_ids: Mutex<Vec<String>>,
     completion_calls: Mutex<usize>,
     turn_calls: Mutex<usize>,
     after_turn_calls: Mutex<Vec<(String, String, String, usize)>>,
@@ -484,6 +486,8 @@ impl FakeRuntime {
             built_tool_views: Mutex::new(Vec::new()),
             turn_requested_tool_views: Mutex::new(Vec::new()),
             build_context_calls: Mutex::new(Vec::new()),
+            turn_requested_provider_ids: Mutex::new(Vec::new()),
+            completion_requested_provider_ids: Mutex::new(Vec::new()),
             completion_calls: Mutex::new(0),
             turn_calls: Mutex::new(0),
             after_turn_calls: Mutex::new(Vec::new()),
@@ -883,7 +887,7 @@ impl ConversationRuntime for FakeRuntime {
 
     async fn request_completion(
         &self,
-        _config: &LoongClawConfig,
+        config: &LoongClawConfig,
         messages: &[Value],
         _kernel_ctx: Option<&KernelContext>,
     ) -> CliResult<String> {
@@ -894,6 +898,10 @@ impl ConversationRuntime for FakeRuntime {
             .lock()
             .expect("completion request lock")
             .push(messages.to_vec());
+        self.completion_requested_provider_ids
+            .lock()
+            .expect("completion provider ids lock")
+            .push(config.active_provider_id().unwrap_or_default().to_owned());
         drop(calls);
         self.completion_responses
             .lock()
@@ -904,7 +912,7 @@ impl ConversationRuntime for FakeRuntime {
 
     async fn request_turn(
         &self,
-        _config: &LoongClawConfig,
+        config: &LoongClawConfig,
         messages: &[Value],
         tool_view: &crate::tools::ToolView,
         _kernel_ctx: Option<&KernelContext>,
@@ -920,6 +928,10 @@ impl ConversationRuntime for FakeRuntime {
             .lock()
             .expect("turn request tool views lock")
             .push(tool_view.clone());
+        self.turn_requested_provider_ids
+            .lock()
+            .expect("turn provider ids lock")
+            .push(config.active_provider_id().unwrap_or_default().to_owned());
         drop(calls);
         self.turn_responses
             .lock()
@@ -3648,6 +3660,99 @@ async fn handle_turn_with_runtime_tool_turn_raw_request_skips_second_pass_comple
         0
     );
     assert_eq!(*runtime.turn_calls.lock().expect("turn calls lock"), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_turn_with_runtime_provider_switch_tool_updates_provider_for_followup_round() {
+    use super::integration_tests::TurnTestHarness;
+
+    let harness = TurnTestHarness::new();
+    let config_path = harness.temp_dir.join("loongclaw.toml");
+
+    let mut config = test_config();
+    let mut openai = ProviderConfig::fresh_for_kind(crate::config::ProviderKind::Openai);
+    openai.model = "gpt-5".to_owned();
+    config.set_active_provider_profile(
+        "openai-gpt-5",
+        crate::config::ProviderProfileConfig {
+            default_for_kind: true,
+            provider: openai.clone(),
+        },
+    );
+    let mut deepseek = ProviderConfig::fresh_for_kind(crate::config::ProviderKind::Deepseek);
+    deepseek.model = "deepseek-chat".to_owned();
+    config.providers.insert(
+        "deepseek-chat".to_owned(),
+        crate::config::ProviderProfileConfig {
+            default_for_kind: true,
+            provider: deepseek.clone(),
+        },
+    );
+    config.provider = openai;
+    config.active_provider = Some("openai-gpt-5".to_owned());
+
+    std::fs::write(
+        &config_path,
+        crate::config::render(&config).expect("render provider switch config"),
+    )
+    .expect("write provider switch config");
+    let canonical_config_path =
+        std::fs::canonicalize(&config_path).expect("canonicalize provider switch config path");
+
+    let runtime = FakeRuntime::with_turns_and_completions(
+        vec![],
+        vec![Ok(ProviderTurn {
+            assistant_text: "Switching provider.".to_owned(),
+            tool_intents: vec![ToolIntent {
+                tool_name: "provider_switch".to_owned(),
+                args_json: json!({
+                    "selector": "deepseek",
+                    "config_path": canonical_config_path.display().to_string()
+                }),
+                source: "provider_tool_call".to_owned(),
+                session_id: "session-provider-switch".to_owned(),
+                turn_id: "turn-provider-switch-1".to_owned(),
+                tool_call_id: "call-provider-switch".to_owned(),
+            }],
+            raw_meta: Value::Null,
+        })],
+        vec![Ok("DeepSeek is now active.".to_owned())],
+    );
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "session-provider-switch",
+            "switch to deepseek and continue",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            Some(&harness.kernel_ctx),
+        )
+        .await
+        .expect("provider switch turn should succeed");
+
+    assert_eq!(reply, "DeepSeek is now active.");
+    assert_eq!(
+        runtime
+            .turn_requested_provider_ids
+            .lock()
+            .expect("turn provider ids lock")
+            .clone(),
+        vec!["openai-gpt-5".to_owned()]
+    );
+    assert_eq!(
+        runtime
+            .completion_requested_provider_ids
+            .lock()
+            .expect("completion provider ids lock")
+            .clone(),
+        vec!["deepseek-chat".to_owned()]
+    );
+
+    let (_, reloaded) =
+        crate::config::load(Some(config_path.to_str().expect("utf8 config path"))).expect("reload");
+    assert_eq!(reloaded.active_provider_id(), Some("deepseek-chat"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

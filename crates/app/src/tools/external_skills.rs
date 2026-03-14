@@ -1566,6 +1566,7 @@ mod tests {
     fn base_runtime_config() -> ToolRuntimeConfig {
         ToolRuntimeConfig {
             file_root: Some(std::env::temp_dir().join("loongclaw-ext-skills-tests")),
+            config_path: None,
             external_skills: ExternalSkillsRuntimePolicy {
                 enabled: false,
                 require_download_approval: true,
@@ -1597,6 +1598,7 @@ mod tests {
     fn managed_runtime_config(root: &Path) -> ToolRuntimeConfig {
         ToolRuntimeConfig {
             file_root: Some(root.to_path_buf()),
+            config_path: None,
             external_skills: ExternalSkillsRuntimePolicy {
                 enabled: true,
                 require_download_approval: true,

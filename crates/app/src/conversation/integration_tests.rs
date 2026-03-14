@@ -107,6 +107,8 @@ impl TurnTestHarness {
         let tool_config = ToolRuntimeConfig {
             file_root: Some(temp_dir.clone()),
             ..tool_config_override
+            config_path: Some(temp_dir.join("loongclaw.toml")),
+            ..tool_config_override
         };
 
         let audit = Arc::new(InMemoryAuditSink::default());

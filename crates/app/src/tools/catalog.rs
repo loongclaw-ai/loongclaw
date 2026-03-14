@@ -195,6 +195,15 @@ pub fn tool_catalog() -> ToolCatalog {
             provider_definition_builder: external_skills_remove_definition,
         },
         ToolDescriptor {
+            name: "provider.switch",
+            provider_name: "provider_switch",
+            aliases: &[],
+            description: "Inspect current provider state or switch the default provider profile for subsequent turns",
+            execution_kind: ToolExecutionKind::Core,
+            availability: ToolAvailability::Runtime,
+            provider_definition_builder: provider_switch_definition,
+        },
+        ToolDescriptor {
             name: "delegate",
             provider_name: "delegate",
             aliases: &[],
@@ -499,6 +508,29 @@ fn claw_import_definition(descriptor: &ToolDescriptor) -> Value {
                 },
                 "required": [],
                 "additionalProperties": false
+            }
+        }
+    })
+}
+
+fn provider_switch_definition(descriptor: &ToolDescriptor) -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": descriptor.provider_name,
+            "description": "Inspect current provider state or switch the default provider profile for subsequent turns when the user explicitly wants future replies to use another configured provider, profile, or model.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": format!(
+                            "Optional provider selector. Accepts a {} such as `openai-gpt-5`, `gpt-5.1-codex`, or `deepseek`. When omitted, the tool reports current provider state without changing it.",
+                            crate::config::PROVIDER_SELECTOR_HUMAN_SUMMARY
+                        )
+                    }
+                },
+                "required": []
             }
         }
     })

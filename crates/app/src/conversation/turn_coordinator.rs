@@ -1827,6 +1827,35 @@ impl ConversationTurnCoordinator {
         .await
     }
 
+    fn reload_followup_provider_config_after_tool_turn(
+        config: &LoongClawConfig,
+        turn: &ProviderTurn,
+    ) -> LoongClawConfig {
+        let config_path_from_tool = turn.tool_intents.iter().rev().find_map(|intent| {
+            (crate::tools::canonical_tool_name(intent.tool_name.as_str()) == "provider.switch")
+                .then_some(intent.args_json.as_object())
+                .flatten()
+                .and_then(|payload| payload.get("config_path"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(std::path::PathBuf::from)
+        });
+
+        let config_path = config_path_from_tool.or_else(|| {
+            crate::tools::runtime_config::get_tool_runtime_config()
+                .config_path
+                .clone()
+        });
+        let Some(config_path) = config_path else {
+            return config.clone();
+        };
+
+        config
+            .reload_provider_runtime_state_from_path(config_path.as_path())
+            .unwrap_or_else(|_| config.clone())
+    }
+
     pub async fn handle_turn_with_runtime_and_address_and_acp_event_sink<
         R: ConversationRuntime + ?Sized,
     >(

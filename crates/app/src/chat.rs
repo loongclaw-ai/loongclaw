@@ -1,7 +1,7 @@
 #[cfg(feature = "memory-sqlite")]
 use std::collections::BTreeSet;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(feature = "memory-sqlite")]
 use loongclaw_contracts::Capability;
@@ -272,9 +272,10 @@ pub async fn run_cli_chat(
         )
         .with_additional_bootstrap_mcp_servers(&options.acp_bootstrap_mcp_servers)
         .with_working_directory(options.acp_working_directory.as_deref());
+        let turn_config = reload_cli_turn_config(&config, resolved_path.as_path())?;
         let assistant_text = turn_coordinator
             .handle_turn_with_address_and_acp_options(
-                &config,
+                &turn_config,
                 &session_address,
                 input,
                 ProviderErrorMode::InlineMessage,
@@ -288,6 +289,13 @@ pub async fn run_cli_chat(
 
     println!("bye.");
     Ok(())
+}
+
+fn reload_cli_turn_config(
+    config: &LoongClawConfig,
+    resolved_path: &Path,
+) -> CliResult<LoongClawConfig> {
+    config.reload_provider_runtime_state_from_path(resolved_path)
 }
 
 fn is_exit_command(config: &LoongClawConfig, input: &str) -> bool {
@@ -1140,6 +1148,55 @@ mod tests {
     #[test]
     fn cli_chat_options_keep_automatic_routing_without_explicit_acp_inputs() {
         assert!(!CliChatOptions::default().requests_explicit_acp());
+    }
+
+    #[test]
+    #[cfg(feature = "config-toml")]
+    fn reload_cli_turn_config_refreshes_provider_state_without_mutating_cli_settings() {
+        let path = std::env::temp_dir().join(format!(
+            "loongclaw-chat-provider-reload-{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let path_string = path.display().to_string();
+
+        let mut in_memory = LoongClawConfig::default();
+        in_memory.cli.exit_commands = vec!["/bye".to_owned()];
+        let mut openai =
+            crate::config::ProviderConfig::fresh_for_kind(crate::config::ProviderKind::Openai);
+        openai.model = "gpt-5".to_owned();
+        in_memory.set_active_provider_profile(
+            "openai-gpt-5",
+            crate::config::ProviderProfileConfig {
+                default_for_kind: true,
+                provider: openai.clone(),
+            },
+        );
+
+        let mut on_disk = in_memory.clone();
+        on_disk.cli.exit_commands = vec!["/different".to_owned()];
+        let mut deepseek =
+            crate::config::ProviderConfig::fresh_for_kind(crate::config::ProviderKind::Deepseek);
+        deepseek.model = "deepseek-chat".to_owned();
+        on_disk.providers.insert(
+            "deepseek-chat".to_owned(),
+            crate::config::ProviderProfileConfig {
+                default_for_kind: true,
+                provider: deepseek.clone(),
+            },
+        );
+        on_disk.provider = deepseek;
+        on_disk.active_provider = Some("deepseek-chat".to_owned());
+        crate::config::write(Some(&path_string), &on_disk, true).expect("write config fixture");
+
+        let reloaded = reload_cli_turn_config(&in_memory, path.as_path()).expect("reload");
+        assert_eq!(reloaded.active_provider_id(), Some("deepseek-chat"));
+        assert_eq!(reloaded.provider.model, "deepseek-chat");
+        assert_eq!(reloaded.cli.exit_commands, vec!["/bye".to_owned()]);
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

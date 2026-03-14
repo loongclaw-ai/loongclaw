@@ -4,8 +4,8 @@ pub(crate) fn guided_provider_label(kind: mvp::config::ProviderKind) -> &'static
     kind.display_name()
 }
 
-pub(crate) fn provider_choice_label(kind: mvp::config::ProviderKind) -> String {
-    format!("{} [{}]", guided_provider_label(kind), kind.as_str())
+pub(crate) fn provider_choice_label(profile_id: &str, kind: mvp::config::ProviderKind) -> String {
+    format!("{} [{profile_id}]", guided_provider_label(kind))
 }
 
 pub(crate) fn provider_identity_summary(config: &mvp::config::ProviderConfig) -> String {

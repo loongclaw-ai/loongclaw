@@ -1568,6 +1568,53 @@ fn onboard_provider_selection_plan_requires_explicit_choice_for_conflicting_reco
 }
 
 #[test]
+fn onboard_provider_selection_plan_retains_same_kind_profiles_and_defaults_to_selected_profile() {
+    let recommended = import_candidate_with_provider(
+        crate::migration::types::ImportSourceKind::RecommendedPlan,
+        "recommended import plan",
+        mvp::config::ProviderKind::Openai,
+        "gpt-5",
+        "OPENAI_MAIN_API_KEY",
+    );
+    let codex = import_candidate_with_provider(
+        crate::migration::types::ImportSourceKind::CodexConfig,
+        "Codex config at ~/.codex/config.toml",
+        mvp::config::ProviderKind::Openai,
+        "gpt-5",
+        "OPENAI_MAIN_API_KEY",
+    );
+    let env = import_candidate_with_provider(
+        crate::migration::types::ImportSourceKind::Environment,
+        "your current environment",
+        mvp::config::ProviderKind::Openai,
+        "o4-mini",
+        "OPENAI_REASONING_API_KEY",
+    );
+
+    let plan = crate::onboard_cli::build_provider_selection_plan_for_candidate(
+        &recommended,
+        &[recommended.clone(), codex, env],
+    );
+
+    assert_eq!(
+        plan.imported_choices.len(),
+        2,
+        "recommended imports should retain distinct same-kind provider profiles instead of collapsing them into one choice: {plan:#?}"
+    );
+    assert_eq!(
+        plan.default_profile_id.as_deref(),
+        Some("openai-gpt-5"),
+        "the selected recommended provider should stay the default profile even when another same-kind profile is also detected: {plan:#?}"
+    );
+    assert!(
+        plan.imported_choices
+            .iter()
+            .any(|choice| choice.profile_id == "openai-o4-mini"),
+        "same-kind alternate profiles should receive stable, model-derived ids: {plan:#?}"
+    );
+}
+
+#[test]
 fn onboard_provider_selection_screen_includes_focus_title_and_choices() {
     let recommended = import_candidate_with_kind(
         crate::migration::types::ImportSourceKind::RecommendedPlan,
@@ -1611,6 +1658,23 @@ fn onboard_provider_selection_screen_includes_focus_title_and_choices() {
             .iter()
             .any(|line| line.contains("other detected settings stay merged")),
         "provider choice screen should reassure users that non-provider domains stay merged: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("try one of: openai, deepseek")),
+        "provider choice screen should surface quick selector picks instead of forcing users to scan the full selector catalog: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("accepted selectors: openai")),
+        "wide provider choice screens should still expose the full selector catalog in the footer: {lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|line| line
+            .contains("you can also enter a unique model name, model suffix, or provider kind")),
+        "wide provider choice screens should keep the full selector guidance sentence when there is enough room for it: {lines:#?}"
     );
     assert!(
         lines.iter().any(|line| line.contains("OpenAI")),
@@ -1667,6 +1731,128 @@ fn onboard_provider_selection_screen_shows_default_enter_choice_when_provider_is
 }
 
 #[test]
+fn onboard_provider_selection_screen_uses_profile_ids_for_same_kind_choices() {
+    let plan = crate::migration::ProviderSelectionPlan {
+        imported_choices: vec![
+            crate::migration::ImportedProviderChoice {
+                profile_id: "openai-gpt-5".to_owned(),
+                kind: mvp::config::ProviderKind::Openai,
+                source: "Codex config at ~/.codex/config.toml".to_owned(),
+                summary: "OpenAI · gpt-5 · credentials resolved".to_owned(),
+                config: mvp::config::ProviderConfig {
+                    kind: mvp::config::ProviderKind::Openai,
+                    model: "gpt-5".to_owned(),
+                    api_key_env: Some("OPENAI_MAIN_API_KEY".to_owned()),
+                    ..mvp::config::ProviderConfig::default()
+                },
+            },
+            crate::migration::ImportedProviderChoice {
+                profile_id: "openai-o4-mini".to_owned(),
+                kind: mvp::config::ProviderKind::Openai,
+                source: "your current environment".to_owned(),
+                summary: "OpenAI · o4-mini · credentials resolved".to_owned(),
+                config: mvp::config::ProviderConfig {
+                    kind: mvp::config::ProviderKind::Openai,
+                    model: "o4-mini".to_owned(),
+                    api_key_env: Some("OPENAI_REASONING_API_KEY".to_owned()),
+                    ..mvp::config::ProviderConfig::default()
+                },
+            },
+        ],
+        default_kind: Some(mvp::config::ProviderKind::Openai),
+        default_profile_id: Some("openai-o4-mini".to_owned()),
+        requires_explicit_choice: false,
+    };
+
+    let lines = crate::onboard_cli::render_provider_selection_screen_lines(&plan, 80);
+
+    assert!(
+        lines.iter().any(|line| line == "[openai-gpt-5] OpenAI"),
+        "same-kind provider choices should expose the stable profile id instead of only the provider kind: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "[openai-o4-mini] OpenAI (recommended)"),
+        "only the resolved default profile should be marked recommended when same-kind choices coexist: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("selectors: openai-gpt-5, gpt-5")),
+        "each choice should show the selectors a human can type, not only the stable profile id: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("selectors: openai-o4-mini, o4-mini, openai")),
+        "the default-for-kind choice should surface its provider-kind selector alongside profile/model aliases: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "press Enter to use [openai-o4-mini], the OpenAI provider"),
+        "the Enter shortcut should point at the concrete default profile id, not only the provider kind: {lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|line| line.contains(
+            crate::migration::provider_selection::PROVIDER_SELECTOR_NOTE
+        )),
+        "provider choice screen should explain the broader selector grammar without forcing users to memorize only profile ids: {lines:#?}"
+    );
+}
+
+#[test]
+fn onboard_provider_selector_reports_ambiguous_model_name() {
+    let plan = crate::migration::ProviderSelectionPlan {
+        imported_choices: vec![
+            crate::migration::ImportedProviderChoice {
+                profile_id: "openai-gpt-5".to_owned(),
+                kind: mvp::config::ProviderKind::Openai,
+                source: "Codex config at ~/.codex/config.toml".to_owned(),
+                summary: "OpenAI · gpt-5 · credentials resolved".to_owned(),
+                config: mvp::config::ProviderConfig {
+                    kind: mvp::config::ProviderKind::Openai,
+                    model: "gpt-5".to_owned(),
+                    api_key_env: Some("OPENAI_API_KEY".to_owned()),
+                    ..mvp::config::ProviderConfig::default()
+                },
+            },
+            crate::migration::ImportedProviderChoice {
+                profile_id: "openrouter-gpt-5".to_owned(),
+                kind: mvp::config::ProviderKind::Openrouter,
+                source: "your current environment".to_owned(),
+                summary: "OpenRouter · gpt-5 · credentials resolved".to_owned(),
+                config: mvp::config::ProviderConfig {
+                    kind: mvp::config::ProviderKind::Openrouter,
+                    model: "gpt-5".to_owned(),
+                    api_key_env: Some("OPENROUTER_API_KEY".to_owned()),
+                    ..mvp::config::ProviderConfig::default()
+                },
+            },
+        ],
+        default_kind: Some(mvp::config::ProviderKind::Openai),
+        default_profile_id: Some("openai-gpt-5".to_owned()),
+        requires_explicit_choice: false,
+    };
+
+    let error = crate::onboard_cli::resolve_provider_config_from_selector(
+        &mvp::config::ProviderConfig::default(),
+        &plan,
+        "gpt-5",
+    )
+    .expect_err("duplicate model selectors should surface an ambiguity error");
+
+    assert!(error.contains("ambiguous"));
+    assert!(error.contains("try one of:"));
+    assert!(error.contains("openai-gpt-5"));
+    assert!(error.contains("openrouter-gpt-5"));
+    assert!(error.contains("model=gpt-5"));
+    assert!(error.contains("selectors=openai-gpt-5, openai"));
+    assert!(error.contains("selectors=openrouter-gpt-5, openrouter"));
+}
+
+#[test]
 fn onboard_provider_selection_screen_wraps_long_choice_details() {
     let plan = crate::migration::ProviderSelectionPlan {
         imported_choices: vec![
@@ -1719,6 +1905,40 @@ fn onboard_provider_selection_screen_wraps_long_choice_details() {
             .iter()
             .any(|line| line == "    summary: OpenAI · openai/gpt-5.1-codex ·"),
         "provider choice screen should keep the summary label visible before wrapping: {lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|line| line == "    selector: openai"),
+        "narrow provider choice screens should collapse selector aliases into one preferred selector per choice to stay scannable: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .all(|line| !line.starts_with("    selectors: ")),
+        "narrow provider choice screens should avoid repeating the full selector catalog inside each choice row while still allowing the footer to expose the complete selector catalog: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .all(|line| !line.starts_with("accepted selectors: ")),
+        "narrow provider choice screens should drop the full footer selector catalog once each choice already shows a preferred selector and the footer offers quick picks: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("type a model, suffix, or provider kind")),
+        "narrow provider choice screens should use a shorter selector guidance line that is easier to scan than the full long-form explanation: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .all(|line| !line.contains("you can also enter a unique model name")),
+        "narrow provider choice screens should avoid wrapping the longer selector grammar sentence once the compact variant is available: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("try one of: openai, deepseek")),
+        "narrow provider choice screens should keep the quick-pick footer guidance after hiding the full selector catalog: {lines:#?}"
     );
 }
 

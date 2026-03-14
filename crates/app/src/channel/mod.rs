@@ -960,9 +960,11 @@ pub async fn run_telegram_channel(
                             process_channel_batch(&mut adapter, batch, Some(runtime.as_ref()), |message| {
                                 let config = config.clone();
                                 let kernel_ctx = kernel_ctx.clone();
+                                let resolved_path = resolved_path.clone();
                                 Box::pin(async move {
                                     process_inbound_with_provider(
                                         &config,
+                                        Some(resolved_path.as_path()),
                                         &message,
                                         Some(kernel_ctx.as_ref()),
                                     )
@@ -1212,18 +1214,20 @@ pub(crate) async fn send_text_to_known_session(
 #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
 pub(super) async fn process_inbound_with_provider(
     config: &LoongClawConfig,
+    resolved_path: Option<&std::path::Path>,
     message: &ChannelInboundMessage,
     kernel_ctx: Option<&KernelContext>,
 ) -> CliResult<String> {
+    let turn_config = reload_channel_turn_config(config, resolved_path)?;
     let address = message.session.conversation_address();
-    let acp_turn_hints = resolve_channel_acp_turn_hints(config, &message.session)?;
+    let acp_turn_hints = resolve_channel_acp_turn_hints(&turn_config, &message.session)?;
     let acp_options = AcpConversationTurnOptions::automatic()
         .with_additional_bootstrap_mcp_servers(&acp_turn_hints.bootstrap_mcp_servers)
         .with_working_directory(acp_turn_hints.working_directory.as_deref())
         .with_provenance(channel_message_acp_turn_provenance(message));
     ConversationTurnCoordinator::new()
         .handle_turn_with_address_and_acp_options(
-            config,
+            &turn_config,
             &address,
             &message.text,
             ProviderErrorMode::Propagate,
@@ -1231,6 +1235,17 @@ pub(super) async fn process_inbound_with_provider(
             kernel_ctx,
         )
         .await
+}
+
+#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+fn reload_channel_turn_config(
+    config: &LoongClawConfig,
+    resolved_path: Option<&std::path::Path>,
+) -> CliResult<LoongClawConfig> {
+    match resolved_path {
+        Some(path) => config.reload_provider_runtime_state_from_path(path),
+        None => Ok(config.clone()),
+    }
 }
 
 #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
@@ -1586,6 +1601,57 @@ mod tests {
             &["start:1".to_owned(), "stop:1".to_owned()]
         );
         assert_eq!(*adapter.completed_batches.lock().expect("completed"), 0);
+    }
+
+    #[test]
+    #[cfg(feature = "config-toml")]
+    fn reload_channel_turn_config_refreshes_provider_state_without_mutating_channel_settings() {
+        let path = std::env::temp_dir().join(format!(
+            "loongclaw-channel-provider-reload-{}.toml",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let path_string = path.display().to_string();
+
+        let mut in_memory = LoongClawConfig::default();
+        in_memory.telegram.enabled = true;
+        in_memory.telegram.allowed_chat_ids = vec![1001];
+        let mut openai =
+            crate::config::ProviderConfig::fresh_for_kind(crate::config::ProviderKind::Openai);
+        openai.model = "gpt-5".to_owned();
+        in_memory.set_active_provider_profile(
+            "openai-gpt-5",
+            crate::config::ProviderProfileConfig {
+                default_for_kind: true,
+                provider: openai.clone(),
+            },
+        );
+
+        let mut on_disk = in_memory.clone();
+        on_disk.telegram.allowed_chat_ids = vec![2002];
+        let mut deepseek =
+            crate::config::ProviderConfig::fresh_for_kind(crate::config::ProviderKind::Deepseek);
+        deepseek.model = "deepseek-chat".to_owned();
+        on_disk.providers.insert(
+            "deepseek-chat".to_owned(),
+            crate::config::ProviderProfileConfig {
+                default_for_kind: true,
+                provider: deepseek.clone(),
+            },
+        );
+        on_disk.provider = deepseek;
+        on_disk.active_provider = Some("deepseek-chat".to_owned());
+        crate::config::write(Some(&path_string), &on_disk, true).expect("write config fixture");
+
+        let reloaded =
+            reload_channel_turn_config(&in_memory, Some(path.as_path())).expect("reload");
+        assert_eq!(reloaded.active_provider_id(), Some("deepseek-chat"));
+        assert_eq!(reloaded.provider.model, "deepseek-chat");
+        assert_eq!(reloaded.telegram.allowed_chat_ids, vec![1001]);
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
