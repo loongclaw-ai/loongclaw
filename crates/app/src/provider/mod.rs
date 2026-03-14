@@ -174,7 +174,7 @@ pub async fn request_completion(
         &session.model_candidates,
         session.auto_model_mode,
         session.model_candidate_cooldown_policy.as_ref(),
-        |model, auto_model_mode, authorization_header| {
+        |model, auto_model_mode, auth_profile| {
             request_completion_with_model(
                 config,
                 messages,
@@ -182,11 +182,12 @@ pub async fn request_completion(
                 session.runtime_contract,
                 &session.capability_profile,
                 auto_model_mode,
-                authorization_header,
+                auth_profile,
                 &session.endpoint,
                 &session.headers,
                 &session.request_policy,
                 &session.client,
+                &session.auth_context,
             )
         },
     )
@@ -207,7 +208,7 @@ pub async fn request_turn(
         &session.model_candidates,
         session.auto_model_mode,
         session.model_candidate_cooldown_policy.as_ref(),
-        |model, auto_model_mode, authorization_header| {
+        |model, auto_model_mode, auth_profile| {
             request_turn_with_model(
                 config,
                 messages,
@@ -215,11 +216,12 @@ pub async fn request_turn(
                 session.runtime_contract,
                 &session.capability_profile,
                 auto_model_mode,
-                authorization_header,
+                auth_profile,
                 &session.endpoint,
                 &session.headers,
                 &session.request_policy,
                 &session.client,
+                &session.auth_context,
             )
         },
     )
