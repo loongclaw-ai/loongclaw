@@ -10,7 +10,7 @@ use super::shared::{
 pub(crate) const MIN_MEMORY_SLIDING_WINDOW: usize = 1;
 pub(crate) const MAX_MEMORY_SLIDING_WINDOW: usize = 128;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolConfig {
     #[serde(default)]
     pub file_root: Option<String>,
@@ -24,6 +24,53 @@ pub struct ToolConfig {
     /// Default policy for unknown commands: "deny" (default) or "allow".
     #[serde(default = "default_shell_default_mode")]
     pub shell_default_mode: String,
+    #[serde(default)]
+    pub sessions: SessionToolConfig,
+    #[serde(default)]
+    pub messages: MessageToolConfig,
+    #[serde(default)]
+    pub delegate: DelegateToolConfig,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum SessionVisibility {
+    #[serde(rename = "self")]
+    SelfOnly,
+    #[default]
+    #[serde(rename = "children")]
+    Children,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionToolConfig {
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub visibility: SessionVisibility,
+    #[serde(default = "default_session_list_limit")]
+    pub list_limit: usize,
+    #[serde(default = "default_session_history_limit")]
+    pub history_limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct MessageToolConfig {
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DelegateToolConfig {
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_delegate_max_depth")]
+    pub max_depth: usize,
+    #[serde(default = "default_delegate_timeout_seconds")]
+    pub timeout_seconds: u64,
+    #[serde(default = "default_delegate_child_tool_allowlist")]
+    pub child_tool_allowlist: Vec<String>,
+    #[serde(default)]
+    pub allow_shell_in_child: bool,
 }
 
 fn default_shell_default_mode() -> String {
@@ -155,6 +202,32 @@ impl Default for ToolConfig {
             shell_allow: default_shell_allow(),
             shell_deny: Vec::new(),
             shell_default_mode: default_shell_default_mode(),
+            sessions: SessionToolConfig::default(),
+            messages: MessageToolConfig::default(),
+            delegate: DelegateToolConfig::default(),
+        }
+    }
+}
+
+impl Default for SessionToolConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_enabled(),
+            visibility: SessionVisibility::default(),
+            list_limit: default_session_list_limit(),
+            history_limit: default_session_history_limit(),
+        }
+    }
+}
+
+impl Default for DelegateToolConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_enabled(),
+            max_depth: default_delegate_max_depth(),
+            timeout_seconds: default_delegate_timeout_seconds(),
+            child_tool_allowlist: default_delegate_child_tool_allowlist(),
+            allow_shell_in_child: false,
         }
     }
 }
@@ -262,6 +335,29 @@ fn default_sqlite_path() -> String {
         .to_string()
 }
 
+const fn default_enabled() -> bool {
+    true
+}
+
+const fn default_session_list_limit() -> usize {
+    100
+}
+
+const fn default_session_history_limit() -> usize {
+    200
+}
+
+const fn default_delegate_max_depth() -> usize {
+    1
+}
+
+const fn default_delegate_timeout_seconds() -> u64 {
+    60
+}
+
+fn default_delegate_child_tool_allowlist() -> Vec<String> {
+    vec!["file.read".to_owned(), "file.write".to_owned()]
+}
 const fn default_require_download_approval() -> bool {
     true
 }
@@ -291,6 +387,66 @@ const fn default_summary_max_chars() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_config_defaults_expose_session_runtime_policy() {
+        let config = ToolConfig::default();
+        assert!(config.shell_allow.is_empty());
+        assert!(config.shell_deny.is_empty());
+        assert_eq!(config.shell_default_mode, "deny");
+        assert!(config.sessions.enabled);
+        assert_eq!(config.sessions.visibility, SessionVisibility::Children);
+        assert_eq!(config.sessions.list_limit, 100);
+        assert_eq!(config.sessions.history_limit, 200);
+        assert!(!config.messages.enabled);
+        assert!(config.delegate.enabled);
+        assert_eq!(config.delegate.max_depth, 1);
+        assert_eq!(config.delegate.timeout_seconds, 60);
+        assert_eq!(
+            config.delegate.child_tool_allowlist,
+            vec!["file.read".to_owned(), "file.write".to_owned()]
+        );
+        assert!(!config.delegate.allow_shell_in_child);
+    }
+
+    #[cfg(feature = "config-toml")]
+    #[test]
+    fn tool_config_parses_session_runtime_controls_from_toml() {
+        let raw = r#"
+[tools.sessions]
+visibility = "self"
+list_limit = 12
+history_limit = 34
+
+[tools.messages]
+enabled = true
+
+[tools.delegate]
+enabled = false
+max_depth = 2
+timeout_seconds = 90
+allow_shell_in_child = true
+child_tool_allowlist = ["file.read", "shell.exec"]
+"#;
+        let parsed =
+            toml::from_str::<crate::config::LoongClawConfig>(raw).expect("parse tool config");
+
+        assert_eq!(
+            parsed.tools.sessions.visibility,
+            SessionVisibility::SelfOnly
+        );
+        assert_eq!(parsed.tools.sessions.list_limit, 12);
+        assert_eq!(parsed.tools.sessions.history_limit, 34);
+        assert!(parsed.tools.messages.enabled);
+        assert!(!parsed.tools.delegate.enabled);
+        assert_eq!(parsed.tools.delegate.max_depth, 2);
+        assert_eq!(parsed.tools.delegate.timeout_seconds, 90);
+        assert!(parsed.tools.delegate.allow_shell_in_child);
+        assert_eq!(
+            parsed.tools.delegate.child_tool_allowlist,
+            vec!["file.read".to_owned(), "shell.exec".to_owned()]
+        );
+    }
 
     #[test]
     fn memory_profile_defaults_to_window_only() {
