@@ -4948,6 +4948,82 @@ async fn handle_turn_with_runtime_approval_required_skips_completion_rewrite() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_turn_with_runtime_safe_lane_approval_required_is_not_retried() {
+    use super::integration_tests::TurnTestHarness;
+
+    let harness = TurnTestHarness::with_shell_allowlist(BTreeSet::from(["curl".to_owned()]));
+    let runtime = FakeRuntime::with_turn_and_completion(
+        vec![],
+        Ok(ProviderTurn {
+            assistant_text: "Trying the local search endpoint.".to_owned(),
+            tool_intents: vec![ToolIntent {
+                tool_name: "shell.exec".to_owned(),
+                args_json: json!({
+                    "command": "curl",
+                    "args": ["http://127.0.0.1:8080/search?q=arch"]
+                }),
+                source: "provider_tool_call".to_owned(),
+                session_id: "session-safe-approval-required".to_owned(),
+                turn_id: "turn-safe-approval-required".to_owned(),
+                tool_call_id: "call-safe-approval-required".to_owned(),
+            }],
+            raw_meta: Value::Null,
+        }),
+        Ok("MODEL_SHOULD_NOT_RUN".to_owned()),
+    );
+
+    let mut config = test_config();
+    config.conversation.safe_lane_plan_execution_enabled = true;
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "session-safe-approval-required",
+            "deploy to production with secret token and show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            Some(&harness.kernel_ctx),
+        )
+        .await
+        .expect("safe-lane approval-required tool failure should finalize directly");
+
+    assert!(
+        reply.contains("[tool_approval_required]"),
+        "expected approval-required marker, got: {reply}"
+    );
+    assert!(
+        reply.contains("requires approval by default shell policy"),
+        "expected truthful approval-required reason, got: {reply}"
+    );
+    assert_eq!(
+        *runtime
+            .completion_calls
+            .lock()
+            .expect("completion calls lock"),
+        0,
+        "safe-lane approval-required replies should not run a completion rewrite"
+    );
+
+    let approval_denials = harness
+        .audit
+        .snapshot()
+        .iter()
+        .filter(|event| {
+            matches!(
+                &event.kind,
+                loongclaw_kernel::AuditEventKind::AuthorizationDenied { reason, .. }
+                    if reason.contains("requires approval by default shell policy")
+            )
+        })
+        .count();
+    assert_eq!(
+        approval_denials, 1,
+        "safe-lane approval-required tool calls should be audited once"
+    );
+}
+
 #[test]
 fn format_provider_error_reply_is_stable() {
     let output = format_provider_error_reply("timeout");
