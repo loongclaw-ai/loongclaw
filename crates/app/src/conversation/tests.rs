@@ -5425,6 +5425,132 @@ async fn turn_engine_routes_app_tools_through_dispatcher() {
     );
 }
 
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn default_app_tool_dispatcher_executes_session_wait_for_visible_terminal_child_session() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-session-wait", "dispatcher")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "child-session".to_owned(),
+        kind: crate::session::repository::SessionKind::DelegateChild,
+        parent_session_id: Some("root-session".to_owned()),
+        label: Some("Child".to_owned()),
+        state: crate::session::repository::SessionState::Completed,
+    })
+    .expect("create child session");
+    repo.upsert_terminal_outcome(
+        "child-session",
+        "ok",
+        json!({
+            "child_session_id": "child-session",
+            "final_output": "done"
+        }),
+    )
+    .expect("upsert terminal outcome");
+
+    let dispatcher = DefaultAppToolDispatcher::new(memory_config, config.tools.clone());
+    let session_context = SessionContext::root_with_tool_view(
+        "root-session",
+        crate::tools::runtime_tool_view_for_config(&config.tools),
+    );
+
+    let outcome = dispatcher
+        .execute_app_tool(
+            &session_context,
+            loongclaw_contracts::ToolCoreRequest {
+                tool_name: "session_wait".to_owned(),
+                payload: json!({
+                    "session_id": "child-session",
+                    "timeout_ms": 50
+                }),
+            },
+            None,
+        )
+        .await
+        .expect("session_wait outcome");
+
+    assert_eq!(outcome.status, "ok");
+    assert_eq!(outcome.payload["wait_status"], "completed");
+    assert_eq!(outcome.payload["session"]["session_id"], "child-session");
+    assert_eq!(outcome.payload["terminal_outcome"]["status"], "ok");
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn child_session_hidden_session_wait_is_rejected_by_default_dispatcher() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-session-wait", "hidden-child")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "child-session".to_owned(),
+        kind: crate::session::repository::SessionKind::DelegateChild,
+        parent_session_id: Some("root-session".to_owned()),
+        label: Some("Child".to_owned()),
+        state: crate::session::repository::SessionState::Completed,
+    })
+    .expect("create child session");
+
+    let dispatcher = DefaultAppToolDispatcher::new(memory_config, config.tools.clone());
+    let session_context = SessionContext::child(
+        "child-session",
+        "root-session",
+        crate::tools::planned_delegate_child_tool_view(),
+    );
+
+    let error = dispatcher
+        .execute_app_tool(
+            &session_context,
+            loongclaw_contracts::ToolCoreRequest {
+                tool_name: "session_wait".to_owned(),
+                payload: json!({
+                    "session_id": "child-session",
+                    "timeout_ms": 10
+                }),
+            },
+            None,
+        )
+        .await
+        .expect_err("child should not execute hidden session_wait");
+
+    assert!(
+        error.contains("tool_not_visible: session_wait"),
+        "expected tool_not_visible for session_wait, got: {error}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn turn_engine_tool_execution_error_is_marked_retryable() {
     use crate::conversation::turn_engine::{
@@ -8223,6 +8349,93 @@ async fn handle_turn_with_runtime_executes_session_tools_via_default_dispatcher(
 
 #[cfg(feature = "memory-sqlite")]
 #[tokio::test]
+async fn handle_turn_with_runtime_executes_session_wait_via_default_dispatcher() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-session-wait", "normal-lane")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "child-session".to_owned(),
+        kind: crate::session::repository::SessionKind::DelegateChild,
+        parent_session_id: Some("root-session".to_owned()),
+        label: Some("Child".to_owned()),
+        state: crate::session::repository::SessionState::Completed,
+    })
+    .expect("create child session");
+    repo.upsert_terminal_outcome(
+        "child-session",
+        "ok",
+        json!({
+            "child_session_id": "child-session",
+            "final_output": "done"
+        }),
+    )
+    .expect("upsert terminal outcome");
+
+    let runtime = FakeRuntime::with_turn_and_completion(
+        vec![],
+        Ok(ProviderTurn {
+            assistant_text: "Waiting for session completion.".to_owned(),
+            tool_intents: vec![ToolIntent {
+                tool_name: "session_wait".to_owned(),
+                args_json: json!({
+                    "session_id": "child-session",
+                    "timeout_ms": 50
+                }),
+                source: "provider_tool_call".to_owned(),
+                session_id: "root-session".to_owned(),
+                turn_id: "turn-session-wait".to_owned(),
+                tool_call_id: "call-session-wait".to_owned(),
+            }],
+            raw_meta: Value::Null,
+        }),
+        Ok("unused".to_owned()),
+    );
+    let coordinator = ConversationTurnCoordinator::new();
+
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "root-session",
+            "show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            None,
+        )
+        .await
+        .expect("handle turn success");
+
+    assert!(
+        reply.contains("\"tool\":\"session_wait\""),
+        "expected raw session_wait tool output, got: {reply}"
+    );
+    assert!(
+        reply.contains("child-session"),
+        "expected waited child session in output, got: {reply}"
+    );
+    assert!(
+        !reply.contains("tool_not_visible"),
+        "expected dispatcher to execute session_wait, got: {reply}"
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
 async fn handle_turn_with_runtime_safe_lane_executes_session_tools_via_default_dispatcher() {
     let db_path = std::env::temp_dir().join(format!(
         "{}.sqlite3",
@@ -8290,6 +8503,94 @@ async fn handle_turn_with_runtime_safe_lane_executes_session_tools_via_default_d
     assert!(
         reply.contains("child-session"),
         "expected listed child session in output, got: {reply}"
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn handle_turn_with_runtime_safe_lane_executes_session_wait_via_default_dispatcher() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-session-wait", "safe-lane")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    config.conversation.safe_lane_plan_execution_enabled = true;
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "child-session".to_owned(),
+        kind: crate::session::repository::SessionKind::DelegateChild,
+        parent_session_id: Some("root-session".to_owned()),
+        label: Some("Child".to_owned()),
+        state: crate::session::repository::SessionState::Completed,
+    })
+    .expect("create child session");
+    repo.upsert_terminal_outcome(
+        "child-session",
+        "ok",
+        json!({
+            "child_session_id": "child-session",
+            "final_output": "done"
+        }),
+    )
+    .expect("upsert terminal outcome");
+
+    let runtime = FakeRuntime::with_turn_and_completion(
+        vec![],
+        Ok(ProviderTurn {
+            assistant_text: "Waiting for session completion safely.".to_owned(),
+            tool_intents: vec![ToolIntent {
+                tool_name: "session_wait".to_owned(),
+                args_json: json!({
+                    "session_id": "child-session",
+                    "timeout_ms": 50
+                }),
+                source: "provider_tool_call".to_owned(),
+                session_id: "root-session".to_owned(),
+                turn_id: "turn-safe-session-wait".to_owned(),
+                tool_call_id: "call-safe-session-wait".to_owned(),
+            }],
+            raw_meta: Value::Null,
+        }),
+        Ok("unused".to_owned()),
+    );
+    let coordinator = ConversationTurnCoordinator::new();
+
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "root-session",
+            "deploy safely and show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            None,
+        )
+        .await
+        .expect("safe-lane handle turn success");
+
+    assert!(
+        reply.contains("\"tool\":\"session_wait\""),
+        "expected raw session_wait tool output, got: {reply}"
+    );
+    assert!(
+        reply.contains("child-session"),
+        "expected waited child session in output, got: {reply}"
+    );
+    assert!(
+        !reply.contains("tool_not_visible"),
+        "expected safe lane dispatcher to execute session_wait, got: {reply}"
     );
 }
 

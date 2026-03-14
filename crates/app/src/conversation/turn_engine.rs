@@ -316,6 +316,15 @@ impl AppToolDispatcher for DefaultAppToolDispatcher {
         }
 
         let effective_tool_config = self.effective_tool_config_for_session(session_context);
+        if canonical_tool_name == "session_wait" {
+            return crate::tools::wait_for_session_with_config(
+                request.payload,
+                &session_context.session_id,
+                &self.memory_config,
+                &effective_tool_config,
+            )
+            .await;
+        }
         crate::tools::execute_app_tool_with_config(
             request,
             &session_context.session_id,
