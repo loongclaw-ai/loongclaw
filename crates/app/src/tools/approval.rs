@@ -236,6 +236,7 @@ fn execute_approval_requests_list(
                 == Some(integrity_status)
         });
     }
+    let integrity_summary = approval_request_list_integrity_summary_json(&request_summaries);
     let matched_count = request_summaries.len();
     request_summaries.truncate(request.limit);
     let returned_count = request_summaries.len();
@@ -253,6 +254,7 @@ fn execute_approval_requests_list(
             "visible_session_ids": target_session_ids,
             "matched_count": matched_count,
             "returned_count": returned_count,
+            "integrity_summary": integrity_summary,
             "requests": request_summaries,
         }),
     })
@@ -364,6 +366,38 @@ fn approval_request_summary_json_with_evidence(
             .and_then(Value::as_str),
         "execution_evidence": execution_evidence,
         "execution_integrity": execution_integrity,
+    })
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn approval_request_list_integrity_summary_json(requests: &[Value]) -> Value {
+    let mut counts_by_status = BTreeMap::from([
+        ("not_started".to_owned(), 0usize),
+        ("in_progress".to_owned(), 0usize),
+        ("complete".to_owned(), 0usize),
+        ("incomplete".to_owned(), 0usize),
+    ]);
+    let mut incomplete_gap_counts = BTreeMap::<String, usize>::new();
+
+    for request in requests {
+        let execution_integrity = request.get("execution_integrity").unwrap_or(&Value::Null);
+        let status = execution_integrity
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        if let Some(count) = counts_by_status.get_mut(status) {
+            *count += 1;
+        }
+        if status == "incomplete" {
+            if let Some(gap) = execution_integrity.get("gap").and_then(Value::as_str) {
+                *incomplete_gap_counts.entry(gap.to_owned()).or_default() += 1;
+            }
+        }
+    }
+
+    json!({
+        "counts_by_status": counts_by_status,
+        "incomplete_gap_counts": incomplete_gap_counts,
     })
 }
 
@@ -1286,6 +1320,145 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0]["approval_request_id"], "apr-incomplete");
         assert_eq!(requests[0]["execution_integrity"]["status"], "incomplete");
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn approval_request_tool_query_list_surfaces_integrity_summary_counts() {
+        let config = isolated_memory_config("approval-query-list-integrity-summary");
+        let repo = SessionRepository::new(&config).expect("repository");
+        seed_session(&repo, "root-session", SessionKind::Root, None);
+        seed_request(
+            &repo,
+            "apr-summary-not-started",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+        );
+        seed_request(
+            &repo,
+            "apr-summary-in-progress",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+        );
+        seed_request(
+            &repo,
+            "apr-summary-complete",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+        );
+        seed_request(
+            &repo,
+            "apr-summary-incomplete",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+        );
+
+        transition_request_status(
+            &repo,
+            "apr-summary-in-progress",
+            ApprovalRequestStatus::Pending,
+            ApprovalRequestStatus::Executing,
+            None,
+        );
+        transition_request_status(
+            &repo,
+            "apr-summary-complete",
+            ApprovalRequestStatus::Pending,
+            ApprovalRequestStatus::Executed,
+            None,
+        );
+        transition_request_status(
+            &repo,
+            "apr-summary-incomplete",
+            ApprovalRequestStatus::Pending,
+            ApprovalRequestStatus::Executed,
+            Some("persist assistant turn via kernel failed: forced outcome persistence failure"),
+        );
+
+        repo.append_event(crate::session::repository::NewSessionEvent {
+            session_id: "root-session".to_owned(),
+            event_kind: "tool_approval_execution_started".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "approval_request_id": "apr-summary-in-progress",
+                "replay_decision_persisted": true,
+                "replay_decision_persist_error": null,
+            }),
+        })
+        .expect("append in-progress started event");
+        repo.append_event(crate::session::repository::NewSessionEvent {
+            session_id: "root-session".to_owned(),
+            event_kind: "tool_approval_execution_started".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "approval_request_id": "apr-summary-complete",
+                "replay_decision_persisted": true,
+                "replay_decision_persist_error": null,
+            }),
+        })
+        .expect("append complete started event");
+        repo.append_event(crate::session::repository::NewSessionEvent {
+            session_id: "root-session".to_owned(),
+            event_kind: "tool_approval_execution_finished".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "approval_request_id": "apr-summary-complete",
+                "resumed_tool_status": "ok",
+                "replay_outcome_persisted": true,
+                "replay_outcome_persist_error": null,
+            }),
+        })
+        .expect("append complete finished event");
+        repo.append_event(crate::session::repository::NewSessionEvent {
+            session_id: "root-session".to_owned(),
+            event_kind: "tool_approval_execution_started".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "approval_request_id": "apr-summary-incomplete",
+                "replay_decision_persisted": true,
+                "replay_decision_persist_error": null,
+            }),
+        })
+        .expect("append incomplete started event");
+        repo.append_event(crate::session::repository::NewSessionEvent {
+            session_id: "root-session".to_owned(),
+            event_kind: "tool_approval_execution_finished".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "approval_request_id": "apr-summary-incomplete",
+                "resumed_tool_status": "ok",
+                "replay_outcome_persisted": false,
+                "replay_outcome_persist_error": "persist assistant turn via kernel failed: forced outcome persistence failure",
+            }),
+        })
+        .expect("append incomplete finished event");
+
+        let outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome");
+
+        let summary = &outcome.payload["integrity_summary"];
+        assert_eq!(summary["counts_by_status"]["not_started"], 1);
+        assert_eq!(summary["counts_by_status"]["in_progress"], 1);
+        assert_eq!(summary["counts_by_status"]["complete"], 1);
+        assert_eq!(summary["counts_by_status"]["incomplete"], 1);
+        assert_eq!(
+            summary["incomplete_gap_counts"]["replay_outcome_missing"],
+            1
+        );
     }
 
     #[cfg(feature = "memory-sqlite")]
