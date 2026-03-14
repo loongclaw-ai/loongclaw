@@ -8544,6 +8544,11 @@ async fn approval_request_resume_once_executes_blocked_app_tool_and_marks_reques
 
     match result {
         TurnResult::FinalText(text) => {
+            let payload = text
+                .strip_prefix("[ok] ")
+                .expect("approval resolve output should use [ok] envelope");
+            let json: Value = serde_json::from_str(payload)
+                .expect("approval resolve output should be valid json");
             assert!(
                 text.contains("\"approval_request_id\":\"apr-approve-once-success\""),
                 "expected approval request id in output, got: {text}"
@@ -8561,8 +8566,16 @@ async fn approval_request_resume_once_executes_blocked_app_tool_and_marks_reques
                 "expected execution_evidence in output, got: {text}"
             );
             assert!(
+                text.contains("\"execution_integrity\":{"),
+                "expected execution_integrity in output, got: {text}"
+            );
+            assert!(
                 text.contains("\"evidence_complete\":true"),
                 "expected complete execution evidence in output, got: {text}"
+            );
+            assert_eq!(
+                json["approval_request"]["execution_integrity"]["status"],
+                "complete"
             );
         }
         other => panic!("expected FinalText, got: {other:?}"),
@@ -9565,6 +9578,11 @@ async fn approval_request_resume_once_records_successful_replay_outcome_persiste
 
     match result {
         TurnResult::FinalText(text) => {
+            let payload = text
+                .strip_prefix("[ok] ")
+                .expect("approval resolve output should use [ok] envelope");
+            let json: Value = serde_json::from_str(payload)
+                .expect("approval resolve output should be valid json");
             assert!(
                 text.contains("\"status\":\"executed\""),
                 "expected executed status in output, got: {text}"
@@ -9578,8 +9596,16 @@ async fn approval_request_resume_once_records_successful_replay_outcome_persiste
                 "expected execution_evidence in output, got: {text}"
             );
             assert!(
+                text.contains("\"execution_integrity\":{"),
+                "expected execution_integrity in output, got: {text}"
+            );
+            assert!(
                 text.contains("\"evidence_complete\":false"),
                 "expected incomplete execution evidence in output, got: {text}"
+            );
+            assert_eq!(
+                json["approval_request"]["execution_integrity"]["status"],
+                "incomplete"
             );
         }
         other => panic!("expected FinalText, got: {other:?}"),

@@ -199,12 +199,14 @@ fn execute_approval_requests_list(
                 .get(&record.session_id)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
+            let execution_evidence = approval_request_execution_evidence_json_from_events(
+                session_events,
+                &record.approval_request_id,
+            );
             approval_request_summary_json_with_evidence(
                 record,
-                approval_request_execution_evidence_json_from_events(
-                    session_events,
-                    &record.approval_request_id,
-                ),
+                execution_evidence.clone(),
+                approval_request_execution_integrity_json(record, &execution_evidence),
             )
         })
         .collect::<Vec<_>>();
@@ -244,6 +246,9 @@ fn execute_approval_request_status(
         &request.session_id,
         tool_config.sessions.visibility,
     )?;
+    let execution_evidence = approval_request_execution_evidence_json(&repo, &request)?;
+    let execution_integrity =
+        approval_request_execution_integrity_json(&request, &execution_evidence);
 
     Ok(ToolCoreOutcome {
         status: "ok".to_owned(),
@@ -251,7 +256,8 @@ fn execute_approval_request_status(
             "current_session_id": current_session_id,
             "approval_request": approval_request_detail_json_with_evidence(
                 &request,
-                approval_request_execution_evidence_json(&repo, &request)?,
+                execution_evidence,
+                execution_integrity,
             ),
         }),
     })
@@ -279,6 +285,10 @@ async fn execute_approval_request_resolve(
         )
         .await?;
     let repo = SessionRepository::new(config)?;
+    let execution_evidence =
+        approval_request_execution_evidence_json(&repo, &outcome.approval_request)?;
+    let execution_integrity =
+        approval_request_execution_integrity_json(&outcome.approval_request, &execution_evidence);
 
     Ok(ToolCoreOutcome {
         status: "ok".to_owned(),
@@ -286,7 +296,8 @@ async fn execute_approval_request_resolve(
             "current_session_id": current_session_id,
             "approval_request": approval_request_detail_json_with_evidence(
                 &outcome.approval_request,
-                approval_request_execution_evidence_json(&repo, &outcome.approval_request)?,
+                execution_evidence,
+                execution_integrity,
             ),
             "resumed_tool_output": outcome.resumed_tool_output,
         }),
@@ -297,6 +308,7 @@ async fn execute_approval_request_resolve(
 fn approval_request_summary_json_with_evidence(
     record: &ApprovalRequestRecord,
     execution_evidence: Value,
+    execution_integrity: Value,
 ) -> Value {
     json!({
         "approval_request_id": record.approval_request_id,
@@ -321,6 +333,7 @@ fn approval_request_summary_json_with_evidence(
             .get("rule_id")
             .and_then(Value::as_str),
         "execution_evidence": execution_evidence,
+        "execution_integrity": execution_integrity,
     })
 }
 
@@ -328,6 +341,7 @@ fn approval_request_summary_json_with_evidence(
 fn approval_request_detail_json_with_evidence(
     record: &ApprovalRequestRecord,
     execution_evidence: Value,
+    execution_integrity: Value,
 ) -> Value {
     json!({
         "approval_request_id": record.approval_request_id,
@@ -346,6 +360,7 @@ fn approval_request_detail_json_with_evidence(
         "request_payload": record.request_payload_json,
         "governance_snapshot": record.governance_snapshot_json,
         "execution_evidence": execution_evidence,
+        "execution_integrity": execution_integrity,
     })
 }
 
@@ -360,6 +375,148 @@ fn approval_request_execution_evidence_json(
         &events,
         &record.approval_request_id,
     ))
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn approval_request_execution_integrity_json(
+    record: &ApprovalRequestRecord,
+    execution_evidence: &Value,
+) -> Value {
+    let started_event_kind = execution_evidence
+        .get("started_event_kind")
+        .and_then(Value::as_str);
+    let terminal_event_kind = execution_evidence
+        .get("terminal_event_kind")
+        .and_then(Value::as_str);
+    let replay_decision_persisted = execution_evidence
+        .get("replay_decision_persisted")
+        .and_then(Value::as_bool);
+    let replay_outcome_persisted = execution_evidence
+        .get("replay_outcome_persisted")
+        .and_then(Value::as_bool);
+    let replay_decision_persist_error = execution_evidence
+        .get("replay_decision_persist_error")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let replay_outcome_persist_error = execution_evidence
+        .get("replay_outcome_persist_error")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let execution_error = execution_evidence
+        .get("execution_error")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let evidence_complete = execution_evidence
+        .get("evidence_complete")
+        .cloned()
+        .unwrap_or(Value::Null);
+
+    let (status, gap, integrity_error) = if started_event_kind.is_none()
+        && terminal_event_kind.is_none()
+    {
+        match record.status {
+            ApprovalRequestStatus::Pending
+            | ApprovalRequestStatus::Approved
+            | ApprovalRequestStatus::Denied
+            | ApprovalRequestStatus::Expired
+            | ApprovalRequestStatus::Cancelled => ("not_started", Value::Null, Value::Null),
+            ApprovalRequestStatus::Executing => (
+                "incomplete",
+                Value::String("started_event_missing".to_owned()),
+                first_non_null_json_value(
+                    &[
+                        &replay_decision_persist_error,
+                        &replay_outcome_persist_error,
+                    ],
+                    Some("approval_request_missing_execution_started_event"),
+                ),
+            ),
+            ApprovalRequestStatus::Executed => (
+                "incomplete",
+                Value::String("execution_events_missing".to_owned()),
+                first_non_null_json_value(
+                    &[
+                        &replay_decision_persist_error,
+                        &replay_outcome_persist_error,
+                    ],
+                    Some("approval_request_missing_execution_events"),
+                ),
+            ),
+        }
+    } else if started_event_kind.is_none() && terminal_event_kind.is_some() {
+        (
+            "incomplete",
+            Value::String("started_event_missing".to_owned()),
+            first_non_null_json_value(
+                &[
+                    &replay_decision_persist_error,
+                    &replay_outcome_persist_error,
+                ],
+                Some("approval_request_missing_execution_started_event"),
+            ),
+        )
+    } else if started_event_kind.is_some() && terminal_event_kind.is_none() {
+        match record.status {
+            ApprovalRequestStatus::Executing => ("in_progress", Value::Null, Value::Null),
+            _ => (
+                "incomplete",
+                Value::String("terminal_event_missing".to_owned()),
+                first_non_null_json_value(
+                    &[
+                        &replay_decision_persist_error,
+                        &replay_outcome_persist_error,
+                    ],
+                    Some("approval_request_missing_execution_terminal_event"),
+                ),
+            ),
+        }
+    } else if replay_decision_persisted == Some(true) && replay_outcome_persisted == Some(true) {
+        ("complete", Value::Null, Value::Null)
+    } else if replay_decision_persisted != Some(true) && replay_outcome_persisted != Some(true) {
+        (
+            "incomplete",
+            Value::String("replay_decision_and_outcome_missing".to_owned()),
+            first_non_null_json_value(
+                &[
+                    &replay_decision_persist_error,
+                    &replay_outcome_persist_error,
+                ],
+                record.last_error.as_deref(),
+            ),
+        )
+    } else if replay_decision_persisted != Some(true) {
+        (
+            "incomplete",
+            Value::String("replay_decision_missing".to_owned()),
+            first_non_null_json_value(
+                &[
+                    &replay_decision_persist_error,
+                    &replay_outcome_persist_error,
+                ],
+                record.last_error.as_deref(),
+            ),
+        )
+    } else {
+        (
+            "incomplete",
+            Value::String("replay_outcome_missing".to_owned()),
+            first_non_null_json_value(
+                &[
+                    &replay_outcome_persist_error,
+                    &replay_decision_persist_error,
+                ],
+                record.last_error.as_deref(),
+            ),
+        )
+    };
+
+    json!({
+        "status": status,
+        "gap": gap,
+        "integrity_error": integrity_error,
+        "execution_error": execution_error,
+        "evidence_complete": evidence_complete,
+    })
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -449,6 +606,16 @@ fn approval_request_execution_evidence_json_from_events(
         "execution_error": execution_error,
         "evidence_complete": evidence_complete,
     })
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn first_non_null_json_value(values: &[&Value], fallback: Option<&str>) -> Value {
+    values
+        .iter()
+        .find(|value| !value.is_null())
+        .map(|value| (*value).clone())
+        .or_else(|| fallback.map(|value| Value::String(value.to_owned())))
+        .unwrap_or(Value::Null)
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -727,6 +894,8 @@ mod tests {
             root_request["execution_evidence"]["evidence_complete"],
             Value::Null
         );
+        assert_eq!(root_request["execution_integrity"]["status"], "not_started");
+        assert_eq!(root_request["execution_integrity"]["gap"], Value::Null);
     }
 
     #[cfg(feature = "memory-sqlite")]
@@ -792,6 +961,11 @@ mod tests {
         assert_eq!(evidence["replay_decision_persisted"], true);
         assert_eq!(evidence["replay_outcome_persisted"], true);
         assert_eq!(evidence["evidence_complete"], true);
+        let integrity = &request["execution_integrity"];
+        assert_eq!(integrity["status"], "complete");
+        assert_eq!(integrity["gap"], Value::Null);
+        assert_eq!(integrity["execution_error"], Value::Null);
+        assert_eq!(integrity["integrity_error"], Value::Null);
     }
 
     #[cfg(feature = "memory-sqlite")]
@@ -860,6 +1034,13 @@ mod tests {
             complete_evidence_count, 40,
             "all returned requests should retain complete execution evidence"
         );
+        let complete_integrity_count = requests
+            .iter()
+            .filter(|item| {
+                item["execution_integrity"]["status"] == Value::String("complete".to_owned())
+            })
+            .count();
+        assert_eq!(complete_integrity_count, 40);
     }
 
     #[cfg(feature = "memory-sqlite")]
@@ -919,6 +1100,8 @@ mod tests {
             request["execution_evidence"]["evidence_complete"],
             Value::Null
         );
+        assert_eq!(request["execution_integrity"]["status"], "not_started");
+        assert_eq!(request["execution_integrity"]["gap"], Value::Null);
     }
 
     #[cfg(feature = "memory-sqlite")]
@@ -984,6 +1167,76 @@ mod tests {
                 .as_str()
                 .is_some_and(|error| error.contains("persist assistant turn via kernel failed")),
             "expected replay outcome persistence error in evidence, got: {evidence}"
+        );
+        let integrity = &outcome.payload["approval_request"]["execution_integrity"];
+        assert_eq!(integrity["status"], "incomplete");
+        assert_eq!(integrity["gap"], "replay_outcome_missing");
+        assert_eq!(integrity["execution_error"], Value::Null);
+        assert!(
+            integrity["integrity_error"]
+                .as_str()
+                .is_some_and(|error| error.contains("persist assistant turn via kernel failed")),
+            "expected replay outcome persistence integrity error, got: {integrity}"
+        );
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn approval_request_tool_query_status_distinguishes_execution_failure_from_integrity_gap() {
+        let config = isolated_memory_config("approval-query-status-execution-failure");
+        let repo = SessionRepository::new(&config).expect("repository");
+        seed_session(&repo, "root-session", SessionKind::Root, None);
+        seed_request(
+            &repo,
+            "apr-visible-execution-failure",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+        );
+        repo.append_event(crate::session::repository::NewSessionEvent {
+            session_id: "root-session".to_owned(),
+            event_kind: "tool_approval_execution_started".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "approval_request_id": "apr-visible-execution-failure",
+                "replay_decision_persisted": true,
+                "replay_decision_persist_error": null,
+            }),
+        })
+        .expect("append started event");
+        repo.append_event(crate::session::repository::NewSessionEvent {
+            session_id: "root-session".to_owned(),
+            event_kind: "tool_approval_execution_failed".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "approval_request_id": "apr-visible-execution-failure",
+                "error": "tool failed for domain reasons",
+                "replay_outcome_persisted": true,
+                "replay_outcome_persist_error": null,
+            }),
+        })
+        .expect("append failed event");
+
+        let outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_request_status".to_owned(),
+                payload: json!({
+                    "approval_request_id": "apr-visible-execution-failure",
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_request_status outcome");
+
+        let integrity = &outcome.payload["approval_request"]["execution_integrity"];
+        assert_eq!(integrity["status"], "complete");
+        assert_eq!(integrity["gap"], Value::Null);
+        assert_eq!(integrity["integrity_error"], Value::Null);
+        assert_eq!(
+            integrity["execution_error"],
+            "tool failed for domain reasons"
         );
     }
 
