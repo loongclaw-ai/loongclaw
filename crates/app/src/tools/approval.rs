@@ -25,7 +25,29 @@ const APPROVAL_REQUEST_EVIDENCE_EVENT_BUDGET_PER_RETURNED_REQUEST: usize = 4;
 struct ApprovalRequestsListRequest {
     session_id: Option<String>,
     status: Option<ApprovalRequestStatus>,
+    integrity_status: Option<ApprovalExecutionIntegrityStatus>,
     limit: usize,
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApprovalExecutionIntegrityStatus {
+    NotStarted,
+    InProgress,
+    Complete,
+    Incomplete,
+}
+
+#[cfg(feature = "memory-sqlite")]
+impl ApprovalExecutionIntegrityStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NotStarted => "not_started",
+            Self::InProgress => "in_progress",
+            Self::Complete => "complete",
+            Self::Incomplete => "incomplete",
+        }
+    }
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -187,13 +209,10 @@ fn execute_approval_requests_list(
             .then_with(|| left.approval_request_id.cmp(&right.approval_request_id))
     });
 
-    let matched_count = requests.len();
-    requests.truncate(request.limit);
-    let returned_count = requests.len();
     let recent_events_by_session_id =
         approval_request_recent_events_by_session_id(&repo, &requests)?;
-    let request_summaries = requests
-        .iter()
+    let mut request_summaries = requests
+        .into_iter()
         .map(|record| {
             let session_events = recent_events_by_session_id
                 .get(&record.session_id)
@@ -204,12 +223,22 @@ fn execute_approval_requests_list(
                 &record.approval_request_id,
             );
             approval_request_summary_json_with_evidence(
-                record,
+                &record,
                 execution_evidence.clone(),
-                approval_request_execution_integrity_json(record, &execution_evidence),
+                approval_request_execution_integrity_json(&record, &execution_evidence),
             )
         })
         .collect::<Vec<_>>();
+    if let Some(integrity_status) = request.integrity_status {
+        request_summaries.retain(|item| {
+            item.get("execution_integrity")
+                .and_then(approval_request_execution_integrity_status_from_json)
+                == Some(integrity_status)
+        });
+    }
+    let matched_count = request_summaries.len();
+    request_summaries.truncate(request.limit);
+    let returned_count = request_summaries.len();
 
     Ok(ToolCoreOutcome {
         status: "ok".to_owned(),
@@ -218,6 +247,7 @@ fn execute_approval_requests_list(
             "filter": {
                 "session_id": request.session_id,
                 "status": request.status.map(ApprovalRequestStatus::as_str),
+                "integrity_status": request.integrity_status.map(ApprovalExecutionIntegrityStatus::as_str),
                 "limit": request.limit,
             },
             "visible_session_ids": target_session_ids,
@@ -419,9 +449,13 @@ fn approval_request_execution_integrity_json(
             | ApprovalRequestStatus::Approved
             | ApprovalRequestStatus::Denied
             | ApprovalRequestStatus::Expired
-            | ApprovalRequestStatus::Cancelled => ("not_started", Value::Null, Value::Null),
+            | ApprovalRequestStatus::Cancelled => (
+                ApprovalExecutionIntegrityStatus::NotStarted,
+                Value::Null,
+                Value::Null,
+            ),
             ApprovalRequestStatus::Executing => (
-                "incomplete",
+                ApprovalExecutionIntegrityStatus::Incomplete,
                 Value::String("started_event_missing".to_owned()),
                 first_non_null_json_value(
                     &[
@@ -432,7 +466,7 @@ fn approval_request_execution_integrity_json(
                 ),
             ),
             ApprovalRequestStatus::Executed => (
-                "incomplete",
+                ApprovalExecutionIntegrityStatus::Incomplete,
                 Value::String("execution_events_missing".to_owned()),
                 first_non_null_json_value(
                     &[
@@ -445,7 +479,7 @@ fn approval_request_execution_integrity_json(
         }
     } else if started_event_kind.is_none() && terminal_event_kind.is_some() {
         (
-            "incomplete",
+            ApprovalExecutionIntegrityStatus::Incomplete,
             Value::String("started_event_missing".to_owned()),
             first_non_null_json_value(
                 &[
@@ -457,9 +491,13 @@ fn approval_request_execution_integrity_json(
         )
     } else if started_event_kind.is_some() && terminal_event_kind.is_none() {
         match record.status {
-            ApprovalRequestStatus::Executing => ("in_progress", Value::Null, Value::Null),
+            ApprovalRequestStatus::Executing => (
+                ApprovalExecutionIntegrityStatus::InProgress,
+                Value::Null,
+                Value::Null,
+            ),
             _ => (
-                "incomplete",
+                ApprovalExecutionIntegrityStatus::Incomplete,
                 Value::String("terminal_event_missing".to_owned()),
                 first_non_null_json_value(
                     &[
@@ -471,10 +509,14 @@ fn approval_request_execution_integrity_json(
             ),
         }
     } else if replay_decision_persisted == Some(true) && replay_outcome_persisted == Some(true) {
-        ("complete", Value::Null, Value::Null)
+        (
+            ApprovalExecutionIntegrityStatus::Complete,
+            Value::Null,
+            Value::Null,
+        )
     } else if replay_decision_persisted != Some(true) && replay_outcome_persisted != Some(true) {
         (
-            "incomplete",
+            ApprovalExecutionIntegrityStatus::Incomplete,
             Value::String("replay_decision_and_outcome_missing".to_owned()),
             first_non_null_json_value(
                 &[
@@ -486,7 +528,7 @@ fn approval_request_execution_integrity_json(
         )
     } else if replay_decision_persisted != Some(true) {
         (
-            "incomplete",
+            ApprovalExecutionIntegrityStatus::Incomplete,
             Value::String("replay_decision_missing".to_owned()),
             first_non_null_json_value(
                 &[
@@ -498,7 +540,7 @@ fn approval_request_execution_integrity_json(
         )
     } else {
         (
-            "incomplete",
+            ApprovalExecutionIntegrityStatus::Incomplete,
             Value::String("replay_outcome_missing".to_owned()),
             first_non_null_json_value(
                 &[
@@ -511,7 +553,7 @@ fn approval_request_execution_integrity_json(
     };
 
     json!({
-        "status": status,
+        "status": status.as_str(),
         "gap": gap,
         "integrity_error": integrity_error,
         "execution_error": execution_error,
@@ -619,6 +661,16 @@ fn first_non_null_json_value(values: &[&Value], fallback: Option<&str>) -> Value
 }
 
 #[cfg(feature = "memory-sqlite")]
+fn approval_request_execution_integrity_status_from_json(
+    execution_integrity: &Value,
+) -> Option<ApprovalExecutionIntegrityStatus> {
+    execution_integrity
+        .get("status")
+        .and_then(Value::as_str)
+        .and_then(|value| parse_approval_execution_integrity_status(value).ok())
+}
+
+#[cfg(feature = "memory-sqlite")]
 fn parse_approval_requests_list_request(
     payload: &Value,
     tool_config: &ToolConfig,
@@ -626,6 +678,10 @@ fn parse_approval_requests_list_request(
     Ok(ApprovalRequestsListRequest {
         session_id: optional_payload_string(payload, "session_id"),
         status: optional_payload_approval_request_status(payload, "status")?,
+        integrity_status: optional_payload_approval_execution_integrity_status(
+            payload,
+            "integrity_status",
+        )?,
         limit: optional_payload_limit(
             payload,
             "limit",
@@ -720,6 +776,16 @@ fn optional_payload_approval_request_status(
 }
 
 #[cfg(feature = "memory-sqlite")]
+fn optional_payload_approval_execution_integrity_status(
+    payload: &Value,
+    field: &str,
+) -> Result<Option<ApprovalExecutionIntegrityStatus>, String> {
+    optional_payload_string(payload, field)
+        .map(|value| parse_approval_execution_integrity_status(value.as_str()))
+        .transpose()
+}
+
+#[cfg(feature = "memory-sqlite")]
 fn parse_approval_request_status(value: &str) -> Result<ApprovalRequestStatus, String> {
     match value {
         "pending" => Ok(ApprovalRequestStatus::Pending),
@@ -731,6 +797,21 @@ fn parse_approval_request_status(value: &str) -> Result<ApprovalRequestStatus, S
         "cancelled" => Ok(ApprovalRequestStatus::Cancelled),
         _ => Err(format!(
             "approval_requests_list_invalid_request: unknown status `{value}`"
+        )),
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn parse_approval_execution_integrity_status(
+    value: &str,
+) -> Result<ApprovalExecutionIntegrityStatus, String> {
+    match value {
+        "not_started" => Ok(ApprovalExecutionIntegrityStatus::NotStarted),
+        "in_progress" => Ok(ApprovalExecutionIntegrityStatus::InProgress),
+        "complete" => Ok(ApprovalExecutionIntegrityStatus::Complete),
+        "incomplete" => Ok(ApprovalExecutionIntegrityStatus::Incomplete),
+        _ => Err(format!(
+            "approval_requests_list_invalid_request: unknown integrity_status `{value}`"
         )),
     }
 }
@@ -758,7 +839,8 @@ mod tests {
     use crate::config::ToolConfig;
     use crate::memory::runtime_config::MemoryRuntimeConfig;
     use crate::session::repository::{
-        NewApprovalRequestRecord, NewSessionRecord, SessionKind, SessionRepository, SessionState,
+        ApprovalRequestStatus, NewApprovalRequestRecord, NewSessionRecord, SessionKind,
+        SessionRepository, SessionState, TransitionApprovalRequestIfCurrentRequest,
     };
 
     fn isolated_memory_config(test_name: &str) -> MemoryRuntimeConfig {
@@ -820,6 +902,29 @@ mod tests {
             }),
         })
         .expect("seed approval request");
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    fn transition_request_status(
+        repo: &SessionRepository,
+        approval_request_id: &str,
+        expected_status: ApprovalRequestStatus,
+        next_status: ApprovalRequestStatus,
+        last_error: Option<&str>,
+    ) {
+        repo.transition_approval_request_if_current(
+            approval_request_id,
+            TransitionApprovalRequestIfCurrentRequest {
+                expected_status,
+                next_status,
+                decision: None,
+                resolved_by_session_id: None,
+                executed_at: Some(1_773_000_000),
+                last_error: last_error.map(str::to_owned),
+            },
+        )
+        .expect("transition approval request")
+        .expect("approval request should transition");
     }
 
     #[cfg(feature = "memory-sqlite")]
@@ -1041,6 +1146,172 @@ mod tests {
             })
             .count();
         assert_eq!(complete_integrity_count, 40);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn approval_request_tool_query_list_filters_by_execution_integrity_status() {
+        let config = isolated_memory_config("approval-query-list-integrity-filter");
+        let repo = SessionRepository::new(&config).expect("repository");
+        seed_session(&repo, "root-session", SessionKind::Root, None);
+        seed_request(
+            &repo,
+            "apr-not-started",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+        );
+        seed_request(
+            &repo,
+            "apr-incomplete",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+        );
+        seed_request(
+            &repo,
+            "apr-complete",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+        );
+        seed_request(
+            &repo,
+            "apr-in-progress",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+        );
+
+        transition_request_status(
+            &repo,
+            "apr-incomplete",
+            ApprovalRequestStatus::Pending,
+            ApprovalRequestStatus::Executed,
+            Some("persist assistant turn via kernel failed: forced outcome persistence failure"),
+        );
+        transition_request_status(
+            &repo,
+            "apr-complete",
+            ApprovalRequestStatus::Pending,
+            ApprovalRequestStatus::Executed,
+            None,
+        );
+        transition_request_status(
+            &repo,
+            "apr-in-progress",
+            ApprovalRequestStatus::Pending,
+            ApprovalRequestStatus::Executing,
+            None,
+        );
+
+        repo.append_event(crate::session::repository::NewSessionEvent {
+            session_id: "root-session".to_owned(),
+            event_kind: "tool_approval_execution_started".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "approval_request_id": "apr-incomplete",
+                "replay_decision_persisted": true,
+                "replay_decision_persist_error": null,
+            }),
+        })
+        .expect("append incomplete started event");
+        repo.append_event(crate::session::repository::NewSessionEvent {
+            session_id: "root-session".to_owned(),
+            event_kind: "tool_approval_execution_finished".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "approval_request_id": "apr-incomplete",
+                "resumed_tool_status": "ok",
+                "replay_outcome_persisted": false,
+                "replay_outcome_persist_error": "persist assistant turn via kernel failed: forced outcome persistence failure",
+            }),
+        })
+        .expect("append incomplete finished event");
+        repo.append_event(crate::session::repository::NewSessionEvent {
+            session_id: "root-session".to_owned(),
+            event_kind: "tool_approval_execution_started".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "approval_request_id": "apr-complete",
+                "replay_decision_persisted": true,
+                "replay_decision_persist_error": null,
+            }),
+        })
+        .expect("append complete started event");
+        repo.append_event(crate::session::repository::NewSessionEvent {
+            session_id: "root-session".to_owned(),
+            event_kind: "tool_approval_execution_finished".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "approval_request_id": "apr-complete",
+                "resumed_tool_status": "ok",
+                "replay_outcome_persisted": true,
+                "replay_outcome_persist_error": null,
+            }),
+        })
+        .expect("append complete finished event");
+        repo.append_event(crate::session::repository::NewSessionEvent {
+            session_id: "root-session".to_owned(),
+            event_kind: "tool_approval_execution_started".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "approval_request_id": "apr-in-progress",
+                "replay_decision_persisted": true,
+                "replay_decision_persist_error": null,
+            }),
+        })
+        .expect("append in-progress started event");
+
+        let outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "integrity_status": "incomplete",
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome");
+
+        assert_eq!(outcome.payload["filter"]["integrity_status"], "incomplete");
+        assert_eq!(outcome.payload["matched_count"], 1);
+        assert_eq!(outcome.payload["returned_count"], 1);
+        let requests = outcome.payload["requests"]
+            .as_array()
+            .expect("requests array");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["approval_request_id"], "apr-incomplete");
+        assert_eq!(requests[0]["execution_integrity"]["status"], "incomplete");
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn approval_request_tool_query_list_rejects_unknown_execution_integrity_status() {
+        let config = isolated_memory_config("approval-query-list-invalid-integrity-status");
+        let repo = SessionRepository::new(&config).expect("repository");
+        seed_session(&repo, "root-session", SessionKind::Root, None);
+
+        let error = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "integrity_status": "broken",
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect_err("unknown integrity_status should be rejected");
+
+        assert!(
+            error.contains("approval_requests_list_invalid_request: unknown integrity_status"),
+            "expected integrity_status validation error, got: {error}"
+        );
     }
 
     #[cfg(feature = "memory-sqlite")]
