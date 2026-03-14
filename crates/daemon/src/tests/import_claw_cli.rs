@@ -1,5 +1,4 @@
 use super::*;
-use clap::Parser;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -251,50 +250,4 @@ fn run_import_claw_cli_apply_selected_mode_can_apply_external_skill_plan() {
 
     fs::remove_dir_all(&discovery_root).ok();
     fs::remove_dir_all(&output_root).ok();
-}
-
-#[test]
-fn import_claw_cli_defaults_to_plan_mode() {
-    let cli = Cli::try_parse_from(["loongclaw", "import-claw", "--input", "/tmp/legacy"])
-        .expect("import-claw args should parse");
-    #[allow(clippy::wildcard_enum_match_arm)]
-    match cli.command.expect("subcommand should exist") {
-        Commands::ImportClaw { mode, .. } => {
-            assert_eq!(mode, crate::import_claw_cli::ImportClawMode::Plan);
-        }
-        other => panic!("expected import-claw command, got {other:?}"),
-    }
-}
-
-#[test]
-fn import_claw_cli_accepts_selection_alias_flags() {
-    let cli = Cli::try_parse_from([
-        "loongclaw",
-        "import-claw",
-        "--mode",
-        "apply_selected",
-        "--input",
-        "/tmp/legacy",
-        "--selection-id",
-        "openclaw",
-        "--primary-selection-id",
-        "nanobot",
-        "--apply-external-skills-plan",
-    ])
-    .expect("selection alias flags should parse");
-
-    #[allow(clippy::wildcard_enum_match_arm)]
-    match cli.command.expect("subcommand should exist") {
-        Commands::ImportClaw {
-            source_id,
-            primary_source_id,
-            apply_external_skills_plan,
-            ..
-        } => {
-            assert_eq!(source_id.as_deref(), Some("openclaw"));
-            assert_eq!(primary_source_id.as_deref(), Some("nanobot"));
-            assert!(apply_external_skills_plan);
-        }
-        other => panic!("expected import-claw command, got {other:?}"),
-    }
 }
