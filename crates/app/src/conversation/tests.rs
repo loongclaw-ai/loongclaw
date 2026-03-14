@@ -4888,6 +4888,66 @@ async fn handle_turn_with_runtime_tool_failure_completion_error_uses_raw_reason_
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_turn_with_runtime_approval_required_skips_completion_rewrite() {
+    use super::integration_tests::TurnTestHarness;
+
+    let harness = TurnTestHarness::with_shell_allowlist(BTreeSet::from(["curl".to_owned()]));
+    let runtime = FakeRuntime::with_turn_and_completion(
+        vec![],
+        Ok(ProviderTurn {
+            assistant_text: "Trying the local search endpoint.".to_owned(),
+            tool_intents: vec![ToolIntent {
+                tool_name: "shell.exec".to_owned(),
+                args_json: json!({
+                    "command": "curl",
+                    "args": ["http://127.0.0.1:8080/search?q=arch"]
+                }),
+                source: "provider_tool_call".to_owned(),
+                session_id: "session-approval-required".to_owned(),
+                turn_id: "turn-approval-required".to_owned(),
+                tool_call_id: "call-approval-required".to_owned(),
+            }],
+            raw_meta: Value::Null,
+        }),
+        Ok("MODEL_SHOULD_NOT_RUN".to_owned()),
+    );
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &test_config(),
+            "session-approval-required",
+            "search Arch Linux news with my local searxng instance",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            Some(&harness.kernel_ctx),
+        )
+        .await
+        .expect("approval-required tool failure should finalize directly");
+
+    assert!(
+        reply.contains("Trying the local search endpoint."),
+        "expected assistant preface, got: {reply}"
+    );
+    assert!(
+        reply.contains("[tool_approval_required]"),
+        "expected approval-required marker, got: {reply}"
+    );
+    assert!(
+        reply.contains("requires approval by default shell policy"),
+        "expected truthful approval-required reason, got: {reply}"
+    );
+    assert_eq!(
+        *runtime
+            .completion_calls
+            .lock()
+            .expect("completion calls lock"),
+        0,
+        "approval-required replies should not run a completion rewrite"
+    );
+}
+
 #[test]
 fn format_provider_error_reply_is_stable() {
     let output = format_provider_error_reply("timeout");
@@ -5209,6 +5269,15 @@ fn kernel_error_classification_table_is_stable() {
     assert_eq!(
         classify_kernel_error(&policy_error),
         KernelFailureClass::PolicyDenied
+    );
+
+    let approval_required_error = KernelError::Policy(PolicyError::ToolCallApprovalRequired {
+        tool_name: "shell.exec".to_owned(),
+        prompt: "command `curl` requires approval".to_owned(),
+    });
+    assert_eq!(
+        classify_kernel_error(&approval_required_error),
+        KernelFailureClass::ApprovalRequired
     );
 
     let boundary_error = KernelError::PackCapabilityBoundary {

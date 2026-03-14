@@ -184,6 +184,7 @@ impl TurnResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum KernelFailureClass {
+    ApprovalRequired,
     PolicyDenied,
     RetryableExecution,
     NonRetryable,
@@ -192,6 +193,9 @@ pub(crate) enum KernelFailureClass {
 pub(crate) fn classify_kernel_error(error: &KernelError) -> KernelFailureClass {
     #[allow(clippy::wildcard_enum_match_arm)]
     match error {
+        KernelError::Policy(loongclaw_contracts::PolicyError::ToolCallApprovalRequired {
+            ..
+        }) => KernelFailureClass::ApprovalRequired,
         KernelError::Policy(_)
         | KernelError::PackCapabilityBoundary { .. }
         | KernelError::ConnectorNotAllowed { .. } => KernelFailureClass::PolicyDenied,
@@ -332,7 +336,7 @@ impl TurnEngine {
     /// 2. Too many intents → `ToolDenied("max_tool_steps_exceeded")`
     /// 3. Unknown tool → `ToolDenied("tool_not_found: ...")`
     /// 4. No kernel context → `ToolDenied("no_kernel_context")`
-    /// 5. Policy/capability check via kernel → `ToolDenied` with reason if denied
+    /// 5. Policy/capability check via kernel → `NeedsApproval` or `ToolDenied`
     /// 6. Execute tool → map result to `TurnResult`
     pub async fn execute_turn(
         &self,
@@ -386,6 +390,9 @@ impl TurnEngine {
                 Err(e) => {
                     let reason = format!("{e}");
                     return match classify_kernel_error(&e) {
+                        KernelFailureClass::ApprovalRequired => {
+                            TurnResult::needs_approval("kernel_approval_required", reason)
+                        }
                         KernelFailureClass::PolicyDenied => {
                             TurnResult::policy_denied("kernel_policy_denied", reason)
                         }

@@ -3779,6 +3779,9 @@ impl SafeLaneFailureRoute {
 
         if let Some(code) = SafeLaneFailureCode::parse(failure.code.as_str()) {
             match code {
+                SafeLaneFailureCode::PlanNodeApprovalRequired => {
+                    return Self::terminal(SafeLaneFailureRouteReason::ApprovalRequired);
+                }
                 SafeLaneFailureCode::PlanNodePolicyDenied => {
                     return Self::terminal(SafeLaneFailureRouteReason::PolicyDenied);
                 }
@@ -4233,10 +4236,13 @@ fn terminal_turn_failure_from_verify_failure(
 
 fn turn_result_from_plan_failure(failure: PlanRunFailure) -> TurnResult {
     let failure_meta = turn_failure_from_plan_failure(&failure);
-    if matches!(failure_meta.kind, TurnFailureKind::PolicyDenied) {
-        TurnResult::ToolDenied(failure_meta)
-    } else {
-        TurnResult::ToolError(failure_meta)
+    match failure_meta.kind {
+        TurnFailureKind::ApprovalRequired => TurnResult::NeedsApproval(failure_meta),
+        TurnFailureKind::PolicyDenied => TurnResult::ToolDenied(failure_meta),
+        TurnFailureKind::Retryable | TurnFailureKind::NonRetryable => {
+            TurnResult::ToolError(failure_meta)
+        }
+        TurnFailureKind::Provider => TurnResult::ProviderError(failure_meta),
     }
 }
 
@@ -4380,6 +4386,7 @@ async fn execute_single_tool_intent(
         .await
         .map_err(|error| {
             let kind = match classify_kernel_error(&error) {
+                KernelFailureClass::ApprovalRequired => PlanNodeErrorKind::ApprovalRequired,
                 KernelFailureClass::PolicyDenied => PlanNodeErrorKind::PolicyDenied,
                 KernelFailureClass::RetryableExecution => PlanNodeErrorKind::Retryable,
                 KernelFailureClass::NonRetryable => PlanNodeErrorKind::NonRetryable,
@@ -5303,6 +5310,19 @@ mod tests {
     }
 
     #[test]
+    fn safe_lane_route_approval_required_failure_is_terminal() {
+        let failure = TurnFailure::approval_required(
+            "safe_lane_plan_node_approval_required",
+            "approval required",
+        );
+        let route = SafeLaneFailureRoute::from_failure(&failure, SafeLaneReplanBudget::new(3));
+
+        assert_eq!(route.decision, SafeLaneFailureRouteDecision::Terminal);
+        assert_eq!(route.reason, SafeLaneFailureRouteReason::ApprovalRequired);
+        assert_eq!(route.source, SafeLaneFailureRouteSource::BaseRouting);
+    }
+
+    #[test]
     fn safe_lane_route_non_retryable_failure_is_terminal() {
         let failure = TurnFailure::non_retryable("safe_lane_plan_node_non_retryable_error", "bad");
         let route = SafeLaneFailureRoute::from_failure(&failure, SafeLaneReplanBudget::new(3));
@@ -5318,6 +5338,12 @@ mod tests {
     #[test]
     fn turn_failure_from_plan_failure_node_error_mapping_is_stable() {
         let cases = [
+            (
+                PlanNodeErrorKind::ApprovalRequired,
+                TurnFailureKind::ApprovalRequired,
+                "safe_lane_plan_node_approval_required",
+                false,
+            ),
             (
                 PlanNodeErrorKind::PolicyDenied,
                 TurnFailureKind::PolicyDenied,

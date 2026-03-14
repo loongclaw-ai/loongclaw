@@ -35,6 +35,7 @@ pub enum PlanRunFailure {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanNodeErrorKind {
     Retryable,
+    ApprovalRequired,
     PolicyDenied,
     NonRetryable,
 }
@@ -56,6 +57,13 @@ impl PlanNodeError {
     pub fn policy_denied(message: impl Into<String>) -> Self {
         Self {
             kind: PlanNodeErrorKind::PolicyDenied,
+            message: message.into(),
+        }
+    }
+
+    pub fn approval_required(message: impl Into<String>) -> Self {
+        Self {
+            kind: PlanNodeErrorKind::ApprovalRequired,
             message: message.into(),
         }
     }

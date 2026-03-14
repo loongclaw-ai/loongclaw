@@ -84,6 +84,23 @@ impl TurnTestHarness {
     }
 
     pub fn with_capabilities(capabilities: BTreeSet<Capability>) -> Self {
+        Self::with_capabilities_and_shell_allowlist(
+            capabilities,
+            BTreeSet::from(["echo".to_owned(), "cat".to_owned(), "ls".to_owned()]),
+        )
+    }
+
+    pub fn with_shell_allowlist(shell_allowlist: BTreeSet<String>) -> Self {
+        Self::with_capabilities_and_shell_allowlist(
+            BTreeSet::from([Capability::InvokeTool]),
+            shell_allowlist,
+        )
+    }
+
+    pub fn with_capabilities_and_shell_allowlist(
+        capabilities: BTreeSet<Capability>,
+        shell_allowlist: BTreeSet<String>,
+    ) -> Self {
         let id = HARNESS_COUNTER.fetch_add(1, Ordering::SeqCst);
         let temp_dir =
             std::env::temp_dir().join(format!("loongclaw-integ-{}-{id}", std::process::id()));
@@ -91,7 +108,7 @@ impl TurnTestHarness {
 
         // Inject config so tests don't race on the global OnceLock
         let tool_config = ToolRuntimeConfig {
-            shell_allowlist: BTreeSet::from(["echo".to_owned(), "cat".to_owned(), "ls".to_owned()]),
+            shell_allowlist,
             file_root: Some(temp_dir.clone()),
             external_skills: Default::default(),
         };
@@ -330,6 +347,30 @@ mod tests {
                 );
             }
             other => panic!("expected ToolDenied with policy reason, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn integ_shell_exec_allowlisted_curl_still_requires_approval() {
+        let harness = TurnTestHarness::with_shell_allowlist(BTreeSet::from(["curl".to_owned()]));
+
+        let turn = FakeProviderBuilder::new()
+            .with_tool_call(
+                "shell.exec",
+                json!({"command": "curl", "args": ["http://127.0.0.1:8080/search?q=arch"]}),
+            )
+            .build();
+        let result = harness.execute(&turn).await;
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match result {
+            TurnResult::NeedsApproval(err) => {
+                assert!(
+                    err.contains("requires approval by default shell policy"),
+                    "expected approval-required reason, got: {err}"
+                );
+            }
+            other => panic!("expected NeedsApproval for allowlisted curl, got: {other:?}"),
         }
     }
 
