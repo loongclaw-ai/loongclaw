@@ -662,36 +662,37 @@ fn resolve_provider_selection(
 ) -> CliResult<mvp::config::ProviderConfig> {
     if options.non_interactive {
         if let Some(provider_raw) = options.provider.as_deref() {
-            let kind = parse_provider_kind(provider_raw).ok_or_else(|| {
-                format!(
-                    "unsupported --provider value \"{provider_raw}\". supported: {}",
-                    supported_provider_list()
-                )
-            })?;
-            return Ok(crate::migration::resolve_provider_config_from_selection(
+            return resolve_provider_config_from_selector(
                 &config.provider,
                 provider_selection,
-                kind,
-            ));
+                provider_raw,
+            );
         }
         if provider_selection.requires_explicit_choice {
             let detected = provider_selection
                 .imported_choices
                 .iter()
-                .map(|choice| provider_kind_id(choice.kind))
+                .map(|choice| choice.profile_id.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(format!(
-                "multiple detected provider choices found ({detected}); rerun with --provider <id> to choose the active provider"
+                "multiple detected provider choices found ({detected}); rerun with --provider {} to choose the active provider",
+                crate::migration::provider_selection::PROVIDER_SELECTOR_PLACEHOLDER,
             ));
         }
-        let default_kind = provider_selection
-            .default_kind
-            .unwrap_or(config.provider.kind);
+        if let Some(default_profile_id) = provider_selection.default_profile_id.as_deref() {
+            return resolve_provider_config_from_selector(
+                &config.provider,
+                provider_selection,
+                default_profile_id,
+            );
+        }
         return Ok(crate::migration::resolve_provider_config_from_selection(
             &config.provider,
             provider_selection,
-            default_kind,
+            provider_selection
+                .default_kind
+                .unwrap_or(config.provider.kind),
         ));
     }
 
@@ -705,29 +706,108 @@ fn resolve_provider_selection(
     )?;
     let default_provider = options
         .provider
-        .as_deref()
-        .and_then(parse_provider_kind)
-        .or(provider_selection
-            .default_kind
-            .or(Some(config.provider.kind)));
+        .clone()
+        .or_else(|| provider_selection.default_profile_id.clone())
+        .or_else(|| {
+            provider_selection
+                .default_kind
+                .map(|kind| provider_kind_id(kind).to_owned())
+        })
+        .or_else(|| Some(provider_kind_id(config.provider.kind).to_owned()));
     loop {
         let input = if provider_selection.requires_explicit_choice {
             ui.prompt_required("Provider")?
         } else {
             ui.prompt_with_default(
                 "Provider",
-                provider_kind_id(default_provider.expect("interactive provider default")),
+                &default_provider
+                    .clone()
+                    .expect("interactive provider default"),
             )?
         };
-        if let Some(kind) = parse_provider_kind(&input) {
-            return Ok(crate::migration::resolve_provider_config_from_selection(
-                &config.provider,
+        match resolve_provider_config_from_selector(&config.provider, provider_selection, &input) {
+            Ok(provider) => return Ok(provider),
+            Err(error) => print_message(ui, error)?,
+        }
+    }
+}
+
+pub(crate) fn resolve_provider_config_from_selector(
+    current_provider: &mvp::config::ProviderConfig,
+    provider_selection: &crate::migration::ProviderSelectionPlan,
+    selector: &str,
+) -> CliResult<mvp::config::ProviderConfig> {
+    match crate::migration::resolve_choice_by_selector_resolution(provider_selection, selector) {
+        crate::migration::ImportedChoiceSelectorResolution::Match(profile_id) => {
+            let choice = provider_selection
+                .imported_choices
+                .iter()
+                .find(|choice| choice.profile_id == profile_id)
+                .expect("resolved provider choice should exist in plan");
+            return Ok(choice.config.clone());
+        }
+        crate::migration::ImportedChoiceSelectorResolution::Ambiguous(profile_ids) => {
+            let recommendation = crate::migration::recommendation_hint_for_profile_ids(
                 provider_selection,
-                kind,
+                &profile_ids,
+            )
+            .map(|hint| format!("; {hint}"))
+            .unwrap_or_default();
+            return Err(format!(
+                "provider selector `{selector}` is ambiguous; matching profiles: {}{}",
+                crate::migration::describe_matching_choices(provider_selection, &profile_ids),
+                recommendation
             ));
         }
-        print_message(ui, format!("Invalid provider: {input}"))?;
+        crate::migration::ImportedChoiceSelectorResolution::NoMatch => {}
     }
+
+    let kind = parse_provider_kind(selector).ok_or_else(|| {
+        let recommendation = crate::migration::recommendation_hint(provider_selection)
+            .map(|hint| format!(" {}", hint))
+            .unwrap_or_default();
+        format!(
+            "unsupported provider value \"{selector}\". accepted selectors: {}. {}{}",
+            available_provider_selectors(provider_selection),
+            crate::migration::provider_selection::PROVIDER_SELECTOR_NOTE,
+            recommendation
+        )
+    })?;
+    let matching_choices = provider_selection
+        .imported_choices
+        .iter()
+        .filter(|choice| choice.kind == kind)
+        .collect::<Vec<_>>();
+    if matching_choices.len() > 1 {
+        let profile_ids = matching_choices
+            .iter()
+            .map(|choice| choice.profile_id.clone())
+            .collect::<Vec<_>>();
+        let recommendation =
+            crate::migration::recommendation_hint_for_profile_ids(provider_selection, &profile_ids)
+                .map(|hint| format!("; {hint}"))
+                .unwrap_or_default();
+        return Err(format!(
+            "provider selector `{selector}` is ambiguous; matching profiles: {}{}",
+            crate::migration::describe_matching_choices(provider_selection, &profile_ids),
+            recommendation
+        ));
+    }
+    if let Some(choice) = matching_choices.first() {
+        return Ok(choice.config.clone());
+    }
+    Ok(crate::migration::resolve_provider_config_from_selection(
+        current_provider,
+        provider_selection,
+        kind,
+    ))
+}
+
+fn available_provider_selectors(plan: &crate::migration::ProviderSelectionPlan) -> String {
+    if plan.imported_choices.is_empty() {
+        return supported_provider_list();
+    }
+    crate::migration::selector_catalog(plan).join(", ")
 }
 
 pub(crate) fn build_provider_selection_plan_for_candidate(
@@ -3339,19 +3419,28 @@ fn render_provider_selection_screen_lines_with_style(
         .imported_choices
         .iter()
         .map(|choice| OnboardScreenOption {
-            key: provider_kind_id(choice.kind).to_owned(),
+            key: choice.profile_id.clone(),
             label: provider_kind_display_name(choice.kind).to_owned(),
             detail_lines: {
                 let mut detail_lines = vec![
                     format!("source: {}", choice.source),
                     format!("summary: {}", choice.summary),
                 ];
+                if let Some(selector_detail) =
+                    crate::migration::provider_selection::selector_detail_line(
+                        plan,
+                        &choice.profile_id,
+                        width,
+                    )
+                {
+                    detail_lines.push(selector_detail);
+                }
                 if let Some(transport_summary) = choice.config.preview_transport_summary() {
                     detail_lines.push(format!("transport: {transport_summary}"));
                 }
                 detail_lines
             },
-            recommended: Some(choice.kind) == plan.default_kind,
+            recommended: Some(choice.profile_id.as_str()) == plan.default_profile_id.as_deref(),
         })
         .collect::<Vec<_>>();
     render_onboard_choice_screen(
@@ -3363,7 +3452,7 @@ fn render_provider_selection_screen_lines_with_style(
         intro,
         options,
         with_default_choice_footer(
-            vec![format!("provider ids: {}", supported_provider_list())],
+            crate::migration::guidance_lines(plan, width),
             render_provider_selection_default_choice_footer_line(plan),
         ),
         color_enabled,
@@ -3376,9 +3465,15 @@ fn render_provider_selection_default_choice_footer_line(
     if plan.requires_explicit_choice {
         return None;
     }
-    let default_kind = plan.default_kind?;
+    let default_profile_id = plan.default_profile_id.as_deref()?;
+    let default_kind = plan
+        .imported_choices
+        .iter()
+        .find(|choice| choice.profile_id == default_profile_id)
+        .map(|choice| choice.kind)
+        .or(plan.default_kind)?;
     Some(render_default_choice_footer_line(
-        provider_kind_id(default_kind),
+        default_profile_id,
         &format!("the {} provider", provider_kind_display_name(default_kind)),
     ))
 }

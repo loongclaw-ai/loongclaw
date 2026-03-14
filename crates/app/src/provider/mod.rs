@@ -1,56 +1,155 @@
+#[cfg(test)]
 use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
 use tokio::time::sleep;
 
 use crate::{CliResult, KernelContext};
 
-use super::config::{
-    LoongClawConfig, ProviderConfig, ProviderKind, ProviderWireApi, ReasoningEffort,
-};
-#[cfg(feature = "memory-sqlite")]
-use super::memory;
+use super::config::LoongClawConfig;
+#[cfg(test)]
+use super::config::{ProviderKind, ProviderProfileHealthModeConfig};
 
+mod auth_profile_runtime;
+mod capability_profile_runtime;
+mod catalog_executor;
+mod catalog_query_runtime;
+mod catalog_runtime;
+mod contracts;
+mod failover;
+mod failover_telemetry_runtime;
+mod http_client_runtime;
+mod model_candidate_cooldown_runtime;
+mod model_candidate_resolver_runtime;
 mod policy;
+mod profile_health_policy;
+mod profile_health_runtime;
+mod profile_state_backend;
+mod profile_state_store;
+mod provider_keyspace;
+mod provider_validation_runtime;
+mod request_dispatch_runtime;
+mod request_executor;
+mod request_failover_runtime;
+mod request_message_runtime;
+mod request_payload_runtime;
+mod request_planner;
+mod request_session_runtime;
 mod shape;
 mod transport;
 
 pub use shape::extract_provider_turn;
 
+#[cfg(test)]
+use auth_profile_runtime::{ProviderAuthProfile, resolve_provider_auth_profiles};
+use catalog_query_runtime::fetch_available_models_with_profiles;
+#[cfg(test)]
+use catalog_runtime::{
+    ModelCatalogCache, clear_model_catalog_singleflight_slot,
+    fetch_model_catalog_singleflight_with_timeouts, model_catalog_singleflight_slot_count,
+};
+#[cfg(test)]
+use catalog_runtime::{ModelCatalogCacheLookup, fetch_model_catalog_singleflight};
+#[cfg(test)]
+use contracts::ProviderApiError;
+#[cfg(test)]
+use contracts::should_disable_tool_schema_for_error;
+#[cfg(test)]
+use contracts::{CompletionPayloadMode, ReasoningField, TemperatureField, TokenLimitField};
+#[cfg(test)]
+use contracts::{
+    PayloadAdaptationAxis, ProviderReasoningExtraBodyMode, ProviderToolSchemaMode,
+    ProviderTransportMode,
+};
+#[cfg(test)]
+use contracts::{ProviderFeatureFamily, provider_runtime_contract};
+#[cfg(test)]
+use contracts::{adapt_payload_mode_for_error, parse_provider_api_error};
+#[cfg(test)]
+use contracts::{classify_payload_adaptation_axis, should_try_next_model_on_error};
+use failover::ProviderFailoverReason;
+#[cfg(test)]
+use failover::ProviderFailoverSnapshot;
+#[cfg(test)]
+use failover::{ProviderFailoverStage, build_model_request_error};
+#[cfg(test)]
+use failover_telemetry_runtime::{
+    provider_failover_metrics_snapshot, record_provider_failover_audit_event,
+};
+#[cfg(test)]
+use model_candidate_cooldown_runtime::ModelCandidateCooldownCache;
+#[cfg(test)]
+use model_candidate_cooldown_runtime::prioritize_model_candidates_by_cooldown;
+#[cfg(test)]
+use model_candidate_cooldown_runtime::{
+    ModelCandidateCooldownPolicy, register_model_candidate_cooldown,
+};
+#[cfg(test)]
+use model_candidate_resolver_runtime::rank_model_candidates;
+#[cfg(test)]
+use profile_health_runtime::{
+    ProviderProfileStatePolicy, build_provider_profile_state_policy, mark_provider_profile_failure,
+    prioritize_provider_auth_profiles_by_health,
+};
+#[cfg(all(test, feature = "memory-sqlite"))]
+use profile_state_backend::SqliteProviderProfileStateBackend;
+#[cfg(test)]
+use profile_state_backend::with_provider_profile_states;
+#[cfg(test)]
+use profile_state_backend::{
+    FileProviderProfileStateBackend, ProviderProfileStateBackend,
+    ProviderProfileStatePersistOutcome, provider_profile_state_backend,
+    provider_profile_state_persistence_metrics_snapshot,
+    record_provider_profile_state_persist_outcome,
+};
+#[cfg(test)]
+use profile_state_store::{
+    PROVIDER_PROFILE_STATE_SNAPSHOT_VERSION, ProviderProfileStateEntry,
+    ProviderProfileStateSnapshotEntry,
+};
+use profile_state_store::{
+    ProviderProfileHealthMode, ProviderProfileStateSnapshot, ProviderProfileStateStore,
+    current_unix_timestamp_ms,
+};
+#[cfg(test)]
+use provider_keyspace::build_model_catalog_cache_key;
+#[cfg(test)]
+use provider_keyspace::build_provider_profile_state_key;
+use request_dispatch_runtime::{request_completion_with_model, request_turn_with_model};
+use request_failover_runtime::request_across_model_candidates;
+#[cfg(test)]
+use request_payload_runtime::{build_completion_request_body, build_turn_request_body};
+use request_session_runtime::prepare_provider_request_session;
+
+#[cfg(test)]
+use request_planner::{
+    ModelRequestStatusPlan, classify_model_status_failure_reason, plan_model_request_status,
+};
+
+#[cfg(test)]
+const MODEL_CATALOG_CACHE_MAX_ENTRIES: usize = 32;
+#[cfg(test)]
+const MODEL_CANDIDATE_COOLDOWN_CACHE_MAX_ENTRIES: usize = 64;
+
 pub fn build_system_message(
     config: &LoongClawConfig,
     include_system_prompt: bool,
 ) -> Option<Value> {
-    if !include_system_prompt {
-        return None;
-    }
-    let system = config.cli.system_prompt.trim();
-    let snapshot = super::tools::capability_snapshot();
-    let content = if system.is_empty() {
-        snapshot
-    } else {
-        format!("{system}\n\n{snapshot}")
-    };
-    Some(json!({
-        "role": "system",
-        "content": content,
-    }))
+    request_message_runtime::build_system_message(config, include_system_prompt)
 }
 
 pub(crate) fn build_base_messages(
     config: &LoongClawConfig,
     include_system_prompt: bool,
 ) -> Vec<Value> {
-    build_system_message(config, include_system_prompt)
-        .into_iter()
-        .collect()
+    request_message_runtime::build_base_messages(config, include_system_prompt)
 }
 
 pub(crate) fn push_history_message(messages: &mut Vec<Value>, role: &str, content: &str) {
-    messages.push(json!({
-        "role": role,
-        "content": content,
-    }));
+    request_message_runtime::push_history_message(messages, role, content);
 }
 
 pub fn build_messages_for_session(
@@ -58,39 +157,7 @@ pub fn build_messages_for_session(
     session_id: &str,
     include_system_prompt: bool,
 ) -> CliResult<Vec<Value>> {
-    let mut messages = Vec::new();
-    if include_system_prompt {
-        let system = config.cli.system_prompt.trim();
-        let snapshot = super::tools::capability_snapshot();
-        let content = if system.is_empty() {
-            snapshot
-        } else {
-            format!("{system}\n\n{snapshot}")
-        };
-        messages.push(json!({
-            "role": "system",
-            "content": content,
-        }));
-    }
-
-    #[cfg(feature = "memory-sqlite")]
-    {
-        let mem_config =
-            super::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
-        let turns = memory::window_direct(session_id, config.memory.sliding_window, &mem_config)
-            .map_err(|error| format!("load memory window failed: {error}"))?;
-        for turn in turns {
-            messages.push(json!({
-                "role": turn.role,
-                "content": turn.content,
-            }));
-        }
-    }
-    #[cfg(not(feature = "memory-sqlite"))]
-    {
-        let _ = session_id;
-    }
-    Ok(messages)
+    request_message_runtime::build_messages_for_session(config, session_id, include_system_prompt)
 }
 
 pub fn build_messages_for_session_in_view(
@@ -1292,7 +1359,9 @@ pub async fn provider_auth_ready(config: &LoongClawConfig) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{LoongClawConfig, ProviderConfig, ReasoningEffort};
+    use crate::config::{
+        LoongClawConfig, ProviderConfig, ProviderKind, ProviderProfileConfig, ReasoningEffort,
+    };
     use serde_json::json;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -1338,6 +1407,68 @@ mod tests {
             system_content.contains("- file.write: Write file contents"),
             "system prompt should list file.write tool"
         );
+    }
+
+    #[test]
+    fn build_messages_includes_provider_runtime_guidance_for_switchable_profiles() {
+        let mut config = test_config(ProviderConfig::default());
+
+        let mut openai = ProviderConfig::fresh_for_kind(ProviderKind::Openai);
+        openai.model = "gpt-5".to_owned();
+        config.set_active_provider_profile(
+            "openai-main",
+            ProviderProfileConfig {
+                default_for_kind: true,
+                provider: openai.clone(),
+            },
+        );
+
+        let mut deepseek = ProviderConfig::fresh_for_kind(ProviderKind::Deepseek);
+        deepseek.model = "deepseek-chat".to_owned();
+        config.providers.insert(
+            "deepseek-cn".to_owned(),
+            ProviderProfileConfig {
+                default_for_kind: true,
+                provider: deepseek,
+            },
+        );
+        let mut openai_reasoning = ProviderConfig::fresh_for_kind(ProviderKind::Openai);
+        openai_reasoning.model = "o4-mini".to_owned();
+        config.providers.insert(
+            "openai-reasoning".to_owned(),
+            ProviderProfileConfig {
+                default_for_kind: false,
+                provider: openai_reasoning,
+            },
+        );
+        config.provider = openai;
+        config.active_provider = Some("openai-main".to_owned());
+
+        let messages =
+            build_messages_for_session(&config, "noop-session", true).expect("build messages");
+        let system_content = messages[0]["content"].as_str().expect("system content");
+
+        assert!(system_content.contains("[provider_runtime]"));
+        assert!(system_content.contains("- active_profile: openai-main"));
+        assert!(
+            system_content.contains(
+                "openai-main [OpenAI model=gpt-5, active, default_for_kind, selectors=openai-main, gpt-5, openai]"
+            )
+        );
+        assert!(
+            system_content.contains(
+                "deepseek-cn [DeepSeek model=deepseek-chat, default_for_kind, selectors=deepseek-cn, deepseek-chat, deepseek]"
+            )
+        );
+        assert!(system_content.contains(
+            "openai-reasoning [OpenAI model=o4-mini, selectors=openai-reasoning, o4-mini]"
+        ));
+        assert!(system_content.contains(
+            "provider.switch updates the default provider for subsequent turns until the user changes it again"
+        ));
+        assert!(system_content.contains(
+            "If multiple profiles share the same provider kind and the user does not identify a specific profile"
+        ));
     }
 
     #[test]

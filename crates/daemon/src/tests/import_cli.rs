@@ -697,8 +697,23 @@ fn import_cli_render_preview_explains_provider_conflict_apply_behavior() {
         "preview should explain that non-provider domains still compose while the active provider remains unresolved: {lines:#?}"
     );
     assert!(
-        lines.iter().any(|line| line.contains("--provider <id>")),
+        lines.iter().any(|line| line.contains(&format!(
+            "--provider {}",
+            crate::migration::provider_selection::PROVIDER_SELECTOR_PLACEHOLDER
+        ))),
         "preview should direct power users to the explicit provider flag: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("selectors: openai, openai/gpt-5.1-codex, gpt-5.1-codex")),
+        "preview should surface the exact selectors users can type for each provider choice: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("try one of: openai, deepseek")),
+        "preview should surface quick selector picks when provider choice is still unresolved: {lines:#?}"
     );
 }
 
@@ -760,6 +775,16 @@ fn import_cli_render_preview_wraps_provider_choices_for_narrow_width() {
     assert!(
         lines.iter().any(|line| line == "  credentials resolved"),
         "narrow import preview should keep wrapped provider-summary continuations readable: {lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|line| line == "  selector: openai"),
+        "narrow import preview should collapse selector aliases into one preferred selector per provider row: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .all(|line| !line.contains("selectors: openai, openai/gpt-5.1-codex")),
+        "narrow import preview should avoid repeating the full selector catalog inside each provider row: {lines:#?}"
     );
 }
 
@@ -1672,6 +1697,275 @@ fn import_cli_provider_selection_accepts_manual_choice_for_unresolved_recommende
 }
 
 #[test]
+fn provider_selection_resolve_choice_by_kind_prefers_default_profile_id() {
+    let plan = crate::migration::ProviderSelectionPlan {
+        imported_choices: vec![
+            crate::migration::ImportedProviderChoice {
+                profile_id: "openai-main".to_owned(),
+                kind: mvp::config::ProviderKind::Openai,
+                source: "Codex config at ~/.codex/config.toml".to_owned(),
+                summary: "OpenAI · gpt-5 · credentials resolved".to_owned(),
+                config: mvp::config::ProviderConfig {
+                    kind: mvp::config::ProviderKind::Openai,
+                    model: "gpt-5".to_owned(),
+                    ..mvp::config::ProviderConfig::default()
+                },
+            },
+            crate::migration::ImportedProviderChoice {
+                profile_id: "openai-reasoning".to_owned(),
+                kind: mvp::config::ProviderKind::Openai,
+                source: "your current environment".to_owned(),
+                summary: "OpenAI · o4-mini · credentials resolved".to_owned(),
+                config: mvp::config::ProviderConfig {
+                    kind: mvp::config::ProviderKind::Openai,
+                    model: "o4-mini".to_owned(),
+                    ..mvp::config::ProviderConfig::default()
+                },
+            },
+        ],
+        default_kind: Some(mvp::config::ProviderKind::Openai),
+        default_profile_id: Some("openai-reasoning".to_owned()),
+        requires_explicit_choice: false,
+    };
+
+    let choice = crate::migration::resolve_choice_by_selector(&plan, "openai")
+        .expect("kind selector should prefer the plan default profile when multiple same-kind profiles exist");
+    assert_eq!(choice.profile_id, "openai-reasoning");
+}
+
+#[test]
+fn provider_selection_resolve_choice_by_model_accepts_unique_model_name() {
+    let plan = crate::migration::ProviderSelectionPlan {
+        imported_choices: vec![
+            crate::migration::ImportedProviderChoice {
+                profile_id: "openai-main".to_owned(),
+                kind: mvp::config::ProviderKind::Openai,
+                source: "Codex config at ~/.codex/config.toml".to_owned(),
+                summary: "OpenAI · gpt-5 · credentials resolved".to_owned(),
+                config: mvp::config::ProviderConfig {
+                    kind: mvp::config::ProviderKind::Openai,
+                    model: "gpt-5".to_owned(),
+                    ..mvp::config::ProviderConfig::default()
+                },
+            },
+            crate::migration::ImportedProviderChoice {
+                profile_id: "deepseek-main".to_owned(),
+                kind: mvp::config::ProviderKind::Deepseek,
+                source: "your current environment".to_owned(),
+                summary: "DeepSeek · deepseek-chat · credentials resolved".to_owned(),
+                config: mvp::config::ProviderConfig {
+                    kind: mvp::config::ProviderKind::Deepseek,
+                    model: "deepseek-chat".to_owned(),
+                    ..mvp::config::ProviderConfig::default()
+                },
+            },
+        ],
+        default_kind: Some(mvp::config::ProviderKind::Openai),
+        default_profile_id: Some("openai-main".to_owned()),
+        requires_explicit_choice: false,
+    };
+
+    let choice = crate::migration::resolve_choice_by_selector(&plan, "deepseek-chat")
+        .expect("model selector should resolve to the unique matching imported profile");
+    assert_eq!(choice.profile_id, "deepseek-main");
+}
+
+#[test]
+fn provider_selection_resolve_choice_by_model_suffix_accepts_unique_suffix() {
+    let plan = crate::migration::ProviderSelectionPlan {
+        imported_choices: vec![
+            crate::migration::ImportedProviderChoice {
+                profile_id: "openrouter-main".to_owned(),
+                kind: mvp::config::ProviderKind::Openrouter,
+                source: "Codex config at ~/.codex/config.toml".to_owned(),
+                summary: "OpenRouter · openai/gpt-5.1-codex · credentials resolved".to_owned(),
+                config: mvp::config::ProviderConfig {
+                    kind: mvp::config::ProviderKind::Openrouter,
+                    model: "openai/gpt-5.1-codex".to_owned(),
+                    ..mvp::config::ProviderConfig::default()
+                },
+            },
+            crate::migration::ImportedProviderChoice {
+                profile_id: "deepseek-main".to_owned(),
+                kind: mvp::config::ProviderKind::Deepseek,
+                source: "your current environment".to_owned(),
+                summary: "DeepSeek · deepseek-chat · credentials resolved".to_owned(),
+                config: mvp::config::ProviderConfig {
+                    kind: mvp::config::ProviderKind::Deepseek,
+                    model: "deepseek-chat".to_owned(),
+                    ..mvp::config::ProviderConfig::default()
+                },
+            },
+        ],
+        default_kind: Some(mvp::config::ProviderKind::Openrouter),
+        default_profile_id: Some("openrouter-main".to_owned()),
+        requires_explicit_choice: false,
+    };
+
+    let choice = crate::migration::resolve_choice_by_selector(&plan, "gpt-5.1-codex")
+        .expect("model suffix selector should resolve to the unique matching imported profile");
+    assert_eq!(choice.profile_id, "openrouter-main");
+}
+
+#[test]
+fn import_cli_provider_selection_reports_ambiguous_model_selector() {
+    let mut recommended = sample_import_candidate();
+    recommended.source_kind = crate::migration::types::ImportSourceKind::RecommendedPlan;
+    recommended.source = "recommended import plan".to_owned();
+    recommended
+        .domains
+        .retain(|domain| domain.kind != crate::migration::types::SetupDomainKind::Provider);
+
+    let error = crate::import_cli::resolve_import_provider_selection(
+        &mvp::config::ProviderConfig::default(),
+        &[
+            recommended.clone(),
+            import_candidate_with_provider(
+                crate::migration::types::ImportSourceKind::CodexConfig,
+                "Codex config at ~/.codex/config.toml",
+                mvp::config::ProviderKind::Openai,
+                "gpt-5",
+                "OPENAI_API_KEY",
+            ),
+            import_candidate_with_provider(
+                crate::migration::types::ImportSourceKind::Environment,
+                "your current environment",
+                mvp::config::ProviderKind::Openrouter,
+                "gpt-5",
+                "OPENROUTER_API_KEY",
+            ),
+        ],
+        &recommended,
+        Some("gpt-5"),
+    )
+    .expect_err("duplicate model selectors should require clarification instead of guessing");
+
+    assert!(error.contains("ambiguous"));
+    assert!(error.contains("openai"));
+    assert!(error.contains("openrouter"));
+    assert!(error.contains("model=gpt-5"));
+    assert!(error.contains("selectors=openai"));
+    assert!(error.contains("selectors=openrouter"));
+}
+
+#[test]
+fn import_cli_provider_selection_unknown_selector_lists_accepted_selectors() {
+    let mut recommended = sample_import_candidate();
+    recommended.source_kind = crate::migration::types::ImportSourceKind::RecommendedPlan;
+    recommended.source = "recommended import plan".to_owned();
+    recommended
+        .domains
+        .retain(|domain| domain.kind != crate::migration::types::SetupDomainKind::Provider);
+
+    let error = crate::import_cli::resolve_import_provider_selection(
+        &mvp::config::ProviderConfig::default(),
+        &[
+            recommended.clone(),
+            import_candidate_with_provider(
+                crate::migration::types::ImportSourceKind::CodexConfig,
+                "Codex config at ~/.codex/config.toml",
+                mvp::config::ProviderKind::Openai,
+                "openai/gpt-5.1-codex",
+                "OPENAI_API_KEY",
+            ),
+            import_candidate_with_provider(
+                crate::migration::types::ImportSourceKind::Environment,
+                "your current environment",
+                mvp::config::ProviderKind::Deepseek,
+                "deepseek-chat",
+                "DEEPSEEK_API_KEY",
+            ),
+        ],
+        &recommended,
+        Some("missing-provider"),
+    )
+    .expect_err("unknown selector should surface accepted selector help");
+
+    assert!(error.contains("accepted selectors"));
+    assert!(error.contains("try one of:"));
+    assert!(error.contains("openai"));
+    assert!(error.contains("openai/gpt-5.1-codex"));
+    assert!(error.contains("gpt-5.1-codex"));
+    assert!(error.contains("deepseek"));
+    assert!(error.contains("deepseek-chat"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn import_cli_apply_recommended_import_retains_multiple_same_kind_provider_profiles() {
+    let temp_root = unique_temp_dir("same-kind-provider-profiles");
+    std::fs::create_dir_all(&temp_root).expect("create temp dir");
+    let output_path = temp_root.join("config.toml");
+
+    let mut recommended = sample_import_candidate();
+    recommended.source_kind = crate::migration::types::ImportSourceKind::RecommendedPlan;
+    recommended.source = "recommended import plan".to_owned();
+    recommended
+        .domains
+        .retain(|domain| domain.kind != crate::migration::types::SetupDomainKind::Provider);
+
+    let codex = import_candidate_with_provider(
+        crate::migration::types::ImportSourceKind::CodexConfig,
+        "Codex config at ~/.codex/config.toml",
+        mvp::config::ProviderKind::Openai,
+        "gpt-5",
+        "OPENAI_MAIN_API_KEY",
+    );
+    let env = import_candidate_with_provider(
+        crate::migration::types::ImportSourceKind::Environment,
+        "your current environment",
+        mvp::config::ProviderKind::Openai,
+        "o4-mini",
+        "OPENAI_REASONING_API_KEY",
+    );
+
+    crate::import_cli::apply_import_candidate(
+        &output_path,
+        true,
+        &[recommended.clone(), codex, env],
+        &recommended,
+        Some("openai-o4-mini"),
+    )
+    .expect("recommended import should retain multiple same-kind provider profiles");
+
+    let (_, imported) = mvp::config::load(Some(output_path.to_string_lossy().as_ref()))
+        .expect("load imported config");
+
+    assert_eq!(
+        imported.providers.len(),
+        2,
+        "recommended import should keep both same-kind provider profiles instead of collapsing them into one saved profile"
+    );
+    assert!(
+        imported.providers.contains_key("openai-gpt-5"),
+        "the primary imported profile should keep a stable model-derived id: {:#?}",
+        imported.providers.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        imported.providers.contains_key("openai-o4-mini"),
+        "the alternate imported profile should keep a stable model-derived id: {:#?}",
+        imported.providers.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(imported.active_provider_id(), Some("openai-o4-mini"));
+    assert_eq!(imported.provider.model, "o4-mini");
+    assert!(
+        imported
+            .providers
+            .get("openai-o4-mini")
+            .expect("saved active profile")
+            .default_for_kind,
+        "the selected active same-kind profile should become the default_for_kind for future selector-based switching"
+    );
+    assert!(
+        !imported
+            .providers
+            .get("openai-gpt-5")
+            .expect("saved non-active profile")
+            .default_for_kind,
+        "non-active same-kind profiles should not remain the default after explicit selection"
+    );
+}
+
+#[test]
 fn import_cli_preview_json_reports_provider_profiles_and_active_provider() {
     let payload = crate::import_cli::render_import_preview_json(&[sample_import_candidate()])
         .expect("preview json should serialize");
@@ -1683,6 +1977,14 @@ fn import_cli_preview_json_reports_provider_profiles_and_active_provider() {
     assert!(
         payload.contains("\"active_provider\""),
         "preview json should expose the active provider candidate: {payload}"
+    );
+    assert!(
+        payload.contains("\"accepted_selectors\""),
+        "preview json should expose accepted provider selectors for automation and TUI rendering: {payload}"
+    );
+    assert!(
+        payload.contains("\"gpt-5.1\""),
+        "preview json should expose the unique model suffix alias when available: {payload}"
     );
 }
 

@@ -32,8 +32,13 @@ pub use provider::{
 pub use runtime::{
     AcpBackendProfilesConfig, AcpConfig, AcpConversationRoutingMode, AcpDispatchConfig,
     AcpDispatchThreadRoutingMode, AcpxBackendConfig, AcpxMcpServerConfig,
-    ConfigValidationDiagnostic, LoongClawConfig, default_config_path, default_loongclaw_home, load,
-    normalize_validation_locale, render, supported_validation_locales, validate_file,
+    ConfigValidationDiagnostic, LoongClawConfig, PROVIDER_SELECTOR_COMPACT_NOTE,
+    PROVIDER_SELECTOR_HUMAN_SUMMARY, PROVIDER_SELECTOR_NOTE, PROVIDER_SELECTOR_PLACEHOLDER,
+    PROVIDER_SELECTOR_TARGET_SUMMARY, ProviderSelectorProfileRef, ProviderSelectorResolution,
+    accepted_provider_selectors, default_config_path, default_loongclaw_home,
+    describe_provider_selector_target, load, normalize_validation_locale,
+    provider_selector_catalog, provider_selector_recommendation_hint, render,
+    resolve_provider_selector, supported_validation_locales, validate_file,
     validate_file_with_locale, write, write_template,
 };
 pub(crate) use runtime::{normalize_dispatch_account_id, normalize_dispatch_channel_id};

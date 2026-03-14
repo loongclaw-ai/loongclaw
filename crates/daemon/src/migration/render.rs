@@ -121,18 +121,19 @@ fn render_wide_channel_line(channel: &super::ChannelCandidate) -> String {
 }
 
 fn render_stacked_provider_choice_lines(
+    plan: &ProviderSelectionPlan,
     choice: &super::ImportedProviderChoice,
-    default_kind: Option<loongclaw_app::config::ProviderKind>,
+    default_profile_id: Option<&str>,
     width: usize,
 ) -> Vec<String> {
-    let suffix = if Some(choice.kind) == default_kind {
+    let suffix = if Some(choice.profile_id.as_str()) == default_profile_id {
         " (recommended)"
     } else {
         ""
     };
     let mut lines = vec![format!(
         "- {}{}",
-        crate::provider_presentation::provider_choice_label(choice.kind),
+        crate::provider_presentation::provider_choice_label(&choice.profile_id, choice.kind),
         suffix
     )];
     lines.extend(loongclaw_app::presentation::render_wrapped_text_line(
@@ -145,6 +146,15 @@ fn render_stacked_provider_choice_lines(
         &choice.summary,
         width,
     ));
+    if let Some(selector_detail) =
+        super::provider_selection::selector_detail_line(plan, &choice.profile_id, width)
+    {
+        lines.extend(loongclaw_app::presentation::render_wrapped_text_line(
+            "  ",
+            &selector_detail,
+            width,
+        ));
+    }
     if let Some(transport_summary) = choice.config.preview_transport_summary() {
         lines.extend(loongclaw_app::presentation::render_wrapped_text_line(
             "  transport: ",
@@ -157,16 +167,16 @@ fn render_stacked_provider_choice_lines(
 
 fn render_wide_provider_choice_line(
     choice: &super::ImportedProviderChoice,
-    default_kind: Option<loongclaw_app::config::ProviderKind>,
+    default_profile_id: Option<&str>,
 ) -> String {
-    let suffix = if Some(choice.kind) == default_kind {
+    let suffix = if Some(choice.profile_id.as_str()) == default_profile_id {
         " (recommended)"
     } else {
         ""
     };
     format!(
         "- {:24} {:28} {}{}",
-        crate::provider_presentation::provider_choice_label(choice.kind),
+        crate::provider_presentation::provider_choice_label(&choice.profile_id, choice.kind),
         choice.source,
         choice.summary,
         suffix
@@ -266,22 +276,29 @@ pub(crate) fn render_provider_selection_lines(
     let use_stacked_choices = width < 68
         || plan.imported_choices.iter().any(|choice| {
             choice.config.preview_transport_summary().is_some()
-                || render_wide_provider_choice_line(choice, plan.default_kind).len() > width
+                || render_wide_provider_choice_line(choice, plan.default_profile_id.as_deref())
+                    .len()
+                    > width
         });
     if use_stacked_choices {
         for choice in &plan.imported_choices {
             lines.extend(render_stacked_provider_choice_lines(
+                plan,
                 choice,
-                plan.default_kind,
+                plan.default_profile_id.as_deref(),
                 width,
             ));
         }
     } else {
         for choice in &plan.imported_choices {
-            lines.push(render_wide_provider_choice_line(choice, plan.default_kind));
+            lines.push(render_wide_provider_choice_line(
+                choice,
+                plan.default_profile_id.as_deref(),
+            ));
         }
     }
     if plan.requires_explicit_choice {
+        let note_segments = super::unresolved_choice_note_segments(plan);
         lines.extend(loongclaw_app::presentation::render_wrapped_segments(
             if use_stacked_choices {
                 "  note: "
@@ -289,10 +306,7 @@ pub(crate) fn render_provider_selection_lines(
                 "note: "
             },
             "  ",
-            &[
-                "other detected settings stay merged",
-                "use --provider <id> to choose the active provider",
-            ],
+            &note_segments.iter().map(String::as_str).collect::<Vec<_>>(),
             "; ",
             width,
         ));

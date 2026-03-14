@@ -12,7 +12,7 @@ use crate::CliResult;
 use super::{
     channels::{CliChannelConfig, FeishuChannelConfig, TelegramChannelConfig},
     conversation::ConversationConfig,
-    provider::{ProviderConfig, ProviderProfileConfig},
+    provider::{ProviderConfig, ProviderKind, ProviderProfileConfig},
     shared::{
         ConfigValidationIssue, ConfigValidationLocale, DEFAULT_CONFIG_FILE,
         default_loongclaw_home as shared_default_loongclaw_home, expand_path,
@@ -531,6 +531,301 @@ fn normalize_provider_profile_id(raw: &str) -> Option<String> {
     normalize_dispatch_channel_id(raw)
 }
 
+pub const PROVIDER_SELECTOR_PLACEHOLDER: &str = "<profile|model|kind>";
+pub const PROVIDER_SELECTOR_HUMAN_SUMMARY: &str =
+    "profile id, unique model name or suffix, or provider kind";
+pub const PROVIDER_SELECTOR_TARGET_SUMMARY: &str =
+    "target profile id, unique model name or suffix, or provider kind";
+pub const PROVIDER_SELECTOR_NOTE: &str =
+    "you can also enter a unique model name, model suffix, or provider kind";
+pub const PROVIDER_SELECTOR_COMPACT_NOTE: &str = "type a model, suffix, or provider kind";
+
+fn normalize_provider_selector_token(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_ascii_lowercase())
+}
+
+fn provider_model_suffix(raw: &str) -> Option<String> {
+    let normalized = normalize_provider_selector_token(raw)?;
+    normalized
+        .rsplit('/')
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn push_unique_selector(selectors: &mut Vec<String>, candidate: &str) {
+    if candidate.trim().is_empty() {
+        return;
+    }
+    if selectors
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case(candidate))
+    {
+        return;
+    }
+    selectors.push(candidate.to_owned());
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ProviderSelectorProfileRef<'a> {
+    pub profile_id: &'a str,
+    pub kind: ProviderKind,
+    pub model: &'a str,
+    pub default_for_kind: bool,
+}
+
+impl<'a> ProviderSelectorProfileRef<'a> {
+    pub const fn new(
+        profile_id: &'a str,
+        kind: ProviderKind,
+        model: &'a str,
+        default_for_kind: bool,
+    ) -> Self {
+        Self {
+            profile_id,
+            kind,
+            model,
+            default_for_kind,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderSelectorResolution {
+    Match(String),
+    Ambiguous(Vec<String>),
+    NoMatch,
+}
+
+pub fn accepted_provider_selectors<'a, I>(profiles: I, target_profile_id: &str) -> Vec<String>
+where
+    I: IntoIterator<Item = ProviderSelectorProfileRef<'a>>,
+{
+    ProviderSelectorIndex::new(profiles).accepted_selectors(target_profile_id)
+}
+
+pub fn provider_selector_catalog<'a, I>(profiles: I) -> Vec<String>
+where
+    I: IntoIterator<Item = ProviderSelectorProfileRef<'a>>,
+{
+    ProviderSelectorIndex::new(profiles).selector_catalog()
+}
+
+pub fn describe_provider_selector_target<'a, I>(
+    profiles: I,
+    target_profile_id: &str,
+) -> Option<String>
+where
+    I: IntoIterator<Item = ProviderSelectorProfileRef<'a>>,
+{
+    ProviderSelectorIndex::new(profiles).describe_profile(target_profile_id)
+}
+
+pub fn provider_selector_recommendation_hint<'a, I, J, S>(
+    profiles: I,
+    target_profile_ids: J,
+) -> Option<String>
+where
+    I: IntoIterator<Item = ProviderSelectorProfileRef<'a>>,
+    J: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    ProviderSelectorIndex::new(profiles).recommendation_hint(target_profile_ids)
+}
+
+pub fn resolve_provider_selector<'a, I>(profiles: I, selector: &str) -> ProviderSelectorResolution
+where
+    I: IntoIterator<Item = ProviderSelectorProfileRef<'a>>,
+{
+    ProviderSelectorIndex::new(profiles).resolve(selector)
+}
+
+struct ProviderSelectorIndex<'a> {
+    profiles: Vec<ProviderSelectorProfileRef<'a>>,
+}
+
+impl<'a> ProviderSelectorIndex<'a> {
+    fn new<I>(profiles: I) -> Self
+    where
+        I: IntoIterator<Item = ProviderSelectorProfileRef<'a>>,
+    {
+        Self {
+            profiles: profiles.into_iter().collect(),
+        }
+    }
+
+    fn accepted_selectors(&self, target_profile_id: &str) -> Vec<String> {
+        let Some(profile) = self.find_profile(target_profile_id) else {
+            return Vec::new();
+        };
+
+        let mut selectors = Vec::new();
+        push_unique_selector(&mut selectors, profile.profile_id);
+
+        if let Some(model) = normalize_provider_selector_token(profile.model)
+            && self.model_matches(model.as_str()).len() == 1
+        {
+            push_unique_selector(&mut selectors, model.as_str());
+        }
+
+        if let Some(suffix) = provider_model_suffix(profile.model)
+            && self.model_suffix_matches(suffix.as_str()).len() == 1
+        {
+            push_unique_selector(&mut selectors, suffix.as_str());
+        }
+
+        if self.kind_resolves_to_profile_id(profile.kind, profile.profile_id) {
+            push_unique_selector(&mut selectors, profile.kind.as_str());
+        }
+
+        selectors
+    }
+
+    fn resolve(&self, selector: &str) -> ProviderSelectorResolution {
+        let Some(normalized) = normalize_provider_selector_token(selector) else {
+            return ProviderSelectorResolution::NoMatch;
+        };
+
+        if let Some(profile) = self
+            .profiles
+            .iter()
+            .find(|profile| profile.profile_id.eq_ignore_ascii_case(normalized.as_str()))
+        {
+            return ProviderSelectorResolution::Match(profile.profile_id.to_owned());
+        }
+
+        let model_matches = self.model_matches(normalized.as_str());
+        match model_matches.as_slice() {
+            [profile_id] => return ProviderSelectorResolution::Match(profile_id.clone()),
+            matches if matches.len() > 1 => {
+                return ProviderSelectorResolution::Ambiguous(matches.to_vec());
+            }
+            _ => {}
+        }
+
+        let suffix_matches = self.model_suffix_matches(normalized.as_str());
+        match suffix_matches.as_slice() {
+            [profile_id] => return ProviderSelectorResolution::Match(profile_id.clone()),
+            matches if matches.len() > 1 => {
+                return ProviderSelectorResolution::Ambiguous(matches.to_vec());
+            }
+            _ => {}
+        }
+
+        let Some(kind) = ProviderKind::parse(normalized.as_str()) else {
+            return ProviderSelectorResolution::NoMatch;
+        };
+        self.resolve_kind(kind)
+    }
+
+    fn selector_catalog(&self) -> Vec<String> {
+        let mut selectors = Vec::new();
+        for profile in &self.profiles {
+            for selector in self.accepted_selectors(profile.profile_id) {
+                push_unique_selector(&mut selectors, selector.as_str());
+            }
+        }
+        selectors
+    }
+
+    fn describe_profile(&self, target_profile_id: &str) -> Option<String> {
+        let profile = self.find_profile(target_profile_id)?;
+        let selectors = self.accepted_selectors(target_profile_id);
+        let mut description = format!("{} [model={}", profile.profile_id, profile.model);
+        if !selectors.is_empty() {
+            description.push_str("; selectors=");
+            description.push_str(selectors.join(", ").as_str());
+        }
+        description.push(']');
+        Some(description)
+    }
+
+    fn recommendation_hint<J, S>(&self, target_profile_ids: J) -> Option<String>
+    where
+        J: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut selectors = Vec::new();
+        for profile_id in target_profile_ids {
+            let Some(selector) = self
+                .accepted_selectors(profile_id.as_ref())
+                .into_iter()
+                .next()
+            else {
+                continue;
+            };
+            push_unique_selector(&mut selectors, selector.as_str());
+            if selectors.len() >= 3 {
+                break;
+            }
+        }
+        (!selectors.is_empty()).then(|| format!("try one of: {}", selectors.join(", ")))
+    }
+
+    fn find_profile(&self, profile_id: &str) -> Option<&ProviderSelectorProfileRef<'a>> {
+        self.profiles
+            .iter()
+            .find(|profile| profile.profile_id == profile_id)
+    }
+
+    fn model_matches(&self, selector: &str) -> Vec<String> {
+        self.profiles
+            .iter()
+            .filter(|profile| {
+                normalize_provider_selector_token(profile.model).as_deref() == Some(selector)
+            })
+            .map(|profile| profile.profile_id.to_owned())
+            .collect()
+    }
+
+    fn model_suffix_matches(&self, selector: &str) -> Vec<String> {
+        self.profiles
+            .iter()
+            .filter(|profile| provider_model_suffix(profile.model).as_deref() == Some(selector))
+            .map(|profile| profile.profile_id.to_owned())
+            .collect()
+    }
+
+    fn resolve_kind(&self, kind: ProviderKind) -> ProviderSelectorResolution {
+        let matches = self
+            .profiles
+            .iter()
+            .filter(|profile| profile.kind == kind)
+            .collect::<Vec<_>>();
+        let Some(first) = matches.first().copied() else {
+            return ProviderSelectorResolution::NoMatch;
+        };
+        if matches.len() == 1 {
+            return ProviderSelectorResolution::Match(first.profile_id.to_owned());
+        }
+
+        let default_matches = matches
+            .iter()
+            .copied()
+            .filter(|profile| profile.default_for_kind)
+            .collect::<Vec<_>>();
+        if default_matches.len() == 1 {
+            return ProviderSelectorResolution::Match(default_matches[0].profile_id.to_owned());
+        }
+
+        ProviderSelectorResolution::Ambiguous(
+            matches
+                .into_iter()
+                .map(|profile| profile.profile_id.to_owned())
+                .collect(),
+        )
+    }
+
+    fn kind_resolves_to_profile_id(&self, kind: ProviderKind, profile_id: &str) -> bool {
+        matches!(
+            self.resolve_kind(kind),
+            ProviderSelectorResolution::Match(resolved) if resolved == profile_id
+        )
+    }
+}
+
 fn canonical_env_reference(env_name: &str) -> Option<String> {
     let trimmed = env_name.trim();
     if trimmed.is_empty() {
@@ -690,6 +985,73 @@ impl LoongClawConfig {
             .filter(|value| !value.is_empty())
     }
 
+    pub fn resolve_provider_switch_target(&self, selector: &str) -> CliResult<String> {
+        let mut normalized = self.clone();
+        normalized.normalize_provider_profiles();
+        normalized.resolve_provider_switch_target_from_normalized(selector)
+    }
+
+    pub fn switch_active_provider(&mut self, selector: &str) -> CliResult<String> {
+        self.normalize_provider_profiles();
+        let target_profile_id = self.resolve_provider_switch_target_from_normalized(selector)?;
+        let previous_active = self.active_provider_id().map(str::to_owned);
+        let target_profile = self
+            .providers
+            .get(&target_profile_id)
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "provider switch target `{target_profile_id}` is unavailable in the current config"
+                )
+            })?;
+
+        for profile in self
+            .providers
+            .values_mut()
+            .filter(|profile| profile.provider.kind == target_profile.provider.kind)
+        {
+            profile.default_for_kind = false;
+        }
+        if let Some(profile) = self.providers.get_mut(&target_profile_id) {
+            profile.default_for_kind = true;
+        }
+
+        self.provider = target_profile.provider;
+        self.active_provider = Some(target_profile_id.clone());
+        if previous_active.as_deref() != Some(target_profile_id.as_str()) {
+            self.last_provider = previous_active;
+        }
+        Ok(target_profile_id)
+    }
+
+    pub fn accepted_provider_selectors(&self, target_profile_id: &str) -> Vec<String> {
+        accepted_provider_selectors(self.provider_selector_profiles(), target_profile_id)
+    }
+
+    pub fn clone_with_provider_runtime_state(
+        &self,
+        provider_runtime_state: &LoongClawConfig,
+    ) -> Self {
+        let mut merged = self.clone();
+        merged.provider = provider_runtime_state.provider.clone();
+        merged.providers = provider_runtime_state.providers.clone();
+        merged.active_provider = provider_runtime_state.active_provider.clone();
+        merged.last_provider = provider_runtime_state.last_provider.clone();
+        merged.normalize_provider_profiles();
+        merged
+    }
+
+    pub fn reload_provider_runtime_state_from_path(&self, path: &Path) -> CliResult<Self> {
+        let raw = fs::read_to_string(path).map_err(|error| {
+            format!(
+                "failed to read provider runtime config {}: {error}",
+                path.display()
+            )
+        })?;
+        let reloaded = parse_toml_config_without_validation(&raw)?;
+        Ok(self.clone_with_provider_runtime_state(&reloaded))
+    }
+
     pub fn set_active_provider_profile(
         &mut self,
         profile_id: impl Into<String>,
@@ -700,6 +1062,20 @@ impl LoongClawConfig {
         self.provider = profile.provider.clone();
         self.providers.insert(profile_id.clone(), profile);
         self.active_provider = Some(profile_id);
+    }
+
+    fn provider_selector_profiles(&self) -> Vec<ProviderSelectorProfileRef<'_>> {
+        self.providers
+            .iter()
+            .map(|(profile_id, profile)| {
+                ProviderSelectorProfileRef::new(
+                    profile_id,
+                    profile.provider.kind,
+                    profile.provider.model.as_str(),
+                    profile.default_for_kind,
+                )
+            })
+            .collect()
     }
 
     fn normalize_provider_profiles(&mut self) {
@@ -749,6 +1125,52 @@ impl LoongClawConfig {
             normalized_last_provider.filter(|profile_id| self.providers.contains_key(profile_id));
         if let Some(active_profile) = self.providers.get(&active_provider) {
             self.provider = active_profile.provider.clone();
+        }
+    }
+
+    fn resolve_provider_switch_target_from_normalized(&self, selector: &str) -> CliResult<String> {
+        let trimmed = selector.trim();
+        if trimmed.is_empty() {
+            return Err("provider selector cannot be empty".to_owned());
+        }
+        let selector_profiles = self.provider_selector_profiles();
+        match resolve_provider_selector(selector_profiles.iter().copied(), trimmed) {
+            ProviderSelectorResolution::Match(profile_id) => Ok(profile_id),
+            ProviderSelectorResolution::Ambiguous(profile_ids) => {
+                let recommendation = provider_selector_recommendation_hint(
+                    selector_profiles.iter().copied(),
+                    &profile_ids,
+                )
+                .map(|hint| format!("; {hint}"))
+                .unwrap_or_default();
+                Err(format!(
+                    "provider selector `{trimmed}` is ambiguous; matching profiles: {}{}",
+                    profile_ids
+                        .iter()
+                        .filter_map(|profile_id| {
+                            describe_provider_selector_target(
+                                selector_profiles.iter().copied(),
+                                profile_id,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    recommendation
+                ))
+            }
+            ProviderSelectorResolution::NoMatch => {
+                let recommendation = provider_selector_recommendation_hint(
+                    selector_profiles.iter().copied(),
+                    selector_profiles.iter().map(|profile| profile.profile_id),
+                )
+                .map(|hint| format!("; {hint}"))
+                .unwrap_or_default();
+                Err(format!(
+                    "unknown provider selector `{trimmed}`; accepted selectors: {}{}",
+                    provider_selector_catalog(selector_profiles.iter().copied()).join(", "),
+                    recommendation
+                ))
+            }
         }
     }
 
@@ -1400,6 +1822,268 @@ api_key = "${DEEPSEEK_API_KEY}"
         assert!(!raw.contains("api_key_env = "));
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn resolve_provider_switch_target_prefers_profile_id_then_kind_default() {
+        let mut config = LoongClawConfig::default();
+        config.set_active_provider_profile(
+            "openai-main",
+            ProviderProfileConfig {
+                default_for_kind: false,
+                provider: ProviderConfig {
+                    kind: ProviderKind::Openai,
+                    model: "gpt-5".to_owned(),
+                    ..ProviderConfig::default()
+                },
+            },
+        );
+        config.providers.insert(
+            "openai-reasoning".to_owned(),
+            ProviderProfileConfig {
+                default_for_kind: true,
+                provider: ProviderConfig {
+                    kind: ProviderKind::Openai,
+                    model: "o4-mini".to_owned(),
+                    ..ProviderConfig::default()
+                },
+            },
+        );
+        config.providers.insert(
+            "deepseek-cn".to_owned(),
+            ProviderProfileConfig {
+                default_for_kind: true,
+                provider: ProviderConfig {
+                    kind: ProviderKind::Deepseek,
+                    model: "deepseek-chat".to_owned(),
+                    ..ProviderConfig::default()
+                },
+            },
+        );
+
+        assert_eq!(
+            config.resolve_provider_switch_target("openai-reasoning"),
+            Ok("openai-reasoning".to_owned())
+        );
+        assert_eq!(
+            config.resolve_provider_switch_target("openai"),
+            Ok("openai-reasoning".to_owned())
+        );
+        assert_eq!(
+            config.resolve_provider_switch_target("deepseek"),
+            Ok("deepseek-cn".to_owned())
+        );
+    }
+
+    #[test]
+    fn resolve_provider_switch_target_accepts_unique_model_selector() {
+        let mut config = LoongClawConfig::default();
+        config.set_active_provider_profile(
+            "openai-main",
+            ProviderProfileConfig {
+                default_for_kind: true,
+                provider: ProviderConfig {
+                    kind: ProviderKind::Openai,
+                    model: "gpt-5".to_owned(),
+                    ..ProviderConfig::default()
+                },
+            },
+        );
+        config.providers.insert(
+            "deepseek-cn".to_owned(),
+            ProviderProfileConfig {
+                default_for_kind: true,
+                provider: ProviderConfig {
+                    kind: ProviderKind::Deepseek,
+                    model: "deepseek-chat".to_owned(),
+                    ..ProviderConfig::default()
+                },
+            },
+        );
+
+        assert_eq!(
+            config.resolve_provider_switch_target("gpt-5"),
+            Ok("openai-main".to_owned())
+        );
+        assert_eq!(
+            config.resolve_provider_switch_target("deepseek-chat"),
+            Ok("deepseek-cn".to_owned())
+        );
+    }
+
+    #[test]
+    fn resolve_provider_switch_target_accepts_unique_model_suffix_selector() {
+        let mut config = LoongClawConfig::default();
+        config.set_active_provider_profile(
+            "openrouter-main",
+            ProviderProfileConfig {
+                default_for_kind: true,
+                provider: ProviderConfig {
+                    kind: ProviderKind::Openrouter,
+                    model: "openai/gpt-5.1-codex".to_owned(),
+                    ..ProviderConfig::default()
+                },
+            },
+        );
+        config.providers.insert(
+            "deepseek-cn".to_owned(),
+            ProviderProfileConfig {
+                default_for_kind: true,
+                provider: ProviderConfig {
+                    kind: ProviderKind::Deepseek,
+                    model: "deepseek-chat".to_owned(),
+                    ..ProviderConfig::default()
+                },
+            },
+        );
+
+        assert_eq!(
+            config.resolve_provider_switch_target("gpt-5.1-codex"),
+            Ok("openrouter-main".to_owned())
+        );
+    }
+
+    #[test]
+    fn resolve_provider_switch_target_rejects_ambiguous_kind_without_default() {
+        let mut config = LoongClawConfig::default();
+        config.set_active_provider_profile(
+            "openai-main",
+            ProviderProfileConfig {
+                default_for_kind: false,
+                provider: ProviderConfig {
+                    kind: ProviderKind::Openai,
+                    model: "gpt-5".to_owned(),
+                    ..ProviderConfig::default()
+                },
+            },
+        );
+        config.providers.insert(
+            "openai-azure".to_owned(),
+            ProviderProfileConfig {
+                default_for_kind: false,
+                provider: ProviderConfig {
+                    kind: ProviderKind::Openai,
+                    model: "gpt-4.1".to_owned(),
+                    ..ProviderConfig::default()
+                },
+            },
+        );
+
+        let error = config
+            .resolve_provider_switch_target("openai")
+            .expect_err("ambiguous same-kind provider switch should require clarification");
+        assert!(error.contains("ambiguous"));
+        assert!(error.contains("openai-main"));
+        assert!(error.contains("openai-azure"));
+        assert!(error.contains("model=gpt-5"));
+        assert!(error.contains("selectors=openai-main, gpt-5"));
+        assert!(error.contains("model=gpt-4.1"));
+        assert!(error.contains("selectors=openai-azure, gpt-4.1"));
+    }
+
+    #[test]
+    fn resolve_provider_switch_target_unknown_selector_lists_accepted_selectors() {
+        let mut config = LoongClawConfig::default();
+        config.set_active_provider_profile(
+            "openai-main",
+            ProviderProfileConfig {
+                default_for_kind: true,
+                provider: ProviderConfig {
+                    kind: ProviderKind::Openai,
+                    model: "gpt-5".to_owned(),
+                    ..ProviderConfig::default()
+                },
+            },
+        );
+        config.providers.insert(
+            "deepseek-cn".to_owned(),
+            ProviderProfileConfig {
+                default_for_kind: true,
+                provider: ProviderConfig {
+                    kind: ProviderKind::Deepseek,
+                    model: "deepseek-chat".to_owned(),
+                    ..ProviderConfig::default()
+                },
+            },
+        );
+
+        let error = config
+            .resolve_provider_switch_target("unknown-provider")
+            .expect_err("unknown selector should surface accepted selectors");
+        assert!(error.contains("accepted selectors"));
+        assert!(error.contains("try one of:"));
+        assert!(error.contains("openai-main"));
+        assert!(error.contains("gpt-5"));
+        assert!(error.contains("openai"));
+        assert!(error.contains("deepseek-cn"));
+        assert!(error.contains("deepseek-chat"));
+        assert!(error.contains("deepseek"));
+    }
+
+    #[test]
+    fn switch_active_provider_updates_last_provider_and_kind_default() {
+        let mut config = LoongClawConfig::default();
+        config.set_active_provider_profile(
+            "openai-main",
+            ProviderProfileConfig {
+                default_for_kind: true,
+                provider: ProviderConfig {
+                    kind: ProviderKind::Openai,
+                    model: "gpt-5".to_owned(),
+                    ..ProviderConfig::default()
+                },
+            },
+        );
+        config.providers.insert(
+            "openai-reasoning".to_owned(),
+            ProviderProfileConfig {
+                default_for_kind: false,
+                provider: ProviderConfig {
+                    kind: ProviderKind::Openai,
+                    model: "o4-mini".to_owned(),
+                    ..ProviderConfig::default()
+                },
+            },
+        );
+        config.providers.insert(
+            "deepseek-cn".to_owned(),
+            ProviderProfileConfig {
+                default_for_kind: true,
+                provider: ProviderConfig {
+                    kind: ProviderKind::Deepseek,
+                    model: "deepseek-chat".to_owned(),
+                    ..ProviderConfig::default()
+                },
+            },
+        );
+
+        let selected = config
+            .switch_active_provider("openai-reasoning")
+            .expect("profile switch should succeed");
+
+        assert_eq!(selected, "openai-reasoning");
+        assert_eq!(config.active_provider_id(), Some("openai-reasoning"));
+        assert_eq!(config.last_provider_id(), Some("openai-main"));
+        assert_eq!(config.provider.kind, ProviderKind::Openai);
+        assert_eq!(config.provider.model, "o4-mini");
+        assert!(
+            config
+                .providers
+                .get("openai-reasoning")
+                .expect("new active profile")
+                .default_for_kind
+        );
+        assert!(
+            !config
+                .providers
+                .get("openai-main")
+                .expect("old active profile")
+                .default_for_kind
+        );
+        assert_eq!(
+            config.resolve_provider_switch_target("openai"),
+            Ok("openai-reasoning".to_owned())
+        );
     }
 
     #[test]

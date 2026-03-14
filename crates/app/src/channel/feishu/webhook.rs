@@ -34,6 +34,7 @@ const FEISHU_SIGNATURE_MAX_SKEW_SECONDS: i64 = 5 * 60;
 #[derive(Clone)]
 pub(super) struct FeishuWebhookState {
     config: LoongClawConfig,
+    resolved_path: PathBuf,
     adapter: Arc<Mutex<FeishuAdapter>>,
     account_id: String,
     verification_token: Option<String>,
@@ -48,6 +49,7 @@ pub(super) struct FeishuWebhookState {
 impl FeishuWebhookState {
     pub(super) fn new(
         config: LoongClawConfig,
+        resolved_path: PathBuf,
         resolved: &ResolvedFeishuChannelConfig,
         adapter: FeishuAdapter,
         kernel_ctx: KernelContext,
@@ -71,6 +73,7 @@ impl FeishuWebhookState {
                 .collect(),
             ignore_bot_messages: resolved.ignore_bot_messages,
             config,
+            resolved_path,
             adapter: Arc::new(Mutex::new(adapter)),
             seen_events: Arc::new(Mutex::new(seen_events)),
             kernel_ctx: Arc::new(kernel_ctx),
@@ -401,6 +404,7 @@ async fn handle_feishu_webhook_payload(
                 };
                 let reply = process_inbound_with_provider(
                     &state.config,
+                    Some(state.resolved_path.as_path()),
                     &channel_message,
                     Some(&state.kernel_ctx),
                 )

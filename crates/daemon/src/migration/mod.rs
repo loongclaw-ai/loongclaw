@@ -26,8 +26,12 @@ pub(crate) use planner::{
 };
 #[allow(unused_imports)]
 pub(crate) use provider_selection::{
-    ImportedProviderChoice, ProviderSelectionPlan, build_provider_selection_plan_for_candidate,
-    resolve_choice_by_selector, resolve_provider_config_from_selection,
+    ImportedChoiceSelectorResolution, ImportedProviderChoice, ProviderSelectionPlan,
+    accepted_selectors_for_choice, build_provider_selection_plan_for_candidate, describe_choice,
+    describe_matching_choices, guidance_lines, recommendation_hint,
+    recommendation_hint_for_profile_ids, resolve_choice_by_selector,
+    resolve_choice_by_selector_resolution, resolve_provider_config_from_selection,
+    selector_catalog, unresolved_choice_note_segments,
 };
 #[allow(unused_imports)]
 pub(crate) use types::{

@@ -472,6 +472,7 @@ struct ImportPreviewProviderSelection {
 #[derive(Serialize)]
 struct ImportPreviewProviderChoice {
     profile_id: String,
+    accepted_selectors: Vec<String>,
     kind: String,
     source: String,
     summary: String,
@@ -483,6 +484,7 @@ struct ImportPreviewProviderChoice {
 #[derive(Serialize)]
 struct ImportPreviewProviderProfile {
     profile_id: String,
+    accepted_selectors: Vec<String>,
     kind: String,
     source: String,
     summary: String,
@@ -495,50 +497,49 @@ pub(crate) fn render_import_preview_json(candidates: &[ImportCandidate]) -> CliR
     let preview = candidates
         .iter()
         .map(|candidate| {
-            let provider_selection =
+            let provider_plan =
                 migration::build_provider_selection_plan_for_candidate(candidate, candidates);
-            let provider_selection = if provider_selection.imported_choices.is_empty() {
+            let provider_selection = if provider_plan.imported_choices.is_empty() {
                 None
             } else {
                 Some(ImportPreviewProviderSelection {
-                    required: provider_selection.requires_explicit_choice,
-                    choices: provider_selection
+                    required: provider_plan.requires_explicit_choice,
+                    choices: provider_plan
                         .imported_choices
                         .iter()
                         .map(|choice| ImportPreviewProviderChoice {
                             profile_id: choice.profile_id.clone(),
+                            accepted_selectors: migration::accepted_selectors_for_choice(
+                                &provider_plan,
+                                &choice.profile_id,
+                            ),
                             kind: choice.kind.profile().id.to_owned(),
                             source: choice.source.clone(),
                             summary: choice.summary.clone(),
                             transport: choice.config.preview_transport_summary(),
                             selected_by_default: Some(choice.profile_id.as_str())
-                                == provider_selection.default_profile_id.as_deref(),
+                                == provider_plan.default_profile_id.as_deref(),
                         })
                         .collect(),
                 })
             };
-            let provider_profiles = provider_selection
-                .as_ref()
-                .map(|_| {
-                    migration::build_provider_selection_plan_for_candidate(candidate, candidates)
-                        .imported_choices
-                        .iter()
-                        .map(|choice| ImportPreviewProviderProfile {
-                            profile_id: choice.profile_id.clone(),
-                            kind: choice.kind.profile().id.to_owned(),
-                            source: choice.source.clone(),
-                            summary: choice.summary.clone(),
-                            transport: choice.config.preview_transport_summary(),
-                            active_candidate: Some(choice.profile_id.as_str())
-                                == migration::build_provider_selection_plan_for_candidate(
-                                    candidate, candidates,
-                                )
-                                .default_profile_id
-                                .as_deref(),
-                        })
-                        .collect::<Vec<_>>()
+            let provider_profiles = provider_plan
+                .imported_choices
+                .iter()
+                .map(|choice| ImportPreviewProviderProfile {
+                    profile_id: choice.profile_id.clone(),
+                    accepted_selectors: migration::accepted_selectors_for_choice(
+                        &provider_plan,
+                        &choice.profile_id,
+                    ),
+                    kind: choice.kind.profile().id.to_owned(),
+                    source: choice.source.clone(),
+                    summary: choice.summary.clone(),
+                    transport: choice.config.preview_transport_summary(),
+                    active_candidate: Some(choice.profile_id.as_str())
+                        == provider_plan.default_profile_id.as_deref(),
                 })
-                .unwrap_or_default();
+                .collect::<Vec<_>>();
             ImportPreviewJson {
                 source_kind: candidate.source_kind,
                 source: candidate.source.clone(),
@@ -552,10 +553,7 @@ pub(crate) fn render_import_preview_json(candidates: &[ImportCandidate]) -> CliR
                 channel_candidates: candidate.channel_candidates.clone(),
                 workspace_guidance: candidate.workspace_guidance.clone(),
                 provider_profiles,
-                active_provider: migration::build_provider_selection_plan_for_candidate(
-                    candidate, candidates,
-                )
-                .default_profile_id,
+                active_provider: provider_plan.default_profile_id.clone(),
                 provider_selection,
             }
         })
@@ -621,32 +619,59 @@ pub(crate) fn resolve_import_provider_selection(
             .collect::<Vec<_>>()
             .join(", ");
         return Err(format!(
-            "recommended import plan requires an active provider choice ({choices}); rerun with --provider <id> or use loongclaw onboard"
+            "recommended import plan requires an active provider choice ({choices}); rerun with --provider {} or use loongclaw onboard",
+            migration::provider_selection::PROVIDER_SELECTOR_PLACEHOLDER,
         ));
     }
 
     if let Some(provider_raw) = provider {
-        let Some(choice) = migration::resolve_choice_by_selector(&provider_selection, provider_raw)
-        else {
-            let choices = provider_selection
-                .imported_choices
-                .iter()
-                .map(|choice| choice.profile_id.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Err(format!(
-                "unsupported --provider value {:?}. available provider profiles: {}",
-                provider_raw, choices
-            ));
-        };
+        match migration::resolve_choice_by_selector_resolution(&provider_selection, provider_raw) {
+            migration::ImportedChoiceSelectorResolution::Match(profile_id) => {
+                let choice = provider_selection
+                    .imported_choices
+                    .iter()
+                    .find(|choice| choice.profile_id == profile_id)
+                    .expect("resolved provider choice should exist in plan");
+                return Ok(choice.config.clone());
+            }
+            migration::ImportedChoiceSelectorResolution::Ambiguous(profile_ids) => {
+                let recommendation = migration::recommendation_hint_for_profile_ids(
+                    &provider_selection,
+                    &profile_ids,
+                )
+                .map(|hint| format!("; {hint}"))
+                .unwrap_or_default();
+                return Err(format!(
+                    "provider selector `{provider_raw}` is ambiguous; matching profiles: {}{}",
+                    migration::describe_matching_choices(&provider_selection, &profile_ids),
+                    recommendation
+                ));
+            }
+            migration::ImportedChoiceSelectorResolution::NoMatch => {
+                let recommendation = migration::recommendation_hint(&provider_selection)
+                    .map(|hint| format!(" {}", hint))
+                    .unwrap_or_default();
+                return Err(format!(
+                    "unsupported --provider value {:?}. accepted selectors: {}. {}{}",
+                    provider_raw,
+                    migration::selector_catalog(&provider_selection).join(", "),
+                    migration::provider_selection::PROVIDER_SELECTOR_NOTE,
+                    recommendation
+                ));
+            }
+        }
+    }
+
+    if let Some(default_profile_id) = provider_selection.default_profile_id.as_deref()
+        && let Some(choice) =
+            migration::resolve_choice_by_selector(&provider_selection, default_profile_id)
+    {
         return Ok(choice.config.clone());
     }
 
-    let selected_kind = if let Some(default_kind) = provider_selection.default_kind {
-        default_kind
-    } else {
-        candidate.config.provider.kind
-    };
+    let selected_kind = provider_selection
+        .default_kind
+        .unwrap_or(candidate.config.provider.kind);
 
     Ok(migration::resolve_provider_config_from_selection(
         current_provider,
@@ -655,93 +680,33 @@ pub(crate) fn resolve_import_provider_selection(
     ))
 }
 
-fn provider_identity_key(provider: &mvp::config::ProviderConfig) -> String {
-    let endpoint = provider
-        .endpoint
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| {
-            format!(
-                "{}{}",
-                provider.base_url.trim().to_ascii_lowercase(),
-                provider.chat_completions_path.trim().to_ascii_lowercase()
-            )
-        });
-    format!(
-        "{}|{}|{}",
-        provider.kind.as_str(),
-        provider.wire_api.as_str(),
-        endpoint
-    )
-}
-
 fn merge_provider_profile(
     existing: &mvp::config::ProviderConfig,
     incoming: &mvp::config::ProviderConfig,
 ) -> mvp::config::ProviderConfig {
-    let mut merged = existing.clone();
-    if merged.model.trim().is_empty() || merged.model.eq_ignore_ascii_case("auto") {
-        merged.model = incoming.model.clone();
-    }
-    if merged.api_key.is_none() {
-        merged.api_key = incoming.api_key.clone();
-    }
-    if merged.api_key_env.is_none() {
-        merged.api_key_env = incoming.api_key_env.clone();
-    }
-    if merged.oauth_access_token.is_none() {
-        merged.oauth_access_token = incoming.oauth_access_token.clone();
-    }
-    if merged.oauth_access_token_env.is_none() {
-        merged.oauth_access_token_env = incoming.oauth_access_token_env.clone();
-    }
-    if merged.endpoint.is_none() {
-        merged.endpoint = incoming.endpoint.clone();
-    }
-    if merged.models_endpoint.is_none() {
-        merged.models_endpoint = incoming.models_endpoint.clone();
-    }
-    if merged.headers.is_empty() {
-        merged.headers = incoming.headers.clone();
-    } else {
-        for (key, value) in &incoming.headers {
-            merged
-                .headers
-                .entry(key.clone())
-                .or_insert_with(|| value.clone());
-        }
-    }
-    if merged.base_url_is_profile_default_like() {
-        merged.base_url = incoming.base_url.clone();
-    }
-    if merged.chat_completions_path_is_profile_default_like() {
-        merged.chat_completions_path = incoming.chat_completions_path.clone();
-    }
-    if merged.preferred_models.is_empty() && !incoming.preferred_models.is_empty() {
-        merged.preferred_models = incoming.preferred_models.clone();
-    }
-    if merged.reasoning_effort.is_none() {
-        merged.reasoning_effort = incoming.reasoning_effort;
-    }
-    merged
+    migration::provider_selection::merge_provider_config(existing, incoming)
 }
 
 fn insert_or_merge_provider_profile(
     profiles: &mut BTreeMap<String, mvp::config::ProviderProfileConfig>,
     provider: &mvp::config::ProviderConfig,
+    preferred_profile_id: Option<&str>,
 ) -> String {
-    let incoming_identity = provider_identity_key(provider);
-    if let Some((profile_id, profile)) = profiles
-        .iter_mut()
-        .find(|(_, profile)| provider_identity_key(&profile.provider) == incoming_identity)
-    {
+    let incoming_identity = migration::provider_selection::provider_profile_merge_key(provider);
+    if let Some((profile_id, profile)) = profiles.iter_mut().find(|(_, profile)| {
+        migration::provider_selection::provider_profile_merge_key(&profile.provider)
+            == incoming_identity
+    }) {
         profile.provider = merge_provider_profile(&profile.provider, provider);
         return profile_id.clone();
     }
 
-    let base_id = provider.inferred_profile_id();
+    let inferred_profile_id = provider.inferred_profile_id();
+    let base_id = preferred_profile_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(inferred_profile_id.as_str())
+        .to_owned();
     let mut profile_id = base_id.clone();
     let mut suffix = 2;
     while profiles.contains_key(&profile_id) {
@@ -777,7 +742,11 @@ fn apply_provider_profiles_to_config(
     let mut profiles = resolved_config.providers.clone();
     let mut inserted_ids = BTreeMap::new();
     for choice in &provider_selection.imported_choices {
-        let profile_id = insert_or_merge_provider_profile(&mut profiles, &choice.config);
+        let profile_id = insert_or_merge_provider_profile(
+            &mut profiles,
+            &choice.config,
+            Some(&choice.profile_id),
+        );
         inserted_ids.insert(choice.profile_id.clone(), profile_id);
     }
 
@@ -787,20 +756,38 @@ fn apply_provider_profiles_to_config(
             .map(str::to_owned)
             .or_else(|| profiles.keys().next().cloned())
     } else if let Some(provider_raw) = provider {
-        let choice = migration::resolve_choice_by_selector(&provider_selection, provider_raw)
-            .ok_or_else(|| {
-                let available = provider_selection
-                    .imported_choices
-                    .iter()
-                    .map(|choice| choice.profile_id.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!(
-                    "unsupported --provider value {:?}. available provider profiles: {}",
-                    provider_raw, available
+        let profile_id = match migration::resolve_choice_by_selector_resolution(
+            &provider_selection,
+            provider_raw,
+        ) {
+            migration::ImportedChoiceSelectorResolution::Match(profile_id) => profile_id,
+            migration::ImportedChoiceSelectorResolution::Ambiguous(profile_ids) => {
+                let recommendation = migration::recommendation_hint_for_profile_ids(
+                    &provider_selection,
+                    &profile_ids,
                 )
-            })?;
-        inserted_ids.get(&choice.profile_id).cloned()
+                .map(|hint| format!("; {hint}"))
+                .unwrap_or_default();
+                return Err(format!(
+                    "provider selector `{provider_raw}` is ambiguous; matching profiles: {}{}",
+                    migration::describe_matching_choices(&provider_selection, &profile_ids),
+                    recommendation
+                ));
+            }
+            migration::ImportedChoiceSelectorResolution::NoMatch => {
+                let recommendation = migration::recommendation_hint(&provider_selection)
+                    .map(|hint| format!(" {}", hint))
+                    .unwrap_or_default();
+                return Err(format!(
+                    "unsupported --provider value {:?}. accepted selectors: {}. {}{}",
+                    provider_raw,
+                    migration::selector_catalog(&provider_selection).join(", "),
+                    migration::provider_selection::PROVIDER_SELECTOR_NOTE,
+                    recommendation
+                ));
+            }
+        };
+        inserted_ids.get(&profile_id).cloned()
     } else {
         provider_selection
             .default_profile_id
@@ -811,6 +798,22 @@ fn apply_provider_profiles_to_config(
 
     resolved_config.providers = profiles;
     if let Some(active_provider_id) = active_provider_id {
+        let active_kind = resolved_config
+            .providers
+            .get(&active_provider_id)
+            .map(|profile| profile.provider.kind);
+        if let Some(active_kind) = active_kind {
+            for profile in resolved_config
+                .providers
+                .values_mut()
+                .filter(|profile| profile.provider.kind == active_kind)
+            {
+                profile.default_for_kind = false;
+            }
+            if let Some(active_profile) = resolved_config.providers.get_mut(&active_provider_id) {
+                active_profile.default_for_kind = true;
+            }
+        }
         resolved_config.active_provider = Some(active_provider_id.clone());
         if let Some(active_profile) = resolved_config.providers.get(&active_provider_id) {
             resolved_config.provider = active_profile.provider.clone();
