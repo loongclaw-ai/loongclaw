@@ -1068,6 +1068,7 @@ fn approval_request_list_grant_summary_json(requests: &[Value]) -> Value {
     ]);
     let mut scope_session_counts = BTreeMap::<String, usize>::new();
     let mut created_by_session_counts = BTreeMap::<String, usize>::new();
+    let mut created_by_approval_key_counts = BTreeMap::<String, BTreeMap<String, usize>>::new();
     let mut reviewable_count = 0usize;
     let mut counts_by_age_bucket = BTreeMap::from([
         ("fresh".to_owned(), 0usize),
@@ -1093,6 +1094,13 @@ fn approval_request_list_grant_summary_json(requests: &[Value]) -> Value {
             *created_by_session_counts
                 .entry(created_by_session_id.to_owned())
                 .or_default() += 1;
+            if let Some(approval_key) = request.get("approval_key").and_then(Value::as_str) {
+                *created_by_approval_key_counts
+                    .entry(created_by_session_id.to_owned())
+                    .or_default()
+                    .entry(approval_key.to_owned())
+                    .or_default() += 1;
+            }
         }
         if let Some(status) = request
             .get("grant_audit")
@@ -1126,6 +1134,7 @@ fn approval_request_list_grant_summary_json(requests: &[Value]) -> Value {
         "consistency_counts": consistency_counts,
         "scope_session_counts": scope_session_counts,
         "created_by_session_counts": created_by_session_counts,
+        "created_by_approval_key_counts": created_by_approval_key_counts,
         "review_summary": {
             "reviewable_count": reviewable_count,
             "non_reviewable_count": requests.len().saturating_sub(reviewable_count),
@@ -5394,6 +5403,102 @@ mod tests {
         assert_eq!(request["grant_review"]["reviewable"], true);
         assert_eq!(request["grant_review"]["age_bucket"], "overdue");
         assert_eq!(request["grant_review"]["last_changed_at"], overdue_updated_at);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn approval_request_tool_query_groups_runtime_grants_by_creator_and_action() {
+        let config = isolated_memory_config("approval-query-list-grant-creator-action-summary");
+        let repo = SessionRepository::new(&config).expect("repository");
+        seed_session(&repo, "root-session", SessionKind::Root, None);
+        seed_session(
+            &repo,
+            "child-session",
+            SessionKind::DelegateChild,
+            Some("root-session"),
+        );
+
+        seed_request(
+            &repo,
+            "apr-grant-creator-action-a",
+            "child-session",
+            "delegate_async",
+            "governed_tool_requires_per_call_approval",
+        );
+        seed_request(
+            &repo,
+            "apr-grant-creator-action-b",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+        );
+        seed_request(
+            &repo,
+            "apr-grant-creator-action-c",
+            "root-session",
+            "memory_search",
+            "governed_tool_requires_per_call_approval",
+        );
+
+        seed_runtime_grant(
+            &repo,
+            "root-session",
+            "tool:delegate_async",
+            Some("operator-alpha"),
+        );
+        seed_runtime_grant(
+            &repo,
+            "root-session",
+            "tool:session_cancel",
+            Some("operator-alpha"),
+        );
+        seed_runtime_grant(
+            &repo,
+            "root-session",
+            "tool:memory_search",
+            Some("operator-beta"),
+        );
+
+        let list_outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome for creator/action summary");
+
+        let grant_summary = &list_outcome.payload["grant_summary"];
+        assert_eq!(
+            grant_summary["created_by_approval_key_counts"]["operator-alpha"]["tool:delegate_async"],
+            1
+        );
+        assert_eq!(
+            grant_summary["created_by_approval_key_counts"]["operator-alpha"]["tool:session_cancel"],
+            1
+        );
+        assert_eq!(
+            grant_summary["created_by_approval_key_counts"]["operator-beta"]["tool:memory_search"],
+            1
+        );
+        assert_eq!(
+            grant_summary["created_by_approval_key_counts"]["operator-alpha"]
+                .as_object()
+                .expect("operator-alpha approval key counts")
+                .len(),
+            2
+        );
+        assert_eq!(
+            grant_summary["created_by_approval_key_counts"]["operator-beta"]
+                .as_object()
+                .expect("operator-beta approval key counts")
+                .len(),
+            1
+        );
     }
 
     #[cfg(feature = "memory-sqlite")]
