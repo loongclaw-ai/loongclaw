@@ -333,7 +333,7 @@ fn execute_approval_requests_list(
         approval_request_recent_events_by_session_id(&repo, &requests)?;
     let mut request_summaries = requests
         .into_iter()
-        .map(|record| {
+        .map(|record| -> Result<Value, String> {
             let session_events = recent_events_by_session_id
                 .get(&record.session_id)
                 .map(Vec::as_slice)
@@ -342,13 +342,15 @@ fn execute_approval_requests_list(
                 session_events,
                 &record.approval_request_id,
             );
-            approval_request_summary_json_with_evidence(
+            let grant = approval_request_runtime_grant_json(&repo, &record)?;
+            Ok(approval_request_summary_json_with_evidence(
                 &record,
+                grant,
                 execution_evidence.clone(),
                 approval_request_execution_integrity_json(&record, &execution_evidence),
-            )
+            ))
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, String>>()?;
     if let Some(integrity_status) = request.integrity_status {
         request_summaries.retain(|item| {
             item.get("execution_integrity")
@@ -465,6 +467,7 @@ fn execute_approval_requests_list(
     let resolution_summary = approval_request_list_resolution_summary_json(&request_summaries);
     let correlation_summary = approval_request_list_correlation_summary_json(&request_summaries);
     let governance_summary = approval_request_list_governance_summary_json(&request_summaries);
+    let grant_summary = approval_request_list_grant_summary_json(&request_summaries);
     let session_summary = approval_request_list_session_summary_json(&request_summaries);
     let tool_summary = approval_request_list_tool_summary_json(&request_summaries);
     let matched_count = request_summaries.len();
@@ -505,6 +508,7 @@ fn execute_approval_requests_list(
             "resolution_summary": resolution_summary,
             "correlation_summary": correlation_summary,
             "governance_summary": governance_summary,
+            "grant_summary": grant_summary,
             "session_summary": session_summary,
             "tool_summary": tool_summary,
             "requests": request_summaries,
@@ -533,6 +537,7 @@ fn execute_approval_request_status(
     let execution_evidence = approval_request_execution_evidence_json(&repo, &request)?;
     let execution_integrity =
         approval_request_execution_integrity_json(&request, &execution_evidence);
+    let grant = approval_request_runtime_grant_json(&repo, &request)?;
 
     Ok(ToolCoreOutcome {
         status: "ok".to_owned(),
@@ -540,6 +545,7 @@ fn execute_approval_request_status(
             "current_session_id": current_session_id,
             "approval_request": approval_request_detail_json_with_evidence(
                 &request,
+                grant,
                 execution_evidence,
                 execution_integrity,
             ),
@@ -573,6 +579,7 @@ async fn execute_approval_request_resolve(
         approval_request_execution_evidence_json(&repo, &outcome.approval_request)?;
     let execution_integrity =
         approval_request_execution_integrity_json(&outcome.approval_request, &execution_evidence);
+    let grant = approval_request_runtime_grant_json(&repo, &outcome.approval_request)?;
     let resolution = approval_request_resolution_json(
         &outcome.approval_request,
         &execution_evidence,
@@ -586,6 +593,7 @@ async fn execute_approval_request_resolve(
             "resolution": resolution,
             "approval_request": approval_request_detail_json_with_evidence(
                 &outcome.approval_request,
+                grant,
                 execution_evidence,
                 execution_integrity,
             ),
@@ -597,6 +605,7 @@ async fn execute_approval_request_resolve(
 #[cfg(feature = "memory-sqlite")]
 fn approval_request_summary_json_with_evidence(
     record: &ApprovalRequestRecord,
+    grant: Value,
     execution_evidence: Value,
     execution_integrity: Value,
 ) -> Value {
@@ -637,6 +646,7 @@ fn approval_request_summary_json_with_evidence(
             .governance_snapshot_json
             .get("rule_id")
             .and_then(Value::as_str),
+        "grant": grant,
         "pending_queue": pending_queue,
         "resolution": resolution,
         "execution_evidence": execution_evidence,
@@ -925,6 +935,33 @@ fn approval_request_list_governance_summary_json(requests: &[Value]) -> Value {
 }
 
 #[cfg(feature = "memory-sqlite")]
+fn approval_request_list_grant_summary_json(requests: &[Value]) -> Value {
+    let mut counts_by_state = BTreeMap::from([
+        ("present".to_owned(), 0usize),
+        ("absent".to_owned(), 0usize),
+        ("lineage_unresolved".to_owned(), 0usize),
+    ]);
+    let mut scope_session_counts = BTreeMap::<String, usize>::new();
+
+    for request in requests {
+        let grant = request.get("grant").unwrap_or(&Value::Null);
+        if let Some(state) = grant.get("state").and_then(Value::as_str) {
+            *counts_by_state.entry(state.to_owned()).or_default() += 1;
+        }
+        if let Some(scope_session_id) = grant.get("scope_session_id").and_then(Value::as_str) {
+            *scope_session_counts
+                .entry(scope_session_id.to_owned())
+                .or_default() += 1;
+        }
+    }
+
+    json!({
+        "counts_by_state": counts_by_state,
+        "scope_session_counts": scope_session_counts,
+    })
+}
+
+#[cfg(feature = "memory-sqlite")]
 fn approval_request_list_session_summary_json(requests: &[Value]) -> Value {
     #[derive(Default)]
     struct SessionSummaryAccumulator {
@@ -1161,6 +1198,7 @@ fn approval_request_list_tool_summary_json(requests: &[Value]) -> Value {
 #[cfg(feature = "memory-sqlite")]
 fn approval_request_detail_json_with_evidence(
     record: &ApprovalRequestRecord,
+    grant: Value,
     execution_evidence: Value,
     execution_integrity: Value,
 ) -> Value {
@@ -1195,6 +1233,7 @@ fn approval_request_detail_json_with_evidence(
         "last_error": record.last_error,
         "request_payload": record.request_payload_json,
         "governance_snapshot": record.governance_snapshot_json,
+        "grant": grant,
         "pending_queue": pending_queue,
         "resolution": resolution,
         "execution_evidence": execution_evidence,
@@ -1251,6 +1290,39 @@ fn approval_request_resolution_json(
             .get("recommended_action")
             .cloned()
             .unwrap_or(Value::Null),
+    })
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn approval_request_runtime_grant_json(
+    repo: &SessionRepository,
+    record: &ApprovalRequestRecord,
+) -> Result<Value, String> {
+    let Some(scope_session_id) = repo.lineage_root_session_id(&record.session_id)? else {
+        return Ok(json!({
+            "state": "lineage_unresolved",
+            "scope_session_id": Value::Null,
+            "created_by_session_id": Value::Null,
+            "created_at": Value::Null,
+            "updated_at": Value::Null,
+        }));
+    };
+    let grant = repo.load_approval_grant(&scope_session_id, &record.approval_key)?;
+    Ok(match grant {
+        Some(grant) => json!({
+            "state": "present",
+            "scope_session_id": grant.scope_session_id,
+            "created_by_session_id": grant.created_by_session_id,
+            "created_at": grant.created_at,
+            "updated_at": grant.updated_at,
+        }),
+        None => json!({
+            "state": "absent",
+            "scope_session_id": scope_session_id,
+            "created_by_session_id": Value::Null,
+            "created_at": Value::Null,
+            "updated_at": Value::Null,
+        }),
     })
 }
 
@@ -2263,8 +2335,9 @@ mod tests {
     use crate::config::ToolConfig;
     use crate::memory::runtime_config::MemoryRuntimeConfig;
     use crate::session::repository::{
-        ApprovalDecision, ApprovalRequestStatus, NewApprovalRequestRecord, NewSessionRecord,
-        SessionKind, SessionRepository, SessionState, TransitionApprovalRequestIfCurrentRequest,
+        ApprovalDecision, ApprovalRequestStatus, NewApprovalGrantRecord, NewApprovalRequestRecord,
+        NewSessionRecord, SessionKind, SessionRepository, SessionState,
+        TransitionApprovalRequestIfCurrentRequest,
     };
 
     fn isolated_memory_config(test_name: &str) -> MemoryRuntimeConfig {
@@ -2363,6 +2436,21 @@ mod tests {
             }),
         })
         .expect("seed approval request with governance");
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    fn seed_runtime_grant(
+        repo: &SessionRepository,
+        scope_session_id: &str,
+        approval_key: &str,
+        created_by_session_id: Option<&str>,
+    ) {
+        repo.upsert_approval_grant(NewApprovalGrantRecord {
+            scope_session_id: scope_session_id.to_owned(),
+            approval_key: approval_key.to_owned(),
+            created_by_session_id: created_by_session_id.map(str::to_owned),
+        })
+        .expect("seed runtime grant");
     }
 
     #[cfg(feature = "memory-sqlite")]
@@ -4278,6 +4366,116 @@ mod tests {
         assert_eq!(tools[2]["pending_count"], 0);
         assert_eq!(tools[2]["attention_count"], 0);
         assert_eq!(tools[2]["oldest_pending_requested_at"], Value::Null);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn approval_request_tool_query_surfaces_runtime_grant_snapshots() {
+        let config = isolated_memory_config("approval-query-list-grant-summary");
+        let repo = SessionRepository::new(&config).expect("repository");
+        seed_session(&repo, "root-session", SessionKind::Root, None);
+        seed_session(
+            &repo,
+            "child-session",
+            SessionKind::DelegateChild,
+            Some("root-session"),
+        );
+
+        seed_request_with_governance(
+            &repo,
+            "apr-grant-present",
+            "child-session",
+            "delegate_async",
+            "governed_tool_requires_per_call_approval",
+            "Orchestration",
+            "TopologyMutation",
+            "High",
+        );
+        seed_request_with_governance(
+            &repo,
+            "apr-grant-absent",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+            "App",
+            "Routine",
+            "Elevated",
+        );
+        seed_runtime_grant(
+            &repo,
+            "root-session",
+            "tool:delegate_async",
+            Some("operator-session"),
+        );
+
+        let list_outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome for grant summary");
+
+        let grant_summary = &list_outcome.payload["grant_summary"];
+        assert_eq!(grant_summary["counts_by_state"]["present"], 1);
+        assert_eq!(grant_summary["counts_by_state"]["absent"], 1);
+        assert_eq!(grant_summary["counts_by_state"]["lineage_unresolved"], 0);
+        assert_eq!(grant_summary["scope_session_counts"]["root-session"], 2);
+
+        let requests = list_outcome.payload["requests"]
+            .as_array()
+            .expect("requests array");
+        let present_request = requests
+            .iter()
+            .find(|item| item["approval_request_id"] == "apr-grant-present")
+            .expect("present grant request");
+        assert_eq!(present_request["grant"]["state"], "present");
+        assert_eq!(present_request["grant"]["scope_session_id"], "root-session");
+        assert_eq!(
+            present_request["grant"]["created_by_session_id"],
+            "operator-session"
+        );
+        assert!(present_request["grant"]["created_at"].as_i64().is_some());
+        assert!(present_request["grant"]["updated_at"].as_i64().is_some());
+
+        let absent_request = requests
+            .iter()
+            .find(|item| item["approval_request_id"] == "apr-grant-absent")
+            .expect("absent grant request");
+        assert_eq!(absent_request["grant"]["state"], "absent");
+        assert_eq!(absent_request["grant"]["scope_session_id"], "root-session");
+        assert_eq!(
+            absent_request["grant"]["created_by_session_id"],
+            Value::Null
+        );
+        assert_eq!(absent_request["grant"]["created_at"], Value::Null);
+        assert_eq!(absent_request["grant"]["updated_at"], Value::Null);
+
+        let status_outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_request_status".to_owned(),
+                payload: json!({
+                    "approval_request_id": "apr-grant-present",
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_request_status outcome for grant snapshot");
+
+        let request = &status_outcome.payload["approval_request"];
+        assert_eq!(request["grant"]["state"], "present");
+        assert_eq!(request["grant"]["scope_session_id"], "root-session");
+        assert_eq!(
+            request["grant"]["created_by_session_id"],
+            "operator-session"
+        );
     }
 
     #[cfg(feature = "memory-sqlite")]
