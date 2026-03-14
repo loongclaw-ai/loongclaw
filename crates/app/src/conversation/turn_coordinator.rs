@@ -841,15 +841,21 @@ struct ProviderTurnContinuePhase {
     request: TurnCheckpointRequest,
     lane_execution: ProviderTurnLaneExecution,
     reply_phase: ToolDrivenReplyPhase,
+    followup_config: LoongClawConfig,
 }
 
 impl ProviderTurnContinuePhase {
-    fn new(tool_intents: usize, lane_execution: ProviderTurnLaneExecution) -> Self {
+    fn new(
+        tool_intents: usize,
+        lane_execution: ProviderTurnLaneExecution,
+        followup_config: LoongClawConfig,
+    ) -> Self {
         let reply_phase = lane_execution.reply_phase();
         Self {
             request: TurnCheckpointRequest::Continue { tool_intents },
             lane_execution,
             reply_phase,
+            followup_config,
         }
     }
 
@@ -873,14 +879,13 @@ impl ProviderTurnContinuePhase {
     async fn resolve_reply<R: ConversationRuntime + ?Sized>(
         &self,
         runtime: &R,
-        config: &LoongClawConfig,
         preparation: &ProviderTurnPreparation,
         user_input: &str,
         kernel_ctx: Option<&KernelContext>,
     ) -> String {
         resolve_provider_turn_reply(
             runtime,
-            config,
+            &self.followup_config,
             preparation,
             &self.lane_execution,
             &self.reply_phase,
@@ -2054,7 +2059,7 @@ async fn resolve_provider_turn<R: ConversationRuntime + ?Sized>(
             )
             .await;
             let reply = continue_phase
-                .resolve_reply(runtime, config, preparation, user_input, kernel_ctx)
+                .resolve_reply(runtime, preparation, user_input, kernel_ctx)
                 .await;
             let checkpoint = continue_phase.checkpoint(preparation, user_input, reply.as_str());
             ResolvedProviderTurn::persist_reply(reply, checkpoint)
@@ -2079,9 +2084,11 @@ async fn prepare_provider_turn_continue_phase<R: ConversationRuntime + ?Sized>(
 ) -> ProviderTurnContinuePhase {
     let tool_intents = turn.tool_intents.len();
     let lane_execution =
-        execute_provider_turn_lane(config, runtime, session_id, preparation, turn, kernel_ctx)
+        execute_provider_turn_lane(config, runtime, session_id, preparation, &turn, kernel_ctx)
             .await;
-    ProviderTurnContinuePhase::new(tool_intents, lane_execution)
+    let followup_config =
+        ConversationTurnCoordinator::reload_followup_provider_config_after_tool_turn(config, &turn);
+    ProviderTurnContinuePhase::new(tool_intents, lane_execution, followup_config)
 }
 
 async fn resolve_provider_turn_reply<R: ConversationRuntime + ?Sized>(
@@ -3320,7 +3327,7 @@ async fn execute_provider_turn_lane<R: ConversationRuntime + ?Sized>(
     runtime: &R,
     session_id: &str,
     preparation: &ProviderTurnPreparation,
-    turn: ProviderTurn,
+    turn: &ProviderTurn,
     kernel_ctx: Option<&KernelContext>,
 ) -> ProviderTurnLaneExecution {
     let had_tool_intents = !turn.tool_intents.is_empty();
@@ -5350,6 +5357,7 @@ mod tests {
                     source: SafeLaneFailureRouteSource::SessionGovernor,
                 }),
             },
+            config.clone(),
         );
 
         let checkpoint =
@@ -5429,6 +5437,7 @@ mod tests {
                 turn_result: TurnResult::FinalText("hello there".to_owned()),
                 safe_lane_terminal_route: None,
             },
+            LoongClawConfig::default(),
         );
 
         let checkpoint = phase.checkpoint(&preparation, "say hello", "hello there");
