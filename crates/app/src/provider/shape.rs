@@ -273,6 +273,7 @@ fn extract_inline_function_call_turn(text: &str) -> InlineFunctionParseResult {
         let start = cursor + relative_start;
         if !is_standalone_inline_function_start(text, start)
             || is_inside_markdown_fence(text, start)
+            || is_inside_markdown_indented_code_block(text, start)
         {
             let next_cursor = start + FUNCTION_OPEN.len();
             cleaned.push_str(&text[cursor..next_cursor]);
@@ -543,6 +544,53 @@ fn is_inside_markdown_fence(text: &str, index: usize) -> bool {
     }
 
     inside
+}
+
+fn is_inside_markdown_indented_code_block(text: &str, index: usize) -> bool {
+    let mut line_start = text[..index]
+        .rfind('\n')
+        .map(|offset| offset + 1)
+        .unwrap_or(0);
+
+    if !line_has_markdown_indented_code_prefix(&text[line_start..index]) {
+        return false;
+    }
+
+    loop {
+        if line_start == 0 {
+            return true;
+        }
+
+        let previous_line_end = line_start.saturating_sub(1);
+        let previous_line_start = text[..previous_line_end]
+            .rfind('\n')
+            .map(|offset| offset + 1)
+            .unwrap_or(0);
+        let previous_line = &text[previous_line_start..previous_line_end];
+
+        if previous_line.trim().is_empty() {
+            return true;
+        }
+
+        if !line_has_markdown_indented_code_prefix(previous_line) {
+            return false;
+        }
+
+        line_start = previous_line_start;
+    }
+}
+
+fn line_has_markdown_indented_code_prefix(line: &str) -> bool {
+    let mut spaces = 0usize;
+    for ch in line.chars() {
+        match ch {
+            ' ' => spaces += 1,
+            '\t' => return true,
+            '\r' => {}
+            _ => return spaces >= 4,
+        }
+    }
+    spaces >= 4
 }
 
 fn markdown_fence_marker(line: &str) -> Option<char> {
@@ -834,6 +882,41 @@ mod tests {
             turn.assistant_text,
             "示例：\n```xml\n<function=shell.exec><parameter=command>ls</parameter></function>\n```"
         );
+    }
+
+    #[test]
+    fn extract_provider_turn_does_not_execute_indented_code_block_examples() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": "示例：\n\n    <function=shell.exec><parameter=command>ls</parameter></function>"
+                }
+            }]
+        });
+
+        let turn = extract_provider_turn(&body).expect("turn");
+        assert!(turn.tool_intents.is_empty());
+        assert_eq!(
+            turn.assistant_text,
+            "示例：\n\n    <function=shell.exec><parameter=command>ls</parameter></function>"
+        );
+    }
+
+    #[test]
+    fn extract_provider_turn_parses_indented_inline_function_when_not_code_block() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": "让我重试：\n    <function=shell.exec><parameter=command>ls</parameter></function>"
+                }
+            }]
+        });
+
+        let turn = extract_provider_turn(&body).expect("turn");
+        assert_eq!(turn.assistant_text, "让我重试：");
+        assert_eq!(turn.tool_intents.len(), 1);
+        assert_eq!(turn.tool_intents[0].tool_name, "shell.exec");
+        assert_eq!(turn.tool_intents[0].args_json, json!({"command": "ls"}));
     }
 
     #[test]
