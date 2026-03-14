@@ -1,3 +1,12 @@
+#![allow(
+    clippy::await_holding_lock,
+    clippy::expect_used,
+    clippy::indexing_slicing
+)]
+
+// These daemon tests intentionally serialize env-dependent subprocess cases
+// and use direct JSON assertions to keep the harness straightforward.
+
 use super::*;
 use clap::Parser;
 use std::path::PathBuf;

@@ -29,9 +29,7 @@ pub struct ToolDescriptor {
 
 impl ToolDescriptor {
     pub fn matches_name(&self, raw: &str) -> bool {
-        self.name == raw
-            || self.provider_name == raw
-            || self.aliases.iter().any(|alias| *alias == raw)
+        self.name == raw || self.provider_name == raw || self.aliases.contains(&raw)
     }
 
     pub fn provider_definition(&self) -> Value {

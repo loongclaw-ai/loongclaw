@@ -6,6 +6,7 @@ use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 #[cfg(feature = "memory-sqlite")]
 use std::{
+    io::{self, Write},
     path::{Path, PathBuf},
     process::Stdio,
 };
@@ -313,7 +314,9 @@ fn spawn_async_delegate_detached(
                 label,
                 error.clone(),
             ) {
-                eprintln!(
+                let mut stderr = io::stderr().lock();
+                let _ = writeln!(
+                    &mut stderr,
                     "error: async delegate spawn failure persistence failed for `{child_session_id}`: {finalize_error}; original spawn error: {error}"
                 );
             }
@@ -407,10 +410,10 @@ impl DefaultAppToolDispatcher {
     pub fn runtime() -> Self {
         #[cfg(feature = "memory-sqlite")]
         {
-            return Self::production(
+            Self::production(
                 crate::memory::runtime_config::get_memory_runtime_config().clone(),
                 ToolConfig::default(),
-            );
+            )
         }
         #[cfg(not(feature = "memory-sqlite"))]
         Self::new(
@@ -734,9 +737,9 @@ impl TurnEngine {
         // Execute each tool intent through the kernel
         let mut outputs = Vec::new();
         for intent in &turn.tool_intents {
-            let descriptor = catalog
-                .resolve(&intent.tool_name)
-                .expect("tool descriptor should remain resolvable after validation");
+            let Some(descriptor) = catalog.resolve(&intent.tool_name) else {
+                return TurnResult::ToolDenied(format!("tool_not_found: {}", intent.tool_name));
+            };
             let request = ToolCoreRequest {
                 tool_name: descriptor.name.to_owned(),
                 payload: intent.args_json.clone(),

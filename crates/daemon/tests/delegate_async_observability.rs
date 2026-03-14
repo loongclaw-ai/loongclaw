@@ -1,3 +1,13 @@
+#![allow(
+    clippy::await_holding_lock,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::map_err_ignore
+)]
+
+// This integration harness intentionally serializes env-dependent subprocess tests
+// and uses direct JSON assertions for readability.
+
 use async_trait::async_trait;
 use loongclaw_app as mvp;
 use loongclaw_contracts::ToolCoreRequest;

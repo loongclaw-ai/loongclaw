@@ -39,7 +39,7 @@ pub struct SessionToolConfig {
     pub history_limit: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct MessageToolConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -96,12 +96,6 @@ impl Default for SessionToolConfig {
             list_limit: default_session_list_limit(),
             history_limit: default_session_history_limit(),
         }
-    }
-}
-
-impl Default for MessageToolConfig {
-    fn default() -> Self {
-        Self { enabled: false }
     }
 }
 

@@ -462,10 +462,10 @@ fn ensure_session_registered(
 fn default_app_tool_dispatcher(config: &LoongClawConfig) -> DefaultAppToolDispatcher {
     #[cfg(feature = "memory-sqlite")]
     {
-        return DefaultAppToolDispatcher::production_with_config(
+        DefaultAppToolDispatcher::production_with_config(
             memory_runtime_config_for(config),
             config.clone(),
-        );
+        )
     }
     #[cfg(not(feature = "memory-sqlite"))]
     DefaultAppToolDispatcher::new(memory_runtime_config_for(config), config.tools.clone())
