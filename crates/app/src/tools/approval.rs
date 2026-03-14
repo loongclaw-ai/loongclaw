@@ -378,6 +378,11 @@ fn approval_request_list_integrity_summary_json(requests: &[Value]) -> Value {
         ("incomplete".to_owned(), 0usize),
     ]);
     let mut incomplete_gap_counts = BTreeMap::<String, usize>::new();
+    let mut needs_attention_count = 0usize;
+    let mut counts_by_reason = BTreeMap::from([
+        ("integrity_gap".to_owned(), 0usize),
+        ("execution_failed".to_owned(), 0usize),
+    ]);
 
     for request in requests {
         let execution_integrity = request.get("execution_integrity").unwrap_or(&Value::Null);
@@ -393,11 +398,28 @@ fn approval_request_list_integrity_summary_json(requests: &[Value]) -> Value {
                 *incomplete_gap_counts.entry(gap.to_owned()).or_default() += 1;
             }
         }
+        if execution_integrity
+            .get("needs_attention")
+            .and_then(Value::as_bool)
+            == Some(true)
+        {
+            needs_attention_count += 1;
+            if let Some(reason) = execution_integrity
+                .get("attention_reason")
+                .and_then(Value::as_str)
+            {
+                *counts_by_reason.entry(reason.to_owned()).or_default() += 1;
+            }
+        }
     }
 
     json!({
         "counts_by_status": counts_by_status,
         "incomplete_gap_counts": incomplete_gap_counts,
+        "attention_summary": {
+            "needs_attention_count": needs_attention_count,
+            "counts_by_reason": counts_by_reason,
+        },
     })
 }
 
@@ -586,12 +608,25 @@ fn approval_request_execution_integrity_json(
         )
     };
 
+    let (needs_attention, attention_reason) =
+        if matches!(status, ApprovalExecutionIntegrityStatus::Incomplete) {
+            (true, Value::String("integrity_gap".to_owned()))
+        } else if matches!(status, ApprovalExecutionIntegrityStatus::Complete)
+            && !execution_error.is_null()
+        {
+            (true, Value::String("execution_failed".to_owned()))
+        } else {
+            (false, Value::Null)
+        };
+
     json!({
         "status": status.as_str(),
         "gap": gap,
         "integrity_error": integrity_error,
         "execution_error": execution_error,
         "evidence_complete": evidence_complete,
+        "needs_attention": needs_attention,
+        "attention_reason": attention_reason,
     })
 }
 
@@ -1035,6 +1070,14 @@ mod tests {
         );
         assert_eq!(root_request["execution_integrity"]["status"], "not_started");
         assert_eq!(root_request["execution_integrity"]["gap"], Value::Null);
+        assert_eq!(
+            root_request["execution_integrity"]["needs_attention"],
+            false
+        );
+        assert_eq!(
+            root_request["execution_integrity"]["attention_reason"],
+            Value::Null
+        );
     }
 
     #[cfg(feature = "memory-sqlite")]
@@ -1105,6 +1148,8 @@ mod tests {
         assert_eq!(integrity["gap"], Value::Null);
         assert_eq!(integrity["execution_error"], Value::Null);
         assert_eq!(integrity["integrity_error"], Value::Null);
+        assert_eq!(integrity["needs_attention"], false);
+        assert_eq!(integrity["attention_reason"], Value::Null);
     }
 
     #[cfg(feature = "memory-sqlite")]
@@ -1356,6 +1401,13 @@ mod tests {
             "session_cancel",
             "governed_tool_requires_per_call_approval",
         );
+        seed_request(
+            &repo,
+            "apr-summary-execution-failed",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+        );
 
         transition_request_status(
             &repo,
@@ -1377,6 +1429,13 @@ mod tests {
             ApprovalRequestStatus::Pending,
             ApprovalRequestStatus::Executed,
             Some("persist assistant turn via kernel failed: forced outcome persistence failure"),
+        );
+        transition_request_status(
+            &repo,
+            "apr-summary-execution-failed",
+            ApprovalRequestStatus::Pending,
+            ApprovalRequestStatus::Executed,
+            Some("tool failed for domain reasons"),
         );
 
         repo.append_event(crate::session::repository::NewSessionEvent {
@@ -1436,6 +1495,29 @@ mod tests {
             }),
         })
         .expect("append incomplete finished event");
+        repo.append_event(crate::session::repository::NewSessionEvent {
+            session_id: "root-session".to_owned(),
+            event_kind: "tool_approval_execution_started".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "approval_request_id": "apr-summary-execution-failed",
+                "replay_decision_persisted": true,
+                "replay_decision_persist_error": null,
+            }),
+        })
+        .expect("append execution-failed started event");
+        repo.append_event(crate::session::repository::NewSessionEvent {
+            session_id: "root-session".to_owned(),
+            event_kind: "tool_approval_execution_failed".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "approval_request_id": "apr-summary-execution-failed",
+                "error": "tool failed for domain reasons",
+                "replay_outcome_persisted": true,
+                "replay_outcome_persist_error": null,
+            }),
+        })
+        .expect("append execution-failed terminal event");
 
         let outcome = crate::tools::execute_app_tool_with_config(
             ToolCoreRequest {
@@ -1453,10 +1535,19 @@ mod tests {
         let summary = &outcome.payload["integrity_summary"];
         assert_eq!(summary["counts_by_status"]["not_started"], 1);
         assert_eq!(summary["counts_by_status"]["in_progress"], 1);
-        assert_eq!(summary["counts_by_status"]["complete"], 1);
+        assert_eq!(summary["counts_by_status"]["complete"], 2);
         assert_eq!(summary["counts_by_status"]["incomplete"], 1);
         assert_eq!(
             summary["incomplete_gap_counts"]["replay_outcome_missing"],
+            1
+        );
+        assert_eq!(summary["attention_summary"]["needs_attention_count"], 2);
+        assert_eq!(
+            summary["attention_summary"]["counts_by_reason"]["integrity_gap"],
+            1
+        );
+        assert_eq!(
+            summary["attention_summary"]["counts_by_reason"]["execution_failed"],
             1
         );
     }
@@ -1546,6 +1637,11 @@ mod tests {
         );
         assert_eq!(request["execution_integrity"]["status"], "not_started");
         assert_eq!(request["execution_integrity"]["gap"], Value::Null);
+        assert_eq!(request["execution_integrity"]["needs_attention"], false);
+        assert_eq!(
+            request["execution_integrity"]["attention_reason"],
+            Value::Null
+        );
     }
 
     #[cfg(feature = "memory-sqlite")]
@@ -1616,6 +1712,8 @@ mod tests {
         assert_eq!(integrity["status"], "incomplete");
         assert_eq!(integrity["gap"], "replay_outcome_missing");
         assert_eq!(integrity["execution_error"], Value::Null);
+        assert_eq!(integrity["needs_attention"], true);
+        assert_eq!(integrity["attention_reason"], "integrity_gap");
         assert!(
             integrity["integrity_error"]
                 .as_str()
@@ -1682,6 +1780,8 @@ mod tests {
             integrity["execution_error"],
             "tool failed for domain reasons"
         );
+        assert_eq!(integrity["needs_attention"], true);
+        assert_eq!(integrity["attention_reason"], "execution_failed");
     }
 
     #[cfg(feature = "memory-sqlite")]
