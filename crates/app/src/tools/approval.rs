@@ -461,11 +461,17 @@ async fn execute_approval_request_resolve(
         approval_request_execution_evidence_json(&repo, &outcome.approval_request)?;
     let execution_integrity =
         approval_request_execution_integrity_json(&outcome.approval_request, &execution_evidence);
+    let resolution = approval_request_resolution_json(
+        &outcome.approval_request,
+        &execution_integrity,
+        outcome.resumed_tool_output.as_ref(),
+    );
 
     Ok(ToolCoreOutcome {
         status: "ok".to_owned(),
         payload: json!({
             "current_session_id": current_session_id,
+            "resolution": resolution,
             "approval_request": approval_request_detail_json_with_evidence(
                 &outcome.approval_request,
                 execution_evidence,
@@ -627,6 +633,43 @@ fn approval_request_detail_json_with_evidence(
         "governance_snapshot": record.governance_snapshot_json,
         "execution_evidence": execution_evidence,
         "execution_integrity": execution_integrity,
+    })
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn approval_request_resolution_json(
+    record: &ApprovalRequestRecord,
+    execution_integrity: &Value,
+    resumed_tool_output: Option<&ToolCoreOutcome>,
+) -> Value {
+    let replay_attempted = resumed_tool_output.is_some();
+    let needs_attention = execution_integrity
+        .get("needs_attention")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let replay_result = if !replay_attempted {
+        "not_attempted"
+    } else if needs_attention {
+        "completed_with_attention"
+    } else {
+        "completed_cleanly"
+    };
+
+    json!({
+        "decision": record.decision.map(|decision| decision.as_str()),
+        "request_status": record.status.as_str(),
+        "replay_attempted": replay_attempted,
+        "replay_result": replay_result,
+        "integrity_status": execution_integrity.get("status").cloned().unwrap_or(Value::Null),
+        "needs_attention": needs_attention,
+        "attention_reason": execution_integrity
+            .get("attention_reason")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "recommended_action": execution_integrity
+            .get("recommended_action")
+            .cloned()
+            .unwrap_or(Value::Null),
     })
 }
 

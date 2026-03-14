@@ -8335,6 +8335,11 @@ async fn approval_request_resolve_deny_transitions_request_and_emits_event() {
 
     match result {
         TurnResult::FinalText(text) => {
+            let payload = text
+                .strip_prefix("[ok] ")
+                .expect("approval resolve output should use [ok] envelope");
+            let json: Value = serde_json::from_str(payload)
+                .expect("approval resolve output should be valid json");
             assert!(
                 text.contains("\"approval_request_id\":\"apr-deny\""),
                 "expected approval request id in output, got: {text}"
@@ -8343,6 +8348,14 @@ async fn approval_request_resolve_deny_transitions_request_and_emits_event() {
                 text.contains("\"status\":\"denied\""),
                 "expected denied status in output, got: {text}"
             );
+            assert_eq!(json["resolution"]["decision"], "deny");
+            assert_eq!(json["resolution"]["request_status"], "denied");
+            assert_eq!(json["resolution"]["replay_attempted"], false);
+            assert_eq!(json["resolution"]["replay_result"], "not_attempted");
+            assert_eq!(json["resolution"]["integrity_status"], "not_started");
+            assert_eq!(json["resolution"]["needs_attention"], false);
+            assert_eq!(json["resolution"]["attention_reason"], Value::Null);
+            assert_eq!(json["resolution"]["recommended_action"], Value::Null);
         }
         other => panic!("expected FinalText, got: {other:?}"),
     }
@@ -8577,6 +8590,14 @@ async fn approval_request_resume_once_executes_blocked_app_tool_and_marks_reques
                 json["approval_request"]["execution_integrity"]["status"],
                 "complete"
             );
+            assert_eq!(json["resolution"]["decision"], "approve_once");
+            assert_eq!(json["resolution"]["request_status"], "executed");
+            assert_eq!(json["resolution"]["replay_attempted"], true);
+            assert_eq!(json["resolution"]["replay_result"], "completed_cleanly");
+            assert_eq!(json["resolution"]["integrity_status"], "complete");
+            assert_eq!(json["resolution"]["needs_attention"], false);
+            assert_eq!(json["resolution"]["attention_reason"], Value::Null);
+            assert_eq!(json["resolution"]["recommended_action"], Value::Null);
         }
         other => panic!("expected FinalText, got: {other:?}"),
     }
@@ -9606,6 +9627,20 @@ async fn approval_request_resume_once_records_successful_replay_outcome_persiste
             assert_eq!(
                 json["approval_request"]["execution_integrity"]["status"],
                 "incomplete"
+            );
+            assert_eq!(json["resolution"]["decision"], "approve_once");
+            assert_eq!(json["resolution"]["request_status"], "executed");
+            assert_eq!(json["resolution"]["replay_attempted"], true);
+            assert_eq!(
+                json["resolution"]["replay_result"],
+                "completed_with_attention"
+            );
+            assert_eq!(json["resolution"]["integrity_status"], "incomplete");
+            assert_eq!(json["resolution"]["needs_attention"], true);
+            assert_eq!(json["resolution"]["attention_reason"], "integrity_gap");
+            assert_eq!(
+                json["resolution"]["recommended_action"],
+                "inspect_replay_persistence"
             );
         }
         other => panic!("expected FinalText, got: {other:?}"),
