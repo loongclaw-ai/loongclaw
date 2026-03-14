@@ -83,6 +83,7 @@ Use `task verify` for the stricter local superset (architecture, conventions, do
 
 | Need | Go to |
 |------|-------|
+| Architecture overview & crate DAG | `ARCHITECTURE.md` |
 | Core principles | `docs/design-docs/core-beliefs.md` |
 | Layered architecture | `docs/design-docs/layered-kernel-design.md` |
 | Design decisions, patterns & catalog | `docs/design-docs/index.md` |
@@ -95,6 +96,5 @@ Use `task verify` for the stricter local superset (architecture, conventions, do
 | Product sense & principles | `docs/PRODUCT_SENSE.md` |
 | Release process docs | `docs/releases/` |
 | Product requirements | `docs/product-specs/` |
-| LLM-optimized references | `docs/references/` |
-| Auto-generated artifacts | `docs/generated/` |
+| References (specs, schemas, technical docs) | `docs/references/` |
 | Contributing recipes | `CONTRIBUTING.md` |
