@@ -20,7 +20,15 @@ impl FilePolicyExtension {
         }
     }
 
-    /// Pure path-based escape check without filesystem access.
+    /// Check whether `raw_path` escapes `root`.
+    ///
+    /// Attempts filesystem-aware canonicalization first so that symbolic links
+    /// pointing outside the sandbox are caught at the policy layer (defense in
+    /// depth — the execution layer still performs its own `canonicalize()`).
+    ///
+    /// Falls back to pure path normalization when the path (or its parent)
+    /// does not exist yet, which is the normal case for `file.write` to a new
+    /// file.
     fn path_escapes_root(root: &Path, raw_path: &str) -> bool {
         let candidate = Path::new(raw_path);
         let combined = if candidate.is_absolute() {
@@ -28,6 +36,24 @@ impl FilePolicyExtension {
         } else {
             root.join(candidate)
         };
+
+        // Canonicalize root once so the comparison base is consistent.
+        let canon_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+
+        // 1. Try full canonicalize (works when the path already exists).
+        if let Ok(canon) = combined.canonicalize() {
+            return !canon.starts_with(&canon_root);
+        }
+
+        // 2. Path doesn't exist — canonicalize the parent directory instead,
+        //    then re-attach the file name.  Handles `file.write "new.txt"`.
+        if let (Some(parent), Some(file_name)) = (combined.parent(), combined.file_name())
+            && let Ok(canon_parent) = parent.canonicalize()
+        {
+            return !canon_parent.join(file_name).starts_with(&canon_root);
+        }
+
+        // 3. Neither path nor parent exists — fall back to pure normalization.
         let normalized = super::normalize_without_fs(&combined);
         !normalized.starts_with(root)
     }
