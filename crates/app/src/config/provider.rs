@@ -376,21 +376,12 @@ pub struct ProviderConfig {
     pub reasoning_extra_body_omit_model_hints: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ProviderProfileConfig {
     #[serde(default)]
     pub default_for_kind: bool,
     #[serde(flatten)]
     pub provider: ProviderConfig,
-}
-
-impl Default for ProviderProfileConfig {
-    fn default() -> Self {
-        Self {
-            default_for_kind: false,
-            provider: ProviderConfig::default(),
-        }
-    }
 }
 
 impl ProviderProfileConfig {
@@ -401,7 +392,6 @@ impl ProviderProfileConfig {
         }
     }
 }
-
 impl Default for ProviderConfig {
     fn default() -> Self {
         Self {
@@ -1112,18 +1102,19 @@ impl ProviderConfig {
 
     pub fn selection_baseline(&self) -> Self {
         let profile = self.kind.profile();
-        let mut baseline = Self::default();
-        baseline.kind = self.kind;
-        baseline.model = self.model.clone();
-        baseline.base_url = profile.base_url.to_owned();
-        baseline.wire_api = self.wire_api;
-        baseline.chat_completions_path = profile.chat_completions_path.to_owned();
-        baseline.api_key_env = self.kind.default_api_key_env().map(str::to_owned);
-        baseline.oauth_access_token_env = self
-            .kind
-            .default_oauth_access_token_env()
-            .map(str::to_owned);
-        baseline
+        Self {
+            kind: self.kind,
+            model: self.model.clone(),
+            base_url: profile.base_url.to_owned(),
+            wire_api: self.wire_api,
+            chat_completions_path: profile.chat_completions_path.to_owned(),
+            api_key_env: self.kind.default_api_key_env().map(str::to_owned),
+            oauth_access_token_env: self
+                .kind
+                .default_oauth_access_token_env()
+                .map(str::to_owned),
+            ..Self::default()
+        }
     }
 
     pub fn has_only_selection_changes(&self) -> bool {
@@ -1914,9 +1905,10 @@ impl ProviderKind {
     }
 
     pub const fn default_model(self) -> Option<&'static str> {
-        match self {
-            ProviderKind::KimiCoding => Some("kimi-for-coding"),
-            _ => None,
+        if matches!(self, ProviderKind::KimiCoding) {
+            Some("kimi-for-coding")
+        } else {
+            None
         }
     }
 }

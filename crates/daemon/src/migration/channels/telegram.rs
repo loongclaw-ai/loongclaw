@@ -1,11 +1,21 @@
 use loongclaw_app as mvp;
 
+#[cfg(test)]
+use super::ChannelDoctorCheck;
+use super::ensure_default_env_binding;
 use super::{ChannelCheckLevel, ChannelPreflightCheck, ChannelPreview, build_channel_preview};
-use super::{ChannelDoctorCheck, ensure_default_env_binding};
 use crate::migration::ChannelCredentialState;
 use crate::migration::{ChannelImportReadiness, ImportSurfaceLevel};
 
 pub(super) const ID: &str = "telegram";
+
+const FALLBACK_DESCRIPTOR: mvp::config::ChannelDescriptor = mvp::config::ChannelDescriptor {
+    id: ID,
+    label: "telegram",
+    surface_label: "telegram channel",
+    runtime_kind: mvp::config::ChannelRuntimeKind::Service,
+    serve_subcommand: Some("telegram-serve"),
+};
 
 pub(super) fn collect_preview(
     config: &mvp::config::LoongClawConfig,
@@ -102,6 +112,7 @@ pub(super) fn collect_preflight_checks(
     }]
 }
 
+#[cfg(test)]
 pub(super) fn collect_doctor_checks(
     config: &mvp::config::LoongClawConfig,
 ) -> Vec<ChannelDoctorCheck> {
@@ -173,5 +184,5 @@ fn merge_telegram_config(
 }
 
 fn descriptor() -> &'static mvp::config::ChannelDescriptor {
-    mvp::config::channel_descriptor(ID).expect("telegram should use shared channel descriptor")
+    mvp::config::channel_descriptor(ID).unwrap_or(&FALLBACK_DESCRIPTOR)
 }

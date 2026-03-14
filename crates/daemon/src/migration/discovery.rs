@@ -96,6 +96,7 @@ pub(crate) fn collect_import_candidates_with_path_list(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn collect_import_candidates_with_paths_and_readiness(
     output_path: &Path,
     codex_config_path: Option<&Path>,
@@ -512,9 +513,11 @@ fn codex_import_config_to_loongclaw(
 fn baseline_codex_import_provider_config(
     provider_kind: mvp::config::ProviderKind,
 ) -> mvp::config::ProviderConfig {
-    let mut provider = mvp::config::ProviderConfig::default();
-    provider.kind = provider_kind;
-    provider.api_key_env = provider_kind.default_api_key_env().map(str::to_owned);
+    let mut provider = mvp::config::ProviderConfig {
+        kind: provider_kind,
+        api_key_env: provider_kind.default_api_key_env().map(str::to_owned),
+        ..mvp::config::ProviderConfig::default()
+    };
     ImportedProviderTransport::default_for_kind(provider_kind).apply_to_provider(&mut provider);
     provider
 }

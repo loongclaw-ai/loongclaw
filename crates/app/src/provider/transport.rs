@@ -172,13 +172,13 @@ fn build_request_headers_internal(
             .map_err(|error| format!("invalid provider header value for `{key}`: {error}"))?;
         headers.insert(name, header_value);
     }
-    if !headers.contains_key(USER_AGENT) {
-        if let Some(default_user_agent) = provider.kind.default_user_agent() {
-            let header_value = HeaderValue::from_str(default_user_agent).map_err(|error| {
-                format!("invalid default provider user-agent `{default_user_agent}`: {error}")
-            })?;
-            headers.insert(USER_AGENT, header_value);
-        }
+    if !headers.contains_key(USER_AGENT)
+        && let Some(default_user_agent) = provider.kind.default_user_agent()
+    {
+        let header_value = HeaderValue::from_str(default_user_agent).map_err(|error| {
+            format!("invalid default provider user-agent `{default_user_agent}`: {error}")
+        })?;
+        headers.insert(USER_AGENT, header_value);
     }
     for (key, value) in provider.kind.default_headers() {
         if headers.contains_key(*key) {

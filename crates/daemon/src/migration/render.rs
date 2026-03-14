@@ -7,10 +7,10 @@ fn normalized_source_label(source: &str) -> Option<String> {
 }
 
 fn push_source_label(labels: &mut Vec<String>, seen: &mut BTreeSet<String>, label: Option<String>) {
-    if let Some(label) = label {
-        if seen.insert(label.clone()) {
-            labels.push(label);
-        }
+    if let Some(label) = label
+        && seen.insert(label.clone())
+    {
+        labels.push(label);
     }
 }
 

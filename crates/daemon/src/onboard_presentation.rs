@@ -304,7 +304,11 @@ pub(crate) const fn starting_point_footer_description(
 ) -> &'static str {
     match first_kind {
         ImportSourceKind::RecommendedPlan => "the suggested starting point",
-        _ => "the first starting point",
+        ImportSourceKind::CurrentSetup
+        | ImportSourceKind::ExistingLoongClawConfig
+        | ImportSourceKind::CodexConfig
+        | ImportSourceKind::Environment
+        | ImportSourceKind::ExplicitPath => "the first starting point",
     }
 }
 

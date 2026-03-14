@@ -102,11 +102,17 @@ pub(crate) async fn run_import_cli(options: ImportCommandOptions) -> CliResult<(
     }
 
     let candidate_index = select_apply_candidate_index(&candidates)?;
+    let candidate = candidates.get(candidate_index).ok_or_else(|| {
+        format!(
+            "selected import candidate index {candidate_index} is out of range for {} candidate(s)",
+            candidates.len()
+        )
+    })?;
     apply_import_candidate(
         &output_path,
         options.force,
         &candidates,
-        &candidates[candidate_index],
+        candidate,
         options.provider.as_deref(),
     )
 }
@@ -553,7 +559,7 @@ pub(crate) fn render_import_preview_json(candidates: &[ImportCandidate]) -> CliR
                 channel_candidates: candidate.channel_candidates.clone(),
                 workspace_guidance: candidate.workspace_guidance.clone(),
                 provider_profiles,
-                active_provider: provider_plan.default_profile_id.clone(),
+                active_provider: provider_plan.default_profile_id,
                 provider_selection,
             }
         })
@@ -580,22 +586,21 @@ pub(crate) fn select_apply_candidate_index(candidates: &[ImportCandidate]) -> Cl
     {
         return Ok(index);
     }
-    if let Some(first_kind) = candidates.first().map(|candidate| candidate.source_kind) {
-        if candidates
+    if let Some(first_kind) = candidates.first().map(|candidate| candidate.source_kind)
+        && candidates
             .iter()
             .all(|candidate| candidate.source_kind == first_kind)
-        {
-            let matched_sources = candidates
-                .iter()
-                .map(|candidate| candidate.source.as_str())
-                .collect::<Vec<_>>()
-                .join(" | ");
-            return Err(format!(
-                "applying import matched multiple {} candidates; rerun with --source-path <path> to choose one, inspect preview/json first, or remove one detected config. matched sources: {}",
-                first_kind.import_cli_selector(),
-                matched_sources
-            ));
-        }
+    {
+        let matched_sources = candidates
+            .iter()
+            .map(|candidate| candidate.source.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        return Err(format!(
+            "applying import matched multiple {} candidates; rerun with --source-path <path> to choose one, inspect preview/json first, or remove one detected config. matched sources: {}",
+            first_kind.import_cli_selector(),
+            matched_sources
+        ));
     }
     Err(format!(
         "applying import requires a single selected source; use --from {}",
@@ -603,6 +608,7 @@ pub(crate) fn select_apply_candidate_index(candidates: &[ImportCandidate]) -> Cl
     ))
 }
 
+#[cfg(test)]
 pub(crate) fn resolve_import_provider_selection(
     current_provider: &mvp::config::ProviderConfig,
     all_candidates: &[ImportCandidate],
