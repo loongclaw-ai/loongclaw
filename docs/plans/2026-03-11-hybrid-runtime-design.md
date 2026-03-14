@@ -120,7 +120,7 @@ Delivered:
 Files:
 
 - `crates/app/src/conversation/turn_coordinator.rs`
-- `crates/app/src/conversation/orchestrator.rs` (compat alias)
+- no separate conversation alias module; `turn_coordinator.rs` is the canonical runtime entrypoint
 
 Delivered:
 
@@ -254,7 +254,7 @@ Delivered:
       - non-retryable verify failures fail fast without wasting replan rounds
 - naming aligned with actual responsibility:
   - canonical type: `ConversationTurnCoordinator`
-  - `ConversationOrchestrator` retained as backward-compatible alias
+  - removed the old `ConversationOrchestrator` alias so the type name matches the actual responsibility
 - failure taxonomy unification across fast/safe execution surfaces:
   - `TurnResult` failure variants now carry structured `TurnFailure` metadata
   - shared fields: `kind`, `code`, `reason`, `retryable`

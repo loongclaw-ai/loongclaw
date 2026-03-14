@@ -254,7 +254,7 @@ This creates an operator-facing validation path before full ACPX runtime executi
 
 ### 9. Channel / CLI turns now route through ACP via explicit dispatch policy
 
-`ConversationOrchestrator` now treats ACP as a first-class runtime path:
+`ConversationTurnCoordinator` now treats ACP as a first-class runtime path:
 
 - when `acp.enabled = false`, turns continue down the existing provider path
 - when `acp.enabled = true`, normal turns still stay on the existing provider/context-engine path
@@ -404,7 +404,7 @@ The new pieces are:
 
 - `AcpSessionManager::run_turn_with_sink(...)` as the formal manager seam for streamed ACP turn
   events
-- `ConversationTurnCoordinator::*acp_event_sink(...)` entrypoints as the conversation/orchestrator
+- `ConversationTurnCoordinator::*acp_event_sink(...)` entrypoints as the conversation turn-coordinator
   seam for live ACP runtime event subscribers, so callers can observe ACP runtime events directly
   without reaching into manager/backend internals
 - conversation-path persistence of structured `acp_turn_event` and `acp_turn_final` records into
@@ -464,7 +464,7 @@ OpenClaw's documented ACP agent-management direction.
 
 ### 15. ACP-owned turn options now front-load per-turn extensibility without API sprawl
 
-One remaining pre-embed risk was API shape drift in the conversation/orchestrator layer.
+One remaining pre-embed risk was API shape drift in the conversation turn-coordinator layer.
 
 After adding the public ACP live event sink, the next obvious trap would have been to keep growing
  `ConversationTurnCoordinator` with one more variant per new ACP concern:
@@ -531,7 +531,7 @@ This matters for architecture more than for operator ergonomics:
   dispatch baseline without mutating global config or leaking ACPX-specific config into top-level
   `[acp]`
 - it gives LoongClaw a first operator-facing ACP turn override surface that is still routed through
-  the conversation/orchestrator abstraction, not around it
+  the conversation turn-coordinator abstraction, not around it
 
 This is still intentionally smaller than OpenClaw's broader ACP bridge/runtime surfaces, but it
 removes two future refactor cliffs:
@@ -578,7 +578,7 @@ Current scope is deliberately narrow:
   path
 
 That means channel-specific ACP bootstrap policy now lives above ACPX backend config, but below the
-conversation/orchestrator seam, which is exactly where future per-channel workflow policy belongs.
+conversation turn-coordinator seam, which is exactly where future per-channel workflow policy belongs.
 
 ### 18. Channel status snapshots now expose ACP bootstrap MCP presets for operator visibility
 
@@ -665,7 +665,7 @@ There was one more hidden refactor cliff in the ACP path:
 - `AcpSessionBootstrap` already had `working_directory`
 - `AcpTurnRequest` already had `working_directory`
 - `acpx` backend already knew how to honor it
-- but the conversation/orchestrator path still hard-coded both to `None`
+- but the conversation turn-coordinator path still hard-coded both to `None`
 
 That meant any future requirement for:
 
@@ -690,7 +690,7 @@ and wires it through:
 This is the correct ownership boundary:
 
 - channel/account/workflow layers choose the runtime workspace hint
-- conversation/orchestrator carries it as a per-turn ACP concern
+- conversation turn-coordinator carries it as a per-turn ACP concern
 - ACP control-plane transports it
 - ACPX consumes it as one backend implementation detail
 
@@ -757,7 +757,7 @@ One smaller but important ownership leak still remained after the earlier ACP ev
 That is now tightened further:
 
 - `acp::BufferedAcpTurnEventSink` and `acp::CompositeAcpTurnEventSink` are the shared ACP-owned
-  sink utilities used by both the ACP manager and conversation/orchestrator path
+  sink utilities used by both the ACP manager and conversation turn-coordinator path
 - `acp::analytics::build_persisted_runtime_event_records(...)` owns the persisted
   `acp_turn_event` / `acp_turn_final` record shape
 - `conversation::persistence::persist_acp_runtime_events(...)` now acts only as storage transport
@@ -931,7 +931,7 @@ These items are still outstanding and should remain separate workstreams:
 ## Recommended next implementation order
 
 1. Add a public live event stream surface on top of the persisted runtime-event shape so
-   daemon/channel/orchestrator callers can choose direct streaming instead of summary-only
+   daemon/channel/conversation callers can choose direct streaming instead of summary-only
    observation; the ACP-owned JSONL sink is now the minimal base seam, but richer transport/API
    surfaces are still separate work.
 2. Expand user-facing ACP bootstrap surfaces beyond `acp.dispatch.bootstrap_mcp_servers`, so
