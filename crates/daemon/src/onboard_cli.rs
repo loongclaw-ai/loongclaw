@@ -222,7 +222,44 @@ pub(crate) async fn run_onboard_cli(options: OnboardCommandOptions) -> CliResult
     #[cfg(feature = "memory-sqlite")]
     println!("- sqlite memory: {}", memory_path.display());
     println!("next step: loongclaw chat --config {}", path.display());
+    for line in build_channel_onboarding_follow_up_lines(&config) {
+        println!("{line}");
+    }
     Ok(())
+}
+
+pub(crate) fn build_channel_onboarding_follow_up_lines(
+    config: &mvp::config::LoongClawConfig,
+) -> Vec<String> {
+    let inventory = mvp::channel::channel_inventory(config);
+    let mut lines = Vec::with_capacity(inventory.channel_surfaces.len() + 1);
+    lines.push("channel next steps:".to_owned());
+
+    for surface in inventory.channel_surfaces {
+        let aliases = if surface.catalog.aliases.is_empty() {
+            "-".to_owned()
+        } else {
+            surface.catalog.aliases.join(",")
+        };
+        let repair_command = surface
+            .catalog
+            .onboarding
+            .repair_command
+            .map(|command| format!("\"{command}\""))
+            .unwrap_or_else(|| "-".to_owned());
+        lines.push(format!(
+            "- {} [{}] strategy={} aliases={} status_command=\"{}\" repair_command={} setup_hint=\"{}\"",
+            surface.catalog.label,
+            surface.catalog.id,
+            surface.catalog.onboarding.strategy.as_str(),
+            aliases,
+            surface.catalog.onboarding.status_command,
+            repair_command,
+            surface.catalog.onboarding.setup_hint,
+        ));
+    }
+
+    lines
 }
 
 fn resolve_provider_selection(

@@ -273,3 +273,32 @@ async fn non_interactive_onboard_preserves_inline_api_key_literals() {
     fs::remove_file(&config_path).ok();
     fs::remove_dir_all(&temp_dir).ok();
 }
+
+#[test]
+fn build_channel_onboarding_follow_up_lines_reports_manual_and_planned_channels() {
+    let lines = crate::onboard_cli::build_channel_onboarding_follow_up_lines(
+        &mvp::config::LoongClawConfig::default(),
+    );
+
+    assert_eq!(
+        lines.first().map(String::as_str),
+        Some("channel next steps:")
+    );
+    assert!(lines.iter().any(|line| {
+        line.contains("Telegram [telegram]")
+            && line.contains("strategy=manual_config")
+            && line.contains("status_command=\"loongclaw doctor\"")
+            && line.contains("repair_command=\"loongclaw doctor --fix\"")
+    }));
+    assert!(lines.iter().any(|line| {
+        line.contains("Feishu/Lark [feishu]")
+            && line.contains("strategy=manual_config")
+            && line.contains("aliases=lark")
+    }));
+    assert!(lines.iter().any(|line| {
+        line.contains("Discord [discord]")
+            && line.contains("strategy=planned")
+            && line.contains("repair_command=-")
+            && line.contains("status_command=\"loongclaw channels --json\"")
+    }));
+}
