@@ -39,6 +39,7 @@ struct ApprovalRequestsListRequest {
     risk_class: Option<ToolRiskClass>,
     grant_state: Option<ApprovalGrantState>,
     grant_scope_session_id: Option<String>,
+    grant_created_by_session_id: Option<String>,
     pending_age_bucket: Option<ApprovalAttentionAgeBucket>,
     tool_name: Option<String>,
     approval_key: Option<String>,
@@ -407,6 +408,12 @@ fn execute_approval_requests_list(
                 == Some(grant_scope_session_id)
         });
     }
+    if let Some(grant_created_by_session_id) = request.grant_created_by_session_id.as_deref() {
+        request_summaries.retain(|item| {
+            approval_request_grant_created_by_session_id_from_json(item)
+                == Some(grant_created_by_session_id)
+        });
+    }
     if let Some(tool_name) = request.tool_name.as_deref() {
         request_summaries
             .retain(|item| item.get("tool_name").and_then(Value::as_str) == Some(tool_name));
@@ -517,6 +524,7 @@ fn execute_approval_requests_list(
                 "risk_class": request.risk_class.map(tool_risk_class_as_str),
                 "grant_state": request.grant_state.map(ApprovalGrantState::as_str),
                 "grant_scope_session_id": request.grant_scope_session_id,
+                "grant_created_by_session_id": request.grant_created_by_session_id,
                 "pending_age_bucket": request.pending_age_bucket.map(ApprovalAttentionAgeBucket::as_str),
                 "tool_name": request.tool_name,
                 "approval_key": request.approval_key,
@@ -975,6 +983,7 @@ fn approval_request_list_grant_summary_json(requests: &[Value]) -> Value {
         ("lineage_unresolved".to_owned(), 0usize),
     ]);
     let mut scope_session_counts = BTreeMap::<String, usize>::new();
+    let mut created_by_session_counts = BTreeMap::<String, usize>::new();
 
     for request in requests {
         let grant = request.get("grant").unwrap_or(&Value::Null);
@@ -986,11 +995,19 @@ fn approval_request_list_grant_summary_json(requests: &[Value]) -> Value {
                 .entry(scope_session_id.to_owned())
                 .or_default() += 1;
         }
+        if let Some(created_by_session_id) =
+            grant.get("created_by_session_id").and_then(Value::as_str)
+        {
+            *created_by_session_counts
+                .entry(created_by_session_id.to_owned())
+                .or_default() += 1;
+        }
     }
 
     json!({
         "counts_by_state": counts_by_state,
         "scope_session_counts": scope_session_counts,
+        "created_by_session_counts": created_by_session_counts,
     })
 }
 
@@ -1704,6 +1721,14 @@ fn approval_request_grant_scope_session_id_from_json(request: &Value) -> Option<
 }
 
 #[cfg(feature = "memory-sqlite")]
+fn approval_request_grant_created_by_session_id_from_json(request: &Value) -> Option<&str> {
+    request
+        .get("grant")
+        .and_then(|value| value.get("created_by_session_id"))
+        .and_then(Value::as_str)
+}
+
+#[cfg(feature = "memory-sqlite")]
 fn approval_request_decision_from_json(request: &Value) -> Option<ApprovalDecision> {
     request
         .get("resolution")
@@ -1937,6 +1962,10 @@ fn parse_approval_requests_list_request(
         risk_class: optional_payload_tool_risk_class(payload, "risk_class")?,
         grant_state: optional_payload_approval_grant_state(payload, "grant_state")?,
         grant_scope_session_id: optional_payload_string(payload, "grant_scope_session_id"),
+        grant_created_by_session_id: optional_payload_string(
+            payload,
+            "grant_created_by_session_id",
+        ),
         pending_age_bucket: optional_payload_approval_pending_age_bucket(
             payload,
             "pending_age_bucket",
@@ -4675,6 +4704,126 @@ mod tests {
         assert_eq!(
             error,
             "approval_requests_list_invalid_request: unknown grant_state `broken`"
+        );
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn approval_request_tool_query_list_summarizes_and_filters_runtime_grants_by_creator() {
+        let config = isolated_memory_config("approval-query-list-grant-creator-summary");
+        let repo = SessionRepository::new(&config).expect("repository");
+        seed_session(&repo, "root-session", SessionKind::Root, None);
+        seed_session(
+            &repo,
+            "child-session",
+            SessionKind::DelegateChild,
+            Some("root-session"),
+        );
+
+        seed_request_with_governance(
+            &repo,
+            "apr-grant-creator-a",
+            "child-session",
+            "delegate_async",
+            "governed_tool_requires_per_call_approval",
+            "Orchestration",
+            "TopologyMutation",
+            "High",
+        );
+        seed_request_with_governance(
+            &repo,
+            "apr-grant-creator-b",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+            "App",
+            "Routine",
+            "Elevated",
+        );
+        seed_request_with_governance(
+            &repo,
+            "apr-grant-creator-absent",
+            "root-session",
+            "memory_search",
+            "governed_tool_requires_per_call_approval",
+            "App",
+            "Routine",
+            "Low",
+        );
+
+        seed_runtime_grant(
+            &repo,
+            "root-session",
+            "tool:delegate_async",
+            Some("operator-alpha"),
+        );
+        seed_runtime_grant(
+            &repo,
+            "root-session",
+            "tool:session_cancel",
+            Some("operator-beta"),
+        );
+
+        let list_outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome for grant creator summary");
+
+        let grant_summary = &list_outcome.payload["grant_summary"];
+        assert_eq!(grant_summary["counts_by_state"]["present"], 2);
+        assert_eq!(grant_summary["counts_by_state"]["absent"], 1);
+        assert_eq!(
+            grant_summary["created_by_session_counts"]["operator-alpha"],
+            1
+        );
+        assert_eq!(
+            grant_summary["created_by_session_counts"]["operator-beta"],
+            1
+        );
+        assert_eq!(
+            grant_summary["created_by_session_counts"]
+                .as_object()
+                .expect("creator counts object")
+                .len(),
+            2
+        );
+
+        let filtered_outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "grant_created_by_session_id": "operator-beta",
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome for grant creator filter");
+
+        assert_eq!(filtered_outcome.payload["matched_count"], 1);
+        assert_eq!(filtered_outcome.payload["returned_count"], 1);
+        assert_eq!(
+            filtered_outcome.payload["filter"]["grant_created_by_session_id"],
+            "operator-beta"
+        );
+        let requests = filtered_outcome.payload["requests"]
+            .as_array()
+            .expect("requests array");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["approval_request_id"], "apr-grant-creator-b");
+        assert_eq!(
+            requests[0]["grant"]["created_by_session_id"],
+            "operator-beta"
         );
     }
 
