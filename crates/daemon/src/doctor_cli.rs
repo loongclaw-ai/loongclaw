@@ -145,7 +145,7 @@ pub(crate) async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<(
         "create tool file root",
     ));
 
-    checks.extend(collect_channel_doctor_checks(&config));
+    checks.extend(check_channel_surfaces(&config));
 
     if options.fix && config_mutated {
         let path = config_path
@@ -480,7 +480,18 @@ fn provider_transport_doctor_check(provider: &mvp::config::ProviderConfig) -> Do
 }
 
 fn collect_channel_doctor_checks(config: &mvp::config::LoongClawConfig) -> Vec<DoctorCheck> {
-    check_channel_surfaces(config)
+    crate::migration::channels::collect_channel_doctor_checks(config)
+        .into_iter()
+        .map(|check| DoctorCheck {
+            name: check.name.to_owned(),
+            level: match check.level {
+                crate::migration::channels::ChannelCheckLevel::Pass => DoctorCheckLevel::Pass,
+                crate::migration::channels::ChannelCheckLevel::Warn => DoctorCheckLevel::Warn,
+                crate::migration::channels::ChannelCheckLevel::Fail => DoctorCheckLevel::Fail,
+            },
+            detail: check.detail,
+        })
+        .collect()
 }
 
 pub(crate) fn resolve_secret_value(inline: Option<&str>, env_key: Option<&str>) -> Option<String> {
@@ -652,7 +663,10 @@ mod tests {
         config.feishu.app_secret = Some("feishu-secret".to_owned());
 
         let checks = collect_channel_doctor_checks(&config);
-        let names = checks.iter().map(|check| check.name).collect::<Vec<_>>();
+        let names = checks
+            .iter()
+            .map(|check| check.name.as_str())
+            .collect::<Vec<_>>();
 
         assert_eq!(
             names,
