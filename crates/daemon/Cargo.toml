@@ -27,7 +27,7 @@ loongclaw-spec = { path = "../spec" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
-chrono.workspace = true
+time.workspace = true
 
 [[bin]]
 name = "loongclaw"
@@ -36,6 +36,7 @@ path = "src/main.rs"
 [dev-dependencies]
 base64.workspace = true
 ed25519-dalek.workspace = true
+loongclaw-spec = { path = "../spec", features = ["test-hooks"] }
 sha2.workspace = true
 wat = "1"
 

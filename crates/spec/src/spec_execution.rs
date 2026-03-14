@@ -280,8 +280,13 @@ pub async fn execute_spec(spec: &RunnerSpec, include_audit: bool) -> SpecRunRepo
 
         if blocked_reason.is_none() {
             for pending in pending_absorb_inputs {
-                let absorb = scanner.absorb(&mut integration_catalog, &mut pack, &pending);
-                plugin_absorb_reports.push(absorb);
+                match scanner.absorb(&mut integration_catalog, &mut pack, &pending) {
+                    Ok(absorb) => plugin_absorb_reports.push(absorb),
+                    Err(error) => {
+                        blocked_reason = Some(format!("plugin absorb failed: {error}"));
+                        break;
+                    }
+                }
             }
         }
     }
@@ -1048,7 +1053,7 @@ fn register_dynamic_catalog_connectors(
     };
 
     for provider in snapshot {
-        kernel.register_connector(DynamicCatalogConnector {
+        kernel.register_core_connector_adapter(DynamicCatalogConnector {
             connector_name: provider.connector_name,
             provider_id: provider.provider_id,
             catalog: catalog.clone(),
@@ -1124,9 +1129,10 @@ async fn execute_spec_operation(
             payload,
         } => {
             let dispatch = kernel
-                .invoke_connector(
+                .execute_connector_core(
                     pack_id,
                     token,
+                    Some(connector_name.as_str()),
                     ConnectorCommand {
                         connector_name: connector_name.clone(),
                         operation: operation.clone(),

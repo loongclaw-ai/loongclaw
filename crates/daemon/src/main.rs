@@ -160,60 +160,85 @@ enum Commands {
     },
     /// Guided onboarding for a fast first chat with preflight diagnostics
     Onboard {
+        /// Target config output path (defaults to ~/.loongclaw/config.toml)
         #[arg(long)]
         output: Option<String>,
+        /// Overwrite existing output config if present
         #[arg(long, default_value_t = false)]
         force: bool,
+        /// Run onboarding in non-interactive mode using provided flags/defaults
         #[arg(long, default_value_t = false)]
         non_interactive: bool,
+        /// Accept generated config values that may require manual hardening later
         #[arg(long, default_value_t = false)]
         accept_risk: bool,
+        /// Provider identifier to prefill in generated config
         #[arg(long)]
         provider: Option<String>,
+        /// Model identifier to prefill in generated config
         #[arg(long)]
         model: Option<String>,
+        /// Environment variable name holding the provider API key
         #[arg(long, alias = "api-key-env")]
         api_key: Option<String>,
+        /// Default personality profile for the generated config
         #[arg(long)]
         personality: Option<String>,
+        /// Default memory profile for the generated config
         #[arg(long)]
         memory_profile: Option<String>,
+        /// Override system prompt text in generated config
         #[arg(long)]
         system_prompt: Option<String>,
+        /// Skip provider model probe during onboarding diagnostics
         #[arg(long, default_value_t = false)]
         skip_model_probe: bool,
     },
     /// Import prompt/identity traits from another claw workspace into LoongClaw config
     ImportClaw {
+        /// Source config file to import from
         #[arg(long)]
         input: Option<String>,
+        /// Target config file to write import plan/apply result
         #[arg(long)]
         output: Option<String>,
+        /// Explicit source kind (auto-detected when omitted)
         #[arg(long)]
         source: Option<String>,
+        /// Import mode (`plan` preview or `apply` mutation)
         #[arg(long, value_enum, default_value = "plan")]
         mode: import_claw_cli::ImportClawMode,
+        /// Emit machine-readable JSON output
         #[arg(long, default_value_t = false)]
         json: bool,
+        /// Source selection identifier (alias: --selection-id)
         #[arg(long, visible_alias = "selection-id")]
         source_id: Option<String>,
+        /// Merge memory profiles conservatively to avoid destructive overwrites
         #[arg(long, default_value_t = false)]
         safe_profile_merge: bool,
+        /// Primary source identifier for multi-source imports
         #[arg(long, visible_alias = "primary-selection-id")]
         primary_source_id: Option<String>,
+        /// Apply external-skills import plan when running in apply mode
         #[arg(long, default_value_t = false)]
         apply_external_skills_plan: bool,
+        /// Force apply even when importer detects non-fatal safeguards
         #[arg(long, default_value_t = false)]
         force: bool,
     },
     /// Run configuration diagnostics and optionally apply safe config/path fixes
     Doctor {
+        /// Config file path to validate (defaults to auto-discovery)
         #[arg(long)]
         config: Option<String>,
+        /// Apply safe auto-fixes for detected diagnostics
         #[arg(long, default_value_t = false)]
         fix: bool,
+        /// Emit machine-readable JSON diagnostics
         #[arg(long, default_value_t = false)]
         json: bool,
+        /// Skip provider model probing during diagnostics
         #[arg(long, default_value_t = false)]
         skip_model_probe: bool,
     },
@@ -665,9 +690,10 @@ async fn run_demo() -> CliResult<()> {
     );
 
     let connector_dispatch = kernel
-        .invoke_connector(
+        .execute_connector_core(
             DEFAULT_PACK_ID,
             &token,
+            None,
             ConnectorCommand {
                 connector_name: "webhook".to_owned(),
                 operation: "notify".to_owned(),
@@ -722,9 +748,10 @@ async fn invoke_connector_cli(operation: &str, payload_raw: &str) -> CliResult<(
         .map_err(|error| format!("token issue failed: {error}"))?;
 
     let dispatch = kernel
-        .invoke_connector(
+        .execute_connector_core(
             DEFAULT_PACK_ID,
             &token,
+            None,
             ConnectorCommand {
                 connector_name: "webhook".to_owned(),
                 operation: operation.to_owned(),
@@ -771,9 +798,10 @@ async fn run_audit_demo() -> CliResult<()> {
     fixed_clock.advance_by(5);
 
     let _ = kernel
-        .invoke_connector(
+        .execute_connector_core(
             DEFAULT_PACK_ID,
             &token,
+            None,
             ConnectorCommand {
                 connector_name: "webhook".to_owned(),
                 operation: "notify".to_owned(),
@@ -937,13 +965,11 @@ async fn run_list_models_cli(config_path: Option<&str>, as_json: bool) -> CliRes
 
 fn run_channels_cli(config_path: Option<&str>, as_json: bool) -> CliResult<()> {
     let (resolved_path, config) = mvp::config::load(config_path)?;
-    let snapshots = mvp::channel::channel_status_snapshots(&config);
+    let inventory = mvp::channel::channel_inventory(&config);
+    let resolved_path_display = resolved_path.display().to_string();
 
     if as_json {
-        let payload = json!({
-            "config": resolved_path.display().to_string(),
-            "channels": snapshots,
-        });
+        let payload = build_channels_cli_json_payload(&resolved_path_display, &inventory);
         let pretty = serde_json::to_string_pretty(&payload)
             .map_err(|error| format!("serialize channel status output failed: {error}"))?;
         println!("{pretty}");
@@ -952,89 +978,202 @@ fn run_channels_cli(config_path: Option<&str>, as_json: bool) -> CliResult<()> {
 
     println!(
         "{}",
-        render_channel_snapshots_text(&resolved_path.display().to_string(), &snapshots)
+        render_channel_surfaces_text(&resolved_path_display, &inventory)
     );
     Ok(())
 }
 
-fn render_channel_snapshots_text(
+#[derive(Debug, Clone, Serialize)]
+struct ChannelsCliJsonSchema {
+    version: u32,
+    primary_channel_view: &'static str,
+    catalog_view: &'static str,
+    legacy_channel_views: &'static [&'static str],
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ChannelsCliJsonPayload {
+    config: String,
+    schema: ChannelsCliJsonSchema,
+    channels: Vec<mvp::channel::ChannelStatusSnapshot>,
+    catalog_only_channels: Vec<mvp::channel::ChannelCatalogEntry>,
+    channel_catalog: Vec<mvp::channel::ChannelCatalogEntry>,
+    channel_surfaces: Vec<mvp::channel::ChannelSurface>,
+}
+
+const CHANNELS_CLI_JSON_SCHEMA_VERSION: u32 = 1;
+const CHANNELS_CLI_JSON_LEGACY_VIEWS: &[&str] = &["channels", "catalog_only_channels"];
+
+fn build_channels_cli_json_payload(
     config_path: &str,
-    snapshots: &[mvp::channel::ChannelStatusSnapshot],
+    inventory: &mvp::channel::ChannelInventory,
+) -> ChannelsCliJsonPayload {
+    ChannelsCliJsonPayload {
+        config: config_path.to_owned(),
+        schema: ChannelsCliJsonSchema {
+            version: CHANNELS_CLI_JSON_SCHEMA_VERSION,
+            primary_channel_view: "channel_surfaces",
+            catalog_view: "channel_catalog",
+            legacy_channel_views: CHANNELS_CLI_JSON_LEGACY_VIEWS,
+        },
+        channels: inventory.channels.clone(),
+        catalog_only_channels: inventory.catalog_only_channels.clone(),
+        channel_catalog: inventory.channel_catalog.clone(),
+        channel_surfaces: inventory.channel_surfaces.clone(),
+    }
+}
+
+fn render_channel_surfaces_text(
+    config_path: &str,
+    inventory: &mvp::channel::ChannelInventory,
 ) -> String {
     let mut lines = vec![format!("config={config_path}")];
-    for snapshot in snapshots {
-        let aliases = if snapshot.aliases.is_empty() {
-            "-".to_owned()
-        } else {
-            snapshot.aliases.join(",")
-        };
-        let api_base_url = snapshot.api_base_url.as_deref().unwrap_or("-");
-        lines.push(format!(
-            "{} [{}] configured_account={} default_account={} default_source={} compiled={} enabled={} aliases={} api_base_url={}",
-            snapshot.label,
-            snapshot.id,
-            snapshot.configured_account_id,
-            snapshot.is_default_account,
-            snapshot.default_account_source.as_str(),
-            snapshot.compiled,
-            snapshot.enabled,
-            aliases,
-            api_base_url
-        ));
-        lines.push(format!("  transport={}", snapshot.transport));
-        lines.push(format!(
-            "  configured_account_label={}",
-            snapshot.configured_account_label
-        ));
-        for note in &snapshot.notes {
-            lines.push(format!("  note: {note}"));
+    let mut catalog_only_surfaces = Vec::new();
+
+    for surface in &inventory.channel_surfaces {
+        if surface.catalog.implementation_status
+            == mvp::channel::ChannelCatalogImplementationStatus::Stub
+        {
+            catalog_only_surfaces.push(surface);
+            continue;
         }
-        for operation in &snapshot.operations {
+
+        push_channel_surface_header(&mut lines, surface);
+        for snapshot in &surface.configured_accounts {
+            let api_base_url = snapshot.api_base_url.as_deref().unwrap_or("-");
             lines.push(format!(
-                "  op {} ({}) {}: {}",
-                operation.id,
-                operation.command,
-                operation.health.as_str(),
-                operation.detail
+                "  account configured_account={} configured_account_label={} default_account={} default_source={} compiled={} enabled={} api_base_url={}",
+                snapshot.configured_account_id,
+                snapshot.configured_account_label,
+                snapshot.is_default_account,
+                snapshot.default_account_source.as_str(),
+                snapshot.compiled,
+                snapshot.enabled,
+                api_base_url
             ));
-            if let Some(runtime) = &operation.runtime {
-                lines.push(format!(
-                    "    runtime account={} account_id={} running={} stale={} busy={} active_runs={} instance_count={} running_instances={} stale_instances={} last_run_activity_at={} last_heartbeat_at={} pid={}",
-                    runtime
-                        .account_label
-                        .as_deref()
-                        .unwrap_or("-"),
-                    runtime
-                        .account_id
-                        .as_deref()
-                        .unwrap_or("-"),
-                    runtime.running,
-                    runtime.stale,
-                    runtime.busy,
-                    runtime.active_runs,
-                    runtime.instance_count,
-                    runtime.running_instances,
-                    runtime.stale_instances,
-                    runtime
-                        .last_run_activity_at
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| "-".to_owned()),
-                    runtime
-                        .last_heartbeat_at
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| "-".to_owned()),
-                    runtime
-                        .pid
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| "-".to_owned())
-                ));
+            for note in &snapshot.notes {
+                lines.push(format!("    note: {note}"));
             }
-            for issue in &operation.issues {
-                lines.push(format!("    issue: {issue}"));
+            for operation in &snapshot.operations {
+                let requirement_ids = surface
+                    .catalog
+                    .operations
+                    .iter()
+                    .find(|catalog_operation| catalog_operation.id == operation.id)
+                    .map(|catalog_operation| {
+                        render_channel_operation_requirement_ids(catalog_operation.requirements)
+                    })
+                    .unwrap_or_else(|| "-".to_owned());
+                lines.push(format!(
+                    "    op {} ({}) {}: {} requirements={}",
+                    operation.id,
+                    operation.command,
+                    operation.health.as_str(),
+                    operation.detail,
+                    requirement_ids,
+                ));
+                if let Some(runtime) = &operation.runtime {
+                    lines.push(format!(
+                        "      runtime account={} account_id={} running={} stale={} busy={} active_runs={} instance_count={} running_instances={} stale_instances={} last_run_activity_at={} last_heartbeat_at={} pid={}",
+                        runtime
+                            .account_label
+                            .as_deref()
+                            .unwrap_or("-"),
+                        runtime
+                            .account_id
+                            .as_deref()
+                            .unwrap_or("-"),
+                        runtime.running,
+                        runtime.stale,
+                        runtime.busy,
+                        runtime.active_runs,
+                        runtime.instance_count,
+                        runtime.running_instances,
+                        runtime.stale_instances,
+                        runtime
+                            .last_run_activity_at
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "-".to_owned()),
+                        runtime
+                            .last_heartbeat_at
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "-".to_owned()),
+                        runtime
+                            .pid
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "-".to_owned())
+                    ));
+                }
+                for issue in &operation.issues {
+                    lines.push(format!("      issue: {issue}"));
+                }
+            }
+        }
+    }
+
+    if !catalog_only_surfaces.is_empty() {
+        lines.push("catalog-only channels:".to_owned());
+        for surface in catalog_only_surfaces {
+            push_channel_surface_header(&mut lines, surface);
+            for operation in &surface.catalog.operations {
+                lines.push(format!(
+                    "  catalog op {} ({}) availability={} tracks_runtime={} requirements={}",
+                    operation.id,
+                    operation.command,
+                    operation.availability.as_str(),
+                    operation.tracks_runtime,
+                    render_channel_operation_requirement_ids(operation.requirements)
+                ));
             }
         }
     }
     lines.join("\n")
+}
+
+fn render_channel_operation_requirement_ids(
+    requirements: &[mvp::channel::ChannelCatalogOperationRequirement],
+) -> String {
+    if requirements.is_empty() {
+        return "-".to_owned();
+    }
+    requirements
+        .iter()
+        .map(|requirement| requirement.id)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn push_channel_surface_header(lines: &mut Vec<String>, surface: &mvp::channel::ChannelSurface) {
+    let aliases = if surface.catalog.aliases.is_empty() {
+        "-".to_owned()
+    } else {
+        surface.catalog.aliases.join(",")
+    };
+    let capabilities = if surface.catalog.capabilities.is_empty() {
+        "-".to_owned()
+    } else {
+        surface
+            .catalog
+            .capabilities
+            .iter()
+            .map(|capability| capability.as_str())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    lines.push(format!(
+        "{} [{}] implementation_status={} capabilities={} aliases={} transport={} configured_accounts={} default_configured_account={}",
+        surface.catalog.label,
+        surface.catalog.id,
+        surface.catalog.implementation_status.as_str(),
+        capabilities,
+        aliases,
+        surface.catalog.transport,
+        surface.configured_accounts.len(),
+        surface
+            .default_configured_account_id
+            .as_deref()
+            .unwrap_or("-")
+    ));
 }
 
 fn run_list_context_engines_cli(config_path: Option<&str>, as_json: bool) -> CliResult<()> {
@@ -1823,12 +1962,54 @@ fn format_milli_ratio(value: Option<u32>) -> String {
         .unwrap_or_else(|| "-".to_owned())
 }
 
+async fn with_graceful_shutdown<F>(serve_future: F) -> CliResult<()>
+where
+    F: std::future::Future<Output = CliResult<()>>,
+{
+    tokio::select! {
+        result = serve_future => result,
+        result = wait_for_shutdown_signal() => result,
+    }
+}
+
+#[cfg(unix)]
+async fn wait_for_shutdown_signal() -> CliResult<()> {
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .map_err(|error| format!("failed to register SIGTERM handler: {error}"))?;
+
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => {
+            result.map_err(|error| format!("failed to register Ctrl-C handler: {error}"))?;
+            eprintln!("\nReceived Ctrl-C, shutting down gracefully...");
+            Ok(())
+        }
+        _ = sigterm.recv() => {
+            eprintln!("\nReceived SIGTERM, shutting down gracefully...");
+            Ok(())
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_for_shutdown_signal() -> CliResult<()> {
+    tokio::signal::ctrl_c()
+        .await
+        .map_err(|error| format!("failed to register Ctrl-C handler: {error}"))?;
+    eprintln!("\nReceived Ctrl-C, shutting down gracefully...");
+    Ok(())
+}
+
 async fn run_telegram_serve_cli(
     config_path: Option<&str>,
     once: bool,
     account: Option<&str>,
 ) -> CliResult<()> {
-    mvp::channel::run_telegram_channel(config_path, once, account).await
+    with_graceful_shutdown(mvp::channel::run_telegram_channel(
+        config_path,
+        once,
+        account,
+    ))
+    .await
 }
 
 async fn run_feishu_send_cli(
@@ -1847,7 +2028,13 @@ async fn run_feishu_serve_cli(
     bind_override: Option<&str>,
     path_override: Option<&str>,
 ) -> CliResult<()> {
-    mvp::channel::run_feishu_channel(config_path, account, bind_override, path_override).await
+    with_graceful_shutdown(mvp::channel::run_feishu_channel(
+        config_path,
+        account,
+        bind_override,
+        path_override,
+    ))
+    .await
 }
 
 fn parse_json_payload(raw: &str, context: &str) -> CliResult<Value> {

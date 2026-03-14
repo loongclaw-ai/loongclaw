@@ -2,6 +2,7 @@ use thiserror::Error;
 
 use crate::contracts::{Capability, HarnessKind};
 
+#[non_exhaustive]
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PackError {
     #[error("pack_id must not be empty")]
@@ -14,6 +15,7 @@ pub enum PackError {
     EmptyCapabilities,
 }
 
+#[non_exhaustive]
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PolicyError {
     #[error("token {token_id} expired at {expires_at_epoch_s}")]
@@ -39,6 +41,7 @@ pub enum PolicyError {
     ToolCallDenied { tool_name: String, reason: String },
 }
 
+#[non_exhaustive]
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum HarnessError {
     #[error("harness adapter not found: {0}")]
@@ -55,6 +58,7 @@ pub enum HarnessError {
     Execution(String),
 }
 
+#[non_exhaustive]
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ConnectorError {
     #[error("connector not found: {0}")]
@@ -69,6 +73,7 @@ pub enum ConnectorError {
     Execution(String),
 }
 
+#[non_exhaustive]
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RuntimePlaneError {
     #[error("core runtime adapter not found: {0}")]
@@ -81,6 +86,7 @@ pub enum RuntimePlaneError {
     Execution(String),
 }
 
+#[non_exhaustive]
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ToolPlaneError {
     #[error("core tool adapter not found: {0}")]
@@ -93,6 +99,7 @@ pub enum ToolPlaneError {
     Execution(String),
 }
 
+#[non_exhaustive]
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum MemoryPlaneError {
     #[error("core memory adapter not found: {0}")]
@@ -105,6 +112,7 @@ pub enum MemoryPlaneError {
     Execution(String),
 }
 
+#[non_exhaustive]
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum IntegrationError {
     #[error("provider not found: {0}")]
@@ -123,14 +131,18 @@ pub enum IntegrationError {
     AwarenessRootNotFound(String),
     #[error("failed to inspect awareness file {path}: {reason}")]
     AwarenessFileRead { path: String, reason: String },
+    #[error("plugin absorb failed for {plugin_id}: {reason}")]
+    PluginAbsorbFailed { plugin_id: String, reason: String },
 }
 
+#[non_exhaustive]
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum AuditError {
     #[error("audit sink failure: {0}")]
     Sink(String),
 }
 
+#[non_exhaustive]
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum KernelError {
     #[error("pack not found: {0}")]

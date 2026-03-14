@@ -12,6 +12,10 @@ pub use channels::{
     FeishuDomain, ResolvedFeishuChannelConfig, ResolvedTelegramChannelConfig,
     TelegramAccountConfig, TelegramChannelConfig,
 };
+pub(crate) use channels::{
+    FEISHU_APP_ID_ENV, FEISHU_APP_SECRET_ENV, FEISHU_ENCRYPT_KEY_ENV,
+    FEISHU_VERIFICATION_TOKEN_ENV, TELEGRAM_BOT_TOKEN_ENV,
+};
 #[allow(unused_imports)]
 pub use conversation::{ConversationConfig, ConversationTurnLoopConfig};
 #[allow(unused_imports)]

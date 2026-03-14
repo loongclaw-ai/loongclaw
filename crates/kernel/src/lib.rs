@@ -35,8 +35,7 @@ pub use bootstrap::{
 };
 pub use clock::{Clock, FixedClock, SystemClock};
 pub use connector::{
-    ConnectorAdapter, ConnectorExtensionAdapter, ConnectorPlane, ConnectorRegistry, ConnectorTier,
-    CoreConnectorAdapter,
+    ConnectorExtensionAdapter, ConnectorPlane, ConnectorTier, CoreConnectorAdapter,
 };
 pub use contracts::{
     Capability, CapabilityToken, ConnectorCommand, ConnectorOutcome, ExecutionRoute, Fault,

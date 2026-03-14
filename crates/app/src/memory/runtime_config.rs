@@ -96,35 +96,6 @@ fn parse_positive_usize(raw: Option<String>) -> Option<usize> {
         .filter(|value| *value > 0)
 }
 
-pub fn apply_memory_runtime_env(config: &MemoryConfig) {
-    crate::process_env::set_var(
-        "LOONGCLAW_SQLITE_PATH",
-        config.resolved_sqlite_path().display().to_string(),
-    );
-    crate::process_env::set_var(
-        "LOONGCLAW_SLIDING_WINDOW",
-        config.sliding_window.to_string(),
-    );
-    crate::process_env::set_var(
-        "LOONGCLAW_MEMORY_BACKEND",
-        config.resolved_backend().as_str(),
-    );
-    crate::process_env::set_var(
-        "LOONGCLAW_MEMORY_PROFILE",
-        config.resolved_profile().as_str(),
-    );
-    crate::process_env::set_var(
-        "LOONGCLAW_MEMORY_SUMMARY_MAX_CHARS",
-        config.summary_char_budget().to_string(),
-    );
-
-    if let Some(profile_note) = config.trimmed_profile_note() {
-        crate::process_env::set_var("LOONGCLAW_MEMORY_PROFILE_NOTE", profile_note);
-    } else {
-        crate::process_env::remove_var("LOONGCLAW_MEMORY_PROFILE_NOTE");
-    }
-}
-
 static MEMORY_RUNTIME_CONFIG: OnceLock<MemoryRuntimeConfig> = OnceLock::new();
 
 /// Initialise the process-wide memory runtime config.
@@ -149,12 +120,6 @@ pub fn get_memory_runtime_config() -> &'static MemoryRuntimeConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
-
-    fn env_lock() -> &'static Mutex<()> {
-        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        ENV_LOCK.get_or_init(|| Mutex::new(()))
-    }
 
     #[test]
     fn parse_sliding_window_accepts_positive_integer() {
@@ -210,20 +175,5 @@ mod tests {
         assert_eq!(runtime.profile, MemoryProfile::WindowPlusSummary);
         assert_eq!(runtime.mode, MemoryMode::WindowPlusSummary);
         assert_eq!(runtime.summary_max_chars, 900);
-    }
-
-    #[test]
-    fn apply_memory_runtime_env_clears_absent_profile_note() {
-        let _guard = env_lock().lock().expect("env lock");
-
-        crate::process_env::set_var("LOONGCLAW_MEMORY_PROFILE_NOTE", "stale imported note");
-
-        let config = MemoryConfig::default();
-        apply_memory_runtime_env(&config);
-
-        assert!(
-            std::env::var("LOONGCLAW_MEMORY_PROFILE_NOTE").is_err(),
-            "profile note env should be cleared when config has no note"
-        );
     }
 }

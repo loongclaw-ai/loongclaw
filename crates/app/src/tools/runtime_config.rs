@@ -270,4 +270,27 @@ mod tests {
         crate::process_env::remove_var("LOONGCLAW_EXTERNAL_SKILLS_INSTALL_ROOT");
         crate::process_env::remove_var("LOONGCLAW_EXTERNAL_SKILLS_AUTO_EXPOSE_INSTALLED");
     }
+
+    #[test]
+    fn external_skills_policy_struct_construction() {
+        let policy = ExternalSkillsRuntimePolicy {
+            enabled: true,
+            require_download_approval: false,
+            allowed_domains: BTreeSet::from(["skills.sh".to_owned(), "clawhub.io".to_owned()]),
+            blocked_domains: BTreeSet::from(["malicious.example".to_owned()]),
+            install_root: Some(PathBuf::from("/tmp/managed-skills")),
+            auto_expose_installed: false,
+        };
+
+        assert!(policy.enabled);
+        assert!(!policy.require_download_approval);
+        assert!(policy.allowed_domains.contains("skills.sh"));
+        assert!(policy.allowed_domains.contains("clawhub.io"));
+        assert!(policy.blocked_domains.contains("malicious.example"));
+        assert_eq!(
+            policy.install_root,
+            Some(PathBuf::from("/tmp/managed-skills"))
+        );
+        assert!(!policy.auto_expose_installed);
+    }
 }

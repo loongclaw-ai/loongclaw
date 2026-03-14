@@ -41,11 +41,24 @@ fn programmatic_error(code: ProgrammaticErrorCode, message: impl Into<String>) -
     format!("programmatic_error[{}]: {}", code.as_str(), message.into())
 }
 
+fn normalize_connector_error_message(error: &str) -> String {
+    if error
+        .to_ascii_lowercase()
+        .contains("core connector adapter not found")
+    {
+        return error.replacen("core connector adapter not found", "connector not found", 1);
+    }
+
+    error.to_owned()
+}
+
 fn classify_connector_error_code(error: &str) -> &'static str {
     let normalized = error.to_ascii_lowercase();
     if normalized.contains("programmatic_error[circuit_open]") {
         "circuit_open"
-    } else if normalized.contains("connector not found") {
+    } else if normalized.contains("connector not found")
+        || normalized.contains("core connector adapter not found")
+    {
         "connector_not_found"
     } else if normalized.contains("not allowed") {
         "connector_not_allowed"
@@ -1188,9 +1201,10 @@ async fn invoke_programmatic_connector_with_resilience(
         rate_wait_ms_total = rate_wait_ms_total.saturating_add(waited);
 
         let dispatch = kernel
-            .invoke_connector(
+            .execute_connector_core(
                 pack_id,
                 token,
+                Some(connector_name),
                 ConnectorCommand {
                     connector_name: connector_name.to_owned(),
                     operation: operation.to_owned(),
@@ -1223,7 +1237,7 @@ async fn invoke_programmatic_connector_with_resilience(
                 ));
             }
             Err(error) => {
-                let error_string = error.to_string();
+                let error_string = normalize_connector_error_message(&error.to_string());
                 let connector_error_code = classify_connector_error_code(&error_string);
                 if attempt >= retry_policy.max_attempts {
                     let circuit_phase_after = record_programmatic_circuit_outcome(

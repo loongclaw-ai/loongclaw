@@ -10,6 +10,7 @@ use crate::errors::{KernelError, PolicyError};
 /// Unlike `KernelError` (which covers all kernel operations including setup),
 /// `Fault` represents runtime dispatch failures that callers can match on
 /// to decide recovery strategy.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Fault {
     Panic {
@@ -18,11 +19,6 @@ pub enum Fault {
     CapabilityViolation {
         token_id: String,
         capability: Capability,
-    },
-    BudgetExhausted {
-        resource: String,
-        limit: u64,
-        used: u64,
     },
     TokenExpired {
         token_id: String,
@@ -48,13 +44,6 @@ impl fmt::Display for Fault {
                     f,
                     "capability violation: token {token_id} missing {capability:?}"
                 )
-            }
-            Self::BudgetExhausted {
-                resource,
-                limit,
-                used,
-            } => {
-                write!(f, "budget exhausted: {resource} used {used}/{limit}")
             }
             Self::TokenExpired {
                 token_id,

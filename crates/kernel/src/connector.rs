@@ -7,44 +7,6 @@ use crate::{
     errors::ConnectorError,
 };
 
-#[async_trait]
-pub trait ConnectorAdapter: Send + Sync {
-    fn name(&self) -> &str;
-    async fn invoke(&self, command: ConnectorCommand) -> Result<ConnectorOutcome, ConnectorError>;
-}
-
-#[derive(Default)]
-pub struct ConnectorRegistry {
-    connectors: BTreeMap<String, Arc<dyn ConnectorAdapter>>,
-}
-
-impl ConnectorRegistry {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            connectors: BTreeMap::new(),
-        }
-    }
-
-    pub fn register<A: ConnectorAdapter + 'static>(&mut self, connector: A) {
-        let key = connector.name().to_owned();
-        self.connectors.insert(key, Arc::new(connector));
-    }
-
-    pub async fn invoke(
-        &self,
-        command: ConnectorCommand,
-    ) -> Result<ConnectorOutcome, ConnectorError> {
-        let connector_name = command.connector_name.clone();
-        let connector = self
-            .connectors
-            .get(&connector_name)
-            .ok_or(ConnectorError::NotFound(connector_name))?
-            .clone();
-        return connector.invoke(command).await;
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectorTier {
     Core,

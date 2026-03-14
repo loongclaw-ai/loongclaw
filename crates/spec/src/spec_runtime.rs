@@ -1,35 +1,41 @@
+#[cfg(any(test, feature = "test-hooks"))]
+use std::time::Duration;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     io::Read,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Duration,
 };
 
 use async_trait::async_trait;
 use kernel::{
     ArchitectureGuardReport, AuditEvent, BootstrapReport, Capability, CodebaseAwarenessSnapshot,
-    ConnectorAdapter, ConnectorCommand, ConnectorError, ConnectorOutcome, CoreConnectorAdapter,
-    CoreMemoryAdapter, CoreRuntimeAdapter, CoreToolAdapter, ExecutionRoute, HarnessAdapter,
-    HarnessError, HarnessKind, HarnessOutcome, HarnessRequest, IntegrationCatalog,
-    IntegrationHotfix, MemoryCoreOutcome, MemoryCoreRequest, MemoryExtensionAdapter,
-    MemoryExtensionOutcome, MemoryExtensionRequest, PluginAbsorbReport, PluginActivationPlan,
-    PluginBridgeKind, PluginScanReport, PluginTranslationReport, ProvisionPlan, RuntimeCoreOutcome,
-    RuntimeCoreRequest, RuntimeExtensionAdapter, RuntimeExtensionOutcome, RuntimeExtensionRequest,
-    ToolCoreOutcome, ToolCoreRequest, ToolExtensionAdapter, ToolExtensionOutcome,
-    ToolExtensionRequest, VerticalPackManifest,
+    ConnectorCommand, ConnectorError, ConnectorOutcome, CoreConnectorAdapter, CoreMemoryAdapter,
+    CoreRuntimeAdapter, CoreToolAdapter, ExecutionRoute, HarnessAdapter, HarnessError, HarnessKind,
+    HarnessOutcome, HarnessRequest, IntegrationCatalog, IntegrationHotfix, MemoryCoreOutcome,
+    MemoryCoreRequest, MemoryExtensionAdapter, MemoryExtensionOutcome, MemoryExtensionRequest,
+    PluginAbsorbReport, PluginActivationPlan, PluginBridgeKind, PluginScanReport,
+    PluginTranslationReport, ProvisionPlan, RuntimeCoreOutcome, RuntimeCoreRequest,
+    RuntimeExtensionAdapter, RuntimeExtensionOutcome, RuntimeExtensionRequest, ToolCoreOutcome,
+    ToolCoreRequest, ToolExtensionAdapter, ToolExtensionOutcome, ToolExtensionRequest,
+    VerticalPackManifest,
 };
-use loongclaw_protocol::{OutboundFrame, ProtocolRouter, RouteAuthorizationRequest};
+use loongclaw_protocol::{
+    OutboundFrame, PROTOCOL_VERSION, ProtocolRouter, RouteAuthorizationRequest,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tokio::time::{Instant as TokioInstant, sleep};
+use tokio::time::Instant as TokioInstant;
+#[cfg(any(test, feature = "test-hooks"))]
+use tokio::time::sleep;
 use wasmtime::{
     Config as WasmtimeConfig, Engine as WasmtimeEngine, Linker as WasmtimeLinker,
     Module as WasmtimeModule, Store as WasmtimeStore,
 };
 
+#[cfg(any(test, feature = "test-hooks"))]
 use crate::WEBHOOK_TEST_RETRY_STATE;
 use crate::spec_execution::{normalize_path_for_policy, resolve_plugin_relative_path};
 
@@ -1147,12 +1153,16 @@ impl HarnessAdapter for EmbeddedPiHarness {
 pub struct WebhookConnector;
 
 #[async_trait]
-impl ConnectorAdapter for WebhookConnector {
+impl CoreConnectorAdapter for WebhookConnector {
     fn name(&self) -> &str {
         "webhook"
     }
 
-    async fn invoke(&self, command: ConnectorCommand) -> Result<ConnectorOutcome, ConnectorError> {
+    async fn invoke_core(
+        &self,
+        command: ConnectorCommand,
+    ) -> Result<ConnectorOutcome, ConnectorError> {
+        #[cfg(any(test, feature = "test-hooks"))]
         if let Some(test_config) = command
             .payload
             .as_object()
@@ -1214,12 +1224,15 @@ pub struct DynamicCatalogConnector {
 }
 
 #[async_trait]
-impl ConnectorAdapter for DynamicCatalogConnector {
+impl CoreConnectorAdapter for DynamicCatalogConnector {
     fn name(&self) -> &str {
         &self.connector_name
     }
 
-    async fn invoke(&self, command: ConnectorCommand) -> Result<ConnectorOutcome, ConnectorError> {
+    async fn invoke_core(
+        &self,
+        command: ConnectorCommand,
+    ) -> Result<ConnectorOutcome, ConnectorError> {
         let requested_channel = command
             .payload
             .get("channel_id")

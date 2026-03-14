@@ -144,7 +144,6 @@ mod tests {
             expires_at_epoch_s: 2000,
             allowed_capabilities: BTreeSet::from([Capability::InvokeTool]),
             generation: 1,
-            membrane: None,
         }
     }
 
@@ -426,7 +425,8 @@ mod tests {
             | PolicyError::MissingCapability { .. }
             | PolicyError::PackMismatch { .. }
             | PolicyError::RevokedToken { .. }
-            | PolicyError::ExtensionDenied { .. }) => {
+            | PolicyError::ExtensionDenied { .. }
+            | _) => {
                 panic!("expected ToolCallDenied, got {other:?}")
             }
         }
@@ -475,7 +475,8 @@ mod tests {
             | PolicyError::MissingCapability { .. }
             | PolicyError::PackMismatch { .. }
             | PolicyError::RevokedToken { .. }
-            | PolicyError::ExtensionDenied { .. }) => {
+            | PolicyError::ExtensionDenied { .. }
+            | _) => {
                 panic!("expected ToolCallDenied, got {other:?}")
             }
         }
@@ -500,7 +501,8 @@ mod tests {
             | PolicyError::MissingCapability { .. }
             | PolicyError::PackMismatch { .. }
             | PolicyError::RevokedToken { .. }
-            | PolicyError::ExtensionDenied { .. }) => {
+            | PolicyError::ExtensionDenied { .. }
+            | _) => {
                 panic!("expected ToolCallDenied, got {other:?}")
             }
         }

@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Capability {
     InvokeTool,
@@ -16,6 +17,7 @@ pub enum Capability {
     ObserveTelemetry,
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HarnessKind {
     EmbeddedPi,
@@ -37,8 +39,6 @@ pub struct CapabilityToken {
     pub issued_at_epoch_s: u64,
     pub expires_at_epoch_s: u64,
     pub generation: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub membrane: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

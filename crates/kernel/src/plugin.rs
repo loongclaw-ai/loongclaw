@@ -104,16 +104,54 @@ impl PluginScanner {
         Ok(report)
     }
 
+    /// Absorb plugin descriptors into the catalog and pack manifest.
+    ///
+    /// Uses clone-and-restore rollback: if any operation fails partway through,
+    /// both `catalog` and `pack` are restored to their pre-absorb state so
+    /// callers never observe a partially-mutated configuration.
     pub fn absorb(
         &self,
         catalog: &mut IntegrationCatalog,
         pack: &mut VerticalPackManifest,
         report: &PluginScanReport,
-    ) -> PluginAbsorbReport {
+    ) -> Result<PluginAbsorbReport, IntegrationError> {
+        let catalog_snapshot = catalog.clone();
+        let pack_snapshot = pack.clone();
+
+        let result = self.absorb_inner(catalog, pack, report);
+
+        if result.is_err() {
+            *catalog = catalog_snapshot;
+            *pack = pack_snapshot;
+        }
+
+        result
+    }
+
+    fn absorb_inner(
+        &self,
+        catalog: &mut IntegrationCatalog,
+        pack: &mut VerticalPackManifest,
+        report: &PluginScanReport,
+    ) -> Result<PluginAbsorbReport, IntegrationError> {
         let mut absorbed = PluginAbsorbReport::default();
 
         for descriptor in &report.descriptors {
             let manifest = &descriptor.manifest;
+
+            if manifest.provider_id.is_empty() {
+                return Err(IntegrationError::PluginAbsorbFailed {
+                    plugin_id: manifest.plugin_id.clone(),
+                    reason: "provider_id must not be empty".to_owned(),
+                });
+            }
+
+            if manifest.connector_name.is_empty() {
+                return Err(IntegrationError::PluginAbsorbFailed {
+                    plugin_id: manifest.plugin_id.clone(),
+                    reason: "connector_name must not be empty".to_owned(),
+                });
+            }
 
             catalog.upsert_provider(ProviderConfig {
                 provider_id: manifest.provider_id.clone(),
@@ -170,7 +208,7 @@ impl PluginScanner {
             absorbed.absorbed_plugins = absorbed.absorbed_plugins.saturating_add(1);
         }
 
-        absorbed
+        Ok(absorbed)
     }
 
     #[must_use]
@@ -407,7 +445,9 @@ mod tests {
         let mut pack = sample_pack();
         let scanner = PluginScanner::new();
 
-        let absorb = scanner.absorb(&mut catalog, &mut pack, &report);
+        let absorb = scanner
+            .absorb(&mut catalog, &mut pack, &report)
+            .expect("absorb should succeed");
         assert_eq!(absorb.absorbed_plugins, 1);
         assert_eq!(absorb.provider_upserts, 1);
         assert_eq!(absorb.channel_upserts, 1);
@@ -433,5 +473,68 @@ mod tests {
             .expect("binary files should be skipped, not fail");
         assert_eq!(report.scanned_files, 1);
         assert_eq!(report.matched_plugins, 0);
+    }
+
+    #[test]
+    fn absorb_rolls_back_catalog_and_pack_on_validation_failure() {
+        // First descriptor is valid, second has an empty provider_id which
+        // triggers validation failure. The rollback must undo the first
+        // descriptor's mutations so catalog and pack remain unchanged.
+        let report = PluginScanReport {
+            scanned_files: 2,
+            matched_plugins: 2,
+            descriptors: vec![
+                PluginDescriptor {
+                    path: "/tmp/good.rs".to_owned(),
+                    language: "rs".to_owned(),
+                    manifest: PluginManifest {
+                        plugin_id: "good-plugin".to_owned(),
+                        provider_id: "good-provider".to_owned(),
+                        connector_name: "good-connector".to_owned(),
+                        channel_id: Some("good-channel".to_owned()),
+                        endpoint: Some("https://good.local/invoke".to_owned()),
+                        capabilities: BTreeSet::from([Capability::InvokeConnector]),
+                        metadata: BTreeMap::from([("version".to_owned(), "1.0.0".to_owned())]),
+                        summary: None,
+                        tags: Vec::new(),
+                        input_examples: Vec::new(),
+                        output_examples: Vec::new(),
+                        defer_loading: false,
+                    },
+                },
+                PluginDescriptor {
+                    path: "/tmp/bad.rs".to_owned(),
+                    language: "rs".to_owned(),
+                    manifest: PluginManifest {
+                        plugin_id: "bad-plugin".to_owned(),
+                        provider_id: String::new(), // empty — triggers validation error
+                        connector_name: "bad-connector".to_owned(),
+                        channel_id: None,
+                        endpoint: None,
+                        capabilities: BTreeSet::new(),
+                        metadata: BTreeMap::new(),
+                        summary: None,
+                        tags: Vec::new(),
+                        input_examples: Vec::new(),
+                        output_examples: Vec::new(),
+                        defer_loading: false,
+                    },
+                },
+            ],
+        };
+
+        let mut catalog = IntegrationCatalog::new();
+        let mut pack = sample_pack();
+        let scanner = PluginScanner::new();
+
+        let catalog_before = catalog.clone();
+        let pack_before = pack.clone();
+
+        let result = scanner.absorb(&mut catalog, &mut pack, &report);
+        assert!(result.is_err(), "absorb should fail on empty provider_id");
+
+        // Verify rollback: catalog and pack are identical to their pre-absorb state.
+        assert_eq!(catalog, catalog_before, "catalog must be rolled back");
+        assert_eq!(pack, pack_before, "pack must be rolled back");
     }
 }

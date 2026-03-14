@@ -12,7 +12,7 @@ use crate::{
     Fault, TaskState,
     audit::{AuditEventKind, ExecutionPlane, InMemoryAuditSink, PlaneTier},
     clock::FixedClock,
-    connector::{ConnectorAdapter, ConnectorExtensionAdapter, CoreConnectorAdapter},
+    connector::{ConnectorExtensionAdapter, CoreConnectorAdapter},
     contracts::{
         Capability, ConnectorCommand, ConnectorOutcome, ExecutionRoute, HarnessKind,
         HarnessOutcome, HarnessRequest, TaskIntent,
@@ -74,12 +74,15 @@ impl HarnessAdapter for MockEmbeddedPiHarness {
 struct MockCrmConnector;
 
 #[async_trait]
-impl ConnectorAdapter for MockCrmConnector {
+impl CoreConnectorAdapter for MockCrmConnector {
     fn name(&self) -> &str {
         "crm"
     }
 
-    async fn invoke(&self, command: ConnectorCommand) -> Result<ConnectorOutcome, ConnectorError> {
+    async fn invoke_core(
+        &self,
+        command: ConnectorCommand,
+    ) -> Result<ConnectorOutcome, ConnectorError> {
         Ok(ConnectorOutcome {
             status: "ok".to_owned(),
             payload: json!({
@@ -270,7 +273,7 @@ async fn kernel_executes_task_and_connector_under_pack_policy() {
     kernel.register_harness_adapter(MockEmbeddedPiHarness {
         seen_tasks: Mutex::new(Vec::new()),
     });
-    kernel.register_connector(MockCrmConnector);
+    kernel.register_core_connector_adapter(MockCrmConnector);
 
     let token = kernel
         .issue_token("sales-intel", "agent-alpha", 120)
@@ -299,7 +302,7 @@ async fn kernel_executes_task_and_connector_under_pack_policy() {
     };
 
     let connector_dispatch = kernel
-        .invoke_connector("sales-intel", &token, connector_command)
+        .execute_connector_core("sales-intel", &token, None, connector_command)
         .await
         .expect("connector dispatch should succeed");
 
@@ -346,7 +349,7 @@ async fn kernel_rejects_connector_not_whitelisted_by_pack() {
     kernel
         .register_pack(sample_pack())
         .expect("pack should register");
-    kernel.register_connector(MockCrmConnector);
+    kernel.register_core_connector_adapter(MockCrmConnector);
 
     let token = kernel
         .issue_token("sales-intel", "agent-alpha", 120)
@@ -360,7 +363,7 @@ async fn kernel_rejects_connector_not_whitelisted_by_pack() {
     };
 
     let error = kernel
-        .invoke_connector("sales-intel", &token, command)
+        .execute_connector_core("sales-intel", &token, None, command)
         .await
         .expect_err("non-whitelisted connector must fail");
 
@@ -630,7 +633,7 @@ async fn audit_sink_receives_core_lifecycle_events() {
     kernel.register_harness_adapter(MockEmbeddedPiHarness {
         seen_tasks: Mutex::new(Vec::new()),
     });
-    kernel.register_connector(MockCrmConnector);
+    kernel.register_core_connector_adapter(MockCrmConnector);
 
     let token = kernel
         .issue_token("sales-intel", "agent-audit", 300)
@@ -648,9 +651,10 @@ async fn audit_sink_receives_core_lifecycle_events() {
         .expect("task should dispatch");
 
     kernel
-        .invoke_connector(
+        .execute_connector_core(
             "sales-intel",
             &token,
+            None,
             ConnectorCommand {
                 connector_name: "crm".to_owned(),
                 operation: "upsert".to_owned(),
@@ -688,7 +692,7 @@ async fn audit_sink_receives_core_lifecycle_events() {
             event.kind,
             AuditEventKind::PlaneInvoked {
                 plane: ExecutionPlane::Connector,
-                tier: PlaneTier::Legacy,
+                tier: PlaneTier::Core,
                 ..
             }
         )
@@ -1600,6 +1604,39 @@ async fn tool_core_call_is_denied_when_policy_engine_rejects_rule_of_two_gate() 
     ));
 }
 
+#[test]
+fn record_tool_call_denial_audits_extension_denied_errors() {
+    let clock: Arc<FixedClock> = Arc::new(FixedClock::new(1_700_004_000));
+    let audit = Arc::new(InMemoryAuditSink::default());
+    let mut kernel =
+        LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock, audit.clone());
+    let pack = sample_pack();
+    kernel
+        .register_pack(pack.clone())
+        .expect("pack should register");
+    let token = kernel
+        .issue_token(&pack.pack_id, "agent-extension-denied", 120)
+        .expect("token should issue");
+    let error = PolicyError::ExtensionDenied {
+        extension: "policy".to_owned(),
+        reason: "unexpected policy decision for tool `shell.exec`".to_owned(),
+    };
+
+    kernel
+        .record_tool_call_denial(&pack, &token, 1_700_004_000, &error)
+        .expect("audit record should succeed");
+
+    let events = audit.snapshot();
+    assert_eq!(events.len(), 2);
+    assert!(matches!(
+        &events[1].kind,
+        AuditEventKind::AuthorizationDenied { pack_id, token_id, reason }
+            if pack_id == &pack.pack_id
+                && token_id == &token.token_id
+                && reason.contains("unexpected policy decision for tool `shell.exec`")
+    ));
+}
+
 #[tokio::test]
 async fn generation_revoke_below_threshold_denies_old_tokens() {
     let clock = Arc::new(FixedClock::new(1_000_000));
@@ -1645,17 +1682,6 @@ async fn generation_revoke_below_threshold_denies_old_tokens() {
     };
     let result = kernel.execute_task("sales-intel", &token_gen2, task2).await;
     assert!(result.is_ok());
-}
-
-#[test]
-fn token_membrane_is_none_by_default() {
-    let engine = StaticPolicyEngine::default();
-    let pack = sample_pack();
-    let token = engine
-        .issue_token(&pack, "agent-1", 1_000_000, 3600)
-        .unwrap();
-    assert_eq!(token.membrane, None);
-    assert!(token.generation > 0);
 }
 
 #[test]

@@ -124,7 +124,6 @@ mod tests {
             expires_at_epoch_s: 2000,
             allowed_capabilities: caps,
             generation: 1,
-            membrane: None,
         }
     }
 

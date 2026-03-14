@@ -10,6 +10,7 @@ pub mod prompt;
 pub mod provider;
 pub mod tools;
 
+#[cfg(test)]
 mod process_env;
 
 pub use context::KernelContext;
