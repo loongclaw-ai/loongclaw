@@ -1734,6 +1734,59 @@ fn provider_selection_resolve_choice_by_kind_prefers_default_profile_id() {
 }
 
 #[test]
+fn provider_selection_recommendation_hint_prefers_short_human_selectors() {
+    let plan = crate::migration::ProviderSelectionPlan {
+        imported_choices: vec![
+            crate::migration::ImportedProviderChoice {
+                profile_id: "openai-reasoning".to_owned(),
+                kind: mvp::config::ProviderKind::Openai,
+                source: "your current environment".to_owned(),
+                summary: "OpenAI · o4-mini · credentials resolved".to_owned(),
+                config: mvp::config::ProviderConfig {
+                    kind: mvp::config::ProviderKind::Openai,
+                    model: "o4-mini".to_owned(),
+                    ..mvp::config::ProviderConfig::default()
+                },
+            },
+            crate::migration::ImportedProviderChoice {
+                profile_id: "openai-main".to_owned(),
+                kind: mvp::config::ProviderKind::Openai,
+                source: "Codex config at ~/.codex/config.toml".to_owned(),
+                summary: "OpenAI · gpt-5 · credentials resolved".to_owned(),
+                config: mvp::config::ProviderConfig {
+                    kind: mvp::config::ProviderKind::Openai,
+                    model: "gpt-5".to_owned(),
+                    ..mvp::config::ProviderConfig::default()
+                },
+            },
+            crate::migration::ImportedProviderChoice {
+                profile_id: "deepseek-main".to_owned(),
+                kind: mvp::config::ProviderKind::Deepseek,
+                source: "another source".to_owned(),
+                summary: "DeepSeek · deepseek-chat · credentials resolved".to_owned(),
+                config: mvp::config::ProviderConfig {
+                    kind: mvp::config::ProviderKind::Deepseek,
+                    model: "deepseek-chat".to_owned(),
+                    ..mvp::config::ProviderConfig::default()
+                },
+            },
+        ],
+        default_kind: Some(mvp::config::ProviderKind::Openai),
+        default_profile_id: Some("openai-reasoning".to_owned()),
+        requires_explicit_choice: false,
+    };
+
+    assert_eq!(
+        crate::migration::recommendation_hint(&plan),
+        Some("try one of: openai, gpt-5, deepseek".to_owned())
+    );
+    assert_eq!(
+        crate::migration::preferred_selector_for_choice(&plan, "openai-main"),
+        Some("gpt-5".to_owned())
+    );
+}
+
+#[test]
 fn provider_selection_resolve_choice_by_model_accepts_unique_model_name() {
     let plan = crate::migration::ProviderSelectionPlan {
         imported_choices: vec![

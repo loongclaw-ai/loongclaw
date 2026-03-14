@@ -28,7 +28,8 @@ pub(crate) use planner::{
 pub(crate) use provider_selection::{
     ImportedChoiceSelectorResolution, ImportedProviderChoice, ProviderSelectionPlan,
     accepted_selectors_for_choice, build_provider_selection_plan_for_candidate, describe_choice,
-    describe_matching_choices, guidance_lines, recommendation_hint,
+    describe_matching_choices, format_ambiguous_selector_error, format_unknown_selector_error,
+    guidance_lines, preferred_selector_for_choice, recommendation_hint,
     recommendation_hint_for_profile_ids, resolve_choice_by_selector,
     resolve_choice_by_selector_resolution, resolve_provider_config_from_selection,
     selector_catalog, unresolved_choice_note_segments,
