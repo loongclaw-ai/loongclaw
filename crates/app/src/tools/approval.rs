@@ -29,6 +29,8 @@ const APPROVAL_ATTENTION_STALE_MAX_SECONDS: i64 = 4 * 60 * 60;
 struct ApprovalRequestsListRequest {
     session_id: Option<String>,
     status: Option<ApprovalRequestStatus>,
+    decision: Option<ApprovalDecision>,
+    replay_result: Option<ApprovalReplayResult>,
     integrity_status: Option<ApprovalExecutionIntegrityStatus>,
     needs_attention: Option<bool>,
     attention_reason: Option<ApprovalAttentionReason>,
@@ -130,6 +132,27 @@ impl ApprovalEscalationLevel {
         match self {
             Self::Elevated => "elevated",
             Self::Critical => "critical",
+        }
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApprovalReplayResult {
+    NotAttempted,
+    InProgress,
+    CompletedCleanly,
+    CompletedWithAttention,
+}
+
+#[cfg(feature = "memory-sqlite")]
+impl ApprovalReplayResult {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NotAttempted => "not_attempted",
+            Self::InProgress => "in_progress",
+            Self::CompletedCleanly => "completed_cleanly",
+            Self::CompletedWithAttention => "completed_with_attention",
         }
     }
 }
@@ -320,6 +343,14 @@ fn execute_approval_requests_list(
                 == Some(integrity_status)
         });
     }
+    if let Some(decision) = request.decision {
+        request_summaries
+            .retain(|item| approval_request_decision_from_json(item) == Some(decision));
+    }
+    if let Some(replay_result) = request.replay_result {
+        request_summaries
+            .retain(|item| approval_request_replay_result_from_json(item) == Some(replay_result));
+    }
     if let Some(needs_attention) = request.needs_attention {
         request_summaries.retain(|item| {
             item.get("execution_integrity")
@@ -383,6 +414,8 @@ fn execute_approval_requests_list(
             "filter": {
                 "session_id": request.session_id,
                 "status": request.status.map(ApprovalRequestStatus::as_str),
+                "decision": request.decision.map(ApprovalDecision::as_str),
+                "replay_result": request.replay_result.map(ApprovalReplayResult::as_str),
                 "integrity_status": request.integrity_status.map(ApprovalExecutionIntegrityStatus::as_str),
                 "needs_attention": request.needs_attention,
                 "attention_reason": request.attention_reason.map(ApprovalAttentionReason::as_str),
@@ -616,6 +649,12 @@ fn approval_request_list_integrity_summary_json(requests: &[Value]) -> Value {
 
 #[cfg(feature = "memory-sqlite")]
 fn approval_request_list_resolution_summary_json(requests: &[Value]) -> Value {
+    let mut decision_counts = BTreeMap::from([
+        ("unresolved".to_owned(), 0usize),
+        ("approve_once".to_owned(), 0usize),
+        ("approve_always".to_owned(), 0usize),
+        ("deny".to_owned(), 0usize),
+    ]);
     let mut request_status_counts = BTreeMap::from([
         ("pending".to_owned(), 0usize),
         ("approved".to_owned(), 0usize),
@@ -634,6 +673,14 @@ fn approval_request_list_resolution_summary_json(requests: &[Value]) -> Value {
 
     for request in requests {
         let resolution = request.get("resolution").unwrap_or(&Value::Null);
+        match resolution.get("decision").and_then(Value::as_str) {
+            Some(decision) => {
+                *decision_counts.entry(decision.to_owned()).or_default() += 1;
+            }
+            None => {
+                *decision_counts.entry("unresolved".to_owned()).or_default() += 1;
+            }
+        }
         if let Some(request_status) = resolution.get("request_status").and_then(Value::as_str) {
             *request_status_counts
                 .entry(request_status.to_owned())
@@ -647,6 +694,7 @@ fn approval_request_list_resolution_summary_json(requests: &[Value]) -> Value {
     }
 
     json!({
+        "decision_counts": decision_counts,
         "request_status_counts": request_status_counts,
         "replay_result_counts": replay_result_counts,
     })
@@ -1038,6 +1086,24 @@ fn approval_request_execution_integrity_status_from_json(
 }
 
 #[cfg(feature = "memory-sqlite")]
+fn approval_request_decision_from_json(request: &Value) -> Option<ApprovalDecision> {
+    request
+        .get("resolution")
+        .and_then(|value| value.get("decision"))
+        .and_then(Value::as_str)
+        .and_then(|value| parse_approval_list_decision(value).ok())
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn approval_request_replay_result_from_json(request: &Value) -> Option<ApprovalReplayResult> {
+    request
+        .get("resolution")
+        .and_then(|value| value.get("replay_result"))
+        .and_then(Value::as_str)
+        .and_then(|value| parse_approval_replay_result(value).ok())
+}
+
+#[cfg(feature = "memory-sqlite")]
 fn approval_request_attention_reason_from_json(
     execution_integrity: &Value,
 ) -> Option<ApprovalAttentionReason> {
@@ -1198,6 +1264,8 @@ fn parse_approval_requests_list_request(
     Ok(ApprovalRequestsListRequest {
         session_id: optional_payload_string(payload, "session_id"),
         status: optional_payload_approval_request_status(payload, "status")?,
+        decision: optional_payload_approval_list_decision(payload, "decision")?,
+        replay_result: optional_payload_approval_replay_result(payload, "replay_result")?,
         integrity_status: optional_payload_approval_execution_integrity_status(
             payload,
             "integrity_status",
@@ -1321,6 +1389,26 @@ fn optional_payload_approval_execution_integrity_status(
 }
 
 #[cfg(feature = "memory-sqlite")]
+fn optional_payload_approval_list_decision(
+    payload: &Value,
+    field: &str,
+) -> Result<Option<ApprovalDecision>, String> {
+    optional_payload_string(payload, field)
+        .map(|value| parse_approval_list_decision(value.as_str()))
+        .transpose()
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn optional_payload_approval_replay_result(
+    payload: &Value,
+    field: &str,
+) -> Result<Option<ApprovalReplayResult>, String> {
+    optional_payload_string(payload, field)
+        .map(|value| parse_approval_replay_result(value.as_str()))
+        .transpose()
+}
+
+#[cfg(feature = "memory-sqlite")]
 fn optional_payload_approval_attention_reason(
     payload: &Value,
     field: &str,
@@ -1387,6 +1475,31 @@ fn parse_approval_execution_integrity_status(
         "incomplete" => Ok(ApprovalExecutionIntegrityStatus::Incomplete),
         _ => Err(format!(
             "approval_requests_list_invalid_request: unknown integrity_status `{value}`"
+        )),
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn parse_approval_list_decision(value: &str) -> Result<ApprovalDecision, String> {
+    match value {
+        "approve_once" => Ok(ApprovalDecision::ApproveOnce),
+        "approve_always" => Ok(ApprovalDecision::ApproveAlways),
+        "deny" => Ok(ApprovalDecision::Deny),
+        _ => Err(format!(
+            "approval_requests_list_invalid_request: unknown decision `{value}`"
+        )),
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn parse_approval_replay_result(value: &str) -> Result<ApprovalReplayResult, String> {
+    match value {
+        "not_attempted" => Ok(ApprovalReplayResult::NotAttempted),
+        "in_progress" => Ok(ApprovalReplayResult::InProgress),
+        "completed_cleanly" => Ok(ApprovalReplayResult::CompletedCleanly),
+        "completed_with_attention" => Ok(ApprovalReplayResult::CompletedWithAttention),
+        _ => Err(format!(
+            "approval_requests_list_invalid_request: unknown replay_result `{value}`"
         )),
     }
 }
@@ -1467,8 +1580,8 @@ mod tests {
     use crate::config::ToolConfig;
     use crate::memory::runtime_config::MemoryRuntimeConfig;
     use crate::session::repository::{
-        ApprovalRequestStatus, NewApprovalRequestRecord, NewSessionRecord, SessionKind,
-        SessionRepository, SessionState, TransitionApprovalRequestIfCurrentRequest,
+        ApprovalDecision, ApprovalRequestStatus, NewApprovalRequestRecord, NewSessionRecord,
+        SessionKind, SessionRepository, SessionState, TransitionApprovalRequestIfCurrentRequest,
     };
 
     fn isolated_memory_config(test_name: &str) -> MemoryRuntimeConfig {
@@ -2270,6 +2383,200 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(elevated_escalation_ids.contains(&"apr-attention-integrity-gap"));
         assert!(elevated_escalation_ids.contains(&"apr-attention-execution-failed"));
+
+        let completed_with_attention_outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "replay_result": "completed_with_attention",
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome for replay_result");
+
+        assert_eq!(
+            completed_with_attention_outcome.payload["filter"]["replay_result"],
+            "completed_with_attention"
+        );
+        assert_eq!(completed_with_attention_outcome.payload["matched_count"], 2);
+        assert_eq!(
+            completed_with_attention_outcome.payload["returned_count"],
+            2
+        );
+        let completed_with_attention_requests = completed_with_attention_outcome.payload
+            ["requests"]
+            .as_array()
+            .expect("replay_result requests array");
+        let completed_with_attention_ids = completed_with_attention_requests
+            .iter()
+            .filter_map(|item| item["approval_request_id"].as_str())
+            .collect::<Vec<_>>();
+        assert!(completed_with_attention_ids.contains(&"apr-attention-integrity-gap"));
+        assert!(completed_with_attention_ids.contains(&"apr-attention-execution-failed"));
+
+        let in_progress_outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "replay_result": "in_progress",
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome for in_progress replay_result");
+
+        assert_eq!(
+            in_progress_outcome.payload["filter"]["replay_result"],
+            "in_progress"
+        );
+        assert_eq!(in_progress_outcome.payload["matched_count"], 1);
+        assert_eq!(in_progress_outcome.payload["returned_count"], 1);
+        let in_progress_requests = in_progress_outcome.payload["requests"]
+            .as_array()
+            .expect("in_progress replay_result requests array");
+        assert_eq!(in_progress_requests.len(), 1);
+        assert_eq!(
+            in_progress_requests[0]["approval_request_id"],
+            "apr-attention-in-progress"
+        );
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn approval_request_tool_query_list_filters_by_decision() {
+        let config = isolated_memory_config("approval-query-list-decision-filter");
+        let repo = SessionRepository::new(&config).expect("repository");
+        seed_session(&repo, "root-session", SessionKind::Root, None);
+        seed_request(
+            &repo,
+            "apr-decision-pending",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+        );
+        seed_request(
+            &repo,
+            "apr-decision-denied",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+        );
+        seed_request(
+            &repo,
+            "apr-decision-approved",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+        );
+        seed_request(
+            &repo,
+            "apr-decision-once",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+        );
+
+        repo.transition_approval_request_if_current(
+            "apr-decision-denied",
+            TransitionApprovalRequestIfCurrentRequest {
+                expected_status: ApprovalRequestStatus::Pending,
+                next_status: ApprovalRequestStatus::Denied,
+                decision: Some(ApprovalDecision::Deny),
+                resolved_by_session_id: Some("root-session".to_owned()),
+                executed_at: None,
+                last_error: None,
+            },
+        )
+        .expect("transition denied request")
+        .expect("denied request should transition");
+        repo.transition_approval_request_if_current(
+            "apr-decision-approved",
+            TransitionApprovalRequestIfCurrentRequest {
+                expected_status: ApprovalRequestStatus::Pending,
+                next_status: ApprovalRequestStatus::Approved,
+                decision: Some(ApprovalDecision::ApproveAlways),
+                resolved_by_session_id: Some("root-session".to_owned()),
+                executed_at: None,
+                last_error: None,
+            },
+        )
+        .expect("transition approved request")
+        .expect("approved request should transition");
+        repo.transition_approval_request_if_current(
+            "apr-decision-once",
+            TransitionApprovalRequestIfCurrentRequest {
+                expected_status: ApprovalRequestStatus::Pending,
+                next_status: ApprovalRequestStatus::Executed,
+                decision: Some(ApprovalDecision::ApproveOnce),
+                resolved_by_session_id: Some("root-session".to_owned()),
+                executed_at: Some(1_773_000_000),
+                last_error: None,
+            },
+        )
+        .expect("transition approve_once request")
+        .expect("approve_once request should transition");
+
+        let approve_always_outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "decision": "approve_always",
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome for approve_always decision");
+
+        assert_eq!(
+            approve_always_outcome.payload["filter"]["decision"],
+            "approve_always"
+        );
+        assert_eq!(approve_always_outcome.payload["matched_count"], 1);
+        assert_eq!(approve_always_outcome.payload["returned_count"], 1);
+        let approve_always_requests = approve_always_outcome.payload["requests"]
+            .as_array()
+            .expect("approve_always decision requests array");
+        assert_eq!(approve_always_requests.len(), 1);
+        assert_eq!(
+            approve_always_requests[0]["approval_request_id"],
+            "apr-decision-approved"
+        );
+
+        let deny_outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "decision": "deny",
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome for deny decision");
+
+        assert_eq!(deny_outcome.payload["filter"]["decision"], "deny");
+        assert_eq!(deny_outcome.payload["matched_count"], 1);
+        assert_eq!(deny_outcome.payload["returned_count"], 1);
+        let deny_requests = deny_outcome.payload["requests"]
+            .as_array()
+            .expect("deny decision requests array");
+        assert_eq!(deny_requests.len(), 1);
+        assert_eq!(
+            deny_requests[0]["approval_request_id"],
+            "apr-decision-denied"
+        );
     }
 
     #[cfg(feature = "memory-sqlite")]
@@ -2712,6 +3019,10 @@ mod tests {
             1
         );
         let resolution_summary = &outcome.payload["resolution_summary"];
+        assert_eq!(resolution_summary["decision_counts"]["unresolved"], 6);
+        assert_eq!(resolution_summary["decision_counts"]["approve_once"], 0);
+        assert_eq!(resolution_summary["decision_counts"]["approve_always"], 0);
+        assert_eq!(resolution_summary["decision_counts"]["deny"], 0);
         assert_eq!(resolution_summary["request_status_counts"]["pending"], 1);
         assert_eq!(resolution_summary["request_status_counts"]["approved"], 0);
         assert_eq!(resolution_summary["request_status_counts"]["executing"], 1);
@@ -2719,7 +3030,10 @@ mod tests {
         assert_eq!(resolution_summary["request_status_counts"]["denied"], 0);
         assert_eq!(resolution_summary["request_status_counts"]["expired"], 0);
         assert_eq!(resolution_summary["request_status_counts"]["cancelled"], 0);
-        assert_eq!(resolution_summary["replay_result_counts"]["not_attempted"], 1);
+        assert_eq!(
+            resolution_summary["replay_result_counts"]["not_attempted"],
+            1
+        );
         assert_eq!(resolution_summary["replay_result_counts"]["in_progress"], 1);
         assert_eq!(
             resolution_summary["replay_result_counts"]["completed_cleanly"],
@@ -2754,6 +3068,58 @@ mod tests {
         assert!(
             error.contains("approval_requests_list_invalid_request: unknown attention_reason"),
             "expected attention_reason validation error, got: {error}"
+        );
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn approval_request_tool_query_list_rejects_unknown_decision() {
+        let config = isolated_memory_config("approval-query-list-invalid-decision");
+        let repo = SessionRepository::new(&config).expect("repository");
+        seed_session(&repo, "root-session", SessionKind::Root, None);
+
+        let error = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "decision": "broken",
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect_err("unknown decision should be rejected");
+
+        assert!(
+            error.contains("approval_requests_list_invalid_request: unknown decision"),
+            "expected decision validation error, got: {error}"
+        );
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn approval_request_tool_query_list_rejects_unknown_replay_result() {
+        let config = isolated_memory_config("approval-query-list-invalid-replay-result");
+        let repo = SessionRepository::new(&config).expect("repository");
+        seed_session(&repo, "root-session", SessionKind::Root, None);
+
+        let error = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "replay_result": "broken",
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect_err("unknown replay_result should be rejected");
+
+        assert!(
+            error.contains("approval_requests_list_invalid_request: unknown replay_result"),
+            "expected replay_result validation error, got: {error}"
         );
     }
 
