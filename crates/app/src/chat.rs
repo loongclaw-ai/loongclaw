@@ -655,7 +655,7 @@ fn export_runtime_env(config: &LoongClawConfig) {
             .iter()
             .map(|s| s.to_ascii_lowercase())
             .collect(),
-        shell_default_mode: crate::tools::policy_ext::ShellPolicyDefault::parse(
+        shell_default_mode: crate::tools::shell_policy_ext::ShellPolicyDefault::parse(
             &config.tools.shell_default_mode,
         ),
         external_skills: crate::tools::runtime_config::ExternalSkillsRuntimePolicy {

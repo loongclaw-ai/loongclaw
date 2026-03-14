@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use super::policy_ext::ShellPolicyDefault;
+use super::shell_policy_ext::ShellPolicyDefault;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalSkillsRuntimePolicy {

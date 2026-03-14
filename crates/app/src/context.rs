@@ -90,9 +90,9 @@ pub(crate) fn bootstrap_kernel_context(
 
     // Register policy extensions for unified security enforcement.
     let tool_rt = crate::tools::runtime_config::get_tool_runtime_config();
-    kernel.register_policy_extension(crate::tools::policy_ext::ToolPolicyExtension::from_config(
-        tool_rt,
-    ));
+    kernel.register_policy_extension(
+        crate::tools::shell_policy_ext::ToolPolicyExtension::from_config(tool_rt),
+    );
     let file_root = tool_rt.file_root.clone();
     kernel.register_policy_extension(crate::tools::file_policy_ext::FilePolicyExtension::new(
         file_root,

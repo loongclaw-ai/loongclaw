@@ -12,9 +12,9 @@ mod external_skills;
 mod file;
 pub mod file_policy_ext;
 mod kernel_adapter;
-pub mod policy_ext;
 pub mod runtime_config;
 mod shell;
+pub mod shell_policy_ext;
 
 pub use kernel_adapter::MvpToolAdapter;
 

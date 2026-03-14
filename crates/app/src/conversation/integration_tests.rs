@@ -136,7 +136,7 @@ impl TurnTestHarness {
         // Policy rules come exclusively from the runtime config; no hardcoded
         // lists are injected here.
         kernel.register_policy_extension(
-            crate::tools::policy_ext::ToolPolicyExtension::from_config(&tool_config),
+            crate::tools::shell_policy_ext::ToolPolicyExtension::from_config(&tool_config),
         );
         kernel.register_policy_extension(crate::tools::file_policy_ext::FilePolicyExtension::new(
             tool_config.file_root,
