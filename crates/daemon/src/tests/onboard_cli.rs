@@ -1803,6 +1803,52 @@ fn onboard_provider_selection_screen_uses_profile_ids_for_same_kind_choices() {
 }
 
 #[test]
+fn onboard_provider_selection_screen_prefers_short_human_selectors_on_narrow_width() {
+    let plan = crate::migration::ProviderSelectionPlan {
+        imported_choices: vec![
+            crate::migration::ImportedProviderChoice {
+                profile_id: "openai-o4-mini".to_owned(),
+                kind: mvp::config::ProviderKind::Openai,
+                source: "your current environment".to_owned(),
+                summary: "OpenAI · o4-mini · credentials resolved".to_owned(),
+                config: mvp::config::ProviderConfig {
+                    kind: mvp::config::ProviderKind::Openai,
+                    model: "o4-mini".to_owned(),
+                    api_key_env: Some("OPENAI_REASONING_API_KEY".to_owned()),
+                    ..mvp::config::ProviderConfig::default()
+                },
+            },
+            crate::migration::ImportedProviderChoice {
+                profile_id: "openai-gpt-5".to_owned(),
+                kind: mvp::config::ProviderKind::Openai,
+                source: "Codex config at ~/.codex/config.toml".to_owned(),
+                summary: "OpenAI · gpt-5 · credentials resolved".to_owned(),
+                config: mvp::config::ProviderConfig {
+                    kind: mvp::config::ProviderKind::Openai,
+                    model: "gpt-5".to_owned(),
+                    api_key_env: Some("OPENAI_MAIN_API_KEY".to_owned()),
+                    ..mvp::config::ProviderConfig::default()
+                },
+            },
+        ],
+        default_kind: Some(mvp::config::ProviderKind::Openai),
+        default_profile_id: Some("openai-o4-mini".to_owned()),
+        requires_explicit_choice: false,
+    };
+
+    let lines = crate::onboard_cli::render_provider_selection_screen_lines(&plan, 52);
+
+    assert!(
+        lines.iter().any(|line| line == "    selector: openai"),
+        "the default same-kind profile should surface the short provider-kind selector on narrow screens: {lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|line| line == "    selector: gpt-5"),
+        "non-default same-kind profiles should surface the concise model alias instead of the longer profile id on narrow screens: {lines:#?}"
+    );
+}
+
+#[test]
 fn onboard_provider_selector_reports_ambiguous_model_name() {
     let plan = crate::migration::ProviderSelectionPlan {
         imported_choices: vec![

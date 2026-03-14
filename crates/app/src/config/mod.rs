@@ -37,8 +37,8 @@ pub use runtime::{
     PROVIDER_SELECTOR_TARGET_SUMMARY, ProviderSelectorProfileRef, ProviderSelectorResolution,
     accepted_provider_selectors, default_config_path, default_loongclaw_home,
     describe_provider_selector_target, load, normalize_validation_locale,
-    provider_selector_catalog, provider_selector_recommendation_hint, render,
-    resolve_provider_selector, supported_validation_locales, validate_file,
+    preferred_provider_selector, provider_selector_catalog, provider_selector_recommendation_hint,
+    render, resolve_provider_selector, supported_validation_locales, validate_file,
     validate_file_with_locale, write, write_template,
 };
 pub(crate) use runtime::{normalize_dispatch_account_id, normalize_dispatch_channel_id};

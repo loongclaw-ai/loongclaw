@@ -747,30 +747,26 @@ pub(crate) fn resolve_provider_config_from_selector(
             return Ok(choice.config.clone());
         }
         crate::migration::ImportedChoiceSelectorResolution::Ambiguous(profile_ids) => {
-            let recommendation = crate::migration::recommendation_hint_for_profile_ids(
+            return Err(crate::migration::format_ambiguous_selector_error(
                 provider_selection,
+                selector,
                 &profile_ids,
-            )
-            .map(|hint| format!("; {hint}"))
-            .unwrap_or_default();
-            return Err(format!(
-                "provider selector `{selector}` is ambiguous; matching profiles: {}{}",
-                crate::migration::describe_matching_choices(provider_selection, &profile_ids),
-                recommendation
             ));
         }
         crate::migration::ImportedChoiceSelectorResolution::NoMatch => {}
     }
 
     let kind = parse_provider_kind(selector).ok_or_else(|| {
-        let recommendation = crate::migration::recommendation_hint(provider_selection)
-            .map(|hint| format!(" {}", hint))
-            .unwrap_or_default();
-        format!(
-            "unsupported provider value \"{selector}\". accepted selectors: {}. {}{}",
-            available_provider_selectors(provider_selection),
-            crate::migration::provider_selection::PROVIDER_SELECTOR_NOTE,
-            recommendation
+        if provider_selection.imported_choices.is_empty() {
+            return format!(
+                "unsupported provider value \"{selector}\". accepted selectors: {}. {}",
+                supported_provider_list(),
+                crate::migration::provider_selection::PROVIDER_SELECTOR_NOTE,
+            );
+        }
+        crate::migration::format_unknown_selector_error(
+            provider_selection,
+            format!("unsupported provider value \"{selector}\"").as_str(),
         )
     })?;
     let matching_choices = provider_selection
@@ -783,14 +779,10 @@ pub(crate) fn resolve_provider_config_from_selector(
             .iter()
             .map(|choice| choice.profile_id.clone())
             .collect::<Vec<_>>();
-        let recommendation =
-            crate::migration::recommendation_hint_for_profile_ids(provider_selection, &profile_ids)
-                .map(|hint| format!("; {hint}"))
-                .unwrap_or_default();
-        return Err(format!(
-            "provider selector `{selector}` is ambiguous; matching profiles: {}{}",
-            crate::migration::describe_matching_choices(provider_selection, &profile_ids),
-            recommendation
+        return Err(crate::migration::format_ambiguous_selector_error(
+            provider_selection,
+            selector,
+            &profile_ids,
         ));
     }
     if let Some(choice) = matching_choices.first() {
@@ -801,13 +793,6 @@ pub(crate) fn resolve_provider_config_from_selector(
         provider_selection,
         kind,
     ))
-}
-
-fn available_provider_selectors(plan: &crate::migration::ProviderSelectionPlan) -> String {
-    if plan.imported_choices.is_empty() {
-        return supported_provider_list();
-    }
-    crate::migration::selector_catalog(plan).join(", ")
 }
 
 pub(crate) fn build_provider_selection_plan_for_candidate(

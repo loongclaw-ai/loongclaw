@@ -260,6 +260,13 @@ pub(crate) fn accepted_selectors_for_choice(
     mvp::config::accepted_provider_selectors(provider_selector_profiles(plan), profile_id)
 }
 
+pub(crate) fn preferred_selector_for_choice(
+    plan: &ProviderSelectionPlan,
+    profile_id: &str,
+) -> Option<String> {
+    mvp::config::preferred_provider_selector(provider_selector_profiles(plan), profile_id)
+}
+
 pub(crate) fn selector_catalog(plan: &ProviderSelectionPlan) -> Vec<String> {
     mvp::config::provider_selector_catalog(provider_selector_profiles(plan))
 }
@@ -328,11 +335,42 @@ pub(crate) fn selector_detail_line(
     width: usize,
 ) -> Option<String> {
     let selectors = accepted_selectors_for_choice(plan, profile_id);
-    let first = selectors.first()?.clone();
+    let preferred =
+        preferred_selector_for_choice(plan, profile_id).or_else(|| selectors.first().cloned())?;
     if selectors.len() == 1 || width < COMPACT_SELECTOR_DETAIL_WIDTH {
-        return Some(format!("selector: {first}"));
+        return Some(format!("selector: {preferred}"));
     }
     Some(format!("selectors: {}", selectors.join(", ")))
+}
+
+pub(crate) fn format_ambiguous_selector_error(
+    plan: &ProviderSelectionPlan,
+    selector: &str,
+    profile_ids: &[String],
+) -> String {
+    let recommendation = recommendation_hint_for_profile_ids(plan, profile_ids)
+        .map(|hint| format!("; {hint}"))
+        .unwrap_or_default();
+    format!(
+        "provider selector `{selector}` is ambiguous; matching profiles: {}{}",
+        describe_matching_choices(plan, profile_ids),
+        recommendation
+    )
+}
+
+pub(crate) fn format_unknown_selector_error(
+    plan: &ProviderSelectionPlan,
+    invalid_selector_message: &str,
+) -> String {
+    let recommendation = recommendation_hint(plan)
+        .map(|hint| format!(" {hint}"))
+        .unwrap_or_default();
+    format!(
+        "{invalid_selector_message}. accepted selectors: {}. {}{}",
+        selector_catalog(plan).join(", "),
+        PROVIDER_SELECTOR_NOTE,
+        recommendation
+    )
 }
 
 pub(crate) fn unresolved_choice_note_segments(plan: &ProviderSelectionPlan) -> Vec<String> {

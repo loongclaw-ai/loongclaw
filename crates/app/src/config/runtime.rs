@@ -613,6 +613,13 @@ where
     ProviderSelectorIndex::new(profiles).selector_catalog()
 }
 
+pub fn preferred_provider_selector<'a, I>(profiles: I, target_profile_id: &str) -> Option<String>
+where
+    I: IntoIterator<Item = ProviderSelectorProfileRef<'a>>,
+{
+    ProviderSelectorIndex::new(profiles).preferred_selector(target_profile_id)
+}
+
 pub fn describe_provider_selector_target<'a, I>(
     profiles: I,
     target_profile_id: &str,
@@ -730,6 +737,41 @@ impl<'a> ProviderSelectorIndex<'a> {
         selectors
     }
 
+    fn preferred_selector(&self, target_profile_id: &str) -> Option<String> {
+        let profile = self.find_profile(target_profile_id)?;
+        let selectors = self.accepted_selectors(target_profile_id);
+        if selectors.is_empty() {
+            return None;
+        }
+
+        let profile_id = normalize_provider_selector_token(profile.profile_id);
+        let model = normalize_provider_selector_token(profile.model);
+        let suffix = provider_model_suffix(profile.model);
+        let kind = normalize_provider_selector_token(profile.kind.as_str());
+        let profile_id_len = profile_id.as_ref().map_or(usize::MAX, String::len);
+
+        let preferred_candidates = [
+            kind.as_deref(),
+            suffix.as_deref(),
+            model
+                .as_deref()
+                .filter(|model| model.len() <= profile_id_len),
+            profile_id.as_deref(),
+            model.as_deref(),
+        ];
+
+        for candidate in preferred_candidates.into_iter().flatten() {
+            if let Some(selector) = selectors
+                .iter()
+                .find(|existing| existing.eq_ignore_ascii_case(candidate))
+            {
+                return Some(selector.clone());
+            }
+        }
+
+        selectors.into_iter().next()
+    }
+
     fn describe_profile(&self, target_profile_id: &str) -> Option<String> {
         let profile = self.find_profile(target_profile_id)?;
         let selectors = self.accepted_selectors(target_profile_id);
@@ -749,11 +791,7 @@ impl<'a> ProviderSelectorIndex<'a> {
     {
         let mut selectors = Vec::new();
         for profile_id in target_profile_ids {
-            let Some(selector) = self
-                .accepted_selectors(profile_id.as_ref())
-                .into_iter()
-                .next()
-            else {
+            let Some(selector) = self.preferred_selector(profile_id.as_ref()) else {
                 continue;
             };
             push_unique_selector(&mut selectors, selector.as_str());
@@ -1026,6 +1064,10 @@ impl LoongClawConfig {
 
     pub fn accepted_provider_selectors(&self, target_profile_id: &str) -> Vec<String> {
         accepted_provider_selectors(self.provider_selector_profiles(), target_profile_id)
+    }
+
+    pub fn preferred_provider_selector(&self, target_profile_id: &str) -> Option<String> {
+        preferred_provider_selector(self.provider_selector_profiles(), target_profile_id)
     }
 
     pub fn clone_with_provider_runtime_state(
@@ -1979,6 +2021,65 @@ api_key = "${DEEPSEEK_API_KEY}"
         assert!(error.contains("selectors=openai-main, gpt-5"));
         assert!(error.contains("model=gpt-4.1"));
         assert!(error.contains("selectors=openai-azure, gpt-4.1"));
+    }
+
+    #[test]
+    fn preferred_provider_selector_prefers_human_friendly_aliases() {
+        let profiles = [
+            ProviderSelectorProfileRef::new("openai-main", ProviderKind::Openai, "gpt-5", false),
+            ProviderSelectorProfileRef::new(
+                "openai-reasoning",
+                ProviderKind::Openai,
+                "o4-mini",
+                true,
+            ),
+            ProviderSelectorProfileRef::new(
+                "openrouter-main",
+                ProviderKind::Openrouter,
+                "openai/gpt-5.1-codex",
+                true,
+            ),
+        ];
+
+        assert_eq!(
+            preferred_provider_selector(profiles.iter().copied(), "openai-main"),
+            Some("gpt-5".to_owned())
+        );
+        assert_eq!(
+            preferred_provider_selector(profiles.iter().copied(), "openai-reasoning"),
+            Some("openai".to_owned())
+        );
+        assert_eq!(
+            preferred_provider_selector(profiles.iter().copied(), "openrouter-main"),
+            Some("openrouter".to_owned())
+        );
+    }
+
+    #[test]
+    fn provider_selector_recommendation_hint_prefers_human_friendly_aliases() {
+        let profiles = [
+            ProviderSelectorProfileRef::new("openai-main", ProviderKind::Openai, "gpt-5", false),
+            ProviderSelectorProfileRef::new(
+                "openai-reasoning",
+                ProviderKind::Openai,
+                "o4-mini",
+                true,
+            ),
+            ProviderSelectorProfileRef::new(
+                "deepseek-cn",
+                ProviderKind::Deepseek,
+                "deepseek-chat",
+                true,
+            ),
+        ];
+
+        assert_eq!(
+            provider_selector_recommendation_hint(
+                profiles.iter().copied(),
+                ["openai-reasoning", "openai-main", "deepseek-cn"],
+            ),
+            Some("try one of: openai, gpt-5, deepseek".to_owned())
+        );
     }
 
     #[test]

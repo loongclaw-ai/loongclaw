@@ -635,28 +635,16 @@ pub(crate) fn resolve_import_provider_selection(
                 return Ok(choice.config.clone());
             }
             migration::ImportedChoiceSelectorResolution::Ambiguous(profile_ids) => {
-                let recommendation = migration::recommendation_hint_for_profile_ids(
+                return Err(migration::format_ambiguous_selector_error(
                     &provider_selection,
+                    provider_raw,
                     &profile_ids,
-                )
-                .map(|hint| format!("; {hint}"))
-                .unwrap_or_default();
-                return Err(format!(
-                    "provider selector `{provider_raw}` is ambiguous; matching profiles: {}{}",
-                    migration::describe_matching_choices(&provider_selection, &profile_ids),
-                    recommendation
                 ));
             }
             migration::ImportedChoiceSelectorResolution::NoMatch => {
-                let recommendation = migration::recommendation_hint(&provider_selection)
-                    .map(|hint| format!(" {}", hint))
-                    .unwrap_or_default();
-                return Err(format!(
-                    "unsupported --provider value {:?}. accepted selectors: {}. {}{}",
-                    provider_raw,
-                    migration::selector_catalog(&provider_selection).join(", "),
-                    migration::provider_selection::PROVIDER_SELECTOR_NOTE,
-                    recommendation
+                return Err(migration::format_unknown_selector_error(
+                    &provider_selection,
+                    format!("unsupported --provider value {provider_raw:?}").as_str(),
                 ));
             }
         }
@@ -762,28 +750,16 @@ fn apply_provider_profiles_to_config(
         ) {
             migration::ImportedChoiceSelectorResolution::Match(profile_id) => profile_id,
             migration::ImportedChoiceSelectorResolution::Ambiguous(profile_ids) => {
-                let recommendation = migration::recommendation_hint_for_profile_ids(
+                return Err(migration::format_ambiguous_selector_error(
                     &provider_selection,
+                    provider_raw,
                     &profile_ids,
-                )
-                .map(|hint| format!("; {hint}"))
-                .unwrap_or_default();
-                return Err(format!(
-                    "provider selector `{provider_raw}` is ambiguous; matching profiles: {}{}",
-                    migration::describe_matching_choices(&provider_selection, &profile_ids),
-                    recommendation
                 ));
             }
             migration::ImportedChoiceSelectorResolution::NoMatch => {
-                let recommendation = migration::recommendation_hint(&provider_selection)
-                    .map(|hint| format!(" {}", hint))
-                    .unwrap_or_default();
-                return Err(format!(
-                    "unsupported --provider value {:?}. accepted selectors: {}. {}{}",
-                    provider_raw,
-                    migration::selector_catalog(&provider_selection).join(", "),
-                    migration::provider_selection::PROVIDER_SELECTOR_NOTE,
-                    recommendation
+                return Err(migration::format_unknown_selector_error(
+                    &provider_selection,
+                    format!("unsupported --provider value {provider_raw:?}").as_str(),
                 ));
             }
         };
