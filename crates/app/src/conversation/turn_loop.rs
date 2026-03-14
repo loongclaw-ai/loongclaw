@@ -1,25 +1,55 @@
+use async_trait::async_trait;
+use futures_util::FutureExt;
+use std::any::Any;
 use std::collections::VecDeque;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::panic::AssertUnwindSafe;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
+use tokio::time::timeout;
 
 use crate::CliResult;
 use crate::KernelContext;
 
 use super::super::config::LoongClawConfig;
-use super::ProviderErrorMode;
 use super::persistence::{format_provider_error_reply, persist_error_turns, persist_success_turns};
-use super::runtime::{ConversationRuntime, DefaultConversationRuntime};
-use super::turn_engine::{ProviderTurn, ToolIntent, TurnEngine, TurnResult};
-use super::turn_shared::{
-    build_external_skill_followup_user_prompt, build_external_skill_system_message,
-    build_tool_followup_user_prompt, compose_assistant_reply, join_non_empty_lines,
-    parse_external_skill_invoke_context, user_requested_raw_tool_output,
+use super::runtime::{ConversationRuntime, DefaultConversationRuntime, SessionContext};
+#[cfg(feature = "memory-sqlite")]
+use super::turn_engine::SessionRepositoryApprovalRequestStore;
+#[cfg(feature = "memory-sqlite")]
+use super::turn_engine::{
+    effective_tool_config_for_session, ApprovalOrchestrationReplayer,
+    DefaultApprovalResolutionRuntime,
 };
+use super::turn_engine::{
+    AppToolDispatcher, ApprovalRequirement, ApprovalRequirementKind, DefaultAppToolDispatcher,
+    DefaultOrchestrationToolDispatcher, DefaultToolGovernanceEvaluator,
+    GovernedApprovalRequestStore, OrchestrationToolDispatcher, ProviderTurn, ToolIntent,
+    TurnEngine, TurnResult,
+};
+use super::ProviderErrorMode;
+
+use crate::memory::runtime_config::MemoryRuntimeConfig;
+#[cfg(feature = "memory-sqlite")]
+use crate::session::recovery::{build_terminal_finalize_recovery_payload, RECOVERY_EVENT_KIND};
+#[cfg(feature = "memory-sqlite")]
+use crate::session::repository::{
+    CreateSessionWithEventRequest, NewSessionRecord, SessionKind, SessionRepository, SessionState,
+    TransitionSessionWithEventIfCurrentRequest,
+};
+#[cfg(feature = "memory-sqlite")]
+use crate::session::{
+    delegate_cancelled_error, parse_delegate_cancelled_reason, DELEGATE_CANCELLED_EVENT_KIND,
+    DELEGATE_CANCEL_REASON_OPERATOR_REQUESTED, DELEGATE_CANCEL_REQUESTED_EVENT_KIND,
+};
+use crate::tools::runtime_tool_view_for_config;
 
 #[derive(Default)]
 pub struct ConversationTurnLoop;
 
+const TOOL_FOLLOWUP_PROMPT: &str = "Use the tool result above to answer the original user request in natural language. Do not include raw JSON, payload wrappers, or status markers unless the user explicitly asks for raw output.";
 const TOOL_LOOP_GUARD_PROMPT: &str = "Detected tool-loop behavior across rounds. Do not repeat identical or cyclical tool calls without new evidence. Adjust strategy (different tool, arguments, or decomposition) or provide the best possible final answer and clearly state remaining gaps.";
 
 impl ConversationTurnLoop {
@@ -35,9 +65,34 @@ impl ConversationTurnLoop {
         error_mode: ProviderErrorMode,
         kernel_ctx: Option<&KernelContext>,
     ) -> CliResult<String> {
-        let runtime = DefaultConversationRuntime::from_config_or_env(config)?;
-        self.handle_turn_with_runtime(
-            config, session_id, user_input, error_mode, &runtime, kernel_ctx,
+        let session_context = SessionContext::root_with_tool_view(
+            session_id,
+            runtime_tool_view_for_config(&config.tools),
+        );
+        self.handle_turn_in_session(config, &session_context, user_input, error_mode, kernel_ctx)
+            .await
+    }
+
+    pub async fn handle_turn_in_session(
+        &self,
+        config: &LoongClawConfig,
+        session_context: &SessionContext,
+        user_input: &str,
+        error_mode: ProviderErrorMode,
+        kernel_ctx: Option<&KernelContext>,
+    ) -> CliResult<String> {
+        let runtime = DefaultConversationRuntime;
+        let app_dispatcher = default_app_tool_dispatcher(config);
+        let orchestration_dispatcher = default_orchestration_tool_dispatcher(config);
+        self.handle_turn_with_runtime_and_context(
+            config,
+            session_context,
+            user_input,
+            error_mode,
+            &runtime,
+            &app_dispatcher,
+            &orchestration_dispatcher,
+            kernel_ctx,
         )
         .await
     }
@@ -51,9 +106,71 @@ impl ConversationTurnLoop {
         runtime: &R,
         kernel_ctx: Option<&KernelContext>,
     ) -> CliResult<String> {
-        let mut messages = runtime
-            .build_messages(config, session_id, true, kernel_ctx)
-            .await?;
+        let session_context = runtime.session_context(config, session_id, kernel_ctx)?;
+        let app_dispatcher = default_app_tool_dispatcher(config);
+        let orchestration_dispatcher = default_orchestration_tool_dispatcher(config);
+        self.handle_turn_with_runtime_and_context(
+            config,
+            &session_context,
+            user_input,
+            error_mode,
+            runtime,
+            &app_dispatcher,
+            &orchestration_dispatcher,
+            kernel_ctx,
+        )
+        .await
+    }
+
+    pub async fn handle_turn_with_runtime_and_context<
+        R: ConversationRuntime + ?Sized,
+        A: AppToolDispatcher + ?Sized,
+        O: OrchestrationToolDispatcher + ?Sized,
+    >(
+        &self,
+        config: &LoongClawConfig,
+        session_context: &SessionContext,
+        user_input: &str,
+        error_mode: ProviderErrorMode,
+        runtime: &R,
+        app_dispatcher: &A,
+        orchestration_dispatcher: &O,
+        kernel_ctx: Option<&KernelContext>,
+    ) -> CliResult<String> {
+        #[cfg(feature = "memory-sqlite")]
+        ensure_session_registered(config, session_context)?;
+
+        #[cfg(feature = "memory-sqlite")]
+        let approval_aware_app_dispatcher = TurnLoopAppToolDispatcher {
+            turn_loop: self,
+            config,
+            runtime,
+            base: app_dispatcher,
+            orchestration_dispatcher,
+        };
+        let turn_loop_dispatcher = TurnLoopOrchestrationToolDispatcher {
+            turn_loop: self,
+            config,
+            runtime,
+            app_dispatcher,
+            fallback: orchestration_dispatcher,
+        };
+        #[cfg(not(feature = "memory-sqlite"))]
+        let turn_loop_dispatcher = TurnLoopOrchestrationToolDispatcher {
+            turn_loop: self,
+            config,
+            runtime,
+            app_dispatcher,
+            fallback: orchestration_dispatcher,
+        };
+        #[cfg(feature = "memory-sqlite")]
+        let app_dispatcher_ref = &approval_aware_app_dispatcher;
+        #[cfg(not(feature = "memory-sqlite"))]
+        let app_dispatcher_ref = app_dispatcher;
+        let session_id = session_context.session_id.as_str();
+        let tool_view = &session_context.tool_view;
+        let mut messages =
+            runtime.build_messages(config, session_id, true, tool_view, kernel_ctx)?;
         messages.push(json!({
             "role": "user",
             "content": user_input,
@@ -66,9 +183,21 @@ impl ConversationTurnLoop {
             policy.max_followup_tool_payload_chars,
             policy.max_followup_tool_payload_chars_total,
         );
+        #[cfg(feature = "memory-sqlite")]
+        let approval_request_store =
+            SessionRepositoryApprovalRequestStore::new(memory_runtime_config_for(config));
 
         for round_index in 0..policy.max_rounds {
-            let turn = match runtime.request_turn(config, &messages, kernel_ctx).await {
+            #[cfg(feature = "memory-sqlite")]
+            if session_context.parent_session_id.is_some() {
+                if let Some(cancel_reason) =
+                    load_delegate_child_cancel_request(config, session_context)?
+                {
+                    return Err(delegate_cancelled_error(&cancel_reason));
+                }
+            }
+
+            let turn = match runtime.request_turn(config, &messages, tool_view).await {
                 Ok(turn) => turn,
                 Err(error) => {
                     return match error_mode {
@@ -91,14 +220,27 @@ impl ConversationTurnLoop {
             let current_tool_name_signature =
                 had_tool_intents.then(|| tool_name_signature(&turn.tool_intents));
 
-            let turn_result = TurnEngine::with_tool_result_payload_summary_limit(
-                policy.max_tool_steps_per_round,
-                config
-                    .conversation
-                    .tool_result_payload_summary_limit_chars(),
-            )
-            .execute_turn(&turn, kernel_ctx)
-            .await;
+            let governance_evaluator = DefaultToolGovernanceEvaluator::with_memory_config(
+                memory_runtime_config_for(config),
+                config.tools.clone(),
+            );
+            #[cfg(feature = "memory-sqlite")]
+            let approval_request_store_ref: Option<&dyn GovernedApprovalRequestStore> =
+                Some(&approval_request_store);
+            #[cfg(not(feature = "memory-sqlite"))]
+            let approval_request_store_ref = None;
+            let turn_result = TurnEngine::new(policy.max_tool_steps_per_round)
+                .execute_turn_in_context_with_governance_and_persistence(
+                    &turn,
+                    session_context,
+                    runtime,
+                    &governance_evaluator,
+                    app_dispatcher_ref,
+                    &turn_loop_dispatcher,
+                    approval_request_store_ref,
+                    kernel_ctx,
+                )
+                .await;
             let loop_supervisor_verdict = if let (Some(signature), Some(name_signature)) = (
                 current_tool_signature.as_deref(),
                 current_tool_name_signature.as_deref(),
@@ -116,7 +258,6 @@ impl ConversationTurnLoop {
                 None
             };
 
-            #[allow(clippy::wildcard_enum_match_arm)]
             let reply = match turn_result {
                 TurnResult::FinalText(tool_text) if had_tool_intents => {
                     let raw_reply =
@@ -140,7 +281,6 @@ impl ConversationTurnLoop {
                                 runtime,
                                 config,
                                 &messages,
-                                kernel_ctx,
                                 raw_reply.as_str(),
                             )
                             .await
@@ -170,7 +310,6 @@ impl ConversationTurnLoop {
                                 runtime,
                                 config,
                                 &messages,
-                                kernel_ctx,
                                 raw_reply.as_str(),
                             )
                             .await
@@ -203,7 +342,6 @@ impl ConversationTurnLoop {
                                 runtime,
                                 config,
                                 &messages,
-                                kernel_ctx,
                                 raw_reply.as_str(),
                             )
                             .await
@@ -233,7 +371,6 @@ impl ConversationTurnLoop {
                                 runtime,
                                 config,
                                 &messages,
-                                kernel_ctx,
                                 raw_reply.as_str(),
                             )
                             .await
@@ -266,7 +403,6 @@ impl ConversationTurnLoop {
                                 runtime,
                                 config,
                                 &messages,
-                                kernel_ctx,
                                 raw_reply.as_str(),
                             )
                             .await
@@ -296,7 +432,6 @@ impl ConversationTurnLoop {
                                 runtime,
                                 config,
                                 &messages,
-                                kernel_ctx,
                                 raw_reply.as_str(),
                             )
                             .await
@@ -321,6 +456,756 @@ impl ConversationTurnLoop {
     }
 }
 
+#[cfg(feature = "memory-sqlite")]
+struct TurnLoopApprovalResolutionRuntime<'a, R: ?Sized, A: ?Sized, O: ?Sized> {
+    inner: DefaultApprovalResolutionRuntime,
+    replayer: TurnLoopApprovalOrchestrationReplayer<'a, R, A, O>,
+}
+
+#[cfg(feature = "memory-sqlite")]
+struct TurnLoopApprovalOrchestrationReplayer<'a, R: ?Sized, A: ?Sized, O: ?Sized> {
+    turn_loop: &'a ConversationTurnLoop,
+    config: &'a LoongClawConfig,
+    runtime: &'a R,
+    app_dispatcher: &'a A,
+    orchestration_dispatcher: &'a O,
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[async_trait]
+impl<R, A, O> crate::tools::approval::ApprovalResolutionRuntime
+    for TurnLoopApprovalResolutionRuntime<'_, R, A, O>
+where
+    R: ConversationRuntime + ?Sized,
+    A: AppToolDispatcher + ?Sized,
+    O: OrchestrationToolDispatcher + ?Sized,
+{
+    async fn resolve_approval_request(
+        &self,
+        request: crate::tools::approval::ApprovalResolutionRequest,
+        kernel_ctx: Option<&KernelContext>,
+    ) -> Result<crate::tools::approval::ApprovalResolutionOutcome, String> {
+        self.inner
+            .resolve_approval_request_with_orchestration_replayer(
+                request,
+                Some(&self.replayer),
+                kernel_ctx,
+            )
+            .await
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[async_trait]
+impl<R, A, O> ApprovalOrchestrationReplayer for TurnLoopApprovalOrchestrationReplayer<'_, R, A, O>
+where
+    R: ConversationRuntime + ?Sized,
+    A: AppToolDispatcher + ?Sized,
+    O: OrchestrationToolDispatcher + ?Sized,
+{
+    async fn replay_orchestration_request(
+        &self,
+        session_context: &SessionContext,
+        request: loongclaw_contracts::ToolCoreRequest,
+        kernel_ctx: Option<&KernelContext>,
+    ) -> Result<loongclaw_contracts::ToolCoreOutcome, String> {
+        match request.tool_name.as_str() {
+            "delegate" => {
+                execute_delegate_tool(
+                    self.turn_loop,
+                    self.config,
+                    self.runtime,
+                    self.app_dispatcher,
+                    self.orchestration_dispatcher,
+                    session_context,
+                    request.payload,
+                    kernel_ctx,
+                )
+                .await
+            }
+            _ => {
+                self.orchestration_dispatcher
+                    .execute_orchestration_tool(session_context, request, kernel_ctx)
+                    .await
+            }
+        }
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+struct TurnLoopAppToolDispatcher<'a, R: ?Sized, A: ?Sized, O: ?Sized> {
+    turn_loop: &'a ConversationTurnLoop,
+    config: &'a LoongClawConfig,
+    runtime: &'a R,
+    base: &'a A,
+    orchestration_dispatcher: &'a O,
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[async_trait]
+impl<R, A, O> AppToolDispatcher for TurnLoopAppToolDispatcher<'_, R, A, O>
+where
+    R: ConversationRuntime + ?Sized,
+    A: AppToolDispatcher + ?Sized,
+    O: OrchestrationToolDispatcher + ?Sized,
+{
+    async fn execute_app_tool(
+        &self,
+        session_context: &SessionContext,
+        request: loongclaw_contracts::ToolCoreRequest,
+        kernel_ctx: Option<&KernelContext>,
+    ) -> Result<loongclaw_contracts::ToolCoreOutcome, String> {
+        let canonical_tool_name = crate::tools::canonical_tool_name(request.tool_name.as_str());
+        if canonical_tool_name != "approval_request_resolve" {
+            return self
+                .base
+                .execute_app_tool(session_context, request, kernel_ctx)
+                .await;
+        }
+
+        let approval_runtime = TurnLoopApprovalResolutionRuntime {
+            inner: DefaultApprovalResolutionRuntime::new(
+                memory_runtime_config_for(self.config),
+                self.config.tools.clone(),
+                Some(Arc::new(self.config.clone())),
+                None,
+            ),
+            replayer: TurnLoopApprovalOrchestrationReplayer {
+                turn_loop: self.turn_loop,
+                config: self.config,
+                runtime: self.runtime,
+                app_dispatcher: self.base,
+                orchestration_dispatcher: self.orchestration_dispatcher,
+            },
+        };
+        let effective_tool_config =
+            effective_tool_config_for_session(&self.config.tools, session_context);
+        crate::tools::approval::execute_approval_tool_with_runtime_support(
+            request,
+            &session_context.session_id,
+            &memory_runtime_config_for(self.config),
+            &effective_tool_config,
+            Some(&approval_runtime),
+            kernel_ctx,
+        )
+        .await
+    }
+}
+
+struct TurnLoopOrchestrationToolDispatcher<'a, R: ?Sized, A: ?Sized, O: ?Sized> {
+    turn_loop: &'a ConversationTurnLoop,
+    config: &'a LoongClawConfig,
+    runtime: &'a R,
+    app_dispatcher: &'a A,
+    fallback: &'a O,
+}
+
+#[async_trait]
+impl<R, A, O> OrchestrationToolDispatcher for TurnLoopOrchestrationToolDispatcher<'_, R, A, O>
+where
+    R: ConversationRuntime + ?Sized,
+    A: AppToolDispatcher + ?Sized,
+    O: OrchestrationToolDispatcher + ?Sized,
+{
+    async fn execute_orchestration_tool(
+        &self,
+        session_context: &SessionContext,
+        request: loongclaw_contracts::ToolCoreRequest,
+        kernel_ctx: Option<&KernelContext>,
+    ) -> Result<loongclaw_contracts::ToolCoreOutcome, String> {
+        match request.tool_name.as_str() {
+            "delegate" => {
+                execute_delegate_tool(
+                    self.turn_loop,
+                    self.config,
+                    self.runtime,
+                    self.app_dispatcher,
+                    self.fallback,
+                    session_context,
+                    request.payload,
+                    kernel_ctx,
+                )
+                .await
+            }
+            _ => {
+                self.fallback
+                    .execute_orchestration_tool(session_context, request, kernel_ctx)
+                    .await
+            }
+        }
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn ensure_session_registered(
+    config: &LoongClawConfig,
+    session_context: &SessionContext,
+) -> CliResult<()> {
+    let repo = SessionRepository::new(&memory_runtime_config_for(config))?;
+    let kind = if session_context.parent_session_id.is_some() {
+        SessionKind::DelegateChild
+    } else {
+        SessionKind::Root
+    };
+    let _ = repo.ensure_session(NewSessionRecord {
+        session_id: session_context.session_id.clone(),
+        kind,
+        parent_session_id: session_context.parent_session_id.clone(),
+        label: None,
+        state: SessionState::Ready,
+    })?;
+    Ok(())
+}
+
+fn default_app_tool_dispatcher(config: &LoongClawConfig) -> DefaultAppToolDispatcher {
+    #[cfg(feature = "memory-sqlite")]
+    {
+        return DefaultAppToolDispatcher::production_with_config(
+            memory_runtime_config_for(config),
+            config.clone(),
+        );
+    }
+    #[cfg(not(feature = "memory-sqlite"))]
+    DefaultAppToolDispatcher::new(memory_runtime_config_for(config), config.tools.clone())
+}
+
+fn default_orchestration_tool_dispatcher(
+    config: &LoongClawConfig,
+) -> DefaultOrchestrationToolDispatcher {
+    #[cfg(feature = "memory-sqlite")]
+    {
+        return DefaultOrchestrationToolDispatcher::production(
+            memory_runtime_config_for(config),
+            config.tools.clone(),
+        );
+    }
+    #[cfg(not(feature = "memory-sqlite"))]
+    DefaultOrchestrationToolDispatcher::new(memory_runtime_config_for(config), config.tools.clone())
+}
+
+fn memory_runtime_config_for(config: &LoongClawConfig) -> MemoryRuntimeConfig {
+    MemoryRuntimeConfig {
+        sqlite_path: Some(config.memory.resolved_sqlite_path()),
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+pub async fn run_delegate_child_turn(
+    turn_loop: &ConversationTurnLoop,
+    config: &LoongClawConfig,
+    child_session_id: &str,
+    user_input: &str,
+    timeout_seconds: u64,
+    kernel_ctx: Option<&KernelContext>,
+) -> Result<loongclaw_contracts::ToolCoreOutcome, String> {
+    let runtime = DefaultConversationRuntime;
+    let app_dispatcher = default_app_tool_dispatcher(config);
+    run_delegate_child_turn_with_runtime(
+        turn_loop,
+        config,
+        &runtime,
+        &app_dispatcher,
+        child_session_id,
+        user_input,
+        timeout_seconds,
+        kernel_ctx,
+    )
+    .await
+}
+
+#[cfg(feature = "memory-sqlite")]
+pub async fn run_delegate_child_turn_with_runtime<R, A>(
+    turn_loop: &ConversationTurnLoop,
+    config: &LoongClawConfig,
+    runtime: &R,
+    app_dispatcher: &A,
+    child_session_id: &str,
+    user_input: &str,
+    timeout_seconds: u64,
+    kernel_ctx: Option<&KernelContext>,
+) -> Result<loongclaw_contracts::ToolCoreOutcome, String>
+where
+    R: ConversationRuntime + ?Sized,
+    A: AppToolDispatcher + ?Sized,
+{
+    let orchestration_dispatcher = default_orchestration_tool_dispatcher(config);
+    run_delegate_child_turn_with_runtime_and_dispatchers(
+        turn_loop,
+        config,
+        runtime,
+        app_dispatcher,
+        &orchestration_dispatcher,
+        child_session_id,
+        user_input,
+        timeout_seconds,
+        kernel_ctx,
+    )
+    .await
+}
+
+#[cfg(feature = "memory-sqlite")]
+async fn run_delegate_child_turn_with_runtime_and_dispatchers<R, A, O>(
+    turn_loop: &ConversationTurnLoop,
+    config: &LoongClawConfig,
+    runtime: &R,
+    app_dispatcher: &A,
+    orchestration_dispatcher: &O,
+    child_session_id: &str,
+    user_input: &str,
+    timeout_seconds: u64,
+    kernel_ctx: Option<&KernelContext>,
+) -> Result<loongclaw_contracts::ToolCoreOutcome, String>
+where
+    R: ConversationRuntime + ?Sized,
+    A: AppToolDispatcher + ?Sized,
+    O: OrchestrationToolDispatcher + ?Sized,
+{
+    let repo = SessionRepository::new(&memory_runtime_config_for(config))?;
+    let child_execution = load_delegate_child_execution_context(&repo, config, child_session_id)?;
+
+    if repo
+        .transition_session_with_event_if_current(
+            child_session_id,
+            TransitionSessionWithEventIfCurrentRequest {
+                expected_state: SessionState::Ready,
+                next_state: SessionState::Running,
+                last_error: None,
+                event_kind: "delegate_started".to_owned(),
+                actor_session_id: Some(child_execution.parent_session_id.clone()),
+                event_payload_json: json!({
+                    "task": user_input,
+                    "label": child_execution.child_label.clone(),
+                    "timeout_seconds": timeout_seconds,
+                }),
+            },
+        )?
+        .is_none()
+    {
+        let latest_child_session = repo
+            .load_session(child_session_id)?
+            .ok_or_else(|| format!("delegate child session `{child_session_id}` not found"))?;
+        return Err(format!(
+            "delegate child session `{child_session_id}` is not runnable from state `{}`",
+            latest_child_session.state.as_str()
+        ));
+    }
+
+    run_started_delegate_child_turn_with_runtime(
+        turn_loop,
+        config,
+        runtime,
+        app_dispatcher,
+        orchestration_dispatcher,
+        child_session_id,
+        user_input,
+        timeout_seconds,
+        kernel_ctx,
+        child_execution,
+    )
+    .await
+}
+
+#[cfg(feature = "memory-sqlite")]
+struct DelegateChildExecutionContext {
+    parent_session_id: String,
+    child_label: Option<String>,
+    child_can_delegate: bool,
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn load_delegate_child_execution_context(
+    repo: &SessionRepository,
+    config: &LoongClawConfig,
+    child_session_id: &str,
+) -> Result<DelegateChildExecutionContext, String> {
+    let child_session = repo
+        .load_session(child_session_id)?
+        .ok_or_else(|| format!("delegate child session `{child_session_id}` not found"))?;
+    if child_session.kind != SessionKind::DelegateChild {
+        return Err(format!(
+            "session `{child_session_id}` is not a delegate child session"
+        ));
+    }
+    let parent_session_id = child_session.parent_session_id.clone().ok_or_else(|| {
+        format!("delegate child session `{child_session_id}` is missing parent_session_id")
+    })?;
+    let child_label = child_session.label.clone();
+    let child_depth = repo.session_lineage_depth(child_session_id)?;
+    let child_can_delegate = child_depth < config.tools.delegate.max_depth;
+
+    Ok(DelegateChildExecutionContext {
+        parent_session_id,
+        child_label,
+        child_can_delegate,
+    })
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn load_delegate_child_cancel_request(
+    config: &LoongClawConfig,
+    session_context: &SessionContext,
+) -> Result<Option<String>, String> {
+    let repo = SessionRepository::new(&memory_runtime_config_for(config))?;
+    let recent_events = repo.list_recent_events(&session_context.session_id, 1)?;
+    let Some(event) = recent_events.last() else {
+        return Ok(None);
+    };
+    if event.event_kind != DELEGATE_CANCEL_REQUESTED_EVENT_KIND {
+        return Ok(None);
+    }
+    let reason = event
+        .payload_json
+        .get("cancel_reason")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DELEGATE_CANCEL_REASON_OPERATOR_REQUESTED)
+        .to_owned();
+    Ok(Some(reason))
+}
+
+#[cfg(feature = "memory-sqlite")]
+async fn run_started_delegate_child_turn_with_runtime<R, A, O>(
+    turn_loop: &ConversationTurnLoop,
+    config: &LoongClawConfig,
+    runtime: &R,
+    app_dispatcher: &A,
+    orchestration_dispatcher: &O,
+    child_session_id: &str,
+    user_input: &str,
+    timeout_seconds: u64,
+    kernel_ctx: Option<&KernelContext>,
+    child_execution: DelegateChildExecutionContext,
+) -> Result<loongclaw_contracts::ToolCoreOutcome, String>
+where
+    R: ConversationRuntime + ?Sized,
+    A: AppToolDispatcher + ?Sized,
+    O: OrchestrationToolDispatcher + ?Sized,
+{
+    let repo = SessionRepository::new(&memory_runtime_config_for(config))?;
+    let child_context = SessionContext::child(
+        child_session_id.to_owned(),
+        child_execution.parent_session_id.clone(),
+        crate::tools::delegate_child_tool_view_for_config_with_delegate(
+            &config.tools,
+            child_execution.child_can_delegate,
+        ),
+    );
+    let start = Instant::now();
+    let child_result = timeout(Duration::from_secs(timeout_seconds), async {
+        AssertUnwindSafe(turn_loop.handle_turn_with_runtime_and_context(
+            config,
+            &child_context,
+            user_input,
+            ProviderErrorMode::Propagate,
+            runtime,
+            app_dispatcher,
+            orchestration_dispatcher,
+            kernel_ctx,
+        ))
+        .catch_unwind()
+        .await
+    })
+    .await;
+    let duration_ms = start.elapsed().as_millis() as u64;
+
+    match child_result {
+        Ok(Ok(Ok(final_output))) => {
+            let turn_count = repo
+                .load_session_summary(child_session_id)?
+                .map(|session| session.turn_count)
+                .unwrap_or_default();
+            let outcome = crate::tools::delegate::delegate_success_outcome(
+                child_session_id.to_owned(),
+                child_execution.child_label,
+                final_output,
+                turn_count,
+                duration_ms,
+            );
+            finalize_delegate_child_terminal_with_recovery(
+                &repo,
+                child_session_id,
+                crate::session::repository::FinalizeSessionTerminalRequest {
+                    state: SessionState::Completed,
+                    last_error: None,
+                    event_kind: "delegate_completed".to_owned(),
+                    actor_session_id: Some(child_execution.parent_session_id.clone()),
+                    event_payload_json: json!({
+                        "turn_count": turn_count,
+                        "duration_ms": duration_ms,
+                    }),
+                    outcome_status: outcome.status.clone(),
+                    outcome_payload_json: outcome.payload.clone(),
+                },
+            )?;
+            Ok(outcome)
+        }
+        Ok(Ok(Err(error))) => {
+            let outcome = crate::tools::delegate::delegate_error_outcome(
+                child_session_id.to_owned(),
+                child_execution.child_label,
+                error.clone(),
+                duration_ms,
+            );
+            let (event_kind, event_payload_json) =
+                if let Some(cancel_reason) = parse_delegate_cancelled_reason(&error) {
+                    (
+                        DELEGATE_CANCELLED_EVENT_KIND.to_owned(),
+                        json!({
+                            "error": error,
+                            "duration_ms": duration_ms,
+                            "cancel_reason": cancel_reason,
+                            "reference": "running",
+                        }),
+                    )
+                } else {
+                    (
+                        "delegate_failed".to_owned(),
+                        json!({
+                            "error": error,
+                            "duration_ms": duration_ms,
+                        }),
+                    )
+                };
+            finalize_delegate_child_terminal_with_recovery(
+                &repo,
+                child_session_id,
+                crate::session::repository::FinalizeSessionTerminalRequest {
+                    state: SessionState::Failed,
+                    last_error: Some(error.clone()),
+                    event_kind,
+                    actor_session_id: Some(child_execution.parent_session_id.clone()),
+                    event_payload_json,
+                    outcome_status: outcome.status.clone(),
+                    outcome_payload_json: outcome.payload.clone(),
+                },
+            )?;
+            Ok(outcome)
+        }
+        Ok(Err(panic_payload)) => {
+            let panic_error = format_delegate_child_panic(panic_payload);
+            let outcome = crate::tools::delegate::delegate_error_outcome(
+                child_session_id.to_owned(),
+                child_execution.child_label,
+                panic_error.clone(),
+                duration_ms,
+            );
+            finalize_delegate_child_terminal_with_recovery(
+                &repo,
+                child_session_id,
+                crate::session::repository::FinalizeSessionTerminalRequest {
+                    state: SessionState::Failed,
+                    last_error: Some(panic_error.clone()),
+                    event_kind: "delegate_failed".to_owned(),
+                    actor_session_id: Some(child_execution.parent_session_id.clone()),
+                    event_payload_json: json!({
+                        "error": panic_error,
+                        "duration_ms": duration_ms,
+                    }),
+                    outcome_status: outcome.status.clone(),
+                    outcome_payload_json: outcome.payload.clone(),
+                },
+            )?;
+            Ok(outcome)
+        }
+        Err(_) => {
+            let timeout_error = "delegate_timeout".to_owned();
+            let outcome = crate::tools::delegate::delegate_timeout_outcome(
+                child_session_id.to_owned(),
+                child_execution.child_label,
+                duration_ms,
+            );
+            finalize_delegate_child_terminal_with_recovery(
+                &repo,
+                child_session_id,
+                crate::session::repository::FinalizeSessionTerminalRequest {
+                    state: SessionState::TimedOut,
+                    last_error: Some(timeout_error.clone()),
+                    event_kind: "delegate_timed_out".to_owned(),
+                    actor_session_id: Some(child_execution.parent_session_id.clone()),
+                    event_payload_json: json!({
+                        "error": timeout_error,
+                        "duration_ms": duration_ms,
+                    }),
+                    outcome_status: outcome.status.clone(),
+                    outcome_payload_json: outcome.payload.clone(),
+                },
+            )?;
+            Ok(outcome)
+        }
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn finalize_delegate_child_terminal_with_recovery(
+    repo: &SessionRepository,
+    child_session_id: &str,
+    request: crate::session::repository::FinalizeSessionTerminalRequest,
+) -> Result<(), String> {
+    let recovery_request = request.clone();
+    match repo.finalize_session_terminal(child_session_id, request) {
+        Ok(_) => Ok(()),
+        Err(finalize_error) => {
+            let recovery_error = format!("delegate_terminal_finalize_failed: {finalize_error}");
+            match repo.transition_session_with_event_if_current(
+                child_session_id,
+                TransitionSessionWithEventIfCurrentRequest {
+                    expected_state: SessionState::Running,
+                    next_state: SessionState::Failed,
+                    last_error: Some(recovery_error.clone()),
+                    event_kind: RECOVERY_EVENT_KIND.to_owned(),
+                    actor_session_id: recovery_request.actor_session_id.clone(),
+                    event_payload_json: build_terminal_finalize_recovery_payload(
+                        &recovery_request,
+                        &recovery_error,
+                    ),
+                },
+            ) {
+                Ok(Some(_)) => Err(recovery_error),
+                Ok(None) => {
+                    delegate_terminal_recovery_skipped_error(repo, child_session_id, recovery_error)
+                }
+                Err(recovery_event_error) => match repo.update_session_state_if_current(
+                    child_session_id,
+                    SessionState::Running,
+                    SessionState::Failed,
+                    Some(recovery_error.clone()),
+                ) {
+                    Ok(Some(_)) => Err(format!(
+                        "{recovery_error}; delegate_terminal_recovery_event_failed: {recovery_event_error}"
+                    )),
+                    Ok(None) => delegate_terminal_recovery_skipped_error(
+                        repo,
+                        child_session_id,
+                        recovery_error,
+                    ),
+                    Err(mark_error) => Err(format!(
+                        "{recovery_error}; delegate_terminal_recovery_failed: {mark_error}"
+                    )),
+                },
+            }
+        }
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn delegate_terminal_recovery_skipped_error(
+    repo: &SessionRepository,
+    child_session_id: &str,
+    recovery_error: String,
+) -> Result<(), String> {
+    let current_state = repo
+        .load_session(child_session_id)?
+        .map(|session| session.state.as_str().to_owned())
+        .unwrap_or_else(|| "missing".to_owned());
+    Err(format!(
+        "{recovery_error}; delegate_terminal_recovery_skipped_from_state: {current_state}"
+    ))
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn format_delegate_child_panic(panic_payload: Box<dyn Any + Send>) -> String {
+    let panic_payload = match panic_payload.downcast::<String>() {
+        Ok(message) => return format!("delegate_child_panic: {}", *message),
+        Err(panic_payload) => panic_payload,
+    };
+    match panic_payload.downcast::<&'static str>() {
+        Ok(message) => format!("delegate_child_panic: {}", *message),
+        Err(_) => "delegate_child_panic".to_owned(),
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+async fn execute_delegate_tool<R, A, O>(
+    turn_loop: &ConversationTurnLoop,
+    config: &LoongClawConfig,
+    runtime: &R,
+    app_dispatcher: &A,
+    orchestration_dispatcher: &O,
+    session_context: &SessionContext,
+    payload: Value,
+    kernel_ctx: Option<&KernelContext>,
+) -> Result<loongclaw_contracts::ToolCoreOutcome, String>
+where
+    R: ConversationRuntime + ?Sized,
+    A: AppToolDispatcher + ?Sized,
+    O: OrchestrationToolDispatcher + ?Sized,
+{
+    if !config.tools.delegate.enabled {
+        return Err("app_tool_disabled: delegate is disabled by config".to_owned());
+    }
+
+    let delegate_request = crate::tools::delegate::parse_delegate_request_with_default_timeout(
+        &payload,
+        config.tools.delegate.timeout_seconds,
+    )?;
+    let child_session_id = crate::tools::delegate::next_delegate_session_id();
+    let repo = SessionRepository::new(&memory_runtime_config_for(config))?;
+    let current_depth = repo.session_lineage_depth(&session_context.session_id)?;
+    let next_child_depth = current_depth.saturating_add(1);
+    if next_child_depth > config.tools.delegate.max_depth {
+        return Err(format!(
+            "delegate_depth_exceeded: next child depth {next_child_depth} exceeds configured max_depth {}",
+            config.tools.delegate.max_depth
+        ));
+    }
+    let child_label = delegate_request.label.clone();
+    let child_can_delegate = next_child_depth < config.tools.delegate.max_depth;
+
+    repo.create_session_with_event(CreateSessionWithEventRequest {
+        session: NewSessionRecord {
+            session_id: child_session_id.clone(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some(session_context.session_id.clone()),
+            label: child_label.clone(),
+            state: SessionState::Running,
+        },
+        event_kind: "delegate_started".to_owned(),
+        actor_session_id: Some(session_context.session_id.clone()),
+        event_payload_json: json!({
+            "task": delegate_request.task,
+            "label": child_label.clone(),
+            "timeout_seconds": delegate_request.timeout_seconds,
+        }),
+    })?;
+    run_started_delegate_child_turn_with_runtime(
+        turn_loop,
+        config,
+        runtime,
+        app_dispatcher,
+        orchestration_dispatcher,
+        &child_session_id,
+        &delegate_request.task,
+        delegate_request.timeout_seconds,
+        kernel_ctx,
+        DelegateChildExecutionContext {
+            parent_session_id: session_context.session_id.clone(),
+            child_label,
+            child_can_delegate,
+        },
+    )
+    .await
+}
+
+#[cfg(not(feature = "memory-sqlite"))]
+async fn execute_delegate_tool<R, A, O>(
+    _turn_loop: &ConversationTurnLoop,
+    _config: &LoongClawConfig,
+    _runtime: &R,
+    _app_dispatcher: &A,
+    _orchestration_dispatcher: &O,
+    _session_context: &SessionContext,
+    _payload: Value,
+    _kernel_ctx: Option<&KernelContext>,
+) -> Result<loongclaw_contracts::ToolCoreOutcome, String>
+where
+    R: ConversationRuntime + ?Sized,
+    A: AppToolDispatcher + ?Sized,
+    O: OrchestrationToolDispatcher + ?Sized,
+{
+    Err("delegate requires sqlite memory support (enable feature `memory-sqlite`)".to_owned())
+}
+
 fn append_tool_followup_messages(
     messages: &mut Vec<Value>,
     assistant_preface: &str,
@@ -336,27 +1221,6 @@ fn append_tool_followup_messages(
             "content": preface,
         }));
     }
-    if let Some(skill_context) = parse_external_skill_invoke_context(tool_result_text) {
-        messages.push(json!({
-            "role": "system",
-            "content": build_external_skill_system_message(&skill_context),
-        }));
-        if let Some(reason) = loop_warning_reason {
-            messages.push(json!({
-                "role": "assistant",
-                "content": format!("[tool_loop_warning]\n{reason}"),
-            }));
-        }
-        messages.push(json!({
-            "role": "user",
-            "content": build_external_skill_followup_user_prompt(
-                user_input,
-                loop_warning_reason,
-                &skill_context,
-            ),
-        }));
-        return;
-    }
     let bounded_result = followup_payload_budget.truncate_payload("tool_result", tool_result_text);
     messages.push(json!({
         "role": "assistant",
@@ -370,11 +1234,7 @@ fn append_tool_followup_messages(
     }
     messages.push(json!({
         "role": "user",
-        "content": build_tool_followup_user_prompt(
-            user_input,
-            loop_warning_reason,
-            Some(tool_result_text),
-        ),
+        "content": build_tool_followup_prompt(user_input, loop_warning_reason),
     }));
 }
 
@@ -407,7 +1267,7 @@ fn append_tool_failure_followup_messages(
     }
     messages.push(json!({
         "role": "user",
-        "content": build_tool_followup_user_prompt(user_input, loop_warning_reason, None),
+        "content": build_tool_followup_prompt(user_input, loop_warning_reason),
     }));
 }
 
@@ -444,22 +1304,16 @@ fn append_repeated_tool_guard_followup_messages(
 }
 
 fn build_tool_loop_guard_prompt(user_input: &str, reason: &str) -> String {
-    format!(
-        "{TOOL_LOOP_GUARD_PROMPT}\n\nLoop guard reason:\n{reason}\n\nOriginal request:\n{user_input}"
-    )
+    format!("{TOOL_LOOP_GUARD_PROMPT}\n\nLoop guard reason:\n{reason}\n\nOriginal request:\n{user_input}")
 }
 
 async fn request_completion_with_raw_fallback<R: ConversationRuntime + ?Sized>(
     runtime: &R,
     config: &LoongClawConfig,
     messages: &[Value],
-    kernel_ctx: Option<&KernelContext>,
     raw_reply: &str,
 ) -> String {
-    match runtime
-        .request_completion(config, messages, kernel_ctx)
-        .await
-    {
+    match runtime.request_completion(config, messages).await {
         Ok(final_reply) => {
             let trimmed = final_reply.trim();
             if trimmed.is_empty() {
@@ -470,6 +1324,31 @@ async fn request_completion_with_raw_fallback<R: ConversationRuntime + ?Sized>(
         }
         Err(_) => raw_reply.to_owned(),
     }
+}
+
+fn user_requested_raw_tool_output(user_input: &str) -> bool {
+    let normalized = user_input.to_ascii_lowercase();
+    [
+        "raw",
+        "json",
+        "payload",
+        "verbatim",
+        "exact output",
+        "full output",
+        "tool output",
+        "[ok]",
+    ]
+    .iter()
+    .any(|signal| normalized.contains(signal))
+}
+
+fn build_tool_followup_prompt(user_input: &str, loop_warning_reason: Option<&str>) -> String {
+    if let Some(reason) = loop_warning_reason {
+        return format!(
+            "{TOOL_FOLLOWUP_PROMPT}\n\nLoop warning:\n{reason}\nAvoid repeating the same tool call with unchanged results. Try a different tool, adjust arguments, or provide a best-effort final answer if evidence is sufficient.\n\nOriginal request:\n{user_input}"
+        );
+    }
+    format!("{TOOL_FOLLOWUP_PROMPT}\n\nOriginal request:\n{user_input}")
 }
 
 fn truncate_followup_tool_payload(label: &str, text: &str, max_chars: usize) -> String {
@@ -656,7 +1535,7 @@ impl ToolLoopSupervisor {
         }
 
         self.recent_rounds.push_back(ToolLoopObservation {
-            pattern,
+            pattern: pattern.clone(),
             tool_name_signature: tool_name_signature.to_owned(),
             failed,
         });
@@ -772,129 +1651,57 @@ impl ToolLoopSupervisor {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn append_tool_followup_messages_adds_truncation_hint_to_user_prompt() {
-        let mut messages = Vec::new();
-        let mut budget = FollowupPayloadBudget::new(8_000, 20_000);
-
-        append_tool_followup_messages(
-            &mut messages,
-            "preface",
-            r#"[ok] {"payload_truncated":true,"payload_summary":"..."}"#,
-            "summarize note.md",
-            &mut budget,
-            None,
-        );
-
-        let user_prompt = messages
-            .last()
-            .and_then(|message| message.get("content"))
-            .and_then(Value::as_str)
-            .expect("user followup prompt should exist");
-        assert!(
-            user_prompt.contains(crate::conversation::turn_shared::TOOL_TRUNCATION_HINT_PROMPT)
-        );
+fn compose_assistant_reply(
+    assistant_preface: &str,
+    had_tool_intents: bool,
+    turn_result: TurnResult,
+) -> String {
+    match turn_result {
+        TurnResult::FinalText(text) => {
+            if had_tool_intents {
+                join_non_empty_lines(&[assistant_preface, text.as_str()])
+            } else {
+                text
+            }
+        }
+        TurnResult::NeedsApproval(requirement) => join_non_empty_lines(&[
+            assistant_preface,
+            format_approval_required_reply(&requirement).as_str(),
+        ]),
+        TurnResult::ToolDenied(reason) => join_non_empty_lines(&[assistant_preface, &reason]),
+        TurnResult::ToolError(reason) => join_non_empty_lines(&[assistant_preface, &reason]),
+        TurnResult::ProviderError(reason) => {
+            let inline = format_provider_error_reply(&reason);
+            join_non_empty_lines(&[assistant_preface, inline.as_str()])
+        }
     }
+}
 
-    #[test]
-    fn append_tool_failure_followup_messages_omits_truncation_hint_in_user_prompt() {
-        let mut messages = Vec::new();
-        let mut budget = FollowupPayloadBudget::new(8_000, 20_000);
-
-        append_tool_failure_followup_messages(
-            &mut messages,
-            "preface",
-            "tool_timeout ...(truncated 200 chars)",
-            "summarize note.md",
-            &mut budget,
-            None,
-        );
-
-        let user_prompt = messages
-            .last()
-            .and_then(|message| message.get("content"))
-            .and_then(Value::as_str)
-            .expect("user followup prompt should exist");
-        assert!(
-            !user_prompt.contains(crate::conversation::turn_shared::TOOL_TRUNCATION_HINT_PROMPT)
-        );
+fn format_approval_required_reply(requirement: &ApprovalRequirement) -> String {
+    match requirement.kind {
+        ApprovalRequirementKind::GovernedTool => {
+            let tool_name = requirement.tool_name.as_deref().unwrap_or("governed tool");
+            let mut lines = vec![format!(
+                "[tool_approval_required] Approval required before running `{tool_name}`."
+            )];
+            if let Some(approval_request_id) = requirement.approval_request_id.as_deref() {
+                lines.push(format!("Request ID: {approval_request_id}"));
+            }
+            lines.push(format!("Reason: {}", requirement.reason));
+            lines.push("Allowed decisions: approve_once, approve_always, deny.".to_owned());
+            lines.join("\n")
+        }
+        ApprovalRequirementKind::KernelContextRequired => {
+            format!("[tool_approval_required] {}", requirement.reason)
+        }
     }
+}
 
-    #[test]
-    fn append_tool_followup_messages_promotes_external_skill_invoke_into_system_context() {
-        let mut messages = Vec::new();
-        let mut budget = FollowupPayloadBudget::new(64, 64);
-
-        append_tool_followup_messages(
-            &mut messages,
-            "preface",
-            r#"[ok] {"status":"ok","tool":"external_skills.invoke","tool_call_id":"call-1","payload_summary":"{\"skill_id\":\"demo-skill\",\"display_name\":\"Demo Skill\",\"instructions\":\"Follow the managed skill instruction before answering.\"}","payload_chars":180,"payload_truncated":false}"#,
-            "summarize note.md",
-            &mut budget,
-            None,
-        );
-
-        assert_eq!(messages[0]["role"], "assistant");
-        assert_eq!(messages[1]["role"], "system");
-        let system_content = messages[1]["content"]
-            .as_str()
-            .expect("system content should exist");
-        assert!(system_content.contains("Demo Skill"));
-        assert!(system_content.contains("Follow the managed skill instruction before answering."));
-        assert!(
-            !system_content.contains("[tool_result_truncated]"),
-            "invoke instructions should not be funneled through followup truncation markers"
-        );
-
-        let user_prompt = messages[2]["content"]
-            .as_str()
-            .expect("user prompt should exist");
-        assert!(user_prompt.contains("managed external skill"));
-        assert!(user_prompt.contains("Original request:\nsummarize note.md"));
-    }
-
-    #[test]
-    fn append_tool_followup_messages_keeps_large_external_skill_instructions_intact() {
-        let mut messages = Vec::new();
-        let mut budget = FollowupPayloadBudget::new(32, 32);
-        let instructions = format!("prefix {}\nsuffix-marker", "x".repeat(512));
-        let payload_summary = serde_json::json!({
-            "skill_id": "demo-skill",
-            "display_name": "Demo Skill",
-            "instructions": instructions,
-        })
-        .to_string();
-        let tool_result = format!(
-            "[ok] {}",
-            serde_json::json!({
-                "status": "ok",
-                "tool": "external_skills.invoke",
-                "tool_call_id": "call-2",
-                "payload_summary": payload_summary,
-                "payload_chars": 2048,
-                "payload_truncated": false
-            })
-        );
-
-        append_tool_followup_messages(
-            &mut messages,
-            "",
-            tool_result.as_str(),
-            "apply the skill",
-            &mut budget,
-            None,
-        );
-
-        let system_content = messages[0]["content"]
-            .as_str()
-            .expect("system content should exist");
-        assert!(
-            system_content.contains("suffix-marker"),
-            "system context should preserve the tail of large invoke instructions"
-        );
-    }
+fn join_non_empty_lines(parts: &[&str]) -> String {
+    parts
+        .iter()
+        .map(|part| part.trim())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }

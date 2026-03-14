@@ -1,17 +1,30 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use loongclaw_contracts::{Capability, ToolCoreOutcome, ToolCoreRequest};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
+use crate::config::{LoongClawConfig, ToolConfig};
+use crate::memory::runtime_config::MemoryRuntimeConfig;
 use crate::KernelContext;
 
-mod claw_import;
-mod external_skills;
+pub(crate) mod approval;
+mod catalog;
+pub(crate) mod delegate;
 mod file;
 mod kernel_adapter;
+mod memory;
+pub(crate) mod messaging;
 pub mod runtime_config;
+mod session;
 mod shell;
 
+pub use catalog::{
+    delegate_child_tool_view_for_config, delegate_child_tool_view_for_config_with_delegate,
+    planned_delegate_child_tool_view, planned_root_tool_view, runtime_tool_view,
+    runtime_tool_view_for_config, tool_catalog, ToolApprovalMode, ToolAvailability, ToolCatalog,
+    ToolDescriptor, ToolExecutionPlane, ToolGovernanceScope, ToolRiskClass, ToolView,
+};
 pub use kernel_adapter::MvpToolAdapter;
 
 /// Execute a tool request, optionally routing through the kernel for
@@ -41,38 +54,233 @@ pub fn execute_tool_core(request: ToolCoreRequest) -> Result<ToolCoreOutcome, St
     execute_tool_core_with_config(request, runtime_config::get_tool_runtime_config())
 }
 
+pub fn execute_app_tool(
+    request: ToolCoreRequest,
+    current_session_id: &str,
+) -> Result<ToolCoreOutcome, String> {
+    execute_app_tool_with_config(
+        request,
+        current_session_id,
+        crate::memory::runtime_config::get_memory_runtime_config(),
+        &crate::config::ToolConfig::default(),
+    )
+}
+
+pub fn execute_app_tool_with_config(
+    request: ToolCoreRequest,
+    current_session_id: &str,
+    memory_config: &MemoryRuntimeConfig,
+    tool_config: &ToolConfig,
+) -> Result<ToolCoreOutcome, String> {
+    let canonical_name = canonical_tool_name(request.tool_name.as_str());
+    let request = ToolCoreRequest {
+        tool_name: canonical_name.to_owned(),
+        payload: request.payload,
+    };
+    match canonical_name {
+        "approval_request_resolve" => {
+            Err("app_tool_requires_runtime_support: approval_request_resolve".to_owned())
+        }
+        "approval_requests_list" | "approval_request_status" => {
+            approval::execute_approval_tool_with_policies(
+                request,
+                current_session_id,
+                memory_config,
+                tool_config,
+            )
+        }
+        "sessions_list" | "sessions_history" | "session_status" | "session_events"
+        | "session_cancel" | "session_archive" | "session_recover" | "session_unarchive" => {
+            session::execute_session_tool_with_policies(
+                request,
+                current_session_id,
+                memory_config,
+                tool_config,
+            )
+        }
+        "memory_search" => memory::execute_memory_search_tool_with_policies(
+            request.payload,
+            current_session_id,
+            memory_config,
+            tool_config,
+        ),
+        "sessions_send" => Err("app_tool_requires_runtime_support: sessions_send".to_owned()),
+        "session_wait" => Err("app_tool_requires_async_runtime_support: session_wait".to_owned()),
+        "delegate_async" | "delegate" => {
+            Err(format!("app_tool_wrong_execution_plane: {canonical_name}"))
+        }
+        _ => Err(format!(
+            "app_tool_not_found: unknown tool `{}`",
+            request.tool_name
+        )),
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct AppToolRuntimeSupport<'a> {
+    pub app_config: Option<&'a LoongClawConfig>,
+    pub kernel_ctx: Option<&'a KernelContext>,
+    #[cfg(feature = "memory-sqlite")]
+    pub(crate) approval_runtime: Option<Arc<dyn approval::ApprovalResolutionRuntime>>,
+}
+
+#[derive(Clone, Default)]
+pub struct OrchestrationToolRuntimeSupport {
+    pub async_delegate_spawner: Option<Arc<dyn delegate::AsyncDelegateSpawner>>,
+}
+
+pub async fn execute_app_tool_with_runtime_support(
+    request: ToolCoreRequest,
+    current_session_id: &str,
+    memory_config: &MemoryRuntimeConfig,
+    tool_config: &ToolConfig,
+    runtime_support: AppToolRuntimeSupport<'_>,
+) -> Result<ToolCoreOutcome, String> {
+    let canonical_name = canonical_tool_name(request.tool_name.as_str());
+    let request = ToolCoreRequest {
+        tool_name: canonical_name.to_owned(),
+        payload: request.payload,
+    };
+    match canonical_name {
+        "approval_requests_list" | "approval_request_status" | "approval_request_resolve" => {
+            approval::execute_approval_tool_with_runtime_support(
+                request,
+                current_session_id,
+                memory_config,
+                tool_config,
+                #[cfg(feature = "memory-sqlite")]
+                runtime_support.approval_runtime.as_deref(),
+                #[cfg(not(feature = "memory-sqlite"))]
+                None,
+                runtime_support.kernel_ctx,
+            )
+            .await
+        }
+        "sessions_list" | "sessions_history" | "session_status" | "session_events"
+        | "session_cancel" | "session_archive" | "session_recover" | "session_unarchive" => {
+            session::execute_session_tool_with_policies(
+                request,
+                current_session_id,
+                memory_config,
+                tool_config,
+            )
+        }
+        "memory_search" => memory::execute_memory_search_tool_with_policies(
+            request.payload,
+            current_session_id,
+            memory_config,
+            tool_config,
+        ),
+        "session_wait" => {
+            wait_for_session_with_config(
+                request.payload,
+                current_session_id,
+                memory_config,
+                tool_config,
+            )
+            .await
+        }
+        "sessions_send" => {
+            let app_config = runtime_support
+                .app_config
+                .ok_or_else(|| "sessions_send_not_configured".to_owned())?;
+            messaging::execute_sessions_send_with_config(
+                request.payload,
+                current_session_id,
+                memory_config,
+                tool_config,
+                app_config,
+            )
+            .await
+        }
+        "delegate_async" | "delegate" => {
+            Err(format!("app_tool_wrong_execution_plane: {canonical_name}"))
+        }
+        _ => Err(format!(
+            "app_tool_not_found: unknown tool `{}`",
+            request.tool_name
+        )),
+    }
+}
+
+pub async fn execute_orchestration_tool_with_runtime_support(
+    request: ToolCoreRequest,
+    current_session_id: &str,
+    memory_config: &MemoryRuntimeConfig,
+    tool_config: &ToolConfig,
+    runtime_support: OrchestrationToolRuntimeSupport,
+) -> Result<ToolCoreOutcome, String> {
+    let canonical_name = canonical_tool_name(request.tool_name.as_str());
+    let request = ToolCoreRequest {
+        tool_name: canonical_name.to_owned(),
+        payload: request.payload,
+    };
+    match canonical_name {
+        "delegate_async" => {
+            let spawner = runtime_support
+                .async_delegate_spawner
+                .ok_or_else(|| "delegate_async_not_configured".to_owned())?;
+            delegate::execute_delegate_async_with_config(
+                request.payload,
+                current_session_id,
+                memory_config,
+                tool_config,
+                spawner,
+            )
+            .await
+        }
+        "delegate" => Err("orchestration_tool_requires_turn_loop_dispatch: delegate".to_owned()),
+        _ => Err(format!(
+            "orchestration_tool_not_found: unknown tool `{}`",
+            request.tool_name
+        )),
+    }
+}
+
+pub async fn wait_for_session_with_config(
+    payload: Value,
+    current_session_id: &str,
+    memory_config: &MemoryRuntimeConfig,
+    tool_config: &ToolConfig,
+) -> Result<ToolCoreOutcome, String> {
+    #[cfg(not(feature = "memory-sqlite"))]
+    {
+        let _ = (payload, current_session_id, memory_config, tool_config);
+        return Err(
+            "session tools require sqlite memory support (enable feature `memory-sqlite`)"
+                .to_owned(),
+        );
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    {
+        if !tool_config.sessions.enabled {
+            return Err("app_tool_disabled: session tools are disabled by config".to_owned());
+        }
+        session::wait_for_session_tool_with_policies(
+            payload,
+            current_session_id,
+            memory_config,
+            tool_config,
+        )
+        .await
+    }
+}
+
 pub fn canonical_tool_name(raw: &str) -> &str {
-    match raw {
-        "claw_import" | "import_claw" => "claw.import",
-        "external_skills_inspect" => "external_skills.inspect",
-        "external_skills_install" => "external_skills.install",
-        "external_skills_invoke" => "external_skills.invoke",
-        "external_skills_list" => "external_skills.list",
-        "external_skills_policy" => "external_skills.policy",
-        "external_skills_fetch" => "external_skills.fetch",
-        "external_skills_remove" => "external_skills.remove",
-        "file_read" => "file.read",
-        "file_write" => "file.write",
-        "shell_exec" | "shell" => "shell.exec",
-        other => other,
+    let catalog = tool_catalog();
+    match catalog.resolve(raw) {
+        Some(descriptor) => descriptor.name,
+        None => raw,
     }
 }
 
 pub fn is_known_tool_name(raw: &str) -> bool {
-    matches!(
-        canonical_tool_name(raw),
-        "claw.import"
-            | "external_skills.inspect"
-            | "external_skills.install"
-            | "external_skills.invoke"
-            | "external_skills.list"
-            | "external_skills.policy"
-            | "external_skills.fetch"
-            | "external_skills.remove"
-            | "shell.exec"
-            | "file.read"
-            | "file.write"
-    )
+    is_known_tool_name_in_view(raw, &runtime_tool_view())
+}
+
+pub fn is_known_tool_name_in_view(raw: &str, view: &ToolView) -> bool {
+    view.contains(canonical_tool_name(raw))
 }
 
 pub fn execute_tool_core_with_config(
@@ -85,28 +293,6 @@ pub fn execute_tool_core_with_config(
         payload: request.payload,
     };
     match canonical_name {
-        "claw.import" => claw_import::execute_claw_import_tool_with_config(request, config),
-        "external_skills.inspect" => {
-            external_skills::execute_external_skills_inspect_tool_with_config(request, config)
-        }
-        "external_skills.install" => {
-            external_skills::execute_external_skills_install_tool_with_config(request, config)
-        }
-        "external_skills.invoke" => {
-            external_skills::execute_external_skills_invoke_tool_with_config(request, config)
-        }
-        "external_skills.list" => {
-            external_skills::execute_external_skills_list_tool_with_config(request, config)
-        }
-        "external_skills.policy" => {
-            external_skills::execute_external_skills_policy_tool_with_config(request, config)
-        }
-        "external_skills.fetch" => {
-            external_skills::execute_external_skills_fetch_tool_with_config(request, config)
-        }
-        "external_skills.remove" => {
-            external_skills::execute_external_skills_remove_tool_with_config(request, config)
-        }
         "shell.exec" => shell::execute_shell_tool_with_config(request, config),
         "file.read" => file::execute_file_read_tool_with_config(request, config),
         "file.write" => file::execute_file_write_tool_with_config(request, config),
@@ -126,80 +312,27 @@ pub struct ToolRegistryEntry {
 
 /// Returns a sorted list of all registered tools, gated by feature flags.
 pub fn tool_registry() -> Vec<ToolRegistryEntry> {
-    let mut entries = vec![
-        ToolRegistryEntry {
-            name: "claw.import",
-            description: "Import legacy Claw configs into native LoongClaw settings",
-        },
-        ToolRegistryEntry {
-            name: "external_skills.fetch",
-            description: "Download external skills artifacts with domain policy and approval guards",
-        },
-        ToolRegistryEntry {
-            name: "external_skills.inspect",
-            description: "Read metadata for an installed external skill",
-        },
-        ToolRegistryEntry {
-            name: "external_skills.install",
-            description: "Install a managed external skill from a local directory or archive",
-        },
-        ToolRegistryEntry {
-            name: "external_skills.invoke",
-            description: "Load an installed external skill into the conversation loop",
-        },
-        ToolRegistryEntry {
-            name: "external_skills.list",
-            description: "List managed external skills available for invocation",
-        },
-        ToolRegistryEntry {
-            name: "external_skills.policy",
-            description: "Read/update external skills domain allow/block policy at runtime",
-        },
-        ToolRegistryEntry {
-            name: "external_skills.remove",
-            description: "Remove an installed external skill from the managed runtime",
-        },
-    ];
-    #[cfg(feature = "tool-file")]
-    {
-        entries.push(ToolRegistryEntry {
-            name: "file.read",
-            description: "Read file contents",
-        });
-        entries.push(ToolRegistryEntry {
-            name: "file.write",
-            description: "Write file contents",
-        });
-    }
-    #[cfg(feature = "tool-shell")]
-    {
-        entries.push(ToolRegistryEntry {
-            name: "shell.exec",
-            description: "Execute shell commands",
-        });
-    }
-    entries.sort_by_key(|entry| entry.name);
-    entries
+    let catalog = tool_catalog();
+    runtime_tool_view()
+        .iter(&catalog)
+        .map(|descriptor| ToolRegistryEntry {
+            name: descriptor.name,
+            description: descriptor.description,
+        })
+        .collect()
 }
 
 /// Produce a deterministic text block listing available tools,
 /// suitable for appending to the system prompt.
 pub fn capability_snapshot() -> String {
-    capability_snapshot_with_config(runtime_config::get_tool_runtime_config())
+    capability_snapshot_for_view(&runtime_tool_view())
 }
 
-pub fn capability_snapshot_with_config(config: &runtime_config::ToolRuntimeConfig) -> String {
-    let entries = tool_registry();
+pub fn capability_snapshot_for_view(view: &ToolView) -> String {
+    let catalog = tool_catalog();
     let mut lines = vec!["[available_tools]".to_owned()];
-    for entry in &entries {
-        lines.push(format!("- {}: {}", entry.name, entry.description));
-    }
-    if let Ok(skill_lines) = external_skills::installed_skill_snapshot_lines_with_config(config)
-        && !skill_lines.is_empty()
-    {
-        lines.push(String::new());
-        lines.push("[available_external_skills]".to_owned());
-        lines.extend(skill_lines);
+    for descriptor in view.iter(&catalog) {
+        lines.push(format!("- {}: {}", descriptor.name, descriptor.description));
     }
     lines.join("\n")
 }
@@ -209,382 +342,33 @@ pub fn capability_snapshot_with_config(config: &runtime_config::ToolRuntimeConfi
 /// The output shape matches OpenAI-compatible `tools=[{type:function,...}]`.
 /// Order is deterministic for stable prompting/tests.
 pub fn provider_tool_definitions() -> Vec<Value> {
-    let mut tools = Vec::new();
-
-    tools.push(json!({
-        "type": "function",
-        "function": {
-            "name": "claw_import",
-            "description": "Import, discover, plan, merge, apply, and rollback legacy Claw workspace migration into native LoongClaw config.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "input_path": {
-                        "type": "string",
-                        "description": "Path to the legacy Claw workspace, config root, or portable import file. Required for all modes except rollback_last_apply."
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": [
-                            "plan",
-                            "apply",
-                            "discover",
-                            "plan_many",
-                            "recommend_primary",
-                            "merge_profiles",
-                            "map_external_skills",
-                            "apply_selected",
-                            "rollback_last_apply"
-                        ],
-                        "description": "Migration mode. Defaults to `plan` when omitted."
-                    },
-                    "source": {
-                        "type": "string",
-                        "enum": ["auto", "nanobot", "openclaw", "picoclaw", "zeroclaw", "nanoclaw"],
-                        "description": "Optional source hint for plan/apply modes. Defaults to automatic detection."
-                    },
-                    "source_id": {
-                        "type": "string",
-                        "description": "Selected source identifier for apply_selected mode."
-                    },
-                    "selection_id": {
-                        "type": "string",
-                        "description": "Alias of source_id for apply_selected mode."
-                    },
-                    "primary_source_id": {
-                        "type": "string",
-                        "description": "Primary source identifier for safe profile merge in apply_selected mode."
-                    },
-                    "primary_selection_id": {
-                        "type": "string",
-                        "description": "Alias of primary_source_id for safe profile merge in apply_selected mode."
-                    },
-                    "safe_profile_merge": {
-                        "type": "boolean",
-                        "description": "Enable safe multi-source profile merge in apply_selected mode."
-                    },
-                    "apply_external_skills_plan": {
-                        "type": "boolean",
-                        "description": "When true, apply a generated external-skills mapping addendum into profile_note during apply_selected."
-                    },
-                    "output_path": {
-                        "type": "string",
-                        "description": "Target config path. Required in apply/apply_selected/rollback_last_apply modes."
-                    },
-                    "force": {
-                        "type": "boolean",
-                        "description": "Overwrite an existing target config when applying. Defaults to false."
-                    }
-                },
-                "required": [],
-                "additionalProperties": false
-            }
-        }
-    }));
-
-    tools.push(json!({
-        "type": "function",
-        "function": {
-            "name": "external_skills_policy",
-            "description": "Get, set, or reset runtime policy for external skills downloads (enabled flag, approval gate, domain allowlist/blocklist).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["get", "set", "reset"],
-                        "description": "Policy action. Defaults to `get`."
-                    },
-                    "policy_update_approved": {
-                        "type": "boolean",
-                        "description": "Explicit user authorization for policy updates. Required for `set` and `reset`."
-                    },
-                    "enabled": {
-                        "type": "boolean",
-                        "description": "Whether external skills runtime/download is enabled."
-                    },
-                    "require_download_approval": {
-                        "type": "boolean",
-                        "description": "When true, every external skills download requires explicit approval_granted=true."
-                    },
-                    "allowed_domains": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Optional domain allowlist (supports exact domains and wildcard forms like *.example.com). Empty list means allow all domains unless blocked."
-                    },
-                    "blocked_domains": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Optional domain blocklist (supports exact domains and wildcard forms like *.example.com). Blocklist always takes precedence."
-                    }
-                },
-                "required": [],
-                "additionalProperties": false
-            }
-        }
-    }));
-
-    tools.push(json!({
-        "type": "function",
-        "function": {
-            "name": "external_skills_fetch",
-            "description": "Download an external skill artifact with strict domain policy checks and explicit approval gating.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "HTTPS URL to download."
-                    },
-                    "approval_granted": {
-                        "type": "boolean",
-                        "description": "Explicit user authorization for this download. Required when require_download_approval=true."
-                    },
-                    "save_as": {
-                        "type": "string",
-                        "description": "Optional output filename (stored under configured file root / external-skills-downloads)."
-                    },
-                    "max_bytes": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 20971520,
-                        "description": "Maximum download size in bytes. Defaults to 5242880 and is capped at 20971520."
-                    }
-                },
-                "required": ["url"],
-                "additionalProperties": false
-            }
-        }
-    }));
-
-    tools.push(json!({
-        "type": "function",
-        "function": {
-            "name": "external_skills_inspect",
-            "description": "Read metadata and a short preview for an installed external skill.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "skill_id": {
-                        "type": "string",
-                        "description": "Managed external skill identifier."
-                    }
-                },
-                "required": ["skill_id"],
-                "additionalProperties": false
-            }
-        }
-    }));
-
-    tools.push(json!({
-        "type": "function",
-        "function": {
-            "name": "external_skills_install",
-            "description": "Install a managed external skill from a local directory or local .tgz/.tar.gz archive under the configured file root.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Path to a local directory containing SKILL.md or a local .tgz/.tar.gz archive."
-                    },
-                    "skill_id": {
-                        "type": "string",
-                        "description": "Optional explicit managed skill id override."
-                    },
-                    "replace": {
-                        "type": "boolean",
-                        "description": "Replace an existing installed skill with the same id. Defaults to false."
-                    }
-                },
-                "required": ["path"],
-                "additionalProperties": false
-            }
-        }
-    }));
-
-    tools.push(json!({
-        "type": "function",
-        "function": {
-            "name": "external_skills_invoke",
-            "description": "Load an installed external skill's SKILL.md instructions into the conversation loop.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "skill_id": {
-                        "type": "string",
-                        "description": "Managed external skill identifier."
-                    }
-                },
-                "required": ["skill_id"],
-                "additionalProperties": false
-            }
-        }
-    }));
-
-    tools.push(json!({
-        "type": "function",
-        "function": {
-            "name": "external_skills_list",
-            "description": "List managed external skills available for invocation.",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "required": [],
-                "additionalProperties": false
-            }
-        }
-    }));
-
-    tools.push(json!({
-        "type": "function",
-        "function": {
-            "name": "external_skills_remove",
-            "description": "Remove an installed external skill from the managed runtime.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "skill_id": {
-                        "type": "string",
-                        "description": "Managed external skill identifier."
-                    }
-                },
-                "required": ["skill_id"],
-                "additionalProperties": false
-            }
-        }
-    }));
-
-    #[cfg(feature = "tool-file")]
-    {
-        tools.push(json!({
-            "type": "function",
-            "function": {
-                "name": "file_read",
-                "description": "Read file contents",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Path to read (absolute or relative to configured file root)."
-                        },
-                        "max_bytes": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 8_388_608,
-                            "description": "Optional read limit in bytes. Defaults to 1048576."
-                        }
-                    },
-                    "required": ["path"],
-                    "additionalProperties": false
-                }
-            }
-        }));
-        tools.push(json!({
-            "type": "function",
-            "function": {
-                "name": "file_write",
-                "description": "Write file contents",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Path to write (absolute or relative to configured file root)."
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "File content to write."
-                        },
-                        "create_dirs": {
-                            "type": "boolean",
-                            "description": "Create parent directories when missing. Defaults to true."
-                        }
-                    },
-                    "required": ["path", "content"],
-                    "additionalProperties": false
-                }
-            }
-        }));
-    }
-
-    #[cfg(feature = "tool-shell")]
-    {
-        tools.push(json!({
-            "type": "function",
-            "function": {
-                "name": "shell_exec",
-                "description": "Execute shell commands",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "command": {
-                            "type": "string",
-                            "description": "Executable command name. Must be allowlisted."
-                        },
-                        "args": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Optional command arguments."
-                        },
-                        "cwd": {
-                            "type": "string",
-                            "description": "Optional working directory."
-                        }
-                    },
-                    "required": ["command"],
-                    "additionalProperties": false
-                }
-            }
-        }));
-    }
-
-    tools.sort_by(|left, right| tool_function_name(left).cmp(tool_function_name(right)));
-    tools
+    try_provider_tool_definitions_for_view(&runtime_tool_view())
+        .expect("runtime tool view should always be advertisable")
 }
 
-fn tool_function_name(tool: &Value) -> &str {
-    tool.get("function")
-        .and_then(|value| value.get("name"))
-        .and_then(Value::as_str)
-        .unwrap_or("")
+pub fn try_provider_tool_definitions_for_view(view: &ToolView) -> Result<Vec<Value>, String> {
+    let catalog = tool_catalog();
+    let mut tools = Vec::new();
+    for descriptor in view.iter(&catalog) {
+        if descriptor.availability != ToolAvailability::Runtime {
+            return Err(format!(
+                "tool_not_advertisable: `{}` is still planned and cannot be exposed yet",
+                descriptor.name
+            ));
+        }
+        tools.push(descriptor.provider_definition());
+    }
+    Ok(tools)
 }
 
 #[allow(dead_code)]
 fn _shape_examples() -> BTreeMap<&'static str, Value> {
     BTreeMap::from([
         (
-            "claw.import",
-            json!({
-                "input_path": "/tmp/nanobot-workspace",
-                "mode": "plan",
-                "source": "auto"
-            }),
-        ),
-        (
             "shell.exec",
             json!({
                 "command": "echo",
                 "args": ["hello"]
-            }),
-        ),
-        (
-            "external_skills.policy",
-            json!({
-                "action": "set",
-                "policy_update_approved": true,
-                "enabled": true,
-                "require_download_approval": true,
-                "allowed_domains": ["skills.sh"],
-                "blocked_domains": ["*.evil.example"]
-            }),
-        ),
-        (
-            "external_skills.fetch",
-            json!({
-                "url": "https://skills.sh/packages/demo-skill.tar.gz",
-                "approval_granted": true
             }),
         ),
         (
@@ -619,140 +403,107 @@ mod tests {
         assert_eq!(snapshot, snapshot2);
     }
 
-    #[test]
-    fn capability_snapshot_can_include_installed_external_skills() {
-        use std::{
-            fs,
-            path::{Path, PathBuf},
-            time::{SystemTime, UNIX_EPOCH},
-        };
-
-        fn unique_temp_dir(prefix: &str) -> PathBuf {
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock should be after epoch")
-                .as_nanos();
-            std::env::temp_dir().join(format!("{prefix}-{nanos}"))
-        }
-
-        fn write_file(root: &Path, relative: &str, content: &str) {
-            let path = root.join(relative);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).expect("create parent directory");
-            }
-            fs::write(path, content).expect("write fixture");
-        }
-
-        let root = unique_temp_dir("loongclaw-tool-capability-snapshot-skills");
-        fs::create_dir_all(&root).expect("create fixture root");
-        write_file(
-            &root,
-            "skills/demo-skill/SKILL.md",
-            "# Demo Skill\n\nUse this skill for explicit verification.\n",
-        );
-
-        let config = runtime_config::ToolRuntimeConfig {
-            shell_allowlist: BTreeSet::new(),
-            file_root: Some(root.clone()),
-            external_skills: runtime_config::ExternalSkillsRuntimePolicy {
-                enabled: true,
-                require_download_approval: true,
-                allowed_domains: BTreeSet::new(),
-                blocked_domains: BTreeSet::new(),
-                install_root: None,
-                auto_expose_installed: true,
-            },
-        };
-        execute_tool_core_with_config(
-            ToolCoreRequest {
-                tool_name: "external_skills.install".to_owned(),
-                payload: json!({
-                    "path": "skills/demo-skill"
-                }),
-            },
-            &config,
-        )
-        .expect("install should succeed");
-
-        let snapshot = capability_snapshot_with_config(&config);
-        assert!(snapshot.contains("[available_external_skills]"));
-        assert!(snapshot.contains(
-            "- demo-skill: installed managed external skill; use external_skills.inspect or external_skills.invoke for details"
-        ));
-
-        fs::remove_dir_all(&root).ok();
-    }
-
     #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
     #[test]
     fn capability_snapshot_lists_all_tools_when_all_features_enabled() {
         let snapshot = capability_snapshot();
-        assert!(
-            snapshot.contains(
-                "- claw.import: Import legacy Claw configs into native LoongClaw settings"
-            )
-        );
-        assert!(snapshot.contains("- external_skills.fetch: Download external skills artifacts with domain policy and approval guards"));
-        assert!(snapshot.contains("- external_skills.install: Install a managed external skill from a local directory or archive"));
-        assert!(
-            snapshot.contains(
-                "- external_skills.inspect: Read metadata for an installed external skill"
-            )
-        );
         assert!(snapshot.contains(
-            "- external_skills.invoke: Load an installed external skill into the conversation loop"
+            "- approval_request_resolve: Resolve one visible governed tool approval request"
         ));
         assert!(snapshot.contains(
-            "- external_skills.list: List managed external skills available for invocation"
+            "- approval_request_status: Inspect full detail for a visible governed tool approval request"
         ));
-        assert!(snapshot.contains("- external_skills.policy: Read/update external skills domain allow/block policy at runtime"));
         assert!(snapshot.contains(
-            "- external_skills.remove: Remove an installed external skill from the managed runtime"
+            "- approval_requests_list: List visible governed tool approval requests across the current session scope"
+        ));
+        assert!(snapshot.contains("- delegate: Delegate a focused subtask into a child session"));
+        assert!(snapshot.contains(
+            "- delegate_async: Delegate a focused subtask into a background child session"
         ));
         assert!(snapshot.contains("- file.read: Read file contents"));
         assert!(snapshot.contains("- file.write: Write file contents"));
+        assert!(snapshot.contains(
+            "- memory_search: Search visible transcript memory across persisted session turns"
+        ));
         assert!(snapshot.contains("- shell.exec: Execute shell commands"));
+        assert!(
+            snapshot.contains("- sessions_list: List visible sessions and their high-level state")
+        );
+        assert!(
+            snapshot.contains("- sessions_history: Fetch transcript history for a visible session")
+        );
+        assert!(
+            snapshot.contains("- session_status: Inspect the current status of a visible session")
+        );
+        assert!(snapshot.contains(
+            "- session_archive: Archive a visible terminal session from default session listings"
+        ));
+        assert!(
+            snapshot.contains("- session_cancel: Cancel a visible async delegate child session")
+        );
+        assert!(snapshot.contains(
+            "- session_recover: Recover an overdue queued async delegate child session by marking it failed"
+        ));
+        assert!(snapshot
+            .contains("- session_unarchive: Restore a visible archived terminal session to default session listings"));
+        assert!(snapshot
+            .contains("- session_wait: Wait for a visible session to reach a terminal state"));
+        assert!(snapshot.contains("- session_events: Fetch session events for a visible session"));
 
-        // Verify sorted order: claw.import < external_skills.* < file.* < shell.exec
+        // Verify sorted canonical name order.
         let lines: Vec<&str> = snapshot.lines().skip(1).collect();
-        assert_eq!(lines.len(), 11);
-        assert!(lines[0].starts_with("- claw.import"));
-        assert!(lines[1].starts_with("- external_skills.fetch"));
-        assert!(lines[2].starts_with("- external_skills.inspect"));
-        assert!(lines[3].starts_with("- external_skills.install"));
-        assert!(lines[4].starts_with("- external_skills.invoke"));
-        assert!(lines[5].starts_with("- external_skills.list"));
-        assert!(lines[6].starts_with("- external_skills.policy"));
-        assert!(lines[7].starts_with("- external_skills.remove"));
-        assert!(lines[8].starts_with("- file.read"));
-        assert!(lines[9].starts_with("- file.write"));
-        assert!(lines[10].starts_with("- shell.exec"));
+        assert_eq!(lines.len(), 18);
+        assert!(lines[0].starts_with("- approval_request_resolve"));
+        assert!(lines[1].starts_with("- approval_request_status"));
+        assert!(lines[2].starts_with("- approval_requests_list"));
+        assert!(lines[3].starts_with("- delegate"));
+        assert!(lines[4].starts_with("- delegate_async"));
+        assert!(lines[5].starts_with("- file.read"));
+        assert!(lines[6].starts_with("- file.write"));
+        assert!(lines[7].starts_with("- memory_search"));
+        assert!(lines[8].starts_with("- session_archive"));
+        assert!(lines[9].starts_with("- session_cancel"));
+        assert!(lines[10].starts_with("- session_events"));
+        assert!(lines[11].starts_with("- session_recover"));
+        assert!(lines[12].starts_with("- session_status"));
+        assert!(lines[13].starts_with("- session_unarchive"));
+        assert!(lines[14].starts_with("- session_wait"));
+        assert!(lines[15].starts_with("- sessions_history"));
+        assert!(lines[16].starts_with("- sessions_list"));
+        assert!(lines[17].starts_with("- shell.exec"));
     }
 
     #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
     #[test]
     fn tool_registry_returns_all_known_tools() {
         let entries = tool_registry();
-        assert_eq!(entries.len(), 11);
+        assert_eq!(entries.len(), 18);
         let names: Vec<&str> = entries.iter().map(|e| e.name).collect();
-        assert!(names.contains(&"claw.import"));
-        assert!(names.contains(&"external_skills.fetch"));
-        assert!(names.contains(&"external_skills.install"));
-        assert!(names.contains(&"external_skills.inspect"));
-        assert!(names.contains(&"external_skills.invoke"));
-        assert!(names.contains(&"external_skills.list"));
-        assert!(names.contains(&"external_skills.policy"));
-        assert!(names.contains(&"external_skills.remove"));
+        assert!(names.contains(&"approval_request_resolve"));
+        assert!(names.contains(&"approval_request_status"));
+        assert!(names.contains(&"approval_requests_list"));
+        assert!(names.contains(&"delegate"));
+        assert!(names.contains(&"delegate_async"));
         assert!(names.contains(&"shell.exec"));
         assert!(names.contains(&"file.read"));
         assert!(names.contains(&"file.write"));
+        assert!(names.contains(&"memory_search"));
+        assert!(names.contains(&"session_archive"));
+        assert!(names.contains(&"session_cancel"));
+        assert!(names.contains(&"session_events"));
+        assert!(names.contains(&"session_recover"));
+        assert!(names.contains(&"session_unarchive"));
+        assert!(names.contains(&"sessions_list"));
+        assert!(names.contains(&"sessions_history"));
+        assert!(names.contains(&"session_status"));
+        assert!(names.contains(&"session_wait"));
     }
 
     #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
     #[test]
     fn provider_tool_definitions_are_stable_and_complete() {
         let defs = provider_tool_definitions();
-        assert_eq!(defs.len(), 11);
+        assert_eq!(defs.len(), 18);
 
         let names: Vec<&str> = defs
             .iter()
@@ -763,17 +514,24 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "claw_import",
-                "external_skills_fetch",
-                "external_skills_inspect",
-                "external_skills_install",
-                "external_skills_invoke",
-                "external_skills_list",
-                "external_skills_policy",
-                "external_skills_remove",
+                "approval_request_resolve",
+                "approval_request_status",
+                "approval_requests_list",
+                "delegate",
+                "delegate_async",
                 "file_read",
                 "file_write",
-                "shell_exec"
+                "memory_search",
+                "session_archive",
+                "session_cancel",
+                "session_events",
+                "session_recover",
+                "session_status",
+                "session_unarchive",
+                "session_wait",
+                "sessions_history",
+                "sessions_list",
+                "shell_exec",
             ]
         );
 
@@ -782,100 +540,195 @@ mod tests {
             assert_eq!(item["function"]["parameters"]["type"], "object");
         }
 
-        let claw_import = defs
+        let approval_request_resolve = defs
             .iter()
-            .find(|item| {
-                item.get("function")
-                    .and_then(|function| function.get("name"))
-                    .and_then(Value::as_str)
-                    == Some("claw_import")
-            })
-            .expect("claw_import definition should exist");
-        let mode_enum: Vec<&str> =
-            claw_import["function"]["parameters"]["properties"]["mode"]["enum"]
-                .as_array()
-                .expect("mode enum should be an array")
-                .iter()
-                .filter_map(Value::as_str)
-                .collect();
+            .find(|item| item["function"]["name"] == "approval_request_resolve")
+            .expect("approval_request_resolve definition");
+        let approval_request_resolve_properties = approval_request_resolve["function"]
+            ["parameters"]["properties"]
+            .as_object()
+            .expect("approval_request_resolve properties");
+        assert!(approval_request_resolve_properties.contains_key("approval_request_id"));
+        assert!(approval_request_resolve_properties.contains_key("decision"));
+
+        let approval_request_status = defs
+            .iter()
+            .find(|item| item["function"]["name"] == "approval_request_status")
+            .expect("approval_request_status definition");
+        let approval_request_status_properties = approval_request_status["function"]["parameters"]
+            ["properties"]
+            .as_object()
+            .expect("approval_request_status properties");
+        assert!(approval_request_status_properties.contains_key("approval_request_id"));
+
+        let approval_requests_list = defs
+            .iter()
+            .find(|item| item["function"]["name"] == "approval_requests_list")
+            .expect("approval_requests_list definition");
+        let approval_requests_list_properties = approval_requests_list["function"]["parameters"]
+            ["properties"]
+            .as_object()
+            .expect("approval_requests_list properties");
+        assert!(approval_requests_list_properties.contains_key("session_id"));
+        assert!(approval_requests_list_properties.contains_key("status"));
+        assert!(approval_requests_list_properties.contains_key("limit"));
+
+        let session_wait = defs
+            .iter()
+            .find(|item| item["function"]["name"] == "session_wait")
+            .expect("session_wait definition");
+        let properties = session_wait["function"]["parameters"]["properties"]
+            .as_object()
+            .expect("session_wait properties");
+        assert!(properties.contains_key("session_id"));
+        assert!(properties.contains_key("session_ids"));
+        assert!(properties.contains_key("timeout_ms"));
+        assert!(properties.contains_key("after_id"));
         assert_eq!(
-            mode_enum,
-            vec![
-                "plan",
-                "apply",
-                "discover",
-                "plan_many",
-                "recommend_primary",
-                "merge_profiles",
-                "map_external_skills",
-                "apply_selected",
-                "rollback_last_apply"
-            ]
-        );
-        assert!(
-            claw_import["function"]["parameters"]["required"]
+            session_wait["function"]["parameters"]["oneOf"]
                 .as_array()
-                .expect("required should be an array")
-                .is_empty()
+                .expect("session_wait oneOf")
+                .len(),
+            2
         );
+
+        let session_recover = defs
+            .iter()
+            .find(|item| item["function"]["name"] == "session_recover")
+            .expect("session_recover definition");
+        let recover_properties = session_recover["function"]["parameters"]["properties"]
+            .as_object()
+            .expect("session_recover properties");
+        assert!(recover_properties.contains_key("session_id"));
+        assert!(recover_properties.contains_key("session_ids"));
+        assert!(recover_properties.contains_key("dry_run"));
+        assert_eq!(
+            session_recover["function"]["parameters"]["oneOf"]
+                .as_array()
+                .expect("session_recover oneOf")
+                .len(),
+            2
+        );
+
+        let session_cancel = defs
+            .iter()
+            .find(|item| item["function"]["name"] == "session_cancel")
+            .expect("session_cancel definition");
+        let cancel_properties = session_cancel["function"]["parameters"]["properties"]
+            .as_object()
+            .expect("session_cancel properties");
+        assert!(cancel_properties.contains_key("session_id"));
+        assert!(cancel_properties.contains_key("session_ids"));
+        assert!(cancel_properties.contains_key("dry_run"));
+        assert_eq!(
+            session_cancel["function"]["parameters"]["oneOf"]
+                .as_array()
+                .expect("session_cancel oneOf")
+                .len(),
+            2
+        );
+
+        let session_archive = defs
+            .iter()
+            .find(|item| item["function"]["name"] == "session_archive")
+            .expect("session_archive definition");
+        let archive_properties = session_archive["function"]["parameters"]["properties"]
+            .as_object()
+            .expect("session_archive properties");
+        assert!(archive_properties.contains_key("session_id"));
+        assert!(archive_properties.contains_key("session_ids"));
+        assert!(archive_properties.contains_key("dry_run"));
+        assert_eq!(
+            session_archive["function"]["parameters"]["oneOf"]
+                .as_array()
+                .expect("session_archive oneOf")
+                .len(),
+            2
+        );
+
+        let session_unarchive = defs
+            .iter()
+            .find(|item| item["function"]["name"] == "session_unarchive")
+            .expect("session_unarchive definition");
+        let unarchive_properties = session_unarchive["function"]["parameters"]["properties"]
+            .as_object()
+            .expect("session_unarchive properties");
+        assert!(unarchive_properties.contains_key("session_id"));
+        assert!(unarchive_properties.contains_key("session_ids"));
+        assert!(unarchive_properties.contains_key("dry_run"));
+        assert_eq!(
+            session_unarchive["function"]["parameters"]["oneOf"]
+                .as_array()
+                .expect("session_unarchive oneOf")
+                .len(),
+            2
+        );
+
+        let session_status = defs
+            .iter()
+            .find(|item| item["function"]["name"] == "session_status")
+            .expect("session_status definition");
+        let status_properties = session_status["function"]["parameters"]["properties"]
+            .as_object()
+            .expect("session_status properties");
+        assert!(status_properties.contains_key("session_id"));
+        assert!(status_properties.contains_key("session_ids"));
+        assert_eq!(
+            session_status["function"]["parameters"]["oneOf"]
+                .as_array()
+                .expect("session_status oneOf")
+                .len(),
+            2
+        );
+
+        let memory_search = defs
+            .iter()
+            .find(|item| item["function"]["name"] == "memory_search")
+            .expect("memory_search definition");
+        let memory_search_properties = memory_search["function"]["parameters"]["properties"]
+            .as_object()
+            .expect("memory_search properties");
+        assert!(memory_search_properties.contains_key("query"));
+        assert!(memory_search_properties.contains_key("session_id"));
+        assert!(memory_search_properties.contains_key("session_ids"));
+        assert!(memory_search_properties.contains_key("limit"));
+        assert!(memory_search_properties.contains_key("excerpt_chars"));
+        assert_eq!(
+            memory_search["function"]["parameters"]["oneOf"]
+                .as_array()
+                .expect("memory_search oneOf")
+                .len(),
+            3
+        );
+
+        let sessions_list = defs
+            .iter()
+            .find(|item| item["function"]["name"] == "sessions_list")
+            .expect("sessions_list definition");
+        let list_properties = sessions_list["function"]["parameters"]["properties"]
+            .as_object()
+            .expect("sessions_list properties");
+        assert!(list_properties.contains_key("limit"));
+        assert!(list_properties.contains_key("state"));
+        assert!(list_properties.contains_key("kind"));
+        assert!(list_properties.contains_key("parent_session_id"));
+        assert!(list_properties.contains_key("overdue_only"));
+        assert!(list_properties.contains_key("include_archived"));
+        assert!(list_properties.contains_key("include_delegate_lifecycle"));
     }
 
     #[test]
     fn canonical_tool_name_maps_known_aliases() {
-        assert_eq!(canonical_tool_name("claw_import"), "claw.import");
-        assert_eq!(
-            canonical_tool_name("external_skills_policy"),
-            "external_skills.policy"
-        );
-        assert_eq!(
-            canonical_tool_name("external_skills_fetch"),
-            "external_skills.fetch"
-        );
-        assert_eq!(
-            canonical_tool_name("external_skills_install"),
-            "external_skills.install"
-        );
-        assert_eq!(
-            canonical_tool_name("external_skills_list"),
-            "external_skills.list"
-        );
-        assert_eq!(
-            canonical_tool_name("external_skills_inspect"),
-            "external_skills.inspect"
-        );
-        assert_eq!(
-            canonical_tool_name("external_skills_invoke"),
-            "external_skills.invoke"
-        );
-        assert_eq!(
-            canonical_tool_name("external_skills_remove"),
-            "external_skills.remove"
-        );
         assert_eq!(canonical_tool_name("file_read"), "file.read");
         assert_eq!(canonical_tool_name("file_write"), "file.write");
         assert_eq!(canonical_tool_name("shell_exec"), "shell.exec");
         assert_eq!(canonical_tool_name("shell"), "shell.exec");
+        assert_eq!(canonical_tool_name("memory_search"), "memory_search");
         assert_eq!(canonical_tool_name("file.read"), "file.read");
     }
 
     #[test]
     fn is_known_tool_name_accepts_canonical_and_alias_forms() {
-        assert!(is_known_tool_name("claw.import"));
-        assert!(is_known_tool_name("claw_import"));
-        assert!(is_known_tool_name("external_skills.policy"));
-        assert!(is_known_tool_name("external_skills_policy"));
-        assert!(is_known_tool_name("external_skills.fetch"));
-        assert!(is_known_tool_name("external_skills_fetch"));
-        assert!(is_known_tool_name("external_skills.install"));
-        assert!(is_known_tool_name("external_skills_install"));
-        assert!(is_known_tool_name("external_skills.list"));
-        assert!(is_known_tool_name("external_skills_list"));
-        assert!(is_known_tool_name("external_skills.inspect"));
-        assert!(is_known_tool_name("external_skills_inspect"));
-        assert!(is_known_tool_name("external_skills.invoke"));
-        assert!(is_known_tool_name("external_skills_invoke"));
-        assert!(is_known_tool_name("external_skills.remove"));
-        assert!(is_known_tool_name("external_skills_remove"));
         assert!(is_known_tool_name("file.read"));
         assert!(is_known_tool_name("file_read"));
         assert!(is_known_tool_name("file.write"));
@@ -900,719 +753,530 @@ mod tests {
     }
 
     #[test]
-    fn claw_import_plan_mode_returns_nativeized_preview() {
-        use std::{
-            fs,
-            path::{Path, PathBuf},
-            time::{SystemTime, UNIX_EPOCH},
-        };
-
-        fn unique_temp_dir(prefix: &str) -> PathBuf {
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock should be after epoch")
-                .as_nanos();
-            std::env::temp_dir().join(format!("{prefix}-{nanos}"))
-        }
-
-        fn write_file(root: &Path, relative: &str, content: &str) {
-            let path = root.join(relative);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).expect("create parent directory");
-            }
-            fs::write(path, content).expect("write fixture");
-        }
-
-        let root = unique_temp_dir("loongclaw-tool-import-plan");
-        fs::create_dir_all(&root).expect("create fixture root");
-        write_file(
-            &root,
-            "SOUL.md",
-            "# Soul\n\nAlways prefer concise shell output. updated by nanobot.\n",
-        );
-        write_file(
-            &root,
-            "IDENTITY.md",
-            "# Identity\n\n- Motto: your nanobot agent for deploys\n",
-        );
-
-        let config = runtime_config::ToolRuntimeConfig {
-            shell_allowlist: BTreeSet::new(),
-            file_root: Some(root.clone()),
-            external_skills: Default::default(),
-        };
-        let outcome = execute_tool_core_with_config(
-            ToolCoreRequest {
-                tool_name: "claw.import".to_owned(),
-                payload: json!({
-                    "mode": "plan",
-                    "source": "nanobot",
-                    "input_path": "."
-                }),
-            },
-            &config,
-        )
-        .expect("claw import plan should succeed");
-
-        assert_eq!(outcome.status, "ok");
-        assert_eq!(outcome.payload["tool_name"], "claw.import");
-        assert_eq!(outcome.payload["mode"], "plan");
-        assert_eq!(outcome.payload["source"], "nanobot");
+    fn tool_catalog_marks_core_app_and_orchestration_tools() {
+        let catalog = tool_catalog();
         assert_eq!(
-            outcome.payload["config_preview"]["prompt_pack_id"],
-            "loongclaw-core-v1"
+            catalog
+                .descriptor("file.read")
+                .expect("file.read descriptor")
+                .execution_plane,
+            ToolExecutionPlane::Core
         );
         assert_eq!(
-            outcome.payload["config_preview"]["memory_profile"],
-            "profile_plus_window"
+            catalog
+                .descriptor("sessions_list")
+                .expect("sessions_list descriptor")
+                .execution_plane,
+            ToolExecutionPlane::App
         );
-        assert!(
-            outcome.payload["config_preview"]["system_prompt_addendum"]
-                .as_str()
-                .expect("prompt addendum should exist")
-                .contains("LoongClaw")
+        assert_eq!(
+            catalog
+                .descriptor("delegate")
+                .expect("delegate descriptor")
+                .execution_plane,
+            ToolExecutionPlane::Orchestration
         );
-        assert!(
-            outcome.payload["config_preview"]["profile_note"]
-                .as_str()
-                .expect("profile note should exist")
-                .contains("LoongClaw")
+        assert_eq!(
+            catalog
+                .descriptor("delegate_async")
+                .expect("delegate_async descriptor")
+                .execution_plane,
+            ToolExecutionPlane::Orchestration
         );
-        assert_eq!(outcome.payload["config_written"], false);
-
-        fs::remove_dir_all(&root).ok();
+        assert_eq!(
+            catalog
+                .descriptor("delegate")
+                .expect("delegate descriptor")
+                .availability,
+            ToolAvailability::Runtime
+        );
+        assert_eq!(
+            catalog
+                .descriptor("delegate_async")
+                .expect("delegate_async descriptor")
+                .availability,
+            ToolAvailability::Runtime
+        );
+        assert_eq!(
+            catalog
+                .descriptor("sessions_list")
+                .expect("sessions_list descriptor")
+                .availability,
+            ToolAvailability::Runtime
+        );
     }
 
     #[test]
-    fn claw_import_apply_mode_writes_target_config() {
-        use std::{
-            fs,
-            path::{Path, PathBuf},
-            time::{SystemTime, UNIX_EPOCH},
-        };
+    fn tool_catalog_marks_governance_metadata_for_routine_and_orchestration_tools() {
+        let catalog = tool_catalog();
 
-        fn unique_temp_dir(prefix: &str) -> PathBuf {
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock should be after epoch")
-                .as_nanos();
-            std::env::temp_dir().join(format!("{prefix}-{nanos}"))
-        }
+        let sessions_list = catalog
+            .descriptor("sessions_list")
+            .expect("sessions_list descriptor");
+        assert_eq!(sessions_list.governance_scope, ToolGovernanceScope::Routine);
+        assert_eq!(sessions_list.risk_class, ToolRiskClass::Low);
+        assert_eq!(sessions_list.approval_mode, ToolApprovalMode::Never);
 
-        fn write_file(root: &Path, relative: &str, content: &str) {
-            let path = root.join(relative);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).expect("create parent directory");
-            }
-            fs::write(path, content).expect("write fixture");
-        }
-
-        let root = unique_temp_dir("loongclaw-tool-import-apply");
-        fs::create_dir_all(&root).expect("create fixture root");
-        write_file(
-            &root,
-            "SOUL.md",
-            "# Soul\n\nAlways prefer concise shell output. updated by nanobot.\n",
-        );
-        write_file(
-            &root,
-            "IDENTITY.md",
-            "# Identity\n\n- Motto: your nanobot agent for deploys\n",
-        );
-
-        let output_path = root.join("generated").join("loongclaw.toml");
-        let config = runtime_config::ToolRuntimeConfig {
-            shell_allowlist: BTreeSet::new(),
-            file_root: Some(root.clone()),
-            external_skills: Default::default(),
-        };
-        let outcome = execute_tool_core_with_config(
-            ToolCoreRequest {
-                tool_name: "claw_import".to_owned(),
-                payload: json!({
-                    "mode": "apply",
-                    "source": "nanobot",
-                    "input_path": ".",
-                    "output_path": "generated/loongclaw.toml",
-                    "force": true
-                }),
-            },
-            &config,
-        )
-        .expect("claw import apply should succeed");
-
-        assert_eq!(outcome.status, "ok");
-        assert_eq!(outcome.payload["mode"], "apply");
-        assert_eq!(outcome.payload["config_written"], true);
+        let approval_request_resolve = catalog
+            .descriptor("approval_request_resolve")
+            .expect("approval_request_resolve descriptor");
         assert_eq!(
-            outcome.payload["next_step"]
-                .as_str()
-                .expect("next_step should be present")
-                .split_whitespace()
-                .next(),
-            Some("loongclaw")
+            approval_request_resolve.governance_scope,
+            ToolGovernanceScope::Routine
         );
+        assert_eq!(approval_request_resolve.risk_class, ToolRiskClass::Low);
         assert_eq!(
-            outcome.payload["output_path"]
-                .as_str()
-                .expect("output path should exist"),
-            fs::canonicalize(&output_path)
-                .expect("output path should canonicalize")
-                .display()
-                .to_string()
+            approval_request_resolve.approval_mode,
+            ToolApprovalMode::Never
         );
 
-        let raw = fs::read_to_string(&output_path).expect("output config should exist");
-        assert!(raw.contains("prompt_pack_id = \"loongclaw-core-v1\""));
-        assert!(raw.contains("profile = \"profile_plus_window\""));
-        assert!(raw.contains("LoongClaw"));
+        let approval_requests_list = catalog
+            .descriptor("approval_requests_list")
+            .expect("approval_requests_list descriptor");
+        assert_eq!(
+            approval_requests_list.governance_scope,
+            ToolGovernanceScope::Routine
+        );
+        assert_eq!(approval_requests_list.risk_class, ToolRiskClass::Low);
+        assert_eq!(
+            approval_requests_list.approval_mode,
+            ToolApprovalMode::Never
+        );
 
-        fs::remove_dir_all(&root).ok();
+        let session_cancel = catalog
+            .descriptor("session_cancel")
+            .expect("session_cancel descriptor");
+        assert_eq!(
+            session_cancel.governance_scope,
+            ToolGovernanceScope::Routine
+        );
+        assert_eq!(session_cancel.risk_class, ToolRiskClass::Elevated);
+        assert_eq!(session_cancel.approval_mode, ToolApprovalMode::PolicyDriven);
+
+        let delegate_async = catalog
+            .descriptor("delegate_async")
+            .expect("delegate_async descriptor");
+        assert_eq!(
+            delegate_async.governance_scope,
+            ToolGovernanceScope::TopologyMutation
+        );
+        assert_eq!(delegate_async.risk_class, ToolRiskClass::High);
+        assert_eq!(delegate_async.approval_mode, ToolApprovalMode::PolicyDriven);
     }
 
     #[test]
-    fn claw_import_discover_mode_returns_detected_sources() {
-        use std::{
-            fs,
-            path::{Path, PathBuf},
-            time::{SystemTime, UNIX_EPOCH},
-        };
-
-        fn unique_temp_dir(prefix: &str) -> PathBuf {
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock should be after epoch")
-                .as_nanos();
-            std::env::temp_dir().join(format!("{prefix}-{nanos}"))
-        }
-
-        fn write_file(root: &Path, relative: &str, content: &str) {
-            let path = root.join(relative);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).expect("create parent directory");
-            }
-            fs::write(path, content).expect("write fixture");
-        }
-
-        let root = unique_temp_dir("loongclaw-tool-import-discover");
-        fs::create_dir_all(&root).expect("create fixture root");
-
-        let openclaw_root = root.join("openclaw-workspace");
-        fs::create_dir_all(&openclaw_root).expect("create openclaw root");
-        write_file(
-            &openclaw_root,
-            "SOUL.md",
-            "# Soul\n\nPrefer direct answers and keep OpenClaw style concise.\n",
-        );
-        write_file(
-            &openclaw_root,
-            "IDENTITY.md",
-            "# Identity\n\n- Role: Release copilot\n- Priority: stability first\n",
-        );
-
-        let config = runtime_config::ToolRuntimeConfig {
-            shell_allowlist: BTreeSet::new(),
-            file_root: Some(root.clone()),
-            external_skills: Default::default(),
-        };
-        let outcome = execute_tool_core_with_config(
-            ToolCoreRequest {
-                tool_name: "claw.import".to_owned(),
-                payload: json!({
-                    "mode": "discover",
-                    "input_path": "."
-                }),
-            },
-            &config,
-        )
-        .expect("claw import discover should succeed");
-
-        assert_eq!(outcome.status, "ok");
-        assert_eq!(outcome.payload["mode"], "discover");
-        assert_eq!(outcome.payload["sources"][0]["source_id"], "openclaw");
-
-        fs::remove_dir_all(&root).ok();
+    fn planned_root_tool_view_contains_first_phase_tools() {
+        let view = planned_root_tool_view();
+        assert!(view.contains("file.read"));
+        assert!(view.contains("file.write"));
+        #[cfg(feature = "tool-shell")]
+        assert!(view.contains("shell.exec"));
+        assert!(view.contains("approval_request_resolve"));
+        assert!(view.contains("approval_request_status"));
+        assert!(view.contains("approval_requests_list"));
+        assert!(view.contains("sessions_list"));
+        assert!(view.contains("sessions_history"));
+        assert!(view.contains("session_status"));
+        assert!(view.contains("session_events"));
+        assert!(view.contains("memory_search"));
+        assert!(view.contains("session_archive"));
+        assert!(view.contains("session_cancel"));
+        assert!(view.contains("session_recover"));
+        assert!(view.contains("session_wait"));
+        assert!(view.contains("delegate"));
+        assert!(view.contains("delegate_async"));
     }
 
     #[test]
-    fn claw_import_plan_many_mode_returns_source_summaries_and_recommendation() {
-        use std::{
-            fs,
-            path::{Path, PathBuf},
-            time::{SystemTime, UNIX_EPOCH},
-        };
-
-        fn unique_temp_dir(prefix: &str) -> PathBuf {
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock should be after epoch")
-                .as_nanos();
-            std::env::temp_dir().join(format!("{prefix}-{nanos}"))
-        }
-
-        fn write_file(root: &Path, relative: &str, content: &str) {
-            let path = root.join(relative);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).expect("create parent directory");
-            }
-            fs::write(path, content).expect("write fixture");
-        }
-
-        let root = unique_temp_dir("loongclaw-tool-import-plan-many");
-        fs::create_dir_all(&root).expect("create fixture root");
-
-        let openclaw_root = root.join("openclaw-workspace");
-        fs::create_dir_all(&openclaw_root).expect("create openclaw root");
-        write_file(
-            &openclaw_root,
-            "SOUL.md",
-            "# Soul\n\nPrefer direct answers and keep OpenClaw style concise.\n",
-        );
-        write_file(
-            &openclaw_root,
-            "IDENTITY.md",
-            "# Identity\n\n- Role: Release copilot\n- Priority: stability first\n",
-        );
-
-        let nanobot_root = root.join("nanobot");
-        fs::create_dir_all(&nanobot_root).expect("create nanobot root");
-        write_file(
-            &nanobot_root,
-            "IDENTITY.md",
-            "# Identity\n\n- Motto: your nanobot agent for deploys\n",
-        );
-
-        let config = runtime_config::ToolRuntimeConfig {
-            shell_allowlist: BTreeSet::new(),
-            file_root: Some(root.clone()),
-            external_skills: Default::default(),
-        };
-        let outcome = execute_tool_core_with_config(
-            ToolCoreRequest {
-                tool_name: "claw.import".to_owned(),
-                payload: json!({
-                    "mode": "plan_many",
-                    "input_path": "."
-                }),
-            },
-            &config,
-        )
-        .expect("claw import plan_many should succeed");
-
-        assert_eq!(outcome.status, "ok");
-        assert_eq!(outcome.payload["mode"], "plan_many");
-        assert_eq!(outcome.payload["plans"][0]["source_id"], "openclaw");
-        assert_eq!(outcome.payload["recommendation"]["source_id"], "openclaw");
-
-        fs::remove_dir_all(&root).ok();
+    fn runtime_tool_view_includes_delegate_and_session_tools() {
+        let view = runtime_tool_view();
+        assert!(view.contains("approval_request_resolve"));
+        assert!(view.contains("approval_request_status"));
+        assert!(view.contains("approval_requests_list"));
+        assert!(view.contains("delegate"));
+        assert!(view.contains("sessions_list"));
+        assert!(view.contains("sessions_history"));
+        assert!(view.contains("session_status"));
+        assert!(view.contains("session_events"));
+        assert!(view.contains("session_archive"));
+        assert!(view.contains("session_cancel"));
+        assert!(view.contains("session_recover"));
+        assert!(view.contains("session_wait"));
+        assert!(view.contains("delegate_async"));
     }
 
     #[test]
-    fn claw_import_merge_profiles_mode_preserves_prompt_owner() {
-        use std::{
-            fs,
-            path::{Path, PathBuf},
-            time::{SystemTime, UNIX_EPOCH},
-        };
+    fn session_cancel_is_visible_in_root_and_hidden_in_child_views() {
+        let root_view = runtime_tool_view();
+        assert!(root_view.contains("session_cancel"));
 
-        fn unique_temp_dir(prefix: &str) -> PathBuf {
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock should be after epoch")
-                .as_nanos();
-            std::env::temp_dir().join(format!("{prefix}-{nanos}"))
-        }
+        let child_view = planned_delegate_child_tool_view();
+        assert!(!child_view.contains("session_cancel"));
 
-        fn write_file(root: &Path, relative: &str, content: &str) {
-            let path = root.join(relative);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).expect("create parent directory");
-            }
-            fs::write(path, content).expect("write fixture");
-        }
-
-        let root = unique_temp_dir("loongclaw-tool-import-merge-profiles");
-        fs::create_dir_all(&root).expect("create fixture root");
-
-        let openclaw_root = root.join("openclaw-workspace");
-        fs::create_dir_all(&openclaw_root).expect("create openclaw root");
-        write_file(
-            &openclaw_root,
-            "SOUL.md",
-            "# Soul\n\nPrefer direct answers and keep OpenClaw style concise.\n",
+        let child_with_depth = delegate_child_tool_view_for_config_with_delegate(
+            &crate::config::ToolConfig::default(),
+            true,
         );
-        write_file(
-            &openclaw_root,
-            "IDENTITY.md",
-            "# Identity\n\n- role: release copilot\n- tone: steady\n",
+        assert!(!child_with_depth.contains("session_cancel"));
+    }
+
+    #[test]
+    fn session_archive_is_visible_in_root_and_hidden_in_child_views() {
+        let root_view = runtime_tool_view();
+        assert!(root_view.contains("session_archive"));
+
+        let child_view = planned_delegate_child_tool_view();
+        assert!(!child_view.contains("session_archive"));
+
+        let child_with_depth = delegate_child_tool_view_for_config_with_delegate(
+            &crate::config::ToolConfig::default(),
+            true,
         );
+        assert!(!child_with_depth.contains("session_archive"));
+    }
 
-        let nanobot_root = root.join("nanobot");
-        fs::create_dir_all(&nanobot_root).expect("create nanobot root");
-        write_file(
-            &nanobot_root,
-            "IDENTITY.md",
-            "# Identity\n\n- role: release copilot\n- region: apac\n",
+    #[test]
+    fn memory_search_is_visible_in_root_and_hidden_in_child_views() {
+        let root_view = runtime_tool_view();
+        assert!(root_view.contains("memory_search"));
+
+        let child_view = planned_delegate_child_tool_view();
+        assert!(!child_view.contains("memory_search"));
+
+        let child_with_depth = delegate_child_tool_view_for_config_with_delegate(
+            &crate::config::ToolConfig::default(),
+            true,
         );
+        assert!(!child_with_depth.contains("memory_search"));
+    }
 
-        let config = runtime_config::ToolRuntimeConfig {
-            shell_allowlist: BTreeSet::new(),
-            file_root: Some(root.clone()),
-            external_skills: Default::default(),
-        };
-        let outcome = execute_tool_core_with_config(
-            ToolCoreRequest {
-                tool_name: "claw.import".to_owned(),
-                payload: json!({
-                    "mode": "merge_profiles",
-                    "input_path": "."
-                }),
-            },
-            &config,
-        )
-        .expect("claw import merge_profiles should succeed");
+    #[test]
+    fn session_unarchive_is_visible_in_root_and_hidden_in_child_views() {
+        let root_view = runtime_tool_view();
+        assert!(root_view.contains("session_unarchive"));
 
-        assert_eq!(outcome.status, "ok");
-        assert_eq!(outcome.payload["mode"], "merge_profiles");
+        let child_view = planned_delegate_child_tool_view();
+        assert!(!child_view.contains("session_unarchive"));
+
+        let child_with_depth = delegate_child_tool_view_for_config_with_delegate(
+            &crate::config::ToolConfig::default(),
+            true,
+        );
+        assert!(!child_with_depth.contains("session_unarchive"));
+    }
+
+    #[test]
+    fn approval_request_tools_are_visible_in_root_and_hidden_in_child_views() {
+        let root_view = runtime_tool_view();
+        assert!(root_view.contains("approval_request_resolve"));
+        assert!(root_view.contains("approval_request_status"));
+        assert!(root_view.contains("approval_requests_list"));
+
+        let child_view = planned_delegate_child_tool_view();
+        assert!(!child_view.contains("approval_request_resolve"));
+        assert!(!child_view.contains("approval_request_status"));
+        assert!(!child_view.contains("approval_requests_list"));
+
+        let child_with_depth = delegate_child_tool_view_for_config_with_delegate(
+            &crate::config::ToolConfig::default(),
+            true,
+        );
+        assert!(!child_with_depth.contains("approval_request_resolve"));
+        assert!(!child_with_depth.contains("approval_request_status"));
+        assert!(!child_with_depth.contains("approval_requests_list"));
+    }
+
+    #[test]
+    fn runtime_tool_view_for_config_omits_disabled_session_and_delegate_tools() {
+        let mut config = crate::config::ToolConfig::default();
+        config.sessions.enabled = false;
+        config.delegate.enabled = false;
+
+        let view = runtime_tool_view_for_config(&config);
+        assert!(view.contains("file.read"));
+        assert!(view.contains("file.write"));
+        assert!(!view.contains("delegate"));
+        assert!(!view.contains("delegate_async"));
+        assert!(!view.contains("approval_request_resolve"));
+        assert!(!view.contains("approval_request_status"));
+        assert!(!view.contains("approval_requests_list"));
+        assert!(!view.contains("sessions_list"));
+        assert!(!view.contains("sessions_history"));
+        assert!(!view.contains("session_status"));
+        assert!(!view.contains("session_events"));
+        assert!(!view.contains("memory_search"));
+        assert!(!view.contains("session_archive"));
+        assert!(!view.contains("session_recover"));
+        assert!(!view.contains("session_unarchive"));
+        assert!(!view.contains("session_wait"));
+    }
+
+    #[test]
+    fn delegate_child_tool_view_for_config_allows_shell_when_enabled() {
+        let mut config = crate::config::ToolConfig::default();
+        config.delegate.allow_shell_in_child = true;
+
+        let view = delegate_child_tool_view_for_config(&config);
+        assert!(view.contains("file.read"));
+        assert!(view.contains("file.write"));
+        assert!(view.contains("shell.exec"));
+        assert!(!view.contains("delegate"));
+        assert!(!view.contains("sessions_list"));
+        assert!(!view.contains("session_recover"));
+        assert!(!view.contains("session_wait"));
+    }
+
+    #[test]
+    fn delegate_child_tool_view_with_remaining_depth_allows_delegate() {
+        let config = crate::config::ToolConfig::default();
+
+        let view = delegate_child_tool_view_for_config_with_delegate(&config, true);
+        assert!(view.contains("file.read"));
+        assert!(view.contains("file.write"));
+        assert!(view.contains("delegate"));
+        assert!(view.contains("delegate_async"));
+        assert!(view.contains("sessions_history"));
+        assert!(view.contains("session_status"));
+        assert!(!view.contains("sessions_list"));
+    }
+
+    #[test]
+    fn delegate_child_tool_view_default_allowlist_matches_runtime_child_tools() {
+        let config = crate::config::ToolConfig::default();
         assert_eq!(
-            outcome.payload["result"]["prompt_owner_source_id"],
-            "openclaw"
+            config.delegate.child_tool_allowlist,
+            vec!["file.read", "file.write"]
         );
+    }
+
+    #[test]
+    fn child_tool_view_excludes_delegate_and_session_list() {
+        let view = planned_delegate_child_tool_view();
+        assert!(view.contains("file.read"));
+        assert!(view.contains("file.write"));
+        assert!(view.contains("sessions_history"));
+        assert!(view.contains("session_status"));
+        assert!(!view.contains("shell.exec"));
+        assert!(!view.contains("delegate"));
+        assert!(!view.contains("delegate_async"));
+        assert!(!view.contains("sessions_list"));
+        assert!(!view.contains("session_events"));
+        assert!(!view.contains("session_archive"));
+        assert!(!view.contains("session_cancel"));
+        assert!(!view.contains("session_recover"));
+        assert!(!view.contains("session_wait"));
+    }
+
+    #[test]
+    fn child_session_self_inspection_tool_view_includes_status_and_history_only() {
+        let view = planned_delegate_child_tool_view();
+        assert!(view.contains("file.read"));
+        assert!(view.contains("file.write"));
+        assert!(view.contains("sessions_history"));
+        assert!(view.contains("session_status"));
+        assert!(!view.contains("sessions_list"));
+        assert!(!view.contains("session_events"));
+        assert!(!view.contains("session_archive"));
+        assert!(!view.contains("session_cancel"));
+        assert!(!view.contains("session_recover"));
+        assert!(!view.contains("session_wait"));
+        assert!(!view.contains("delegate_async"));
+    }
+
+    #[test]
+    fn delegate_async_is_visible_in_root_and_depth_budgeted_child_views() {
+        let root_view = runtime_tool_view();
+        assert!(root_view.contains("delegate_async"));
+
+        let child_allowed = delegate_child_tool_view_for_config_with_delegate(
+            &crate::config::ToolConfig::default(),
+            true,
+        );
+        assert!(child_allowed.contains("delegate_async"));
+
+        let child_exhausted = planned_delegate_child_tool_view();
+        assert!(!child_exhausted.contains("delegate_async"));
+    }
+
+    #[test]
+    fn provider_tool_definitions_follow_tool_view() {
+        let view = ToolView::from_tool_names(["file.read"]);
+        let defs =
+            try_provider_tool_definitions_for_view(&view).expect("runtime-visible tool schemas");
+        let names: Vec<&str> = defs
+            .iter()
+            .filter_map(|item| item.get("function"))
+            .filter_map(|function| function.get("name"))
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(names, vec!["file_read"]);
+    }
+
+    #[test]
+    fn provider_tool_definitions_include_delegate_when_visible() {
+        let view = ToolView::from_tool_names(["delegate", "delegate_async", "file.read"]);
+        let defs =
+            try_provider_tool_definitions_for_view(&view).expect("runtime-visible tool schemas");
+        let names: Vec<&str> = defs
+            .iter()
+            .filter_map(|item| item.get("function"))
+            .filter_map(|function| function.get("name"))
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(names, vec!["delegate", "delegate_async", "file_read"]);
+    }
+
+    #[cfg(feature = "config-toml")]
+    #[test]
+    fn runtime_tool_view_exposes_sessions_send_only_when_messages_enabled() {
+        let raw = r#"
+[tools.messages]
+enabled = true
+"#;
+        let parsed =
+            toml::from_str::<crate::config::LoongClawConfig>(raw).expect("parse tool config");
+        let root_view = runtime_tool_view_for_config(&parsed.tools);
+        assert!(root_view.contains("sessions_send"));
+
+        let child_view = delegate_child_tool_view_for_config(&parsed.tools);
+        assert!(!child_view.contains("sessions_send"));
+    }
+
+    #[cfg(feature = "config-toml")]
+    #[test]
+    fn provider_tool_definitions_include_sessions_send_when_enabled() {
+        let raw = r#"
+[tools.messages]
+enabled = true
+"#;
+        let parsed =
+            toml::from_str::<crate::config::LoongClawConfig>(raw).expect("parse tool config");
+        let defs =
+            try_provider_tool_definitions_for_view(&runtime_tool_view_for_config(&parsed.tools))
+                .expect("runtime-visible tool schemas");
+        let sessions_send = defs
+            .iter()
+            .find(|item| item["function"]["name"] == "sessions_send")
+            .expect("sessions_send definition");
+        let properties = sessions_send["function"]["parameters"]["properties"]
+            .as_object()
+            .expect("sessions_send properties");
+        assert!(properties.contains_key("session_id"));
+        assert!(properties.contains_key("text"));
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    fn isolated_memory_config(
+        test_name: &str,
+    ) -> crate::memory::runtime_config::MemoryRuntimeConfig {
+        let base = std::env::temp_dir().join(format!(
+            "loongclaw-tools-mod-{test_name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&base).expect("create tools test directory");
+        crate::memory::runtime_config::MemoryRuntimeConfig {
+            sqlite_path: Some(base.join("memory.sqlite3")),
+        }
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[tokio::test]
+    async fn execute_app_tool_runtime_support_routes_session_wait() {
+        let memory_config = isolated_memory_config("runtime-session-wait");
+        let repo =
+            crate::session::repository::SessionRepository::new(&memory_config).expect("repo");
+        repo.create_session(crate::session::repository::NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: crate::session::repository::SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: crate::session::repository::SessionState::Ready,
+        })
+        .expect("create root");
+        repo.create_session(crate::session::repository::NewSessionRecord {
+            session_id: "child-session".to_owned(),
+            kind: crate::session::repository::SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Child".to_owned()),
+            state: crate::session::repository::SessionState::Ready,
+        })
+        .expect("create child");
+
+        let outcome = execute_app_tool_with_runtime_support(
+            ToolCoreRequest {
+                tool_name: "session_wait".to_owned(),
+                payload: json!({
+                    "session_id": "child-session",
+                    "timeout_ms": 1
+                }),
+            },
+            "root-session",
+            &memory_config,
+            &crate::config::ToolConfig::default(),
+            AppToolRuntimeSupport::default(),
+        )
+        .await
+        .expect("session_wait outcome");
+
+        assert_eq!(outcome.status, "timeout");
+        assert_eq!(outcome.payload["session"]["session_id"], "child-session");
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[tokio::test]
+    async fn execute_app_tool_runtime_support_reports_sessions_send_not_configured() {
+        let memory_config = isolated_memory_config("runtime-sessions-send");
+
+        let error = execute_app_tool_with_runtime_support(
+            ToolCoreRequest {
+                tool_name: "sessions_send".to_owned(),
+                payload: json!({
+                    "session_id": "telegram:123",
+                    "text": "hello"
+                }),
+            },
+            "root-session",
+            &memory_config,
+            &crate::config::ToolConfig::default(),
+            AppToolRuntimeSupport::default(),
+        )
+        .await
+        .expect_err("missing app config should be rejected");
+
         assert!(
-            outcome.payload["result"]["merged_profile_note"]
-                .as_str()
-                .expect("merged profile note should be present")
-                .contains("region: apac")
+            error.contains("sessions_send_not_configured"),
+            "expected sessions_send_not_configured, got: {error}"
         );
-
-        fs::remove_dir_all(&root).ok();
     }
 
-    #[test]
-    fn claw_import_map_external_skills_mode_returns_mapping_plan() {
-        use std::{
-            fs,
-            path::{Path, PathBuf},
-            time::{SystemTime, UNIX_EPOCH},
-        };
+    #[cfg(feature = "memory-sqlite")]
+    #[tokio::test]
+    async fn execute_orchestration_tool_runtime_support_rejects_delegate_without_turn_loop() {
+        let memory_config = isolated_memory_config("runtime-delegate");
 
-        fn unique_temp_dir(prefix: &str) -> PathBuf {
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock should be after epoch")
-                .as_nanos();
-            std::env::temp_dir().join(format!("{prefix}-{nanos}"))
-        }
-
-        fn write_file(root: &Path, relative: &str, content: &str) {
-            let path = root.join(relative);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).expect("create parent directory");
-            }
-            fs::write(path, content).expect("write fixture");
-        }
-
-        let root = unique_temp_dir("loongclaw-tool-import-map-external-skills");
-        fs::create_dir_all(&root).expect("create fixture root");
-        write_file(&root, "SKILLS.md", "# Skills\n\n- custom/skill-a\n");
-        fs::create_dir_all(root.join(".codex/skills")).expect("create codex skills dir");
-
-        let config = runtime_config::ToolRuntimeConfig {
-            shell_allowlist: BTreeSet::new(),
-            file_root: Some(root.clone()),
-            external_skills: Default::default(),
-        };
-        let outcome = execute_tool_core_with_config(
+        let error = execute_orchestration_tool_with_runtime_support(
             ToolCoreRequest {
-                tool_name: "claw.import".to_owned(),
+                tool_name: "delegate".to_owned(),
                 payload: json!({
-                    "mode": "map_external_skills",
-                    "input_path": "."
+                    "task": "research the runtime"
                 }),
             },
-            &config,
+            "root-session",
+            &memory_config,
+            &crate::config::ToolConfig::default(),
+            OrchestrationToolRuntimeSupport::default(),
         )
-        .expect("claw import map_external_skills should succeed");
+        .await
+        .expect_err("delegate should require turn-loop dispatch");
 
-        assert_eq!(outcome.status, "ok");
-        assert_eq!(outcome.payload["mode"], "map_external_skills");
-        assert_eq!(outcome.payload["result"]["artifact_count"], 2);
-        assert_eq!(
-            outcome.payload["result"]["declared_skills"][0],
-            "custom/skill-a"
-        );
-        assert_eq!(
-            outcome.payload["result"]["resolved_skills"][0],
-            "custom/skill-a"
-        );
         assert!(
-            outcome.payload["result"]["profile_note_addendum"]
-                .as_str()
-                .expect("profile note addendum should exist")
-                .contains("Imported External Skills Artifacts")
+            error.contains("orchestration_tool_requires_turn_loop_dispatch: delegate"),
+            "expected delegate turn-loop error, got: {error}"
         );
-
-        fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn claw_import_apply_selected_mode_writes_manifest_and_backup() {
-        use std::{
-            fs,
-            path::{Path, PathBuf},
-            time::{SystemTime, UNIX_EPOCH},
-        };
-
-        fn unique_temp_dir(prefix: &str) -> PathBuf {
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock should be after epoch")
-                .as_nanos();
-            std::env::temp_dir().join(format!("{prefix}-{nanos}"))
-        }
-
-        fn write_file(root: &Path, relative: &str, content: &str) {
-            let path = root.join(relative);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).expect("create parent directory");
-            }
-            fs::write(path, content).expect("write fixture");
-        }
-
-        let root = unique_temp_dir("loongclaw-tool-import-apply-selected");
-        fs::create_dir_all(&root).expect("create fixture root");
-
-        let openclaw_root = root.join("openclaw-workspace");
-        fs::create_dir_all(&openclaw_root).expect("create openclaw root");
-        write_file(
-            &openclaw_root,
-            "SOUL.md",
-            "# Soul\n\nPrefer direct answers and keep OpenClaw style concise.\n",
-        );
-        write_file(
-            &openclaw_root,
-            "IDENTITY.md",
-            "# Identity\n\n- role: release copilot\n- tone: steady\n",
-        );
-
-        let output_path = root.join("loongclaw.toml");
-        let original_body = crate::config::render(&crate::config::LoongClawConfig::default())
-            .expect("render default config");
-        fs::write(&output_path, &original_body).expect("write original config");
-
-        let config = runtime_config::ToolRuntimeConfig {
-            shell_allowlist: BTreeSet::new(),
-            file_root: Some(root.clone()),
-            external_skills: Default::default(),
-        };
-        let outcome = execute_tool_core_with_config(
-            ToolCoreRequest {
-                tool_name: "claw.import".to_owned(),
-                payload: json!({
-                    "mode": "apply_selected",
-                    "input_path": ".",
-                    "output_path": "loongclaw.toml",
-                    "source_id": "openclaw"
-                }),
-            },
-            &config,
-        )
-        .expect("claw import apply_selected should succeed");
-
-        assert_eq!(outcome.status, "ok");
-        assert_eq!(outcome.payload["mode"], "apply_selected");
-        assert!(
-            Path::new(
-                outcome.payload["result"]["backup_path"]
-                    .as_str()
-                    .expect("backup path should be present")
-            )
-            .exists()
-        );
-        assert!(
-            Path::new(
-                outcome.payload["result"]["manifest_path"]
-                    .as_str()
-                    .expect("manifest path should be present")
-            )
-            .exists()
-        );
-
-        fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn claw_import_apply_selected_mode_can_apply_external_skills_plan() {
-        use std::{
-            fs,
-            path::{Path, PathBuf},
-            time::{SystemTime, UNIX_EPOCH},
-        };
-
-        fn unique_temp_dir(prefix: &str) -> PathBuf {
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock should be after epoch")
-                .as_nanos();
-            std::env::temp_dir().join(format!("{prefix}-{nanos}"))
-        }
-
-        fn write_file(root: &Path, relative: &str, content: &str) {
-            let path = root.join(relative);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).expect("create parent directory");
-            }
-            fs::write(path, content).expect("write fixture");
-        }
-
-        let root = unique_temp_dir("loongclaw-tool-import-apply-selected-external");
-        fs::create_dir_all(&root).expect("create fixture root");
-
-        let openclaw_root = root.join("openclaw-workspace");
-        fs::create_dir_all(&openclaw_root).expect("create openclaw root");
-        write_file(
-            &openclaw_root,
-            "SOUL.md",
-            "# Soul\n\nPrefer direct answers and keep OpenClaw style concise.\n",
-        );
-        write_file(
-            &openclaw_root,
-            "IDENTITY.md",
-            "# Identity\n\n- role: release copilot\n- tone: steady\n",
-        );
-        write_file(&root, "SKILLS.md", "# Skills\n\n- custom/skill-a\n");
-
-        let output_path = root.join("loongclaw.toml");
-
-        let config = runtime_config::ToolRuntimeConfig {
-            shell_allowlist: BTreeSet::new(),
-            file_root: Some(root.clone()),
-            external_skills: Default::default(),
-        };
-        let outcome = execute_tool_core_with_config(
-            ToolCoreRequest {
-                tool_name: "claw.import".to_owned(),
-                payload: json!({
-                    "mode": "apply_selected",
-                    "input_path": ".",
-                    "output_path": "loongclaw.toml",
-                    "source_id": "openclaw",
-                    "apply_external_skills_plan": true
-                }),
-            },
-            &config,
-        )
-        .expect("claw import apply_selected with external skills should succeed");
-
-        assert_eq!(outcome.status, "ok");
-        assert_eq!(
-            outcome.payload["result"]["external_skill_artifact_count"],
-            1
-        );
-        assert_eq!(
-            outcome.payload["result"]["external_skill_entries_applied"],
-            3
-        );
-        assert!(
-            outcome.payload["result"]["external_skills_manifest_path"]
-                .as_str()
-                .is_some(),
-            "external skills manifest path should exist"
-        );
-        let raw = fs::read_to_string(&output_path).expect("read output config");
-        assert!(raw.contains("Imported External Skills Artifacts"));
-
-        fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn claw_import_rollback_last_apply_restores_original_config() {
-        use std::{
-            fs,
-            path::{Path, PathBuf},
-            time::{SystemTime, UNIX_EPOCH},
-        };
-
-        fn unique_temp_dir(prefix: &str) -> PathBuf {
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock should be after epoch")
-                .as_nanos();
-            std::env::temp_dir().join(format!("{prefix}-{nanos}"))
-        }
-
-        fn write_file(root: &Path, relative: &str, content: &str) {
-            let path = root.join(relative);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).expect("create parent directory");
-            }
-            fs::write(path, content).expect("write fixture");
-        }
-
-        let root = unique_temp_dir("loongclaw-tool-import-rollback-selected");
-        fs::create_dir_all(&root).expect("create fixture root");
-
-        let openclaw_root = root.join("openclaw-workspace");
-        fs::create_dir_all(&openclaw_root).expect("create openclaw root");
-        write_file(
-            &openclaw_root,
-            "SOUL.md",
-            "# Soul\n\nPrefer direct answers and keep OpenClaw style concise.\n",
-        );
-        write_file(
-            &openclaw_root,
-            "IDENTITY.md",
-            "# Identity\n\n- role: release copilot\n- tone: steady\n",
-        );
-
-        let output_path = root.join("loongclaw.toml");
-        let original_body = crate::config::render(&crate::config::LoongClawConfig::default())
-            .expect("render default config");
-        fs::write(&output_path, &original_body).expect("write original config");
-
-        let config = runtime_config::ToolRuntimeConfig {
-            shell_allowlist: BTreeSet::new(),
-            file_root: Some(root.clone()),
-            external_skills: Default::default(),
-        };
-        execute_tool_core_with_config(
-            ToolCoreRequest {
-                tool_name: "claw.import".to_owned(),
-                payload: json!({
-                    "mode": "apply_selected",
-                    "input_path": ".",
-                    "output_path": "loongclaw.toml",
-                    "source_id": "openclaw"
-                }),
-            },
-            &config,
-        )
-        .expect("claw import apply_selected should succeed");
-
-        let rollback = execute_tool_core_with_config(
-            ToolCoreRequest {
-                tool_name: "claw.import".to_owned(),
-                payload: json!({
-                    "mode": "rollback_last_apply",
-                    "output_path": "loongclaw.toml"
-                }),
-            },
-            &config,
-        )
-        .expect("claw import rollback_last_apply should succeed");
-
-        assert_eq!(rollback.status, "ok");
-        assert!(
-            rollback.payload["rolled_back"]
-                .as_bool()
-                .expect("rolled_back flag should exist")
-        );
-        assert_eq!(
-            fs::read_to_string(&output_path).expect("read restored config"),
-            original_body
-        );
-
-        fs::remove_dir_all(&root).ok();
     }
 
     // --- Kernel-routed tool tests ---
