@@ -12,9 +12,9 @@ pub fn extract_provider_turn(body: &Value) -> Option<ProviderTurn> {
         .and_then(|choices| choices.first())
         .and_then(|choice| choice.get("message"))?;
 
-    let assistant_text = message_content(message).unwrap_or_default();
+    let mut assistant_text = message_content(message).unwrap_or_default();
 
-    let tool_intents = message
+    let mut tool_intents: Vec<ToolIntent> = message
         .get("tool_calls")
         .and_then(Value::as_array)
         .map(|calls| {
@@ -52,6 +52,14 @@ pub fn extract_provider_turn(body: &Value) -> Option<ProviderTurn> {
                 .collect()
         })
         .unwrap_or_default();
+
+    if tool_intents.is_empty()
+        && let Some((cleaned_text, inline_tool_intents)) =
+            extract_inline_function_call_turn(assistant_text.as_str())
+    {
+        assistant_text = cleaned_text;
+        tool_intents = inline_tool_intents;
+    }
 
     Some(ProviderTurn {
         assistant_text,
@@ -117,6 +125,106 @@ fn normalize_text(raw: &str) -> Option<String> {
         return None;
     }
     Some(trimmed.to_owned())
+}
+
+fn extract_inline_function_call_turn(text: &str) -> Option<(String, Vec<ToolIntent>)> {
+    const FUNCTION_OPEN: &str = "<function=";
+    const FUNCTION_CLOSE: &str = "</function>";
+
+    let mut cursor = 0usize;
+    let mut cleaned = String::new();
+    let mut tool_intents = Vec::new();
+
+    while let Some(relative_start) = text[cursor..].find(FUNCTION_OPEN) {
+        let start = cursor + relative_start;
+        cleaned.push_str(&text[cursor..start]);
+
+        let name_start = start + FUNCTION_OPEN.len();
+        let header_remainder = &text[name_start..];
+        let header_end = header_remainder.find('>')?;
+        let raw_tool_name = header_remainder[..header_end].trim();
+        if raw_tool_name.is_empty() {
+            return None;
+        }
+
+        let body_start = name_start + header_end + 1;
+        let body_remainder = &text[body_start..];
+        let body_end = body_remainder.find(FUNCTION_CLOSE)?;
+        let function_body = &body_remainder[..body_end];
+        let args_json = parse_inline_function_parameters(function_body)?;
+
+        tool_intents.push(ToolIntent {
+            tool_name: tools::canonical_tool_name(raw_tool_name).to_owned(),
+            args_json,
+            source: "provider_inline_function_call".to_owned(),
+            session_id: String::new(),
+            turn_id: String::new(),
+            tool_call_id: format!("inline-call-{}", tool_intents.len()),
+        });
+
+        cursor = body_start + body_end + FUNCTION_CLOSE.len();
+    }
+
+    if tool_intents.is_empty() {
+        return None;
+    }
+
+    cleaned.push_str(&text[cursor..]);
+    Some((
+        normalize_text(cleaned.as_str()).unwrap_or_default(),
+        tool_intents,
+    ))
+}
+
+fn parse_inline_function_parameters(body: &str) -> Option<Value> {
+    const PARAMETER_OPEN: &str = "<parameter=";
+    const PARAMETER_CLOSE: &str = "</parameter>";
+
+    let mut cursor = 0usize;
+    let mut payload = serde_json::Map::new();
+
+    while cursor < body.len() {
+        let remainder = &body[cursor..];
+        let trimmed_len = remainder.len().saturating_sub(remainder.trim_start().len());
+        cursor += trimmed_len;
+        if cursor >= body.len() {
+            break;
+        }
+
+        let remainder = &body[cursor..];
+        if !remainder.starts_with(PARAMETER_OPEN) {
+            return None;
+        }
+
+        let name_start = cursor + PARAMETER_OPEN.len();
+        let name_remainder = &body[name_start..];
+        let name_end = name_remainder.find('>')?;
+        let parameter_name = name_remainder[..name_end].trim();
+        if parameter_name.is_empty() {
+            return None;
+        }
+
+        let value_start = name_start + name_end + 1;
+        let value_remainder = &body[value_start..];
+        let value_end = value_remainder.find(PARAMETER_CLOSE)?;
+        let raw_value = &value_remainder[..value_end];
+        payload.insert(
+            parameter_name.to_owned(),
+            Value::String(decode_inline_xml_text(raw_value).trim().to_owned()),
+        );
+
+        cursor = value_start + value_end + PARAMETER_CLOSE.len();
+    }
+
+    Some(Value::Object(payload))
+}
+
+fn decode_inline_xml_text(raw: &str) -> String {
+    raw.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -308,6 +416,52 @@ mod tests {
         let turn = extract_provider_turn(&body).expect("turn");
         assert_eq!(turn.assistant_text, "hello world");
         assert!(turn.tool_intents.is_empty());
+    }
+
+    #[test]
+    fn extract_provider_turn_parses_inline_shell_function_block() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": "抱歉，刚才的命令执行失败了。让我用更简单的方式重试:\n<function=shell.exec><parameter=command>ls /root</parameter></function>"
+                }
+            }]
+        });
+
+        let turn = extract_provider_turn(&body).expect("turn");
+        assert_eq!(
+            turn.assistant_text,
+            "抱歉，刚才的命令执行失败了。让我用更简单的方式重试:"
+        );
+        assert_eq!(turn.tool_intents.len(), 1);
+        assert_eq!(turn.tool_intents[0].tool_name, "shell.exec");
+        assert_eq!(
+            turn.tool_intents[0].args_json,
+            json!({"command":"ls /root"})
+        );
+    }
+
+    #[test]
+    fn extract_provider_turn_parses_inline_external_skill_function_block() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": "我看到已经安装了 Home Assistant 技能。让我调用它来获取所有实体状态。\n<function=external_skills.invoke><parameter=skill_id>home-assistant-1-0-0</parameter><parameter=action>get_states</parameter></function>"
+                }
+            }]
+        });
+
+        let turn = extract_provider_turn(&body).expect("turn");
+        assert_eq!(
+            turn.assistant_text,
+            "我看到已经安装了 Home Assistant 技能。让我调用它来获取所有实体状态。"
+        );
+        assert_eq!(turn.tool_intents.len(), 1);
+        assert_eq!(turn.tool_intents[0].tool_name, "external_skills.invoke");
+        assert_eq!(
+            turn.tool_intents[0].args_json,
+            json!({"skill_id":"home-assistant-1-0-0","action":"get_states"})
+        );
     }
 
     #[test]
