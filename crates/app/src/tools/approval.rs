@@ -442,6 +442,7 @@ fn execute_approval_requests_list(
     let integrity_summary = approval_request_list_integrity_summary_json(&request_summaries);
     let resolution_summary = approval_request_list_resolution_summary_json(&request_summaries);
     let correlation_summary = approval_request_list_correlation_summary_json(&request_summaries);
+    let session_summary = approval_request_list_session_summary_json(&request_summaries);
     let matched_count = request_summaries.len();
     request_summaries.truncate(request.limit);
     let returned_count = request_summaries.len();
@@ -476,6 +477,7 @@ fn execute_approval_requests_list(
             "integrity_summary": integrity_summary,
             "resolution_summary": resolution_summary,
             "correlation_summary": correlation_summary,
+            "session_summary": session_summary,
             "requests": request_summaries,
         }),
     })
@@ -838,6 +840,105 @@ fn approval_request_list_correlation_summary_json(requests: &[Value]) -> Value {
         "tool_name_counts": tool_name_counts,
         "approval_key_counts": approval_key_counts,
         "rule_id_counts": rule_id_counts,
+    })
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn approval_request_list_session_summary_json(requests: &[Value]) -> Value {
+    #[derive(Default)]
+    struct SessionSummaryAccumulator {
+        request_count: usize,
+        pending_count: usize,
+        attention_count: usize,
+        oldest_pending_requested_at: Option<i64>,
+        oldest_pending_age_seconds: Option<i64>,
+        oldest_pending_age_bucket: Option<ApprovalAttentionAgeBucket>,
+    }
+
+    let mut sessions = BTreeMap::<String, SessionSummaryAccumulator>::new();
+    for request in requests {
+        let Some(session_id) = request.get("session_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let session = sessions.entry(session_id.to_owned()).or_default();
+        session.request_count += 1;
+
+        if request
+            .get("execution_integrity")
+            .and_then(|value| value.get("needs_attention"))
+            .and_then(Value::as_bool)
+            == Some(true)
+        {
+            session.attention_count += 1;
+        }
+
+        let pending_queue = request.get("pending_queue").unwrap_or(&Value::Null);
+        if pending_queue
+            .get("awaiting_decision")
+            .and_then(Value::as_bool)
+            != Some(true)
+        {
+            continue;
+        }
+
+        session.pending_count += 1;
+        let requested_at = approval_request_requested_at(request);
+        session.oldest_pending_requested_at = Some(
+            session
+                .oldest_pending_requested_at
+                .map(|current| current.min(requested_at))
+                .unwrap_or(requested_at),
+        );
+
+        if let Some(age_seconds) = pending_queue.get("age_seconds").and_then(Value::as_i64) {
+            let is_older = session
+                .oldest_pending_age_seconds
+                .map(|current| age_seconds > current)
+                .unwrap_or(true);
+            if is_older {
+                session.oldest_pending_age_seconds = Some(age_seconds);
+                session.oldest_pending_age_bucket =
+                    approval_request_attention_age_bucket(Some(age_seconds));
+            }
+        }
+    }
+
+    let mut sessions = sessions.into_iter().collect::<Vec<_>>();
+    sessions.sort_by(|(left_session_id, left), (right_session_id, right)| {
+        approval_request_session_hotspot_priority(left.oldest_pending_age_bucket)
+            .cmp(&approval_request_session_hotspot_priority(
+                right.oldest_pending_age_bucket,
+            ))
+            .then_with(|| right.pending_count.cmp(&left.pending_count))
+            .then_with(|| right.attention_count.cmp(&left.attention_count))
+            .then_with(|| {
+                right
+                    .oldest_pending_age_seconds
+                    .unwrap_or_default()
+                    .cmp(&left.oldest_pending_age_seconds.unwrap_or_default())
+            })
+            .then_with(|| right.request_count.cmp(&left.request_count))
+            .then_with(|| left_session_id.cmp(right_session_id))
+    });
+
+    let sessions = sessions
+        .into_iter()
+        .map(|(session_id, session)| {
+            json!({
+                "session_id": session_id,
+                "request_count": session.request_count,
+                "pending_count": session.pending_count,
+                "attention_count": session.attention_count,
+                "oldest_pending_requested_at": session.oldest_pending_requested_at,
+                "oldest_pending_age_seconds": session.oldest_pending_age_seconds,
+                "oldest_pending_age_bucket": session.oldest_pending_age_bucket.map(ApprovalAttentionAgeBucket::as_str),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    json!({
+        "session_count": sessions.len(),
+        "sessions": sessions,
     })
 }
 
@@ -1418,6 +1519,18 @@ fn approval_request_pending_priority(request: &Value) -> usize {
         Some(ApprovalAttentionAgeBucket::Stale) => 1,
         Some(ApprovalAttentionAgeBucket::Fresh) => 2,
         None => 2,
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn approval_request_session_hotspot_priority(
+    age_bucket: Option<ApprovalAttentionAgeBucket>,
+) -> usize {
+    match age_bucket {
+        Some(ApprovalAttentionAgeBucket::Overdue) => 0,
+        Some(ApprovalAttentionAgeBucket::Stale) => 1,
+        Some(ApprovalAttentionAgeBucket::Fresh) => 2,
+        None => 3,
     }
 }
 
@@ -3266,6 +3379,177 @@ mod tests {
             "apr-pending-stale"
         );
         assert_eq!(stale_requests[0]["pending_queue"]["age_bucket"], "stale");
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn approval_request_tool_query_list_summarizes_session_hotspots() {
+        let config = isolated_memory_config("approval-query-list-session-summary");
+        let repo = SessionRepository::new(&config).expect("repository");
+        seed_session(&repo, "root-session", SessionKind::Root, None);
+        seed_session(
+            &repo,
+            "child-hot",
+            SessionKind::DelegateChild,
+            Some("root-session"),
+        );
+        seed_session(
+            &repo,
+            "child-busy",
+            SessionKind::DelegateChild,
+            Some("root-session"),
+        );
+
+        seed_request(
+            &repo,
+            "apr-root-complete",
+            "root-session",
+            "memory_search",
+            "governed_tool_requires_per_call_approval",
+        );
+        seed_request(
+            &repo,
+            "apr-child-hot-pending",
+            "child-hot",
+            "shell.exec",
+            "governed_tool_requires_per_call_approval",
+        );
+        seed_request(
+            &repo,
+            "apr-child-hot-attention",
+            "child-hot",
+            "delegate_async",
+            "governed_tool_requires_per_call_approval",
+        );
+        seed_request(
+            &repo,
+            "apr-child-busy-pending-a",
+            "child-busy",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+        );
+        seed_request(
+            &repo,
+            "apr-child-busy-pending-b",
+            "child-busy",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+        );
+
+        transition_request_status(
+            &repo,
+            "apr-root-complete",
+            ApprovalRequestStatus::Pending,
+            ApprovalRequestStatus::Executed,
+            None,
+        );
+        transition_request_status(
+            &repo,
+            "apr-child-hot-attention",
+            ApprovalRequestStatus::Pending,
+            ApprovalRequestStatus::Executed,
+            Some("tool failed for domain reasons"),
+        );
+
+        repo.append_event(crate::session::repository::NewSessionEvent {
+            session_id: "root-session".to_owned(),
+            event_kind: "tool_approval_execution_started".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "approval_request_id": "apr-root-complete",
+                "replay_decision_persisted": true,
+                "replay_decision_persist_error": null,
+            }),
+        })
+        .expect("append root complete started event");
+        repo.append_event(crate::session::repository::NewSessionEvent {
+            session_id: "root-session".to_owned(),
+            event_kind: "tool_approval_execution_finished".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "approval_request_id": "apr-root-complete",
+                "resumed_tool_status": "ok",
+                "replay_outcome_persisted": true,
+                "replay_outcome_persist_error": null,
+            }),
+        })
+        .expect("append root complete finished event");
+        repo.append_event(crate::session::repository::NewSessionEvent {
+            session_id: "child-hot".to_owned(),
+            event_kind: "tool_approval_execution_started".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "approval_request_id": "apr-child-hot-attention",
+                "replay_decision_persisted": true,
+                "replay_decision_persist_error": null,
+            }),
+        })
+        .expect("append child-hot started event");
+        repo.append_event(crate::session::repository::NewSessionEvent {
+            session_id: "child-hot".to_owned(),
+            event_kind: "tool_approval_execution_failed".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "approval_request_id": "apr-child-hot-attention",
+                "error": "tool failed for domain reasons",
+                "replay_outcome_persisted": true,
+                "replay_outcome_persist_error": null,
+            }),
+        })
+        .expect("append child-hot failed event");
+
+        let now = test_unix_ts_now();
+        overwrite_request_requested_at(&config, "apr-child-hot-pending", now - 172_800);
+        overwrite_request_requested_at(&config, "apr-child-hot-attention", now - 300);
+        overwrite_request_requested_at(&config, "apr-child-busy-pending-a", now - 7_200);
+        overwrite_request_requested_at(&config, "apr-child-busy-pending-b", now - 60);
+        overwrite_request_requested_at(&config, "apr-root-complete", now - 30);
+
+        let outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome for session summary");
+
+        let session_summary = &outcome.payload["session_summary"];
+        assert_eq!(session_summary["session_count"], 3);
+        let sessions = session_summary["sessions"]
+            .as_array()
+            .expect("session summary sessions array");
+        assert_eq!(sessions.len(), 3);
+
+        assert_eq!(sessions[0]["session_id"], "child-hot");
+        assert_eq!(sessions[0]["request_count"], 2);
+        assert_eq!(sessions[0]["pending_count"], 1);
+        assert_eq!(sessions[0]["attention_count"], 1);
+        assert_eq!(sessions[0]["oldest_pending_age_bucket"], "overdue");
+        assert!(
+            sessions[0]["oldest_pending_age_seconds"]
+                .as_i64()
+                .expect("child-hot pending age")
+                >= 172_800
+        );
+
+        assert_eq!(sessions[1]["session_id"], "child-busy");
+        assert_eq!(sessions[1]["request_count"], 2);
+        assert_eq!(sessions[1]["pending_count"], 2);
+        assert_eq!(sessions[1]["attention_count"], 0);
+        assert_eq!(sessions[1]["oldest_pending_age_bucket"], "stale");
+
+        assert_eq!(sessions[2]["session_id"], "root-session");
+        assert_eq!(sessions[2]["request_count"], 1);
+        assert_eq!(sessions[2]["pending_count"], 0);
+        assert_eq!(sessions[2]["attention_count"], 0);
+        assert_eq!(sessions[2]["oldest_pending_requested_at"], Value::Null);
+        assert_eq!(sessions[2]["oldest_pending_age_seconds"], Value::Null);
+        assert_eq!(sessions[2]["oldest_pending_age_bucket"], Value::Null);
     }
 
     #[cfg(feature = "memory-sqlite")]
