@@ -20,6 +20,7 @@ pub(crate) struct ChannelPreview {
 pub(crate) enum ChannelCheckLevel {
     Pass,
     Warn,
+    #[cfg(test)]
     Fail,
 }
 
@@ -30,6 +31,7 @@ pub(crate) struct ChannelPreflightCheck {
     pub(crate) detail: String,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ChannelDoctorCheck {
     pub(crate) name: &'static str,
@@ -52,6 +54,7 @@ struct ChannelAdapter {
     readiness_state: fn(&mvp::config::LoongClawConfig) -> ChannelCredentialState,
     apply_import_readiness: fn(&mut mvp::config::LoongClawConfig, ChannelCredentialState),
     collect_preflight_checks: fn(&mvp::config::LoongClawConfig) -> Vec<ChannelPreflightCheck>,
+    #[cfg(test)]
     collect_doctor_checks: fn(&mvp::config::LoongClawConfig) -> Vec<ChannelDoctorCheck>,
     apply_default_env_bindings: fn(&mut mvp::config::LoongClawConfig) -> Vec<String>,
 }
@@ -64,6 +67,7 @@ const REGISTRY: [ChannelAdapter; 2] = [
         readiness_state: telegram::readiness_state,
         apply_import_readiness: telegram::apply_import_readiness,
         collect_preflight_checks: telegram::collect_preflight_checks,
+        #[cfg(test)]
         collect_doctor_checks: telegram::collect_doctor_checks,
         apply_default_env_bindings: telegram::apply_default_env_bindings,
     },
@@ -74,6 +78,7 @@ const REGISTRY: [ChannelAdapter; 2] = [
         readiness_state: feishu::readiness_state,
         apply_import_readiness: feishu::apply_import_readiness,
         collect_preflight_checks: feishu::collect_preflight_checks,
+        #[cfg(test)]
         collect_doctor_checks: feishu::collect_doctor_checks,
         apply_default_env_bindings: feishu::apply_default_env_bindings,
     },
@@ -157,6 +162,7 @@ pub(crate) fn collect_channel_preflight_checks(
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn collect_channel_doctor_checks(
     config: &mvp::config::LoongClawConfig,
 ) -> Vec<ChannelDoctorCheck> {
@@ -182,19 +188,20 @@ pub(crate) fn collect_channel_next_actions(
     enabled_channel_adapters(config)
         .into_iter()
         .filter_map(|adapter| {
-            let descriptor = channel_descriptor(adapter.id);
-            descriptor
-                .serve_subcommand
-                .map(|subcommand| ChannelNextAction {
-                    id: adapter.id,
-                    label: descriptor.label,
-                    command: format!(
-                        "{} {} --config {}",
-                        mvp::config::CLI_COMMAND_NAME,
-                        subcommand,
-                        config_path
-                    ),
-                })
+            mvp::config::channel_descriptor(adapter.id).and_then(|descriptor| {
+                descriptor
+                    .serve_subcommand
+                    .map(|subcommand| ChannelNextAction {
+                        id: adapter.id,
+                        label: descriptor.label,
+                        command: format!(
+                            "{} {} --config {}",
+                            mvp::config::CLI_COMMAND_NAME,
+                            subcommand,
+                            config_path
+                        ),
+                    })
+            })
         })
         .collect()
 }
@@ -209,11 +216,6 @@ fn enabled_channel_adapters(config: &mvp::config::LoongClawConfig) -> Vec<&'stat
         .filter(|channel_id| enabled_ids.contains(*channel_id))
         .filter_map(find_adapter)
         .collect()
-}
-
-fn channel_descriptor(channel_id: &str) -> &'static mvp::config::ChannelDescriptor {
-    mvp::config::channel_descriptor(channel_id)
-        .expect("daemon channel registry must use shared app channel descriptors")
 }
 
 fn ordered_channel_adapters() -> Vec<&'static ChannelAdapter> {

@@ -713,17 +713,12 @@ fn resolve_provider_selection(
                 .default_kind
                 .map(|kind| provider_kind_id(kind).to_owned())
         })
-        .or_else(|| Some(provider_kind_id(config.provider.kind).to_owned()));
+        .unwrap_or_else(|| provider_kind_id(config.provider.kind).to_owned());
     loop {
         let input = if provider_selection.requires_explicit_choice {
             ui.prompt_required("Provider")?
         } else {
-            ui.prompt_with_default(
-                "Provider",
-                &default_provider
-                    .clone()
-                    .expect("interactive provider default"),
-            )?
+            ui.prompt_with_default("Provider", &default_provider)?
         };
         match resolve_provider_config_from_selector(&config.provider, provider_selection, &input) {
             Ok(provider) => return Ok(provider),
@@ -739,11 +734,15 @@ pub(crate) fn resolve_provider_config_from_selector(
 ) -> CliResult<mvp::config::ProviderConfig> {
     match crate::migration::resolve_choice_by_selector_resolution(provider_selection, selector) {
         crate::migration::ImportedChoiceSelectorResolution::Match(profile_id) => {
-            let choice = provider_selection
+            let Some(choice) = provider_selection
                 .imported_choices
                 .iter()
                 .find(|choice| choice.profile_id == profile_id)
-                .expect("resolved provider choice should exist in plan");
+            else {
+                return Err(format!(
+                    "provider selection plan is inconsistent: resolved profile `{profile_id}` is missing"
+                ));
+            };
             return Ok(choice.config.clone());
         }
         crate::migration::ImportedChoiceSelectorResolution::Ambiguous(profile_ids) => {
@@ -1234,6 +1233,7 @@ pub(crate) fn collect_channel_preflight_checks(
             level: match check.level {
                 crate::migration::channels::ChannelCheckLevel::Pass => OnboardCheckLevel::Pass,
                 crate::migration::channels::ChannelCheckLevel::Warn => OnboardCheckLevel::Warn,
+                #[cfg(test)]
                 crate::migration::channels::ChannelCheckLevel::Fail => OnboardCheckLevel::Fail,
             },
             detail: check.detail,
@@ -1356,7 +1356,10 @@ fn load_import_starting_config(
         ));
     }
 
-    if entry_options.len() == 1 && entry_options[0].choice == OnboardEntryChoice::StartFresh {
+    if entry_options
+        .first()
+        .is_some_and(|option| option.choice == OnboardEntryChoice::StartFresh)
+    {
         return Ok(default_starting_config_selection());
     }
 
@@ -1854,13 +1857,15 @@ fn select_interactive_import_starting_config(
         return Ok(default_starting_config_selection());
     }
     if import_candidates.len() == 1 {
-        let candidate = &import_candidates[0];
-        print_import_candidate_preview(ui, candidate, all_candidates, context)?;
-        return Ok(starting_config_selection_from_import_candidate(
-            candidate.clone(),
-            all_candidates,
-            current_setup_state,
-        ));
+        if let Some(candidate) = import_candidates.first() {
+            print_import_candidate_preview(ui, candidate, all_candidates, context)?;
+            return Ok(starting_config_selection_from_import_candidate(
+                candidate.clone(),
+                all_candidates,
+                current_setup_state,
+            ));
+        }
+        return Ok(default_starting_config_selection());
     }
 
     print_import_candidates(ui, &import_candidates, context)?;
@@ -3071,59 +3076,60 @@ fn collect_starting_point_fit_hints(candidate: &ImportCandidate) -> Vec<Starting
         .domains
         .iter()
         .find(|domain| domain.kind == crate::migration::SetupDomainKind::Provider)
+        && let Some(decision) = provider_domain.decision
+        && let Some(reason) = provider_domain.kind.starting_point_reason(decision)
     {
-        if let Some(decision) = provider_domain.decision {
-            if let Some(reason) = provider_domain.kind.starting_point_reason(decision) {
-                let key = match decision {
-                    crate::migration::types::PreviewDecision::KeepCurrent => "provider_keep",
-                    crate::migration::types::PreviewDecision::UseDetected => "provider_detected",
-                    _ => "provider",
-                };
-                push_starting_point_fit_hint(
-                    &mut hints,
-                    &mut seen,
-                    key,
-                    reason,
-                    Some(crate::migration::SetupDomainKind::Provider),
-                );
-            }
-        }
+        let key = match decision {
+            crate::migration::types::PreviewDecision::KeepCurrent => "provider_keep",
+            crate::migration::types::PreviewDecision::UseDetected => "provider_detected",
+            crate::migration::types::PreviewDecision::Supplement
+            | crate::migration::types::PreviewDecision::ReviewConflict
+            | crate::migration::types::PreviewDecision::AdjustedInSession => "provider",
+        };
+        push_starting_point_fit_hint(
+            &mut hints,
+            &mut seen,
+            key,
+            reason,
+            Some(crate::migration::SetupDomainKind::Provider),
+        );
     }
 
     if let Some(channels_domain) = candidate
         .domains
         .iter()
         .find(|domain| domain.kind == crate::migration::SetupDomainKind::Channels)
+        && let Some(decision) = channels_domain.decision
+        && let Some(reason) = channels_domain.kind.starting_point_reason(decision)
     {
-        if let Some(decision) = channels_domain.decision {
-            if let Some(reason) = channels_domain.kind.starting_point_reason(decision) {
-                let key = match decision {
-                    crate::migration::types::PreviewDecision::Supplement => "channels_add",
-                    crate::migration::types::PreviewDecision::UseDetected => "channels_detected",
-                    _ => "channels",
-                };
-                push_starting_point_fit_hint(
-                    &mut hints,
-                    &mut seen,
-                    key,
-                    reason,
-                    Some(crate::migration::SetupDomainKind::Channels),
-                );
-            }
-        }
-    } else if !candidate.channel_candidates.is_empty() {
+        let key = match decision {
+            crate::migration::types::PreviewDecision::Supplement => "channels_add",
+            crate::migration::types::PreviewDecision::UseDetected => "channels_detected",
+            crate::migration::types::PreviewDecision::KeepCurrent
+            | crate::migration::types::PreviewDecision::ReviewConflict
+            | crate::migration::types::PreviewDecision::AdjustedInSession => "channels",
+        };
+        push_starting_point_fit_hint(
+            &mut hints,
+            &mut seen,
+            key,
+            reason,
+            Some(crate::migration::SetupDomainKind::Channels),
+        );
+    } else if !candidate.channel_candidates.is_empty()
+        && let Some(reason) = crate::migration::SetupDomainKind::Channels
+            .starting_point_reason(crate::migration::types::PreviewDecision::Supplement)
+    {
         push_starting_point_fit_hint(
             &mut hints,
             &mut seen,
             "channels_add",
-            crate::migration::SetupDomainKind::Channels
-                .starting_point_reason(crate::migration::types::PreviewDecision::Supplement)
-                .expect("channels supplement reason"),
+            reason,
             Some(crate::migration::SetupDomainKind::Channels),
         );
     }
 
-    if !candidate.workspace_guidance.is_empty()
+    if (!candidate.workspace_guidance.is_empty()
         || candidate.domains.iter().any(|domain| {
             domain.kind == crate::migration::SetupDomainKind::WorkspaceGuidance
                 && matches!(
@@ -3131,15 +3137,15 @@ fn collect_starting_point_fit_hints(candidate: &ImportCandidate) -> Vec<Starting
                     Some(crate::migration::types::PreviewDecision::UseDetected)
                         | Some(crate::migration::types::PreviewDecision::Supplement)
                 )
-        })
+        }))
+        && let Some(reason) = crate::migration::SetupDomainKind::WorkspaceGuidance
+            .starting_point_reason(crate::migration::types::PreviewDecision::UseDetected)
     {
         push_starting_point_fit_hint(
             &mut hints,
             &mut seen,
             "workspace_guidance",
-            crate::migration::SetupDomainKind::WorkspaceGuidance
-                .starting_point_reason(crate::migration::types::PreviewDecision::UseDetected)
-                .expect("workspace guidance detected reason"),
+            reason,
             Some(crate::migration::SetupDomainKind::WorkspaceGuidance),
         );
     }
@@ -3159,10 +3165,9 @@ fn collect_starting_point_fit_hints(candidate: &ImportCandidate) -> Vec<Starting
                     Some(crate::migration::types::PreviewDecision::UseDetected)
                         | Some(crate::migration::types::PreviewDecision::Supplement)
                 )
-        }) {
-            let reason = kind
-                .starting_point_reason(crate::migration::types::PreviewDecision::UseDetected)
-                .expect("detected domain reason");
+        }) && let Some(reason) =
+            kind.starting_point_reason(crate::migration::types::PreviewDecision::UseDetected)
+        {
             push_starting_point_fit_hint(&mut hints, &mut seen, key, reason, Some(kind));
         }
     }
@@ -3211,11 +3216,11 @@ fn format_starting_point_domain_detail(
     domain: &crate::migration::DomainPreview,
 ) -> String {
     let mut detail = format!("{}: ", domain.kind.label());
-    if should_include_starting_point_domain_decision(candidate) {
-        if let Some(decision) = domain.decision {
-            detail.push_str(decision.label());
-            detail.push_str(" · ");
-        }
+    if should_include_starting_point_domain_decision(candidate)
+        && let Some(decision) = domain.decision
+    {
+        detail.push_str(decision.label());
+        detail.push_str(" · ");
     }
     detail.push_str(&domain.summary);
     detail
@@ -3318,15 +3323,13 @@ fn start_fresh_starting_point_detail_lines() -> Vec<String> {
 fn render_starting_point_selection_footer_lines(
     sorted_candidates: &[ImportCandidate],
 ) -> Vec<String> {
-    if sorted_candidates.is_empty() {
+    let Some(first_candidate) = sorted_candidates.first() else {
         return Vec::new();
-    }
+    };
 
     let first_hint = render_default_choice_footer_line(
         "1",
-        crate::onboard_presentation::starting_point_footer_description(
-            sorted_candidates[0].source_kind,
-        ),
+        crate::onboard_presentation::starting_point_footer_description(first_candidate.source_kind),
     );
 
     vec![first_hint]

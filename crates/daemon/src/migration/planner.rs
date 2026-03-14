@@ -165,10 +165,10 @@ fn compose_provider_domain(
         let Some(_) = domain_for_kind(candidate, SetupDomainKind::Provider) else {
             continue;
         };
-        if candidate.config.provider.kind == merged_config.provider.kind {
-            if supplement_provider_config(&mut merged_config.provider, &candidate.config.provider) {
-                supplemented_from.push(candidate.source.clone());
-            }
+        if candidate.config.provider.kind == merged_config.provider.kind
+            && supplement_provider_config(&mut merged_config.provider, &candidate.config.provider)
+        {
+            supplemented_from.push(candidate.source.clone());
         }
     }
     let conflicting_ready_sources = candidates
@@ -203,11 +203,10 @@ fn compose_provider_domain(
         } else {
             Some(PreviewDecision::UseDetected)
         },
-        source: if base_source.as_deref() == Some(chosen.source.as_str()) {
-            chosen.source.clone()
-        } else if supplemented_from
-            .iter()
-            .any(|source| source == &chosen.source)
+        source: if base_source.as_deref() == Some(chosen.source.as_str())
+            || supplemented_from
+                .iter()
+                .any(|source| source == &chosen.source)
         {
             chosen.source.clone()
         } else {
@@ -264,11 +263,11 @@ fn supplement_provider_config(
     let target_has_auth = target.authorization_header().is_some();
     let source_has_auth = source.authorization_header().is_some();
     let mut changed = false;
-    if target.model.trim().is_empty() || target.model.eq_ignore_ascii_case("auto") {
-        if !source.model.trim().is_empty() {
-            target.model = source.model.clone();
-            changed = true;
-        }
+    if (target.model.trim().is_empty() || target.model.eq_ignore_ascii_case("auto"))
+        && !source.model.trim().is_empty()
+    {
+        target.model = source.model.clone();
+        changed = true;
     }
     changed |= provider_transport::supplement_provider_transport(target, source);
     if (target.api_key.is_none() || (!target_has_auth && source_has_auth))

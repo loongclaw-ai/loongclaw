@@ -239,6 +239,7 @@ pub(crate) fn resolve_choice_by_selector_resolution(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn resolve_choice_by_selector<'a>(
     plan: &'a ProviderSelectionPlan,
     selector: &str,

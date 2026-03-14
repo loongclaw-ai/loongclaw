@@ -479,6 +479,7 @@ fn provider_transport_doctor_check(provider: &mvp::config::ProviderConfig) -> Do
     }
 }
 
+#[cfg(test)]
 fn collect_channel_doctor_checks(config: &mvp::config::LoongClawConfig) -> Vec<DoctorCheck> {
     crate::migration::channels::collect_channel_doctor_checks(config)
         .into_iter()

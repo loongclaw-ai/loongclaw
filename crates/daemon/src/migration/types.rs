@@ -74,6 +74,7 @@ pub(crate) enum ImportSourceKind {
     ExistingLoongClawConfig,
     CodexConfig,
     Environment,
+    #[allow(dead_code)]
     ExplicitPath,
 }
 
@@ -168,10 +169,7 @@ impl ImportSourceKind {
     }
 
     fn matches_selector(self, normalized: &str) -> bool {
-        self.descriptor()
-            .selectors
-            .iter()
-            .any(|selector| *selector == normalized)
+        self.descriptor().selectors.contains(&normalized)
     }
 }
 
@@ -288,10 +286,7 @@ impl SetupDomainKind {
     }
 
     fn matches_selector(self, normalized: &str) -> bool {
-        self.descriptor()
-            .selectors
-            .iter()
-            .any(|selector| *selector == normalized)
+        self.descriptor().selectors.contains(&normalized)
     }
 }
 
@@ -478,6 +473,7 @@ pub(crate) struct ChannelImportReadiness {
 }
 
 impl ChannelImportReadiness {
+    #[cfg(test)]
     pub(crate) fn with_state(mut self, channel_id: &str, state: ChannelCredentialState) -> Self {
         self.set_state(channel_id, state);
         self

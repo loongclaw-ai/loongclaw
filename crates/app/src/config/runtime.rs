@@ -57,7 +57,7 @@ impl ConfigValidationDiagnostic {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct LoongClawConfig {
     #[serde(default, skip_serializing)]
     pub provider: ProviderConfig,
@@ -83,25 +83,6 @@ pub struct LoongClawConfig {
     pub memory: MemoryConfig,
     #[serde(default)]
     pub acp: AcpConfig,
-}
-
-impl Default for LoongClawConfig {
-    fn default() -> Self {
-        Self {
-            provider: ProviderConfig::default(),
-            providers: BTreeMap::new(),
-            active_provider: None,
-            last_provider: None,
-            cli: CliChannelConfig::default(),
-            telegram: TelegramChannelConfig::default(),
-            feishu: FeishuChannelConfig::default(),
-            conversation: ConversationConfig::default(),
-            tools: ToolConfig::default(),
-            external_skills: ExternalSkillsConfig::default(),
-            memory: MemoryConfig::default(),
-            acp: AcpConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -844,8 +825,8 @@ impl<'a> ProviderSelectorIndex<'a> {
             .copied()
             .filter(|profile| profile.default_for_kind)
             .collect::<Vec<_>>();
-        if default_matches.len() == 1 {
-            return ProviderSelectorResolution::Match(default_matches[0].profile_id.to_owned());
+        if let [default_match] = default_matches.as_slice() {
+            return ProviderSelectorResolution::Match(default_match.profile_id.to_owned());
         }
 
         ProviderSelectorResolution::Ambiguous(
@@ -1149,7 +1130,7 @@ impl LoongClawConfig {
         }
         self.providers = normalized_profiles;
 
-        let active_provider = self
+        let Some(active_provider) = self
             .active_provider
             .as_deref()
             .and_then(normalize_provider_profile_id)
@@ -1161,7 +1142,9 @@ impl LoongClawConfig {
                     .then_some(legacy_profile_id)
             })
             .or_else(|| self.providers.keys().next().cloned())
-            .expect("provider profile normalization requires at least one provider");
+        else {
+            return;
+        };
         self.active_provider = Some(active_provider.clone());
         self.last_provider =
             normalized_last_provider.filter(|profile_id| self.providers.contains_key(profile_id));

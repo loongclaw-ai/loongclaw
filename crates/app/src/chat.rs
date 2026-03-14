@@ -1171,7 +1171,7 @@ mod tests {
             "openai-gpt-5",
             crate::config::ProviderProfileConfig {
                 default_for_kind: true,
-                provider: openai.clone(),
+                provider: openai,
             },
         );
 

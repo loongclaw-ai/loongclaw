@@ -30,14 +30,13 @@ pub(crate) fn saved_provider_profile_ids(config: &mvp::config::LoongClawConfig) 
         ];
     }
     let mut profile_ids = config.providers.keys().cloned().collect::<Vec<_>>();
-    if let Some(active_provider_id) = config.active_provider_id() {
-        if let Some(active_index) = profile_ids
+    if let Some(active_provider_id) = config.active_provider_id()
+        && let Some(active_index) = profile_ids
             .iter()
             .position(|profile_id| profile_id == active_provider_id)
-        {
-            let active_provider = profile_ids.remove(active_index);
-            profile_ids.insert(0, active_provider);
-        }
+    {
+        let active_provider = profile_ids.remove(active_index);
+        profile_ids.insert(0, active_provider);
     }
     profile_ids
 }
