@@ -82,10 +82,12 @@ impl PolicyExtension for ToolPolicyExtension {
         };
 
         // Extract basename so absolute paths like "/usr/bin/rm" match "rm".
+        // Use `find` instead of `next` so trailing separators (e.g. "/usr/bin/")
+        // don't produce an empty string.
         let basename = command
             .rsplit('/')
-            .next()
-            .and_then(|s| s.rsplit('\\').next())
+            .find(|s| !s.is_empty())
+            .and_then(|s| s.rsplit('\\').find(|s| !s.is_empty()))
             .unwrap_or(&command);
 
         if self.hard_deny.contains(basename) {
@@ -282,6 +284,25 @@ mod tests {
         let result = ext.authorize_extension(&ctx);
         assert!(matches!(
             result.unwrap_err(),
+            PolicyError::ToolCallDenied { .. }
+        ));
+    }
+
+    #[test]
+    fn denies_command_with_trailing_separator() {
+        let ext = ToolPolicyExtension::new(
+            BTreeSet::from(["rm".to_owned()]),
+            BTreeSet::new(),
+            ShellPolicyDefault::Deny,
+        );
+        let pack = test_pack();
+        let token = test_token();
+        let caps = BTreeSet::from([Capability::InvokeTool]);
+        // Trailing slash should still extract "rm" as basename, not "".
+        let params = json!({"tool_name": "shell.exec", "payload": {"command": "/usr/bin/rm/"}});
+        let ctx = make_context(&pack, &token, &caps, Some(&params));
+        assert!(matches!(
+            ext.authorize_extension(&ctx).unwrap_err(),
             PolicyError::ToolCallDenied { .. }
         ));
     }
