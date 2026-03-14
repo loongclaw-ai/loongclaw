@@ -38,8 +38,8 @@ use loongclaw_bench::{
     run_programmatic_pressure_benchmark_cli, run_wasm_cache_benchmark_cli,
 };
 mod doctor_cli;
-mod import_cli;
 mod import_claw_cli;
+mod import_cli;
 mod migration;
 mod next_actions;
 mod onboard_cli;
@@ -2852,7 +2852,12 @@ mod cli_tests {
         let help = String::from_utf8(rendered).expect("help is valid utf-8");
 
         assert!(help.contains("onboarding"));
-        assert!(!help.contains("setup"));
+        assert!(
+            !help
+                .lines()
+                .any(|line| line.trim_start().starts_with("setup ")),
+            "root help should not advertise a standalone `setup` subcommand: {help}"
+        );
     }
 
     #[test]
