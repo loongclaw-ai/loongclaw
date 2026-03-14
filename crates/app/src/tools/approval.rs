@@ -37,6 +37,8 @@ struct ApprovalRequestsListRequest {
     execution_plane: Option<ToolExecutionPlane>,
     governance_scope: Option<ToolGovernanceScope>,
     risk_class: Option<ToolRiskClass>,
+    grant_state: Option<ApprovalGrantState>,
+    grant_scope_session_id: Option<String>,
     pending_age_bucket: Option<ApprovalAttentionAgeBucket>,
     tool_name: Option<String>,
     approval_key: Option<String>,
@@ -61,6 +63,25 @@ enum ApprovalExecutionIntegrityStatus {
     InProgress,
     Complete,
     Incomplete,
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApprovalGrantState {
+    Present,
+    Absent,
+    LineageUnresolved,
+}
+
+#[cfg(feature = "memory-sqlite")]
+impl ApprovalGrantState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Present => "present",
+            Self::Absent => "absent",
+            Self::LineageUnresolved => "lineage_unresolved",
+        }
+    }
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -376,6 +397,16 @@ fn execute_approval_requests_list(
         request_summaries
             .retain(|item| approval_request_risk_class_from_json(item) == Some(risk_class));
     }
+    if let Some(grant_state) = request.grant_state {
+        request_summaries
+            .retain(|item| approval_request_grant_state_from_json(item) == Some(grant_state));
+    }
+    if let Some(grant_scope_session_id) = request.grant_scope_session_id.as_deref() {
+        request_summaries.retain(|item| {
+            approval_request_grant_scope_session_id_from_json(item)
+                == Some(grant_scope_session_id)
+        });
+    }
     if let Some(tool_name) = request.tool_name.as_deref() {
         request_summaries
             .retain(|item| item.get("tool_name").and_then(Value::as_str) == Some(tool_name));
@@ -484,6 +515,8 @@ fn execute_approval_requests_list(
                 "execution_plane": request.execution_plane.map(tool_execution_plane_as_str),
                 "governance_scope": request.governance_scope.map(tool_governance_scope_as_str),
                 "risk_class": request.risk_class.map(tool_risk_class_as_str),
+                "grant_state": request.grant_state.map(ApprovalGrantState::as_str),
+                "grant_scope_session_id": request.grant_scope_session_id,
                 "pending_age_bucket": request.pending_age_bucket.map(ApprovalAttentionAgeBucket::as_str),
                 "tool_name": request.tool_name,
                 "approval_key": request.approval_key,
@@ -1654,6 +1687,23 @@ fn approval_request_risk_class_from_json(request: &Value) -> Option<ToolRiskClas
 }
 
 #[cfg(feature = "memory-sqlite")]
+fn approval_request_grant_state_from_json(request: &Value) -> Option<ApprovalGrantState> {
+    request
+        .get("grant")
+        .and_then(|value| value.get("state"))
+        .and_then(Value::as_str)
+        .and_then(|value| parse_approval_grant_state(value).ok())
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn approval_request_grant_scope_session_id_from_json(request: &Value) -> Option<&str> {
+    request
+        .get("grant")
+        .and_then(|value| value.get("scope_session_id"))
+        .and_then(Value::as_str)
+}
+
+#[cfg(feature = "memory-sqlite")]
 fn approval_request_decision_from_json(request: &Value) -> Option<ApprovalDecision> {
     request
         .get("resolution")
@@ -1885,6 +1935,8 @@ fn parse_approval_requests_list_request(
         execution_plane: optional_payload_tool_execution_plane(payload, "execution_plane")?,
         governance_scope: optional_payload_tool_governance_scope(payload, "governance_scope")?,
         risk_class: optional_payload_tool_risk_class(payload, "risk_class")?,
+        grant_state: optional_payload_approval_grant_state(payload, "grant_state")?,
+        grant_scope_session_id: optional_payload_string(payload, "grant_scope_session_id"),
         pending_age_bucket: optional_payload_approval_pending_age_bucket(
             payload,
             "pending_age_bucket",
@@ -2041,6 +2093,16 @@ fn optional_payload_tool_risk_class(
 }
 
 #[cfg(feature = "memory-sqlite")]
+fn optional_payload_approval_grant_state(
+    payload: &Value,
+    field: &str,
+) -> Result<Option<ApprovalGrantState>, String> {
+    optional_payload_string(payload, field)
+        .map(|value| parse_approval_grant_state(value.as_str()))
+        .transpose()
+}
+
+#[cfg(feature = "memory-sqlite")]
 fn optional_payload_approval_execution_integrity_status(
     payload: &Value,
     field: &str,
@@ -2187,6 +2249,18 @@ fn parse_tool_risk_class(value: &str) -> Result<ToolRiskClass, String> {
         "High" => Ok(ToolRiskClass::High),
         _ => Err(format!(
             "approval_requests_list_invalid_request: unknown risk_class `{value}`"
+        )),
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn parse_approval_grant_state(value: &str) -> Result<ApprovalGrantState, String> {
+    match value {
+        "present" => Ok(ApprovalGrantState::Present),
+        "absent" => Ok(ApprovalGrantState::Absent),
+        "lineage_unresolved" => Ok(ApprovalGrantState::LineageUnresolved),
+        _ => Err(format!(
+            "approval_requests_list_invalid_request: unknown grant_state `{value}`"
         )),
     }
 }
@@ -4475,6 +4549,132 @@ mod tests {
         assert_eq!(
             request["grant"]["created_by_session_id"],
             "operator-session"
+        );
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn approval_request_tool_query_list_filters_by_runtime_grant_state() {
+        let config = isolated_memory_config("approval-query-list-grant-state-filter");
+        let repo = SessionRepository::new(&config).expect("repository");
+        seed_session(&repo, "root-session", SessionKind::Root, None);
+        seed_session(
+            &repo,
+            "child-session",
+            SessionKind::DelegateChild,
+            Some("root-session"),
+        );
+
+        seed_request_with_governance(
+            &repo,
+            "apr-grant-present",
+            "child-session",
+            "delegate_async",
+            "governed_tool_requires_per_call_approval",
+            "Orchestration",
+            "TopologyMutation",
+            "High",
+        );
+        seed_request_with_governance(
+            &repo,
+            "apr-grant-absent",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+            "App",
+            "Routine",
+            "Elevated",
+        );
+        seed_runtime_grant(
+            &repo,
+            "root-session",
+            "tool:delegate_async",
+            Some("operator-session"),
+        );
+
+        let present_only = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "grant_state": "present",
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome for grant_state filter");
+
+        assert_eq!(present_only.payload["matched_count"], 1);
+        assert_eq!(present_only.payload["returned_count"], 1);
+        assert_eq!(present_only.payload["filter"]["grant_state"], "present");
+        let requests = present_only.payload["requests"]
+            .as_array()
+            .expect("requests array");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["approval_request_id"], "apr-grant-present");
+        assert_eq!(requests[0]["grant"]["state"], "present");
+
+        let root_scope = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "grant_scope_session_id": "root-session",
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome for grant scope filter");
+
+        assert_eq!(root_scope.payload["matched_count"], 2);
+        assert_eq!(root_scope.payload["returned_count"], 2);
+        assert_eq!(
+            root_scope.payload["filter"]["grant_scope_session_id"],
+            "root-session"
+        );
+        let requests = root_scope.payload["requests"]
+            .as_array()
+            .expect("requests array");
+        assert_eq!(requests.len(), 2);
+        assert!(requests
+            .iter()
+            .all(|item| item["grant"]["scope_session_id"] == "root-session"));
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn approval_request_tool_query_list_rejects_unknown_grant_state() {
+        let config = isolated_memory_config("approval-query-list-invalid-grant-state");
+        let repo = SessionRepository::new(&config).expect("repository");
+        seed_session(&repo, "root-session", SessionKind::Root, None);
+        seed_request(
+            &repo,
+            "apr-invalid-grant-state",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+        );
+
+        let error = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "grant_state": "broken",
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect_err("grant_state should reject unknown values");
+
+        assert_eq!(
+            error,
+            "approval_requests_list_invalid_request: unknown grant_state `broken`"
         );
     }
 
