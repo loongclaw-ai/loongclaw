@@ -8,7 +8,7 @@ Catalog of design documents and architectural decisions.
 |----------|-------|--------|
 | [Core Beliefs](core-beliefs.md) | Engineering principles and taste enforcement | Living |
 | [Layered Kernel Design](layered-kernel-design.md) | L0-L9 kernel layer specification and boundary rules | Living |
-| [Provider Runtime Roadmap](provider-runtime-ROADMAP.md) | Provider/runtime evolution strategy | Active |
+| [Provider Runtime Roadmap](provider-runtime-roadmap.md) | Provider/runtime evolution strategy | Active |
 | [ACP/ACPX Pre-Embed](acp-acpx-preembed.md) | Advanced cryptographic primitives | Active |
 | [Harness Engineering](harness-engineering.md) | Environment design for agent-driven development | Active |
 
