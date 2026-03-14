@@ -44,6 +44,11 @@ struct ApprovalRequestsListRequest {
     risk_class: Option<ToolRiskClass>,
     grant_audit_status: Option<ApprovalGrantAuditStatus>,
     grant_review_age_bucket: Option<ApprovalAttentionAgeBucket>,
+    grant_needs_attention: Option<bool>,
+    grant_attention_reason: Option<ApprovalGrantAttentionReason>,
+    grant_recommended_action: Option<ApprovalGrantRecommendedAction>,
+    grant_attention_age_bucket: Option<ApprovalAttentionAgeBucket>,
+    grant_escalation_level: Option<ApprovalEscalationLevel>,
     grant_state: Option<ApprovalGrantState>,
     grant_scope_session_id: Option<String>,
     grant_created_by_session_id: Option<String>,
@@ -474,6 +479,33 @@ fn execute_approval_requests_list(
                 == Some(grant_review_age_bucket)
         });
     }
+    if let Some(grant_needs_attention) = request.grant_needs_attention {
+        request_summaries
+            .retain(|item| approval_request_has_grant_attention(item) == grant_needs_attention);
+    }
+    if let Some(grant_attention_reason) = request.grant_attention_reason {
+        request_summaries.retain(|item| {
+            approval_request_grant_attention_reason_from_json(item) == Some(grant_attention_reason)
+        });
+    }
+    if let Some(grant_recommended_action) = request.grant_recommended_action {
+        request_summaries.retain(|item| {
+            approval_request_grant_recommended_action_from_json(item)
+                == Some(grant_recommended_action)
+        });
+    }
+    if let Some(grant_attention_age_bucket) = request.grant_attention_age_bucket {
+        request_summaries.retain(|item| {
+            approval_request_grant_attention_age_bucket_from_json(item)
+                == Some(grant_attention_age_bucket)
+        });
+    }
+    if let Some(grant_escalation_level) = request.grant_escalation_level {
+        request_summaries.retain(|item| {
+            approval_request_grant_escalation_level_from_json(item)
+                == Some(grant_escalation_level)
+        });
+    }
     if let Some(grant_state) = request.grant_state {
         request_summaries
             .retain(|item| approval_request_grant_state_from_json(item) == Some(grant_state));
@@ -512,12 +544,7 @@ fn execute_approval_requests_list(
             .retain(|item| approval_request_replay_result_from_json(item) == Some(replay_result));
     }
     if let Some(needs_attention) = request.needs_attention {
-        request_summaries.retain(|item| {
-            item.get("execution_integrity")
-                .and_then(|value| value.get("needs_attention"))
-                .and_then(Value::as_bool)
-                == Some(needs_attention)
-        });
+        request_summaries.retain(|item| approval_request_has_attention(item) == needs_attention);
     }
     if let Some(attention_reason) = request.attention_reason {
         request_summaries.retain(|item| {
@@ -577,6 +604,7 @@ fn execute_approval_requests_list(
         });
     }
     let pending_summary = approval_request_list_pending_summary_json(&request_summaries);
+    let attention_summary = approval_request_list_attention_summary_json(&request_summaries);
     let integrity_summary = approval_request_list_integrity_summary_json(&request_summaries);
     let resolution_summary = approval_request_list_resolution_summary_json(&request_summaries);
     let correlation_summary = approval_request_list_correlation_summary_json(&request_summaries);
@@ -601,6 +629,11 @@ fn execute_approval_requests_list(
                 "risk_class": request.risk_class.map(tool_risk_class_as_str),
                 "grant_audit_status": request.grant_audit_status.map(ApprovalGrantAuditStatus::as_str),
                 "grant_review_age_bucket": request.grant_review_age_bucket.map(ApprovalAttentionAgeBucket::as_str),
+                "grant_needs_attention": request.grant_needs_attention,
+                "grant_attention_reason": request.grant_attention_reason.map(ApprovalGrantAttentionReason::as_str),
+                "grant_recommended_action": request.grant_recommended_action.map(ApprovalGrantRecommendedAction::as_str),
+                "grant_attention_age_bucket": request.grant_attention_age_bucket.map(ApprovalAttentionAgeBucket::as_str),
+                "grant_escalation_level": request.grant_escalation_level.map(ApprovalEscalationLevel::as_str),
                 "grant_state": request.grant_state.map(ApprovalGrantState::as_str),
                 "grant_scope_session_id": request.grant_scope_session_id,
                 "grant_created_by_session_id": request.grant_created_by_session_id,
@@ -624,6 +657,7 @@ fn execute_approval_requests_list(
             "matched_count": matched_count,
             "returned_count": returned_count,
             "pending_summary": pending_summary,
+            "attention_summary": attention_summary,
             "integrity_summary": integrity_summary,
             "resolution_summary": resolution_summary,
             "correlation_summary": correlation_summary,
@@ -1035,6 +1069,136 @@ fn approval_request_list_integrity_summary_json(requests: &[Value]) -> Value {
             "age_bucket_counts": age_bucket_counts,
             "counts_by_escalation": counts_by_escalation,
         },
+    })
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn approval_request_list_attention_summary_json(requests: &[Value]) -> Value {
+    let mut needs_attention_count = 0usize;
+    let mut signal_count = 0usize;
+    let mut request_counts_by_source = BTreeMap::from([
+        ("execution_only".to_owned(), 0usize),
+        ("grant_only".to_owned(), 0usize),
+        ("both".to_owned(), 0usize),
+    ]);
+    let mut counts_by_reason = BTreeMap::from([
+        ("integrity_gap".to_owned(), 0usize),
+        ("execution_failed".to_owned(), 0usize),
+        ("durable_grant_missing".to_owned(), 0usize),
+        ("grant_review_overdue".to_owned(), 0usize),
+    ]);
+    let mut recommended_action_counts = BTreeMap::from([
+        ("inspect_execution_event_stream".to_owned(), 0usize),
+        ("inspect_replay_persistence".to_owned(), 0usize),
+        ("inspect_tool_execution_failure".to_owned(), 0usize),
+        ("inspect_approval_integrity".to_owned(), 0usize),
+        ("inspect_runtime_grant_persistence".to_owned(), 0usize),
+        ("review_runtime_grant_scope".to_owned(), 0usize),
+    ]);
+    let mut age_bucket_counts = BTreeMap::from([
+        ("fresh".to_owned(), 0usize),
+        ("stale".to_owned(), 0usize),
+        ("overdue".to_owned(), 0usize),
+    ]);
+    let mut counts_by_escalation = BTreeMap::from([
+        ("elevated".to_owned(), 0usize),
+        ("critical".to_owned(), 0usize),
+    ]);
+
+    for request in requests {
+        let execution_attention = request.get("execution_integrity").unwrap_or(&Value::Null);
+        let grant_attention = request.get("grant_attention").unwrap_or(&Value::Null);
+        let has_execution_attention = approval_request_has_execution_attention(request);
+        let has_grant_attention = approval_request_has_grant_attention(request);
+        if !(has_execution_attention || has_grant_attention) {
+            continue;
+        }
+
+        needs_attention_count += 1;
+        match (has_execution_attention, has_grant_attention) {
+            (true, true) => {
+                *request_counts_by_source.entry("both".to_owned()).or_default() += 1;
+            }
+            (true, false) => {
+                *request_counts_by_source
+                    .entry("execution_only".to_owned())
+                    .or_default() += 1;
+            }
+            (false, true) => {
+                *request_counts_by_source
+                    .entry("grant_only".to_owned())
+                    .or_default() += 1;
+            }
+            (false, false) => {}
+        }
+
+        if has_execution_attention {
+            signal_count += 1;
+            if let Some(reason) = execution_attention
+                .get("attention_reason")
+                .and_then(Value::as_str)
+            {
+                *counts_by_reason.entry(reason.to_owned()).or_default() += 1;
+            }
+            if let Some(action) = execution_attention
+                .get("recommended_action")
+                .and_then(Value::as_str)
+            {
+                *recommended_action_counts
+                    .entry(action.to_owned())
+                    .or_default() += 1;
+            }
+            if let Some(age_bucket) = execution_attention
+                .get("attention_age_bucket")
+                .and_then(Value::as_str)
+            {
+                *age_bucket_counts.entry(age_bucket.to_owned()).or_default() += 1;
+            }
+            if let Some(escalation) = execution_attention
+                .get("escalation_level")
+                .and_then(Value::as_str)
+            {
+                *counts_by_escalation
+                    .entry(escalation.to_owned())
+                    .or_default() += 1;
+            }
+        }
+
+        if has_grant_attention {
+            signal_count += 1;
+            if let Some(reason) = grant_attention.get("attention_reason").and_then(Value::as_str) {
+                *counts_by_reason.entry(reason.to_owned()).or_default() += 1;
+            }
+            if let Some(action) = grant_attention
+                .get("recommended_action")
+                .and_then(Value::as_str)
+            {
+                *recommended_action_counts
+                    .entry(action.to_owned())
+                    .or_default() += 1;
+            }
+            if let Some(age_bucket) = grant_attention.get("age_bucket").and_then(Value::as_str) {
+                *age_bucket_counts.entry(age_bucket.to_owned()).or_default() += 1;
+            }
+            if let Some(escalation) = grant_attention
+                .get("escalation_level")
+                .and_then(Value::as_str)
+            {
+                *counts_by_escalation
+                    .entry(escalation.to_owned())
+                    .or_default() += 1;
+            }
+        }
+    }
+
+    json!({
+        "needs_attention_count": needs_attention_count,
+        "signal_count": signal_count,
+        "request_counts_by_source": request_counts_by_source,
+        "counts_by_reason": counts_by_reason,
+        "recommended_action_counts": recommended_action_counts,
+        "age_bucket_counts": age_bucket_counts,
+        "counts_by_escalation": counts_by_escalation,
     })
 }
 
@@ -2023,6 +2187,50 @@ fn approval_request_grant_review_age_bucket_from_json(
 }
 
 #[cfg(feature = "memory-sqlite")]
+fn approval_request_grant_attention_reason_from_json(
+    request: &Value,
+) -> Option<ApprovalGrantAttentionReason> {
+    request
+        .get("grant_attention")
+        .and_then(|value| value.get("attention_reason"))
+        .and_then(Value::as_str)
+        .and_then(|value| parse_approval_grant_attention_reason(value).ok())
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn approval_request_grant_recommended_action_from_json(
+    request: &Value,
+) -> Option<ApprovalGrantRecommendedAction> {
+    request
+        .get("grant_attention")
+        .and_then(|value| value.get("recommended_action"))
+        .and_then(Value::as_str)
+        .and_then(|value| parse_approval_grant_recommended_action(value).ok())
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn approval_request_grant_attention_age_bucket_from_json(
+    request: &Value,
+) -> Option<ApprovalAttentionAgeBucket> {
+    request
+        .get("grant_attention")
+        .and_then(|value| value.get("age_bucket"))
+        .and_then(Value::as_str)
+        .and_then(|value| parse_approval_grant_attention_age_bucket(value).ok())
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn approval_request_grant_escalation_level_from_json(
+    request: &Value,
+) -> Option<ApprovalEscalationLevel> {
+    request
+        .get("grant_attention")
+        .and_then(|value| value.get("escalation_level"))
+        .and_then(Value::as_str)
+        .and_then(|value| parse_approval_grant_escalation_level(value).ok())
+}
+
+#[cfg(feature = "memory-sqlite")]
 fn approval_request_resolved_by_session_id_from_json(request: &Value) -> Option<&str> {
     request.get("resolved_by_session_id").and_then(Value::as_str)
 }
@@ -2242,17 +2450,26 @@ fn approval_request_grant_escalation_priority(request: &Value) -> u8 {
 }
 
 #[cfg(feature = "memory-sqlite")]
-fn approval_request_has_attention(request: &Value) -> bool {
+fn approval_request_has_execution_attention(request: &Value) -> bool {
     request
         .get("execution_integrity")
         .and_then(|value| value.get("needs_attention"))
         .and_then(Value::as_bool)
         == Some(true)
-        || request
-            .get("grant_attention")
-            .and_then(|value| value.get("needs_attention"))
-            .and_then(Value::as_bool)
-            == Some(true)
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn approval_request_has_grant_attention(request: &Value) -> bool {
+    request
+        .get("grant_attention")
+        .and_then(|value| value.get("needs_attention"))
+        .and_then(Value::as_bool)
+        == Some(true)
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn approval_request_has_attention(request: &Value) -> bool {
+    approval_request_has_execution_attention(request) || approval_request_has_grant_attention(request)
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -2348,6 +2565,23 @@ fn parse_approval_requests_list_request(
         grant_review_age_bucket: optional_payload_approval_grant_review_age_bucket(
             payload,
             "grant_review_age_bucket",
+        )?,
+        grant_needs_attention: payload.get("grant_needs_attention").and_then(Value::as_bool),
+        grant_attention_reason: optional_payload_approval_grant_attention_reason(
+            payload,
+            "grant_attention_reason",
+        )?,
+        grant_recommended_action: optional_payload_approval_grant_recommended_action(
+            payload,
+            "grant_recommended_action",
+        )?,
+        grant_attention_age_bucket: optional_payload_approval_grant_attention_age_bucket(
+            payload,
+            "grant_attention_age_bucket",
+        )?,
+        grant_escalation_level: optional_payload_approval_grant_escalation_level(
+            payload,
+            "grant_escalation_level",
         )?,
         grant_state: optional_payload_approval_grant_state(payload, "grant_state")?,
         grant_scope_session_id: optional_payload_string(payload, "grant_scope_session_id"),
@@ -2527,6 +2761,46 @@ fn optional_payload_approval_grant_review_age_bucket(
 ) -> Result<Option<ApprovalAttentionAgeBucket>, String> {
     optional_payload_string(payload, field)
         .map(|value| parse_approval_grant_review_age_bucket(value.as_str()))
+        .transpose()
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn optional_payload_approval_grant_attention_reason(
+    payload: &Value,
+    field: &str,
+) -> Result<Option<ApprovalGrantAttentionReason>, String> {
+    optional_payload_string(payload, field)
+        .map(|value| parse_approval_grant_attention_reason(value.as_str()))
+        .transpose()
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn optional_payload_approval_grant_recommended_action(
+    payload: &Value,
+    field: &str,
+) -> Result<Option<ApprovalGrantRecommendedAction>, String> {
+    optional_payload_string(payload, field)
+        .map(|value| parse_approval_grant_recommended_action(value.as_str()))
+        .transpose()
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn optional_payload_approval_grant_attention_age_bucket(
+    payload: &Value,
+    field: &str,
+) -> Result<Option<ApprovalAttentionAgeBucket>, String> {
+    optional_payload_string(payload, field)
+        .map(|value| parse_approval_grant_attention_age_bucket(value.as_str()))
+        .transpose()
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn optional_payload_approval_grant_escalation_level(
+    payload: &Value,
+    field: &str,
+) -> Result<Option<ApprovalEscalationLevel>, String> {
+    optional_payload_string(payload, field)
+        .map(|value| parse_approval_grant_escalation_level(value.as_str()))
         .transpose()
 }
 
@@ -2713,6 +2987,63 @@ fn parse_approval_grant_review_age_bucket(
         "overdue" => Ok(ApprovalAttentionAgeBucket::Overdue),
         _ => Err(format!(
             "approval_requests_list_invalid_request: unknown grant_review_age_bucket `{value}`"
+        )),
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn parse_approval_grant_attention_reason(
+    value: &str,
+) -> Result<ApprovalGrantAttentionReason, String> {
+    match value {
+        "durable_grant_missing" => Ok(ApprovalGrantAttentionReason::DurableGrantMissing),
+        "grant_review_overdue" => Ok(ApprovalGrantAttentionReason::GrantReviewOverdue),
+        _ => Err(format!(
+            "approval_requests_list_invalid_request: unknown grant_attention_reason `{value}`"
+        )),
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn parse_approval_grant_recommended_action(
+    value: &str,
+) -> Result<ApprovalGrantRecommendedAction, String> {
+    match value {
+        "inspect_runtime_grant_persistence" => {
+            Ok(ApprovalGrantRecommendedAction::InspectRuntimeGrantPersistence)
+        }
+        "review_runtime_grant_scope" => {
+            Ok(ApprovalGrantRecommendedAction::ReviewRuntimeGrantScope)
+        }
+        _ => Err(format!(
+            "approval_requests_list_invalid_request: unknown grant_recommended_action `{value}`"
+        )),
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn parse_approval_grant_attention_age_bucket(
+    value: &str,
+) -> Result<ApprovalAttentionAgeBucket, String> {
+    match value {
+        "fresh" => Ok(ApprovalAttentionAgeBucket::Fresh),
+        "stale" => Ok(ApprovalAttentionAgeBucket::Stale),
+        "overdue" => Ok(ApprovalAttentionAgeBucket::Overdue),
+        _ => Err(format!(
+            "approval_requests_list_invalid_request: unknown grant_attention_age_bucket `{value}`"
+        )),
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn parse_approval_grant_escalation_level(
+    value: &str,
+) -> Result<ApprovalEscalationLevel, String> {
+    match value {
+        "elevated" => Ok(ApprovalEscalationLevel::Elevated),
+        "critical" => Ok(ApprovalEscalationLevel::Critical),
+        _ => Err(format!(
+            "approval_requests_list_invalid_request: unknown grant_escalation_level `{value}`"
         )),
     }
 }
@@ -3816,6 +4147,219 @@ mod tests {
             in_progress_requests[0]["approval_request_id"],
             "apr-attention-in-progress"
         );
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn approval_request_tool_query_list_unifies_needs_attention_and_summary() {
+        let config = isolated_memory_config("approval-query-list-operator-attention-unified");
+        let repo = SessionRepository::new(&config).expect("repository");
+        seed_session(&repo, "root-session", SessionKind::Root, None);
+
+        seed_request(
+            &repo,
+            "apr-operator-attn-execution-gap",
+            "root-session",
+            "delegate_async",
+            "governed_tool_requires_per_call_approval",
+        );
+        seed_request(
+            &repo,
+            "apr-operator-attn-grant-missing",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+        );
+        seed_request(
+            &repo,
+            "apr-operator-attn-grant-overdue",
+            "root-session",
+            "memory_search",
+            "governed_tool_requires_per_call_approval",
+        );
+        seed_request(
+            &repo,
+            "apr-operator-attn-clean",
+            "root-session",
+            "shell.exec",
+            "governed_tool_requires_per_call_approval",
+        );
+
+        transition_request_status(
+            &repo,
+            "apr-operator-attn-execution-gap",
+            ApprovalRequestStatus::Pending,
+            ApprovalRequestStatus::Executed,
+            Some("persist assistant turn via kernel failed: forced outcome persistence failure"),
+        );
+        repo.transition_approval_request_if_current(
+            "apr-operator-attn-grant-missing",
+            TransitionApprovalRequestIfCurrentRequest {
+                expected_status: ApprovalRequestStatus::Pending,
+                next_status: ApprovalRequestStatus::Approved,
+                decision: Some(ApprovalDecision::ApproveAlways),
+                resolved_by_session_id: Some("operator-missing".to_owned()),
+                executed_at: None,
+                last_error: None,
+            },
+        )
+        .expect("transition grant-missing operator attention request")
+        .expect("grant-missing operator attention request should transition");
+        repo.transition_approval_request_if_current(
+            "apr-operator-attn-grant-overdue",
+            TransitionApprovalRequestIfCurrentRequest {
+                expected_status: ApprovalRequestStatus::Pending,
+                next_status: ApprovalRequestStatus::Approved,
+                decision: Some(ApprovalDecision::ApproveAlways),
+                resolved_by_session_id: Some("operator-overdue".to_owned()),
+                executed_at: None,
+                last_error: None,
+            },
+        )
+        .expect("transition grant-overdue operator attention request")
+        .expect("grant-overdue operator attention request should transition");
+
+        repo.append_event(crate::session::repository::NewSessionEvent {
+            session_id: "root-session".to_owned(),
+            event_kind: "tool_approval_execution_started".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "approval_request_id": "apr-operator-attn-execution-gap",
+                "replay_decision_persisted": true,
+                "replay_decision_persist_error": null,
+            }),
+        })
+        .expect("append operator attention execution-gap started event");
+        repo.append_event(crate::session::repository::NewSessionEvent {
+            session_id: "root-session".to_owned(),
+            event_kind: "tool_approval_execution_finished".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "approval_request_id": "apr-operator-attn-execution-gap",
+                "resumed_tool_status": "ok",
+                "replay_outcome_persisted": false,
+                "replay_outcome_persist_error": "persist assistant turn via kernel failed: forced outcome persistence failure",
+            }),
+        })
+        .expect("append operator attention execution-gap finished event");
+
+        seed_runtime_grant(
+            &repo,
+            "root-session",
+            "tool:memory_search",
+            Some("operator-overdue"),
+        );
+
+        let now = test_unix_ts_now();
+        overwrite_request_requested_at(&config, "apr-operator-attn-execution-gap", now - 7_200);
+        overwrite_request_requested_at(&config, "apr-operator-attn-grant-missing", now - 3_600);
+        overwrite_request_requested_at(&config, "apr-operator-attn-grant-overdue", now - 300);
+        overwrite_request_requested_at(&config, "apr-operator-attn-clean", now - 30);
+        overwrite_runtime_grant_timestamps(
+            &config,
+            "root-session",
+            "tool:memory_search",
+            now - (9 * 24 * 60 * 60) - 60,
+            now - (9 * 24 * 60 * 60),
+        );
+
+        let summary_outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome for unified operator attention summary");
+
+        let attention_summary = &summary_outcome.payload["attention_summary"];
+        assert_eq!(attention_summary["needs_attention_count"], 3);
+        assert_eq!(attention_summary["signal_count"], 3);
+        assert_eq!(
+            attention_summary["request_counts_by_source"]["execution_only"],
+            1
+        );
+        assert_eq!(
+            attention_summary["request_counts_by_source"]["grant_only"],
+            2
+        );
+        assert_eq!(attention_summary["request_counts_by_source"]["both"], 0);
+        assert_eq!(attention_summary["counts_by_reason"]["integrity_gap"], 1);
+        assert_eq!(
+            attention_summary["counts_by_reason"]["durable_grant_missing"],
+            1
+        );
+        assert_eq!(
+            attention_summary["counts_by_reason"]["grant_review_overdue"],
+            1
+        );
+        assert_eq!(
+            attention_summary["recommended_action_counts"]["inspect_replay_persistence"],
+            1
+        );
+        assert_eq!(
+            attention_summary["recommended_action_counts"]["inspect_runtime_grant_persistence"],
+            1
+        );
+        assert_eq!(
+            attention_summary["recommended_action_counts"]["review_runtime_grant_scope"],
+            1
+        );
+        assert_eq!(attention_summary["age_bucket_counts"]["fresh"], 0);
+        assert_eq!(attention_summary["age_bucket_counts"]["stale"], 1);
+        assert_eq!(attention_summary["age_bucket_counts"]["overdue"], 1);
+        assert_eq!(attention_summary["counts_by_escalation"]["elevated"], 2);
+        assert_eq!(attention_summary["counts_by_escalation"]["critical"], 1);
+
+        let needs_attention_outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "needs_attention": true,
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome for unified needs_attention filter");
+
+        assert_eq!(needs_attention_outcome.payload["matched_count"], 3);
+        let attention_ids = needs_attention_outcome.payload["requests"]
+            .as_array()
+            .expect("needs_attention requests array")
+            .iter()
+            .filter_map(|item| item["approval_request_id"].as_str())
+            .collect::<Vec<_>>();
+        assert!(attention_ids.contains(&"apr-operator-attn-execution-gap"));
+        assert!(attention_ids.contains(&"apr-operator-attn-grant-missing"));
+        assert!(attention_ids.contains(&"apr-operator-attn-grant-overdue"));
+
+        let no_attention_outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "needs_attention": false,
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome for unified no-attention filter");
+
+        assert_eq!(no_attention_outcome.payload["matched_count"], 1);
+        assert_eq!(
+            no_attention_outcome.payload["requests"][0]["approval_request_id"],
+            "apr-operator-attn-clean"
+        );
+
     }
 
     #[cfg(feature = "memory-sqlite")]
@@ -6523,6 +7067,269 @@ mod tests {
         assert_eq!(
             requests[0]["approval_request_id"],
             "apr-grant-review-filter-fresh"
+        );
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn approval_request_tool_query_list_filters_by_grant_attention_state() {
+        let config = isolated_memory_config("approval-query-list-grant-attention-filter");
+        let repo = SessionRepository::new(&config).expect("repository");
+        seed_session(&repo, "root-session", SessionKind::Root, None);
+
+        seed_request(
+            &repo,
+            "apr-grant-attention-filter-missing",
+            "root-session",
+            "delegate_async",
+            "governed_tool_requires_per_call_approval",
+        );
+        seed_request(
+            &repo,
+            "apr-grant-attention-filter-overdue",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+        );
+        seed_request(
+            &repo,
+            "apr-grant-attention-filter-clean",
+            "root-session",
+            "memory_search",
+            "governed_tool_requires_per_call_approval",
+        );
+
+        repo.transition_approval_request_if_current(
+            "apr-grant-attention-filter-missing",
+            TransitionApprovalRequestIfCurrentRequest {
+                expected_status: ApprovalRequestStatus::Pending,
+                next_status: ApprovalRequestStatus::Approved,
+                decision: Some(ApprovalDecision::ApproveAlways),
+                resolved_by_session_id: Some("operator-missing".to_owned()),
+                executed_at: None,
+                last_error: None,
+            },
+        )
+        .expect("transition missing grant-attention filter request")
+        .expect("missing grant-attention filter request should transition");
+        repo.transition_approval_request_if_current(
+            "apr-grant-attention-filter-overdue",
+            TransitionApprovalRequestIfCurrentRequest {
+                expected_status: ApprovalRequestStatus::Pending,
+                next_status: ApprovalRequestStatus::Approved,
+                decision: Some(ApprovalDecision::ApproveAlways),
+                resolved_by_session_id: Some("operator-overdue".to_owned()),
+                executed_at: None,
+                last_error: None,
+            },
+        )
+        .expect("transition overdue grant-attention filter request")
+        .expect("overdue grant-attention filter request should transition");
+
+        seed_runtime_grant(
+            &repo,
+            "root-session",
+            "tool:session_cancel",
+            Some("operator-overdue"),
+        );
+
+        let now = test_unix_ts_now();
+        overwrite_runtime_grant_timestamps(
+            &config,
+            "root-session",
+            "tool:session_cancel",
+            now - (9 * 24 * 60 * 60) - 60,
+            now - (9 * 24 * 60 * 60),
+        );
+
+        let needs_attention_outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "grant_needs_attention": true,
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome for grant_needs_attention");
+
+        assert_eq!(needs_attention_outcome.payload["matched_count"], 2);
+        let attention_ids = needs_attention_outcome.payload["requests"]
+            .as_array()
+            .expect("grant attention requests array")
+            .iter()
+            .filter_map(|item| item["approval_request_id"].as_str())
+            .collect::<Vec<_>>();
+        assert!(attention_ids.contains(&"apr-grant-attention-filter-missing"));
+        assert!(attention_ids.contains(&"apr-grant-attention-filter-overdue"));
+
+        let no_attention_outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "grant_needs_attention": false,
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome for non-grant attention");
+
+        assert_eq!(no_attention_outcome.payload["matched_count"], 1);
+        assert_eq!(
+            no_attention_outcome.payload["requests"][0]["approval_request_id"],
+            "apr-grant-attention-filter-clean"
+        );
+
+        let missing_reason_outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "grant_attention_reason": "durable_grant_missing",
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome for grant_attention_reason");
+
+        assert_eq!(missing_reason_outcome.payload["matched_count"], 1);
+        assert_eq!(
+            missing_reason_outcome.payload["requests"][0]["approval_request_id"],
+            "apr-grant-attention-filter-missing"
+        );
+
+        let overdue_action_outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "grant_recommended_action": "review_runtime_grant_scope",
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome for grant_recommended_action");
+
+        assert_eq!(overdue_action_outcome.payload["matched_count"], 1);
+        assert_eq!(
+            overdue_action_outcome.payload["requests"][0]["approval_request_id"],
+            "apr-grant-attention-filter-overdue"
+        );
+
+        let overdue_age_outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "grant_attention_age_bucket": "overdue",
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome for grant_attention_age_bucket");
+
+        assert_eq!(overdue_age_outcome.payload["matched_count"], 1);
+        assert_eq!(
+            overdue_age_outcome.payload["requests"][0]["approval_request_id"],
+            "apr-grant-attention-filter-overdue"
+        );
+
+        let critical_outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "grant_escalation_level": "critical",
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome for grant_escalation_level");
+
+        assert_eq!(critical_outcome.payload["matched_count"], 1);
+        assert_eq!(
+            critical_outcome.payload["requests"][0]["approval_request_id"],
+            "apr-grant-attention-filter-missing"
+        );
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn approval_request_tool_query_list_rejects_unknown_grant_attention_reason() {
+        let config = isolated_memory_config("approval-query-list-invalid-grant-attention-reason");
+        let repo = SessionRepository::new(&config).expect("repository");
+        seed_session(&repo, "root-session", SessionKind::Root, None);
+        seed_request(
+            &repo,
+            "apr-invalid-grant-attention-reason",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+        );
+
+        let error = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "grant_attention_reason": "broken",
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect_err("grant_attention_reason should reject unknown values");
+
+        assert_eq!(
+            error,
+            "approval_requests_list_invalid_request: unknown grant_attention_reason `broken`"
+        );
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn approval_request_tool_query_list_rejects_unknown_grant_recommended_action() {
+        let config = isolated_memory_config("approval-query-list-invalid-grant-recommended-action");
+        let repo = SessionRepository::new(&config).expect("repository");
+        seed_session(&repo, "root-session", SessionKind::Root, None);
+        seed_request(
+            &repo,
+            "apr-invalid-grant-recommended-action",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+        );
+
+        let error = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "grant_recommended_action": "broken",
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect_err("grant_recommended_action should reject unknown values");
+
+        assert_eq!(
+            error,
+            "approval_requests_list_invalid_request: unknown grant_recommended_action `broken`"
         );
     }
 
