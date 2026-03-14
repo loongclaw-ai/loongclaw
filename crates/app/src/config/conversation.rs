@@ -92,8 +92,6 @@ pub struct ConversationConfig {
     pub safe_lane_complexity_threshold: u32,
     #[serde(default = "default_fast_lane_max_input_chars")]
     pub fast_lane_max_input_chars: usize,
-    #[serde(default = "default_high_risk_keywords")]
-    pub high_risk_keywords: Vec<String>,
     #[serde(default = "default_tool_result_payload_summary_limit_chars")]
     pub tool_result_payload_summary_limit_chars: usize,
     #[serde(default = "default_safe_lane_health_truncation_warn_threshold")]
@@ -104,6 +102,8 @@ pub struct ConversationConfig {
     pub safe_lane_health_verify_failure_warn_threshold: f64,
     #[serde(default = "default_safe_lane_health_replan_warn_threshold")]
     pub safe_lane_health_replan_warn_threshold: f64,
+    #[serde(default = "default_high_risk_keywords")]
+    pub high_risk_keywords: Vec<String>,
 }
 
 impl Default for ConversationConfig {
@@ -169,7 +169,6 @@ impl Default for ConversationConfig {
             safe_lane_risk_threshold: default_safe_lane_risk_threshold(),
             safe_lane_complexity_threshold: default_safe_lane_complexity_threshold(),
             fast_lane_max_input_chars: default_fast_lane_max_input_chars(),
-            high_risk_keywords: default_high_risk_keywords(),
             tool_result_payload_summary_limit_chars:
                 default_tool_result_payload_summary_limit_chars(),
             safe_lane_health_truncation_warn_threshold:
@@ -180,6 +179,7 @@ impl Default for ConversationConfig {
                 default_safe_lane_health_verify_failure_warn_threshold(),
             safe_lane_health_replan_warn_threshold: default_safe_lane_health_replan_warn_threshold(
             ),
+            high_risk_keywords: default_high_risk_keywords(),
         }
     }
 }
@@ -571,12 +571,12 @@ fn default_high_risk_keywords() -> Vec<String> {
         "rm -rf",
         "drop table",
         "delete",
-        "prod",
-        "production",
-        "deploy",
         "credential",
         "token",
         "secret",
+        "prod",
+        "production",
+        "deploy",
         "payment",
         "wallet",
     ]
