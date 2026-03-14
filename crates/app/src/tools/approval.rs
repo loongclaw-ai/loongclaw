@@ -29,6 +29,9 @@ const APPROVAL_ATTENTION_STALE_MAX_SECONDS: i64 = 4 * 60 * 60;
 struct ApprovalRequestsListRequest {
     session_id: Option<String>,
     status: Option<ApprovalRequestStatus>,
+    tool_name: Option<String>,
+    approval_key: Option<String>,
+    rule_id: Option<String>,
     decision: Option<ApprovalDecision>,
     replay_result: Option<ApprovalReplayResult>,
     integrity_status: Option<ApprovalExecutionIntegrityStatus>,
@@ -347,6 +350,18 @@ fn execute_approval_requests_list(
         request_summaries
             .retain(|item| approval_request_decision_from_json(item) == Some(decision));
     }
+    if let Some(tool_name) = request.tool_name.as_deref() {
+        request_summaries
+            .retain(|item| item.get("tool_name").and_then(Value::as_str) == Some(tool_name));
+    }
+    if let Some(approval_key) = request.approval_key.as_deref() {
+        request_summaries
+            .retain(|item| item.get("approval_key").and_then(Value::as_str) == Some(approval_key));
+    }
+    if let Some(rule_id) = request.rule_id.as_deref() {
+        request_summaries
+            .retain(|item| item.get("rule_id").and_then(Value::as_str) == Some(rule_id));
+    }
     if let Some(replay_result) = request.replay_result {
         request_summaries
             .retain(|item| approval_request_replay_result_from_json(item) == Some(replay_result));
@@ -403,6 +418,7 @@ fn execute_approval_requests_list(
     }
     let integrity_summary = approval_request_list_integrity_summary_json(&request_summaries);
     let resolution_summary = approval_request_list_resolution_summary_json(&request_summaries);
+    let correlation_summary = approval_request_list_correlation_summary_json(&request_summaries);
     let matched_count = request_summaries.len();
     request_summaries.truncate(request.limit);
     let returned_count = request_summaries.len();
@@ -414,6 +430,9 @@ fn execute_approval_requests_list(
             "filter": {
                 "session_id": request.session_id,
                 "status": request.status.map(ApprovalRequestStatus::as_str),
+                "tool_name": request.tool_name,
+                "approval_key": request.approval_key,
+                "rule_id": request.rule_id,
                 "decision": request.decision.map(ApprovalDecision::as_str),
                 "replay_result": request.replay_result.map(ApprovalReplayResult::as_str),
                 "integrity_status": request.integrity_status.map(ApprovalExecutionIntegrityStatus::as_str),
@@ -430,6 +449,7 @@ fn execute_approval_requests_list(
             "returned_count": returned_count,
             "integrity_summary": integrity_summary,
             "resolution_summary": resolution_summary,
+            "correlation_summary": correlation_summary,
             "requests": request_summaries,
         }),
     })
@@ -697,6 +717,33 @@ fn approval_request_list_resolution_summary_json(requests: &[Value]) -> Value {
         "decision_counts": decision_counts,
         "request_status_counts": request_status_counts,
         "replay_result_counts": replay_result_counts,
+    })
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn approval_request_list_correlation_summary_json(requests: &[Value]) -> Value {
+    let mut tool_name_counts = BTreeMap::<String, usize>::new();
+    let mut approval_key_counts = BTreeMap::<String, usize>::new();
+    let mut rule_id_counts = BTreeMap::<String, usize>::new();
+
+    for request in requests {
+        if let Some(tool_name) = request.get("tool_name").and_then(Value::as_str) {
+            *tool_name_counts.entry(tool_name.to_owned()).or_default() += 1;
+        }
+        if let Some(approval_key) = request.get("approval_key").and_then(Value::as_str) {
+            *approval_key_counts
+                .entry(approval_key.to_owned())
+                .or_default() += 1;
+        }
+        if let Some(rule_id) = request.get("rule_id").and_then(Value::as_str) {
+            *rule_id_counts.entry(rule_id.to_owned()).or_default() += 1;
+        }
+    }
+
+    json!({
+        "tool_name_counts": tool_name_counts,
+        "approval_key_counts": approval_key_counts,
+        "rule_id_counts": rule_id_counts,
     })
 }
 
@@ -1264,6 +1311,9 @@ fn parse_approval_requests_list_request(
     Ok(ApprovalRequestsListRequest {
         session_id: optional_payload_string(payload, "session_id"),
         status: optional_payload_approval_request_status(payload, "status")?,
+        tool_name: optional_payload_string(payload, "tool_name"),
+        approval_key: optional_payload_string(payload, "approval_key"),
+        rule_id: optional_payload_string(payload, "rule_id"),
         decision: optional_payload_approval_list_decision(payload, "decision")?,
         replay_result: optional_payload_approval_replay_result(payload, "replay_result")?,
         integrity_status: optional_payload_approval_execution_integrity_status(
@@ -2577,6 +2627,153 @@ mod tests {
             deny_requests[0]["approval_request_id"],
             "apr-decision-denied"
         );
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn approval_request_tool_query_list_filters_and_summarizes_by_correlation_fields() {
+        let config = isolated_memory_config("approval-query-list-correlation-filter");
+        let repo = SessionRepository::new(&config).expect("repository");
+        seed_session(&repo, "root-session", SessionKind::Root, None);
+        seed_request(
+            &repo,
+            "apr-correlation-delegate-rule-a",
+            "root-session",
+            "delegate_async",
+            "governed_tool_requires_per_call_approval",
+        );
+        seed_request(
+            &repo,
+            "apr-correlation-delegate-rule-b",
+            "root-session",
+            "delegate_async",
+            "governed_tool_requires_allowlist_grant",
+        );
+        seed_request(
+            &repo,
+            "apr-correlation-cancel-rule-a",
+            "root-session",
+            "session_cancel",
+            "governed_tool_requires_per_call_approval",
+        );
+
+        let summary_outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome for correlation summary");
+
+        let correlation_summary = &summary_outcome.payload["correlation_summary"];
+        assert_eq!(correlation_summary["tool_name_counts"]["delegate_async"], 2);
+        assert_eq!(correlation_summary["tool_name_counts"]["session_cancel"], 1);
+        assert_eq!(
+            correlation_summary["approval_key_counts"]["tool:delegate_async"],
+            2
+        );
+        assert_eq!(
+            correlation_summary["approval_key_counts"]["tool:session_cancel"],
+            1
+        );
+        assert_eq!(
+            correlation_summary["rule_id_counts"]["governed_tool_requires_per_call_approval"],
+            2
+        );
+        assert_eq!(
+            correlation_summary["rule_id_counts"]["governed_tool_requires_allowlist_grant"],
+            1
+        );
+
+        let tool_name_outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "tool_name": "delegate_async",
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome for tool_name filter");
+
+        assert_eq!(
+            tool_name_outcome.payload["filter"]["tool_name"],
+            "delegate_async"
+        );
+        assert_eq!(tool_name_outcome.payload["matched_count"], 2);
+        let tool_name_requests = tool_name_outcome.payload["requests"]
+            .as_array()
+            .expect("tool_name requests array");
+        assert_eq!(tool_name_requests.len(), 2);
+        assert!(tool_name_requests
+            .iter()
+            .all(|item| item["tool_name"] == "delegate_async"));
+
+        let approval_key_outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "approval_key": "tool:session_cancel",
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome for approval_key filter");
+
+        assert_eq!(
+            approval_key_outcome.payload["filter"]["approval_key"],
+            "tool:session_cancel"
+        );
+        assert_eq!(approval_key_outcome.payload["matched_count"], 1);
+        let approval_key_requests = approval_key_outcome.payload["requests"]
+            .as_array()
+            .expect("approval_key requests array");
+        assert_eq!(approval_key_requests.len(), 1);
+        assert_eq!(
+            approval_key_requests[0]["approval_request_id"],
+            "apr-correlation-cancel-rule-a"
+        );
+
+        let rule_id_outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_requests_list".to_owned(),
+                payload: json!({
+                    "rule_id": "governed_tool_requires_per_call_approval",
+                    "limit": 10,
+                }),
+            },
+            "root-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_requests_list outcome for rule_id filter");
+
+        assert_eq!(
+            rule_id_outcome.payload["filter"]["rule_id"],
+            "governed_tool_requires_per_call_approval"
+        );
+        assert_eq!(rule_id_outcome.payload["matched_count"], 2);
+        let rule_id_requests = rule_id_outcome.payload["requests"]
+            .as_array()
+            .expect("rule_id requests array");
+        let rule_id_request_ids = rule_id_requests
+            .iter()
+            .filter_map(|item| item["approval_request_id"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(rule_id_request_ids.len(), 2);
+        assert!(rule_id_request_ids.contains(&"apr-correlation-delegate-rule-a"));
+        assert!(rule_id_request_ids.contains(&"apr-correlation-cancel-rule-a"));
     }
 
     #[cfg(feature = "memory-sqlite")]
