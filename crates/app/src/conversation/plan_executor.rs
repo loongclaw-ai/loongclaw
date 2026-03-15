@@ -236,7 +236,11 @@ impl PlanExecutor {
                                 error_kind: Some(normalized.kind),
                                 error: Some(normalized.message.clone()),
                             });
-                            if attempt == node.max_attempts {
+                            // Approval-required failures are terminal until the caller changes
+                            // execution context, so retrying the same node cannot make progress.
+                            if normalized.kind == PlanNodeErrorKind::PolicyDenied
+                                || attempt == node.max_attempts
+                            {
                                 let elapsed_ms = started_at.elapsed().as_millis();
                                 return PlanRunReport {
                                     status: PlanRunStatus::Failed(PlanRunFailure::NodeFailed {
@@ -464,6 +468,39 @@ mod tests {
         }
     }
 
+    struct PolicyDeniedExecutor {
+        denied_node: String,
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl PolicyDeniedExecutor {
+        fn new(node_id: &str) -> Self {
+            Self {
+                denied_node: node_id.to_owned(),
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl PlanNodeExecutor for PolicyDeniedExecutor {
+        async fn execute(&self, node: &PlanNode, attempt: u8) -> Result<(), PlanNodeError> {
+            self.calls
+                .lock()
+                .expect("calls lock")
+                .push(format!("{}#{attempt}", node.id));
+
+            if node.id == self.denied_node {
+                return Err(PlanNodeError::policy_denied(format!(
+                    "policy denied for {}",
+                    node.id
+                )));
+            }
+
+            Ok(())
+        }
+    }
+
     #[async_trait]
     impl PlanNodeExecutor for RecordingExecutor {
         async fn execute(&self, node: &PlanNode, attempt: u8) -> Result<(), PlanNodeError> {
@@ -612,6 +649,36 @@ mod tests {
             }
             other => panic!("expected timeout node failure, got: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn executor_stops_retrying_after_policy_denied_failure() {
+        let graph = sample_graph();
+        let executor = PolicyDeniedExecutor::new("n2");
+        let report = PlanExecutor::execute(&graph, &executor).await;
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match report.status {
+            PlanRunStatus::Failed(PlanRunFailure::NodeFailed {
+                node_id,
+                attempts_used,
+                last_error_kind,
+                ref last_error,
+            }) => {
+                assert_eq!(node_id, "n2");
+                assert_eq!(attempts_used, 1);
+                assert_eq!(last_error_kind, PlanNodeErrorKind::PolicyDenied);
+                assert!(
+                    last_error.contains("policy denied"),
+                    "expected policy-denied reason, got: {last_error}"
+                );
+            }
+            other => panic!("expected policy-denied node failure, got: {other:?}"),
+        }
+
+        let calls = executor.calls.lock().expect("calls lock").clone();
+        assert_eq!(calls, vec!["n1#1".to_owned(), "n2#1".to_owned()]);
+        assert_eq!(report.attempts_used, 2);
     }
 
     #[tokio::test]

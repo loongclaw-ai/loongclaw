@@ -4227,10 +4227,12 @@ fn terminal_turn_failure_from_verify_failure(
 
 fn turn_result_from_plan_failure(failure: PlanRunFailure) -> TurnResult {
     let failure_meta = turn_failure_from_plan_failure(&failure);
-    if matches!(failure_meta.kind, TurnFailureKind::PolicyDenied) {
-        TurnResult::ToolDenied(failure_meta)
-    } else {
-        TurnResult::ToolError(failure_meta)
+    match failure_meta.kind {
+        TurnFailureKind::PolicyDenied => TurnResult::ToolDenied(failure_meta),
+        TurnFailureKind::Retryable | TurnFailureKind::NonRetryable => {
+            TurnResult::ToolError(failure_meta)
+        }
+        TurnFailureKind::Provider => TurnResult::ProviderError(failure_meta),
     }
 }
 
