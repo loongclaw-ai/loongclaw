@@ -1,24 +1,29 @@
-<!-- logo placeholder: replace with actual logo when available -->
-<!-- <p align="center"><img src="logo.png" alt="LoongClaw" width="200"/></p> -->
-
-<h1 align="center">LoongClaw</h1>
+# 🐉 LoongClaw - A Rust-based Agentic OS Kernel
 
 <p align="center">
-  <strong>A Rust-first Agentic OS foundation -- stable kernel contracts, strict policy boundaries, pluggable runtime orchestration.</strong>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo/loongclaw-logo-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="assets/logo/loongclaw-logo-light.png" />
+    <img src="assets/logo/loongclaw-logo-light.png" alt="LoongClaw" width="800" />
+  </picture>
 </p>
 
-<p align="center">
-  <a href="https://github.com/loongclaw-ai/loongclaw/actions/workflows/ci.yml"><img src="https://github.com/loongclaw-ai/loongclaw/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-  <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT" /></a>
-  <img src="https://img.shields.io/badge/rust-edition%202024-orange.svg" alt="Rust Edition 2024" />
-  <img src="https://img.shields.io/badge/version-0.1.2-yellow.svg" alt="Version: 0.1.2" />
-</p>
+<h3 align="center"><em>"Originated from the East, here to benefit the world"</em></h3>
 
 <p align="center">
-  <a href="https://x.com/loongclawai"><img src="https://img.shields.io/badge/Follow-loongclawai-000000?logo=x&logoColor=white" alt="X" /></a>
-  <a href="https://t.me/loongclaw"><img src="https://img.shields.io/badge/Telegram-loongclaw-26A5E4?logo=telegram&logoColor=white" alt="Telegram" /></a>
-  <a href="https://discord.gg/7kSTX9mca"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
-  <a href="https://www.reddit.com/r/LoongClaw"><img src="https://img.shields.io/badge/Reddit-r%2Floongclaw-FF4500?logo=reddit&logoColor=white" alt="Reddit" /></a>
+  <a href="https://github.com/loongclaw-ai/loongclaw/actions/workflows/ci.yml?branch=dev"><img src="https://img.shields.io/github/actions/workflow/status/loongclaw-ai/loongclaw/ci.yml?branch=dev&label=build&style=flat-square" alt="Build" /></a>
+  <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square" alt="License: MIT" /></a>
+  <img src="https://img.shields.io/badge/rust-edition%202024-orange.svg?style=flat-square" alt="Rust Edition 2024" />
+  <a href="https://github.com/loongclaw-ai/loongclaw/releases"><img src="https://img.shields.io/github/v/release/loongclaw-ai/loongclaw?label=version&color=yellow&include_prereleases&style=flat-square" alt="Version" /></a>
+  <br/>
+  <a href="https://x.com/loongclawai"><img src="https://img.shields.io/badge/Follow-loongclawai-000000?logo=x&logoColor=white&style=flat-square" alt="X" /></a>
+  <a href="https://t.me/loongclaw"><img src="https://img.shields.io/badge/Telegram-loongclaw-26A5E4?logo=telegram&logoColor=white&style=flat-square" alt="Telegram" /></a>
+  <a href="https://discord.gg/7kSTX9mca"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white&style=flat-square" alt="Discord" /></a>
+  <a href="https://www.reddit.com/r/LoongClaw"><img src="https://img.shields.io/badge/Reddit-r%2Floongclaw-FF4500?logo=reddit&logoColor=white&style=flat-square" alt="Reddit" /></a>
+  <br/>
+  <a href="https://xhslink.com/m/1dqFqF1IKDk"><img src="https://img.shields.io/badge/Xiaohongshu-follow-FF2442?logo=xiaohongshu&logoColor=white&style=flat-square" alt="Xiaohongshu" /></a>
+  <a href="https://loongclaw.ai/feishu.jpg"><img src="https://img.shields.io/badge/Feishu-QR-3370FF?logo=lark&logoColor=white&style=flat-square" alt="Feishu QR" /></a>
+  <a href="https://loongclaw.ai/wechat.jpg"><img src="https://img.shields.io/badge/WeChat-QR-07C160?logo=wechat&logoColor=white&style=flat-square" alt="WeChat QR" /></a>
 </p>
 
 <p align="center">
@@ -38,26 +43,32 @@
 
 ## Why LoongClaw?
 
-LoongClaw is a layered Agentic OS kernel focused on stable kernel contracts, strict policy boundaries, and pluggable runtime orchestration. Core and business logic are strictly separated:
+LoongClaw is a Rust-based Agentic OS kernel with strict separation of core and business logic:
 
-- **Minimal, stable core** -- handles only policy, security, and audit. No business logic in the kernel.
-- **Security cannot be bypassed** -- every tool call, memory operation, and connector invocation is gated by the policy engine. High-risk actions require explicit human authorization.
-- **Business logic lives in extension planes** -- providers, tools, channels, and memory backends are all replaceable adapters that never touch the kernel.
-- **Multi-language plugins** -- supports Rust, WASM, and process plugins in any language. The community can extend freely.
+- **Security first** -- every tool call, memory operation, and connector invocation is gated by the policy engine. High-risk actions are blocked by default and require pre-authorization. Full audit trail included.
+- **Fast deployment** -- single-binary install. One command (`loongclaw onboard`) to configure. Guided onboarding, personality presets, and memory profiles are built-in runtime capabilities. Supports one-click migration from existing claw data.
+- **Lightweight** -- the kernel handles only policy, security, and audit — no business logic. Small footprint, low resource usage.
+- **Stable and reliable** -- kernel contracts are backward-compatible with no breaking changes. 600+ tests with strict CI gates on every commit.
+- **Flexibly extensible** -- providers, tools, channels, and memory backends are all replaceable adapters that never touch the kernel. Supports Rust, WASM, and process plugins in any language.
+- **Easy to uninstall** -- we won't litter randomly in your workspace when you eventually want to say goodbye
 - **Bidirectional integration** -- can be embedded as a kernel into other systems, or connect to external services via adapters.
-- **Operator-ready product layer** -- onboarding, personalities, memory profiles, and legacy claw import are all first-class runtime capabilities.
 
 ## Sponsors
 
 <p align="center">
-  <a href="https://www.volcengine.com">
+  <a href="https://www.byteplus.com/en/activity/codingplan?utm_campaign=loongclaw&utm_content=loongclaw&utm_medium=devrel&utm_source=OWO&utm_term=loongclaw">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="assets/sponsors_logo/volcengine-logo-dark.png"/>
-      <img src="assets/sponsors_logo/volcengine-logo-light.png" alt="Volcengine" height="48"/>
+      <source media="(prefers-color-scheme: dark)" srcset="assets/sponsors_logo/volcengine/volcengine-logo-dark-en.png"/>
+      <img src="assets/sponsors_logo/volcengine/volcengine-logo-light-en.png" alt="Volcengine" height="44"/>
     </picture>
   </a>
-  <br/><br/>
-  Thanks to <a href="https://www.volcengine.com">Volcengine</a> for sponsoring this project.
+  <span>&emsp;&emsp;&emsp;</span>
+  <a href="https://www.feishu.cn">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="assets/sponsors_logo/feishu/feishu-logo-dark-en.png"/>
+      <img src="assets/sponsors_logo/feishu/feishu-logo-light-en.png" alt="Feishu" height="44"/>
+    </picture>
+  </a>
 </p>
 
 ## Alpha-Test Highlights
@@ -377,7 +388,7 @@ Recommended runtime flow:
 
 **Developer Experience**
 - 7-crate DAG with zero cycles and strict dependency direction
-- 370+ tests with strict lint/fmt CI gates at every commit
+- 650+ tests with strict lint/fmt CI gates at every commit
 - Cargo feature flags for modular builds
 - Spec-driven deterministic test execution
 - Benchmark gates for programmatic pressure and WASM cache performance

@@ -1,24 +1,29 @@
-<!-- logo placeholder: replace with actual logo when available -->
-<!-- <p align="center"><img src="logo.png" alt="LoongClaw" width="200"/></p> -->
-
-<h1 align="center">LoongClaw</h1>
+# 🐉 LoongClaw - 基于 Rust 构建的 Agentic OS 内核
 
 <p align="center">
-  <strong>Rust 优先的 Agentic OS 基座 -- 稳定的内核协议、严格的策略边界、即插即用的运行时(runtime)扩展。</strong>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo/loongclaw-logo-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="assets/logo/loongclaw-logo-light.png" />
+    <img src="assets/logo/loongclaw-logo-light.png" alt="LoongClaw" width="800" />
+  </picture>
 </p>
 
-<p align="center">
-  <a href="https://github.com/loongclaw-ai/loongclaw/actions/workflows/ci.yml"><img src="https://github.com/loongclaw-ai/loongclaw/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-  <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT" /></a>
-  <img src="https://img.shields.io/badge/rust-edition%202024-orange.svg" alt="Rust Edition 2024" />
-  <img src="https://img.shields.io/badge/version-0.1.2-yellow.svg" alt="Version: 0.1.2" />
-</p>
+<h3 align="center"><em>“发轫于东，以会群友”</em></h3>
 
 <p align="center">
-  <a href="https://x.com/loongclawai"><img src="https://img.shields.io/badge/Follow-loongclawai-000000?logo=x&logoColor=white" alt="X" /></a>
-  <a href="https://t.me/loongclaw"><img src="https://img.shields.io/badge/Telegram-loongclaw-26A5E4?logo=telegram&logoColor=white" alt="Telegram" /></a>
-  <a href="https://discord.gg/7kSTX9mca"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
-  <a href="https://www.reddit.com/r/LoongClaw"><img src="https://img.shields.io/badge/Reddit-r%2Floongclaw-FF4500?logo=reddit&logoColor=white" alt="Reddit" /></a>
+  <a href="https://github.com/loongclaw-ai/loongclaw/actions/workflows/ci.yml?branch=dev"><img src="https://img.shields.io/github/actions/workflow/status/loongclaw-ai/loongclaw/ci.yml?branch=dev&label=build&style=flat-square" alt="Build" /></a>
+  <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square" alt="License: MIT" /></a>
+  <img src="https://img.shields.io/badge/rust-edition%202024-orange.svg?style=flat-square" alt="Rust Edition 2024" />
+  <a href="https://github.com/loongclaw-ai/loongclaw/releases"><img src="https://img.shields.io/github/v/release/loongclaw-ai/loongclaw?label=version&color=yellow&include_prereleases&style=flat-square" alt="Version" /></a>
+  <br/>
+  <a href="https://x.com/loongclawai"><img src="https://img.shields.io/badge/Follow-loongclawai-000000?logo=x&logoColor=white&style=flat-square" alt="X" /></a>
+  <a href="https://t.me/loongclaw"><img src="https://img.shields.io/badge/Telegram-loongclaw-26A5E4?logo=telegram&logoColor=white&style=flat-square" alt="Telegram" /></a>
+  <a href="https://discord.gg/7kSTX9mca"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white&style=flat-square" alt="Discord" /></a>
+  <a href="https://www.reddit.com/r/LoongClaw"><img src="https://img.shields.io/badge/Reddit-r%2Floongclaw-FF4500?logo=reddit&logoColor=white&style=flat-square" alt="Reddit" /></a>
+  <br/>
+  <a href="https://xhslink.com/m/1dqFqF1IKDk"><img src="https://img.shields.io/badge/Xiaohongshu-follow-FF2442?logo=xiaohongshu&logoColor=white&style=flat-square" alt="Xiaohongshu" /></a>
+  <a href="https://loongclaw.ai/feishu.jpg"><img src="https://img.shields.io/badge/Feishu-QR-3370FF?logo=lark&logoColor=white&style=flat-square" alt="Feishu QR" /></a>
+  <a href="https://loongclaw.ai/wechat.jpg"><img src="https://img.shields.io/badge/WeChat-QR-07C160?logo=wechat&logoColor=white&style=flat-square" alt="WeChat QR" /></a>
 </p>
 
 <p align="center">
@@ -38,25 +43,33 @@
 
 ## 什么是 LoongClaw？
 
-LoongClaw 是一个基于Rust构建的 Agentic OS 内核，专注于稳定且轻量的内核协议、严格的策略边界和即插即用的运行时（runtime）扩展，意在实现核心与业务功能的严格分离：
+LoongClaw 是一个基于 Rust 构建的 Agentic OS 内核，核心与业务严格分离：
 
-- **内核精简稳定** -- 只负责策略、安全和审计，不包含任何额外的业务逻辑，力图保持体积精简，足以在边缘设备上运行
-- **安全边界不可逾越** -- 每个工具调用、内存操作和连接器调用都经过策略引擎管控；高风险操作需要显式人工授权
-- **业务逻辑扩展** -- provider、工具、通道、内存后端都是可替换的适配器扩展，不侵入内核
-- **多语言插件** -- 支持 Rust、WASM及任意语言的进程插件，社区可自由扩展
+- **安全第一** -- 每个工具调用、内存操作和连接器调用都经过策略引擎管控；高风险操作默认阻断，需预先授权方可执行；全链路审计可追溯
+- **快速上手** -- 单二进制安装，`loongclaw onboard` 一条命令完成配置；支持从原有 claw 数据一键迁移
+- **轻量高效** -- 内核只负责策略、安全和审计，不包含业务逻辑；体积精简，资源占用低
+- **稳定可靠** -- 内核协议向后兼容、不做破坏性变更；600+ 测试用例 + 严格 CI 门禁保障每次提交
+- **灵活扩展** -- provider、工具、通道、内存后端都是可替换的适配器，不侵入内核；支持 Rust、WASM 及任意语言的进程插件，社区可自由扩展
+- **易于卸载** -- 当你最终想说再见时，我们不会留下来过的痕迹。
 - **双向可集成** -- 既能作为内核被其他系统嵌入，也能通过适配器对接外部服务
+
 
 ## 赞助商
 
 <p align="center">
-  <a href="https://www.volcengine.com">
+  <a href="https://www.volcengine.com/activity/codingplan?utm_campaign=loongclaw&utm_content=loongclaw&utm_medium=devrel&utm_source=OWO&utm_term=loongclaw">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="assets/sponsors_logo/volcengine-logo-dark.png"/>
-      <img src="assets/sponsors_logo/volcengine-logo-light.png" alt="火山引擎" height="48"/>
+      <source media="(prefers-color-scheme: dark)" srcset="assets/sponsors_logo/volcengine/volcengine-logo-dark-zh.png"/>
+      <img src="assets/sponsors_logo/volcengine/volcengine-logo-light-zh.png" alt="火山引擎" height="44"/>
     </picture>
   </a>
-  <br/><br/>
-  感谢<a href="https://www.volcengine.com">火山引擎</a>对本项目的赞助支持。
+  <span>&emsp;&emsp;&emsp;</span>
+  <a href="https://www.feishu.cn">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="assets/sponsors_logo/feishu/feishu-logo-dark-zh.png"/>
+      <img src="assets/sponsors_logo/feishu/feishu-logo-light-zh.png" alt="飞书" height="44"/>
+    </picture>
+  </a>
 </p>
 
 ## 快速开始
@@ -125,9 +138,36 @@ cargo install --path crates/daemon
 cargo test --workspace --all-features
 ```
 
+## 提示词与人格
+
+LoongClaw 内置了一套原生提示词包和三种默认人格。三种人格共享同一套安全优先的边界约束，
+仅在语气、主动性、确认风格和回复密度上有所不同。
+
+- `calm_engineering`：严谨、直接、技术导向
+- `friendly_collab`：亲和、协作、适时给出解释
+- `autonomous_executor`：果断、高主动性、执行导向
+
+交互式引导流程默认进入人格选择，高级用户也可通过 `--system-prompt` 传入完整的自定义系统提示词。
+
+## 记忆档案
+
+LoongClaw 将记忆行为与存储后端分离。当前后端为 SQLite，提供三种可选的上下文注入模式：
+
+- `window_only`：仅加载最近的滑动窗口
+- `window_plus_summary`：较早的对话轮次压缩为摘要块
+- `profile_plus_window`：在滑动窗口前注入持久化的 `profile_note` 块
+
+`profile_note` 是首个支持迁移的持久记忆通道，用于承载导入的 claw 身份、稳定偏好或用户的长期个性化配置，而无需将所有内容塞进系统提示词。
+
 ## 迁移与导入
 
-LoongClaw 支持从旧 claw 工作区进行发现、规划、应用与回滚：
+LoongClaw 在引导流程中可自动发现原有的 claw 数据目录，并在首次配置前提供导入选项。
+
+- 推荐方式：从置信度最高的单一来源导入。
+- 进阶方式：规划多个来源，仅合并记忆档案通道，提示词与系统身份保持单一来源。
+- 安全默认值：密钥不参与迁移，导入的运行时身份统一归一化为 `LoongClaw`，每次应用都会生成备份清单并支持回滚。
+
+CLI 迁移工作流：
 
 - 不传 `--mode` 时默认使用 `plan`（仅预览，不落盘）。
 - `apply_selected` 同时兼容 `--source-id` 与别名 `--selection-id`。
@@ -271,7 +311,7 @@ auto_expose_installed = true
 
 **开发者体验**
 - 7 crate DAG，零循环，严格依赖方向
-- 370+ 测试，每次提交都有严格的 lint/fmt CI 检查
+- 650+ 测试，每次提交都有严格的 lint/fmt CI 检查
 - Cargo feature flags 支持模块化构建
 - 基于 spec 的确定性测试执行
 - 编程压力测试与 WASM 缓存性能的基准验收
