@@ -2774,6 +2774,18 @@ impl<R> AppToolDispatcher for CoordinatorAppToolDispatcher<'_, R>
 where
     R: ConversationRuntime + ?Sized,
 {
+    async fn maybe_require_approval(
+        &self,
+        session_context: &SessionContext,
+        intent: &ToolIntent,
+        descriptor: &crate::tools::ToolDescriptor,
+        kernel_ctx: Option<&KernelContext>,
+    ) -> Result<Option<super::turn_engine::ApprovalRequirement>, String> {
+        self.fallback
+            .maybe_require_approval(session_context, intent, descriptor, kernel_ctx)
+            .await
+    }
+
     async fn execute_app_tool(
         &self,
         session_context: &SessionContext,
