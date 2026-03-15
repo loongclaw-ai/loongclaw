@@ -495,6 +495,7 @@ async fn main() {
                 &output,
                 enforce_gate,
                 preflight_fail_on_warnings,
+                Some(native_spec_tool_executor),
             )
             .await
         }

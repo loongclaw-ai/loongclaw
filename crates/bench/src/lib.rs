@@ -18,8 +18,9 @@ use loongclaw_spec::programmatic::{
     acquire_programmatic_circuit_slot, record_programmatic_circuit_outcome,
 };
 use loongclaw_spec::{
-    BridgeRuntimePolicy, CliResult, ProgrammaticCircuitBreakerPolicy,
-    ProgrammaticCircuitRuntimeState, RunnerSpec, execute_spec, execute_wasm_component_bridge,
+    BridgeRuntimePolicy, CliResult, NativeToolExecutor, ProgrammaticCircuitBreakerPolicy,
+    ProgrammaticCircuitRuntimeState, RunnerSpec, execute_spec_with_native_tool_executor,
+    execute_wasm_component_bridge, spec_requires_native_tool_executor,
 };
 
 const DEFAULT_PRESSURE_ITERATIONS: usize = 12;
@@ -338,6 +339,7 @@ pub async fn run_programmatic_pressure_benchmark_cli(
     output_path: &str,
     enforce_gate: bool,
     preflight_fail_on_warnings: bool,
+    native_tool_executor: Option<NativeToolExecutor>,
 ) -> CliResult<()> {
     let matrix: ProgrammaticPressureMatrix = read_json_file(matrix_path)?;
 
@@ -382,6 +384,7 @@ pub async fn run_programmatic_pressure_benchmark_cli(
         baseline.as_ref(),
         preflight,
         enforce_gate,
+        native_tool_executor,
     )
     .await;
 
@@ -771,13 +774,19 @@ async fn run_programmatic_pressure_matrix(
     baseline: Option<&ProgrammaticPressureBaseline>,
     preflight: Option<ProgrammaticPressureBaselinePreflight>,
     enforce_gate: bool,
+    native_tool_executor: Option<NativeToolExecutor>,
 ) -> ProgrammaticPressureReport {
     let mut scenarios = Vec::new();
     for scenario in &matrix.scenarios {
         let baseline_thresholds = baseline.and_then(|value| value.scenarios.get(&scenario.name));
-        let report =
-            run_programmatic_pressure_scenario(matrix, scenario, baseline_thresholds, enforce_gate)
-                .await;
+        let report = run_programmatic_pressure_scenario(
+            matrix,
+            scenario,
+            baseline_thresholds,
+            enforce_gate,
+            native_tool_executor,
+        )
+        .await;
         scenarios.push(report);
     }
 
@@ -988,6 +997,7 @@ async fn run_programmatic_pressure_scenario(
     scenario: &ProgrammaticPressureScenario,
     thresholds: Option<&ProgrammaticPressureScenarioThresholds>,
     enforce_gate: bool,
+    native_tool_executor: Option<NativeToolExecutor>,
 ) -> ProgrammaticPressureScenarioReport {
     let iterations = scenario
         .iterations
@@ -998,13 +1008,13 @@ async fn run_programmatic_pressure_scenario(
         .unwrap_or(matrix.default_warmup_iterations);
 
     for _ in 0..warmup_iterations {
-        let _ = run_pressure_scenario_once(scenario).await;
+        let _ = run_pressure_scenario_once(scenario, native_tool_executor).await;
     }
 
     let mut samples = Vec::with_capacity(iterations);
     for _ in 0..iterations {
         let started = TokioInstant::now();
-        let run = run_pressure_scenario_once(scenario).await;
+        let run = run_pressure_scenario_once(scenario, native_tool_executor).await;
         let latency_ms = started.elapsed().as_secs_f64() * 1_000.0;
         samples.push(match run {
             Ok(mut sample) => {
@@ -1037,10 +1047,11 @@ async fn run_programmatic_pressure_scenario(
 
 async fn run_pressure_scenario_once(
     scenario: &ProgrammaticPressureScenario,
+    native_tool_executor: Option<NativeToolExecutor>,
 ) -> CliResult<ScenarioRunSample> {
     match &scenario.kind {
         ProgrammaticPressureScenarioKind::SpecRun { spec } => {
-            run_spec_pressure_once(spec, scenario).await
+            run_spec_pressure_once(spec, scenario, native_tool_executor).await
         }
         ProgrammaticPressureScenarioKind::CircuitHalfOpen {
             connector_name,
@@ -1066,13 +1077,14 @@ async fn run_pressure_scenario_once(
 async fn run_spec_pressure_once(
     spec: &RunnerSpec,
     scenario: &ProgrammaticPressureScenario,
+    native_tool_executor: Option<NativeToolExecutor>,
 ) -> CliResult<ScenarioRunSample> {
-    if spec_requires_native_tool_executor(spec) {
+    if spec_requires_native_tool_executor(spec) && native_tool_executor.is_none() {
         return Err(
             "spec benchmark scenario requires a native tool executor; move this claw.import/claw-migration run to daemon composition root".to_owned(),
         );
     }
-    let report = execute_spec(spec, false).await;
+    let report = execute_spec_with_native_tool_executor(spec, false, native_tool_executor).await;
     let blocked = report.operation_kind == "blocked" || report.blocked_reason.is_some();
 
     let mut sample = ScenarioRunSample {
@@ -1110,28 +1122,6 @@ async fn run_spec_pressure_once(
     collect_spec_step_metrics(&report.outcome, &mut sample);
 
     Ok(sample)
-}
-
-fn spec_requires_native_tool_executor(spec: &RunnerSpec) -> bool {
-    match &spec.operation {
-        loongclaw_spec::OperationSpec::ToolCore { tool_name, .. } => matches!(
-            tool_name.as_str(),
-            "claw.import" | "claw_import" | "import_claw"
-        ),
-        loongclaw_spec::OperationSpec::ToolExtension { extension, .. } => {
-            extension == "claw-migration"
-        }
-        loongclaw_spec::OperationSpec::Task { .. }
-        | loongclaw_spec::OperationSpec::ConnectorLegacy { .. }
-        | loongclaw_spec::OperationSpec::ConnectorCore { .. }
-        | loongclaw_spec::OperationSpec::ConnectorExtension { .. }
-        | loongclaw_spec::OperationSpec::RuntimeCore { .. }
-        | loongclaw_spec::OperationSpec::RuntimeExtension { .. }
-        | loongclaw_spec::OperationSpec::MemoryCore { .. }
-        | loongclaw_spec::OperationSpec::MemoryExtension { .. }
-        | loongclaw_spec::OperationSpec::ToolSearch { .. }
-        | loongclaw_spec::OperationSpec::ProgrammaticToolCall { .. } => false,
-    }
 }
 
 async fn run_circuit_half_open_pressure_once(
@@ -1986,7 +1976,10 @@ fn default_failures_before_open() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kernel::{Capability, ExecutionRoute, HarnessKind, VerticalPackManifest};
+    use kernel::{
+        Capability, ExecutionRoute, HarnessKind, ToolCoreOutcome, ToolCoreRequest,
+        VerticalPackManifest,
+    };
     use serde_json::json;
 
     #[test]
@@ -2670,7 +2663,7 @@ mod tests {
             kind: ProgrammaticPressureScenarioKind::SpecRun { spec: spec.clone() },
         };
 
-        let error = run_spec_pressure_once(&spec, &scenario)
+        let error = run_spec_pressure_once(&spec, &scenario, None)
             .await
             .expect_err("bench spec runs should reject native claw.import scenarios");
         assert!(error.contains("native tool executor"));
@@ -2710,6 +2703,71 @@ mod tests {
             },
         };
 
-        assert!(spec_requires_native_tool_executor(&spec));
+        assert!(loongclaw_spec::spec_requires_native_tool_executor(&spec));
+    }
+
+    fn test_native_tool_executor(
+        request: ToolCoreRequest,
+    ) -> Option<Result<ToolCoreOutcome, String>> {
+        if !loongclaw_spec::tool_name_requires_native_tool_executor(request.tool_name.as_str()) {
+            return None;
+        }
+        Some(Ok(ToolCoreOutcome {
+            status: "ok".to_owned(),
+            payload: json!({
+                "adapter": "native-tools",
+                "tool": request.tool_name,
+            }),
+        }))
+    }
+
+    #[tokio::test]
+    async fn run_spec_pressure_once_uses_native_executor_when_present() {
+        let spec = RunnerSpec {
+            pack: VerticalPackManifest {
+                pack_id: "bench-spec-native-claw-import-exec".to_owned(),
+                domain: "ops".to_owned(),
+                version: "0.1.0".to_owned(),
+                default_route: ExecutionRoute {
+                    harness_kind: HarnessKind::EmbeddedPi,
+                    adapter: Some("pi-local".to_owned()),
+                },
+                allowed_connectors: BTreeSet::new(),
+                granted_capabilities: BTreeSet::from([Capability::InvokeTool]),
+                metadata: BTreeMap::new(),
+            },
+            agent_id: "bench-agent-native-claw-import-exec".to_owned(),
+            ttl_s: 60,
+            approval: None,
+            defaults: None,
+            self_awareness: None,
+            plugin_scan: None,
+            bridge_support: None,
+            bootstrap: None,
+            auto_provision: None,
+            hotfixes: Vec::new(),
+            operation: loongclaw_spec::OperationSpec::ToolCore {
+                tool_name: "claw.import".to_owned(),
+                required_capabilities: BTreeSet::from([Capability::InvokeTool]),
+                payload: json!({"mode": "plan"}),
+                core: None,
+            },
+        };
+        let scenario = ProgrammaticPressureScenario {
+            name: "native-claw-import-exec".to_owned(),
+            description: None,
+            iterations: Some(1),
+            warmup_iterations: Some(0),
+            expected_operation_kind: "tool_core".to_owned(),
+            allow_blocked: false,
+            kind: ProgrammaticPressureScenarioKind::SpecRun { spec: spec.clone() },
+        };
+
+        let sample = run_spec_pressure_once(&spec, &scenario, Some(test_native_tool_executor))
+            .await
+            .expect("bench spec runs should execute when a native executor is injected");
+
+        assert!(sample.passed);
+        assert!(!sample.blocked);
     }
 }

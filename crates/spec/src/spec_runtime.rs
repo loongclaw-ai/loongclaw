@@ -2479,7 +2479,16 @@ fn maybe_execute_native_tool(
     request: &ToolCoreRequest,
     native_tool_executor: Option<crate::NativeToolExecutor>,
 ) -> Option<Result<ToolCoreOutcome, String>> {
-    native_tool_executor.and_then(|executor| executor(request.clone()))
+    if let Some(executor) = native_tool_executor {
+        return executor(request.clone());
+    }
+    if crate::tool_name_requires_native_tool_executor(request.tool_name.as_str()) {
+        return Some(Err(format!(
+            "native tool executor required for tool `{}`",
+            request.tool_name
+        )));
+    }
+    None
 }
 
 fn stub_memory_core(request: MemoryCoreRequest) -> Result<MemoryCoreOutcome, String> {
@@ -2937,18 +2946,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn core_tool_runtime_claw_import_without_native_executor_falls_back_to_stub() {
-        let outcome = CoreToolRuntime::default()
+    async fn core_tool_runtime_claw_import_without_native_executor_fails_closed() {
+        let error = CoreToolRuntime::default()
             .execute_core_tool(ToolCoreRequest {
                 tool_name: "claw.import".to_owned(),
                 payload: json!({"mode": "plan"}),
             })
             .await
-            .expect("stub tool execution should succeed");
+            .expect_err("native-only tool execution should fail without an injected executor");
 
-        assert_eq!(outcome.status, "ok");
-        assert_eq!(outcome.payload["adapter"], "core-tools");
-        assert_eq!(outcome.payload["tool"], "claw.import");
+        assert!(error.to_string().contains("native tool executor"));
     }
 
     fn test_native_tool_executor(
