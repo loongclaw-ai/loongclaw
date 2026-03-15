@@ -9,7 +9,7 @@ use crate::CliResult;
 use crate::KernelContext;
 use crate::tools::{
     ToolView, delegate_child_tool_view_for_config,
-    delegate_child_tool_view_for_config_with_delegate,
+    delegate_child_tool_view_for_config_with_delegate, runtime_tool_view_for_config,
 };
 
 use super::super::memory;

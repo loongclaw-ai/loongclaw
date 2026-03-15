@@ -1359,7 +1359,7 @@ impl ConversationTurnCoordinator {
         session_id: &str,
         user_input: &str,
         error_mode: ProviderErrorMode,
-        kernel_ctx: Option<&KernelContext>,
+        binding: ConversationRuntimeBinding<'_>,
         ingress: Option<&ConversationIngressContext>,
     ) -> CliResult<String> {
         let acp_options = AcpConversationTurnOptions::automatic();
@@ -1372,7 +1372,7 @@ impl ConversationTurnCoordinator {
             error_mode,
             &runtime,
             &acp_options,
-            kernel_ctx,
+            binding,
             ingress,
         )
         .await
@@ -1541,7 +1541,7 @@ impl ConversationTurnCoordinator {
         user_input: &str,
         error_mode: ProviderErrorMode,
         acp_options: &AcpConversationTurnOptions<'_>,
-        kernel_ctx: Option<&KernelContext>,
+        binding: ConversationRuntimeBinding<'_>,
         ingress: Option<&ConversationIngressContext>,
     ) -> CliResult<String> {
         let runtime = DefaultConversationRuntime::from_config_or_env(config)?;
@@ -1552,7 +1552,7 @@ impl ConversationTurnCoordinator {
             error_mode,
             &runtime,
             acp_options,
-            kernel_ctx,
+            binding,
             ingress,
         )
         .await
@@ -1610,7 +1610,7 @@ impl ConversationTurnCoordinator {
         user_input: &str,
         error_mode: ProviderErrorMode,
         runtime: &R,
-        kernel_ctx: Option<&KernelContext>,
+        binding: ConversationRuntimeBinding<'_>,
         ingress: Option<&ConversationIngressContext>,
     ) -> CliResult<String> {
         let acp_options = AcpConversationTurnOptions::automatic();
@@ -1622,7 +1622,7 @@ impl ConversationTurnCoordinator {
             error_mode,
             runtime,
             &acp_options,
-            kernel_ctx,
+            binding,
             ingress,
         )
         .await
@@ -1847,7 +1847,7 @@ impl ConversationTurnCoordinator {
             error_mode,
             runtime,
             acp_options,
-            kernel_ctx,
+            binding,
             None,
         )
         .await
@@ -1863,7 +1863,7 @@ impl ConversationTurnCoordinator {
         error_mode: ProviderErrorMode,
         runtime: &R,
         acp_options: &AcpConversationTurnOptions<'_>,
-        kernel_ctx: Option<&KernelContext>,
+        binding: ConversationRuntimeBinding<'_>,
         ingress: Option<&ConversationIngressContext>,
     ) -> CliResult<String> {
         let session_id = address.session_id.as_str();
@@ -1909,7 +1909,7 @@ impl ConversationTurnCoordinator {
         let session_context = runtime.session_context(config, session_id, binding)?;
         let tool_view = session_context.tool_view.clone();
         let visible_ingress = ingress.filter(|value| value.has_contextual_hints());
-        emit_turn_ingress_event(runtime, session_id, visible_ingress, kernel_ctx).await;
+        emit_turn_ingress_event(runtime, session_id, visible_ingress, binding).await;
         let preparation = ProviderTurnPreparation::from_assembled_context(
             config,
             runtime
@@ -2932,7 +2932,7 @@ struct CoordinatorApprovalResolutionRuntime<'a, R: ?Sized> {
     config: &'a LoongClawConfig,
     runtime: &'a R,
     fallback: &'a DefaultAppToolDispatcher,
-    kernel_ctx: Option<&'a KernelContext>,
+    binding: ConversationRuntimeBinding<'a>,
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -2988,7 +2988,7 @@ where
         let replay_request = self.replay_request(approval_request)?;
         let session_context = self
             .runtime
-            .session_context(self.config, &approval_request.session_id, self.kernel_ctx)
+            .session_context(self.config, &approval_request.session_id, self.binding)
             .map_err(|error| format!("load approval request session context failed: {error}"))?;
 
         match crate::tools::canonical_tool_name(replay_request.tool_name.as_str()) {
@@ -2998,7 +2998,7 @@ where
                     self.runtime,
                     &session_context,
                     replay_request.payload,
-                    self.kernel_ctx,
+                    self.binding,
                 )
                 .await
             }
@@ -3013,7 +3013,7 @@ where
             }
             _ => {
                 self.fallback
-                    .execute_app_tool(&session_context, replay_request, self.kernel_ctx)
+                    .execute_app_tool(&session_context, replay_request, self.binding)
                     .await
             }
         }
@@ -3275,7 +3275,7 @@ where
             "approval_request_resolve" => {
                 #[cfg(not(feature = "memory-sqlite"))]
                 {
-                    let _ = (session_context, kernel_ctx);
+                    let _ = (session_context, binding);
                     Err("approval tools require sqlite memory support (enable feature `memory-sqlite`)"
                         .to_owned())
                 }
@@ -3290,7 +3290,7 @@ where
                         config: self.config,
                         runtime: self.runtime,
                         fallback: self.fallback,
-                        kernel_ctx,
+                        binding,
                     };
                     crate::tools::approval::execute_approval_tool_with_runtime_support(
                         request,
@@ -3942,13 +3942,7 @@ async fn execute_provider_turn_lane<R: ConversationRuntime + ?Sized>(
         }
         Ok(TurnValidation::ToolExecutionRequired) => (
             engine
-                .execute_turn_in_context(
-                    turn,
-                    &session_context,
-                    &app_dispatcher,
-                    binding,
-                    ingress,
-                )
+                .execute_turn_in_context(turn, &session_context, &app_dispatcher, binding, ingress)
                 .await,
             None,
         ),
@@ -4391,7 +4385,7 @@ async fn evaluate_safe_lane_round(
         turn.tool_intents.as_slice(),
         session_context,
         app_dispatcher,
-        kernel_ctx,
+        Some(kernel_ctx),
         ingress,
         config.conversation.safe_lane_verify_output_non_empty,
         state.seed_tool_outputs.clone(),
@@ -4407,6 +4401,39 @@ async fn evaluate_safe_lane_round(
         report,
         tool_outputs,
         tool_output_stats,
+    }
+}
+
+fn synthetic_safe_lane_round_without_kernel(plan: &PlanGraph) -> SafeLaneRoundExecution {
+    let ordered_nodes = plan
+        .nodes
+        .iter()
+        .map(|node| node.id.clone())
+        .collect::<Vec<_>>();
+    let failed_node_id = plan
+        .nodes
+        .iter()
+        .find(|node| matches!(node.kind, PlanNodeKind::Tool))
+        .or_else(|| plan.nodes.first())
+        .map(|node| node.id.clone())
+        .unwrap_or_else(|| "tool-1".to_owned());
+    let failure = PlanRunFailure::NodeFailed {
+        node_id: failed_node_id,
+        attempts_used: 1,
+        last_error_kind: PlanNodeErrorKind::PolicyDenied,
+        last_error: "no_kernel_context".to_owned(),
+    };
+
+    SafeLaneRoundExecution {
+        report: PlanRunReport {
+            status: PlanRunStatus::Failed(failure),
+            ordered_nodes,
+            attempts_used: 1,
+            attempt_events: Vec::new(),
+            elapsed_ms: 0,
+        },
+        tool_outputs: Vec::new(),
+        tool_output_stats: summarize_safe_lane_tool_output_stats(&[]),
     }
 }
 
@@ -4442,7 +4469,7 @@ async fn emit_turn_ingress_event<R: ConversationRuntime + ?Sized>(
     runtime: &R,
     session_id: &str,
     ingress: Option<&ConversationIngressContext>,
-    kernel_ctx: Option<&KernelContext>,
+    binding: ConversationRuntimeBinding<'_>,
 ) {
     let Some(ingress) = ingress else {
         return;
@@ -4452,7 +4479,7 @@ async fn emit_turn_ingress_event<R: ConversationRuntime + ?Sized>(
         session_id,
         "turn_ingress",
         ingress.as_event_payload(),
-        kernel_ctx,
+        binding,
     )
     .await;
 }

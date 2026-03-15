@@ -6365,7 +6365,8 @@ async fn turn_engine_routes_direct_binding_to_app_dispatcher() {
                 "expected direct binding payload in output, got: {text}"
             );
         }
-        other @ TurnResult::ToolDenied(_)
+        other @ TurnResult::NeedsApproval(_)
+        | other @ TurnResult::ToolDenied(_)
         | other @ TurnResult::ToolError(_)
         | other @ TurnResult::ProviderError(_) => {
             panic!("expected FinalText, got: {other:?}")
@@ -9763,7 +9764,7 @@ async fn handle_turn_with_runtime_requires_approval_before_delegate_execution() 
             "delegate this task",
             ProviderErrorMode::Propagate,
             &runtime,
-            None,
+            ConversationRuntimeBinding::direct(),
         )
         .await
         .expect("approval reply");
@@ -10026,7 +10027,7 @@ async fn handle_turn_with_runtime_approval_request_resolve_replays_delegate_for_
             "show raw json tool output",
             ProviderErrorMode::Propagate,
             &runtime,
-            None,
+            ConversationRuntimeBinding::direct(),
         )
         .await
         .expect("approval resolve reply");
@@ -10169,7 +10170,7 @@ async fn handle_turn_with_runtime_approval_request_resolve_approve_always_reuses
             "show raw json tool output",
             ProviderErrorMode::Propagate,
             &approval_runtime,
-            None,
+            ConversationRuntimeBinding::direct(),
         )
         .await
         .expect("approval resolve reply");
@@ -10232,7 +10233,7 @@ async fn handle_turn_with_runtime_approval_request_resolve_approve_always_reuses
             "show raw json tool output",
             ProviderErrorMode::Propagate,
             &granted_runtime,
-            None,
+            ConversationRuntimeBinding::direct(),
         )
         .await
         .expect("granted delegate reply");
@@ -10344,7 +10345,7 @@ async fn handle_turn_with_runtime_approval_request_resolve_deny_does_not_replay_
             "show raw json tool output",
             ProviderErrorMode::Propagate,
             &runtime,
-            None,
+            ConversationRuntimeBinding::direct(),
         )
         .await
         .expect("approval deny reply");
@@ -11386,7 +11387,8 @@ async fn handle_turn_with_runtime_executes_session_wait_via_default_dispatcher()
 
 #[cfg(feature = "memory-sqlite")]
 #[tokio::test]
-async fn handle_turn_with_runtime_safe_lane_executes_session_tools_via_default_dispatcher() {
+async fn handle_turn_with_runtime_safe_lane_executes_session_tools_via_default_dispatcher_when_kernel_bound()
+ {
     let db_path = std::env::temp_dir().join(format!(
         "{}.sqlite3",
         unique_acp_test_id("conversation-session-tools", "safe-lane")
@@ -11433,6 +11435,7 @@ async fn handle_turn_with_runtime_safe_lane_executes_session_tools_via_default_d
         Ok("unused".to_owned()),
     );
     let coordinator = ConversationTurnCoordinator::new();
+    let (kernel_ctx, _invocations) = build_kernel_context(Arc::new(InMemoryAuditSink::default()));
 
     let reply = coordinator
         .handle_turn_with_runtime(
@@ -11441,7 +11444,7 @@ async fn handle_turn_with_runtime_safe_lane_executes_session_tools_via_default_d
             "deploy to production with secret token and show raw json tool output",
             ProviderErrorMode::Propagate,
             &runtime,
-            ConversationRuntimeBinding::direct(),
+            ConversationRuntimeBinding::kernel(&kernel_ctx),
         )
         .await
         .expect("safe-lane handle turn success");
@@ -11458,7 +11461,8 @@ async fn handle_turn_with_runtime_safe_lane_executes_session_tools_via_default_d
 
 #[cfg(all(feature = "memory-sqlite", feature = "channel-telegram"))]
 #[tokio::test]
-async fn handle_turn_with_runtime_safe_lane_executes_sessions_send_via_default_dispatcher() {
+async fn handle_turn_with_runtime_safe_lane_executes_sessions_send_via_default_dispatcher_when_kernel_bound()
+ {
     let (base_url, request_rx, server) = spawn_telegram_send_server_once();
     let db_path = std::env::temp_dir().join(format!(
         "{}.sqlite3",
@@ -11516,6 +11520,7 @@ async fn handle_turn_with_runtime_safe_lane_executes_sessions_send_via_default_d
         Ok("unused".to_owned()),
     );
     let coordinator = ConversationTurnCoordinator::new();
+    let (kernel_ctx, _invocations) = build_kernel_context(Arc::new(InMemoryAuditSink::default()));
 
     let reply = coordinator
         .handle_turn_with_runtime(
@@ -11524,7 +11529,7 @@ async fn handle_turn_with_runtime_safe_lane_executes_sessions_send_via_default_d
             "deploy to production with secret token and show raw json tool output",
             ProviderErrorMode::Propagate,
             &runtime,
-            ConversationRuntimeBinding::direct(),
+            ConversationRuntimeBinding::kernel(&kernel_ctx),
         )
         .await
         .expect("safe-lane handle turn success");
@@ -11557,7 +11562,8 @@ async fn handle_turn_with_runtime_safe_lane_executes_sessions_send_via_default_d
 
 #[cfg(feature = "memory-sqlite")]
 #[tokio::test]
-async fn handle_turn_with_runtime_safe_lane_executes_session_wait_via_default_dispatcher() {
+async fn handle_turn_with_runtime_safe_lane_executes_session_wait_via_default_dispatcher_when_kernel_bound()
+ {
     let db_path = std::env::temp_dir().join(format!(
         "{}.sqlite3",
         unique_acp_test_id("conversation-session-wait", "safe-lane")
@@ -11616,6 +11622,7 @@ async fn handle_turn_with_runtime_safe_lane_executes_session_wait_via_default_di
         Ok("unused".to_owned()),
     );
     let coordinator = ConversationTurnCoordinator::new();
+    let (kernel_ctx, _invocations) = build_kernel_context(Arc::new(InMemoryAuditSink::default()));
 
     let reply = coordinator
         .handle_turn_with_runtime(
@@ -11624,7 +11631,7 @@ async fn handle_turn_with_runtime_safe_lane_executes_session_wait_via_default_di
             "deploy to production with secret token and show raw json tool output",
             ProviderErrorMode::Propagate,
             &runtime,
-            ConversationRuntimeBinding::direct(),
+            ConversationRuntimeBinding::kernel(&kernel_ctx),
         )
         .await
         .expect("safe-lane handle turn success");
