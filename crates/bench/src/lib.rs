@@ -1,12 +1,24 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::Path,
-    sync::Arc,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering as AtomicOrdering},
+    },
     time::{Duration, Instant as StdInstant, SystemTime, UNIX_EPOCH},
 };
 
 use kernel::{ChannelConfig, ConnectorCommand, ProviderConfig};
+use loongclaw_app::{
+    config::{MemoryMode, MemoryProfile},
+    memory::{
+        self, MemoryContextEntry, MemoryContextKind, SqliteBootstrapDiagnostics,
+        SqliteContextLoadDiagnostics, runtime_config::MemoryRuntimeConfig,
+    },
+};
+use rusqlite::Connection;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -28,6 +40,28 @@ const DEFAULT_PRESSURE_WARMUP_ITERATIONS: usize = 2;
 const DEFAULT_CIRCUIT_POLL_INTERVAL_MS: u64 = 5;
 const DEFAULT_CIRCUIT_RECOVERY_BUFFER_MS: u64 = 250;
 const DEFAULT_WASM_CACHE_MIN_SPEEDUP_RATIO: f64 = 1.5;
+const DEFAULT_MEMORY_CONTEXT_MIN_SPEEDUP_RATIO: f64 = 1.2;
+const DEFAULT_MEMORY_CONTEXT_WINDOW_COVER_SOFT_MAX_RATIO_P95: f64 = 1.15;
+const DEFAULT_MEMORY_CONTEXT_WINDOW_COVER_SOFT_MAX_OVERHEAD_P95_MS: f64 = 0.050;
+const DEFAULT_MEMORY_CONTEXT_WINDOW_COVER_SOFT_WARNING_MIN_SAMPLES: usize = 8;
+const DEFAULT_MEMORY_CONTEXT_WINDOW_COVER_NOISY_SUPPRESSION_MAX_RATIO_P95: f64 = 1.20;
+const DEFAULT_MEMORY_CONTEXT_WINDOW_COVER_NOISY_SUPPRESSION_MAX_OVERHEAD_P95_MS: f64 = 0.150;
+const DEFAULT_MEMORY_CONTEXT_REBUILD_BUDGET_CHANGE_SOFT_MAX_RATIO_P95: f64 = 1.05;
+const DEFAULT_MEMORY_CONTEXT_METADATA_REALIGN_SOFT_MAX_RATIO_P95: f64 = 1.10;
+const DEFAULT_MEMORY_CONTEXT_SUITE_STABILITY_SOFT_WARNING_MIN_SUITES: usize = 3;
+const DEFAULT_MEMORY_CONTEXT_SUITE_STABILITY_SOFT_MAX_RANGE_OVER_P50: f64 = 0.75;
+const DEFAULT_MEMORY_CONTEXT_SPEEDUP_SUITE_NOISE_CLEAR_WIN_SUPPRESSION_MULTIPLIER: f64 = 1.5;
+const DEFAULT_MEMORY_CONTEXT_SPEEDUP_SUITE_NOISE_TINY_HOT_PATH_MAX_P50_MS: f64 = 1.0;
+const DEFAULT_MEMORY_CONTEXT_SPEEDUP_SUITE_NOISE_TINY_HOT_PATH_MAX_RANGE_MS: f64 = 1.25;
+const MEMORY_CONTEXT_SUITE_AGGREGATION_MEDIAN_OF_P95: &str = "median_of_suite_p95";
+const BENCHMARK_COPY_STRATEGY_ENV: &str = "LOONGCLAW_BENCHMARK_COPY_STRATEGY";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BenchmarkCopyStrategy {
+    StableFsCopy,
+    #[cfg(target_os = "macos")]
+    MacosCloneCp,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ProgrammaticPressureMatrix {
@@ -274,6 +308,339 @@ struct WasmCacheBenchmarkReport {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct MemoryContextBenchmarkReport {
+    generated_at_epoch_s: u64,
+    profile: String,
+    output_path: String,
+    benchmark_temp_root: String,
+    benchmark_temp_root_source: MemoryContextBenchmarkTempRootSource,
+    suite_repetitions: usize,
+    suite_aggregation: String,
+    rss_telemetry_scope: String,
+    history_turns: usize,
+    sliding_window: usize,
+    window_shrink_source_window: usize,
+    summary_max_chars: usize,
+    words_per_turn: usize,
+    rebuild_iterations: usize,
+    hot_iterations: usize,
+    warmup_iterations: usize,
+    seed_db_bytes: u64,
+    suite_p95_summaries: Vec<MemoryContextSuiteP95Summary>,
+    suite_stability: MemoryContextSuiteStabilitySummary,
+    cold_path_phases: MemoryContextColdPathPhaseReport,
+    cold_path_phase_stability: MemoryContextColdPathPhaseStabilityReport,
+    cold_path_noise_attribution: MemoryContextColdPathNoiseAttributionReport,
+    cold_path_bootstrap_noise_attribution: MemoryContextColdPathBootstrapNoiseAttributionReport,
+    cold_path_load_noise_attribution: MemoryContextColdPathLoadNoiseAttributionReport,
+    window_only_latency_ms: NumericStats,
+    summary_window_cover_latency_ms: NumericStats,
+    summary_rebuild_latency_ms: NumericStats,
+    summary_rebuild_budget_change_latency_ms: NumericStats,
+    summary_metadata_realign_latency_ms: NumericStats,
+    summary_steady_state_latency_ms: NumericStats,
+    window_shrink_catch_up_latency_ms: NumericStats,
+    window_only_append_pre_overflow_latency_ms: NumericStats,
+    window_only_append_cold_overflow_latency_ms: NumericStats,
+    summary_append_pre_overflow_latency_ms: NumericStats,
+    summary_append_cold_overflow_latency_ms: NumericStats,
+    summary_append_saturated_latency_ms: NumericStats,
+    window_only_rss_delta_kib: NumericStats,
+    summary_window_cover_rss_delta_kib: NumericStats,
+    summary_rebuild_rss_delta_kib: NumericStats,
+    summary_rebuild_budget_change_rss_delta_kib: NumericStats,
+    summary_metadata_realign_rss_delta_kib: NumericStats,
+    summary_steady_state_rss_delta_kib: NumericStats,
+    window_shrink_catch_up_rss_delta_kib: NumericStats,
+    window_only_append_pre_overflow_rss_delta_kib: NumericStats,
+    window_only_append_cold_overflow_rss_delta_kib: NumericStats,
+    summary_append_pre_overflow_rss_delta_kib: NumericStats,
+    summary_append_cold_overflow_rss_delta_kib: NumericStats,
+    summary_append_saturated_rss_delta_kib: NumericStats,
+    window_only_entry_count: usize,
+    window_only_turn_entries: usize,
+    window_only_payload_chars: usize,
+    summary_window_cover_entry_count: usize,
+    summary_window_cover_turn_entries: usize,
+    summary_window_cover_payload_chars: usize,
+    summary_rebuild_entry_count: usize,
+    summary_rebuild_turn_entries: usize,
+    summary_rebuild_summary_chars: usize,
+    summary_rebuild_payload_chars: usize,
+    summary_rebuild_budget_change_entry_count: usize,
+    summary_rebuild_budget_change_turn_entries: usize,
+    summary_rebuild_budget_change_summary_chars: usize,
+    summary_rebuild_budget_change_payload_chars: usize,
+    summary_metadata_realign_entry_count: usize,
+    summary_metadata_realign_turn_entries: usize,
+    summary_metadata_realign_summary_chars: usize,
+    summary_metadata_realign_payload_chars: usize,
+    summary_steady_state_entry_count: usize,
+    summary_steady_state_turn_entries: usize,
+    summary_steady_state_summary_chars: usize,
+    summary_steady_state_payload_chars: usize,
+    window_shrink_catch_up_entry_count: usize,
+    window_shrink_catch_up_turn_entries: usize,
+    window_shrink_catch_up_summary_chars: usize,
+    window_shrink_catch_up_payload_chars: usize,
+    flattened_sample_ratios: MemoryContextRatioP95Summary,
+    aggregated_p95_median_ms: MemoryContextAggregatedP95MedianMs,
+    aggregated_ratios: MemoryContextRatioP95Summary,
+    gate: MemoryContextBenchmarkGateSummary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum MemoryContextBenchmarkTempRootSource {
+    Explicit,
+    CurrentExeTargetDir,
+    OutputParent,
+    SystemTemp,
+}
+
+impl MemoryContextBenchmarkTempRootSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Explicit => "explicit",
+            Self::CurrentExeTargetDir => "current_exe_target_dir",
+            Self::OutputParent => "output_parent",
+            Self::SystemTemp => "system_temp",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedMemoryContextBenchmarkTempRoot {
+    path: PathBuf,
+    source: MemoryContextBenchmarkTempRootSource,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MemoryContextBenchmarkGateSummary {
+    enforced: bool,
+    passed: bool,
+    min_steady_state_speedup_ratio: f64,
+    observed_speedup_ratio: Option<f64>,
+    summary_window_cover_soft_max_ratio_p95: f64,
+    summary_window_cover_soft_max_overhead_p95_ms: f64,
+    summary_window_cover_soft_warning_min_samples: usize,
+    summary_rebuild_budget_change_vs_rebuild_soft_max_ratio_p95: f64,
+    summary_metadata_realign_vs_budget_change_soft_max_ratio_p95: f64,
+    suite_stability_soft_warning_min_suites: usize,
+    suite_stability_soft_max_range_over_p50: f64,
+    warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MemoryContextAggregatedP95MedianMs {
+    window_only: Option<f64>,
+    summary_window_cover: Option<f64>,
+    summary_rebuild: Option<f64>,
+    summary_rebuild_budget_change: Option<f64>,
+    summary_metadata_realign: Option<f64>,
+    summary_steady_state: Option<f64>,
+    window_shrink_catch_up: Option<f64>,
+    window_only_append_pre_overflow: Option<f64>,
+    window_only_append_cold_overflow: Option<f64>,
+    summary_append_pre_overflow: Option<f64>,
+    summary_append_cold_overflow: Option<f64>,
+    summary_append_saturated: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MemoryContextRatioP95Summary {
+    summary_window_cover_vs_window_only_ratio_p95: Option<f64>,
+    summary_window_cover_overhead_p95_ms: Option<f64>,
+    summary_rebuild_budget_change_vs_rebuild_ratio_p95: Option<f64>,
+    summary_rebuild_budget_change_vs_rebuild_summary_char_adjusted_ratio_p95: Option<f64>,
+    summary_metadata_realign_vs_budget_change_ratio_p95: Option<f64>,
+    speedup_ratio_p95: Option<f64>,
+    window_shrink_catch_up_vs_rebuild_speedup_ratio_p95: Option<f64>,
+    summary_append_pre_overflow_vs_window_only_ratio_p95: Option<f64>,
+    summary_append_cold_overflow_vs_window_only_ratio_p95: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct MemoryContextColdPathPhaseSamples {
+    copy_db_ms: Vec<f64>,
+    source_bootstrap_ms: Vec<f64>,
+    source_bootstrap_normalize_path_ms: Vec<f64>,
+    source_bootstrap_registry_lock_ms: Vec<f64>,
+    source_bootstrap_registry_lookup_ms: Vec<f64>,
+    source_bootstrap_runtime_create_ms: Vec<f64>,
+    source_bootstrap_parent_dir_create_ms: Vec<f64>,
+    source_bootstrap_connection_open_ms: Vec<f64>,
+    source_bootstrap_configure_connection_ms: Vec<f64>,
+    source_bootstrap_schema_init_ms: Vec<f64>,
+    source_bootstrap_schema_upgrade_ms: Vec<f64>,
+    source_bootstrap_registry_insert_ms: Vec<f64>,
+    source_warmup_ms: Vec<f64>,
+    append_turn_ms: Vec<f64>,
+    target_bootstrap_ms: Vec<f64>,
+    target_bootstrap_normalize_path_ms: Vec<f64>,
+    target_bootstrap_registry_lock_ms: Vec<f64>,
+    target_bootstrap_registry_lookup_ms: Vec<f64>,
+    target_bootstrap_runtime_create_ms: Vec<f64>,
+    target_bootstrap_parent_dir_create_ms: Vec<f64>,
+    target_bootstrap_connection_open_ms: Vec<f64>,
+    target_bootstrap_configure_connection_ms: Vec<f64>,
+    target_bootstrap_schema_init_ms: Vec<f64>,
+    target_bootstrap_schema_upgrade_ms: Vec<f64>,
+    target_bootstrap_registry_insert_ms: Vec<f64>,
+    target_load_ms: Vec<f64>,
+    target_load_window_query_ms: Vec<f64>,
+    target_load_window_turn_count_query_ms: Vec<f64>,
+    target_load_window_exact_rows_query_ms: Vec<f64>,
+    target_load_window_known_overflow_rows_query_ms: Vec<f64>,
+    target_load_window_fallback_rows_query_ms: Vec<f64>,
+    target_load_summary_checkpoint_meta_query_ms: Vec<f64>,
+    target_load_summary_checkpoint_body_load_ms: Vec<f64>,
+    target_load_summary_checkpoint_metadata_update_ms: Vec<f64>,
+    target_load_summary_checkpoint_metadata_update_returning_body_ms: Vec<f64>,
+    target_load_summary_rebuild_ms: Vec<f64>,
+    target_load_summary_rebuild_stream_ms: Vec<f64>,
+    target_load_summary_rebuild_checkpoint_upsert_ms: Vec<f64>,
+    target_load_summary_rebuild_checkpoint_metadata_upsert_ms: Vec<f64>,
+    target_load_summary_rebuild_checkpoint_body_upsert_ms: Vec<f64>,
+    target_load_summary_rebuild_checkpoint_commit_ms: Vec<f64>,
+    target_load_summary_catch_up_ms: Vec<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct NumericSpreadSummary {
+    count: usize,
+    min: Option<f64>,
+    p50: Option<f64>,
+    max: Option<f64>,
+    range: Option<f64>,
+    range_over_p50: Option<f64>,
+    max_over_p50: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MemoryContextColdPathPhaseStats {
+    copy_db_ms: NumericStats,
+    source_bootstrap_ms: NumericStats,
+    source_warmup_ms: NumericStats,
+    append_turn_ms: NumericStats,
+    target_bootstrap_ms: NumericStats,
+    target_load_ms: NumericStats,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MemoryContextColdPathPhaseReport {
+    summary_rebuild: MemoryContextColdPathPhaseStats,
+    summary_rebuild_budget_change: MemoryContextColdPathPhaseStats,
+    summary_metadata_realign: MemoryContextColdPathPhaseStats,
+    window_shrink_catch_up: MemoryContextColdPathPhaseStats,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MemoryContextSuiteStabilitySummary {
+    window_only_p95_ms: NumericSpreadSummary,
+    summary_window_cover_p95_ms: NumericSpreadSummary,
+    summary_rebuild_p95_ms: NumericSpreadSummary,
+    summary_rebuild_budget_change_p95_ms: NumericSpreadSummary,
+    summary_metadata_realign_p95_ms: NumericSpreadSummary,
+    summary_steady_state_p95_ms: NumericSpreadSummary,
+    window_shrink_catch_up_p95_ms: NumericSpreadSummary,
+    window_only_append_pre_overflow_p95_ms: NumericSpreadSummary,
+    window_only_append_cold_overflow_p95_ms: NumericSpreadSummary,
+    summary_append_pre_overflow_p95_ms: NumericSpreadSummary,
+    summary_append_cold_overflow_p95_ms: NumericSpreadSummary,
+    summary_append_saturated_p95_ms: NumericSpreadSummary,
+    summary_window_cover_vs_window_only_ratio_p95: NumericSpreadSummary,
+    summary_window_cover_overhead_p95_ms: NumericSpreadSummary,
+    summary_rebuild_budget_change_vs_rebuild_ratio_p95: NumericSpreadSummary,
+    summary_rebuild_budget_change_vs_rebuild_summary_char_adjusted_ratio_p95: NumericSpreadSummary,
+    summary_metadata_realign_vs_budget_change_ratio_p95: NumericSpreadSummary,
+    speedup_ratio_p95: NumericSpreadSummary,
+    window_shrink_catch_up_vs_rebuild_speedup_ratio_p95: NumericSpreadSummary,
+    summary_append_pre_overflow_vs_window_only_ratio_p95: NumericSpreadSummary,
+    summary_append_cold_overflow_vs_window_only_ratio_p95: NumericSpreadSummary,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MemoryContextColdPathPhaseStabilitySummary {
+    copy_db_ms: NumericSpreadSummary,
+    source_bootstrap_ms: NumericSpreadSummary,
+    source_warmup_ms: NumericSpreadSummary,
+    append_turn_ms: NumericSpreadSummary,
+    target_bootstrap_ms: NumericSpreadSummary,
+    target_load_ms: NumericSpreadSummary,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MemoryContextColdPathPhaseStabilityReport {
+    summary_rebuild: MemoryContextColdPathPhaseStabilitySummary,
+    summary_rebuild_budget_change: MemoryContextColdPathPhaseStabilitySummary,
+    summary_metadata_realign: MemoryContextColdPathPhaseStabilitySummary,
+    window_shrink_catch_up: MemoryContextColdPathPhaseStabilitySummary,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MemoryContextColdPathNoiseAttribution {
+    phase: String,
+    range_over_p50: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MemoryContextColdPathNoiseAttributionReport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary_rebuild: Option<MemoryContextColdPathNoiseAttribution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary_rebuild_budget_change: Option<MemoryContextColdPathNoiseAttribution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary_metadata_realign: Option<MemoryContextColdPathNoiseAttribution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    window_shrink_catch_up: Option<MemoryContextColdPathNoiseAttribution>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MemoryContextBootstrapNoiseAttribution {
+    phase: String,
+    range_over_p50: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MemoryContextColdPathBootstrapNoiseAttribution {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_bootstrap: Option<MemoryContextBootstrapNoiseAttribution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_bootstrap: Option<MemoryContextBootstrapNoiseAttribution>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MemoryContextColdPathBootstrapNoiseAttributionReport {
+    summary_rebuild: MemoryContextColdPathBootstrapNoiseAttribution,
+    summary_rebuild_budget_change: MemoryContextColdPathBootstrapNoiseAttribution,
+    summary_metadata_realign: MemoryContextColdPathBootstrapNoiseAttribution,
+    window_shrink_catch_up: MemoryContextColdPathBootstrapNoiseAttribution,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MemoryContextLoadNoiseAttribution {
+    phase: String,
+    range_over_p50: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MemoryContextColdPathLoadNoiseAttribution {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_load: Option<MemoryContextLoadNoiseAttribution>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MemoryContextColdPathLoadNoiseAttributionReport {
+    summary_rebuild: MemoryContextColdPathLoadNoiseAttribution,
+    summary_rebuild_budget_change: MemoryContextColdPathLoadNoiseAttribution,
+    summary_metadata_realign: MemoryContextColdPathLoadNoiseAttribution,
+    window_shrink_catch_up: MemoryContextColdPathLoadNoiseAttribution,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct WasmCacheBenchmarkGateSummary {
     enforced: bool,
     passed: bool,
@@ -330,6 +697,87 @@ struct SchedulerSnapshot {
 struct WasmBridgeSample {
     latency_ms: f64,
     cache_hit: bool,
+}
+
+#[derive(Debug, Clone)]
+struct MemoryContextBenchmarkSuiteSamples {
+    seed_db_bytes: u64,
+    window_only_samples: Vec<f64>,
+    summary_window_cover_samples: Vec<f64>,
+    summary_rebuild_samples: Vec<f64>,
+    summary_rebuild_budget_change_samples: Vec<f64>,
+    summary_metadata_realign_samples: Vec<f64>,
+    summary_steady_state_samples: Vec<f64>,
+    window_shrink_catch_up_samples: Vec<f64>,
+    window_only_append_pre_overflow_samples: Vec<f64>,
+    window_only_append_cold_overflow_samples: Vec<f64>,
+    summary_append_pre_overflow_samples: Vec<f64>,
+    summary_append_cold_overflow_samples: Vec<f64>,
+    summary_append_saturated_samples: Vec<f64>,
+    window_only_rss_deltas_kib: Vec<f64>,
+    summary_window_cover_rss_deltas_kib: Vec<f64>,
+    summary_rebuild_rss_deltas_kib: Vec<f64>,
+    summary_rebuild_budget_change_rss_deltas_kib: Vec<f64>,
+    summary_metadata_realign_rss_deltas_kib: Vec<f64>,
+    summary_steady_state_rss_deltas_kib: Vec<f64>,
+    window_shrink_catch_up_rss_deltas_kib: Vec<f64>,
+    window_only_append_pre_overflow_rss_deltas_kib: Vec<f64>,
+    window_only_append_cold_overflow_rss_deltas_kib: Vec<f64>,
+    summary_append_pre_overflow_rss_deltas_kib: Vec<f64>,
+    summary_append_cold_overflow_rss_deltas_kib: Vec<f64>,
+    summary_append_saturated_rss_deltas_kib: Vec<f64>,
+    summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples,
+    summary_rebuild_budget_change_phase_samples: MemoryContextColdPathPhaseSamples,
+    summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples,
+    window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples,
+    window_only_shape: MemoryContextShape,
+    summary_window_cover_shape: MemoryContextShape,
+    summary_rebuild_shape: MemoryContextShape,
+    summary_rebuild_budget_change_shape: MemoryContextShape,
+    summary_metadata_realign_shape: MemoryContextShape,
+    summary_steady_state_shape: MemoryContextShape,
+    window_shrink_catch_up_shape: MemoryContextShape,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct MemoryContextSuiteP95Summary {
+    window_only: Option<f64>,
+    summary_window_cover: Option<f64>,
+    summary_rebuild: Option<f64>,
+    summary_rebuild_budget_change: Option<f64>,
+    summary_metadata_realign: Option<f64>,
+    summary_steady_state: Option<f64>,
+    window_shrink_catch_up: Option<f64>,
+    window_only_append_pre_overflow: Option<f64>,
+    window_only_append_cold_overflow: Option<f64>,
+    summary_append_pre_overflow: Option<f64>,
+    summary_append_cold_overflow: Option<f64>,
+    summary_append_saturated: Option<f64>,
+    summary_window_cover_vs_window_only_ratio_p95: Option<f64>,
+    summary_window_cover_overhead_p95_ms: Option<f64>,
+    summary_rebuild_budget_change_vs_rebuild_ratio_p95: Option<f64>,
+    summary_rebuild_budget_change_vs_rebuild_summary_char_adjusted_ratio_p95: Option<f64>,
+    summary_metadata_realign_vs_budget_change_ratio_p95: Option<f64>,
+    speedup_ratio_p95: Option<f64>,
+    window_shrink_catch_up_vs_rebuild_speedup_ratio_p95: Option<f64>,
+    summary_append_pre_overflow_vs_window_only_ratio_p95: Option<f64>,
+    summary_append_cold_overflow_vs_window_only_ratio_p95: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MemoryContextShape {
+    entry_count: usize,
+    turn_entries: usize,
+    summary_chars: usize,
+    payload_chars: usize,
+}
+
+#[derive(Debug, Clone)]
+struct PromptContextReadObservation {
+    latency_ms: f64,
+    rss_delta_kib: Option<f64>,
+    shape: MemoryContextShape,
+    load_diagnostics: SqliteContextLoadDiagnostics,
 }
 
 #[allow(clippy::print_stdout)] // CLI benchmark report output
@@ -492,6 +940,2187 @@ pub fn run_programmatic_pressure_baseline_lint_cli(
     }
 
     Ok(())
+}
+
+#[allow(clippy::print_stdout)] // CLI benchmark report output
+pub fn run_memory_context_benchmark_cli(
+    output_path: &str,
+    temp_root: Option<&str>,
+    history_turns: usize,
+    sliding_window: usize,
+    summary_max_chars: usize,
+    words_per_turn: usize,
+    rebuild_iterations: usize,
+    hot_iterations: usize,
+    warmup_iterations: usize,
+    suite_repetitions: usize,
+    enforce_gate: bool,
+    min_steady_state_speedup_ratio: f64,
+) -> CliResult<()> {
+    if history_turns <= sliding_window {
+        return Err("history_turns must exceed sliding_window to exercise summary mode".to_owned());
+    }
+    if history_turns <= sliding_window.saturating_add(1) {
+        return Err(
+            "history_turns must exceed sliding_window by at least 2 to exercise shrink catch-up mode"
+                .to_owned(),
+        );
+    }
+    if sliding_window == 0 {
+        return Err("sliding_window must be >= 1".to_owned());
+    }
+    if summary_max_chars == 0 {
+        return Err("summary_max_chars must be >= 1".to_owned());
+    }
+    if words_per_turn == 0 {
+        return Err("words_per_turn must be >= 1".to_owned());
+    }
+    if rebuild_iterations == 0 {
+        return Err("rebuild_iterations must be >= 1".to_owned());
+    }
+    if hot_iterations == 0 {
+        return Err("hot_iterations must be >= 1".to_owned());
+    }
+    if suite_repetitions == 0 {
+        return Err("suite_repetitions must be >= 1".to_owned());
+    }
+
+    let normalized_min_speedup_ratio =
+        if min_steady_state_speedup_ratio.is_finite() && min_steady_state_speedup_ratio > 0.0 {
+            min_steady_state_speedup_ratio
+        } else {
+            DEFAULT_MEMORY_CONTEXT_MIN_SPEEDUP_RATIO
+        };
+    let window_shrink_source_window =
+        memory_context_window_shrink_source_window(history_turns, sliding_window)?;
+    let temp_root = resolve_memory_context_benchmark_temp_root(output_path, temp_root)?;
+    let mut suite_runs = Vec::with_capacity(suite_repetitions);
+    for _ in 0..suite_repetitions {
+        suite_runs.push(run_memory_context_benchmark_suite(
+            Some(temp_root.path.as_path()),
+            history_turns,
+            sliding_window,
+            window_shrink_source_window,
+            summary_max_chars,
+            words_per_turn,
+            rebuild_iterations,
+            hot_iterations,
+            warmup_iterations,
+        )?);
+    }
+    let report = try_build_memory_context_benchmark_report(
+        output_path,
+        &temp_root,
+        history_turns,
+        sliding_window,
+        window_shrink_source_window,
+        summary_max_chars,
+        words_per_turn,
+        rebuild_iterations,
+        hot_iterations,
+        warmup_iterations,
+        &suite_runs,
+        suite_repetitions,
+        enforce_gate,
+        normalized_min_speedup_ratio,
+    )?;
+
+    write_json_file(output_path, &report)?;
+    println!("memory context benchmark report written to {output_path}");
+    println!(
+        "benchmark_temp_root={} source={}",
+        temp_root.path.display(),
+        temp_root.source.as_str()
+    );
+    println!(
+        "suite_repetitions={} suite_aggregation={}",
+        report.suite_repetitions, report.suite_aggregation
+    );
+    println!(
+        "window_only p95={:.3}ms summary_window_cover p95={:.3}ms cover_vs_window_ratio_p95={:.3} cover_overhead_p95_ms={:.3} summary_rebuild p95={:.3}ms summary_rebuild_budget_change p95={:.3}ms budget_change_vs_rebuild_ratio_p95={:.3} budget_change_vs_rebuild_summary_char_adjusted_ratio_p95={:.3} summary_metadata_realign p95={:.3}ms metadata_realign_vs_budget_change_ratio_p95={:.3} summary_steady_state p95={:.3}ms window_shrink_catch_up p95={:.3}ms window_only_append_pre_overflow p95={:.3}ms summary_append_pre_overflow p95={:.3}ms append_pre_vs_window_only_ratio_p95={:.3} window_only_append_cold_overflow p95={:.3}ms summary_append_cold_overflow p95={:.3}ms append_cold_vs_window_only_ratio_p95={:.3} summary_append_saturated p95={:.3}ms speedup_ratio_p95={:.3} shrink_vs_rebuild_speedup_ratio_p95={:.3} gate={}",
+        report.aggregated_p95_median_ms.window_only.unwrap_or(0.0),
+        report
+            .aggregated_p95_median_ms
+            .summary_window_cover
+            .unwrap_or(0.0),
+        report
+            .aggregated_ratios
+            .summary_window_cover_vs_window_only_ratio_p95
+            .unwrap_or(0.0),
+        report
+            .aggregated_ratios
+            .summary_window_cover_overhead_p95_ms
+            .unwrap_or(0.0),
+        report
+            .aggregated_p95_median_ms
+            .summary_rebuild
+            .unwrap_or(0.0),
+        report
+            .aggregated_p95_median_ms
+            .summary_rebuild_budget_change
+            .unwrap_or(0.0),
+        report
+            .aggregated_ratios
+            .summary_rebuild_budget_change_vs_rebuild_ratio_p95
+            .unwrap_or(0.0),
+        report
+            .aggregated_ratios
+            .summary_rebuild_budget_change_vs_rebuild_summary_char_adjusted_ratio_p95
+            .unwrap_or(0.0),
+        report
+            .aggregated_p95_median_ms
+            .summary_metadata_realign
+            .unwrap_or(0.0),
+        report
+            .aggregated_ratios
+            .summary_metadata_realign_vs_budget_change_ratio_p95
+            .unwrap_or(0.0),
+        report
+            .aggregated_p95_median_ms
+            .summary_steady_state
+            .unwrap_or(0.0),
+        report
+            .aggregated_p95_median_ms
+            .window_shrink_catch_up
+            .unwrap_or(0.0),
+        report
+            .aggregated_p95_median_ms
+            .window_only_append_pre_overflow
+            .unwrap_or(0.0),
+        report
+            .aggregated_p95_median_ms
+            .summary_append_pre_overflow
+            .unwrap_or(0.0),
+        report
+            .aggregated_ratios
+            .summary_append_pre_overflow_vs_window_only_ratio_p95
+            .unwrap_or(0.0),
+        report
+            .aggregated_p95_median_ms
+            .window_only_append_cold_overflow
+            .unwrap_or(0.0),
+        report
+            .aggregated_p95_median_ms
+            .summary_append_cold_overflow
+            .unwrap_or(0.0),
+        report
+            .aggregated_ratios
+            .summary_append_cold_overflow_vs_window_only_ratio_p95
+            .unwrap_or(0.0),
+        report
+            .aggregated_p95_median_ms
+            .summary_append_saturated
+            .unwrap_or(0.0),
+        report.aggregated_ratios.speedup_ratio_p95.unwrap_or(0.0),
+        report
+            .aggregated_ratios
+            .window_shrink_catch_up_vs_rebuild_speedup_ratio_p95
+            .unwrap_or(0.0),
+        if report.gate.passed { "pass" } else { "fail" }
+    );
+    if report.suite_repetitions > 1 {
+        println!(
+            "flattened_sample_ratio_p95 cover_vs_window_ratio_p95={:.3} cover_overhead_p95_ms={:.3} budget_change_vs_rebuild_ratio_p95={:.3} budget_change_vs_rebuild_summary_char_adjusted_ratio_p95={:.3} metadata_realign_vs_budget_change_ratio_p95={:.3} append_pre_vs_window_only_ratio_p95={:.3} append_cold_vs_window_only_ratio_p95={:.3} speedup_ratio_p95={:.3} shrink_vs_rebuild_speedup_ratio_p95={:.3}",
+            report
+                .flattened_sample_ratios
+                .summary_window_cover_vs_window_only_ratio_p95
+                .unwrap_or(0.0),
+            report
+                .flattened_sample_ratios
+                .summary_window_cover_overhead_p95_ms
+                .unwrap_or(0.0),
+            report
+                .flattened_sample_ratios
+                .summary_rebuild_budget_change_vs_rebuild_ratio_p95
+                .unwrap_or(0.0),
+            report
+                .flattened_sample_ratios
+                .summary_rebuild_budget_change_vs_rebuild_summary_char_adjusted_ratio_p95
+                .unwrap_or(0.0),
+            report
+                .flattened_sample_ratios
+                .summary_metadata_realign_vs_budget_change_ratio_p95
+                .unwrap_or(0.0),
+            report
+                .flattened_sample_ratios
+                .summary_append_pre_overflow_vs_window_only_ratio_p95
+                .unwrap_or(0.0),
+            report
+                .flattened_sample_ratios
+                .summary_append_cold_overflow_vs_window_only_ratio_p95
+                .unwrap_or(0.0),
+            report
+                .flattened_sample_ratios
+                .speedup_ratio_p95
+                .unwrap_or(0.0),
+            report
+                .flattened_sample_ratios
+                .window_shrink_catch_up_vs_rebuild_speedup_ratio_p95
+                .unwrap_or(0.0),
+        );
+        println!(
+            "suite_stability_range_ms window_only={} summary_window_cover={} summary_rebuild={} summary_rebuild_budget_change={} summary_metadata_realign={} summary_steady_state={} window_shrink_catch_up={} suite_stability_range_over_p50(speedup/shrink_vs_rebuild)={}/{}",
+            format_optional_decimal(report.suite_stability.window_only_p95_ms.range, 3),
+            format_optional_decimal(report.suite_stability.summary_window_cover_p95_ms.range, 3),
+            format_optional_decimal(report.suite_stability.summary_rebuild_p95_ms.range, 3),
+            format_optional_decimal(
+                report
+                    .suite_stability
+                    .summary_rebuild_budget_change_p95_ms
+                    .range,
+                3
+            ),
+            format_optional_decimal(
+                report.suite_stability.summary_metadata_realign_p95_ms.range,
+                3
+            ),
+            format_optional_decimal(report.suite_stability.summary_steady_state_p95_ms.range, 3),
+            format_optional_decimal(
+                report.suite_stability.window_shrink_catch_up_p95_ms.range,
+                3
+            ),
+            format_optional_decimal(report.suite_stability.speedup_ratio_p95.range_over_p50, 3),
+            format_optional_decimal(
+                report
+                    .suite_stability
+                    .window_shrink_catch_up_vs_rebuild_speedup_ratio_p95
+                    .range_over_p50,
+                3
+            ),
+        );
+        println!(
+            "cold_path_phase_range_ms rebuild(copy/target_bootstrap/target_load)={}/{}/{} budget_change(source_warmup/target_load)={}/{} metadata_realign(append/target_load)={}/{} shrink(source_warmup/target_load)={}/{}",
+            format_optional_decimal(
+                report
+                    .cold_path_phase_stability
+                    .summary_rebuild
+                    .copy_db_ms
+                    .range,
+                3
+            ),
+            format_optional_decimal(
+                report
+                    .cold_path_phase_stability
+                    .summary_rebuild
+                    .target_bootstrap_ms
+                    .range,
+                3
+            ),
+            format_optional_decimal(
+                report
+                    .cold_path_phase_stability
+                    .summary_rebuild
+                    .target_load_ms
+                    .range,
+                3
+            ),
+            format_optional_decimal(
+                report
+                    .cold_path_phase_stability
+                    .summary_rebuild_budget_change
+                    .source_warmup_ms
+                    .range,
+                3
+            ),
+            format_optional_decimal(
+                report
+                    .cold_path_phase_stability
+                    .summary_rebuild_budget_change
+                    .target_load_ms
+                    .range,
+                3
+            ),
+            format_optional_decimal(
+                report
+                    .cold_path_phase_stability
+                    .summary_metadata_realign
+                    .append_turn_ms
+                    .range,
+                3
+            ),
+            format_optional_decimal(
+                report
+                    .cold_path_phase_stability
+                    .summary_metadata_realign
+                    .target_load_ms
+                    .range,
+                3
+            ),
+            format_optional_decimal(
+                report
+                    .cold_path_phase_stability
+                    .window_shrink_catch_up
+                    .source_warmup_ms
+                    .range,
+                3
+            ),
+            format_optional_decimal(
+                report
+                    .cold_path_phase_stability
+                    .window_shrink_catch_up
+                    .target_load_ms
+                    .range,
+                3
+            ),
+        );
+    }
+    println!(
+        "entries window_only={} summary_window_cover={} summary_rebuild={} summary_rebuild_budget_change={} summary_metadata_realign={} summary_steady_state={} window_shrink_catch_up={} summary_chars(rebuild/budget_change/metadata/steady/shrink)={}/{}/{}/{}/{} payload_chars(window/cover/rebuild/budget_change/metadata/steady/shrink)={}/{}/{}/{}/{}/{}/{} approx_rss_step_delta_kib_p95(window/cover/rebuild/budget_change/metadata/steady/shrink/window_only_append_pre/append_pre/window_only_append_cold/append_cold/append)={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{} shrink_source_window={} telemetry_scope={}",
+        report.window_only_entry_count,
+        report.summary_window_cover_entry_count,
+        report.summary_rebuild_entry_count,
+        report.summary_rebuild_budget_change_entry_count,
+        report.summary_metadata_realign_entry_count,
+        report.summary_steady_state_entry_count,
+        report.window_shrink_catch_up_entry_count,
+        report.summary_rebuild_summary_chars,
+        report.summary_rebuild_budget_change_summary_chars,
+        report.summary_metadata_realign_summary_chars,
+        report.summary_steady_state_summary_chars,
+        report.window_shrink_catch_up_summary_chars,
+        report.window_only_payload_chars,
+        report.summary_window_cover_payload_chars,
+        report.summary_rebuild_payload_chars,
+        report.summary_rebuild_budget_change_payload_chars,
+        report.summary_metadata_realign_payload_chars,
+        report.summary_steady_state_payload_chars,
+        report.window_shrink_catch_up_payload_chars,
+        format_optional_decimal(report.window_only_rss_delta_kib.p95, 1),
+        format_optional_decimal(report.summary_window_cover_rss_delta_kib.p95, 1),
+        format_optional_decimal(report.summary_rebuild_rss_delta_kib.p95, 1),
+        format_optional_decimal(report.summary_rebuild_budget_change_rss_delta_kib.p95, 1),
+        format_optional_decimal(report.summary_metadata_realign_rss_delta_kib.p95, 1),
+        format_optional_decimal(report.summary_steady_state_rss_delta_kib.p95, 1),
+        format_optional_decimal(report.window_shrink_catch_up_rss_delta_kib.p95, 1),
+        format_optional_decimal(report.window_only_append_pre_overflow_rss_delta_kib.p95, 1),
+        format_optional_decimal(report.summary_append_pre_overflow_rss_delta_kib.p95, 1),
+        format_optional_decimal(report.window_only_append_cold_overflow_rss_delta_kib.p95, 1),
+        format_optional_decimal(report.summary_append_cold_overflow_rss_delta_kib.p95, 1),
+        format_optional_decimal(report.summary_append_saturated_rss_delta_kib.p95, 1),
+        report.window_shrink_source_window,
+        report.rss_telemetry_scope
+    );
+    for warning in &report.gate.warnings {
+        println!("warning: {warning}");
+    }
+
+    if enforce_gate && !report.gate.passed {
+        return Err(format!(
+            "memory context benchmark regression gate failed: {}",
+            report.gate.reason.as_deref().unwrap_or("gate failed")
+        ));
+    }
+
+    Ok(())
+}
+
+fn run_memory_context_benchmark_suite(
+    temp_root_override: Option<&Path>,
+    history_turns: usize,
+    sliding_window: usize,
+    window_shrink_source_window: usize,
+    summary_max_chars: usize,
+    words_per_turn: usize,
+    rebuild_iterations: usize,
+    hot_iterations: usize,
+    warmup_iterations: usize,
+) -> CliResult<MemoryContextBenchmarkSuiteSamples> {
+    let temp_root = benchmark_temp_root("loongclaw-memory-context-benchmark", temp_root_override);
+    fs::create_dir_all(&temp_root)
+        .map_err(|error| format!("failed to create memory benchmark temp directory: {error}"))?;
+
+    let result = (|| {
+        let session_id = "memory-context-benchmark-session";
+        let seed_db = temp_root.join("seed-history.sqlite3");
+        seed_memory_context_history(
+            &seed_db,
+            session_id,
+            history_turns,
+            sliding_window,
+            summary_max_chars,
+            words_per_turn,
+        )?;
+        checkpoint_sqlite_database(&seed_db)?;
+        release_memory_benchmark_runtime(&seed_db)?;
+        let seed_db_bytes = fs::metadata(&seed_db)
+            .map_err(|error| format!("failed to read seed database metadata: {error}"))?
+            .len();
+
+        let (window_only_samples, window_only_rss_deltas_kib, window_only_shape) =
+            sample_window_only_context(
+                &temp_root,
+                &seed_db,
+                session_id,
+                sliding_window,
+                warmup_iterations,
+                hot_iterations,
+            )?;
+        let (
+            summary_window_cover_samples,
+            summary_window_cover_rss_deltas_kib,
+            summary_window_cover_shape,
+        ) = sample_summary_window_cover_context(
+            &temp_root,
+            session_id,
+            sliding_window,
+            summary_max_chars,
+            words_per_turn,
+            warmup_iterations,
+            hot_iterations,
+        )?;
+        let (
+            summary_rebuild_samples,
+            summary_rebuild_rss_deltas_kib,
+            summary_rebuild_shape,
+            summary_rebuild_phase_samples,
+        ) = sample_summary_rebuild_context(
+            &temp_root,
+            &seed_db,
+            session_id,
+            sliding_window,
+            summary_max_chars,
+            rebuild_iterations,
+        )?;
+        let (
+            summary_rebuild_budget_change_samples,
+            summary_rebuild_budget_change_rss_deltas_kib,
+            summary_rebuild_budget_change_shape,
+            summary_rebuild_budget_change_phase_samples,
+        ) = sample_summary_rebuild_budget_change_context(
+            &temp_root,
+            &seed_db,
+            session_id,
+            sliding_window,
+            summary_max_chars,
+            rebuild_iterations,
+        )?;
+        let (
+            summary_metadata_realign_samples,
+            summary_metadata_realign_rss_deltas_kib,
+            summary_metadata_realign_shape,
+            summary_metadata_realign_phase_samples,
+        ) = sample_summary_metadata_realign_context(
+            &temp_root,
+            &seed_db,
+            session_id,
+            history_turns,
+            sliding_window,
+            summary_max_chars,
+            words_per_turn,
+            rebuild_iterations,
+        )?;
+        let (
+            summary_steady_state_samples,
+            summary_steady_state_rss_deltas_kib,
+            summary_steady_state_shape,
+        ) = sample_summary_steady_state_context(
+            &temp_root,
+            &seed_db,
+            session_id,
+            sliding_window,
+            summary_max_chars,
+            warmup_iterations,
+            hot_iterations,
+        )?;
+        let (
+            window_shrink_catch_up_samples,
+            window_shrink_catch_up_rss_deltas_kib,
+            window_shrink_catch_up_shape,
+            window_shrink_catch_up_phase_samples,
+        ) = sample_window_shrink_catch_up_context(
+            &temp_root,
+            &seed_db,
+            session_id,
+            sliding_window,
+            window_shrink_source_window,
+            summary_max_chars,
+            rebuild_iterations,
+        )?;
+        let (
+            window_only_append_pre_overflow_samples,
+            window_only_append_pre_overflow_rss_deltas_kib,
+        ) = sample_window_only_append_context(
+            &temp_root,
+            "window-only-append-pre-overflow",
+            session_id,
+            sliding_window.saturating_sub(1),
+            sliding_window,
+            summary_max_chars,
+            words_per_turn,
+            rebuild_iterations,
+        )?;
+        let (
+            window_only_append_cold_overflow_samples,
+            window_only_append_cold_overflow_rss_deltas_kib,
+        ) = sample_window_only_append_context(
+            &temp_root,
+            "window-only-append-cold-overflow",
+            session_id,
+            sliding_window,
+            sliding_window,
+            summary_max_chars,
+            words_per_turn,
+            rebuild_iterations,
+        )?;
+        let (summary_append_pre_overflow_samples, summary_append_pre_overflow_rss_deltas_kib) =
+            sample_summary_append_pre_overflow_context(
+                &temp_root,
+                session_id,
+                sliding_window,
+                summary_max_chars,
+                words_per_turn,
+                rebuild_iterations,
+            )?;
+        let (summary_append_cold_overflow_samples, summary_append_cold_overflow_rss_deltas_kib) =
+            sample_summary_append_cold_overflow_context(
+                &temp_root,
+                session_id,
+                sliding_window,
+                summary_max_chars,
+                words_per_turn,
+                rebuild_iterations,
+            )?;
+        let (summary_append_saturated_samples, summary_append_saturated_rss_deltas_kib) =
+            sample_summary_append_saturated_context(
+                &temp_root,
+                &seed_db,
+                session_id,
+                history_turns,
+                sliding_window,
+                summary_max_chars,
+                words_per_turn,
+                warmup_iterations,
+                hot_iterations,
+            )?;
+
+        Ok(MemoryContextBenchmarkSuiteSamples {
+            seed_db_bytes,
+            window_only_samples,
+            summary_window_cover_samples,
+            summary_rebuild_samples,
+            summary_rebuild_budget_change_samples,
+            summary_metadata_realign_samples,
+            summary_steady_state_samples,
+            window_shrink_catch_up_samples,
+            window_only_append_pre_overflow_samples,
+            window_only_append_cold_overflow_samples,
+            summary_append_pre_overflow_samples,
+            summary_append_cold_overflow_samples,
+            summary_append_saturated_samples,
+            window_only_rss_deltas_kib,
+            summary_window_cover_rss_deltas_kib,
+            summary_rebuild_rss_deltas_kib,
+            summary_rebuild_budget_change_rss_deltas_kib,
+            summary_metadata_realign_rss_deltas_kib,
+            summary_steady_state_rss_deltas_kib,
+            window_shrink_catch_up_rss_deltas_kib,
+            window_only_append_pre_overflow_rss_deltas_kib,
+            window_only_append_cold_overflow_rss_deltas_kib,
+            summary_append_pre_overflow_rss_deltas_kib,
+            summary_append_cold_overflow_rss_deltas_kib,
+            summary_append_saturated_rss_deltas_kib,
+            summary_rebuild_phase_samples,
+            summary_rebuild_budget_change_phase_samples,
+            summary_metadata_realign_phase_samples,
+            window_shrink_catch_up_phase_samples,
+            window_only_shape,
+            summary_window_cover_shape,
+            summary_rebuild_shape,
+            summary_rebuild_budget_change_shape,
+            summary_metadata_realign_shape,
+            summary_steady_state_shape,
+            window_shrink_catch_up_shape,
+        })
+    })();
+
+    let _ = fs::remove_dir_all(&temp_root);
+    result
+}
+
+fn try_build_memory_context_benchmark_report(
+    output_path: &str,
+    benchmark_temp_root: &ResolvedMemoryContextBenchmarkTempRoot,
+    history_turns: usize,
+    sliding_window: usize,
+    window_shrink_source_window: usize,
+    summary_max_chars: usize,
+    words_per_turn: usize,
+    rebuild_iterations: usize,
+    hot_iterations: usize,
+    warmup_iterations: usize,
+    suite_runs: &[MemoryContextBenchmarkSuiteSamples],
+    suite_repetitions: usize,
+    enforce_gate: bool,
+    normalized_min_speedup_ratio: f64,
+) -> CliResult<MemoryContextBenchmarkReport> {
+    let representative = suite_runs
+        .last()
+        .ok_or_else(|| "memory context benchmark requires at least one suite run".to_owned())?;
+    let suite_p95_summaries = suite_runs
+        .iter()
+        .map(summarize_memory_context_suite_p95)
+        .collect::<Vec<_>>();
+
+    macro_rules! flatten_metric {
+        ($field:ident) => {
+            suite_runs
+                .iter()
+                .flat_map(|run| run.$field.iter().copied())
+                .collect::<Vec<_>>()
+        };
+    }
+
+    let window_only_samples = flatten_metric!(window_only_samples);
+    let summary_window_cover_samples = flatten_metric!(summary_window_cover_samples);
+    let summary_rebuild_samples = flatten_metric!(summary_rebuild_samples);
+    let summary_rebuild_budget_change_samples =
+        flatten_metric!(summary_rebuild_budget_change_samples);
+    let summary_metadata_realign_samples = flatten_metric!(summary_metadata_realign_samples);
+    let summary_steady_state_samples = flatten_metric!(summary_steady_state_samples);
+    let window_shrink_catch_up_samples = flatten_metric!(window_shrink_catch_up_samples);
+    let window_only_append_pre_overflow_samples =
+        flatten_metric!(window_only_append_pre_overflow_samples);
+    let window_only_append_cold_overflow_samples =
+        flatten_metric!(window_only_append_cold_overflow_samples);
+    let summary_append_pre_overflow_samples = flatten_metric!(summary_append_pre_overflow_samples);
+    let summary_append_cold_overflow_samples =
+        flatten_metric!(summary_append_cold_overflow_samples);
+    let summary_append_saturated_samples = flatten_metric!(summary_append_saturated_samples);
+
+    let window_only_rss_deltas_kib = flatten_metric!(window_only_rss_deltas_kib);
+    let summary_window_cover_rss_deltas_kib = flatten_metric!(summary_window_cover_rss_deltas_kib);
+    let summary_rebuild_rss_deltas_kib = flatten_metric!(summary_rebuild_rss_deltas_kib);
+    let summary_rebuild_budget_change_rss_deltas_kib =
+        flatten_metric!(summary_rebuild_budget_change_rss_deltas_kib);
+    let summary_metadata_realign_rss_deltas_kib =
+        flatten_metric!(summary_metadata_realign_rss_deltas_kib);
+    let summary_steady_state_rss_deltas_kib = flatten_metric!(summary_steady_state_rss_deltas_kib);
+    let window_shrink_catch_up_rss_deltas_kib =
+        flatten_metric!(window_shrink_catch_up_rss_deltas_kib);
+    let window_only_append_pre_overflow_rss_deltas_kib =
+        flatten_metric!(window_only_append_pre_overflow_rss_deltas_kib);
+    let window_only_append_cold_overflow_rss_deltas_kib =
+        flatten_metric!(window_only_append_cold_overflow_rss_deltas_kib);
+    let summary_append_pre_overflow_rss_deltas_kib =
+        flatten_metric!(summary_append_pre_overflow_rss_deltas_kib);
+    let summary_append_cold_overflow_rss_deltas_kib =
+        flatten_metric!(summary_append_cold_overflow_rss_deltas_kib);
+    let summary_append_saturated_rss_deltas_kib =
+        flatten_metric!(summary_append_saturated_rss_deltas_kib);
+
+    let window_only_latency_ms = compute_numeric_stats(&window_only_samples);
+    let summary_window_cover_latency_ms = compute_numeric_stats(&summary_window_cover_samples);
+    let summary_rebuild_latency_ms = compute_numeric_stats(&summary_rebuild_samples);
+    let summary_rebuild_budget_change_latency_ms =
+        compute_numeric_stats(&summary_rebuild_budget_change_samples);
+    let summary_metadata_realign_latency_ms =
+        compute_numeric_stats(&summary_metadata_realign_samples);
+    let summary_steady_state_latency_ms = compute_numeric_stats(&summary_steady_state_samples);
+    let window_shrink_catch_up_latency_ms = compute_numeric_stats(&window_shrink_catch_up_samples);
+    let window_only_append_pre_overflow_latency_ms =
+        compute_numeric_stats(&window_only_append_pre_overflow_samples);
+    let window_only_append_cold_overflow_latency_ms =
+        compute_numeric_stats(&window_only_append_cold_overflow_samples);
+    let summary_append_pre_overflow_latency_ms =
+        compute_numeric_stats(&summary_append_pre_overflow_samples);
+    let summary_append_cold_overflow_latency_ms =
+        compute_numeric_stats(&summary_append_cold_overflow_samples);
+    let summary_append_saturated_latency_ms =
+        compute_numeric_stats(&summary_append_saturated_samples);
+
+    let window_only_rss_delta_kib = compute_numeric_stats(&window_only_rss_deltas_kib);
+    let summary_window_cover_rss_delta_kib =
+        compute_numeric_stats(&summary_window_cover_rss_deltas_kib);
+    let summary_rebuild_rss_delta_kib = compute_numeric_stats(&summary_rebuild_rss_deltas_kib);
+    let summary_rebuild_budget_change_rss_delta_kib =
+        compute_numeric_stats(&summary_rebuild_budget_change_rss_deltas_kib);
+    let summary_metadata_realign_rss_delta_kib =
+        compute_numeric_stats(&summary_metadata_realign_rss_deltas_kib);
+    let summary_steady_state_rss_delta_kib =
+        compute_numeric_stats(&summary_steady_state_rss_deltas_kib);
+    let window_shrink_catch_up_rss_delta_kib =
+        compute_numeric_stats(&window_shrink_catch_up_rss_deltas_kib);
+    let window_only_append_pre_overflow_rss_delta_kib =
+        compute_numeric_stats(&window_only_append_pre_overflow_rss_deltas_kib);
+    let window_only_append_cold_overflow_rss_delta_kib =
+        compute_numeric_stats(&window_only_append_cold_overflow_rss_deltas_kib);
+    let summary_append_pre_overflow_rss_delta_kib =
+        compute_numeric_stats(&summary_append_pre_overflow_rss_deltas_kib);
+    let summary_append_cold_overflow_rss_delta_kib =
+        compute_numeric_stats(&summary_append_cold_overflow_rss_deltas_kib);
+    let summary_append_saturated_rss_delta_kib =
+        compute_numeric_stats(&summary_append_saturated_rss_deltas_kib);
+
+    let summary_window_cover_vs_window_only_ratio_p95 = match (
+        summary_window_cover_latency_ms.p95,
+        window_only_latency_ms.p95,
+    ) {
+        (Some(cover_p95), Some(window_only_p95)) if window_only_p95 > 0.0 => {
+            Some(cover_p95 / window_only_p95)
+        }
+        _ => None,
+    };
+    let summary_window_cover_overhead_p95_ms = match (
+        summary_window_cover_latency_ms.p95,
+        window_only_latency_ms.p95,
+    ) {
+        (Some(cover_p95), Some(window_only_p95)) => Some(cover_p95 - window_only_p95),
+        _ => None,
+    };
+    let summary_rebuild_budget_change_vs_rebuild_ratio_p95 = match (
+        summary_rebuild_budget_change_latency_ms.p95,
+        summary_rebuild_latency_ms.p95,
+    ) {
+        (Some(budget_change_p95), Some(rebuild_p95)) if rebuild_p95 > 0.0 => {
+            Some(budget_change_p95 / rebuild_p95)
+        }
+        _ => None,
+    };
+    let summary_rebuild_budget_change_summary_char_growth_ratio =
+        compute_weighted_summary_char_growth_ratio(
+            suite_runs,
+            |run| run.summary_rebuild_shape.summary_chars,
+            |run| run.summary_rebuild_budget_change_shape.summary_chars,
+            |run| {
+                run.summary_rebuild_samples
+                    .len()
+                    .min(run.summary_rebuild_budget_change_samples.len())
+            },
+        );
+    let summary_rebuild_budget_change_vs_rebuild_summary_char_adjusted_ratio_p95 =
+        compute_workload_adjusted_ratio(
+            summary_rebuild_budget_change_vs_rebuild_ratio_p95,
+            summary_rebuild_budget_change_summary_char_growth_ratio,
+        );
+    let summary_metadata_realign_vs_budget_change_ratio_p95 = match (
+        summary_metadata_realign_latency_ms.p95,
+        summary_rebuild_budget_change_latency_ms.p95,
+    ) {
+        (Some(metadata_realign_p95), Some(budget_change_p95)) if budget_change_p95 > 0.0 => {
+            Some(metadata_realign_p95 / budget_change_p95)
+        }
+        _ => None,
+    };
+    let speedup_ratio_p95 = match (
+        summary_rebuild_latency_ms.p95,
+        summary_steady_state_latency_ms.p95,
+    ) {
+        (Some(rebuild_p95), Some(steady_p95)) if steady_p95 > 0.0 => Some(rebuild_p95 / steady_p95),
+        _ => None,
+    };
+    let window_shrink_catch_up_vs_rebuild_speedup_ratio_p95 = match (
+        summary_rebuild_latency_ms.p95,
+        window_shrink_catch_up_latency_ms.p95,
+    ) {
+        (Some(rebuild_p95), Some(shrink_p95)) if shrink_p95 > 0.0 => Some(rebuild_p95 / shrink_p95),
+        _ => None,
+    };
+    let summary_append_pre_overflow_vs_window_only_ratio_p95 = match (
+        summary_append_pre_overflow_latency_ms.p95,
+        window_only_append_pre_overflow_latency_ms.p95,
+    ) {
+        (Some(summary_p95), Some(window_only_p95)) if window_only_p95 > 0.0 => {
+            Some(summary_p95 / window_only_p95)
+        }
+        _ => None,
+    };
+    let summary_append_cold_overflow_vs_window_only_ratio_p95 = match (
+        summary_append_cold_overflow_latency_ms.p95,
+        window_only_append_cold_overflow_latency_ms.p95,
+    ) {
+        (Some(summary_p95), Some(window_only_p95)) if window_only_p95 > 0.0 => {
+            Some(summary_p95 / window_only_p95)
+        }
+        _ => None,
+    };
+
+    let aggregated_p95_median_ms = MemoryContextAggregatedP95MedianMs {
+        window_only: median_option_f64(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.window_only),
+        ),
+        summary_window_cover: median_option_f64(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_window_cover),
+        ),
+        summary_rebuild: median_option_f64(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_rebuild),
+        ),
+        summary_rebuild_budget_change: median_option_f64(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_rebuild_budget_change),
+        ),
+        summary_metadata_realign: median_option_f64(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_metadata_realign),
+        ),
+        summary_steady_state: median_option_f64(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_steady_state),
+        ),
+        window_shrink_catch_up: median_option_f64(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.window_shrink_catch_up),
+        ),
+        window_only_append_pre_overflow: median_option_f64(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.window_only_append_pre_overflow),
+        ),
+        window_only_append_cold_overflow: median_option_f64(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.window_only_append_cold_overflow),
+        ),
+        summary_append_pre_overflow: median_option_f64(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_append_pre_overflow),
+        ),
+        summary_append_cold_overflow: median_option_f64(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_append_cold_overflow),
+        ),
+        summary_append_saturated: median_option_f64(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_append_saturated),
+        ),
+    };
+    let suite_stability = build_memory_context_suite_stability_summary(&suite_p95_summaries);
+    let cold_path_phases = build_memory_context_cold_path_phase_report(suite_runs);
+    let cold_path_phase_stability =
+        build_memory_context_cold_path_phase_stability_report(suite_runs);
+    let cold_path_noise_attribution =
+        build_memory_context_cold_path_noise_attribution_report(&cold_path_phase_stability);
+    let cold_path_bootstrap_noise_attribution =
+        build_memory_context_cold_path_bootstrap_noise_attribution_report(suite_runs);
+    let cold_path_load_noise_attribution =
+        build_memory_context_cold_path_load_noise_attribution_report(suite_runs);
+    let flattened_sample_ratios = MemoryContextRatioP95Summary {
+        summary_window_cover_vs_window_only_ratio_p95,
+        summary_window_cover_overhead_p95_ms,
+        summary_rebuild_budget_change_vs_rebuild_ratio_p95,
+        summary_rebuild_budget_change_vs_rebuild_summary_char_adjusted_ratio_p95,
+        summary_metadata_realign_vs_budget_change_ratio_p95,
+        speedup_ratio_p95,
+        window_shrink_catch_up_vs_rebuild_speedup_ratio_p95,
+        summary_append_pre_overflow_vs_window_only_ratio_p95,
+        summary_append_cold_overflow_vs_window_only_ratio_p95,
+    };
+    let aggregated_ratios = MemoryContextRatioP95Summary {
+        summary_window_cover_vs_window_only_ratio_p95: median_option_f64(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_window_cover_vs_window_only_ratio_p95),
+        ),
+        summary_window_cover_overhead_p95_ms: median_option_f64(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_window_cover_overhead_p95_ms),
+        ),
+        summary_rebuild_budget_change_vs_rebuild_ratio_p95: median_option_f64(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_rebuild_budget_change_vs_rebuild_ratio_p95),
+        ),
+        summary_rebuild_budget_change_vs_rebuild_summary_char_adjusted_ratio_p95: median_option_f64(
+            suite_p95_summaries.iter().map(|summary| {
+                summary.summary_rebuild_budget_change_vs_rebuild_summary_char_adjusted_ratio_p95
+            }),
+        ),
+        summary_metadata_realign_vs_budget_change_ratio_p95: median_option_f64(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_metadata_realign_vs_budget_change_ratio_p95),
+        ),
+        speedup_ratio_p95: median_option_f64(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.speedup_ratio_p95),
+        ),
+        window_shrink_catch_up_vs_rebuild_speedup_ratio_p95: median_option_f64(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.window_shrink_catch_up_vs_rebuild_speedup_ratio_p95),
+        ),
+        summary_append_pre_overflow_vs_window_only_ratio_p95: median_option_f64(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_append_pre_overflow_vs_window_only_ratio_p95),
+        ),
+        summary_append_cold_overflow_vs_window_only_ratio_p95: median_option_f64(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_append_cold_overflow_vs_window_only_ratio_p95),
+        ),
+    };
+    let soft_warnings = build_memory_context_soft_warnings(
+        aggregated_ratios.summary_window_cover_vs_window_only_ratio_p95,
+        aggregated_ratios.summary_window_cover_overhead_p95_ms,
+        summary_window_cover_samples.len(),
+        suite_stability
+            .window_only_p95_ms
+            .range_over_p50
+            .is_some_and(|range_over_p50| {
+                range_over_p50 > DEFAULT_MEMORY_CONTEXT_SUITE_STABILITY_SOFT_MAX_RANGE_OVER_P50
+            })
+            || suite_stability
+                .summary_window_cover_p95_ms
+                .range_over_p50
+                .is_some_and(|range_over_p50| {
+                    range_over_p50 > DEFAULT_MEMORY_CONTEXT_SUITE_STABILITY_SOFT_MAX_RANGE_OVER_P50
+                })
+            || suite_stability
+                .summary_window_cover_vs_window_only_ratio_p95
+                .range_over_p50
+                .is_some_and(|range_over_p50| {
+                    range_over_p50 > DEFAULT_MEMORY_CONTEXT_SUITE_STABILITY_SOFT_MAX_RANGE_OVER_P50
+                })
+            || suite_stability
+                .summary_window_cover_overhead_p95_ms
+                .range_over_p50
+                .is_some_and(|range_over_p50| {
+                    range_over_p50 > DEFAULT_MEMORY_CONTEXT_SUITE_STABILITY_SOFT_MAX_RANGE_OVER_P50
+                }),
+        aggregated_ratios.summary_rebuild_budget_change_vs_rebuild_ratio_p95,
+        aggregated_ratios.summary_rebuild_budget_change_vs_rebuild_summary_char_adjusted_ratio_p95,
+        summary_rebuild_samples
+            .len()
+            .min(summary_rebuild_budget_change_samples.len()),
+        aggregated_ratios.summary_metadata_realign_vs_budget_change_ratio_p95,
+        summary_metadata_realign_samples
+            .len()
+            .min(summary_rebuild_budget_change_samples.len()),
+        suite_stability.speedup_ratio_p95.min,
+        suite_stability.speedup_ratio_p95.range_over_p50,
+        suite_stability.summary_rebuild_p95_ms.range_over_p50,
+        suite_stability.summary_steady_state_p95_ms.p50,
+        suite_stability.summary_steady_state_p95_ms.range,
+        suite_stability.summary_steady_state_p95_ms.range_over_p50,
+        suite_stability.speedup_ratio_p95.count,
+        normalized_min_speedup_ratio,
+        cold_path_noise_attribution.summary_rebuild.as_ref(),
+        cold_path_bootstrap_noise_attribution
+            .summary_rebuild
+            .target_bootstrap
+            .as_ref(),
+        cold_path_load_noise_attribution
+            .summary_rebuild
+            .target_load
+            .as_ref(),
+        suite_stability
+            .summary_rebuild_budget_change_p95_ms
+            .range_over_p50,
+        suite_stability
+            .summary_metadata_realign_p95_ms
+            .range_over_p50,
+        suite_stability
+            .summary_metadata_realign_vs_budget_change_ratio_p95
+            .range_over_p50,
+        benchmark_temp_root.source,
+        &benchmark_temp_root.path,
+    );
+
+    let observed_speedup_ratio = aggregated_ratios.speedup_ratio_p95;
+    let mut gate_reason = None;
+    let gate_passed = if enforce_gate {
+        match observed_speedup_ratio {
+            Some(observed) if observed >= normalized_min_speedup_ratio => true,
+            Some(observed) => {
+                gate_reason = Some(format!(
+                    "observed aggregated p95 speedup ratio {:.3} is below threshold {:.3}",
+                    observed, normalized_min_speedup_ratio
+                ));
+                false
+            }
+            None => {
+                gate_reason =
+                    Some("unable to compute aggregated memory context speedup ratio".to_owned());
+                false
+            }
+        }
+    } else {
+        true
+    };
+
+    Ok(MemoryContextBenchmarkReport {
+        generated_at_epoch_s: current_epoch_seconds(),
+        profile: "memory_context".to_owned(),
+        output_path: output_path.to_owned(),
+        benchmark_temp_root: benchmark_temp_root.path.display().to_string(),
+        benchmark_temp_root_source: benchmark_temp_root.source,
+        suite_repetitions,
+        suite_aggregation: MEMORY_CONTEXT_SUITE_AGGREGATION_MEDIAN_OF_P95.to_owned(),
+        rss_telemetry_scope: "best_effort_approx_process_rss_step_delta_via_ps".to_owned(),
+        history_turns,
+        sliding_window,
+        window_shrink_source_window,
+        summary_max_chars,
+        words_per_turn,
+        rebuild_iterations,
+        hot_iterations,
+        warmup_iterations,
+        seed_db_bytes: representative.seed_db_bytes,
+        suite_p95_summaries,
+        suite_stability,
+        cold_path_phases,
+        cold_path_phase_stability,
+        cold_path_noise_attribution,
+        cold_path_bootstrap_noise_attribution,
+        cold_path_load_noise_attribution,
+        window_only_latency_ms,
+        summary_window_cover_latency_ms,
+        summary_rebuild_latency_ms,
+        summary_rebuild_budget_change_latency_ms,
+        summary_metadata_realign_latency_ms,
+        summary_steady_state_latency_ms,
+        window_shrink_catch_up_latency_ms,
+        window_only_append_pre_overflow_latency_ms,
+        window_only_append_cold_overflow_latency_ms,
+        summary_append_pre_overflow_latency_ms,
+        summary_append_cold_overflow_latency_ms,
+        summary_append_saturated_latency_ms,
+        window_only_rss_delta_kib,
+        summary_window_cover_rss_delta_kib,
+        summary_rebuild_rss_delta_kib,
+        summary_rebuild_budget_change_rss_delta_kib,
+        summary_metadata_realign_rss_delta_kib,
+        summary_steady_state_rss_delta_kib,
+        window_shrink_catch_up_rss_delta_kib,
+        window_only_append_pre_overflow_rss_delta_kib,
+        window_only_append_cold_overflow_rss_delta_kib,
+        summary_append_pre_overflow_rss_delta_kib,
+        summary_append_cold_overflow_rss_delta_kib,
+        summary_append_saturated_rss_delta_kib,
+        window_only_entry_count: representative.window_only_shape.entry_count,
+        window_only_turn_entries: representative.window_only_shape.turn_entries,
+        window_only_payload_chars: representative.window_only_shape.payload_chars,
+        summary_window_cover_entry_count: representative.summary_window_cover_shape.entry_count,
+        summary_window_cover_turn_entries: representative.summary_window_cover_shape.turn_entries,
+        summary_window_cover_payload_chars: representative.summary_window_cover_shape.payload_chars,
+        summary_rebuild_entry_count: representative.summary_rebuild_shape.entry_count,
+        summary_rebuild_turn_entries: representative.summary_rebuild_shape.turn_entries,
+        summary_rebuild_summary_chars: representative.summary_rebuild_shape.summary_chars,
+        summary_rebuild_payload_chars: representative.summary_rebuild_shape.payload_chars,
+        summary_rebuild_budget_change_entry_count: representative
+            .summary_rebuild_budget_change_shape
+            .entry_count,
+        summary_rebuild_budget_change_turn_entries: representative
+            .summary_rebuild_budget_change_shape
+            .turn_entries,
+        summary_rebuild_budget_change_summary_chars: representative
+            .summary_rebuild_budget_change_shape
+            .summary_chars,
+        summary_rebuild_budget_change_payload_chars: representative
+            .summary_rebuild_budget_change_shape
+            .payload_chars,
+        summary_metadata_realign_entry_count: representative
+            .summary_metadata_realign_shape
+            .entry_count,
+        summary_metadata_realign_turn_entries: representative
+            .summary_metadata_realign_shape
+            .turn_entries,
+        summary_metadata_realign_summary_chars: representative
+            .summary_metadata_realign_shape
+            .summary_chars,
+        summary_metadata_realign_payload_chars: representative
+            .summary_metadata_realign_shape
+            .payload_chars,
+        summary_steady_state_entry_count: representative.summary_steady_state_shape.entry_count,
+        summary_steady_state_turn_entries: representative.summary_steady_state_shape.turn_entries,
+        summary_steady_state_summary_chars: representative.summary_steady_state_shape.summary_chars,
+        summary_steady_state_payload_chars: representative.summary_steady_state_shape.payload_chars,
+        window_shrink_catch_up_entry_count: representative.window_shrink_catch_up_shape.entry_count,
+        window_shrink_catch_up_turn_entries: representative
+            .window_shrink_catch_up_shape
+            .turn_entries,
+        window_shrink_catch_up_summary_chars: representative
+            .window_shrink_catch_up_shape
+            .summary_chars,
+        window_shrink_catch_up_payload_chars: representative
+            .window_shrink_catch_up_shape
+            .payload_chars,
+        flattened_sample_ratios,
+        aggregated_p95_median_ms,
+        aggregated_ratios,
+        gate: MemoryContextBenchmarkGateSummary {
+            enforced: enforce_gate,
+            passed: gate_passed,
+            min_steady_state_speedup_ratio: normalized_min_speedup_ratio,
+            observed_speedup_ratio,
+            summary_window_cover_soft_max_ratio_p95:
+                DEFAULT_MEMORY_CONTEXT_WINDOW_COVER_SOFT_MAX_RATIO_P95,
+            summary_window_cover_soft_max_overhead_p95_ms:
+                DEFAULT_MEMORY_CONTEXT_WINDOW_COVER_SOFT_MAX_OVERHEAD_P95_MS,
+            summary_window_cover_soft_warning_min_samples:
+                DEFAULT_MEMORY_CONTEXT_WINDOW_COVER_SOFT_WARNING_MIN_SAMPLES,
+            summary_rebuild_budget_change_vs_rebuild_soft_max_ratio_p95:
+                DEFAULT_MEMORY_CONTEXT_REBUILD_BUDGET_CHANGE_SOFT_MAX_RATIO_P95,
+            summary_metadata_realign_vs_budget_change_soft_max_ratio_p95:
+                DEFAULT_MEMORY_CONTEXT_METADATA_REALIGN_SOFT_MAX_RATIO_P95,
+            suite_stability_soft_warning_min_suites:
+                DEFAULT_MEMORY_CONTEXT_SUITE_STABILITY_SOFT_WARNING_MIN_SUITES,
+            suite_stability_soft_max_range_over_p50:
+                DEFAULT_MEMORY_CONTEXT_SUITE_STABILITY_SOFT_MAX_RANGE_OVER_P50,
+            warnings: soft_warnings,
+            reason: gate_reason,
+        },
+    })
+}
+
+#[cfg(test)]
+fn build_memory_context_benchmark_report(
+    output_path: &str,
+    benchmark_temp_root: &ResolvedMemoryContextBenchmarkTempRoot,
+    history_turns: usize,
+    sliding_window: usize,
+    window_shrink_source_window: usize,
+    summary_max_chars: usize,
+    words_per_turn: usize,
+    rebuild_iterations: usize,
+    hot_iterations: usize,
+    warmup_iterations: usize,
+    suite_runs: &[MemoryContextBenchmarkSuiteSamples],
+    suite_repetitions: usize,
+    enforce_gate: bool,
+    normalized_min_speedup_ratio: f64,
+) -> MemoryContextBenchmarkReport {
+    try_build_memory_context_benchmark_report(
+        output_path,
+        benchmark_temp_root,
+        history_turns,
+        sliding_window,
+        window_shrink_source_window,
+        summary_max_chars,
+        words_per_turn,
+        rebuild_iterations,
+        hot_iterations,
+        warmup_iterations,
+        suite_runs,
+        suite_repetitions,
+        enforce_gate,
+        normalized_min_speedup_ratio,
+    )
+    .expect("memory context benchmark report should build")
+}
+
+fn summarize_memory_context_suite_p95(
+    run: &MemoryContextBenchmarkSuiteSamples,
+) -> MemoryContextSuiteP95Summary {
+    let window_only = compute_numeric_stats(&run.window_only_samples).p95;
+    let summary_window_cover = compute_numeric_stats(&run.summary_window_cover_samples).p95;
+    let summary_rebuild = compute_numeric_stats(&run.summary_rebuild_samples).p95;
+    let summary_rebuild_budget_change =
+        compute_numeric_stats(&run.summary_rebuild_budget_change_samples).p95;
+    let summary_metadata_realign = compute_numeric_stats(&run.summary_metadata_realign_samples).p95;
+    let summary_steady_state = compute_numeric_stats(&run.summary_steady_state_samples).p95;
+    let window_shrink_catch_up = compute_numeric_stats(&run.window_shrink_catch_up_samples).p95;
+    let window_only_append_pre_overflow =
+        compute_numeric_stats(&run.window_only_append_pre_overflow_samples).p95;
+    let window_only_append_cold_overflow =
+        compute_numeric_stats(&run.window_only_append_cold_overflow_samples).p95;
+    let summary_append_pre_overflow =
+        compute_numeric_stats(&run.summary_append_pre_overflow_samples).p95;
+    let summary_append_cold_overflow =
+        compute_numeric_stats(&run.summary_append_cold_overflow_samples).p95;
+    let summary_append_saturated = compute_numeric_stats(&run.summary_append_saturated_samples).p95;
+
+    let summary_window_cover_vs_window_only_ratio_p95 = match (summary_window_cover, window_only) {
+        (Some(cover_p95), Some(window_only_p95)) if window_only_p95 > 0.0 => {
+            Some(cover_p95 / window_only_p95)
+        }
+        _ => None,
+    };
+    let summary_window_cover_overhead_p95_ms = match (summary_window_cover, window_only) {
+        (Some(cover_p95), Some(window_only_p95)) => Some(cover_p95 - window_only_p95),
+        _ => None,
+    };
+    let summary_rebuild_budget_change_vs_rebuild_ratio_p95 =
+        match (summary_rebuild_budget_change, summary_rebuild) {
+            (Some(budget_change_p95), Some(rebuild_p95)) if rebuild_p95 > 0.0 => {
+                Some(budget_change_p95 / rebuild_p95)
+            }
+            _ => None,
+        };
+    let summary_rebuild_budget_change_summary_char_growth_ratio = compute_summary_char_growth_ratio(
+        run.summary_rebuild_shape.summary_chars,
+        run.summary_rebuild_budget_change_shape.summary_chars,
+    );
+    let summary_rebuild_budget_change_vs_rebuild_summary_char_adjusted_ratio_p95 =
+        compute_workload_adjusted_ratio(
+            summary_rebuild_budget_change_vs_rebuild_ratio_p95,
+            summary_rebuild_budget_change_summary_char_growth_ratio,
+        );
+    let summary_metadata_realign_vs_budget_change_ratio_p95 =
+        match (summary_metadata_realign, summary_rebuild_budget_change) {
+            (Some(metadata_realign_p95), Some(budget_change_p95)) if budget_change_p95 > 0.0 => {
+                Some(metadata_realign_p95 / budget_change_p95)
+            }
+            _ => None,
+        };
+    let speedup_ratio_p95 = match (summary_rebuild, summary_steady_state) {
+        (Some(rebuild_p95), Some(steady_p95)) if steady_p95 > 0.0 => Some(rebuild_p95 / steady_p95),
+        _ => None,
+    };
+    let window_shrink_catch_up_vs_rebuild_speedup_ratio_p95 =
+        match (summary_rebuild, window_shrink_catch_up) {
+            (Some(rebuild_p95), Some(shrink_p95)) if shrink_p95 > 0.0 => {
+                Some(rebuild_p95 / shrink_p95)
+            }
+            _ => None,
+        };
+    let summary_append_pre_overflow_vs_window_only_ratio_p95 =
+        match (summary_append_pre_overflow, window_only_append_pre_overflow) {
+            (Some(summary_p95), Some(window_only_p95)) if window_only_p95 > 0.0 => {
+                Some(summary_p95 / window_only_p95)
+            }
+            _ => None,
+        };
+    let summary_append_cold_overflow_vs_window_only_ratio_p95 = match (
+        summary_append_cold_overflow,
+        window_only_append_cold_overflow,
+    ) {
+        (Some(summary_p95), Some(window_only_p95)) if window_only_p95 > 0.0 => {
+            Some(summary_p95 / window_only_p95)
+        }
+        _ => None,
+    };
+
+    MemoryContextSuiteP95Summary {
+        window_only,
+        summary_window_cover,
+        summary_rebuild,
+        summary_rebuild_budget_change,
+        summary_metadata_realign,
+        summary_steady_state,
+        window_shrink_catch_up,
+        window_only_append_pre_overflow,
+        window_only_append_cold_overflow,
+        summary_append_pre_overflow,
+        summary_append_cold_overflow,
+        summary_append_saturated,
+        summary_window_cover_vs_window_only_ratio_p95,
+        summary_window_cover_overhead_p95_ms,
+        summary_rebuild_budget_change_vs_rebuild_ratio_p95,
+        summary_rebuild_budget_change_vs_rebuild_summary_char_adjusted_ratio_p95,
+        summary_metadata_realign_vs_budget_change_ratio_p95,
+        speedup_ratio_p95,
+        window_shrink_catch_up_vs_rebuild_speedup_ratio_p95,
+        summary_append_pre_overflow_vs_window_only_ratio_p95,
+        summary_append_cold_overflow_vs_window_only_ratio_p95,
+    }
+}
+
+fn build_memory_context_suite_stability_summary(
+    suite_p95_summaries: &[MemoryContextSuiteP95Summary],
+) -> MemoryContextSuiteStabilitySummary {
+    MemoryContextSuiteStabilitySummary {
+        window_only_p95_ms: compute_option_numeric_spread(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.window_only),
+        ),
+        summary_window_cover_p95_ms: compute_option_numeric_spread(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_window_cover),
+        ),
+        summary_rebuild_p95_ms: compute_option_numeric_spread(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_rebuild),
+        ),
+        summary_rebuild_budget_change_p95_ms: compute_option_numeric_spread(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_rebuild_budget_change),
+        ),
+        summary_metadata_realign_p95_ms: compute_option_numeric_spread(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_metadata_realign),
+        ),
+        summary_steady_state_p95_ms: compute_option_numeric_spread(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_steady_state),
+        ),
+        window_shrink_catch_up_p95_ms: compute_option_numeric_spread(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.window_shrink_catch_up),
+        ),
+        window_only_append_pre_overflow_p95_ms: compute_option_numeric_spread(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.window_only_append_pre_overflow),
+        ),
+        window_only_append_cold_overflow_p95_ms: compute_option_numeric_spread(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.window_only_append_cold_overflow),
+        ),
+        summary_append_pre_overflow_p95_ms: compute_option_numeric_spread(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_append_pre_overflow),
+        ),
+        summary_append_cold_overflow_p95_ms: compute_option_numeric_spread(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_append_cold_overflow),
+        ),
+        summary_append_saturated_p95_ms: compute_option_numeric_spread(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_append_saturated),
+        ),
+        summary_window_cover_vs_window_only_ratio_p95: compute_option_numeric_spread(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_window_cover_vs_window_only_ratio_p95),
+        ),
+        summary_window_cover_overhead_p95_ms: compute_option_numeric_spread(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_window_cover_overhead_p95_ms),
+        ),
+        summary_rebuild_budget_change_vs_rebuild_ratio_p95: compute_option_numeric_spread(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_rebuild_budget_change_vs_rebuild_ratio_p95),
+        ),
+        summary_rebuild_budget_change_vs_rebuild_summary_char_adjusted_ratio_p95:
+            compute_option_numeric_spread(suite_p95_summaries.iter().map(|summary| {
+                summary.summary_rebuild_budget_change_vs_rebuild_summary_char_adjusted_ratio_p95
+            })),
+        summary_metadata_realign_vs_budget_change_ratio_p95: compute_option_numeric_spread(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_metadata_realign_vs_budget_change_ratio_p95),
+        ),
+        speedup_ratio_p95: compute_option_numeric_spread(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.speedup_ratio_p95),
+        ),
+        window_shrink_catch_up_vs_rebuild_speedup_ratio_p95: compute_option_numeric_spread(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.window_shrink_catch_up_vs_rebuild_speedup_ratio_p95),
+        ),
+        summary_append_pre_overflow_vs_window_only_ratio_p95: compute_option_numeric_spread(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_append_pre_overflow_vs_window_only_ratio_p95),
+        ),
+        summary_append_cold_overflow_vs_window_only_ratio_p95: compute_option_numeric_spread(
+            suite_p95_summaries
+                .iter()
+                .map(|summary| summary.summary_append_cold_overflow_vs_window_only_ratio_p95),
+        ),
+    }
+}
+
+fn build_memory_context_cold_path_phase_report(
+    suite_runs: &[MemoryContextBenchmarkSuiteSamples],
+) -> MemoryContextColdPathPhaseReport {
+    MemoryContextColdPathPhaseReport {
+        summary_rebuild: build_memory_context_cold_path_phase_stats(
+            suite_runs
+                .iter()
+                .map(|run| &run.summary_rebuild_phase_samples),
+        ),
+        summary_rebuild_budget_change: build_memory_context_cold_path_phase_stats(
+            suite_runs
+                .iter()
+                .map(|run| &run.summary_rebuild_budget_change_phase_samples),
+        ),
+        summary_metadata_realign: build_memory_context_cold_path_phase_stats(
+            suite_runs
+                .iter()
+                .map(|run| &run.summary_metadata_realign_phase_samples),
+        ),
+        window_shrink_catch_up: build_memory_context_cold_path_phase_stats(
+            suite_runs
+                .iter()
+                .map(|run| &run.window_shrink_catch_up_phase_samples),
+        ),
+    }
+}
+
+fn build_memory_context_cold_path_phase_stability_report(
+    suite_runs: &[MemoryContextBenchmarkSuiteSamples],
+) -> MemoryContextColdPathPhaseStabilityReport {
+    MemoryContextColdPathPhaseStabilityReport {
+        summary_rebuild: build_memory_context_cold_path_phase_stability_summary(
+            suite_runs
+                .iter()
+                .map(|run| &run.summary_rebuild_phase_samples),
+        ),
+        summary_rebuild_budget_change: build_memory_context_cold_path_phase_stability_summary(
+            suite_runs
+                .iter()
+                .map(|run| &run.summary_rebuild_budget_change_phase_samples),
+        ),
+        summary_metadata_realign: build_memory_context_cold_path_phase_stability_summary(
+            suite_runs
+                .iter()
+                .map(|run| &run.summary_metadata_realign_phase_samples),
+        ),
+        window_shrink_catch_up: build_memory_context_cold_path_phase_stability_summary(
+            suite_runs
+                .iter()
+                .map(|run| &run.window_shrink_catch_up_phase_samples),
+        ),
+    }
+}
+
+fn build_memory_context_cold_path_noise_attribution_report(
+    stability: &MemoryContextColdPathPhaseStabilityReport,
+) -> MemoryContextColdPathNoiseAttributionReport {
+    MemoryContextColdPathNoiseAttributionReport {
+        summary_rebuild: dominant_memory_context_cold_path_noise(&stability.summary_rebuild),
+        summary_rebuild_budget_change: dominant_memory_context_cold_path_noise(
+            &stability.summary_rebuild_budget_change,
+        ),
+        summary_metadata_realign: dominant_memory_context_cold_path_noise(
+            &stability.summary_metadata_realign,
+        ),
+        window_shrink_catch_up: dominant_memory_context_cold_path_noise(
+            &stability.window_shrink_catch_up,
+        ),
+    }
+}
+
+fn dominant_memory_context_cold_path_noise(
+    stability: &MemoryContextColdPathPhaseStabilitySummary,
+) -> Option<MemoryContextColdPathNoiseAttribution> {
+    [
+        ("copy_db_ms", stability.copy_db_ms.range_over_p50),
+        (
+            "source_bootstrap_ms",
+            stability.source_bootstrap_ms.range_over_p50,
+        ),
+        (
+            "source_warmup_ms",
+            stability.source_warmup_ms.range_over_p50,
+        ),
+        ("append_turn_ms", stability.append_turn_ms.range_over_p50),
+        (
+            "target_bootstrap_ms",
+            stability.target_bootstrap_ms.range_over_p50,
+        ),
+        ("target_load_ms", stability.target_load_ms.range_over_p50),
+    ]
+    .into_iter()
+    .filter_map(|(phase, range_over_p50)| {
+        range_over_p50.map(|range_over_p50| MemoryContextColdPathNoiseAttribution {
+            phase: phase.to_owned(),
+            range_over_p50,
+        })
+    })
+    .max_by(|left, right| left.range_over_p50.total_cmp(&right.range_over_p50))
+}
+
+fn build_memory_context_cold_path_bootstrap_noise_attribution_report(
+    suite_runs: &[MemoryContextBenchmarkSuiteSamples],
+) -> MemoryContextColdPathBootstrapNoiseAttributionReport {
+    MemoryContextColdPathBootstrapNoiseAttributionReport {
+        summary_rebuild: MemoryContextColdPathBootstrapNoiseAttribution {
+            source_bootstrap: None,
+            target_bootstrap: dominant_memory_context_bootstrap_noise(
+                suite_runs
+                    .iter()
+                    .map(|run| &run.summary_rebuild_phase_samples),
+                MemoryContextBootstrapKind::Target,
+            ),
+        },
+        summary_rebuild_budget_change: MemoryContextColdPathBootstrapNoiseAttribution {
+            source_bootstrap: dominant_memory_context_bootstrap_noise(
+                suite_runs
+                    .iter()
+                    .map(|run| &run.summary_rebuild_budget_change_phase_samples),
+                MemoryContextBootstrapKind::Source,
+            ),
+            target_bootstrap: dominant_memory_context_bootstrap_noise(
+                suite_runs
+                    .iter()
+                    .map(|run| &run.summary_rebuild_budget_change_phase_samples),
+                MemoryContextBootstrapKind::Target,
+            ),
+        },
+        summary_metadata_realign: MemoryContextColdPathBootstrapNoiseAttribution {
+            source_bootstrap: dominant_memory_context_bootstrap_noise(
+                suite_runs
+                    .iter()
+                    .map(|run| &run.summary_metadata_realign_phase_samples),
+                MemoryContextBootstrapKind::Source,
+            ),
+            target_bootstrap: dominant_memory_context_bootstrap_noise(
+                suite_runs
+                    .iter()
+                    .map(|run| &run.summary_metadata_realign_phase_samples),
+                MemoryContextBootstrapKind::Target,
+            ),
+        },
+        window_shrink_catch_up: MemoryContextColdPathBootstrapNoiseAttribution {
+            source_bootstrap: dominant_memory_context_bootstrap_noise(
+                suite_runs
+                    .iter()
+                    .map(|run| &run.window_shrink_catch_up_phase_samples),
+                MemoryContextBootstrapKind::Source,
+            ),
+            target_bootstrap: dominant_memory_context_bootstrap_noise(
+                suite_runs
+                    .iter()
+                    .map(|run| &run.window_shrink_catch_up_phase_samples),
+                MemoryContextBootstrapKind::Target,
+            ),
+        },
+    }
+}
+
+fn build_memory_context_cold_path_load_noise_attribution_report(
+    suite_runs: &[MemoryContextBenchmarkSuiteSamples],
+) -> MemoryContextColdPathLoadNoiseAttributionReport {
+    MemoryContextColdPathLoadNoiseAttributionReport {
+        summary_rebuild: MemoryContextColdPathLoadNoiseAttribution {
+            target_load: dominant_memory_context_load_noise(
+                suite_runs
+                    .iter()
+                    .map(|run| &run.summary_rebuild_phase_samples),
+            ),
+        },
+        summary_rebuild_budget_change: MemoryContextColdPathLoadNoiseAttribution {
+            target_load: dominant_memory_context_load_noise(
+                suite_runs
+                    .iter()
+                    .map(|run| &run.summary_rebuild_budget_change_phase_samples),
+            ),
+        },
+        summary_metadata_realign: MemoryContextColdPathLoadNoiseAttribution {
+            target_load: dominant_memory_context_load_noise(
+                suite_runs
+                    .iter()
+                    .map(|run| &run.summary_metadata_realign_phase_samples),
+            ),
+        },
+        window_shrink_catch_up: MemoryContextColdPathLoadNoiseAttribution {
+            target_load: dominant_memory_context_load_noise(
+                suite_runs
+                    .iter()
+                    .map(|run| &run.window_shrink_catch_up_phase_samples),
+            ),
+        },
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MemoryContextBootstrapKind {
+    Source,
+    Target,
+}
+
+#[derive(Debug, Clone, Default)]
+struct MemoryContextBootstrapSubphaseSuiteP95Summary {
+    normalize_path_ms: Option<f64>,
+    registry_lock_ms: Option<f64>,
+    registry_lookup_ms: Option<f64>,
+    runtime_create_ms: Option<f64>,
+    parent_dir_create_ms: Option<f64>,
+    connection_open_ms: Option<f64>,
+    configure_connection_ms: Option<f64>,
+    schema_init_ms: Option<f64>,
+    schema_upgrade_ms: Option<f64>,
+    registry_insert_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct MemoryContextLoadSubphaseSuiteP95Summary {
+    window_query_ms: Option<f64>,
+    window_turn_count_query_ms: Option<f64>,
+    window_exact_rows_query_ms: Option<f64>,
+    window_known_overflow_rows_query_ms: Option<f64>,
+    window_fallback_rows_query_ms: Option<f64>,
+    summary_checkpoint_meta_query_ms: Option<f64>,
+    summary_checkpoint_body_load_ms: Option<f64>,
+    summary_checkpoint_metadata_update_ms: Option<f64>,
+    summary_checkpoint_metadata_update_returning_body_ms: Option<f64>,
+    summary_rebuild_ms: Option<f64>,
+    summary_rebuild_stream_ms: Option<f64>,
+    summary_rebuild_checkpoint_upsert_ms: Option<f64>,
+    summary_rebuild_checkpoint_metadata_upsert_ms: Option<f64>,
+    summary_rebuild_checkpoint_body_upsert_ms: Option<f64>,
+    summary_rebuild_checkpoint_commit_ms: Option<f64>,
+    summary_catch_up_ms: Option<f64>,
+}
+
+fn dominant_memory_context_bootstrap_noise<'a>(
+    phase_samples: impl Iterator<Item = &'a MemoryContextColdPathPhaseSamples>,
+    bootstrap_kind: MemoryContextBootstrapKind,
+) -> Option<MemoryContextBootstrapNoiseAttribution> {
+    let suite_p95 = phase_samples
+        .map(|samples| memory_context_bootstrap_subphase_suite_p95(samples, bootstrap_kind))
+        .collect::<Vec<_>>();
+
+    [
+        (
+            "normalize_path_ms",
+            compute_option_numeric_spread(
+                suite_p95.iter().map(|summary| summary.normalize_path_ms),
+            )
+            .range_over_p50,
+        ),
+        (
+            "registry_lock_ms",
+            compute_option_numeric_spread(suite_p95.iter().map(|summary| summary.registry_lock_ms))
+                .range_over_p50,
+        ),
+        (
+            "registry_lookup_ms",
+            compute_option_numeric_spread(
+                suite_p95.iter().map(|summary| summary.registry_lookup_ms),
+            )
+            .range_over_p50,
+        ),
+        (
+            "runtime_create_ms",
+            compute_option_numeric_spread(
+                suite_p95.iter().map(|summary| summary.runtime_create_ms),
+            )
+            .range_over_p50,
+        ),
+        (
+            "parent_dir_create_ms",
+            compute_option_numeric_spread(
+                suite_p95.iter().map(|summary| summary.parent_dir_create_ms),
+            )
+            .range_over_p50,
+        ),
+        (
+            "connection_open_ms",
+            compute_option_numeric_spread(
+                suite_p95.iter().map(|summary| summary.connection_open_ms),
+            )
+            .range_over_p50,
+        ),
+        (
+            "configure_connection_ms",
+            compute_option_numeric_spread(
+                suite_p95
+                    .iter()
+                    .map(|summary| summary.configure_connection_ms),
+            )
+            .range_over_p50,
+        ),
+        (
+            "schema_init_ms",
+            compute_option_numeric_spread(suite_p95.iter().map(|summary| summary.schema_init_ms))
+                .range_over_p50,
+        ),
+        (
+            "schema_upgrade_ms",
+            compute_option_numeric_spread(
+                suite_p95.iter().map(|summary| summary.schema_upgrade_ms),
+            )
+            .range_over_p50,
+        ),
+        (
+            "registry_insert_ms",
+            compute_option_numeric_spread(
+                suite_p95.iter().map(|summary| summary.registry_insert_ms),
+            )
+            .range_over_p50,
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(phase, range_over_p50)| {
+        range_over_p50.map(|range_over_p50| MemoryContextBootstrapNoiseAttribution {
+            phase: phase.to_owned(),
+            range_over_p50,
+        })
+    })
+    .max_by(|left, right| left.range_over_p50.total_cmp(&right.range_over_p50))
+}
+
+fn dominant_memory_context_load_noise<'a>(
+    phase_samples: impl Iterator<Item = &'a MemoryContextColdPathPhaseSamples>,
+) -> Option<MemoryContextLoadNoiseAttribution> {
+    let suite_p95 = phase_samples
+        .map(memory_context_load_subphase_suite_p95)
+        .collect::<Vec<_>>();
+
+    [
+        (
+            "window_query_ms",
+            compute_option_numeric_spread(suite_p95.iter().map(|summary| summary.window_query_ms))
+                .range_over_p50,
+        ),
+        (
+            "window_turn_count_query_ms",
+            compute_option_numeric_spread(
+                suite_p95
+                    .iter()
+                    .map(|summary| summary.window_turn_count_query_ms),
+            )
+            .range_over_p50,
+        ),
+        (
+            "window_exact_rows_query_ms",
+            compute_option_numeric_spread(
+                suite_p95
+                    .iter()
+                    .map(|summary| summary.window_exact_rows_query_ms),
+            )
+            .range_over_p50,
+        ),
+        (
+            "window_known_overflow_rows_query_ms",
+            compute_option_numeric_spread(
+                suite_p95
+                    .iter()
+                    .map(|summary| summary.window_known_overflow_rows_query_ms),
+            )
+            .range_over_p50,
+        ),
+        (
+            "window_fallback_rows_query_ms",
+            compute_option_numeric_spread(
+                suite_p95
+                    .iter()
+                    .map(|summary| summary.window_fallback_rows_query_ms),
+            )
+            .range_over_p50,
+        ),
+        (
+            "summary_checkpoint_meta_query_ms",
+            compute_option_numeric_spread(
+                suite_p95
+                    .iter()
+                    .map(|summary| summary.summary_checkpoint_meta_query_ms),
+            )
+            .range_over_p50,
+        ),
+        (
+            "summary_checkpoint_body_load_ms",
+            compute_option_numeric_spread(
+                suite_p95
+                    .iter()
+                    .map(|summary| summary.summary_checkpoint_body_load_ms),
+            )
+            .range_over_p50,
+        ),
+        (
+            "summary_checkpoint_metadata_update_ms",
+            compute_option_numeric_spread(
+                suite_p95
+                    .iter()
+                    .map(|summary| summary.summary_checkpoint_metadata_update_ms),
+            )
+            .range_over_p50,
+        ),
+        (
+            "summary_checkpoint_metadata_update_returning_body_ms",
+            compute_option_numeric_spread(
+                suite_p95
+                    .iter()
+                    .map(|summary| summary.summary_checkpoint_metadata_update_returning_body_ms),
+            )
+            .range_over_p50,
+        ),
+        (
+            "summary_rebuild_ms",
+            compute_option_numeric_spread(
+                suite_p95.iter().map(|summary| summary.summary_rebuild_ms),
+            )
+            .range_over_p50,
+        ),
+        (
+            "summary_rebuild_stream_ms",
+            compute_option_numeric_spread(
+                suite_p95
+                    .iter()
+                    .map(|summary| summary.summary_rebuild_stream_ms),
+            )
+            .range_over_p50,
+        ),
+        (
+            "summary_rebuild_checkpoint_upsert_ms",
+            compute_option_numeric_spread(
+                suite_p95
+                    .iter()
+                    .map(|summary| summary.summary_rebuild_checkpoint_upsert_ms),
+            )
+            .range_over_p50,
+        ),
+        (
+            "summary_rebuild_checkpoint_metadata_upsert_ms",
+            compute_option_numeric_spread(
+                suite_p95
+                    .iter()
+                    .map(|summary| summary.summary_rebuild_checkpoint_metadata_upsert_ms),
+            )
+            .range_over_p50,
+        ),
+        (
+            "summary_rebuild_checkpoint_body_upsert_ms",
+            compute_option_numeric_spread(
+                suite_p95
+                    .iter()
+                    .map(|summary| summary.summary_rebuild_checkpoint_body_upsert_ms),
+            )
+            .range_over_p50,
+        ),
+        (
+            "summary_rebuild_checkpoint_commit_ms",
+            compute_option_numeric_spread(
+                suite_p95
+                    .iter()
+                    .map(|summary| summary.summary_rebuild_checkpoint_commit_ms),
+            )
+            .range_over_p50,
+        ),
+        (
+            "summary_catch_up_ms",
+            compute_option_numeric_spread(
+                suite_p95.iter().map(|summary| summary.summary_catch_up_ms),
+            )
+            .range_over_p50,
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(phase, range_over_p50)| {
+        range_over_p50.map(|range_over_p50| MemoryContextLoadNoiseAttribution {
+            phase: phase.to_owned(),
+            range_over_p50,
+        })
+    })
+    .max_by(|left, right| left.range_over_p50.total_cmp(&right.range_over_p50))
+}
+
+fn memory_context_bootstrap_subphase_suite_p95(
+    samples: &MemoryContextColdPathPhaseSamples,
+    bootstrap_kind: MemoryContextBootstrapKind,
+) -> MemoryContextBootstrapSubphaseSuiteP95Summary {
+    match bootstrap_kind {
+        MemoryContextBootstrapKind::Source => MemoryContextBootstrapSubphaseSuiteP95Summary {
+            normalize_path_ms: compute_numeric_stats(&samples.source_bootstrap_normalize_path_ms)
+                .p95,
+            registry_lock_ms: compute_numeric_stats(&samples.source_bootstrap_registry_lock_ms).p95,
+            registry_lookup_ms: compute_numeric_stats(&samples.source_bootstrap_registry_lookup_ms)
+                .p95,
+            runtime_create_ms: compute_numeric_stats(&samples.source_bootstrap_runtime_create_ms)
+                .p95,
+            parent_dir_create_ms: compute_numeric_stats(
+                &samples.source_bootstrap_parent_dir_create_ms,
+            )
+            .p95,
+            connection_open_ms: compute_numeric_stats(&samples.source_bootstrap_connection_open_ms)
+                .p95,
+            configure_connection_ms: compute_numeric_stats(
+                &samples.source_bootstrap_configure_connection_ms,
+            )
+            .p95,
+            schema_init_ms: compute_numeric_stats(&samples.source_bootstrap_schema_init_ms).p95,
+            schema_upgrade_ms: compute_numeric_stats(&samples.source_bootstrap_schema_upgrade_ms)
+                .p95,
+            registry_insert_ms: compute_numeric_stats(&samples.source_bootstrap_registry_insert_ms)
+                .p95,
+        },
+        MemoryContextBootstrapKind::Target => MemoryContextBootstrapSubphaseSuiteP95Summary {
+            normalize_path_ms: compute_numeric_stats(&samples.target_bootstrap_normalize_path_ms)
+                .p95,
+            registry_lock_ms: compute_numeric_stats(&samples.target_bootstrap_registry_lock_ms).p95,
+            registry_lookup_ms: compute_numeric_stats(&samples.target_bootstrap_registry_lookup_ms)
+                .p95,
+            runtime_create_ms: compute_numeric_stats(&samples.target_bootstrap_runtime_create_ms)
+                .p95,
+            parent_dir_create_ms: compute_numeric_stats(
+                &samples.target_bootstrap_parent_dir_create_ms,
+            )
+            .p95,
+            connection_open_ms: compute_numeric_stats(&samples.target_bootstrap_connection_open_ms)
+                .p95,
+            configure_connection_ms: compute_numeric_stats(
+                &samples.target_bootstrap_configure_connection_ms,
+            )
+            .p95,
+            schema_init_ms: compute_numeric_stats(&samples.target_bootstrap_schema_init_ms).p95,
+            schema_upgrade_ms: compute_numeric_stats(&samples.target_bootstrap_schema_upgrade_ms)
+                .p95,
+            registry_insert_ms: compute_numeric_stats(&samples.target_bootstrap_registry_insert_ms)
+                .p95,
+        },
+    }
+}
+
+fn memory_context_load_subphase_suite_p95(
+    samples: &MemoryContextColdPathPhaseSamples,
+) -> MemoryContextLoadSubphaseSuiteP95Summary {
+    MemoryContextLoadSubphaseSuiteP95Summary {
+        window_query_ms: compute_numeric_stats(&samples.target_load_window_query_ms).p95,
+        window_turn_count_query_ms: compute_numeric_stats(
+            &samples.target_load_window_turn_count_query_ms,
+        )
+        .p95,
+        window_exact_rows_query_ms: compute_numeric_stats(
+            &samples.target_load_window_exact_rows_query_ms,
+        )
+        .p95,
+        window_known_overflow_rows_query_ms: compute_numeric_stats(
+            &samples.target_load_window_known_overflow_rows_query_ms,
+        )
+        .p95,
+        window_fallback_rows_query_ms: compute_numeric_stats(
+            &samples.target_load_window_fallback_rows_query_ms,
+        )
+        .p95,
+        summary_checkpoint_meta_query_ms: compute_numeric_stats(
+            &samples.target_load_summary_checkpoint_meta_query_ms,
+        )
+        .p95,
+        summary_checkpoint_body_load_ms: compute_numeric_stats(
+            &samples.target_load_summary_checkpoint_body_load_ms,
+        )
+        .p95,
+        summary_checkpoint_metadata_update_ms: compute_numeric_stats(
+            &samples.target_load_summary_checkpoint_metadata_update_ms,
+        )
+        .p95,
+        summary_checkpoint_metadata_update_returning_body_ms: compute_numeric_stats(
+            &samples.target_load_summary_checkpoint_metadata_update_returning_body_ms,
+        )
+        .p95,
+        summary_rebuild_ms: compute_numeric_stats(&samples.target_load_summary_rebuild_ms).p95,
+        summary_rebuild_stream_ms: compute_numeric_stats(
+            &samples.target_load_summary_rebuild_stream_ms,
+        )
+        .p95,
+        summary_rebuild_checkpoint_upsert_ms: compute_numeric_stats(
+            &samples.target_load_summary_rebuild_checkpoint_upsert_ms,
+        )
+        .p95,
+        summary_rebuild_checkpoint_metadata_upsert_ms: compute_numeric_stats(
+            &samples.target_load_summary_rebuild_checkpoint_metadata_upsert_ms,
+        )
+        .p95,
+        summary_rebuild_checkpoint_body_upsert_ms: compute_numeric_stats(
+            &samples.target_load_summary_rebuild_checkpoint_body_upsert_ms,
+        )
+        .p95,
+        summary_rebuild_checkpoint_commit_ms: compute_numeric_stats(
+            &samples.target_load_summary_rebuild_checkpoint_commit_ms,
+        )
+        .p95,
+        summary_catch_up_ms: compute_numeric_stats(&samples.target_load_summary_catch_up_ms).p95,
+    }
+}
+
+fn build_memory_context_cold_path_phase_stats<'a>(
+    phase_samples: impl Iterator<Item = &'a MemoryContextColdPathPhaseSamples>,
+) -> MemoryContextColdPathPhaseStats {
+    let merged = merge_memory_context_cold_path_phase_samples(phase_samples);
+    MemoryContextColdPathPhaseStats {
+        copy_db_ms: compute_numeric_stats(&merged.copy_db_ms),
+        source_bootstrap_ms: compute_numeric_stats(&merged.source_bootstrap_ms),
+        source_warmup_ms: compute_numeric_stats(&merged.source_warmup_ms),
+        append_turn_ms: compute_numeric_stats(&merged.append_turn_ms),
+        target_bootstrap_ms: compute_numeric_stats(&merged.target_bootstrap_ms),
+        target_load_ms: compute_numeric_stats(&merged.target_load_ms),
+    }
+}
+
+fn build_memory_context_cold_path_phase_stability_summary<'a>(
+    phase_samples: impl Iterator<Item = &'a MemoryContextColdPathPhaseSamples>,
+) -> MemoryContextColdPathPhaseStabilitySummary {
+    let suite_p95 = phase_samples
+        .map(memory_context_cold_path_phase_suite_p95)
+        .collect::<Vec<_>>();
+    MemoryContextColdPathPhaseStabilitySummary {
+        copy_db_ms: compute_option_numeric_spread(
+            suite_p95.iter().map(|summary| summary.copy_db_ms),
+        ),
+        source_bootstrap_ms: compute_option_numeric_spread(
+            suite_p95.iter().map(|summary| summary.source_bootstrap_ms),
+        ),
+        source_warmup_ms: compute_option_numeric_spread(
+            suite_p95.iter().map(|summary| summary.source_warmup_ms),
+        ),
+        append_turn_ms: compute_option_numeric_spread(
+            suite_p95.iter().map(|summary| summary.append_turn_ms),
+        ),
+        target_bootstrap_ms: compute_option_numeric_spread(
+            suite_p95.iter().map(|summary| summary.target_bootstrap_ms),
+        ),
+        target_load_ms: compute_option_numeric_spread(
+            suite_p95.iter().map(|summary| summary.target_load_ms),
+        ),
+    }
+}
+
+fn merge_memory_context_cold_path_phase_samples<'a>(
+    phase_samples: impl Iterator<Item = &'a MemoryContextColdPathPhaseSamples>,
+) -> MemoryContextColdPathPhaseSamples {
+    let mut merged = MemoryContextColdPathPhaseSamples::default();
+    for sample in phase_samples {
+        merged.copy_db_ms.extend_from_slice(&sample.copy_db_ms);
+        merged
+            .source_bootstrap_ms
+            .extend_from_slice(&sample.source_bootstrap_ms);
+        merged
+            .source_warmup_ms
+            .extend_from_slice(&sample.source_warmup_ms);
+        merged
+            .append_turn_ms
+            .extend_from_slice(&sample.append_turn_ms);
+        merged
+            .target_bootstrap_ms
+            .extend_from_slice(&sample.target_bootstrap_ms);
+        merged
+            .target_load_ms
+            .extend_from_slice(&sample.target_load_ms);
+    }
+    merged
+}
+
+fn memory_context_cold_path_phase_suite_p95(
+    phase_samples: &MemoryContextColdPathPhaseSamples,
+) -> MemoryContextColdPathPhaseSuiteP95Summary {
+    MemoryContextColdPathPhaseSuiteP95Summary {
+        copy_db_ms: compute_numeric_stats(&phase_samples.copy_db_ms).p95,
+        source_bootstrap_ms: compute_numeric_stats(&phase_samples.source_bootstrap_ms).p95,
+        source_warmup_ms: compute_numeric_stats(&phase_samples.source_warmup_ms).p95,
+        append_turn_ms: compute_numeric_stats(&phase_samples.append_turn_ms).p95,
+        target_bootstrap_ms: compute_numeric_stats(&phase_samples.target_bootstrap_ms).p95,
+        target_load_ms: compute_numeric_stats(&phase_samples.target_load_ms).p95,
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct MemoryContextColdPathPhaseSuiteP95Summary {
+    copy_db_ms: Option<f64>,
+    source_bootstrap_ms: Option<f64>,
+    source_warmup_ms: Option<f64>,
+    append_turn_ms: Option<f64>,
+    target_bootstrap_ms: Option<f64>,
+    target_load_ms: Option<f64>,
+}
+
+fn median_option_f64<I>(values: I) -> Option<f64>
+where
+    I: IntoIterator<Item = Option<f64>>,
+{
+    let present = values.into_iter().flatten().collect::<Vec<_>>();
+    compute_numeric_stats(&present).p50
+}
+
+fn compute_option_numeric_spread<I>(values: I) -> NumericSpreadSummary
+where
+    I: IntoIterator<Item = Option<f64>>,
+{
+    let present = values.into_iter().flatten().collect::<Vec<_>>();
+    compute_numeric_spread(&present)
+}
+
+fn compute_numeric_spread(values: &[f64]) -> NumericSpreadSummary {
+    let stats = compute_numeric_stats(values);
+    let range = match (stats.min, stats.max) {
+        (Some(min), Some(max)) => Some(normalize_spread_delta(max - min)),
+        _ => None,
+    };
+    let range_over_p50 = match (range, stats.p50) {
+        (Some(range), Some(p50)) if p50 > 0.0 => Some(range / p50),
+        _ => None,
+    };
+    let max_over_p50 = match (stats.max, stats.p50) {
+        (Some(max), Some(p50)) if p50 > 0.0 => Some(max / p50),
+        _ => None,
+    };
+
+    NumericSpreadSummary {
+        count: stats.count,
+        min: stats.min,
+        p50: stats.p50,
+        max: stats.max,
+        range,
+        range_over_p50,
+        max_over_p50,
+    }
+}
+
+fn normalize_spread_delta(value: f64) -> f64 {
+    if value.abs() < 1e-12 { 0.0 } else { value }
+}
+
+fn compute_summary_char_growth_ratio(
+    base_summary_chars: usize,
+    target_summary_chars: usize,
+) -> Option<f64> {
+    match (base_summary_chars, target_summary_chars) {
+        (base, target) if base > 0 && target > 0 => Some((target as f64 / base as f64).max(1.0)),
+        _ => None,
+    }
+}
+
+fn compute_workload_adjusted_ratio(
+    raw_ratio_p95: Option<f64>,
+    summary_char_growth_ratio: Option<f64>,
+) -> Option<f64> {
+    match (raw_ratio_p95, summary_char_growth_ratio) {
+        (Some(raw_ratio_p95), Some(summary_char_growth_ratio))
+            if summary_char_growth_ratio > 0.0 =>
+        {
+            Some(raw_ratio_p95 / summary_char_growth_ratio)
+        }
+        _ => None,
+    }
+}
+
+fn compute_weighted_summary_char_growth_ratio<T, Base, Target, Weight>(
+    values: &[T],
+    base_summary_chars: Base,
+    target_summary_chars: Target,
+    comparable_sample_count: Weight,
+) -> Option<f64>
+where
+    Base: Fn(&T) -> usize,
+    Target: Fn(&T) -> usize,
+    Weight: Fn(&T) -> usize,
+{
+    let (weighted_base_summary_chars, weighted_target_summary_chars) =
+        values
+            .iter()
+            .fold((0usize, 0usize), |(base_acc, target_acc), value| {
+                let comparable_sample_count = comparable_sample_count(value);
+                let base_summary_chars = base_summary_chars(value);
+                let target_summary_chars = target_summary_chars(value);
+                if comparable_sample_count == 0
+                    || base_summary_chars == 0
+                    || target_summary_chars == 0
+                {
+                    return (base_acc, target_acc);
+                }
+
+                (
+                    base_acc
+                        .saturating_add(base_summary_chars.saturating_mul(comparable_sample_count)),
+                    target_acc.saturating_add(
+                        target_summary_chars.saturating_mul(comparable_sample_count),
+                    ),
+                )
+            });
+    compute_summary_char_growth_ratio(weighted_base_summary_chars, weighted_target_summary_chars)
 }
 
 #[allow(clippy::print_stdout)] // CLI benchmark report output
@@ -765,6 +3394,1470 @@ fn run_wasm_bridge_sample(wasm_artifact: &Path) -> CliResult<WasmBridgeSample> {
         latency_ms,
         cache_hit,
     })
+}
+
+fn sample_window_only_context(
+    temp_root: &Path,
+    seed_db: &Path,
+    session_id: &str,
+    sliding_window: usize,
+    warmup_iterations: usize,
+    hot_iterations: usize,
+) -> CliResult<(Vec<f64>, Vec<f64>, MemoryContextShape)> {
+    let db_path = temp_root.join("window-only.sqlite3");
+    let result = (|| {
+        copy_benchmark_file(seed_db, &db_path).map_err(|error| {
+            format!("failed to prepare window-only benchmark database: {error}")
+        })?;
+        let config = memory_window_only_config(db_path.clone(), sliding_window, 256);
+        memory::ensure_memory_db_ready(Some(db_path.clone()), &config)
+            .map_err(|error| format!("window-only benchmark bootstrap failed: {error}"))?;
+        measure_hot_prompt_context_reads(
+            session_id,
+            &config,
+            warmup_iterations,
+            hot_iterations,
+            false,
+        )
+    })();
+    finalize_memory_benchmark_runtime(&db_path, result)
+}
+
+fn sample_summary_window_cover_context(
+    temp_root: &Path,
+    session_id: &str,
+    sliding_window: usize,
+    summary_max_chars: usize,
+    words_per_turn: usize,
+    warmup_iterations: usize,
+    hot_iterations: usize,
+) -> CliResult<(Vec<f64>, Vec<f64>, MemoryContextShape)> {
+    let db_path = temp_root.join("summary-window-cover.sqlite3");
+    let result = (|| {
+        seed_memory_context_history(
+            &db_path,
+            session_id,
+            sliding_window,
+            sliding_window,
+            summary_max_chars,
+            words_per_turn,
+        )?;
+        checkpoint_sqlite_database(&db_path)?;
+        let config = memory_summary_config(db_path.clone(), sliding_window, summary_max_chars);
+        memory::ensure_memory_db_ready(Some(db_path.clone()), &config)
+            .map_err(|error| format!("summary window-cover benchmark bootstrap failed: {error}"))?;
+        measure_hot_prompt_context_reads(
+            session_id,
+            &config,
+            warmup_iterations,
+            hot_iterations,
+            false,
+        )
+    })();
+    finalize_memory_benchmark_runtime(&db_path, result)
+}
+
+fn sample_summary_rebuild_context(
+    temp_root: &Path,
+    seed_db: &Path,
+    session_id: &str,
+    sliding_window: usize,
+    summary_max_chars: usize,
+    rebuild_iterations: usize,
+) -> CliResult<(
+    Vec<f64>,
+    Vec<f64>,
+    MemoryContextShape,
+    MemoryContextColdPathPhaseSamples,
+)> {
+    let mut latencies = Vec::with_capacity(rebuild_iterations);
+    let mut rss_deltas_kib = Vec::with_capacity(rebuild_iterations);
+    let mut phase_samples = MemoryContextColdPathPhaseSamples::default();
+    let mut final_shape = MemoryContextShape {
+        entry_count: 0,
+        turn_entries: 0,
+        summary_chars: 0,
+        payload_chars: 0,
+    };
+
+    for iteration in 0..rebuild_iterations {
+        let db_path = temp_root.join(format!("summary-rebuild-{iteration}.sqlite3"));
+        let iteration_result = (|| {
+            measure_benchmark_phase(&mut phase_samples.copy_db_ms, || {
+                copy_benchmark_file(seed_db, &db_path).map_err(|error| {
+                    format!("failed to prepare summary rebuild benchmark database: {error}")
+                })?;
+                Ok(())
+            })?;
+            let config = memory_summary_config(db_path.clone(), sliding_window, summary_max_chars);
+            let _ = measure_memory_context_bootstrap_phase(
+                &mut phase_samples,
+                MemoryContextBootstrapKind::Target,
+                || {
+                    memory::ensure_memory_db_ready_with_diagnostics(Some(db_path.clone()), &config)
+                        .map_err(|error| {
+                            format!("summary rebuild benchmark bootstrap failed: {error}")
+                        })
+                },
+            )?;
+            let (samples, rss_samples_kib, shape, load_diagnostics) =
+                measure_prompt_context_reads(session_id, &config, 1, true)?;
+            phase_samples.target_load_ms.extend(samples.iter().copied());
+            for diagnostics in &load_diagnostics {
+                record_memory_context_load_diagnostics(&mut phase_samples, diagnostics);
+            }
+            Ok((samples, rss_samples_kib, shape))
+        })();
+        let (samples, rss_samples_kib, shape) =
+            finalize_memory_benchmark_runtime(&db_path, iteration_result)?;
+        latencies.extend(samples);
+        rss_deltas_kib.extend(rss_samples_kib);
+        final_shape = shape;
+    }
+
+    Ok((latencies, rss_deltas_kib, final_shape, phase_samples))
+}
+
+fn copy_benchmark_file(source: &Path, destination: &Path) -> CliResult<()> {
+    match benchmark_copy_strategy_from_env(std::env::var(BENCHMARK_COPY_STRATEGY_ENV).ok()) {
+        #[cfg(target_os = "macos")]
+        BenchmarkCopyStrategy::MacosCloneCp => {
+            let clone_attempt = Command::new("/bin/cp")
+                .arg("-c")
+                .arg(source)
+                .arg(destination)
+                .output();
+            if let Ok(output) = clone_attempt
+                && output.status.success()
+            {
+                return Ok(());
+            }
+
+            if destination.exists() {
+                let _ = fs::remove_file(destination);
+            }
+        }
+        BenchmarkCopyStrategy::StableFsCopy => {}
+    }
+
+    fs::copy(source, destination).map(|_| ()).map_err(|error| {
+        format!(
+            "copy benchmark file {} -> {} failed: {error}",
+            source.display(),
+            destination.display()
+        )
+    })
+}
+
+fn benchmark_copy_strategy_from_env(_raw: Option<String>) -> BenchmarkCopyStrategy {
+    #[cfg(target_os = "macos")]
+    {
+        if _raw
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| value.eq_ignore_ascii_case("clone"))
+        {
+            return BenchmarkCopyStrategy::MacosCloneCp;
+        }
+    }
+
+    BenchmarkCopyStrategy::StableFsCopy
+}
+
+fn sample_summary_rebuild_budget_change_context(
+    temp_root: &Path,
+    seed_db: &Path,
+    session_id: &str,
+    sliding_window: usize,
+    summary_max_chars: usize,
+    rebuild_iterations: usize,
+) -> CliResult<(
+    Vec<f64>,
+    Vec<f64>,
+    MemoryContextShape,
+    MemoryContextColdPathPhaseSamples,
+)> {
+    let mut latencies = Vec::with_capacity(rebuild_iterations);
+    let mut rss_deltas_kib = Vec::with_capacity(rebuild_iterations);
+    let mut phase_samples = MemoryContextColdPathPhaseSamples::default();
+    let mut final_shape = MemoryContextShape {
+        entry_count: 0,
+        turn_entries: 0,
+        summary_chars: 0,
+        payload_chars: 0,
+    };
+    let source_summary_max_chars = summary_max_chars.max(256);
+    let target_summary_max_chars =
+        source_summary_max_chars.saturating_add(source_summary_max_chars.max(256));
+    if target_summary_max_chars == source_summary_max_chars {
+        return Err(
+            "summary rebuild budget-change benchmark could not derive a distinct target budget"
+                .to_owned(),
+        );
+    }
+
+    for iteration in 0..rebuild_iterations {
+        let db_path = temp_root.join(format!("summary-rebuild-budget-change-{iteration}.sqlite3"));
+        let iteration_result = (|| {
+            measure_benchmark_phase(&mut phase_samples.copy_db_ms, || {
+                copy_benchmark_file(seed_db, &db_path).map_err(|error| {
+                    format!(
+                        "failed to prepare summary rebuild budget-change benchmark database: {error}"
+                    )
+                })?;
+                Ok(())
+            })?;
+
+            let source_config =
+                memory_summary_config(db_path.clone(), sliding_window, source_summary_max_chars);
+            let _ = measure_memory_context_bootstrap_phase(
+                &mut phase_samples,
+                MemoryContextBootstrapKind::Source,
+                || {
+                    memory::ensure_memory_db_ready_with_diagnostics(
+                        Some(db_path.clone()),
+                        &source_config,
+                    )
+                    .map_err(|error| {
+                        format!("summary rebuild budget-change source bootstrap failed: {error}")
+                    })
+                },
+            )?;
+            let source_entries =
+                measure_benchmark_phase(&mut phase_samples.source_warmup_ms, || {
+                    memory::load_prompt_context(session_id, &source_config).map_err(|error| {
+                        format!("summary rebuild budget-change source warmup failed: {error}")
+                    })
+                })?;
+            let source_shape = memory_context_shape(&source_entries);
+            if source_shape.summary_chars == 0 {
+                return Err(
+                    "summary rebuild budget-change source warmup did not materialize a summary entry"
+                        .to_owned(),
+                );
+            }
+
+            let target_config =
+                memory_summary_config(db_path.clone(), sliding_window, target_summary_max_chars);
+            let _ = measure_memory_context_bootstrap_phase(
+                &mut phase_samples,
+                MemoryContextBootstrapKind::Target,
+                || {
+                    memory::ensure_memory_db_ready_with_diagnostics(
+                        Some(db_path.clone()),
+                        &target_config,
+                    )
+                    .map_err(|error| {
+                        format!("summary rebuild budget-change target bootstrap failed: {error}")
+                    })
+                },
+            )?;
+            let (samples, rss_samples_kib, shape, load_diagnostics) =
+                measure_prompt_context_reads(session_id, &target_config, 1, true)?;
+            phase_samples.target_load_ms.extend(samples.iter().copied());
+            for diagnostics in &load_diagnostics {
+                record_memory_context_load_diagnostics(&mut phase_samples, diagnostics);
+            }
+            Ok((samples, rss_samples_kib, shape))
+        })();
+        let (samples, rss_samples_kib, shape) =
+            finalize_memory_benchmark_runtime(&db_path, iteration_result)?;
+        latencies.extend(samples);
+        rss_deltas_kib.extend(rss_samples_kib);
+        final_shape = shape;
+    }
+
+    Ok((latencies, rss_deltas_kib, final_shape, phase_samples))
+}
+
+fn sample_summary_metadata_realign_context(
+    temp_root: &Path,
+    seed_db: &Path,
+    session_id: &str,
+    history_turns: usize,
+    sliding_window: usize,
+    summary_max_chars: usize,
+    words_per_turn: usize,
+    iterations: usize,
+) -> CliResult<(
+    Vec<f64>,
+    Vec<f64>,
+    MemoryContextShape,
+    MemoryContextColdPathPhaseSamples,
+)> {
+    let mut latencies = Vec::with_capacity(iterations);
+    let mut rss_deltas_kib = Vec::with_capacity(iterations);
+    let mut phase_samples = MemoryContextColdPathPhaseSamples::default();
+    let mut final_shape = MemoryContextShape {
+        entry_count: 0,
+        turn_entries: 0,
+        summary_chars: 0,
+        payload_chars: 0,
+    };
+
+    if sliding_window <= 1 {
+        return Ok((latencies, rss_deltas_kib, final_shape, phase_samples));
+    }
+
+    let source_window = sliding_window - 1;
+
+    for iteration in 0..iterations {
+        let db_path = temp_root.join(format!("summary-metadata-realign-{iteration}.sqlite3"));
+        let iteration_result = (|| {
+            measure_benchmark_phase(&mut phase_samples.copy_db_ms, || {
+                copy_benchmark_file(seed_db, &db_path).map_err(|error| {
+                    format!(
+                        "failed to prepare summary metadata-realign benchmark database: {error}"
+                    )
+                })?;
+                Ok(())
+            })?;
+
+            let source_config =
+                memory_summary_config(db_path.clone(), source_window, summary_max_chars);
+            let _ = measure_memory_context_bootstrap_phase(
+                &mut phase_samples,
+                MemoryContextBootstrapKind::Source,
+                || {
+                    memory::ensure_memory_db_ready_with_diagnostics(
+                        Some(db_path.clone()),
+                        &source_config,
+                    )
+                    .map_err(|error| {
+                        format!("summary metadata-realign source bootstrap failed: {error}")
+                    })
+                },
+            )?;
+            let source_entries =
+                measure_benchmark_phase(&mut phase_samples.source_warmup_ms, || {
+                    memory::load_prompt_context(session_id, &source_config).map_err(|error| {
+                        format!("summary metadata-realign source warmup failed: {error}")
+                    })
+                })?;
+            let source_shape = memory_context_shape(&source_entries);
+            if source_shape.summary_chars == 0 {
+                return Err(
+                    "summary metadata-realign source warmup did not materialize a summary entry"
+                        .to_owned(),
+                );
+            }
+
+            let window_only_config =
+                memory_window_only_config(db_path.clone(), sliding_window, summary_max_chars);
+            measure_benchmark_phase(&mut phase_samples.append_turn_ms, || {
+                append_benchmark_turn(
+                    session_id,
+                    &window_only_config,
+                    history_turns,
+                    words_per_turn,
+                )
+            })?;
+
+            let target_config =
+                memory_summary_config(db_path.clone(), sliding_window, summary_max_chars);
+            let _ = measure_memory_context_bootstrap_phase(
+                &mut phase_samples,
+                MemoryContextBootstrapKind::Target,
+                || {
+                    memory::ensure_memory_db_ready_with_diagnostics(
+                        Some(db_path.clone()),
+                        &target_config,
+                    )
+                    .map_err(|error| {
+                        format!("summary metadata-realign target bootstrap failed: {error}")
+                    })
+                },
+            )?;
+            let (samples, rss_samples_kib, shape, load_diagnostics) =
+                measure_prompt_context_reads(session_id, &target_config, 1, true)?;
+            phase_samples.target_load_ms.extend(samples.iter().copied());
+            for diagnostics in &load_diagnostics {
+                record_memory_context_load_diagnostics(&mut phase_samples, diagnostics);
+            }
+            Ok((samples, rss_samples_kib, shape))
+        })();
+        let (samples, rss_samples_kib, shape) =
+            finalize_memory_benchmark_runtime(&db_path, iteration_result)?;
+        latencies.extend(samples);
+        rss_deltas_kib.extend(rss_samples_kib);
+        final_shape = shape;
+    }
+
+    Ok((latencies, rss_deltas_kib, final_shape, phase_samples))
+}
+
+fn sample_summary_steady_state_context(
+    temp_root: &Path,
+    seed_db: &Path,
+    session_id: &str,
+    sliding_window: usize,
+    summary_max_chars: usize,
+    warmup_iterations: usize,
+    hot_iterations: usize,
+) -> CliResult<(Vec<f64>, Vec<f64>, MemoryContextShape)> {
+    let db_path = temp_root.join("summary-steady-state.sqlite3");
+    let result = (|| {
+        copy_benchmark_file(seed_db, &db_path).map_err(|error| {
+            format!("failed to prepare summary steady-state benchmark database: {error}")
+        })?;
+        let config = memory_summary_config(db_path.clone(), sliding_window, summary_max_chars);
+        memory::ensure_memory_db_ready(Some(db_path.clone()), &config)
+            .map_err(|error| format!("summary steady-state benchmark bootstrap failed: {error}"))?;
+        measure_hot_prompt_context_reads(
+            session_id,
+            &config,
+            warmup_iterations,
+            hot_iterations,
+            true,
+        )
+    })();
+    finalize_memory_benchmark_runtime(&db_path, result)
+}
+
+fn sample_window_shrink_catch_up_context(
+    temp_root: &Path,
+    seed_db: &Path,
+    session_id: &str,
+    sliding_window: usize,
+    window_shrink_source_window: usize,
+    summary_max_chars: usize,
+    shrink_iterations: usize,
+) -> CliResult<(
+    Vec<f64>,
+    Vec<f64>,
+    MemoryContextShape,
+    MemoryContextColdPathPhaseSamples,
+)> {
+    let mut latencies = Vec::with_capacity(shrink_iterations);
+    let mut rss_deltas_kib = Vec::with_capacity(shrink_iterations);
+    let mut phase_samples = MemoryContextColdPathPhaseSamples::default();
+    let mut final_shape = MemoryContextShape {
+        entry_count: 0,
+        turn_entries: 0,
+        summary_chars: 0,
+        payload_chars: 0,
+    };
+
+    for iteration in 0..shrink_iterations {
+        let db_path = temp_root.join(format!("window-shrink-catch-up-{iteration}.sqlite3"));
+        let iteration_result = (|| {
+            measure_benchmark_phase(&mut phase_samples.copy_db_ms, || {
+                copy_benchmark_file(seed_db, &db_path).map_err(|error| {
+                    format!("failed to prepare shrink catch-up benchmark database: {error}")
+                })?;
+                Ok(())
+            })?;
+
+            let source_config = memory_summary_config(
+                db_path.clone(),
+                window_shrink_source_window,
+                summary_max_chars,
+            );
+            let _ = measure_memory_context_bootstrap_phase(
+                &mut phase_samples,
+                MemoryContextBootstrapKind::Source,
+                || {
+                    memory::ensure_memory_db_ready_with_diagnostics(
+                        Some(db_path.clone()),
+                        &source_config,
+                    )
+                    .map_err(|error| format!("shrink catch-up source bootstrap failed: {error}"))
+                },
+            )?;
+            let source_entries =
+                measure_benchmark_phase(&mut phase_samples.source_warmup_ms, || {
+                    memory::load_prompt_context(session_id, &source_config)
+                        .map_err(|error| format!("shrink catch-up source warmup failed: {error}"))
+                })?;
+            let source_shape = memory_context_shape(&source_entries);
+            if source_shape.summary_chars == 0 {
+                return Err(
+                    "shrink catch-up benchmark source warmup did not materialize a summary entry"
+                        .to_owned(),
+                );
+            }
+
+            let target_config =
+                memory_summary_config(db_path.clone(), sliding_window, summary_max_chars);
+            let _ = measure_memory_context_bootstrap_phase(
+                &mut phase_samples,
+                MemoryContextBootstrapKind::Target,
+                || {
+                    memory::ensure_memory_db_ready_with_diagnostics(
+                        Some(db_path.clone()),
+                        &target_config,
+                    )
+                    .map_err(|error| format!("shrink catch-up target bootstrap failed: {error}"))
+                },
+            )?;
+            let (samples, rss_samples_kib, shape, load_diagnostics) =
+                measure_prompt_context_reads(session_id, &target_config, 1, true)?;
+            phase_samples.target_load_ms.extend(samples.iter().copied());
+            for diagnostics in &load_diagnostics {
+                record_memory_context_load_diagnostics(&mut phase_samples, diagnostics);
+            }
+            Ok((samples, rss_samples_kib, shape))
+        })();
+        let (samples, rss_samples_kib, shape) =
+            finalize_memory_benchmark_runtime(&db_path, iteration_result)?;
+        latencies.extend(samples);
+        rss_deltas_kib.extend(rss_samples_kib);
+        final_shape = shape;
+    }
+
+    Ok((latencies, rss_deltas_kib, final_shape, phase_samples))
+}
+
+fn sample_window_only_append_context(
+    temp_root: &Path,
+    scenario_name: &str,
+    session_id: &str,
+    history_turns: usize,
+    sliding_window: usize,
+    summary_max_chars: usize,
+    words_per_turn: usize,
+    iterations: usize,
+) -> CliResult<(Vec<f64>, Vec<f64>)> {
+    let baseline_db = temp_root.join(format!("{scenario_name}-baseline.sqlite3"));
+    seed_memory_context_history(
+        &baseline_db,
+        session_id,
+        history_turns,
+        sliding_window,
+        summary_max_chars,
+        words_per_turn,
+    )?;
+    checkpoint_sqlite_database(&baseline_db)?;
+    release_memory_benchmark_runtime(&baseline_db)?;
+
+    let mut latencies = Vec::with_capacity(iterations);
+    let mut rss_deltas_kib = Vec::with_capacity(iterations);
+
+    for iteration in 0..iterations {
+        let db_path = temp_root.join(format!("{scenario_name}-{iteration}.sqlite3"));
+        let iteration_result = (|| {
+            copy_benchmark_file(&baseline_db, &db_path).map_err(|error| {
+                format!("failed to prepare {scenario_name} benchmark database: {error}")
+            })?;
+            let config =
+                memory_window_only_config(db_path.clone(), sliding_window, summary_max_chars);
+            memory::ensure_memory_db_ready(Some(db_path.clone()), &config)
+                .map_err(|error| format!("{scenario_name} benchmark bootstrap failed: {error}"))?;
+
+            let baseline_rss_kib = sample_process_rss_kib();
+            let started_at = StdInstant::now();
+            append_benchmark_turn(session_id, &config, history_turns, words_per_turn)?;
+            let latency_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            let rss_delta_kib =
+                compute_rss_step_delta_kib(baseline_rss_kib, sample_process_rss_kib());
+            Ok((latency_ms, rss_delta_kib))
+        })();
+        let (latency_ms, rss_delta_kib) =
+            finalize_memory_benchmark_runtime(&db_path, iteration_result)?;
+        latencies.push(latency_ms);
+        if let Some(delta_kib) = rss_delta_kib {
+            rss_deltas_kib.push(delta_kib);
+        }
+    }
+
+    Ok((latencies, rss_deltas_kib))
+}
+
+fn sample_summary_append_saturated_context(
+    temp_root: &Path,
+    seed_db: &Path,
+    session_id: &str,
+    history_turns: usize,
+    sliding_window: usize,
+    summary_max_chars: usize,
+    words_per_turn: usize,
+    warmup_iterations: usize,
+    hot_iterations: usize,
+) -> CliResult<(Vec<f64>, Vec<f64>)> {
+    let db_path = temp_root.join("summary-append-saturated.sqlite3");
+    let result = (|| {
+        copy_benchmark_file(seed_db, &db_path).map_err(|error| {
+            format!("failed to prepare summary append saturated benchmark database: {error}")
+        })?;
+        let config = memory_summary_config(db_path.clone(), sliding_window, summary_max_chars);
+        memory::ensure_memory_db_ready(Some(db_path.clone()), &config).map_err(|error| {
+            format!("summary append saturated benchmark bootstrap failed: {error}")
+        })?;
+
+        let entries = memory::load_prompt_context(session_id, &config)
+            .map_err(|error| format!("summary append saturated warmup failed: {error}"))?;
+        let shape = memory_context_shape(&entries);
+        if shape.summary_chars == 0 {
+            return Err(
+                "summary append saturated warmup did not materialize a summary entry".to_owned(),
+            );
+        }
+
+        let mut next_turn_index = history_turns;
+        for _ in 0..warmup_iterations.max(1) {
+            append_benchmark_turn(session_id, &config, next_turn_index, words_per_turn)?;
+            next_turn_index = next_turn_index.saturating_add(1);
+        }
+
+        measure_summary_append_latencies(
+            session_id,
+            &config,
+            next_turn_index,
+            words_per_turn,
+            hot_iterations,
+        )
+    })();
+    finalize_memory_benchmark_runtime(&db_path, result)
+}
+
+fn sample_summary_append_cold_overflow_context(
+    temp_root: &Path,
+    session_id: &str,
+    sliding_window: usize,
+    summary_max_chars: usize,
+    words_per_turn: usize,
+    iterations: usize,
+) -> CliResult<(Vec<f64>, Vec<f64>)> {
+    let baseline_db = temp_root.join("summary-append-cold-overflow-baseline.sqlite3");
+    seed_memory_context_history(
+        &baseline_db,
+        session_id,
+        sliding_window,
+        sliding_window,
+        summary_max_chars,
+        words_per_turn,
+    )?;
+    checkpoint_sqlite_database(&baseline_db)?;
+    release_memory_benchmark_runtime(&baseline_db)?;
+
+    let mut latencies = Vec::with_capacity(iterations);
+    let mut rss_deltas_kib = Vec::with_capacity(iterations);
+
+    for iteration in 0..iterations {
+        let db_path = temp_root.join(format!("summary-append-cold-overflow-{iteration}.sqlite3"));
+        let iteration_result = (|| {
+            copy_benchmark_file(&baseline_db, &db_path).map_err(|error| {
+                format!(
+                    "failed to prepare summary append cold overflow benchmark database: {error}"
+                )
+            })?;
+            let config = memory_summary_config(db_path.clone(), sliding_window, summary_max_chars);
+            memory::ensure_memory_db_ready(Some(db_path.clone()), &config).map_err(|error| {
+                format!("summary append cold overflow benchmark bootstrap failed: {error}")
+            })?;
+
+            let baseline_rss_kib = sample_process_rss_kib();
+            let started_at = StdInstant::now();
+            append_benchmark_turn(session_id, &config, sliding_window, words_per_turn)?;
+            let latency_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            let rss_delta_kib =
+                compute_rss_step_delta_kib(baseline_rss_kib, sample_process_rss_kib());
+            Ok((latency_ms, rss_delta_kib))
+        })();
+        let (latency_ms, rss_delta_kib) =
+            finalize_memory_benchmark_runtime(&db_path, iteration_result)?;
+        latencies.push(latency_ms);
+        if let Some(delta_kib) = rss_delta_kib {
+            rss_deltas_kib.push(delta_kib);
+        }
+    }
+
+    Ok((latencies, rss_deltas_kib))
+}
+
+fn sample_summary_append_pre_overflow_context(
+    temp_root: &Path,
+    session_id: &str,
+    sliding_window: usize,
+    summary_max_chars: usize,
+    words_per_turn: usize,
+    iterations: usize,
+) -> CliResult<(Vec<f64>, Vec<f64>)> {
+    let baseline_db = temp_root.join("summary-append-pre-overflow-baseline.sqlite3");
+    seed_memory_context_history(
+        &baseline_db,
+        session_id,
+        sliding_window.saturating_sub(1),
+        sliding_window,
+        summary_max_chars,
+        words_per_turn,
+    )?;
+    checkpoint_sqlite_database(&baseline_db)?;
+    release_memory_benchmark_runtime(&baseline_db)?;
+
+    let mut latencies = Vec::with_capacity(iterations);
+    let mut rss_deltas_kib = Vec::with_capacity(iterations);
+
+    for iteration in 0..iterations {
+        let db_path = temp_root.join(format!("summary-append-pre-overflow-{iteration}.sqlite3"));
+        let iteration_result = (|| {
+            copy_benchmark_file(&baseline_db, &db_path).map_err(|error| {
+                format!("failed to prepare summary append pre-overflow benchmark database: {error}")
+            })?;
+            let config = memory_summary_config(db_path.clone(), sliding_window, summary_max_chars);
+            memory::ensure_memory_db_ready(Some(db_path.clone()), &config).map_err(|error| {
+                format!("summary append pre-overflow benchmark bootstrap failed: {error}")
+            })?;
+
+            let baseline_rss_kib = sample_process_rss_kib();
+            let started_at = StdInstant::now();
+            append_benchmark_turn(
+                session_id,
+                &config,
+                sliding_window.saturating_sub(1),
+                words_per_turn,
+            )?;
+            let latency_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+            let rss_delta_kib =
+                compute_rss_step_delta_kib(baseline_rss_kib, sample_process_rss_kib());
+            Ok((latency_ms, rss_delta_kib))
+        })();
+        let (latency_ms, rss_delta_kib) =
+            finalize_memory_benchmark_runtime(&db_path, iteration_result)?;
+        latencies.push(latency_ms);
+        if let Some(delta_kib) = rss_delta_kib {
+            rss_deltas_kib.push(delta_kib);
+        }
+    }
+
+    Ok((latencies, rss_deltas_kib))
+}
+
+fn measure_prompt_context_reads(
+    session_id: &str,
+    config: &MemoryRuntimeConfig,
+    iterations: usize,
+    expect_summary: bool,
+) -> CliResult<(
+    Vec<f64>,
+    Vec<f64>,
+    MemoryContextShape,
+    Vec<SqliteContextLoadDiagnostics>,
+)> {
+    let mut latencies = Vec::with_capacity(iterations);
+    let mut rss_deltas_kib = Vec::with_capacity(iterations);
+    let mut load_diagnostics = Vec::with_capacity(iterations);
+    let mut final_shape = MemoryContextShape {
+        entry_count: 0,
+        turn_entries: 0,
+        summary_chars: 0,
+        payload_chars: 0,
+    };
+    for _ in 0..iterations {
+        let observation = load_prompt_context_observation(session_id, config)?;
+        latencies.push(observation.latency_ms);
+        if let Some(delta_kib) = observation.rss_delta_kib {
+            rss_deltas_kib.push(delta_kib);
+        }
+        validate_prompt_context_shape(observation.shape, expect_summary, "sample")?;
+        final_shape = observation.shape;
+        load_diagnostics.push(observation.load_diagnostics);
+    }
+
+    Ok((latencies, rss_deltas_kib, final_shape, load_diagnostics))
+}
+
+fn measure_benchmark_phase<T>(
+    phase_samples_ms: &mut Vec<f64>,
+    operation: impl FnOnce() -> CliResult<T>,
+) -> CliResult<T> {
+    let started_at = StdInstant::now();
+    let result = operation();
+    if result.is_ok() {
+        phase_samples_ms.push(started_at.elapsed().as_secs_f64() * 1000.0);
+    }
+    result
+}
+
+fn measure_memory_context_bootstrap_phase(
+    phase_samples: &mut MemoryContextColdPathPhaseSamples,
+    bootstrap_kind: MemoryContextBootstrapKind,
+    operation: impl FnOnce() -> CliResult<(PathBuf, SqliteBootstrapDiagnostics)>,
+) -> CliResult<PathBuf> {
+    let (path, diagnostics) = operation()?;
+    record_memory_context_bootstrap_diagnostics(phase_samples, bootstrap_kind, &diagnostics);
+    Ok(path)
+}
+
+fn record_memory_context_bootstrap_diagnostics(
+    phase_samples: &mut MemoryContextColdPathPhaseSamples,
+    bootstrap_kind: MemoryContextBootstrapKind,
+    diagnostics: &SqliteBootstrapDiagnostics,
+) {
+    match bootstrap_kind {
+        MemoryContextBootstrapKind::Source => {
+            phase_samples.source_bootstrap_ms.push(diagnostics.total_ms);
+            phase_samples
+                .source_bootstrap_normalize_path_ms
+                .push(diagnostics.normalize_path_ms);
+            phase_samples
+                .source_bootstrap_registry_lock_ms
+                .push(diagnostics.registry_lock_ms);
+            phase_samples
+                .source_bootstrap_registry_lookup_ms
+                .push(diagnostics.registry_lookup_ms);
+            phase_samples
+                .source_bootstrap_runtime_create_ms
+                .push(diagnostics.runtime_create_ms);
+            phase_samples
+                .source_bootstrap_parent_dir_create_ms
+                .push(diagnostics.parent_dir_create_ms);
+            phase_samples
+                .source_bootstrap_connection_open_ms
+                .push(diagnostics.connection_open_ms);
+            phase_samples
+                .source_bootstrap_configure_connection_ms
+                .push(diagnostics.configure_connection_ms);
+            phase_samples
+                .source_bootstrap_schema_init_ms
+                .push(diagnostics.schema_init_ms);
+            phase_samples
+                .source_bootstrap_schema_upgrade_ms
+                .push(diagnostics.schema_upgrade_ms);
+            phase_samples
+                .source_bootstrap_registry_insert_ms
+                .push(diagnostics.registry_insert_ms);
+        }
+        MemoryContextBootstrapKind::Target => {
+            phase_samples.target_bootstrap_ms.push(diagnostics.total_ms);
+            phase_samples
+                .target_bootstrap_normalize_path_ms
+                .push(diagnostics.normalize_path_ms);
+            phase_samples
+                .target_bootstrap_registry_lock_ms
+                .push(diagnostics.registry_lock_ms);
+            phase_samples
+                .target_bootstrap_registry_lookup_ms
+                .push(diagnostics.registry_lookup_ms);
+            phase_samples
+                .target_bootstrap_runtime_create_ms
+                .push(diagnostics.runtime_create_ms);
+            phase_samples
+                .target_bootstrap_parent_dir_create_ms
+                .push(diagnostics.parent_dir_create_ms);
+            phase_samples
+                .target_bootstrap_connection_open_ms
+                .push(diagnostics.connection_open_ms);
+            phase_samples
+                .target_bootstrap_configure_connection_ms
+                .push(diagnostics.configure_connection_ms);
+            phase_samples
+                .target_bootstrap_schema_init_ms
+                .push(diagnostics.schema_init_ms);
+            phase_samples
+                .target_bootstrap_schema_upgrade_ms
+                .push(diagnostics.schema_upgrade_ms);
+            phase_samples
+                .target_bootstrap_registry_insert_ms
+                .push(diagnostics.registry_insert_ms);
+        }
+    }
+}
+
+fn record_memory_context_load_diagnostics(
+    phase_samples: &mut MemoryContextColdPathPhaseSamples,
+    diagnostics: &SqliteContextLoadDiagnostics,
+) {
+    phase_samples
+        .target_load_window_query_ms
+        .push(diagnostics.window_query_ms);
+    phase_samples
+        .target_load_window_turn_count_query_ms
+        .push(diagnostics.window_turn_count_query_ms);
+    phase_samples
+        .target_load_window_exact_rows_query_ms
+        .push(diagnostics.window_exact_rows_query_ms);
+    phase_samples
+        .target_load_window_known_overflow_rows_query_ms
+        .push(diagnostics.window_known_overflow_rows_query_ms);
+    phase_samples
+        .target_load_window_fallback_rows_query_ms
+        .push(diagnostics.window_fallback_rows_query_ms);
+    phase_samples
+        .target_load_summary_checkpoint_meta_query_ms
+        .push(diagnostics.summary_checkpoint_meta_query_ms);
+    phase_samples
+        .target_load_summary_checkpoint_body_load_ms
+        .push(diagnostics.summary_checkpoint_body_load_ms);
+    phase_samples
+        .target_load_summary_checkpoint_metadata_update_ms
+        .push(diagnostics.summary_checkpoint_metadata_update_ms);
+    phase_samples
+        .target_load_summary_checkpoint_metadata_update_returning_body_ms
+        .push(diagnostics.summary_checkpoint_metadata_update_returning_body_ms);
+    phase_samples
+        .target_load_summary_rebuild_ms
+        .push(diagnostics.summary_rebuild_ms);
+    phase_samples
+        .target_load_summary_rebuild_stream_ms
+        .push(diagnostics.summary_rebuild_stream_ms);
+    phase_samples
+        .target_load_summary_rebuild_checkpoint_upsert_ms
+        .push(diagnostics.summary_rebuild_checkpoint_upsert_ms);
+    phase_samples
+        .target_load_summary_rebuild_checkpoint_metadata_upsert_ms
+        .push(diagnostics.summary_rebuild_checkpoint_metadata_upsert_ms);
+    phase_samples
+        .target_load_summary_rebuild_checkpoint_body_upsert_ms
+        .push(diagnostics.summary_rebuild_checkpoint_body_upsert_ms);
+    phase_samples
+        .target_load_summary_rebuild_checkpoint_commit_ms
+        .push(diagnostics.summary_rebuild_checkpoint_commit_ms);
+    phase_samples
+        .target_load_summary_catch_up_ms
+        .push(diagnostics.summary_catch_up_ms);
+}
+
+fn measure_hot_prompt_context_reads(
+    session_id: &str,
+    config: &MemoryRuntimeConfig,
+    warmup_iterations: usize,
+    hot_iterations: usize,
+    expect_summary: bool,
+) -> CliResult<(Vec<f64>, Vec<f64>, MemoryContextShape)> {
+    measure_hot_prompt_context_reads_with_loader(
+        warmup_iterations,
+        hot_iterations,
+        expect_summary,
+        || load_prompt_context_observation(session_id, config),
+    )
+}
+
+fn measure_hot_prompt_context_reads_with_loader(
+    warmup_iterations: usize,
+    hot_iterations: usize,
+    expect_summary: bool,
+    mut load_observation: impl FnMut() -> CliResult<PromptContextReadObservation>,
+) -> CliResult<(Vec<f64>, Vec<f64>, MemoryContextShape)> {
+    for _ in 0..warmup_iterations.max(1) {
+        let observation = load_observation()?;
+        validate_prompt_context_shape(observation.shape, expect_summary, "warmup")?;
+    }
+
+    let mut latencies = Vec::with_capacity(hot_iterations);
+    let mut rss_deltas_kib = Vec::with_capacity(hot_iterations);
+    let mut final_shape = MemoryContextShape {
+        entry_count: 0,
+        turn_entries: 0,
+        summary_chars: 0,
+        payload_chars: 0,
+    };
+
+    for _ in 0..hot_iterations {
+        let observation = load_observation()?;
+        latencies.push(observation.latency_ms);
+        if let Some(delta_kib) = observation.rss_delta_kib {
+            rss_deltas_kib.push(delta_kib);
+        }
+        validate_prompt_context_shape(observation.shape, expect_summary, "sample")?;
+        final_shape = observation.shape;
+    }
+
+    Ok((latencies, rss_deltas_kib, final_shape))
+}
+
+fn load_prompt_context_observation(
+    session_id: &str,
+    config: &MemoryRuntimeConfig,
+) -> CliResult<PromptContextReadObservation> {
+    let baseline_rss_kib = sample_process_rss_kib();
+    let start = StdInstant::now();
+    let (entries, load_diagnostics) =
+        memory::load_prompt_context_with_diagnostics(session_id, config)
+            .map_err(|error| format!("memory context benchmark read failed: {error}"))?;
+    Ok(PromptContextReadObservation {
+        latency_ms: start.elapsed().as_secs_f64() * 1000.0,
+        rss_delta_kib: compute_rss_step_delta_kib(baseline_rss_kib, sample_process_rss_kib()),
+        shape: memory_context_shape(&entries),
+        load_diagnostics,
+    })
+}
+
+fn validate_prompt_context_shape(
+    shape: MemoryContextShape,
+    expect_summary: bool,
+    phase: &str,
+) -> CliResult<()> {
+    if expect_summary && shape.summary_chars == 0 {
+        return Err(format!(
+            "summary benchmark {phase} did not produce a summary entry"
+        ));
+    }
+    if !expect_summary && shape.summary_chars != 0 {
+        return Err(format!(
+            "window-only benchmark {phase} unexpectedly produced a summary entry"
+        ));
+    }
+    Ok(())
+}
+
+fn measure_summary_append_latencies(
+    session_id: &str,
+    config: &MemoryRuntimeConfig,
+    start_turn_index: usize,
+    words_per_turn: usize,
+    iterations: usize,
+) -> CliResult<(Vec<f64>, Vec<f64>)> {
+    let mut latencies = Vec::with_capacity(iterations);
+    let mut rss_deltas_kib = Vec::with_capacity(iterations);
+
+    for iteration in 0..iterations {
+        let turn_index = start_turn_index.saturating_add(iteration);
+        let baseline_rss_kib = sample_process_rss_kib();
+        let started_at = StdInstant::now();
+        append_benchmark_turn(session_id, config, turn_index, words_per_turn)?;
+        latencies.push(started_at.elapsed().as_secs_f64() * 1000.0);
+        if let Some(delta_kib) =
+            compute_rss_step_delta_kib(baseline_rss_kib, sample_process_rss_kib())
+        {
+            rss_deltas_kib.push(delta_kib);
+        }
+    }
+
+    Ok((latencies, rss_deltas_kib))
+}
+
+fn append_benchmark_turn(
+    session_id: &str,
+    config: &MemoryRuntimeConfig,
+    turn_index: usize,
+    words_per_turn: usize,
+) -> CliResult<()> {
+    let role = if turn_index.is_multiple_of(2) {
+        "user"
+    } else {
+        "assistant"
+    };
+    let content = build_memory_context_turn_content(turn_index, words_per_turn);
+    memory::append_turn_direct(session_id, role, &content, config).map_err(|error| {
+        format!("failed to append memory context benchmark turn {turn_index}: {error}")
+    })?;
+    Ok(())
+}
+
+fn sample_process_rss_kib() -> Option<f64> {
+    let pid = std::process::id().to_string();
+    let output = Command::new("ps")
+        .args(["-o", "rss=", "-p", pid.as_str()])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    parse_ps_rss_kib_output(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_ps_rss_kib_output(raw: &str) -> Option<f64> {
+    let token = raw.lines().find_map(|line| {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            trimmed.split_whitespace().next()
+        }
+    })?;
+    token.parse::<f64>().ok()
+}
+
+fn compute_rss_step_delta_kib(baseline_kib: Option<f64>, current_kib: Option<f64>) -> Option<f64> {
+    let baseline_kib = baseline_kib?;
+    let current_kib = current_kib?;
+    Some((current_kib - baseline_kib).max(0.0))
+}
+
+fn format_optional_decimal(value: Option<f64>, decimals: usize) -> String {
+    match value {
+        Some(value) => format!("{value:.decimals$}"),
+        None => "n/a".to_owned(),
+    }
+}
+
+fn build_memory_context_soft_warnings(
+    summary_window_cover_vs_window_only_ratio_p95: Option<f64>,
+    summary_window_cover_overhead_p95_ms: Option<f64>,
+    sample_count: usize,
+    summary_window_cover_comparison_suite_is_noisy: bool,
+    summary_rebuild_budget_change_vs_rebuild_ratio_p95: Option<f64>,
+    summary_rebuild_budget_change_vs_rebuild_summary_char_adjusted_ratio_p95: Option<f64>,
+    rebuild_budget_change_sample_count: usize,
+    summary_metadata_realign_vs_budget_change_ratio_p95: Option<f64>,
+    metadata_realign_sample_count: usize,
+    speedup_ratio_suite_min: Option<f64>,
+    speedup_ratio_suite_range_over_p50: Option<f64>,
+    summary_rebuild_suite_range_over_p50: Option<f64>,
+    summary_steady_state_suite_p50_ms: Option<f64>,
+    summary_steady_state_suite_range_ms: Option<f64>,
+    summary_steady_state_suite_range_over_p50: Option<f64>,
+    suite_repetition_count: usize,
+    normalized_min_speedup_ratio: f64,
+    summary_rebuild_noise_attribution: Option<&MemoryContextColdPathNoiseAttribution>,
+    summary_rebuild_target_bootstrap_noise_attribution: Option<
+        &MemoryContextBootstrapNoiseAttribution,
+    >,
+    summary_rebuild_target_load_noise_attribution: Option<&MemoryContextLoadNoiseAttribution>,
+    summary_rebuild_budget_change_suite_range_over_p50: Option<f64>,
+    summary_metadata_realign_suite_range_over_p50: Option<f64>,
+    summary_metadata_realign_vs_budget_change_ratio_suite_range_over_p50: Option<f64>,
+    benchmark_temp_root_source: MemoryContextBenchmarkTempRootSource,
+    benchmark_temp_root: &Path,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if matches!(
+        benchmark_temp_root_source,
+        MemoryContextBenchmarkTempRootSource::SystemTemp
+    ) {
+        warnings.push(format!(
+            "benchmark_temp_root resolved to system temp {}; cold-path measurements can be noisy on OS-managed shared temp volumes, so prefer --temp-root or a target-dir-local tmp-local path for reproducible memory context benchmarks",
+            benchmark_temp_root.display()
+        ));
+    }
+    if suite_repetition_count >= DEFAULT_MEMORY_CONTEXT_SUITE_STABILITY_SOFT_WARNING_MIN_SUITES {
+        let speedup_ratio_suite_clear_win = speedup_ratio_suite_min.is_some_and(
+            |speedup_ratio_suite_min| {
+                speedup_ratio_suite_min
+                    >= normalized_min_speedup_ratio
+                        * DEFAULT_MEMORY_CONTEXT_SPEEDUP_SUITE_NOISE_CLEAR_WIN_SUPPRESSION_MULTIPLIER
+            },
+        );
+        let suppress_speedup_warning_for_clear_preload_noise_wins =
+            summary_rebuild_suite_range_over_p50.is_some_and(|range_over_p50| {
+                range_over_p50 > DEFAULT_MEMORY_CONTEXT_SUITE_STABILITY_SOFT_MAX_RANGE_OVER_P50
+            }) && summary_rebuild_noise_attribution
+                .is_some_and(|attribution| attribution.phase != "target_load_ms")
+                && speedup_ratio_suite_clear_win;
+        let suppress_speedup_warning_for_tiny_hot_path_denominator_jitter =
+            summary_rebuild_suite_range_over_p50.is_some_and(|range_over_p50| {
+                range_over_p50 <= DEFAULT_MEMORY_CONTEXT_SUITE_STABILITY_SOFT_MAX_RANGE_OVER_P50
+            }) && summary_steady_state_suite_range_over_p50.is_some_and(|range_over_p50| {
+                range_over_p50 > DEFAULT_MEMORY_CONTEXT_SUITE_STABILITY_SOFT_MAX_RANGE_OVER_P50
+            }) && summary_steady_state_suite_p50_ms.is_some_and(|p50_ms| {
+                p50_ms <= DEFAULT_MEMORY_CONTEXT_SPEEDUP_SUITE_NOISE_TINY_HOT_PATH_MAX_P50_MS
+            }) && summary_steady_state_suite_range_ms.is_some_and(|range_ms| {
+                range_ms <= DEFAULT_MEMORY_CONTEXT_SPEEDUP_SUITE_NOISE_TINY_HOT_PATH_MAX_RANGE_MS
+            }) && speedup_ratio_suite_clear_win;
+        if let Some(range_over_p50) = speedup_ratio_suite_range_over_p50
+            && range_over_p50 > DEFAULT_MEMORY_CONTEXT_SUITE_STABILITY_SOFT_MAX_RANGE_OVER_P50
+            && !suppress_speedup_warning_for_clear_preload_noise_wins
+            && !suppress_speedup_warning_for_tiny_hot_path_denominator_jitter
+        {
+            let attribution_suffix = match (
+                summary_rebuild_suite_range_over_p50,
+                summary_rebuild_noise_attribution,
+            ) {
+                (Some(summary_rebuild_range_over_p50), Some(attribution))
+                    if summary_rebuild_range_over_p50
+                        > DEFAULT_MEMORY_CONTEXT_SUITE_STABILITY_SOFT_MAX_RANGE_OVER_P50 =>
+                {
+                    let phase_label = format_memory_context_cold_path_noise_phase_label(
+                        attribution,
+                        summary_rebuild_target_bootstrap_noise_attribution,
+                        summary_rebuild_target_load_noise_attribution,
+                    );
+                    format!(
+                        "; dominant summary_rebuild cold-path noise {} range_over_p50 {:.3}",
+                        phase_label, attribution.range_over_p50
+                    )
+                }
+                _ => String::new(),
+            };
+            if speedup_ratio_suite_clear_win {
+                warnings.push(format!(
+                    "speedup_ratio_p95 suite range_over_p50 {:.3} exceeded soft reproducibility threshold {:.3}; aggregated speedup is still a clear win and every suite still cleared the speedup floor by a wide margin, but the exact multiplier is host-sensitive, so rerun on a quieter host before over-interpreting the precise memory context speedup{}",
+                    range_over_p50,
+                    DEFAULT_MEMORY_CONTEXT_SUITE_STABILITY_SOFT_MAX_RANGE_OVER_P50,
+                    attribution_suffix
+                ));
+            } else {
+                warnings.push(format!(
+                    "speedup_ratio_p95 suite range_over_p50 {:.3} exceeded soft reproducibility threshold {:.3}; aggregated speedup still reflects the median suite, but cross-suite spread is too large to trust small gains, so rerun on a quieter host before treating marginal memory context improvements as real{}",
+                    range_over_p50,
+                    DEFAULT_MEMORY_CONTEXT_SUITE_STABILITY_SOFT_MAX_RANGE_OVER_P50,
+                    attribution_suffix
+                ));
+            }
+        }
+        if let Some(range_over_p50) = summary_rebuild_suite_range_over_p50
+            && range_over_p50 > DEFAULT_MEMORY_CONTEXT_SUITE_STABILITY_SOFT_MAX_RANGE_OVER_P50
+        {
+            let attribution_suffix = summary_rebuild_noise_attribution
+                .map(|attribution| {
+                    let phase_label = format_memory_context_cold_path_noise_phase_label(
+                        attribution,
+                        summary_rebuild_target_bootstrap_noise_attribution,
+                        summary_rebuild_target_load_noise_attribution,
+                    );
+                    format!(
+                        "; dominant cold-path phase {} range_over_p50 {:.3}",
+                        phase_label, attribution.range_over_p50
+                    )
+                })
+                .unwrap_or_default();
+            warnings.push(format!(
+                "summary_rebuild suite p95 range_over_p50 {:.3} exceeded soft reproducibility threshold {:.3}; cold-path rebuild cost is still host-noisy across suites, so inspect phase-level variance before over-interpreting one-off p95 wins{}",
+                range_over_p50,
+                DEFAULT_MEMORY_CONTEXT_SUITE_STABILITY_SOFT_MAX_RANGE_OVER_P50,
+                attribution_suffix
+            ));
+        }
+    }
+    if sample_count >= DEFAULT_MEMORY_CONTEXT_WINDOW_COVER_SOFT_WARNING_MIN_SAMPLES
+        && let (Some(ratio_p95), Some(overhead_p95_ms)) = (
+            summary_window_cover_vs_window_only_ratio_p95,
+            summary_window_cover_overhead_p95_ms,
+        )
+    {
+        let marginal_cover_regression_under_suite_noise =
+            summary_window_cover_comparison_suite_is_noisy
+                && ratio_p95 <= DEFAULT_MEMORY_CONTEXT_WINDOW_COVER_NOISY_SUPPRESSION_MAX_RATIO_P95
+                && overhead_p95_ms
+                    <= DEFAULT_MEMORY_CONTEXT_WINDOW_COVER_NOISY_SUPPRESSION_MAX_OVERHEAD_P95_MS;
+        if ratio_p95 > DEFAULT_MEMORY_CONTEXT_WINDOW_COVER_SOFT_MAX_RATIO_P95
+            && overhead_p95_ms > DEFAULT_MEMORY_CONTEXT_WINDOW_COVER_SOFT_MAX_OVERHEAD_P95_MS
+            && !marginal_cover_regression_under_suite_noise
+        {
+            if summary_window_cover_comparison_suite_is_noisy {
+                warnings.push(format!(
+                    "summary_window_cover p95 overhead {:.3}ms and ratio {:.3} exceeded soft thresholds {:.3}ms/{:.3}, but the cover-versus-window comparison is suite-noisy; rerun on a quieter host before treating the cover-path gap as actionable",
+                    overhead_p95_ms,
+                    ratio_p95,
+                    DEFAULT_MEMORY_CONTEXT_WINDOW_COVER_SOFT_MAX_OVERHEAD_P95_MS,
+                    DEFAULT_MEMORY_CONTEXT_WINDOW_COVER_SOFT_MAX_RATIO_P95
+                ));
+            } else {
+                warnings.push(format!(
+                    "summary_window_cover p95 overhead {:.3}ms and ratio {:.3} exceeded soft thresholds {:.3}ms/{:.3}; expected near-window-only cost when the active window already covers the session, so investigate redundant summary materialization or checkpoint work",
+                    overhead_p95_ms,
+                    ratio_p95,
+                    DEFAULT_MEMORY_CONTEXT_WINDOW_COVER_SOFT_MAX_OVERHEAD_P95_MS,
+                    DEFAULT_MEMORY_CONTEXT_WINDOW_COVER_SOFT_MAX_RATIO_P95
+                ));
+            }
+        }
+    }
+    if rebuild_budget_change_sample_count
+        >= DEFAULT_MEMORY_CONTEXT_WINDOW_COVER_SOFT_WARNING_MIN_SAMPLES
+        && let (Some(raw_ratio_p95), Some(adjusted_ratio_p95)) = (
+            summary_rebuild_budget_change_vs_rebuild_ratio_p95,
+            summary_rebuild_budget_change_vs_rebuild_summary_char_adjusted_ratio_p95,
+        )
+        && adjusted_ratio_p95 > DEFAULT_MEMORY_CONTEXT_REBUILD_BUDGET_CHANGE_SOFT_MAX_RATIO_P95
+    {
+        warnings.push(format!(
+            "summary_rebuild_budget_change raw p95 ratio {:.3} and summary-char-adjusted p95 ratio {:.3} exceeded soft threshold {:.3} versus full rebuild; expected metadata-first budget-change rebuild to scale with the larger rebuilt summary rather than regress beyond that workload, so investigate unnecessary checkpoint body loads or duplicate summary scans",
+            raw_ratio_p95,
+            adjusted_ratio_p95,
+            DEFAULT_MEMORY_CONTEXT_REBUILD_BUDGET_CHANGE_SOFT_MAX_RATIO_P95
+        ));
+    }
+    if metadata_realign_sample_count >= DEFAULT_MEMORY_CONTEXT_WINDOW_COVER_SOFT_WARNING_MIN_SAMPLES
+        && let Some(ratio_p95) = summary_metadata_realign_vs_budget_change_ratio_p95
+        && ratio_p95 > DEFAULT_MEMORY_CONTEXT_METADATA_REALIGN_SOFT_MAX_RATIO_P95
+    {
+        let suite_is_noisy =
+            summary_rebuild_budget_change_suite_range_over_p50.is_some_and(|range_over_p50| {
+                range_over_p50 > DEFAULT_MEMORY_CONTEXT_SUITE_STABILITY_SOFT_MAX_RANGE_OVER_P50
+            }) || summary_metadata_realign_suite_range_over_p50.is_some_and(|range_over_p50| {
+                range_over_p50 > DEFAULT_MEMORY_CONTEXT_SUITE_STABILITY_SOFT_MAX_RANGE_OVER_P50
+            }) || summary_metadata_realign_vs_budget_change_ratio_suite_range_over_p50.is_some_and(
+                |range_over_p50| {
+                    range_over_p50 > DEFAULT_MEMORY_CONTEXT_SUITE_STABILITY_SOFT_MAX_RANGE_OVER_P50
+                },
+            );
+        if suite_is_noisy {
+            warnings.push(format!(
+                "summary_metadata_realign p95 ratio {:.3} exceeded soft threshold {:.3}, but the metadata-realign versus budget-change comparison is suite-noisy (ratio range_over_p50 {}, metadata {}, budget_change {}); rerun on a quieter host before attributing this to checkpoint-repair regressions",
+                ratio_p95,
+                DEFAULT_MEMORY_CONTEXT_METADATA_REALIGN_SOFT_MAX_RATIO_P95,
+                format_optional_decimal(
+                    summary_metadata_realign_vs_budget_change_ratio_suite_range_over_p50,
+                    3
+                ),
+                format_optional_decimal(summary_metadata_realign_suite_range_over_p50, 3),
+                format_optional_decimal(summary_rebuild_budget_change_suite_range_over_p50, 3),
+            ));
+        } else {
+            warnings.push(format!(
+                "summary_metadata_realign p95 ratio {:.3} exceeded soft threshold {:.3} versus budget-change rebuild; expected metadata-only checkpoint repair to stay no slower than budget-change rebuild, so investigate accidental summary body rewrites or redundant checkpoint updates",
+                ratio_p95,
+                DEFAULT_MEMORY_CONTEXT_METADATA_REALIGN_SOFT_MAX_RATIO_P95
+            ));
+        }
+    }
+    warnings
+}
+
+fn format_memory_context_cold_path_noise_phase_label(
+    attribution: &MemoryContextColdPathNoiseAttribution,
+    target_bootstrap_attribution: Option<&MemoryContextBootstrapNoiseAttribution>,
+    target_load_attribution: Option<&MemoryContextLoadNoiseAttribution>,
+) -> String {
+    if attribution.phase == "target_bootstrap_ms"
+        && let Some(target_bootstrap_attribution) = target_bootstrap_attribution
+    {
+        return format!("target_bootstrap_ms/{}", target_bootstrap_attribution.phase);
+    }
+    if attribution.phase == "target_load_ms"
+        && let Some(target_load_attribution) = target_load_attribution
+    {
+        return format!("target_load_ms/{}", target_load_attribution.phase);
+    }
+
+    attribution.phase.clone()
+}
+
+fn memory_context_window_shrink_source_window(
+    history_turns: usize,
+    sliding_window: usize,
+) -> CliResult<usize> {
+    if history_turns <= sliding_window.saturating_add(1) {
+        return Err(
+            "history_turns must exceed sliding_window by at least 2 to exercise shrink catch-up mode"
+                .to_owned(),
+        );
+    }
+
+    Ok(sliding_window
+        .saturating_mul(2)
+        .min(history_turns.saturating_sub(1))
+        .max(sliding_window.saturating_add(1)))
+}
+
+fn memory_context_shape(entries: &[MemoryContextEntry]) -> MemoryContextShape {
+    let mut turn_entries = 0usize;
+    let mut summary_chars = 0usize;
+    let mut payload_chars = 0usize;
+    for entry in entries {
+        payload_chars = payload_chars
+            .saturating_add(entry.role.len())
+            .saturating_add(entry.content.len());
+        match entry.kind {
+            MemoryContextKind::Turn => {
+                turn_entries = turn_entries.saturating_add(1);
+            }
+            MemoryContextKind::Summary => {
+                summary_chars = summary_chars.saturating_add(entry.content.len());
+            }
+            MemoryContextKind::Profile => {}
+        }
+    }
+
+    MemoryContextShape {
+        entry_count: entries.len(),
+        turn_entries,
+        summary_chars,
+        payload_chars,
+    }
+}
+
+fn seed_memory_context_history(
+    db_path: &Path,
+    session_id: &str,
+    history_turns: usize,
+    sliding_window: usize,
+    summary_max_chars: usize,
+    words_per_turn: usize,
+) -> CliResult<()> {
+    let _ = fs::remove_file(db_path);
+    let config =
+        memory_window_only_config(db_path.to_path_buf(), sliding_window, summary_max_chars);
+
+    for turn_index in 0..history_turns {
+        let role = if turn_index % 2 == 0 {
+            "user"
+        } else {
+            "assistant"
+        };
+        let content = build_memory_context_turn_content(turn_index, words_per_turn);
+        memory::append_turn_direct(session_id, role, &content, &config).map_err(|error| {
+            format!("failed to seed memory context benchmark history at turn {turn_index}: {error}")
+        })?;
+    }
+
+    Ok(())
+}
+
+fn checkpoint_sqlite_database(db_path: &Path) -> CliResult<()> {
+    let connection = Connection::open(db_path).map_err(|error| {
+        format!("failed to open seeded benchmark database for checkpoint: {error}")
+    })?;
+    connection
+        .busy_timeout(Duration::from_millis(250))
+        .map_err(|error| format!("failed to configure checkpoint busy timeout: {error}"))?;
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .map_err(|error| format!("failed to checkpoint seeded benchmark database: {error}"))?;
+    Ok(())
+}
+
+fn release_memory_benchmark_runtime(db_path: &Path) -> CliResult<()> {
+    memory::drop_cached_sqlite_runtime(db_path)
+        .map(|_| ())
+        .map_err(|error| {
+            format!(
+                "failed to release cached benchmark sqlite runtime {}: {error}",
+                db_path.display()
+            )
+        })
+}
+
+fn finalize_memory_benchmark_runtime<T>(db_path: &Path, result: CliResult<T>) -> CliResult<T> {
+    let cleanup_result = release_memory_benchmark_runtime(db_path);
+    match (result, cleanup_result) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+    }
+}
+
+fn memory_window_only_config(
+    sqlite_path: PathBuf,
+    sliding_window: usize,
+    summary_max_chars: usize,
+) -> MemoryRuntimeConfig {
+    MemoryRuntimeConfig {
+        profile: MemoryProfile::WindowOnly,
+        mode: MemoryMode::WindowOnly,
+        sqlite_path: Some(sqlite_path),
+        sliding_window,
+        summary_max_chars,
+        ..MemoryRuntimeConfig::default()
+    }
+}
+
+fn memory_summary_config(
+    sqlite_path: PathBuf,
+    sliding_window: usize,
+    summary_max_chars: usize,
+) -> MemoryRuntimeConfig {
+    MemoryRuntimeConfig {
+        profile: MemoryProfile::WindowPlusSummary,
+        mode: MemoryMode::WindowPlusSummary,
+        sqlite_path: Some(sqlite_path),
+        sliding_window,
+        summary_max_chars,
+        ..MemoryRuntimeConfig::default()
+    }
+}
+
+fn build_memory_context_turn_content(turn_index: usize, words_per_turn: usize) -> String {
+    let mut content = String::new();
+    for word_index in 0..words_per_turn {
+        if word_index > 0 {
+            if word_index % 5 == 0 {
+                content.push('\n');
+            } else if word_index % 3 == 0 {
+                content.push('\t');
+            } else {
+                content.push(' ');
+            }
+        }
+        content.push_str("turn");
+        content.push_str(&turn_index.to_string());
+        content.push('_');
+        content.push_str(&word_index.to_string());
+    }
+    content
 }
 
 async fn run_programmatic_pressure_matrix(
@@ -1968,6 +6061,83 @@ fn current_epoch_seconds() -> u64 {
         .as_secs()
 }
 
+fn next_benchmark_temp_suffix() -> u64 {
+    static BENCHMARK_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+    BENCHMARK_TEMP_COUNTER.fetch_add(1, AtomicOrdering::Relaxed)
+}
+
+fn benchmark_temp_root(prefix: &str, parent: Option<&Path>) -> PathBuf {
+    let parent = match parent {
+        Some(parent) => parent.to_path_buf(),
+        None => std::env::temp_dir(),
+    };
+    parent.join(format!(
+        "{prefix}-{}-{}-{}",
+        current_epoch_seconds(),
+        std::process::id(),
+        next_benchmark_temp_suffix()
+    ))
+}
+
+fn resolve_memory_context_benchmark_temp_root(
+    output_path: &str,
+    temp_root: Option<&str>,
+) -> CliResult<ResolvedMemoryContextBenchmarkTempRoot> {
+    let current_exe = std::env::current_exe().ok();
+    resolve_memory_context_benchmark_temp_root_with_exe(
+        output_path,
+        temp_root,
+        current_exe.as_deref(),
+    )
+}
+
+fn resolve_memory_context_benchmark_temp_root_with_exe(
+    output_path: &str,
+    temp_root: Option<&str>,
+    current_exe: Option<&Path>,
+) -> CliResult<ResolvedMemoryContextBenchmarkTempRoot> {
+    if let Some(temp_root) = temp_root {
+        return Ok(ResolvedMemoryContextBenchmarkTempRoot {
+            path: PathBuf::from(temp_root),
+            source: MemoryContextBenchmarkTempRootSource::Explicit,
+        });
+    }
+
+    if let Some(current_exe) = current_exe
+        && let Some(profile_dir) = current_exe.parent()
+        && matches!(
+            profile_dir.file_name().and_then(|name| name.to_str()),
+            Some("debug" | "release")
+        )
+        && let Some(target_dir) = profile_dir.parent()
+    {
+        return Ok(ResolvedMemoryContextBenchmarkTempRoot {
+            path: target_dir.join("tmp-local"),
+            source: MemoryContextBenchmarkTempRootSource::CurrentExeTargetDir,
+        });
+    }
+
+    let output_path = Path::new(output_path);
+    let starts_in_target_dir = matches!(
+        output_path.components().next(),
+        Some(std::path::Component::Normal(component)) if component == "target"
+    );
+    if starts_in_target_dir
+        && let Some(parent) = output_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        return Ok(ResolvedMemoryContextBenchmarkTempRoot {
+            path: parent.join("tmp-local"),
+            source: MemoryContextBenchmarkTempRootSource::OutputParent,
+        });
+    }
+
+    Ok(ResolvedMemoryContextBenchmarkTempRoot {
+        path: std::env::temp_dir(),
+        source: MemoryContextBenchmarkTempRootSource::SystemTemp,
+    })
+}
+
 fn default_pressure_iterations() -> usize {
     DEFAULT_PRESSURE_ITERATIONS
 }
@@ -1991,7 +6161,8 @@ mod tests {
         Capability, ExecutionRoute, HarnessKind, ToolCoreOutcome, ToolCoreRequest,
         VerticalPackManifest,
     };
-    use serde_json::json;
+    use serde_json::{Value, json};
+    use std::fs;
 
     #[test]
     fn percentile_interpolates_expected_points() {
@@ -2008,6 +6179,3569 @@ mod tests {
         assert_eq!(
             parse_programmatic_error_code(raw),
             Some("circuit_open".to_owned())
+        );
+    }
+
+    #[test]
+    fn parse_ps_rss_kib_output_extracts_first_non_empty_numeric_value() {
+        assert_eq!(parse_ps_rss_kib_output("  12345\n"), Some(12_345.0));
+        assert_eq!(parse_ps_rss_kib_output("\n  6789 extra\n"), Some(6_789.0));
+    }
+
+    #[test]
+    fn parse_ps_rss_kib_output_rejects_blank_or_invalid_values() {
+        assert_eq!(parse_ps_rss_kib_output(""), None);
+        assert_eq!(parse_ps_rss_kib_output("  \n"), None);
+        assert_eq!(parse_ps_rss_kib_output("rss\n"), None);
+    }
+
+    #[test]
+    fn compute_rss_step_delta_kib_clamps_negative_and_propagates_missing_samples() {
+        assert_eq!(
+            compute_rss_step_delta_kib(Some(100.0), Some(112.0)),
+            Some(12.0)
+        );
+        assert_eq!(
+            compute_rss_step_delta_kib(Some(112.0), Some(100.0)),
+            Some(0.0)
+        );
+        assert_eq!(compute_rss_step_delta_kib(None, Some(100.0)), None);
+        assert_eq!(compute_rss_step_delta_kib(Some(100.0), None), None);
+    }
+
+    #[test]
+    fn format_optional_decimal_returns_na_when_value_missing() {
+        assert_eq!(format_optional_decimal(Some(12.34), 1), "12.3");
+        assert_eq!(format_optional_decimal(None, 1), "n/a");
+    }
+
+    #[test]
+    fn memory_context_soft_warnings_ignore_cover_path_noise_floor() {
+        let warnings = build_memory_context_soft_warnings(
+            Some(1.04),
+            Some(0.012),
+            16,
+            false,
+            Some(0.82),
+            Some(0.82),
+            16,
+            Some(0.91),
+            16,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            5,
+            1.10,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            MemoryContextBenchmarkTempRootSource::CurrentExeTargetDir,
+            Path::new("target/codex-memory-bench-red/tmp-local"),
+        );
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn memory_context_soft_warnings_flag_cover_path_regression_beyond_noise_floor() {
+        let warnings = build_memory_context_soft_warnings(
+            Some(1.24),
+            Some(0.083),
+            16,
+            false,
+            Some(0.82),
+            Some(0.82),
+            16,
+            Some(0.91),
+            16,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            5,
+            1.10,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            MemoryContextBenchmarkTempRootSource::CurrentExeTargetDir,
+            Path::new("target/codex-memory-bench-red/tmp-local"),
+        );
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("summary_window_cover"));
+        assert!(warnings[0].contains("soft thresholds"));
+        assert!(!warnings[0].contains("suite-noisy"));
+    }
+
+    #[test]
+    fn memory_context_soft_warnings_ignore_marginal_cover_regression_when_suite_is_noisy() {
+        let warnings = build_memory_context_soft_warnings(
+            Some(1.177),
+            Some(0.150),
+            16,
+            true,
+            Some(0.82),
+            Some(0.82),
+            16,
+            Some(0.91),
+            16,
+            None,
+            Some(1.496),
+            Some(1.897),
+            None,
+            None,
+            None,
+            5,
+            1.10,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            MemoryContextBenchmarkTempRootSource::CurrentExeTargetDir,
+            Path::new("target/codex-memory-bench-red/tmp-local"),
+        );
+        assert!(
+            warnings
+                .iter()
+                .all(|warning| !warning.contains("summary_window_cover")),
+            "expected marginal cover-path regressions to stay silent when the surrounding suite is already too noisy for path-specific attribution"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("speedup_ratio_p95")),
+            "expected suite-noise warnings to remain visible when cover-path specificity is suppressed"
+        );
+    }
+
+    #[test]
+    fn memory_context_soft_warnings_keep_large_cover_regression_even_when_suite_is_noisy() {
+        let warnings = build_memory_context_soft_warnings(
+            Some(3.012),
+            Some(2.074),
+            16,
+            true,
+            Some(0.82),
+            Some(0.82),
+            16,
+            Some(0.91),
+            16,
+            None,
+            Some(2.670),
+            Some(2.773),
+            None,
+            None,
+            None,
+            5,
+            1.10,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            MemoryContextBenchmarkTempRootSource::CurrentExeTargetDir,
+            Path::new("target/codex-memory-bench-red/tmp-local"),
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("summary_window_cover")),
+            "expected clearly excessive cover-path regressions to keep their dedicated warning even on a noisy host"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("summary_window_cover")
+                    && warning.contains("suite-noisy")),
+            "expected non-marginal cover regressions on noisy suites to stay visible but be qualified as suite-noisy"
+        );
+    }
+
+    #[test]
+    fn memory_context_soft_warnings_flag_budget_change_path_regression() {
+        let warnings = build_memory_context_soft_warnings(
+            Some(1.04),
+            Some(0.012),
+            16,
+            false,
+            Some(1.12),
+            Some(1.12),
+            16,
+            Some(0.91),
+            16,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            5,
+            1.10,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            MemoryContextBenchmarkTempRootSource::CurrentExeTargetDir,
+            Path::new("target/codex-memory-bench-red/tmp-local"),
+        );
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("summary_rebuild_budget_change"));
+        assert!(warnings[0].contains("full rebuild"));
+    }
+
+    #[test]
+    fn memory_context_soft_warnings_ignore_budget_change_when_workload_adjusted_ratio_is_stable() {
+        let warnings = build_memory_context_soft_warnings(
+            Some(1.04),
+            Some(0.012),
+            16,
+            false,
+            Some(1.12),
+            Some(0.58),
+            16,
+            Some(0.91),
+            16,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            5,
+            1.10,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            MemoryContextBenchmarkTempRootSource::CurrentExeTargetDir,
+            Path::new("target/codex-memory-bench-red/tmp-local"),
+        );
+        assert!(
+            warnings
+                .iter()
+                .all(|warning| !warning.contains("summary_rebuild_budget_change")),
+            "expected budget-change warnings to stay quiet when a larger rebuilt summary fully explains the raw latency ratio"
+        );
+    }
+
+    #[test]
+    fn memory_context_soft_warnings_flag_metadata_realign_regression() {
+        let warnings = build_memory_context_soft_warnings(
+            Some(1.04),
+            Some(0.012),
+            16,
+            false,
+            Some(0.82),
+            Some(0.82),
+            16,
+            Some(1.18),
+            16,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            5,
+            1.10,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            MemoryContextBenchmarkTempRootSource::CurrentExeTargetDir,
+            Path::new("target/codex-memory-bench-red/tmp-local"),
+        );
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("summary_metadata_realign"));
+        assert!(warnings[0].contains("budget-change rebuild"));
+        assert!(!warnings[0].contains("suite-noisy"));
+    }
+
+    #[test]
+    fn memory_context_soft_warnings_require_stable_sample_size() {
+        let warnings = build_memory_context_soft_warnings(
+            Some(1.24),
+            Some(0.083),
+            4,
+            false,
+            Some(1.12),
+            Some(1.12),
+            4,
+            Some(1.18),
+            4,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            2,
+            1.10,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            MemoryContextBenchmarkTempRootSource::CurrentExeTargetDir,
+            Path::new("target/codex-memory-bench-red/tmp-local"),
+        );
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn memory_context_soft_warnings_flag_system_temp_root_fallback() {
+        let warnings = build_memory_context_soft_warnings(
+            Some(1.04),
+            Some(0.012),
+            16,
+            false,
+            Some(0.82),
+            Some(0.82),
+            16,
+            Some(0.91),
+            16,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            5,
+            1.10,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            MemoryContextBenchmarkTempRootSource::SystemTemp,
+            Path::new("/tmp"),
+        );
+
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("benchmark_temp_root"));
+        assert!(warnings[0].contains("system temp"));
+    }
+
+    #[test]
+    fn memory_context_soft_warnings_keep_speedup_warning_generic_without_rebuild_noise() {
+        let warnings = build_memory_context_soft_warnings(
+            Some(1.04),
+            Some(0.012),
+            16,
+            false,
+            Some(0.82),
+            Some(0.82),
+            16,
+            Some(0.91),
+            16,
+            None,
+            Some(0.84),
+            Some(0.19),
+            None,
+            None,
+            None,
+            5,
+            1.10,
+            Some(&MemoryContextColdPathNoiseAttribution {
+                phase: "copy_db_ms".to_owned(),
+                range_over_p50: 0.19,
+            }),
+            None,
+            None,
+            None,
+            None,
+            None,
+            MemoryContextBenchmarkTempRootSource::CurrentExeTargetDir,
+            Path::new("target/codex-memory-bench-red/tmp-local"),
+        );
+
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("speedup_ratio_p95"));
+        assert!(!warnings[0].contains("dominant summary_rebuild cold-path noise"));
+    }
+
+    #[test]
+    fn memory_context_soft_warnings_expand_target_load_noise_subphase_labels() {
+        let warnings = build_memory_context_soft_warnings(
+            Some(1.04),
+            Some(0.012),
+            16,
+            false,
+            Some(0.82),
+            Some(0.82),
+            16,
+            Some(0.91),
+            16,
+            None,
+            Some(0.84),
+            Some(0.91),
+            None,
+            None,
+            None,
+            5,
+            1.10,
+            Some(&MemoryContextColdPathNoiseAttribution {
+                phase: "target_load_ms".to_owned(),
+                range_over_p50: 0.91,
+            }),
+            None,
+            Some(&MemoryContextLoadNoiseAttribution {
+                phase: "summary_catch_up_ms".to_owned(),
+                range_over_p50: 0.88,
+            }),
+            None,
+            None,
+            None,
+            MemoryContextBenchmarkTempRootSource::CurrentExeTargetDir,
+            Path::new("target/codex-memory-bench-red/tmp-local"),
+        );
+
+        assert_eq!(warnings.len(), 2);
+        assert!(warnings.iter().any(|warning| {
+            warning.contains("summary_rebuild suite p95")
+                && warning.contains("target_load_ms/summary_catch_up_ms")
+        }));
+    }
+
+    #[test]
+    fn memory_context_benchmark_rejects_history_not_exceeding_window() {
+        let tmp = std::env::temp_dir().join(format!(
+            "loongclaw-memory-context-benchmark-invalid-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).expect("create temp dir");
+        let output = tmp.join("memory-context-benchmark-invalid.json");
+
+        let error = run_memory_context_benchmark_cli(
+            output.to_str().expect("utf-8 output path"),
+            None,
+            8,
+            8,
+            256,
+            8,
+            2,
+            4,
+            1,
+            1,
+            false,
+            1.10,
+        )
+        .expect_err("history equal to window should be rejected");
+
+        assert!(error.contains("history_turns must exceed sliding_window"));
+
+        let _ = fs::remove_file(&output);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn memory_context_benchmark_rejects_history_without_shrink_catch_up_headroom() {
+        let tmp = std::env::temp_dir().join(format!(
+            "loongclaw-memory-context-benchmark-shrink-invalid-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).expect("create temp dir");
+        let output = tmp.join("memory-context-benchmark-shrink-invalid.json");
+
+        let error = run_memory_context_benchmark_cli(
+            output.to_str().expect("utf-8 output path"),
+            None,
+            9,
+            8,
+            256,
+            8,
+            2,
+            4,
+            1,
+            1,
+            false,
+            1.10,
+        )
+        .expect_err("history with only one turn beyond the window should be rejected");
+
+        assert!(error.contains("shrink catch-up mode"));
+
+        let _ = fs::remove_file(&output);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn memory_context_benchmark_writes_report_with_all_scenarios() {
+        let tmp = std::env::temp_dir().join(format!(
+            "loongclaw-memory-context-benchmark-report-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).expect("create temp dir");
+        let output = tmp.join("memory-context-benchmark-report.json");
+        let temp_root = tmp.join("benchmark-temp-root");
+
+        run_memory_context_benchmark_cli(
+            output.to_str().expect("utf-8 output path"),
+            Some(temp_root.to_str().expect("utf-8 temp root path")),
+            24,
+            6,
+            256,
+            12,
+            2,
+            4,
+            1,
+            2,
+            false,
+            1.10,
+        )
+        .expect("memory context benchmark should write report");
+
+        let report_raw = fs::read_to_string(&output).expect("read benchmark report");
+        let report: Value = serde_json::from_str(&report_raw).expect("benchmark report JSON");
+
+        assert_eq!(report.get("history_turns"), Some(&json!(24)));
+        assert_eq!(report.get("suite_repetitions"), Some(&json!(2)));
+        assert_eq!(
+            report.get("suite_aggregation"),
+            Some(&json!("median_of_suite_p95"))
+        );
+        assert_eq!(
+            report.get("rss_telemetry_scope"),
+            Some(&json!("best_effort_approx_process_rss_step_delta_via_ps"))
+        );
+        assert_eq!(
+            report.get("benchmark_temp_root"),
+            Some(&json!(temp_root.display().to_string()))
+        );
+        assert_eq!(
+            report.get("benchmark_temp_root_source"),
+            Some(&json!("explicit"))
+        );
+        assert!(
+            report
+                .get("aggregated_p95_median_ms")
+                .and_then(|value| value.get("summary_steady_state"))
+                .is_some()
+        );
+        assert!(
+            report
+                .get("aggregated_ratios")
+                .and_then(|value| value.get("speedup_ratio_p95"))
+                .is_some()
+        );
+        assert!(report.get("window_only_latency_ms").is_some());
+        assert!(report.get("summary_window_cover_latency_ms").is_some());
+        assert!(report.get("summary_rebuild_latency_ms").is_some());
+        assert!(
+            report
+                .get("summary_rebuild_budget_change_latency_ms")
+                .is_some()
+        );
+        assert!(report.get("summary_metadata_realign_latency_ms").is_some());
+        assert!(report.get("summary_steady_state_latency_ms").is_some());
+        assert!(report.get("window_shrink_catch_up_latency_ms").is_some());
+        assert!(
+            report
+                .get("window_only_append_pre_overflow_latency_ms")
+                .is_some()
+        );
+        assert!(
+            report
+                .get("window_only_append_cold_overflow_latency_ms")
+                .is_some()
+        );
+        assert!(
+            report
+                .get("summary_append_pre_overflow_latency_ms")
+                .is_some()
+        );
+        assert!(
+            report
+                .get("summary_append_cold_overflow_latency_ms")
+                .is_some()
+        );
+        assert!(report.get("summary_append_saturated_latency_ms").is_some());
+        assert!(report.get("window_only_rss_delta_kib").is_some());
+        assert!(report.get("summary_window_cover_rss_delta_kib").is_some());
+        assert!(report.get("summary_rebuild_rss_delta_kib").is_some());
+        assert!(
+            report
+                .get("summary_rebuild_budget_change_rss_delta_kib")
+                .is_some()
+        );
+        assert!(
+            report
+                .get("summary_metadata_realign_rss_delta_kib")
+                .is_some()
+        );
+        assert!(report.get("summary_steady_state_rss_delta_kib").is_some());
+        assert!(report.get("window_shrink_catch_up_rss_delta_kib").is_some());
+        assert!(
+            report
+                .get("window_only_append_pre_overflow_rss_delta_kib")
+                .is_some()
+        );
+        assert!(
+            report
+                .get("window_only_append_cold_overflow_rss_delta_kib")
+                .is_some()
+        );
+        assert!(
+            report
+                .get("summary_append_pre_overflow_rss_delta_kib")
+                .is_some()
+        );
+        assert!(
+            report
+                .get("summary_append_cold_overflow_rss_delta_kib")
+                .is_some()
+        );
+        assert!(
+            report
+                .get("summary_append_saturated_rss_delta_kib")
+                .is_some()
+        );
+        assert!(report.get("window_only_payload_chars").is_some());
+        assert!(report.get("summary_window_cover_payload_chars").is_some());
+        assert!(report.get("summary_rebuild_payload_chars").is_some());
+        assert!(
+            report
+                .get("summary_rebuild_budget_change_payload_chars")
+                .is_some()
+        );
+        assert!(
+            report
+                .get("summary_metadata_realign_payload_chars")
+                .is_some()
+        );
+        assert!(report.get("summary_steady_state_payload_chars").is_some());
+        assert!(report.get("window_shrink_catch_up_payload_chars").is_some());
+        assert!(
+            report
+                .get("flattened_sample_ratios")
+                .and_then(|value| value.get("summary_window_cover_vs_window_only_ratio_p95"))
+                .is_some()
+        );
+        assert!(
+            report
+                .get("flattened_sample_ratios")
+                .and_then(|value| value.get("summary_window_cover_overhead_p95_ms"))
+                .is_some()
+        );
+        assert!(
+            report
+                .get("flattened_sample_ratios")
+                .and_then(|value| {
+                    value.get("summary_rebuild_budget_change_vs_rebuild_ratio_p95")
+                })
+                .is_some()
+        );
+        assert!(
+            report
+                .get("flattened_sample_ratios")
+                .and_then(|value| {
+                    value.get(
+                        "summary_rebuild_budget_change_vs_rebuild_summary_char_adjusted_ratio_p95",
+                    )
+                })
+                .is_some()
+        );
+        assert!(
+            report
+                .get("flattened_sample_ratios")
+                .and_then(|value| {
+                    value.get("summary_metadata_realign_vs_budget_change_ratio_p95")
+                })
+                .is_some()
+        );
+        assert!(
+            report
+                .get("flattened_sample_ratios")
+                .and_then(|value| value.get("speedup_ratio_p95"))
+                .is_some()
+        );
+        assert!(
+            report
+                .get("flattened_sample_ratios")
+                .and_then(|value| {
+                    value.get("window_shrink_catch_up_vs_rebuild_speedup_ratio_p95")
+                })
+                .is_some()
+        );
+        assert!(
+            report
+                .get("flattened_sample_ratios")
+                .and_then(|value| {
+                    value.get("summary_append_pre_overflow_vs_window_only_ratio_p95")
+                })
+                .is_some()
+        );
+        assert!(
+            report
+                .get("flattened_sample_ratios")
+                .and_then(|value| {
+                    value.get("summary_append_cold_overflow_vs_window_only_ratio_p95")
+                })
+                .is_some()
+        );
+        assert!(
+            report
+                .get("aggregated_p95_median_ms")
+                .and_then(|value| value.get("window_only_append_pre_overflow"))
+                .is_some()
+        );
+        assert!(
+            report
+                .get("aggregated_p95_median_ms")
+                .and_then(|value| value.get("window_only_append_cold_overflow"))
+                .is_some()
+        );
+        assert!(
+            report
+                .get("aggregated_ratios")
+                .and_then(|value| {
+                    value.get("summary_append_pre_overflow_vs_window_only_ratio_p95")
+                })
+                .is_some()
+        );
+        assert!(
+            report
+                .get("aggregated_ratios")
+                .and_then(|value| {
+                    value.get("summary_append_cold_overflow_vs_window_only_ratio_p95")
+                })
+                .is_some()
+        );
+        assert!(
+            report
+                .get("gate")
+                .and_then(|gate| gate.get("summary_window_cover_soft_max_ratio_p95"))
+                .is_some()
+        );
+        assert!(
+            report
+                .get("gate")
+                .and_then(|gate| gate.get("summary_window_cover_soft_max_overhead_p95_ms"))
+                .is_some()
+        );
+        assert!(
+            report
+                .get("gate")
+                .and_then(|gate| gate.get("summary_window_cover_soft_warning_min_samples"))
+                .is_some()
+        );
+        assert!(
+            report
+                .get("gate")
+                .and_then(|gate| {
+                    gate.get("summary_rebuild_budget_change_vs_rebuild_soft_max_ratio_p95")
+                })
+                .is_some()
+        );
+        assert!(
+            report
+                .get("gate")
+                .and_then(|gate| {
+                    gate.get("summary_metadata_realign_vs_budget_change_soft_max_ratio_p95")
+                })
+                .is_some()
+        );
+        assert!(
+            report
+                .get("gate")
+                .and_then(|gate| gate.get("suite_stability_soft_warning_min_suites"))
+                .is_some()
+        );
+        assert!(
+            report
+                .get("gate")
+                .and_then(|gate| gate.get("suite_stability_soft_max_range_over_p50"))
+                .is_some()
+        );
+        assert!(
+            report
+                .get("gate")
+                .and_then(|gate| gate.get("warnings"))
+                .is_some()
+        );
+
+        let _ = fs::remove_file(&output);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn memory_context_benchmark_report_tracks_append_window_only_baselines() {
+        let shape = MemoryContextShape {
+            entry_count: 7,
+            turn_entries: 6,
+            summary_chars: 256,
+            payload_chars: 768,
+        };
+        let suite_runs = vec![
+            MemoryContextBenchmarkSuiteSamples {
+                seed_db_bytes: 1024,
+                window_only_samples: vec![1.0, 1.2],
+                summary_window_cover_samples: vec![1.05, 1.25],
+                summary_rebuild_samples: vec![2.0, 2.2],
+                summary_rebuild_budget_change_samples: vec![1.3, 1.4],
+                summary_metadata_realign_samples: vec![1.2, 1.25],
+                summary_steady_state_samples: vec![0.7, 0.75],
+                window_shrink_catch_up_samples: vec![0.9, 0.95],
+                window_only_append_pre_overflow_samples: vec![0.8, 0.82],
+                window_only_append_cold_overflow_samples: vec![0.85, 0.9],
+                summary_append_pre_overflow_samples: vec![1.1, 1.15],
+                summary_append_cold_overflow_samples: vec![1.4, 1.5],
+                summary_append_saturated_samples: vec![1.0, 1.05],
+                window_only_rss_deltas_kib: vec![0.0, 16.0],
+                summary_window_cover_rss_deltas_kib: vec![0.0, 16.0],
+                summary_rebuild_rss_deltas_kib: vec![32.0, 48.0],
+                summary_rebuild_budget_change_rss_deltas_kib: vec![16.0, 32.0],
+                summary_metadata_realign_rss_deltas_kib: vec![16.0, 16.0],
+                summary_steady_state_rss_deltas_kib: vec![0.0, 0.0],
+                window_shrink_catch_up_rss_deltas_kib: vec![16.0, 16.0],
+                window_only_append_pre_overflow_rss_deltas_kib: vec![16.0, 16.0],
+                window_only_append_cold_overflow_rss_deltas_kib: vec![16.0, 32.0],
+                summary_append_pre_overflow_rss_deltas_kib: vec![16.0, 32.0],
+                summary_append_cold_overflow_rss_deltas_kib: vec![32.0, 32.0],
+                summary_append_saturated_rss_deltas_kib: vec![16.0, 16.0],
+                summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                summary_rebuild_budget_change_phase_samples:
+                    MemoryContextColdPathPhaseSamples::default(),
+                summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples::default(
+                ),
+                window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                window_only_shape: shape,
+                summary_window_cover_shape: shape,
+                summary_rebuild_shape: shape,
+                summary_rebuild_budget_change_shape: shape,
+                summary_metadata_realign_shape: shape,
+                summary_steady_state_shape: shape,
+                window_shrink_catch_up_shape: shape,
+            },
+            MemoryContextBenchmarkSuiteSamples {
+                seed_db_bytes: 1024,
+                window_only_samples: vec![1.1, 1.3],
+                summary_window_cover_samples: vec![1.15, 1.35],
+                summary_rebuild_samples: vec![2.1, 2.4],
+                summary_rebuild_budget_change_samples: vec![1.35, 1.45],
+                summary_metadata_realign_samples: vec![1.22, 1.28],
+                summary_steady_state_samples: vec![0.72, 0.77],
+                window_shrink_catch_up_samples: vec![0.92, 1.0],
+                window_only_append_pre_overflow_samples: vec![0.82, 0.86],
+                window_only_append_cold_overflow_samples: vec![0.9, 0.94],
+                summary_append_pre_overflow_samples: vec![1.18, 1.22],
+                summary_append_cold_overflow_samples: vec![1.48, 1.58],
+                summary_append_saturated_samples: vec![1.02, 1.08],
+                window_only_rss_deltas_kib: vec![0.0, 16.0],
+                summary_window_cover_rss_deltas_kib: vec![0.0, 16.0],
+                summary_rebuild_rss_deltas_kib: vec![32.0, 48.0],
+                summary_rebuild_budget_change_rss_deltas_kib: vec![16.0, 32.0],
+                summary_metadata_realign_rss_deltas_kib: vec![16.0, 16.0],
+                summary_steady_state_rss_deltas_kib: vec![0.0, 0.0],
+                window_shrink_catch_up_rss_deltas_kib: vec![16.0, 16.0],
+                window_only_append_pre_overflow_rss_deltas_kib: vec![16.0, 16.0],
+                window_only_append_cold_overflow_rss_deltas_kib: vec![16.0, 32.0],
+                summary_append_pre_overflow_rss_deltas_kib: vec![16.0, 32.0],
+                summary_append_cold_overflow_rss_deltas_kib: vec![32.0, 48.0],
+                summary_append_saturated_rss_deltas_kib: vec![16.0, 16.0],
+                summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                summary_rebuild_budget_change_phase_samples:
+                    MemoryContextColdPathPhaseSamples::default(),
+                summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples::default(
+                ),
+                window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                window_only_shape: shape,
+                summary_window_cover_shape: shape,
+                summary_rebuild_shape: shape,
+                summary_rebuild_budget_change_shape: shape,
+                summary_metadata_realign_shape: shape,
+                summary_steady_state_shape: shape,
+                window_shrink_catch_up_shape: shape,
+            },
+        ];
+
+        let report = build_memory_context_benchmark_report(
+            "target/benchmarks/memory-context-benchmark-report.json",
+            &ResolvedMemoryContextBenchmarkTempRoot {
+                path: PathBuf::from("target/benchmarks/tmp-local"),
+                source: MemoryContextBenchmarkTempRootSource::OutputParent,
+            },
+            24,
+            6,
+            12,
+            256,
+            12,
+            2,
+            4,
+            1,
+            &suite_runs,
+            2,
+            false,
+            1.10,
+        );
+        let report_json = serde_json::to_value(&report).expect("serialize benchmark report");
+
+        assert!(
+            report_json
+                .get("window_only_append_pre_overflow_latency_ms")
+                .is_some()
+        );
+        assert!(
+            report_json
+                .get("window_only_append_cold_overflow_latency_ms")
+                .is_some()
+        );
+        assert!(
+            report_json
+                .get("window_only_append_pre_overflow_rss_delta_kib")
+                .is_some()
+        );
+        assert!(
+            report_json
+                .get("window_only_append_cold_overflow_rss_delta_kib")
+                .is_some()
+        );
+        assert!(
+            report_json
+                .get("flattened_sample_ratios")
+                .and_then(|value| {
+                    value.get(
+                        "summary_rebuild_budget_change_vs_rebuild_summary_char_adjusted_ratio_p95",
+                    )
+                })
+                .is_some()
+        );
+        assert!(
+            report_json
+                .get("aggregated_ratios")
+                .and_then(|value| {
+                    value.get(
+                        "summary_rebuild_budget_change_vs_rebuild_summary_char_adjusted_ratio_p95",
+                    )
+                })
+                .is_some()
+        );
+        assert!(
+            report_json
+                .get("flattened_sample_ratios")
+                .and_then(|value| {
+                    value.get("summary_append_pre_overflow_vs_window_only_ratio_p95")
+                })
+                .is_some()
+        );
+        assert!(
+            report_json
+                .get("flattened_sample_ratios")
+                .and_then(|value| {
+                    value.get("summary_append_cold_overflow_vs_window_only_ratio_p95")
+                })
+                .is_some()
+        );
+        assert!(
+            report_json
+                .get("aggregated_p95_median_ms")
+                .and_then(|value| value.get("window_only_append_pre_overflow"))
+                .is_some()
+        );
+        assert!(
+            report_json
+                .get("aggregated_p95_median_ms")
+                .and_then(|value| value.get("window_only_append_cold_overflow"))
+                .is_some()
+        );
+        assert!(
+            report_json
+                .get("aggregated_ratios")
+                .and_then(|value| {
+                    value.get("summary_append_pre_overflow_vs_window_only_ratio_p95")
+                })
+                .is_some()
+        );
+        assert!(
+            report_json
+                .get("aggregated_ratios")
+                .and_then(|value| {
+                    value.get("summary_append_cold_overflow_vs_window_only_ratio_p95")
+                })
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn memory_context_benchmark_report_separates_flattened_and_aggregated_ratio_views() {
+        let shape = MemoryContextShape {
+            entry_count: 2,
+            turn_entries: 2,
+            summary_chars: 64,
+            payload_chars: 128,
+        };
+        let suite_runs = vec![
+            MemoryContextBenchmarkSuiteSamples {
+                seed_db_bytes: 512,
+                window_only_samples: vec![1.0, 1.0],
+                summary_window_cover_samples: vec![1.0, 1.0],
+                summary_rebuild_samples: vec![10.0, 10.0],
+                summary_rebuild_budget_change_samples: vec![5.0, 5.0],
+                summary_metadata_realign_samples: vec![2.0, 2.0],
+                summary_steady_state_samples: vec![1.0, 1.0],
+                window_shrink_catch_up_samples: vec![2.0, 2.0],
+                window_only_append_pre_overflow_samples: vec![1.0, 1.0],
+                window_only_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_pre_overflow_samples: vec![1.0, 1.0],
+                summary_append_cold_overflow_samples: vec![10.0, 10.0],
+                summary_append_saturated_samples: vec![1.0, 1.0],
+                window_only_rss_deltas_kib: vec![0.0, 0.0],
+                summary_window_cover_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_budget_change_rss_deltas_kib: vec![0.0, 0.0],
+                summary_metadata_realign_rss_deltas_kib: vec![0.0, 0.0],
+                summary_steady_state_rss_deltas_kib: vec![0.0, 0.0],
+                window_shrink_catch_up_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_saturated_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                summary_rebuild_budget_change_phase_samples:
+                    MemoryContextColdPathPhaseSamples::default(),
+                summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples::default(
+                ),
+                window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                window_only_shape: shape,
+                summary_window_cover_shape: shape,
+                summary_rebuild_shape: shape,
+                summary_rebuild_budget_change_shape: shape,
+                summary_metadata_realign_shape: shape,
+                summary_steady_state_shape: shape,
+                window_shrink_catch_up_shape: shape,
+            },
+            MemoryContextBenchmarkSuiteSamples {
+                seed_db_bytes: 512,
+                window_only_samples: vec![1.0, 1.0],
+                summary_window_cover_samples: vec![1.0, 1.0],
+                summary_rebuild_samples: vec![11.0, 11.0],
+                summary_rebuild_budget_change_samples: vec![5.5, 5.5],
+                summary_metadata_realign_samples: vec![2.2, 2.2],
+                summary_steady_state_samples: vec![10.0, 10.0],
+                window_shrink_catch_up_samples: vec![9.0, 9.0],
+                window_only_append_pre_overflow_samples: vec![10.0, 10.0],
+                window_only_append_cold_overflow_samples: vec![10.0, 10.0],
+                summary_append_pre_overflow_samples: vec![10.0, 10.0],
+                summary_append_cold_overflow_samples: vec![11.0, 11.0],
+                summary_append_saturated_samples: vec![10.0, 10.0],
+                window_only_rss_deltas_kib: vec![0.0, 0.0],
+                summary_window_cover_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_budget_change_rss_deltas_kib: vec![0.0, 0.0],
+                summary_metadata_realign_rss_deltas_kib: vec![0.0, 0.0],
+                summary_steady_state_rss_deltas_kib: vec![0.0, 0.0],
+                window_shrink_catch_up_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_saturated_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                summary_rebuild_budget_change_phase_samples:
+                    MemoryContextColdPathPhaseSamples::default(),
+                summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples::default(
+                ),
+                window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                window_only_shape: shape,
+                summary_window_cover_shape: shape,
+                summary_rebuild_shape: shape,
+                summary_rebuild_budget_change_shape: shape,
+                summary_metadata_realign_shape: shape,
+                summary_steady_state_shape: shape,
+                window_shrink_catch_up_shape: shape,
+            },
+        ];
+
+        let report = build_memory_context_benchmark_report(
+            "target/benchmarks/memory-context-benchmark-report.json",
+            &ResolvedMemoryContextBenchmarkTempRoot {
+                path: PathBuf::from("target/benchmarks/tmp-local"),
+                source: MemoryContextBenchmarkTempRootSource::OutputParent,
+            },
+            24,
+            6,
+            12,
+            256,
+            12,
+            2,
+            4,
+            1,
+            &suite_runs,
+            2,
+            false,
+            1.10,
+        );
+        let report_json = serde_json::to_value(&report).expect("serialize benchmark report");
+
+        let flattened_append_cold_ratio = report_json
+            .get("flattened_sample_ratios")
+            .and_then(|value| value.get("summary_append_cold_overflow_vs_window_only_ratio_p95"))
+            .and_then(Value::as_f64)
+            .expect("flattened append-cold ratio should be present");
+        let aggregated_append_cold_ratio = report_json
+            .get("aggregated_ratios")
+            .and_then(|value| value.get("summary_append_cold_overflow_vs_window_only_ratio_p95"))
+            .and_then(Value::as_f64)
+            .expect("aggregated append-cold ratio should be present");
+
+        assert!(
+            report_json
+                .get("summary_append_cold_overflow_vs_window_only_ratio_p95")
+                .is_none(),
+            "expected the report root to stop exposing ambiguous ratio fields once flattened_sample_ratios is available"
+        );
+        assert!(
+            (flattened_append_cold_ratio - aggregated_append_cold_ratio).abs() > 1.0,
+            "expected the fixture to preserve a visible difference between flattened-sample and aggregated ratio views"
+        );
+    }
+
+    #[test]
+    fn memory_context_benchmark_report_uses_aggregated_ratio_view_for_soft_warnings() {
+        let shape = MemoryContextShape {
+            entry_count: 2,
+            turn_entries: 2,
+            summary_chars: 64,
+            payload_chars: 128,
+        };
+        let make_suite = |cover_samples: Vec<f64>,
+                          budget_samples: Vec<f64>,
+                          metadata_samples: Vec<f64>| {
+            MemoryContextBenchmarkSuiteSamples {
+                seed_db_bytes: 512,
+                window_only_samples: vec![1.0, 1.0, 1.0, 1.0],
+                summary_window_cover_samples: cover_samples,
+                summary_rebuild_samples: vec![4.0, 4.0, 4.0, 4.0],
+                summary_rebuild_budget_change_samples: budget_samples,
+                summary_metadata_realign_samples: metadata_samples,
+                summary_steady_state_samples: vec![1.0, 1.0, 1.0, 1.0],
+                window_shrink_catch_up_samples: vec![2.0, 2.0, 2.0, 2.0],
+                window_only_append_pre_overflow_samples: vec![1.0, 1.0, 1.0, 1.0],
+                window_only_append_cold_overflow_samples: vec![1.0, 1.0, 1.0, 1.0],
+                summary_append_pre_overflow_samples: vec![1.0, 1.0, 1.0, 1.0],
+                summary_append_cold_overflow_samples: vec![1.0, 1.0, 1.0, 1.0],
+                summary_append_saturated_samples: vec![1.0, 1.0, 1.0, 1.0],
+                window_only_rss_deltas_kib: vec![0.0, 0.0, 0.0, 0.0],
+                summary_window_cover_rss_deltas_kib: vec![0.0, 0.0, 0.0, 0.0],
+                summary_rebuild_rss_deltas_kib: vec![0.0, 0.0, 0.0, 0.0],
+                summary_rebuild_budget_change_rss_deltas_kib: vec![0.0, 0.0, 0.0, 0.0],
+                summary_metadata_realign_rss_deltas_kib: vec![0.0, 0.0, 0.0, 0.0],
+                summary_steady_state_rss_deltas_kib: vec![0.0, 0.0, 0.0, 0.0],
+                window_shrink_catch_up_rss_deltas_kib: vec![0.0, 0.0, 0.0, 0.0],
+                window_only_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0, 0.0, 0.0],
+                window_only_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0, 0.0, 0.0],
+                summary_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0, 0.0, 0.0],
+                summary_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0, 0.0, 0.0],
+                summary_append_saturated_rss_deltas_kib: vec![0.0, 0.0, 0.0, 0.0],
+                summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                summary_rebuild_budget_change_phase_samples:
+                    MemoryContextColdPathPhaseSamples::default(),
+                summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples::default(
+                ),
+                window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                window_only_shape: shape,
+                summary_window_cover_shape: shape,
+                summary_rebuild_shape: shape,
+                summary_rebuild_budget_change_shape: shape,
+                summary_metadata_realign_shape: shape,
+                summary_steady_state_shape: shape,
+                window_shrink_catch_up_shape: shape,
+            }
+        };
+        let suite_runs = vec![
+            make_suite(
+                vec![1.0, 1.0, 1.0, 1.0],
+                vec![1.0, 1.0, 1.0, 1.0],
+                vec![1.0, 1.0, 1.0, 1.0],
+            ),
+            make_suite(
+                vec![1.0, 1.0, 1.0, 1.0],
+                vec![1.0, 1.0, 1.0, 1.0],
+                vec![1.0, 1.0, 1.0, 1.0],
+            ),
+            make_suite(
+                vec![1.0, 1.0, 2.0, 2.0],
+                vec![1.0, 1.0, 1.0, 1.0],
+                vec![1.0, 1.0, 2.0, 2.0],
+            ),
+        ];
+
+        let report = build_memory_context_benchmark_report(
+            "target/benchmarks/memory-context-benchmark-report.json",
+            &ResolvedMemoryContextBenchmarkTempRoot {
+                path: PathBuf::from("target/benchmarks/tmp-local"),
+                source: MemoryContextBenchmarkTempRootSource::OutputParent,
+            },
+            24,
+            6,
+            12,
+            256,
+            12,
+            2,
+            4,
+            1,
+            &suite_runs,
+            3,
+            false,
+            1.10,
+        );
+
+        assert_eq!(
+            report
+                .flattened_sample_ratios
+                .summary_window_cover_vs_window_only_ratio_p95,
+            Some(2.0)
+        );
+        assert_eq!(
+            report
+                .aggregated_ratios
+                .summary_window_cover_vs_window_only_ratio_p95,
+            Some(1.0)
+        );
+        assert_eq!(
+            report
+                .flattened_sample_ratios
+                .summary_metadata_realign_vs_budget_change_ratio_p95,
+            Some(2.0)
+        );
+        assert_eq!(
+            report
+                .aggregated_ratios
+                .summary_metadata_realign_vs_budget_change_ratio_p95,
+            Some(1.0)
+        );
+        assert!(
+            report
+                .gate
+                .warnings
+                .iter()
+                .all(|warning| !warning.contains("summary_window_cover")),
+            "expected cover-path warnings to key off aggregated suite-median ratios instead of flattened tails"
+        );
+        assert!(
+            report
+                .gate
+                .warnings
+                .iter()
+                .all(|warning| !warning.contains("summary_metadata_realign")),
+            "expected metadata-realign warnings to key off aggregated suite-median ratios instead of flattened tails"
+        );
+    }
+
+    #[test]
+    fn memory_context_benchmark_report_emits_suite_p95_summaries_for_noise_analysis() {
+        let shape = MemoryContextShape {
+            entry_count: 2,
+            turn_entries: 2,
+            summary_chars: 64,
+            payload_chars: 128,
+        };
+        let suite_runs = vec![
+            MemoryContextBenchmarkSuiteSamples {
+                seed_db_bytes: 512,
+                window_only_samples: vec![1.0, 1.2],
+                summary_window_cover_samples: vec![0.9, 1.1],
+                summary_rebuild_samples: vec![2.0, 2.2],
+                summary_rebuild_budget_change_samples: vec![1.0, 1.1],
+                summary_metadata_realign_samples: vec![0.8, 0.9],
+                summary_steady_state_samples: vec![0.5, 0.55],
+                window_shrink_catch_up_samples: vec![0.7, 0.75],
+                window_only_append_pre_overflow_samples: vec![0.8, 0.82],
+                window_only_append_cold_overflow_samples: vec![0.9, 0.95],
+                summary_append_pre_overflow_samples: vec![0.7, 0.74],
+                summary_append_cold_overflow_samples: vec![1.1, 1.2],
+                summary_append_saturated_samples: vec![0.6, 0.65],
+                window_only_rss_deltas_kib: vec![0.0, 0.0],
+                summary_window_cover_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_budget_change_rss_deltas_kib: vec![0.0, 0.0],
+                summary_metadata_realign_rss_deltas_kib: vec![0.0, 0.0],
+                summary_steady_state_rss_deltas_kib: vec![0.0, 0.0],
+                window_shrink_catch_up_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_saturated_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                summary_rebuild_budget_change_phase_samples:
+                    MemoryContextColdPathPhaseSamples::default(),
+                summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples::default(
+                ),
+                window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                window_only_shape: shape,
+                summary_window_cover_shape: shape,
+                summary_rebuild_shape: shape,
+                summary_rebuild_budget_change_shape: shape,
+                summary_metadata_realign_shape: shape,
+                summary_steady_state_shape: shape,
+                window_shrink_catch_up_shape: shape,
+            },
+            MemoryContextBenchmarkSuiteSamples {
+                seed_db_bytes: 512,
+                window_only_samples: vec![2.0, 2.2],
+                summary_window_cover_samples: vec![2.1, 2.3],
+                summary_rebuild_samples: vec![3.0, 3.2],
+                summary_rebuild_budget_change_samples: vec![1.5, 1.7],
+                summary_metadata_realign_samples: vec![1.2, 1.3],
+                summary_steady_state_samples: vec![0.9, 1.0],
+                window_shrink_catch_up_samples: vec![1.1, 1.2],
+                window_only_append_pre_overflow_samples: vec![1.3, 1.4],
+                window_only_append_cold_overflow_samples: vec![1.4, 1.5],
+                summary_append_pre_overflow_samples: vec![1.0, 1.05],
+                summary_append_cold_overflow_samples: vec![1.8, 1.9],
+                summary_append_saturated_samples: vec![0.9, 1.0],
+                window_only_rss_deltas_kib: vec![0.0, 0.0],
+                summary_window_cover_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_budget_change_rss_deltas_kib: vec![0.0, 0.0],
+                summary_metadata_realign_rss_deltas_kib: vec![0.0, 0.0],
+                summary_steady_state_rss_deltas_kib: vec![0.0, 0.0],
+                window_shrink_catch_up_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_saturated_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                summary_rebuild_budget_change_phase_samples:
+                    MemoryContextColdPathPhaseSamples::default(),
+                summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples::default(
+                ),
+                window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                window_only_shape: shape,
+                summary_window_cover_shape: shape,
+                summary_rebuild_shape: shape,
+                summary_rebuild_budget_change_shape: shape,
+                summary_metadata_realign_shape: shape,
+                summary_steady_state_shape: shape,
+                window_shrink_catch_up_shape: shape,
+            },
+        ];
+
+        let report = build_memory_context_benchmark_report(
+            "target/benchmarks/memory-context-benchmark-report.json",
+            &ResolvedMemoryContextBenchmarkTempRoot {
+                path: PathBuf::from("target/benchmarks/tmp-local"),
+                source: MemoryContextBenchmarkTempRootSource::OutputParent,
+            },
+            24,
+            6,
+            12,
+            256,
+            12,
+            2,
+            4,
+            1,
+            &suite_runs,
+            2,
+            false,
+            1.10,
+        );
+        let report_json = serde_json::to_value(&report).expect("serialize benchmark report");
+
+        let suite_summaries = report_json
+            .get("suite_p95_summaries")
+            .and_then(Value::as_array)
+            .expect("suite p95 summaries should be present");
+        assert_eq!(suite_summaries.len(), 2);
+        assert!(
+            suite_summaries[0]
+                .get("summary_append_cold_overflow")
+                .and_then(Value::as_f64)
+                .is_some(),
+            "expected each suite summary to expose scenario-level p95s for direct noise inspection"
+        );
+        assert!(
+            suite_summaries[0]
+                .get("summary_append_cold_overflow_vs_window_only_ratio_p95")
+                .and_then(Value::as_f64)
+                .is_some(),
+            "expected each suite summary to expose ratio-level p95s for direct noise inspection"
+        );
+        assert!(
+            suite_summaries[0]
+                .get("summary_rebuild_budget_change_vs_rebuild_summary_char_adjusted_ratio_p95")
+                .and_then(Value::as_f64)
+                .is_some(),
+            "expected each suite summary to expose workload-adjusted budget-change ratios for direct noise inspection"
+        );
+    }
+
+    #[test]
+    fn memory_context_benchmark_report_emits_suite_stability_summary() {
+        let shape = MemoryContextShape {
+            entry_count: 2,
+            turn_entries: 2,
+            summary_chars: 64,
+            payload_chars: 128,
+        };
+        let make_suite =
+            |window_only: f64,
+             summary_window_cover: f64,
+             summary_rebuild: f64,
+             summary_rebuild_budget_change: f64,
+             summary_metadata_realign: f64,
+             summary_steady_state: f64,
+             window_shrink_catch_up: f64| MemoryContextBenchmarkSuiteSamples {
+                seed_db_bytes: 512,
+                window_only_samples: vec![window_only, window_only],
+                summary_window_cover_samples: vec![summary_window_cover, summary_window_cover],
+                summary_rebuild_samples: vec![summary_rebuild, summary_rebuild],
+                summary_rebuild_budget_change_samples: vec![
+                    summary_rebuild_budget_change,
+                    summary_rebuild_budget_change,
+                ],
+                summary_metadata_realign_samples: vec![
+                    summary_metadata_realign,
+                    summary_metadata_realign,
+                ],
+                summary_steady_state_samples: vec![summary_steady_state, summary_steady_state],
+                window_shrink_catch_up_samples: vec![
+                    window_shrink_catch_up,
+                    window_shrink_catch_up,
+                ],
+                window_only_append_pre_overflow_samples: vec![1.0, 1.0],
+                window_only_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_pre_overflow_samples: vec![1.0, 1.0],
+                summary_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_saturated_samples: vec![1.0, 1.0],
+                window_only_rss_deltas_kib: vec![0.0, 0.0],
+                summary_window_cover_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_budget_change_rss_deltas_kib: vec![0.0, 0.0],
+                summary_metadata_realign_rss_deltas_kib: vec![0.0, 0.0],
+                summary_steady_state_rss_deltas_kib: vec![0.0, 0.0],
+                window_shrink_catch_up_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_saturated_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                summary_rebuild_budget_change_phase_samples:
+                    MemoryContextColdPathPhaseSamples::default(),
+                summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples::default(
+                ),
+                window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                window_only_shape: shape,
+                summary_window_cover_shape: shape,
+                summary_rebuild_shape: shape,
+                summary_rebuild_budget_change_shape: shape,
+                summary_metadata_realign_shape: shape,
+                summary_steady_state_shape: shape,
+                window_shrink_catch_up_shape: shape,
+            };
+        let suite_runs = vec![
+            make_suite(1.0, 0.8, 4.0, 2.0, 1.0, 1.0, 2.0),
+            make_suite(2.0, 1.6, 5.0, 2.5, 1.5, 1.25, 2.5),
+            make_suite(3.0, 2.4, 6.0, 3.0, 2.0, 1.5, 3.0),
+        ];
+
+        let report = build_memory_context_benchmark_report(
+            "target/benchmarks/memory-context-benchmark-report.json",
+            &ResolvedMemoryContextBenchmarkTempRoot {
+                path: PathBuf::from("target/benchmarks/tmp-local"),
+                source: MemoryContextBenchmarkTempRootSource::OutputParent,
+            },
+            24,
+            6,
+            12,
+            256,
+            12,
+            2,
+            4,
+            1,
+            &suite_runs,
+            3,
+            false,
+            1.10,
+        );
+        let report_json = serde_json::to_value(&report).expect("serialize benchmark report");
+
+        assert_eq!(
+            report_json
+                .get("suite_stability")
+                .and_then(|value| value.get("window_only_p95_ms"))
+                .and_then(|value| value.get("count"))
+                .and_then(Value::as_u64),
+            Some(3)
+        );
+        assert_eq!(
+            report_json
+                .get("suite_stability")
+                .and_then(|value| value.get("window_only_p95_ms"))
+                .and_then(|value| value.get("range"))
+                .and_then(Value::as_f64),
+            Some(2.0)
+        );
+        assert_eq!(
+            report_json
+                .get("suite_stability")
+                .and_then(|value| value.get("summary_window_cover_vs_window_only_ratio_p95"))
+                .and_then(|value| value.get("range"))
+                .and_then(Value::as_f64),
+            Some(0.0)
+        );
+        assert_eq!(
+            report_json
+                .get("suite_stability")
+                .and_then(|value| value.get("speedup_ratio_p95"))
+                .and_then(|value| value.get("max_over_p50"))
+                .and_then(Value::as_f64),
+            Some(1.0)
+        );
+    }
+
+    #[test]
+    fn memory_context_benchmark_report_warns_when_speedup_ratio_is_suite_noisy() {
+        let shape = MemoryContextShape {
+            entry_count: 2,
+            turn_entries: 2,
+            summary_chars: 64,
+            payload_chars: 128,
+        };
+        let make_suite = |summary_steady_state: f64| MemoryContextBenchmarkSuiteSamples {
+            seed_db_bytes: 512,
+            window_only_samples: vec![1.0, 1.0],
+            summary_window_cover_samples: vec![1.0, 1.0],
+            summary_rebuild_samples: vec![4.0, 4.0],
+            summary_rebuild_budget_change_samples: vec![2.0, 2.0],
+            summary_metadata_realign_samples: vec![1.0, 1.0],
+            summary_steady_state_samples: vec![summary_steady_state, summary_steady_state],
+            window_shrink_catch_up_samples: vec![2.0, 2.0],
+            window_only_append_pre_overflow_samples: vec![1.0, 1.0],
+            window_only_append_cold_overflow_samples: vec![1.0, 1.0],
+            summary_append_pre_overflow_samples: vec![1.0, 1.0],
+            summary_append_cold_overflow_samples: vec![1.0, 1.0],
+            summary_append_saturated_samples: vec![1.0, 1.0],
+            window_only_rss_deltas_kib: vec![0.0, 0.0],
+            summary_window_cover_rss_deltas_kib: vec![0.0, 0.0],
+            summary_rebuild_rss_deltas_kib: vec![0.0, 0.0],
+            summary_rebuild_budget_change_rss_deltas_kib: vec![0.0, 0.0],
+            summary_metadata_realign_rss_deltas_kib: vec![0.0, 0.0],
+            summary_steady_state_rss_deltas_kib: vec![0.0, 0.0],
+            window_shrink_catch_up_rss_deltas_kib: vec![0.0, 0.0],
+            window_only_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+            window_only_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+            summary_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+            summary_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+            summary_append_saturated_rss_deltas_kib: vec![0.0, 0.0],
+            summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+            summary_rebuild_budget_change_phase_samples: MemoryContextColdPathPhaseSamples::default(
+            ),
+            summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+            window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+            window_only_shape: shape,
+            summary_window_cover_shape: shape,
+            summary_rebuild_shape: shape,
+            summary_rebuild_budget_change_shape: shape,
+            summary_metadata_realign_shape: shape,
+            summary_steady_state_shape: shape,
+            window_shrink_catch_up_shape: shape,
+        };
+        let suite_runs = vec![make_suite(1.0), make_suite(2.0), make_suite(4.0)];
+
+        let report = build_memory_context_benchmark_report(
+            "target/benchmarks/memory-context-benchmark-report.json",
+            &ResolvedMemoryContextBenchmarkTempRoot {
+                path: PathBuf::from("target/benchmarks/tmp-local"),
+                source: MemoryContextBenchmarkTempRootSource::OutputParent,
+            },
+            24,
+            6,
+            12,
+            256,
+            12,
+            2,
+            4,
+            1,
+            &suite_runs,
+            3,
+            false,
+            1.10,
+        );
+
+        assert!(
+            report
+                .gate
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("speedup_ratio_p95")),
+            "expected suite stability warning for noisy speedup ratio"
+        );
+    }
+
+    #[test]
+    fn memory_context_benchmark_report_qualifies_cover_warning_under_suite_noise() {
+        let shape = MemoryContextShape {
+            entry_count: 2,
+            turn_entries: 2,
+            summary_chars: 64,
+            payload_chars: 128,
+        };
+        let make_suite =
+            |window_only: f64, summary_window_cover: f64| MemoryContextBenchmarkSuiteSamples {
+                seed_db_bytes: 512,
+                window_only_samples: vec![window_only, window_only],
+                summary_window_cover_samples: vec![summary_window_cover, summary_window_cover],
+                summary_rebuild_samples: vec![4.0, 4.0],
+                summary_rebuild_budget_change_samples: vec![2.0, 2.0],
+                summary_metadata_realign_samples: vec![1.0, 1.0],
+                summary_steady_state_samples: vec![1.0, 1.0],
+                window_shrink_catch_up_samples: vec![2.0, 2.0],
+                window_only_append_pre_overflow_samples: vec![1.0, 1.0],
+                window_only_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_pre_overflow_samples: vec![1.0, 1.0],
+                summary_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_saturated_samples: vec![1.0, 1.0],
+                window_only_rss_deltas_kib: vec![0.0, 0.0],
+                summary_window_cover_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_budget_change_rss_deltas_kib: vec![0.0, 0.0],
+                summary_metadata_realign_rss_deltas_kib: vec![0.0, 0.0],
+                summary_steady_state_rss_deltas_kib: vec![0.0, 0.0],
+                window_shrink_catch_up_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_saturated_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                summary_rebuild_budget_change_phase_samples:
+                    MemoryContextColdPathPhaseSamples::default(),
+                summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples::default(
+                ),
+                window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                window_only_shape: shape,
+                summary_window_cover_shape: shape,
+                summary_rebuild_shape: shape,
+                summary_rebuild_budget_change_shape: shape,
+                summary_metadata_realign_shape: shape,
+                summary_steady_state_shape: shape,
+                window_shrink_catch_up_shape: shape,
+            };
+        let suite_runs = vec![
+            make_suite(0.4300038, 0.31504375),
+            make_suite(0.44856565, 1.1060792),
+            make_suite(0.8337033, 0.45344445),
+            make_suite(0.9723356, 1.72131875),
+            make_suite(0.6513814, 1.0745410),
+        ];
+
+        let report = build_memory_context_benchmark_report(
+            "target/benchmarks/memory-context-benchmark-report.json",
+            &ResolvedMemoryContextBenchmarkTempRoot {
+                path: PathBuf::from("target/benchmarks/tmp-local"),
+                source: MemoryContextBenchmarkTempRootSource::OutputParent,
+            },
+            24,
+            6,
+            12,
+            256,
+            12,
+            2,
+            4,
+            1,
+            &suite_runs,
+            3,
+            false,
+            1.10,
+        );
+
+        let cover_warning = report
+            .gate
+            .warnings
+            .iter()
+            .find(|warning| warning.contains("summary_window_cover"))
+            .expect("expected cover warning");
+        assert!(
+            cover_warning.contains("suite-noisy"),
+            "expected noisy cover-path comparisons to be qualified as suite-noisy instead of being presented as a direct product regression"
+        );
+        assert!(
+            !cover_warning.contains("redundant summary materialization or checkpoint work"),
+            "expected suite-noisy cover warnings to avoid over-specific product-cause guidance"
+        );
+    }
+
+    #[test]
+    fn memory_context_benchmark_report_qualifies_metadata_realign_warning_under_suite_noise() {
+        let shape = MemoryContextShape {
+            entry_count: 2,
+            turn_entries: 2,
+            summary_chars: 64,
+            payload_chars: 128,
+        };
+        let make_suite = |summary_rebuild_budget_change: f64, summary_metadata_realign: f64| {
+            MemoryContextBenchmarkSuiteSamples {
+                seed_db_bytes: 512,
+                window_only_samples: vec![1.0, 1.0],
+                summary_window_cover_samples: vec![1.0, 1.0],
+                summary_rebuild_samples: vec![4.0, 4.0],
+                summary_rebuild_budget_change_samples: vec![
+                    summary_rebuild_budget_change,
+                    summary_rebuild_budget_change,
+                ],
+                summary_metadata_realign_samples: vec![
+                    summary_metadata_realign,
+                    summary_metadata_realign,
+                ],
+                summary_steady_state_samples: vec![2.0, 2.0],
+                window_shrink_catch_up_samples: vec![2.0, 2.0],
+                window_only_append_pre_overflow_samples: vec![1.0, 1.0],
+                window_only_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_pre_overflow_samples: vec![1.0, 1.0],
+                summary_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_saturated_samples: vec![1.0, 1.0],
+                window_only_rss_deltas_kib: vec![0.0, 0.0],
+                summary_window_cover_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_budget_change_rss_deltas_kib: vec![0.0, 0.0],
+                summary_metadata_realign_rss_deltas_kib: vec![0.0, 0.0],
+                summary_steady_state_rss_deltas_kib: vec![0.0, 0.0],
+                window_shrink_catch_up_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_saturated_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                summary_rebuild_budget_change_phase_samples:
+                    MemoryContextColdPathPhaseSamples::default(),
+                summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples::default(
+                ),
+                window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                window_only_shape: shape,
+                summary_window_cover_shape: shape,
+                summary_rebuild_shape: shape,
+                summary_rebuild_budget_change_shape: shape,
+                summary_metadata_realign_shape: shape,
+                summary_steady_state_shape: shape,
+                window_shrink_catch_up_shape: shape,
+            }
+        };
+        let suite_runs = vec![
+            make_suite(1.36408355, 0.31361875),
+            make_suite(0.45087515, 3.65480625),
+            make_suite(0.65107080, 1.56425160),
+            make_suite(0.49981005, 0.98310625),
+            make_suite(0.70441715, 0.34252745),
+        ];
+
+        let report = build_memory_context_benchmark_report(
+            "target/benchmarks/memory-context-benchmark-report.json",
+            &ResolvedMemoryContextBenchmarkTempRoot {
+                path: PathBuf::from("target/benchmarks/tmp-local"),
+                source: MemoryContextBenchmarkTempRootSource::OutputParent,
+            },
+            24,
+            6,
+            12,
+            256,
+            12,
+            2,
+            4,
+            1,
+            &suite_runs,
+            3,
+            false,
+            1.10,
+        );
+
+        let metadata_warning = report
+            .gate
+            .warnings
+            .iter()
+            .find(|warning| warning.contains("summary_metadata_realign"))
+            .expect("expected metadata-realign warning");
+        assert!(
+            metadata_warning.contains("suite-noisy"),
+            "expected noisy metadata/budget-change comparisons to be qualified as suite-noisy instead of being presented as a direct product regression"
+        );
+        assert!(
+            !metadata_warning.contains("accidental summary body rewrites"),
+            "expected suite-noisy metadata warning to avoid over-specific product-cause guidance"
+        );
+    }
+
+    #[test]
+    fn memory_context_benchmark_report_suppresses_speedup_warning_when_copy_noise_dominates_clear_wins()
+     {
+        let shape = MemoryContextShape {
+            entry_count: 2,
+            turn_entries: 2,
+            summary_chars: 64,
+            payload_chars: 128,
+        };
+        let make_suite = |summary_rebuild: f64,
+                          summary_steady_state: f64,
+                          copy_db_ms: f64,
+                          target_load_ms: f64| {
+            MemoryContextBenchmarkSuiteSamples {
+                seed_db_bytes: 512,
+                window_only_samples: vec![1.0, 1.0],
+                summary_window_cover_samples: vec![1.0, 1.0],
+                summary_rebuild_samples: vec![summary_rebuild, summary_rebuild],
+                summary_rebuild_budget_change_samples: vec![2.0, 2.0],
+                summary_metadata_realign_samples: vec![1.0, 1.0],
+                summary_steady_state_samples: vec![summary_steady_state, summary_steady_state],
+                window_shrink_catch_up_samples: vec![2.0, 2.0],
+                window_only_append_pre_overflow_samples: vec![1.0, 1.0],
+                window_only_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_pre_overflow_samples: vec![1.0, 1.0],
+                summary_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_saturated_samples: vec![1.0, 1.0],
+                window_only_rss_deltas_kib: vec![0.0, 0.0],
+                summary_window_cover_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_budget_change_rss_deltas_kib: vec![0.0, 0.0],
+                summary_metadata_realign_rss_deltas_kib: vec![0.0, 0.0],
+                summary_steady_state_rss_deltas_kib: vec![0.0, 0.0],
+                window_shrink_catch_up_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_saturated_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples {
+                    copy_db_ms: vec![copy_db_ms, copy_db_ms],
+                    target_load_ms: vec![target_load_ms, target_load_ms],
+                    target_load_summary_rebuild_ms: vec![target_load_ms, target_load_ms],
+                    ..MemoryContextColdPathPhaseSamples::default()
+                },
+                summary_rebuild_budget_change_phase_samples:
+                    MemoryContextColdPathPhaseSamples::default(),
+                summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples::default(
+                ),
+                window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                window_only_shape: shape,
+                summary_window_cover_shape: shape,
+                summary_rebuild_shape: shape,
+                summary_rebuild_budget_change_shape: shape,
+                summary_metadata_realign_shape: shape,
+                summary_steady_state_shape: shape,
+                window_shrink_catch_up_shape: shape,
+            }
+        };
+        let suite_runs = vec![
+            make_suite(4.0, 0.40, 1.0, 3.0),
+            make_suite(8.0, 1.60, 5.0, 8.0),
+            make_suite(12.0, 3.00, 9.0, 12.0),
+        ];
+
+        let report = build_memory_context_benchmark_report(
+            "target/benchmarks/memory-context-benchmark-report.json",
+            &ResolvedMemoryContextBenchmarkTempRoot {
+                path: PathBuf::from("target/benchmarks/tmp-local"),
+                source: MemoryContextBenchmarkTempRootSource::OutputParent,
+            },
+            24,
+            6,
+            12,
+            256,
+            12,
+            2,
+            4,
+            1,
+            &suite_runs,
+            3,
+            false,
+            1.10,
+        );
+
+        assert!(
+            report
+                .gate
+                .warnings
+                .iter()
+                .all(|warning| !warning.contains("speedup_ratio_p95")),
+            "expected non-marginal speedup wins to ignore suite-noise warnings when copy_db_ms is the dominant rebuild-noise source"
+        );
+        assert!(
+            report
+                .gate
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("summary_rebuild suite p95")),
+            "expected summary_rebuild instability warning to remain visible for the underlying cold-path noise"
+        );
+    }
+
+    #[test]
+    fn memory_context_benchmark_report_suppresses_speedup_warning_when_bootstrap_noise_dominates_clear_wins()
+     {
+        let shape = MemoryContextShape {
+            entry_count: 2,
+            turn_entries: 2,
+            summary_chars: 64,
+            payload_chars: 128,
+        };
+        let make_suite = |summary_rebuild: f64,
+                          summary_steady_state: f64,
+                          target_bootstrap_ms: f64,
+                          schema_upgrade_ms: f64,
+                          target_load_ms: f64| {
+            MemoryContextBenchmarkSuiteSamples {
+                seed_db_bytes: 512,
+                window_only_samples: vec![1.0, 1.0],
+                summary_window_cover_samples: vec![1.0, 1.0],
+                summary_rebuild_samples: vec![summary_rebuild, summary_rebuild],
+                summary_rebuild_budget_change_samples: vec![2.0, 2.0],
+                summary_metadata_realign_samples: vec![1.0, 1.0],
+                summary_steady_state_samples: vec![summary_steady_state, summary_steady_state],
+                window_shrink_catch_up_samples: vec![2.0, 2.0],
+                window_only_append_pre_overflow_samples: vec![1.0, 1.0],
+                window_only_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_pre_overflow_samples: vec![1.0, 1.0],
+                summary_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_saturated_samples: vec![1.0, 1.0],
+                window_only_rss_deltas_kib: vec![0.0, 0.0],
+                summary_window_cover_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_budget_change_rss_deltas_kib: vec![0.0, 0.0],
+                summary_metadata_realign_rss_deltas_kib: vec![0.0, 0.0],
+                summary_steady_state_rss_deltas_kib: vec![0.0, 0.0],
+                window_shrink_catch_up_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_saturated_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples {
+                    target_bootstrap_ms: vec![target_bootstrap_ms, target_bootstrap_ms],
+                    target_bootstrap_schema_upgrade_ms: vec![schema_upgrade_ms, schema_upgrade_ms],
+                    target_load_ms: vec![target_load_ms, target_load_ms],
+                    target_load_summary_rebuild_ms: vec![target_load_ms, target_load_ms],
+                    ..MemoryContextColdPathPhaseSamples::default()
+                },
+                summary_rebuild_budget_change_phase_samples:
+                    MemoryContextColdPathPhaseSamples::default(),
+                summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples::default(
+                ),
+                window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                window_only_shape: shape,
+                summary_window_cover_shape: shape,
+                summary_rebuild_shape: shape,
+                summary_rebuild_budget_change_shape: shape,
+                summary_metadata_realign_shape: shape,
+                summary_steady_state_shape: shape,
+                window_shrink_catch_up_shape: shape,
+            }
+        };
+        let suite_runs = vec![
+            make_suite(4.0, 0.20, 1.0, 1.0, 3.0),
+            make_suite(8.0, 0.80, 8.0, 8.0, 4.0),
+            make_suite(12.0, 1.20, 16.0, 16.0, 5.0),
+        ];
+
+        let report = build_memory_context_benchmark_report(
+            "target/benchmarks/memory-context-benchmark-report.json",
+            &ResolvedMemoryContextBenchmarkTempRoot {
+                path: PathBuf::from("target/benchmarks/tmp-local"),
+                source: MemoryContextBenchmarkTempRootSource::OutputParent,
+            },
+            24,
+            6,
+            12,
+            256,
+            12,
+            2,
+            4,
+            1,
+            &suite_runs,
+            3,
+            false,
+            1.10,
+        );
+
+        assert!(
+            report
+                .gate
+                .warnings
+                .iter()
+                .all(|warning| !warning.contains("speedup_ratio_p95")),
+            "expected non-marginal speedup wins to ignore suite-noise warnings when bootstrap noise dominates rebuild instability"
+        );
+        assert!(
+            report
+                .gate
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("summary_rebuild suite p95")),
+            "expected summary_rebuild instability warning to remain visible when bootstrap noise dominates"
+        );
+    }
+
+    #[test]
+    fn memory_context_benchmark_report_suppresses_speedup_warning_for_tiny_hot_path_denominator_jitter()
+     {
+        let shape = MemoryContextShape {
+            entry_count: 2,
+            turn_entries: 2,
+            summary_chars: 64,
+            payload_chars: 128,
+        };
+        let make_suite =
+            |summary_rebuild: f64, summary_steady_state: f64| MemoryContextBenchmarkSuiteSamples {
+                seed_db_bytes: 512,
+                window_only_samples: vec![1.0, 1.0],
+                summary_window_cover_samples: vec![1.0, 1.0],
+                summary_rebuild_samples: vec![summary_rebuild, summary_rebuild],
+                summary_rebuild_budget_change_samples: vec![2.0, 2.0],
+                summary_metadata_realign_samples: vec![1.0, 1.0],
+                summary_steady_state_samples: vec![summary_steady_state, summary_steady_state],
+                window_shrink_catch_up_samples: vec![2.0, 2.0],
+                window_only_append_pre_overflow_samples: vec![1.0, 1.0],
+                window_only_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_pre_overflow_samples: vec![1.0, 1.0],
+                summary_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_saturated_samples: vec![1.0, 1.0],
+                window_only_rss_deltas_kib: vec![0.0, 0.0],
+                summary_window_cover_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_budget_change_rss_deltas_kib: vec![0.0, 0.0],
+                summary_metadata_realign_rss_deltas_kib: vec![0.0, 0.0],
+                summary_steady_state_rss_deltas_kib: vec![0.0, 0.0],
+                window_shrink_catch_up_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_saturated_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                summary_rebuild_budget_change_phase_samples:
+                    MemoryContextColdPathPhaseSamples::default(),
+                summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples::default(
+                ),
+                window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                window_only_shape: shape,
+                summary_window_cover_shape: shape,
+                summary_rebuild_shape: shape,
+                summary_rebuild_budget_change_shape: shape,
+                summary_metadata_realign_shape: shape,
+                summary_steady_state_shape: shape,
+                window_shrink_catch_up_shape: shape,
+            };
+        let suite_runs = vec![
+            make_suite(3.5, 0.30),
+            make_suite(3.8, 0.60),
+            make_suite(4.2, 1.20),
+        ];
+
+        let report = build_memory_context_benchmark_report(
+            "target/benchmarks/memory-context-benchmark-report.json",
+            &ResolvedMemoryContextBenchmarkTempRoot {
+                path: PathBuf::from("target/benchmarks/tmp-local"),
+                source: MemoryContextBenchmarkTempRootSource::OutputParent,
+            },
+            24,
+            6,
+            12,
+            256,
+            12,
+            2,
+            4,
+            1,
+            &suite_runs,
+            3,
+            false,
+            1.10,
+        );
+
+        assert!(
+            report
+                .gate
+                .warnings
+                .iter()
+                .all(|warning| !warning.contains("speedup_ratio_p95")),
+            "expected clear speedup wins to ignore speedup-ratio suite noise when only a tiny hot-path denominator jitter is inflating the ratio spread"
+        );
+        assert!(
+            report
+                .gate
+                .warnings
+                .iter()
+                .all(|warning| !warning.contains("summary_rebuild suite p95")),
+            "expected summary_rebuild to stay classified as stable in the hot-denominator jitter case"
+        );
+    }
+
+    #[test]
+    fn memory_context_benchmark_report_keeps_speedup_warning_when_hot_path_spread_is_not_tiny() {
+        let shape = MemoryContextShape {
+            entry_count: 2,
+            turn_entries: 2,
+            summary_chars: 64,
+            payload_chars: 128,
+        };
+        let make_suite =
+            |summary_rebuild: f64, summary_steady_state: f64| MemoryContextBenchmarkSuiteSamples {
+                seed_db_bytes: 512,
+                window_only_samples: vec![1.0, 1.0],
+                summary_window_cover_samples: vec![1.0, 1.0],
+                summary_rebuild_samples: vec![summary_rebuild, summary_rebuild],
+                summary_rebuild_budget_change_samples: vec![2.0, 2.0],
+                summary_metadata_realign_samples: vec![1.0, 1.0],
+                summary_steady_state_samples: vec![summary_steady_state, summary_steady_state],
+                window_shrink_catch_up_samples: vec![2.0, 2.0],
+                window_only_append_pre_overflow_samples: vec![1.0, 1.0],
+                window_only_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_pre_overflow_samples: vec![1.0, 1.0],
+                summary_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_saturated_samples: vec![1.0, 1.0],
+                window_only_rss_deltas_kib: vec![0.0, 0.0],
+                summary_window_cover_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_budget_change_rss_deltas_kib: vec![0.0, 0.0],
+                summary_metadata_realign_rss_deltas_kib: vec![0.0, 0.0],
+                summary_steady_state_rss_deltas_kib: vec![0.0, 0.0],
+                window_shrink_catch_up_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_saturated_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                summary_rebuild_budget_change_phase_samples:
+                    MemoryContextColdPathPhaseSamples::default(),
+                summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples::default(
+                ),
+                window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                window_only_shape: shape,
+                summary_window_cover_shape: shape,
+                summary_rebuild_shape: shape,
+                summary_rebuild_budget_change_shape: shape,
+                summary_metadata_realign_shape: shape,
+                summary_steady_state_shape: shape,
+                window_shrink_catch_up_shape: shape,
+            };
+        let suite_runs = vec![
+            make_suite(12.0, 2.0),
+            make_suite(12.6, 4.0),
+            make_suite(13.2, 6.0),
+        ];
+
+        let report = build_memory_context_benchmark_report(
+            "target/benchmarks/memory-context-benchmark-report.json",
+            &ResolvedMemoryContextBenchmarkTempRoot {
+                path: PathBuf::from("target/benchmarks/tmp-local"),
+                source: MemoryContextBenchmarkTempRootSource::OutputParent,
+            },
+            24,
+            6,
+            12,
+            256,
+            12,
+            2,
+            4,
+            1,
+            &suite_runs,
+            3,
+            false,
+            1.10,
+        );
+
+        assert!(
+            report
+                .gate
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("speedup_ratio_p95")),
+            "expected speedup-ratio suite warning to remain visible once hot-path absolute spread is large enough to be operationally meaningful"
+        );
+    }
+
+    #[test]
+    fn memory_context_benchmark_report_qualifies_speedup_warning_when_all_suites_still_clear_the_floor()
+     {
+        let shape = MemoryContextShape {
+            entry_count: 2,
+            turn_entries: 2,
+            summary_chars: 64,
+            payload_chars: 128,
+        };
+        let make_suite =
+            |summary_rebuild: f64, summary_steady_state: f64| MemoryContextBenchmarkSuiteSamples {
+                seed_db_bytes: 512,
+                window_only_samples: vec![1.0, 1.0],
+                summary_window_cover_samples: vec![1.0, 1.0],
+                summary_rebuild_samples: vec![summary_rebuild, summary_rebuild],
+                summary_rebuild_budget_change_samples: vec![2.0, 2.0],
+                summary_metadata_realign_samples: vec![1.0, 1.0],
+                summary_steady_state_samples: vec![summary_steady_state, summary_steady_state],
+                window_shrink_catch_up_samples: vec![2.0, 2.0],
+                window_only_append_pre_overflow_samples: vec![1.0, 1.0],
+                window_only_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_pre_overflow_samples: vec![1.0, 1.0],
+                summary_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_saturated_samples: vec![1.0, 1.0],
+                window_only_rss_deltas_kib: vec![0.0, 0.0],
+                summary_window_cover_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_budget_change_rss_deltas_kib: vec![0.0, 0.0],
+                summary_metadata_realign_rss_deltas_kib: vec![0.0, 0.0],
+                summary_steady_state_rss_deltas_kib: vec![0.0, 0.0],
+                window_shrink_catch_up_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_saturated_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                summary_rebuild_budget_change_phase_samples:
+                    MemoryContextColdPathPhaseSamples::default(),
+                summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples::default(
+                ),
+                window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                window_only_shape: shape,
+                summary_window_cover_shape: shape,
+                summary_rebuild_shape: shape,
+                summary_rebuild_budget_change_shape: shape,
+                summary_metadata_realign_shape: shape,
+                summary_steady_state_shape: shape,
+                window_shrink_catch_up_shape: shape,
+            };
+        let report = build_memory_context_benchmark_report(
+            "target/benchmarks/memory-context-benchmark-report.json",
+            &ResolvedMemoryContextBenchmarkTempRoot {
+                path: PathBuf::from("target/benchmarks/tmp-local"),
+                source: MemoryContextBenchmarkTempRootSource::OutputParent,
+            },
+            24,
+            6,
+            12,
+            256,
+            12,
+            2,
+            4,
+            1,
+            &[
+                make_suite(12.0, 2.0),
+                make_suite(12.2, 4.0),
+                make_suite(12.4, 6.0),
+            ],
+            3,
+            false,
+            1.10,
+        );
+
+        let speedup_warning = report
+            .gate
+            .warnings
+            .iter()
+            .find(|warning| warning.contains("speedup_ratio_p95"))
+            .expect("expected speedup warning to remain visible for suite noise");
+        assert!(
+            speedup_warning.contains("every suite still cleared the speedup floor"),
+            "expected clear-win suite noise to be qualified instead of described as marginal"
+        );
+        assert!(
+            !speedup_warning.contains("marginal memory context improvements"),
+            "expected clear-win suite noise wording to avoid marginal-gain guidance"
+        );
+    }
+
+    #[test]
+    fn memory_context_benchmark_report_warns_when_summary_rebuild_is_suite_noisy() {
+        let shape = MemoryContextShape {
+            entry_count: 2,
+            turn_entries: 2,
+            summary_chars: 64,
+            payload_chars: 128,
+        };
+        let make_suite =
+            |summary_rebuild: f64,
+             summary_steady_state: f64,
+             target_bootstrap_ms: f64,
+             target_bootstrap_connection_open_ms: f64,
+             target_load_ms: f64,
+             copy_db_ms: f64| MemoryContextBenchmarkSuiteSamples {
+                seed_db_bytes: 512,
+                window_only_samples: vec![1.0, 1.0],
+                summary_window_cover_samples: vec![1.0, 1.0],
+                summary_rebuild_samples: vec![summary_rebuild, summary_rebuild],
+                summary_rebuild_budget_change_samples: vec![2.0, 2.0],
+                summary_metadata_realign_samples: vec![1.0, 1.0],
+                summary_steady_state_samples: vec![summary_steady_state, summary_steady_state],
+                window_shrink_catch_up_samples: vec![2.0, 2.0],
+                window_only_append_pre_overflow_samples: vec![1.0, 1.0],
+                window_only_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_pre_overflow_samples: vec![1.0, 1.0],
+                summary_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_saturated_samples: vec![1.0, 1.0],
+                window_only_rss_deltas_kib: vec![0.0, 0.0],
+                summary_window_cover_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_budget_change_rss_deltas_kib: vec![0.0, 0.0],
+                summary_metadata_realign_rss_deltas_kib: vec![0.0, 0.0],
+                summary_steady_state_rss_deltas_kib: vec![0.0, 0.0],
+                window_shrink_catch_up_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_saturated_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples {
+                    copy_db_ms: vec![copy_db_ms, copy_db_ms],
+                    target_bootstrap_ms: vec![target_bootstrap_ms, target_bootstrap_ms],
+                    target_bootstrap_connection_open_ms: vec![
+                        target_bootstrap_connection_open_ms,
+                        target_bootstrap_connection_open_ms,
+                    ],
+                    target_load_ms: vec![target_load_ms, target_load_ms],
+                    ..MemoryContextColdPathPhaseSamples::default()
+                },
+                summary_rebuild_budget_change_phase_samples:
+                    MemoryContextColdPathPhaseSamples::default(),
+                summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples::default(
+                ),
+                window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                window_only_shape: shape,
+                summary_window_cover_shape: shape,
+                summary_rebuild_shape: shape,
+                summary_rebuild_budget_change_shape: shape,
+                summary_metadata_realign_shape: shape,
+                summary_steady_state_shape: shape,
+                window_shrink_catch_up_shape: shape,
+            };
+        let suite_runs = vec![
+            make_suite(4.0, 1.0, 4.0, 4.0, 1.0, 1.0),
+            make_suite(8.0, 2.0, 8.0, 8.0, 1.2, 1.2),
+            make_suite(12.0, 3.0, 12.0, 12.0, 1.4, 1.4),
+        ];
+
+        let report = build_memory_context_benchmark_report(
+            "target/benchmarks/memory-context-benchmark-report.json",
+            &ResolvedMemoryContextBenchmarkTempRoot {
+                path: PathBuf::from("target/benchmarks/tmp-local"),
+                source: MemoryContextBenchmarkTempRootSource::OutputParent,
+            },
+            24,
+            6,
+            12,
+            256,
+            12,
+            2,
+            4,
+            1,
+            &suite_runs,
+            3,
+            false,
+            1.10,
+        );
+
+        assert!(
+            report.gate.warnings.iter().any(|warning| {
+                warning.contains("summary_rebuild suite p95")
+                    && warning.contains("target_bootstrap_ms/connection_open_ms")
+            }),
+            "expected suite stability warning for noisy summary_rebuild p95"
+        );
+    }
+
+    #[test]
+    fn memory_context_benchmark_report_emits_cold_path_noise_attribution() {
+        let shape = MemoryContextShape {
+            entry_count: 2,
+            turn_entries: 2,
+            summary_chars: 64,
+            payload_chars: 128,
+        };
+        let make_suite =
+            |rebuild_target_load_ms: f64,
+             rebuild_copy_db_ms: f64,
+             budget_target_load_ms: f64,
+             budget_source_warmup_ms: f64| MemoryContextBenchmarkSuiteSamples {
+                seed_db_bytes: 512,
+                window_only_samples: vec![1.0, 1.0],
+                summary_window_cover_samples: vec![1.0, 1.0],
+                summary_rebuild_samples: vec![4.0, 4.0],
+                summary_rebuild_budget_change_samples: vec![2.0, 2.0],
+                summary_metadata_realign_samples: vec![1.0, 1.0],
+                summary_steady_state_samples: vec![1.0, 1.0],
+                window_shrink_catch_up_samples: vec![2.0, 2.0],
+                window_only_append_pre_overflow_samples: vec![1.0, 1.0],
+                window_only_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_pre_overflow_samples: vec![1.0, 1.0],
+                summary_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_saturated_samples: vec![1.0, 1.0],
+                window_only_rss_deltas_kib: vec![0.0, 0.0],
+                summary_window_cover_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_budget_change_rss_deltas_kib: vec![0.0, 0.0],
+                summary_metadata_realign_rss_deltas_kib: vec![0.0, 0.0],
+                summary_steady_state_rss_deltas_kib: vec![0.0, 0.0],
+                window_shrink_catch_up_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_saturated_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples {
+                    copy_db_ms: vec![rebuild_copy_db_ms, rebuild_copy_db_ms],
+                    target_load_ms: vec![rebuild_target_load_ms, rebuild_target_load_ms],
+                    ..MemoryContextColdPathPhaseSamples::default()
+                },
+                summary_rebuild_budget_change_phase_samples: MemoryContextColdPathPhaseSamples {
+                    source_warmup_ms: vec![budget_source_warmup_ms, budget_source_warmup_ms],
+                    target_load_ms: vec![budget_target_load_ms, budget_target_load_ms],
+                    ..MemoryContextColdPathPhaseSamples::default()
+                },
+                summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples::default(
+                ),
+                window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                window_only_shape: shape,
+                summary_window_cover_shape: shape,
+                summary_rebuild_shape: shape,
+                summary_rebuild_budget_change_shape: shape,
+                summary_metadata_realign_shape: shape,
+                summary_steady_state_shape: shape,
+                window_shrink_catch_up_shape: shape,
+            };
+        let suite_runs = vec![
+            make_suite(4.0, 1.0, 2.0, 6.0),
+            make_suite(8.0, 1.2, 2.5, 10.0),
+            make_suite(12.0, 1.4, 3.0, 14.0),
+        ];
+
+        let report = build_memory_context_benchmark_report(
+            "target/benchmarks/memory-context-benchmark-report.json",
+            &ResolvedMemoryContextBenchmarkTempRoot {
+                path: PathBuf::from("target/benchmarks/tmp-local"),
+                source: MemoryContextBenchmarkTempRootSource::OutputParent,
+            },
+            24,
+            6,
+            12,
+            256,
+            12,
+            2,
+            4,
+            1,
+            &suite_runs,
+            3,
+            false,
+            1.10,
+        );
+        let report_json = serde_json::to_value(&report).expect("serialize benchmark report");
+
+        assert_eq!(
+            report_json
+                .get("cold_path_noise_attribution")
+                .and_then(|value| value.get("summary_rebuild"))
+                .and_then(|value| value.get("phase"))
+                .and_then(Value::as_str),
+            Some("target_load_ms")
+        );
+        assert_eq!(
+            report_json
+                .get("cold_path_noise_attribution")
+                .and_then(|value| value.get("summary_rebuild_budget_change"))
+                .and_then(|value| value.get("phase"))
+                .and_then(Value::as_str),
+            Some("source_warmup_ms")
+        );
+    }
+
+    #[test]
+    fn memory_context_benchmark_report_emits_cold_path_bootstrap_noise_attribution() {
+        let shape = MemoryContextShape {
+            entry_count: 2,
+            turn_entries: 2,
+            summary_chars: 64,
+            payload_chars: 128,
+        };
+        let make_suite =
+            |target_connection_open_ms: f64,
+             target_schema_init_ms: f64,
+             source_registry_lookup_ms: f64,
+             source_schema_upgrade_ms: f64| MemoryContextBenchmarkSuiteSamples {
+                seed_db_bytes: 512,
+                window_only_samples: vec![1.0, 1.0],
+                summary_window_cover_samples: vec![1.0, 1.0],
+                summary_rebuild_samples: vec![4.0, 4.0],
+                summary_rebuild_budget_change_samples: vec![2.0, 2.0],
+                summary_metadata_realign_samples: vec![1.0, 1.0],
+                summary_steady_state_samples: vec![1.0, 1.0],
+                window_shrink_catch_up_samples: vec![2.0, 2.0],
+                window_only_append_pre_overflow_samples: vec![1.0, 1.0],
+                window_only_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_pre_overflow_samples: vec![1.0, 1.0],
+                summary_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_saturated_samples: vec![1.0, 1.0],
+                window_only_rss_deltas_kib: vec![0.0, 0.0],
+                summary_window_cover_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_budget_change_rss_deltas_kib: vec![0.0, 0.0],
+                summary_metadata_realign_rss_deltas_kib: vec![0.0, 0.0],
+                summary_steady_state_rss_deltas_kib: vec![0.0, 0.0],
+                window_shrink_catch_up_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_saturated_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples {
+                    target_bootstrap_connection_open_ms: vec![
+                        target_connection_open_ms,
+                        target_connection_open_ms,
+                    ],
+                    target_bootstrap_schema_init_ms: vec![
+                        target_schema_init_ms,
+                        target_schema_init_ms,
+                    ],
+                    ..MemoryContextColdPathPhaseSamples::default()
+                },
+                summary_rebuild_budget_change_phase_samples: MemoryContextColdPathPhaseSamples {
+                    source_bootstrap_registry_lookup_ms: vec![
+                        source_registry_lookup_ms,
+                        source_registry_lookup_ms,
+                    ],
+                    source_bootstrap_schema_upgrade_ms: vec![
+                        source_schema_upgrade_ms,
+                        source_schema_upgrade_ms,
+                    ],
+                    ..MemoryContextColdPathPhaseSamples::default()
+                },
+                summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples::default(
+                ),
+                window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                window_only_shape: shape,
+                summary_window_cover_shape: shape,
+                summary_rebuild_shape: shape,
+                summary_rebuild_budget_change_shape: shape,
+                summary_metadata_realign_shape: shape,
+                summary_steady_state_shape: shape,
+                window_shrink_catch_up_shape: shape,
+            };
+        let suite_runs = vec![
+            make_suite(4.0, 1.0, 2.0, 6.0),
+            make_suite(8.0, 1.2, 2.5, 10.0),
+            make_suite(12.0, 1.4, 3.0, 14.0),
+        ];
+
+        let report = build_memory_context_benchmark_report(
+            "target/benchmarks/memory-context-benchmark-report.json",
+            &ResolvedMemoryContextBenchmarkTempRoot {
+                path: PathBuf::from("target/benchmarks/tmp-local"),
+                source: MemoryContextBenchmarkTempRootSource::OutputParent,
+            },
+            24,
+            6,
+            12,
+            256,
+            12,
+            2,
+            4,
+            1,
+            &suite_runs,
+            3,
+            false,
+            1.10,
+        );
+        let report_json = serde_json::to_value(&report).expect("serialize benchmark report");
+
+        assert_eq!(
+            report_json
+                .get("cold_path_bootstrap_noise_attribution")
+                .and_then(|value| value.get("summary_rebuild"))
+                .and_then(|value| value.get("target_bootstrap"))
+                .and_then(|value| value.get("phase"))
+                .and_then(Value::as_str),
+            Some("connection_open_ms")
+        );
+        assert_eq!(
+            report_json
+                .get("cold_path_bootstrap_noise_attribution")
+                .and_then(|value| value.get("summary_rebuild_budget_change"))
+                .and_then(|value| value.get("source_bootstrap"))
+                .and_then(|value| value.get("phase"))
+                .and_then(Value::as_str),
+            Some("schema_upgrade_ms")
+        );
+    }
+
+    #[test]
+    fn memory_context_benchmark_report_emits_cold_path_load_noise_attribution() {
+        let shape = MemoryContextShape {
+            entry_count: 2,
+            turn_entries: 2,
+            summary_chars: 64,
+            payload_chars: 128,
+        };
+        let make_suite = |budget_target_window_query_ms: f64,
+                          budget_target_meta_query_ms: f64,
+                          budget_target_update_returning_body_ms: f64,
+                          metadata_target_window_query_ms: f64,
+                          metadata_target_body_load_ms: f64,
+                          metadata_target_catch_up_ms: f64| {
+            MemoryContextBenchmarkSuiteSamples {
+                seed_db_bytes: 512,
+                window_only_samples: vec![1.0, 1.0],
+                summary_window_cover_samples: vec![1.0, 1.0],
+                summary_rebuild_samples: vec![4.0, 4.0],
+                summary_rebuild_budget_change_samples: vec![2.0, 2.0],
+                summary_metadata_realign_samples: vec![1.0, 1.0],
+                summary_steady_state_samples: vec![1.0, 1.0],
+                window_shrink_catch_up_samples: vec![2.0, 2.0],
+                window_only_append_pre_overflow_samples: vec![1.0, 1.0],
+                window_only_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_pre_overflow_samples: vec![1.0, 1.0],
+                summary_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_saturated_samples: vec![1.0, 1.0],
+                window_only_rss_deltas_kib: vec![0.0, 0.0],
+                summary_window_cover_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_budget_change_rss_deltas_kib: vec![0.0, 0.0],
+                summary_metadata_realign_rss_deltas_kib: vec![0.0, 0.0],
+                summary_steady_state_rss_deltas_kib: vec![0.0, 0.0],
+                window_shrink_catch_up_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_saturated_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                summary_rebuild_budget_change_phase_samples: MemoryContextColdPathPhaseSamples {
+                    target_load_window_query_ms: vec![
+                        budget_target_window_query_ms,
+                        budget_target_window_query_ms,
+                    ],
+                    target_load_summary_checkpoint_meta_query_ms: vec![
+                        budget_target_meta_query_ms,
+                        budget_target_meta_query_ms,
+                    ],
+                    target_load_summary_checkpoint_metadata_update_returning_body_ms: vec![
+                        budget_target_update_returning_body_ms,
+                        budget_target_update_returning_body_ms,
+                    ],
+                    ..MemoryContextColdPathPhaseSamples::default()
+                },
+                summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples {
+                    target_load_window_query_ms: vec![
+                        metadata_target_window_query_ms,
+                        metadata_target_window_query_ms,
+                    ],
+                    target_load_summary_checkpoint_body_load_ms: vec![
+                        metadata_target_body_load_ms,
+                        metadata_target_body_load_ms,
+                    ],
+                    target_load_summary_catch_up_ms: vec![
+                        metadata_target_catch_up_ms,
+                        metadata_target_catch_up_ms,
+                    ],
+                    ..MemoryContextColdPathPhaseSamples::default()
+                },
+                window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                window_only_shape: shape,
+                summary_window_cover_shape: shape,
+                summary_rebuild_shape: shape,
+                summary_rebuild_budget_change_shape: shape,
+                summary_metadata_realign_shape: shape,
+                summary_steady_state_shape: shape,
+                window_shrink_catch_up_shape: shape,
+            }
+        };
+        let suite_runs = vec![
+            make_suite(2.0, 3.0, 6.0, 1.0, 2.0, 5.0),
+            make_suite(2.5, 3.5, 10.0, 1.2, 2.3, 9.0),
+            make_suite(3.0, 4.0, 14.0, 1.4, 2.6, 13.0),
+        ];
+
+        let report = build_memory_context_benchmark_report(
+            "target/benchmarks/memory-context-benchmark-report.json",
+            &ResolvedMemoryContextBenchmarkTempRoot {
+                path: PathBuf::from("target/benchmarks/tmp-local"),
+                source: MemoryContextBenchmarkTempRootSource::OutputParent,
+            },
+            24,
+            6,
+            12,
+            256,
+            12,
+            2,
+            4,
+            1,
+            &suite_runs,
+            3,
+            false,
+            1.10,
+        );
+        let report_json = serde_json::to_value(&report).expect("serialize benchmark report");
+
+        assert_eq!(
+            report_json
+                .get("cold_path_load_noise_attribution")
+                .and_then(|value| value.get("summary_rebuild_budget_change"))
+                .and_then(|value| value.get("target_load"))
+                .and_then(|value| value.get("phase"))
+                .and_then(Value::as_str),
+            Some("summary_checkpoint_metadata_update_returning_body_ms")
+        );
+        assert_eq!(
+            report_json
+                .get("cold_path_load_noise_attribution")
+                .and_then(|value| value.get("summary_metadata_realign"))
+                .and_then(|value| value.get("target_load"))
+                .and_then(|value| value.get("phase"))
+                .and_then(Value::as_str),
+            Some("summary_catch_up_ms")
+        );
+    }
+
+    #[test]
+    fn memory_context_benchmark_report_emits_split_summary_rebuild_load_noise_attribution() {
+        let shape = MemoryContextShape {
+            entry_count: 2,
+            turn_entries: 2,
+            summary_chars: 64,
+            payload_chars: 128,
+        };
+        let make_suite = |rebuild_stream_ms: f64,
+                          rebuild_metadata_upsert_ms: f64,
+                          rebuild_body_upsert_ms: f64,
+                          rebuild_commit_ms: f64| {
+            MemoryContextBenchmarkSuiteSamples {
+                seed_db_bytes: 512,
+                window_only_samples: vec![1.0, 1.0],
+                summary_window_cover_samples: vec![1.0, 1.0],
+                summary_rebuild_samples: vec![4.0, 4.0],
+                summary_rebuild_budget_change_samples: vec![2.0, 2.0],
+                summary_metadata_realign_samples: vec![1.0, 1.0],
+                summary_steady_state_samples: vec![1.0, 1.0],
+                window_shrink_catch_up_samples: vec![2.0, 2.0],
+                window_only_append_pre_overflow_samples: vec![1.0, 1.0],
+                window_only_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_pre_overflow_samples: vec![1.0, 1.0],
+                summary_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_saturated_samples: vec![1.0, 1.0],
+                window_only_rss_deltas_kib: vec![0.0, 0.0],
+                summary_window_cover_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_budget_change_rss_deltas_kib: vec![0.0, 0.0],
+                summary_metadata_realign_rss_deltas_kib: vec![0.0, 0.0],
+                summary_steady_state_rss_deltas_kib: vec![0.0, 0.0],
+                window_shrink_catch_up_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_saturated_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples {
+                    target_load_summary_rebuild_ms: vec![1.0, 1.0],
+                    target_load_summary_rebuild_stream_ms: vec![
+                        rebuild_stream_ms,
+                        rebuild_stream_ms,
+                    ],
+                    target_load_summary_rebuild_checkpoint_metadata_upsert_ms: vec![
+                        rebuild_metadata_upsert_ms,
+                        rebuild_metadata_upsert_ms,
+                    ],
+                    target_load_summary_rebuild_checkpoint_body_upsert_ms: vec![
+                        rebuild_body_upsert_ms,
+                        rebuild_body_upsert_ms,
+                    ],
+                    target_load_summary_rebuild_checkpoint_commit_ms: vec![
+                        rebuild_commit_ms,
+                        rebuild_commit_ms,
+                    ],
+                    target_load_summary_rebuild_checkpoint_upsert_ms: vec![
+                        rebuild_metadata_upsert_ms + rebuild_body_upsert_ms + rebuild_commit_ms,
+                        rebuild_metadata_upsert_ms + rebuild_body_upsert_ms + rebuild_commit_ms,
+                    ],
+                    ..MemoryContextColdPathPhaseSamples::default()
+                },
+                summary_rebuild_budget_change_phase_samples:
+                    MemoryContextColdPathPhaseSamples::default(),
+                summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples::default(
+                ),
+                window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                window_only_shape: shape,
+                summary_window_cover_shape: shape,
+                summary_rebuild_shape: shape,
+                summary_rebuild_budget_change_shape: shape,
+                summary_metadata_realign_shape: shape,
+                summary_steady_state_shape: shape,
+                window_shrink_catch_up_shape: shape,
+            }
+        };
+        let suite_runs = vec![
+            make_suite(2.0, 0.3, 0.5, 0.4),
+            make_suite(10.0, 0.4, 0.6, 0.5),
+            make_suite(14.0, 0.5, 0.7, 0.6),
+        ];
+
+        let report = build_memory_context_benchmark_report(
+            "target/benchmarks/memory-context-benchmark-report.json",
+            &ResolvedMemoryContextBenchmarkTempRoot {
+                path: PathBuf::from("target/benchmarks/tmp-local"),
+                source: MemoryContextBenchmarkTempRootSource::OutputParent,
+            },
+            24,
+            6,
+            12,
+            256,
+            12,
+            2,
+            4,
+            1,
+            &suite_runs,
+            3,
+            false,
+            1.10,
+        );
+        let report_json = serde_json::to_value(&report).expect("serialize benchmark report");
+
+        assert_eq!(
+            report_json
+                .get("cold_path_load_noise_attribution")
+                .and_then(|value| value.get("summary_rebuild"))
+                .and_then(|value| value.get("target_load"))
+                .and_then(|value| value.get("phase"))
+                .and_then(Value::as_str),
+            Some("summary_rebuild_stream_ms")
+        );
+    }
+
+    #[test]
+    fn memory_context_benchmark_report_emits_split_window_query_load_noise_attribution() {
+        let shape = MemoryContextShape {
+            entry_count: 2,
+            turn_entries: 2,
+            summary_chars: 64,
+            payload_chars: 128,
+        };
+        let make_suite =
+            |turn_count_ms: f64, known_overflow_rows_ms: f64| MemoryContextBenchmarkSuiteSamples {
+                seed_db_bytes: 512,
+                window_only_samples: vec![1.0, 1.0],
+                summary_window_cover_samples: vec![1.0, 1.0],
+                summary_rebuild_samples: vec![4.0, 4.0],
+                summary_rebuild_budget_change_samples: vec![2.0, 2.0],
+                summary_metadata_realign_samples: vec![1.0, 1.0],
+                summary_steady_state_samples: vec![1.0, 1.0],
+                window_shrink_catch_up_samples: vec![2.0, 2.0],
+                window_only_append_pre_overflow_samples: vec![1.0, 1.0],
+                window_only_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_pre_overflow_samples: vec![1.0, 1.0],
+                summary_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_saturated_samples: vec![1.0, 1.0],
+                window_only_rss_deltas_kib: vec![0.0, 0.0],
+                summary_window_cover_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_budget_change_rss_deltas_kib: vec![0.0, 0.0],
+                summary_metadata_realign_rss_deltas_kib: vec![0.0, 0.0],
+                summary_steady_state_rss_deltas_kib: vec![0.0, 0.0],
+                window_shrink_catch_up_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_saturated_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples {
+                    target_load_ms: vec![1.0, 1.0],
+                    target_load_window_query_ms: vec![
+                        turn_count_ms + known_overflow_rows_ms,
+                        turn_count_ms + known_overflow_rows_ms,
+                    ],
+                    target_load_window_turn_count_query_ms: vec![turn_count_ms, turn_count_ms],
+                    target_load_window_known_overflow_rows_query_ms: vec![
+                        known_overflow_rows_ms,
+                        known_overflow_rows_ms,
+                    ],
+                    ..MemoryContextColdPathPhaseSamples::default()
+                },
+                summary_rebuild_budget_change_phase_samples:
+                    MemoryContextColdPathPhaseSamples::default(),
+                summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples::default(
+                ),
+                window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                window_only_shape: shape,
+                summary_window_cover_shape: shape,
+                summary_rebuild_shape: shape,
+                summary_rebuild_budget_change_shape: shape,
+                summary_metadata_realign_shape: shape,
+                summary_steady_state_shape: shape,
+                window_shrink_catch_up_shape: shape,
+            };
+        let report = build_memory_context_benchmark_report(
+            "target/benchmarks/memory-context-benchmark-report.json",
+            &ResolvedMemoryContextBenchmarkTempRoot {
+                path: PathBuf::from("target/benchmarks/tmp-local"),
+                source: MemoryContextBenchmarkTempRootSource::OutputParent,
+            },
+            24,
+            6,
+            12,
+            256,
+            12,
+            2,
+            4,
+            1,
+            &[
+                make_suite(0.3, 1.0),
+                make_suite(0.35, 4.0),
+                make_suite(0.4, 8.0),
+            ],
+            3,
+            false,
+            1.10,
+        );
+        let report_json = serde_json::to_value(&report).expect("serialize benchmark report");
+
+        assert_eq!(
+            report_json
+                .get("cold_path_load_noise_attribution")
+                .and_then(|value| value.get("summary_rebuild"))
+                .and_then(|value| value.get("target_load"))
+                .and_then(|value| value.get("phase"))
+                .and_then(Value::as_str),
+            Some("window_known_overflow_rows_query_ms")
+        );
+    }
+
+    #[test]
+    fn memory_context_benchmark_report_emits_summary_rebuild_checkpoint_commit_noise_attribution() {
+        let shape = MemoryContextShape {
+            entry_count: 2,
+            turn_entries: 2,
+            summary_chars: 64,
+            payload_chars: 128,
+        };
+        let make_suite = |rebuild_stream_ms: f64,
+                          rebuild_metadata_upsert_ms: f64,
+                          rebuild_body_upsert_ms: f64,
+                          rebuild_commit_ms: f64| {
+            MemoryContextBenchmarkSuiteSamples {
+                seed_db_bytes: 512,
+                window_only_samples: vec![1.0, 1.0],
+                summary_window_cover_samples: vec![1.0, 1.0],
+                summary_rebuild_samples: vec![4.0, 4.0],
+                summary_rebuild_budget_change_samples: vec![2.0, 2.0],
+                summary_metadata_realign_samples: vec![1.0, 1.0],
+                summary_steady_state_samples: vec![1.0, 1.0],
+                window_shrink_catch_up_samples: vec![2.0, 2.0],
+                window_only_append_pre_overflow_samples: vec![1.0, 1.0],
+                window_only_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_pre_overflow_samples: vec![1.0, 1.0],
+                summary_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_saturated_samples: vec![1.0, 1.0],
+                window_only_rss_deltas_kib: vec![0.0, 0.0],
+                summary_window_cover_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_budget_change_rss_deltas_kib: vec![0.0, 0.0],
+                summary_metadata_realign_rss_deltas_kib: vec![0.0, 0.0],
+                summary_steady_state_rss_deltas_kib: vec![0.0, 0.0],
+                window_shrink_catch_up_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_saturated_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples {
+                    target_load_summary_rebuild_ms: vec![1.0, 1.0],
+                    target_load_summary_rebuild_stream_ms: vec![
+                        rebuild_stream_ms,
+                        rebuild_stream_ms,
+                    ],
+                    target_load_summary_rebuild_checkpoint_metadata_upsert_ms: vec![
+                        rebuild_metadata_upsert_ms,
+                        rebuild_metadata_upsert_ms,
+                    ],
+                    target_load_summary_rebuild_checkpoint_body_upsert_ms: vec![
+                        rebuild_body_upsert_ms,
+                        rebuild_body_upsert_ms,
+                    ],
+                    target_load_summary_rebuild_checkpoint_commit_ms: vec![
+                        rebuild_commit_ms,
+                        rebuild_commit_ms,
+                    ],
+                    target_load_summary_rebuild_checkpoint_upsert_ms: vec![
+                        rebuild_metadata_upsert_ms + rebuild_body_upsert_ms + rebuild_commit_ms,
+                        rebuild_metadata_upsert_ms + rebuild_body_upsert_ms + rebuild_commit_ms,
+                    ],
+                    ..MemoryContextColdPathPhaseSamples::default()
+                },
+                summary_rebuild_budget_change_phase_samples:
+                    MemoryContextColdPathPhaseSamples::default(),
+                summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples::default(
+                ),
+                window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                window_only_shape: shape,
+                summary_window_cover_shape: shape,
+                summary_rebuild_shape: shape,
+                summary_rebuild_budget_change_shape: shape,
+                summary_metadata_realign_shape: shape,
+                summary_steady_state_shape: shape,
+                window_shrink_catch_up_shape: shape,
+            }
+        };
+        let suite_runs = vec![
+            make_suite(0.4, 0.3, 0.4, 1.0),
+            make_suite(0.5, 0.35, 0.45, 5.0),
+            make_suite(0.6, 0.4, 0.5, 9.0),
+        ];
+
+        let report = build_memory_context_benchmark_report(
+            "target/benchmarks/memory-context-benchmark-report.json",
+            &ResolvedMemoryContextBenchmarkTempRoot {
+                path: PathBuf::from("target/benchmarks/tmp-local"),
+                source: MemoryContextBenchmarkTempRootSource::OutputParent,
+            },
+            24,
+            6,
+            12,
+            256,
+            12,
+            2,
+            4,
+            1,
+            &suite_runs,
+            3,
+            false,
+            1.10,
+        );
+        let report_json = serde_json::to_value(&report).expect("serialize benchmark report");
+
+        assert_eq!(
+            report_json
+                .get("cold_path_load_noise_attribution")
+                .and_then(|value| value.get("summary_rebuild"))
+                .and_then(|value| value.get("target_load"))
+                .and_then(|value| value.get("phase"))
+                .and_then(Value::as_str),
+            Some("summary_rebuild_checkpoint_commit_ms")
+        );
+    }
+
+    #[test]
+    fn memory_context_benchmark_report_emits_cold_path_phase_reports() {
+        let shape = MemoryContextShape {
+            entry_count: 2,
+            turn_entries: 2,
+            summary_chars: 64,
+            payload_chars: 128,
+        };
+        let make_suite =
+            |rebuild_phase: MemoryContextColdPathPhaseSamples,
+             budget_change_phase: MemoryContextColdPathPhaseSamples,
+             metadata_phase: MemoryContextColdPathPhaseSamples,
+             shrink_phase: MemoryContextColdPathPhaseSamples| {
+                MemoryContextBenchmarkSuiteSamples {
+                    seed_db_bytes: 512,
+                    window_only_samples: vec![1.0, 1.0],
+                    summary_window_cover_samples: vec![1.0, 1.0],
+                    summary_rebuild_samples: vec![4.0, 4.0],
+                    summary_rebuild_budget_change_samples: vec![2.0, 2.0],
+                    summary_metadata_realign_samples: vec![1.0, 1.0],
+                    summary_steady_state_samples: vec![1.0, 1.0],
+                    window_shrink_catch_up_samples: vec![2.0, 2.0],
+                    window_only_append_pre_overflow_samples: vec![1.0, 1.0],
+                    window_only_append_cold_overflow_samples: vec![1.0, 1.0],
+                    summary_append_pre_overflow_samples: vec![1.0, 1.0],
+                    summary_append_cold_overflow_samples: vec![1.0, 1.0],
+                    summary_append_saturated_samples: vec![1.0, 1.0],
+                    window_only_rss_deltas_kib: vec![0.0, 0.0],
+                    summary_window_cover_rss_deltas_kib: vec![0.0, 0.0],
+                    summary_rebuild_rss_deltas_kib: vec![0.0, 0.0],
+                    summary_rebuild_budget_change_rss_deltas_kib: vec![0.0, 0.0],
+                    summary_metadata_realign_rss_deltas_kib: vec![0.0, 0.0],
+                    summary_steady_state_rss_deltas_kib: vec![0.0, 0.0],
+                    window_shrink_catch_up_rss_deltas_kib: vec![0.0, 0.0],
+                    window_only_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                    window_only_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                    summary_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                    summary_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                    summary_append_saturated_rss_deltas_kib: vec![0.0, 0.0],
+                    summary_rebuild_phase_samples: rebuild_phase,
+                    summary_rebuild_budget_change_phase_samples: budget_change_phase,
+                    summary_metadata_realign_phase_samples: metadata_phase,
+                    window_shrink_catch_up_phase_samples: shrink_phase,
+                    window_only_shape: shape,
+                    summary_window_cover_shape: shape,
+                    summary_rebuild_shape: shape,
+                    summary_rebuild_budget_change_shape: shape,
+                    summary_metadata_realign_shape: shape,
+                    summary_steady_state_shape: shape,
+                    window_shrink_catch_up_shape: shape,
+                }
+            };
+        let suite_runs = vec![
+            make_suite(
+                MemoryContextColdPathPhaseSamples {
+                    copy_db_ms: vec![1.0, 1.0],
+                    target_bootstrap_ms: vec![2.0, 2.0],
+                    target_load_ms: vec![3.0, 3.0],
+                    ..MemoryContextColdPathPhaseSamples::default()
+                },
+                MemoryContextColdPathPhaseSamples {
+                    source_warmup_ms: vec![5.0, 5.0],
+                    target_load_ms: vec![8.0, 8.0],
+                    ..MemoryContextColdPathPhaseSamples::default()
+                },
+                MemoryContextColdPathPhaseSamples {
+                    append_turn_ms: vec![1.5, 1.5],
+                    target_load_ms: vec![2.0, 2.0],
+                    ..MemoryContextColdPathPhaseSamples::default()
+                },
+                MemoryContextColdPathPhaseSamples {
+                    source_warmup_ms: vec![1.0, 1.0],
+                    target_load_ms: vec![2.0, 2.0],
+                    ..MemoryContextColdPathPhaseSamples::default()
+                },
+            ),
+            make_suite(
+                MemoryContextColdPathPhaseSamples {
+                    copy_db_ms: vec![2.0, 2.0],
+                    target_bootstrap_ms: vec![4.0, 4.0],
+                    target_load_ms: vec![7.0, 7.0],
+                    ..MemoryContextColdPathPhaseSamples::default()
+                },
+                MemoryContextColdPathPhaseSamples {
+                    source_warmup_ms: vec![9.0, 9.0],
+                    target_load_ms: vec![12.0, 12.0],
+                    ..MemoryContextColdPathPhaseSamples::default()
+                },
+                MemoryContextColdPathPhaseSamples {
+                    append_turn_ms: vec![4.5, 4.5],
+                    target_load_ms: vec![6.0, 6.0],
+                    ..MemoryContextColdPathPhaseSamples::default()
+                },
+                MemoryContextColdPathPhaseSamples {
+                    source_warmup_ms: vec![3.0, 3.0],
+                    target_load_ms: vec![5.0, 5.0],
+                    ..MemoryContextColdPathPhaseSamples::default()
+                },
+            ),
+        ];
+
+        let report = build_memory_context_benchmark_report(
+            "target/benchmarks/memory-context-benchmark-report.json",
+            &ResolvedMemoryContextBenchmarkTempRoot {
+                path: PathBuf::from("target/benchmarks/tmp-local"),
+                source: MemoryContextBenchmarkTempRootSource::OutputParent,
+            },
+            24,
+            6,
+            12,
+            256,
+            12,
+            2,
+            4,
+            1,
+            &suite_runs,
+            2,
+            false,
+            1.10,
+        );
+        let report_json = serde_json::to_value(&report).expect("serialize benchmark report");
+
+        assert_eq!(
+            report_json
+                .get("cold_path_phases")
+                .and_then(|value| value.get("summary_rebuild"))
+                .and_then(|value| value.get("target_load_ms"))
+                .and_then(|value| value.get("count"))
+                .and_then(Value::as_u64),
+            Some(4)
+        );
+        assert_eq!(
+            report_json
+                .get("cold_path_phases")
+                .and_then(|value| value.get("summary_rebuild"))
+                .and_then(|value| value.get("target_load_ms"))
+                .and_then(|value| value.get("p95"))
+                .and_then(Value::as_f64),
+            Some(7.0)
+        );
+        assert_eq!(
+            report_json
+                .get("cold_path_phase_stability")
+                .and_then(|value| value.get("summary_rebuild"))
+                .and_then(|value| value.get("target_load_ms"))
+                .and_then(|value| value.get("range"))
+                .and_then(Value::as_f64),
+            Some(4.0)
+        );
+        assert_eq!(
+            report_json
+                .get("cold_path_phase_stability")
+                .and_then(|value| value.get("summary_metadata_realign"))
+                .and_then(|value| value.get("append_turn_ms"))
+                .and_then(|value| value.get("range"))
+                .and_then(Value::as_f64),
+            Some(3.0)
+        );
+    }
+
+    #[test]
+    fn memory_context_benchmark_report_tracks_budget_change_workload_adjusted_ratios() {
+        let shape_small = MemoryContextShape {
+            entry_count: 2,
+            turn_entries: 2,
+            summary_chars: 256,
+            payload_chars: 1024,
+        };
+        let shape_large = MemoryContextShape {
+            entry_count: 2,
+            turn_entries: 2,
+            summary_chars: 512,
+            payload_chars: 1280,
+        };
+        let shape_larger = MemoryContextShape {
+            entry_count: 2,
+            turn_entries: 2,
+            summary_chars: 768,
+            payload_chars: 1536,
+        };
+        let suite_runs = vec![
+            MemoryContextBenchmarkSuiteSamples {
+                seed_db_bytes: 512,
+                window_only_samples: vec![1.0, 1.0],
+                summary_window_cover_samples: vec![1.0, 1.0],
+                summary_rebuild_samples: vec![2.0, 2.0],
+                summary_rebuild_budget_change_samples: vec![3.0, 3.0],
+                summary_metadata_realign_samples: vec![1.0, 1.0],
+                summary_steady_state_samples: vec![1.0, 1.0],
+                window_shrink_catch_up_samples: vec![1.0, 1.0],
+                window_only_append_pre_overflow_samples: vec![1.0, 1.0],
+                window_only_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_pre_overflow_samples: vec![1.0, 1.0],
+                summary_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_saturated_samples: vec![1.0, 1.0],
+                window_only_rss_deltas_kib: vec![0.0, 0.0],
+                summary_window_cover_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_budget_change_rss_deltas_kib: vec![0.0, 0.0],
+                summary_metadata_realign_rss_deltas_kib: vec![0.0, 0.0],
+                summary_steady_state_rss_deltas_kib: vec![0.0, 0.0],
+                window_shrink_catch_up_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_saturated_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                summary_rebuild_budget_change_phase_samples:
+                    MemoryContextColdPathPhaseSamples::default(),
+                summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples::default(
+                ),
+                window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                window_only_shape: shape_small,
+                summary_window_cover_shape: shape_small,
+                summary_rebuild_shape: shape_small,
+                summary_rebuild_budget_change_shape: shape_large,
+                summary_metadata_realign_shape: shape_small,
+                summary_steady_state_shape: shape_small,
+                window_shrink_catch_up_shape: shape_small,
+            },
+            MemoryContextBenchmarkSuiteSamples {
+                seed_db_bytes: 512,
+                window_only_samples: vec![1.0, 1.0],
+                summary_window_cover_samples: vec![1.0, 1.0],
+                summary_rebuild_samples: vec![2.0, 2.0],
+                summary_rebuild_budget_change_samples: vec![3.6, 3.6],
+                summary_metadata_realign_samples: vec![1.0, 1.0],
+                summary_steady_state_samples: vec![1.0, 1.0],
+                window_shrink_catch_up_samples: vec![1.0, 1.0],
+                window_only_append_pre_overflow_samples: vec![1.0, 1.0],
+                window_only_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_pre_overflow_samples: vec![1.0, 1.0],
+                summary_append_cold_overflow_samples: vec![1.0, 1.0],
+                summary_append_saturated_samples: vec![1.0, 1.0],
+                window_only_rss_deltas_kib: vec![0.0, 0.0],
+                summary_window_cover_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_budget_change_rss_deltas_kib: vec![0.0, 0.0],
+                summary_metadata_realign_rss_deltas_kib: vec![0.0, 0.0],
+                summary_steady_state_rss_deltas_kib: vec![0.0, 0.0],
+                window_shrink_catch_up_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                window_only_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_pre_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_cold_overflow_rss_deltas_kib: vec![0.0, 0.0],
+                summary_append_saturated_rss_deltas_kib: vec![0.0, 0.0],
+                summary_rebuild_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                summary_rebuild_budget_change_phase_samples:
+                    MemoryContextColdPathPhaseSamples::default(),
+                summary_metadata_realign_phase_samples: MemoryContextColdPathPhaseSamples::default(
+                ),
+                window_shrink_catch_up_phase_samples: MemoryContextColdPathPhaseSamples::default(),
+                window_only_shape: shape_small,
+                summary_window_cover_shape: shape_small,
+                summary_rebuild_shape: shape_small,
+                summary_rebuild_budget_change_shape: shape_larger,
+                summary_metadata_realign_shape: shape_small,
+                summary_steady_state_shape: shape_small,
+                window_shrink_catch_up_shape: shape_small,
+            },
+        ];
+
+        let report = build_memory_context_benchmark_report(
+            "target/benchmarks/memory-context-benchmark-report.json",
+            &ResolvedMemoryContextBenchmarkTempRoot {
+                path: PathBuf::from("target/benchmarks/tmp-local"),
+                source: MemoryContextBenchmarkTempRootSource::OutputParent,
+            },
+            24,
+            6,
+            12,
+            256,
+            12,
+            2,
+            4,
+            1,
+            &suite_runs,
+            2,
+            false,
+            1.10,
+        );
+        let report_json = serde_json::to_value(&report).expect("serialize benchmark report");
+
+        let flattened_raw_ratio = report_json
+            .get("flattened_sample_ratios")
+            .and_then(|value| value.get("summary_rebuild_budget_change_vs_rebuild_ratio_p95"))
+            .and_then(Value::as_f64)
+            .expect("raw budget-change ratio should be present");
+        let flattened_adjusted_ratio = report_json
+            .get("flattened_sample_ratios")
+            .and_then(|value| {
+                value
+                    .get("summary_rebuild_budget_change_vs_rebuild_summary_char_adjusted_ratio_p95")
+            })
+            .and_then(Value::as_f64)
+            .expect("summary-char-adjusted budget-change ratio should be present");
+        let aggregated_adjusted_ratio = report_json
+            .get("aggregated_ratios")
+            .and_then(|value| {
+                value
+                    .get("summary_rebuild_budget_change_vs_rebuild_summary_char_adjusted_ratio_p95")
+            })
+            .and_then(Value::as_f64)
+            .expect("aggregated summary-char-adjusted budget-change ratio should be present");
+
+        assert!((flattened_raw_ratio - 1.8).abs() < 0.001);
+        assert!((flattened_adjusted_ratio - 0.72).abs() < 0.001);
+        assert!((aggregated_adjusted_ratio - 0.675).abs() < 0.001);
+    }
+
+    #[test]
+    fn memory_context_hot_read_helper_excludes_warmup_reads_from_samples() {
+        let shape = MemoryContextShape {
+            entry_count: 4,
+            turn_entries: 4,
+            summary_chars: 0,
+            payload_chars: 128,
+        };
+        let mut call_count = 0_usize;
+
+        let (latencies, rss_deltas_kib, final_shape) =
+            measure_hot_prompt_context_reads_with_loader(0, 2, false, || {
+                call_count = call_count.saturating_add(1);
+                Ok(PromptContextReadObservation {
+                    latency_ms: call_count as f64,
+                    rss_delta_kib: Some((call_count * 10) as f64),
+                    shape,
+                    load_diagnostics: SqliteContextLoadDiagnostics::default(),
+                })
+            })
+            .expect("hot-read helper should preserve only measured samples");
+
+        assert_eq!(call_count, 3);
+        assert_eq!(latencies, vec![2.0, 3.0]);
+        assert_eq!(rss_deltas_kib, vec![20.0, 30.0]);
+        assert_eq!(final_shape.entry_count, shape.entry_count);
+        assert_eq!(final_shape.turn_entries, shape.turn_entries);
+        assert_eq!(final_shape.summary_chars, shape.summary_chars);
+        assert_eq!(final_shape.payload_chars, shape.payload_chars);
+    }
+
+    #[test]
+    fn memory_context_hot_read_helper_rejects_missing_summary_during_warmup() {
+        let error = measure_hot_prompt_context_reads_with_loader(1, 2, true, || {
+            Ok(PromptContextReadObservation {
+                latency_ms: 1.0,
+                rss_delta_kib: Some(8.0),
+                shape: MemoryContextShape {
+                    entry_count: 3,
+                    turn_entries: 3,
+                    summary_chars: 0,
+                    payload_chars: 96,
+                },
+                load_diagnostics: SqliteContextLoadDiagnostics::default(),
+            })
+        })
+        .expect_err("summary warmup without a summary should fail");
+
+        assert!(error.contains("summary benchmark warmup did not produce a summary entry"));
+    }
+
+    #[test]
+    fn benchmark_temp_root_uses_unique_suffixes_per_call() {
+        let first = benchmark_temp_root("loongclaw-memory-context-benchmark-test", None);
+        let second = benchmark_temp_root("loongclaw-memory-context-benchmark-test", None);
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn benchmark_copy_helper_preserves_contents() {
+        let tmp = std::env::temp_dir().join(format!(
+            "loongclaw-benchmark-copy-helper-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).expect("create temp dir");
+        let source = tmp.join("source.sqlite3");
+        let destination = tmp.join("destination.sqlite3");
+        let payload = b"benchmark-copy-helper-payload";
+        fs::write(&source, payload).expect("write source payload");
+
+        copy_benchmark_file(&source, &destination).expect("copy benchmark file");
+
+        assert_eq!(
+            fs::read(&destination).expect("read copied payload"),
+            payload.as_slice()
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn benchmark_copy_strategy_defaults_to_stable_fs_copy() {
+        assert_eq!(
+            benchmark_copy_strategy_from_env(None),
+            BenchmarkCopyStrategy::StableFsCopy
+        );
+        assert_eq!(
+            benchmark_copy_strategy_from_env(Some("".to_owned())),
+            BenchmarkCopyStrategy::StableFsCopy
+        );
+        assert_eq!(
+            benchmark_copy_strategy_from_env(Some("copy".to_owned())),
+            BenchmarkCopyStrategy::StableFsCopy
+        );
+        assert_eq!(
+            benchmark_copy_strategy_from_env(Some("unexpected".to_owned())),
+            BenchmarkCopyStrategy::StableFsCopy
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn benchmark_copy_strategy_accepts_explicit_clone_opt_in() {
+        assert_eq!(
+            benchmark_copy_strategy_from_env(Some("clone".to_owned())),
+            BenchmarkCopyStrategy::MacosCloneCp
+        );
+        assert_eq!(
+            benchmark_copy_strategy_from_env(Some(" CLONE ".to_owned())),
+            BenchmarkCopyStrategy::MacosCloneCp
+        );
+    }
+
+    #[test]
+    fn benchmark_temp_root_honors_requested_parent_directory() {
+        let requested_parent = Path::new("/tmp/loongclaw-memory-context-benchmark-parent");
+        let root = benchmark_temp_root(
+            "loongclaw-memory-context-benchmark-test",
+            Some(requested_parent),
+        );
+
+        assert_eq!(root.parent(), Some(requested_parent));
+    }
+
+    #[test]
+    fn memory_context_benchmark_temp_root_prefers_explicit_override() {
+        let explicit = Path::new("/tmp/loongclaw-memory-context-benchmark-explicit");
+        let resolved = resolve_memory_context_benchmark_temp_root(
+            "target/benchmarks/memory-context-benchmark-report.json",
+            Some(explicit.to_str().expect("utf-8 explicit path")),
+        )
+        .expect("resolve explicit temp root");
+
+        assert_eq!(resolved.path, explicit);
+        assert_eq!(
+            resolved.source,
+            MemoryContextBenchmarkTempRootSource::Explicit
+        );
+    }
+
+    #[test]
+    fn memory_context_benchmark_temp_root_defaults_to_output_parent_for_target_reports() {
+        let resolved = resolve_memory_context_benchmark_temp_root_with_exe(
+            "target/benchmarks/memory-context-benchmark-report.json",
+            None,
+            None,
+        )
+        .expect("resolve temp root for target benchmark report");
+
+        assert_eq!(resolved.path, Path::new("target/benchmarks/tmp-local"));
+        assert_eq!(
+            resolved.source,
+            MemoryContextBenchmarkTempRootSource::OutputParent
+        );
+    }
+
+    #[test]
+    fn memory_context_benchmark_temp_root_falls_back_to_system_temp_outside_target() {
+        let resolved = resolve_memory_context_benchmark_temp_root_with_exe(
+            "/tmp/memory-context-benchmark-report.json",
+            None,
+            None,
+        )
+        .expect("resolve temp root outside target");
+
+        assert_eq!(resolved.path, std::env::temp_dir());
+        assert_eq!(
+            resolved.source,
+            MemoryContextBenchmarkTempRootSource::SystemTemp
+        );
+    }
+
+    #[test]
+    fn memory_context_benchmark_temp_root_prefers_current_exe_target_dir() {
+        let resolved = resolve_memory_context_benchmark_temp_root_with_exe(
+            "target/benchmarks/memory-context-benchmark-report.json",
+            None,
+            Some(Path::new(
+                "/repo/target/codex-memory-bench-red/debug/loongclaw",
+            )),
+        )
+        .expect("resolve temp root from current exe");
+
+        assert_eq!(
+            resolved.path,
+            Path::new("/repo/target/codex-memory-bench-red/tmp-local")
+        );
+        assert_eq!(
+            resolved.source,
+            MemoryContextBenchmarkTempRootSource::CurrentExeTargetDir
         );
     }
 

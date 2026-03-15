@@ -1755,8 +1755,10 @@ dependencies = [
 name = "loongclaw-bench"
 version = "0.1.2"
 dependencies = [
+ "loongclaw-app",
  "loongclaw-kernel",
  "loongclaw-spec",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",

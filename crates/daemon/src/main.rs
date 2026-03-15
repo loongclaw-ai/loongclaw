@@ -34,8 +34,8 @@ pub(crate) use loongclaw_spec::spec_runtime::*;
 use loongclaw_spec::{CliResult, DEFAULT_AGENT_ID, DEFAULT_PACK_ID, kernel_bootstrap};
 
 use loongclaw_bench::{
-    run_programmatic_pressure_baseline_lint_cli, run_programmatic_pressure_benchmark_cli,
-    run_wasm_cache_benchmark_cli,
+    run_memory_context_benchmark_cli, run_programmatic_pressure_baseline_lint_cli,
+    run_programmatic_pressure_benchmark_cli, run_wasm_cache_benchmark_cli,
 };
 mod doctor_cli;
 mod import_claw_cli;
@@ -189,6 +189,36 @@ enum Commands {
         enforce_gate: bool,
         #[arg(long, default_value_t = 1.5)]
         min_speedup_ratio: f64,
+    },
+    /// Benchmark memory prompt-context hydration across window-only, rebuild, steady-state, and shrink catch-up summary paths
+    BenchmarkMemoryContext {
+        #[arg(
+            long,
+            default_value = "target/benchmarks/memory-context-benchmark-report.json"
+        )]
+        output: String,
+        #[arg(long)]
+        temp_root: Option<String>,
+        #[arg(long, default_value_t = 256)]
+        history_turns: usize,
+        #[arg(long, default_value_t = 24)]
+        sliding_window: usize,
+        #[arg(long, default_value_t = 1024)]
+        summary_max_chars: usize,
+        #[arg(long, default_value_t = 24)]
+        words_per_turn: usize,
+        #[arg(long, default_value_t = 12)]
+        rebuild_iterations: usize,
+        #[arg(long, default_value_t = 32)]
+        hot_iterations: usize,
+        #[arg(long, default_value_t = 4)]
+        warmup_iterations: usize,
+        #[arg(long, default_value_t = 1)]
+        suite_repetitions: usize,
+        #[arg(long, default_value_t = false)]
+        enforce_gate: bool,
+        #[arg(long, default_value_t = 1.2)]
+        min_steady_state_speedup_ratio: f64,
     },
     /// Validate config semantics and report structured diagnostics
     ValidateConfig {
@@ -535,6 +565,33 @@ async fn main() {
             warmup_iterations,
             enforce_gate,
             min_speedup_ratio,
+        ),
+        Commands::BenchmarkMemoryContext {
+            output,
+            temp_root,
+            history_turns,
+            sliding_window,
+            summary_max_chars,
+            words_per_turn,
+            rebuild_iterations,
+            hot_iterations,
+            warmup_iterations,
+            suite_repetitions,
+            enforce_gate,
+            min_steady_state_speedup_ratio,
+        } => run_memory_context_benchmark_cli(
+            &output,
+            temp_root.as_deref(),
+            history_turns,
+            sliding_window,
+            summary_max_chars,
+            words_per_turn,
+            rebuild_iterations,
+            hot_iterations,
+            warmup_iterations,
+            suite_repetitions,
+            enforce_gate,
+            min_steady_state_speedup_ratio,
         ),
         Commands::ValidateConfig {
             config,
@@ -2839,6 +2896,94 @@ mod cli_tests {
         match cli.command {
             Some(Commands::Onboard { api_key, .. }) => {
                 assert_eq!(api_key.as_deref(), Some("OPENAI_API_KEY"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn benchmark_memory_context_cli_parses_custom_knobs() {
+        let cli = Cli::try_parse_from([
+            "loongclaw",
+            "benchmark-memory-context",
+            "--output",
+            "target/benchmarks/test-memory-context-report.json",
+            "--temp-root",
+            "target/benchmarks/tmp-local",
+            "--history-turns",
+            "96",
+            "--sliding-window",
+            "12",
+            "--summary-max-chars",
+            "640",
+            "--words-per-turn",
+            "18",
+            "--rebuild-iterations",
+            "3",
+            "--hot-iterations",
+            "7",
+            "--warmup-iterations",
+            "2",
+            "--suite-repetitions",
+            "3",
+            "--enforce-gate",
+            "--min-steady-state-speedup-ratio",
+            "1.35",
+        ])
+        .expect("benchmark-memory-context CLI should parse");
+
+        match cli.command {
+            Some(Commands::BenchmarkMemoryContext {
+                output,
+                temp_root,
+                history_turns,
+                sliding_window,
+                summary_max_chars,
+                words_per_turn,
+                rebuild_iterations,
+                hot_iterations,
+                warmup_iterations,
+                suite_repetitions,
+                enforce_gate,
+                min_steady_state_speedup_ratio,
+            }) => {
+                assert_eq!(
+                    output,
+                    "target/benchmarks/test-memory-context-report.json".to_owned()
+                );
+                assert_eq!(temp_root, Some("target/benchmarks/tmp-local".to_owned()));
+                assert_eq!(history_turns, 96);
+                assert_eq!(sliding_window, 12);
+                assert_eq!(summary_max_chars, 640);
+                assert_eq!(words_per_turn, 18);
+                assert_eq!(rebuild_iterations, 3);
+                assert_eq!(hot_iterations, 7);
+                assert_eq!(warmup_iterations, 2);
+                assert_eq!(suite_repetitions, 3);
+                assert!(enforce_gate);
+                assert!((min_steady_state_speedup_ratio - 1.35).abs() < f64::EPSILON);
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn benchmark_memory_context_cli_uses_stable_default_sample_sizes() {
+        let cli = Cli::try_parse_from(["loongclaw", "benchmark-memory-context"])
+            .expect("benchmark-memory-context CLI should parse with defaults");
+
+        match cli.command {
+            Some(Commands::BenchmarkMemoryContext {
+                rebuild_iterations,
+                hot_iterations,
+                warmup_iterations,
+                suite_repetitions,
+                ..
+            }) => {
+                assert_eq!(rebuild_iterations, 12);
+                assert_eq!(hot_iterations, 32);
+                assert_eq!(warmup_iterations, 4);
+                assert_eq!(suite_repetitions, 1);
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }

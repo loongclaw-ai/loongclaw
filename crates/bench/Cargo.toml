@@ -6,8 +6,10 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+loongclaw-app = { path = "../app", default-features = false, features = ["memory-sqlite"] }
 loongclaw-spec = { path = "../spec" }
 kernel = { package = "loongclaw-kernel", path = "../kernel" }
+rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

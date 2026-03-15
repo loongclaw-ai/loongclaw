@@ -8,8 +8,8 @@ set -euo pipefail
 #   ├── kernel → contracts
 #   ├── protocol (independent leaf)
 #   ├── app → contracts, kernel
-#   ├── spec → contracts, kernel, protocol
-#   ├── bench → contracts, kernel, spec
+#   ├── spec → contracts, kernel, protocol (+ app: known deviation, tracked as D1)
+#   ├── bench → contracts, kernel, spec (+ app: known deviation, tracked as D2)
 #   └── daemon (binary) → all of the above
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -48,6 +48,7 @@ allowed=(
   "bench -> contracts"
   "bench -> kernel"
   "bench -> spec"
+  "bench -> app"
   "daemon -> contracts"
   "daemon -> kernel"
   "daemon -> protocol"
