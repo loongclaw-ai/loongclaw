@@ -11,6 +11,7 @@ use time::macros::format_description;
 
 const BACKUP_TIMESTAMP_FORMAT: &[FormatItem<'static>] =
     format_description!("[year][month][day]-[hour][minute][second]");
+const ONBOARD_CLEAR_INPUT_TOKEN: &str = ":clear";
 
 #[derive(Debug, Clone)]
 pub(crate) struct OnboardCommandOptions {
@@ -126,6 +127,10 @@ fn print_lines(ui: &mut impl OnboardUi, lines: impl IntoIterator<Item = String>)
 
 fn print_message(ui: &mut impl OnboardUi, line: impl Into<String>) -> CliResult<()> {
     ui.print_line(&line.into())
+}
+
+fn is_explicit_onboard_clear_input(raw: &str) -> bool {
+    raw.trim().eq_ignore_ascii_case(ONBOARD_CLEAR_INPUT_TOKEN)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -272,6 +277,13 @@ impl ReviewFlowStyle {
     const fn header_subtitle(self) -> &'static str {
         crate::onboard_presentation::review_flow_copy(self.presentation_kind()).header_subtitle
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SystemPromptSelection {
+    KeepCurrent,
+    RestoreBuiltIn,
+    Set(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -487,11 +499,9 @@ pub(crate) async fn run_onboard_cli_with_ui(
             resolve_api_key_env_selection(&options, &config, default_api_key_env, ui, context)?;
         apply_selected_api_key_env(&mut config.provider, selected_api_key_env);
 
-        if let Some(system_prompt) =
-            resolve_system_prompt_selection(&options, &config, ui, context)?
-        {
-            config.cli.system_prompt = system_prompt;
-        }
+        let system_prompt_selection =
+            resolve_system_prompt_selection(&options, &config, ui, context)?;
+        apply_selected_system_prompt(&mut config, system_prompt_selection);
     }
 
     let workspace_guidance = context
@@ -909,13 +919,16 @@ fn resolve_api_key_env_selection(
     context: &OnboardRuntimeContext,
 ) -> CliResult<String> {
     if options.non_interactive {
-        return Ok(options
-            .api_key_env
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or(default_api_key_env.as_str())
-            .to_owned());
+        if let Some(api_key_env) = options.api_key_env.as_deref() {
+            if is_explicit_onboard_clear_input(api_key_env) {
+                return Ok(String::new());
+            }
+            let trimmed = api_key_env.trim();
+            if !trimmed.is_empty() {
+                return Ok(trimmed.to_owned());
+            }
+        }
+        return Ok(default_api_key_env);
     }
     let initial = options
         .api_key_env
@@ -934,6 +947,9 @@ fn resolve_api_key_env_selection(
         ),
     )?;
     let value = ui.prompt_with_default("API key env var", initial)?;
+    if is_explicit_onboard_clear_input(&value) {
+        return Ok(String::new());
+    }
     Ok(value.trim().to_owned())
 }
 
@@ -953,19 +969,42 @@ fn apply_selected_api_key_env(
     provider.set_api_key_env(Some(selected_api_key_env.to_owned()));
 }
 
+fn apply_selected_system_prompt(
+    config: &mut mvp::config::LoongClawConfig,
+    selection: SystemPromptSelection,
+) {
+    match selection {
+        SystemPromptSelection::KeepCurrent => {}
+        SystemPromptSelection::RestoreBuiltIn => {
+            config.cli.system_prompt = if config.cli.uses_native_prompt_pack() {
+                config.cli.rendered_native_system_prompt()
+            } else {
+                mvp::config::CliChannelConfig::default().system_prompt
+            };
+        }
+        SystemPromptSelection::Set(system_prompt) => {
+            config.cli.system_prompt = system_prompt;
+        }
+    }
+}
+
 fn resolve_system_prompt_selection(
     options: &OnboardCommandOptions,
     config: &mvp::config::LoongClawConfig,
     ui: &mut impl OnboardUi,
     context: &OnboardRuntimeContext,
-) -> CliResult<Option<String>> {
+) -> CliResult<SystemPromptSelection> {
     if options.non_interactive {
-        return Ok(options
-            .system_prompt
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned));
+        if let Some(system_prompt) = options.system_prompt.as_deref() {
+            if is_explicit_onboard_clear_input(system_prompt) {
+                return Ok(SystemPromptSelection::RestoreBuiltIn);
+            }
+            let trimmed = system_prompt.trim();
+            if !trimmed.is_empty() {
+                return Ok(SystemPromptSelection::Set(trimmed.to_owned()));
+            }
+        }
+        return Ok(SystemPromptSelection::KeepCurrent);
     }
     let initial = options
         .system_prompt
@@ -983,11 +1022,14 @@ fn resolve_system_prompt_selection(
         ),
     )?;
     let value = ui.prompt_with_default("CLI system prompt", initial)?;
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
+    if is_explicit_onboard_clear_input(&value) {
+        return Ok(SystemPromptSelection::RestoreBuiltIn);
     }
-    Ok(Some(trimmed.to_owned()))
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed == config.cli.system_prompt.trim() {
+        return Ok(SystemPromptSelection::KeepCurrent);
+    }
+    Ok(SystemPromptSelection::Set(trimmed.to_owned()))
 }
 
 async fn run_preflight_checks(
@@ -2654,6 +2696,13 @@ fn render_default_input_hint_line(description: impl AsRef<str>) -> String {
     format!("- press Enter to {}", description.as_ref())
 }
 
+fn render_clear_input_hint_line(description: impl AsRef<str>) -> String {
+    format!(
+        "- type {ONBOARD_CLEAR_INPUT_TOKEN} to {}",
+        description.as_ref()
+    )
+}
+
 fn render_model_selection_default_hint_line(
     config: &mvp::config::LoongClawConfig,
     prompt_default: &str,
@@ -3655,7 +3704,13 @@ fn render_api_key_env_selection_screen_lines_with_style(
         prompt_default,
     )];
     if provider_supports_blank_api_key_env(config) {
-        hint_lines.push("- blank keeps inline or oauth credentials".to_owned());
+        if prompt_default.trim().is_empty() {
+            hint_lines.push("- leave this blank to keep inline or oauth credentials".to_owned());
+        } else {
+            hint_lines.push(render_clear_input_hint_line(
+                "keep inline or oauth credentials",
+            ));
+        }
     }
 
     render_onboard_input_screen(
@@ -3710,7 +3765,11 @@ fn render_system_prompt_selection_screen_lines_with_style(
         vec![format!("- current prompt: {current_prompt_display}")],
         vec![
             render_system_prompt_selection_default_hint_line(config, prompt_default),
-            "- blank keeps the built-in behavior".to_owned(),
+            if prompt_default.trim().is_empty() {
+                "- leave this blank to use the built-in behavior".to_owned()
+            } else {
+                render_clear_input_hint_line("use the built-in behavior")
+            },
         ],
         color_enabled,
     )
@@ -4352,6 +4411,46 @@ fn format_backup_timestamp_at(timestamp: OffsetDateTime) -> CliResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+
+    struct TestOnboardUi {
+        inputs: VecDeque<String>,
+    }
+
+    impl TestOnboardUi {
+        fn with_inputs(inputs: impl IntoIterator<Item = impl Into<String>>) -> Self {
+            Self {
+                inputs: inputs.into_iter().map(Into::into).collect(),
+            }
+        }
+    }
+
+    impl OnboardUi for TestOnboardUi {
+        fn print_line(&mut self, _line: &str) -> CliResult<()> {
+            Ok(())
+        }
+
+        fn prompt_with_default(&mut self, _label: &str, default: &str) -> CliResult<String> {
+            Ok(self
+                .inputs
+                .pop_front()
+                .unwrap_or_else(|| default.to_owned()))
+        }
+
+        fn prompt_required(&mut self, _label: &str) -> CliResult<String> {
+            self.inputs
+                .pop_front()
+                .ok_or_else(|| "missing required test input".to_owned())
+        }
+
+        fn prompt_confirm(&mut self, _message: &str, default: bool) -> CliResult<bool> {
+            Ok(self
+                .inputs
+                .pop_front()
+                .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
+                .unwrap_or(default))
+        }
+    }
 
     fn import_candidate_with_domain_status(
         source_kind: crate::migration::ImportSourceKind,
@@ -4419,6 +4518,150 @@ mod tests {
                         .contains("retry chat_completions automatically")
             }),
             "preflight should surface transport review before writing a Responses-compatible config: {checks:#?}"
+        );
+    }
+
+    #[test]
+    fn resolve_api_key_env_selection_accepts_explicit_clear_token_in_interactive_mode() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.provider.kind = mvp::config::ProviderKind::Openai;
+        config.provider.api_key = Some("inline-secret".to_owned());
+        let mut ui = TestOnboardUi::with_inputs([":clear"]);
+        let context = OnboardRuntimeContext::new_for_tests(80, None, std::iter::empty::<PathBuf>());
+
+        let selected = resolve_api_key_env_selection(
+            &OnboardCommandOptions {
+                output: None,
+                force: false,
+                non_interactive: false,
+                accept_risk: true,
+                provider: None,
+                model: None,
+                api_key_env: None,
+                system_prompt: None,
+                skip_model_probe: false,
+            },
+            &config,
+            "OPENAI_API_KEY".to_owned(),
+            &mut ui,
+            &context,
+        )
+        .expect("resolve api key env selection");
+
+        assert!(
+            selected.is_empty(),
+            "typing :clear should explicitly clear the api-key env selection instead of persisting the literal token: {selected:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_system_prompt_selection_accepts_explicit_clear_token_in_interactive_mode() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.cli.system_prompt = "be terse and code-focused".to_owned();
+        let mut ui = TestOnboardUi::with_inputs([":clear"]);
+        let context = OnboardRuntimeContext::new_for_tests(80, None, std::iter::empty::<PathBuf>());
+
+        let selected = resolve_system_prompt_selection(
+            &OnboardCommandOptions {
+                output: None,
+                force: false,
+                non_interactive: false,
+                accept_risk: true,
+                provider: None,
+                model: None,
+                api_key_env: None,
+                system_prompt: None,
+                skip_model_probe: false,
+            },
+            &config,
+            &mut ui,
+            &context,
+        )
+        .expect("resolve system prompt selection");
+
+        assert_eq!(
+            selected,
+            SystemPromptSelection::RestoreBuiltIn,
+            "typing :clear should restore the built-in system prompt instead of keeping the literal token"
+        );
+    }
+
+    #[test]
+    fn resolve_system_prompt_selection_keeps_current_prompt_when_interactive_default_is_used() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.cli.system_prompt = "be terse and code-focused".to_owned();
+        let mut ui = TestOnboardUi::with_inputs(std::iter::empty::<&str>());
+        let context = OnboardRuntimeContext::new_for_tests(80, None, std::iter::empty::<PathBuf>());
+
+        let selected = resolve_system_prompt_selection(
+            &OnboardCommandOptions {
+                output: None,
+                force: false,
+                non_interactive: false,
+                accept_risk: true,
+                provider: None,
+                model: None,
+                api_key_env: None,
+                system_prompt: None,
+                skip_model_probe: false,
+            },
+            &config,
+            &mut ui,
+            &context,
+        )
+        .expect("resolve system prompt selection");
+
+        assert_eq!(
+            selected,
+            SystemPromptSelection::KeepCurrent,
+            "using the prompt default should keep the current system prompt when no override is prefilled"
+        );
+    }
+
+    #[test]
+    fn resolve_system_prompt_selection_keeps_prefilled_override_when_interactive_default_is_used() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.cli.system_prompt = "be terse and code-focused".to_owned();
+        let mut ui = TestOnboardUi::with_inputs(std::iter::empty::<&str>());
+        let context = OnboardRuntimeContext::new_for_tests(80, None, std::iter::empty::<PathBuf>());
+
+        let selected = resolve_system_prompt_selection(
+            &OnboardCommandOptions {
+                output: None,
+                force: false,
+                non_interactive: false,
+                accept_risk: true,
+                provider: None,
+                model: None,
+                api_key_env: None,
+                system_prompt: Some("prefer concise code reviews".to_owned()),
+                skip_model_probe: false,
+            },
+            &config,
+            &mut ui,
+            &context,
+        )
+        .expect("resolve system prompt selection");
+
+        assert_eq!(
+            selected,
+            SystemPromptSelection::Set("prefer concise code reviews".to_owned()),
+            "using the prompt default should still apply a prefilled system prompt override"
+        );
+    }
+
+    #[test]
+    fn apply_selected_system_prompt_restore_uses_rendered_native_prompt() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.cli.system_prompt = "custom review prompt".to_owned();
+        config.cli.system_prompt_addendum = Some("Prefer concrete remediation steps.".to_owned());
+        let expected = config.cli.rendered_native_system_prompt();
+
+        apply_selected_system_prompt(&mut config, SystemPromptSelection::RestoreBuiltIn);
+
+        assert_eq!(
+            config.cli.system_prompt, expected,
+            "restoring the built-in prompt should respect the active native prompt rendering inputs"
         );
     }
 
