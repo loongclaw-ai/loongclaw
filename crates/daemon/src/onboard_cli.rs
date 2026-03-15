@@ -141,6 +141,13 @@ pub(crate) enum OnboardCheckLevel {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum OnboardNonInteractiveWarningPolicy {
+    #[default]
+    Block,
+    AcceptedBySkipModelProbe,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct OnboardCheckCounts {
     pass: usize,
     warn: usize,
@@ -152,6 +159,7 @@ pub(crate) struct OnboardCheck {
     pub(crate) name: &'static str,
     pub(crate) level: OnboardCheckLevel,
     pub(crate) detail: String,
+    pub(crate) non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -541,12 +549,13 @@ pub(crate) async fn run_onboard_cli_with_ui(
     let has_warnings = checks
         .iter()
         .any(|check| check.level == OnboardCheckLevel::Warn);
-    let has_blocking_non_interactive_warnings = checks.iter().any(|check| {
-        check.level == OnboardCheckLevel::Warn
-            && !is_explicitly_accepted_non_interactive_warning(check, &options)
-    });
     let existing_output_config = load_existing_output_config(&output_path);
     let skip_config_write = should_skip_config_write(existing_output_config.as_ref(), &config);
+    let has_blocking_non_interactive_warnings = !skip_config_write
+        && checks.iter().any(|check| {
+            check.level == OnboardCheckLevel::Warn
+                && !is_explicitly_accepted_non_interactive_warning(check, &options)
+        });
 
     if options.non_interactive {
         if !credential_ok {
@@ -1047,12 +1056,15 @@ async fn run_preflight_checks(
             name: "provider model probe",
             level: OnboardCheckLevel::Warn,
             detail: "skipped by --skip-model-probe".to_owned(),
+            non_interactive_warning_policy:
+                OnboardNonInteractiveWarningPolicy::AcceptedBySkipModelProbe,
         });
     } else if !has_credentials {
         checks.push(OnboardCheck {
             name: "provider model probe",
             level: OnboardCheckLevel::Warn,
             detail: "skipped because credentials are missing".to_owned(),
+            non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
         });
     } else {
         match mvp::provider::fetch_available_models(config).await {
@@ -1060,11 +1072,13 @@ async fn run_preflight_checks(
                 name: "provider model probe",
                 level: OnboardCheckLevel::Pass,
                 detail: format!("{} model(s) available", models.len()),
+                non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
             }),
             Err(error) => checks.push(OnboardCheck {
                 name: "provider model probe",
                 level: OnboardCheckLevel::Fail,
                 detail: error,
+                non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
             }),
         }
     }
@@ -1093,6 +1107,7 @@ pub(crate) fn provider_credential_check(config: &mvp::config::LoongClawConfig) -
             name: "provider credentials",
             level: OnboardCheckLevel::Pass,
             detail: "inline oauth access token configured".to_owned(),
+            non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
         };
     }
 
@@ -1106,6 +1121,7 @@ pub(crate) fn provider_credential_check(config: &mvp::config::LoongClawConfig) -
             name: "provider credentials",
             level: OnboardCheckLevel::Pass,
             detail: "inline api key configured".to_owned(),
+            non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
         };
     }
 
@@ -1117,6 +1133,7 @@ pub(crate) fn provider_credential_check(config: &mvp::config::LoongClawConfig) -
             name: "provider credentials",
             level: OnboardCheckLevel::Pass,
             detail,
+            non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
         };
     }
 
@@ -1127,6 +1144,7 @@ pub(crate) fn provider_credential_check(config: &mvp::config::LoongClawConfig) -
         name: "provider credentials",
         level: OnboardCheckLevel::Warn,
         detail,
+        non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
     }
 }
 
@@ -1140,6 +1158,7 @@ fn provider_transport_check(config: &mvp::config::LoongClawConfig) -> OnboardChe
             mvp::config::ProviderTransportReadinessLevel::Unsupported => OnboardCheckLevel::Fail,
         },
         detail: readiness.detail,
+        non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
     }
 }
 
@@ -1148,8 +1167,10 @@ fn is_explicitly_accepted_non_interactive_warning(
     options: &OnboardCommandOptions,
 ) -> bool {
     options.skip_model_probe
-        && check.name == "provider model probe"
-        && check.detail == "skipped by --skip-model-probe"
+        && matches!(
+            check.non_interactive_warning_policy,
+            OnboardNonInteractiveWarningPolicy::AcceptedBySkipModelProbe
+        )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1288,16 +1309,19 @@ pub(crate) fn directory_preflight_check(name: &'static str, target: &Path) -> On
                 name,
                 level: OnboardCheckLevel::Pass,
                 detail: target.display().to_string(),
+                non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
             },
             Ok(_) => OnboardCheck {
                 name,
                 level: OnboardCheckLevel::Fail,
                 detail: format!("{} exists but is not a directory", target.display()),
+                non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
             },
             Err(error) => OnboardCheck {
                 name,
                 level: OnboardCheckLevel::Fail,
                 detail: format!("failed to inspect {}: {error}", target.display()),
+                non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
             },
         };
     }
@@ -1309,6 +1333,7 @@ pub(crate) fn directory_preflight_check(name: &'static str, target: &Path) -> On
                 name,
                 level: OnboardCheckLevel::Fail,
                 detail: format!("no existing parent found for {}", target.display()),
+                non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
             };
         };
         ancestor = parent;
@@ -1319,16 +1344,19 @@ pub(crate) fn directory_preflight_check(name: &'static str, target: &Path) -> On
             name,
             level: OnboardCheckLevel::Pass,
             detail: format!("would create under {}", ancestor.display()),
+            non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
         },
         Ok(_) => OnboardCheck {
             name,
             level: OnboardCheckLevel::Fail,
             detail: format!("{} exists but is not a directory", ancestor.display()),
+            non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
         },
         Err(error) => OnboardCheck {
             name,
             level: OnboardCheckLevel::Fail,
             detail: format!("failed to inspect {}: {error}", ancestor.display()),
+            non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
         },
     }
 }
@@ -1347,6 +1375,7 @@ pub(crate) fn collect_channel_preflight_checks(
                 crate::migration::channels::ChannelCheckLevel::Fail => OnboardCheckLevel::Fail,
             },
             detail: check.detail,
+            non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
         })
         .collect()
 }
@@ -4666,6 +4695,33 @@ mod tests {
     }
 
     #[test]
+    fn accepted_non_interactive_warnings_do_not_depend_on_display_text() {
+        let check = OnboardCheck {
+            name: "provider model probe",
+            level: OnboardCheckLevel::Warn,
+            detail: "display text changed".to_owned(),
+            non_interactive_warning_policy:
+                OnboardNonInteractiveWarningPolicy::AcceptedBySkipModelProbe,
+        };
+        let options = OnboardCommandOptions {
+            output: None,
+            force: false,
+            non_interactive: true,
+            accept_risk: true,
+            provider: None,
+            model: None,
+            api_key_env: None,
+            system_prompt: None,
+            skip_model_probe: true,
+        };
+
+        assert!(
+            is_explicitly_accepted_non_interactive_warning(&check, &options),
+            "non-interactive warning acceptance should follow structured policy rather than fragile display strings"
+        );
+    }
+
+    #[test]
     fn select_non_interactive_starting_config_uses_sorted_detected_candidate_priority() {
         let codex_candidate = import_candidate_with_domain_status(
             crate::migration::ImportSourceKind::CodexConfig,
@@ -4738,6 +4794,30 @@ mod tests {
         assert_eq!(
             path,
             PathBuf::from("/tmp/loongclaw.toml.bak-20260314-012345")
+        );
+    }
+
+    #[test]
+    fn rollback_removes_partial_first_write_config() {
+        let output_path = std::env::temp_dir().join(format!(
+            "loongclaw-first-write-rollback-{}.toml",
+            std::process::id()
+        ));
+        fs::write(&output_path, "partial = true\n").expect("write partial config");
+
+        let recovery = OnboardWriteRecovery {
+            output_preexisted: false,
+            backup_path: None,
+            keep_backup_on_success: false,
+        };
+
+        recovery
+            .rollback(&output_path)
+            .expect("first-write rollback should succeed");
+
+        assert!(
+            !output_path.exists(),
+            "first-write rollback should remove the partially written config"
         );
     }
 }

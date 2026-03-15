@@ -447,15 +447,14 @@ async fn non_interactive_onboard_rejects_unresolved_preflight_warnings() {
     mvp::config::write(Some(output.to_string_lossy().as_ref()), &config, true)
         .expect("write existing config");
 
+    let mut options = default_non_interactive_onboard_options(&output);
+    options.system_prompt = Some("force a pending write".to_owned());
+
     let mut ui = ScriptedOnboardUi::new(std::iter::empty::<String>());
     let context = crate::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, None);
-    let error = crate::onboard_cli::run_onboard_cli_with_ui(
-        default_non_interactive_onboard_options(&output),
-        &mut ui,
-        &context,
-    )
-    .await
-    .expect_err("non-interactive onboarding should stop on unresolved warnings");
+    let error = crate::onboard_cli::run_onboard_cli_with_ui(options, &mut ui, &context)
+        .await
+        .expect_err("non-interactive onboarding should stop on unresolved warnings");
 
     assert!(
         error.contains("unresolved") && error.contains("warning"),
@@ -470,6 +469,56 @@ async fn non_interactive_onboard_rejects_unresolved_preflight_warnings() {
                 && normalized.contains("authorization: bearer test-openai-key")
         }),
         "warning reproduction should still perform the model probe before the warning gate: {requests:#?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn non_interactive_onboard_keeps_matching_existing_config_despite_persistent_warnings() {
+    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
+    let root = unique_temp_path("non-interactive-warning-noop-root");
+    std::fs::create_dir_all(&root).expect("create test root");
+    let output = root.join("loongclaw.toml");
+    unsafe {
+        std::env::set_var("DEEPSEEK_API_KEY", "test-deepseek-key");
+    }
+
+    let mut config = mvp::config::LoongClawConfig::default();
+    config.provider.kind = mvp::config::ProviderKind::Deepseek;
+    config.provider.model = "deepseek-chat".to_owned();
+    config.provider.wire_api = mvp::config::ProviderWireApi::Responses;
+    config.provider.api_key_env = Some("DEEPSEEK_API_KEY".to_owned());
+    mvp::config::write(Some(output.to_string_lossy().as_ref()), &config, true)
+        .expect("write existing config");
+
+    let raw = std::fs::read_to_string(&output).expect("read written config");
+    let legacy_raw = raw.replace(
+        "api_key = \"${DEEPSEEK_API_KEY}\"",
+        "api_key_env = \"DEEPSEEK_API_KEY\"",
+    );
+    std::fs::write(&output, legacy_raw).expect("rewrite config to legacy api_key_env form");
+    let original_body = std::fs::read_to_string(&output).expect("read original config");
+
+    let mut options = default_non_interactive_onboard_options(&output);
+    options.skip_model_probe = true;
+
+    let mut ui = ScriptedOnboardUi::new(std::iter::empty::<String>());
+    let context = crate::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, None);
+    crate::onboard_cli::run_onboard_cli_with_ui(options, &mut ui, &context)
+        .await
+        .expect("matching existing config should stay a successful no-op even when persistent warnings remain");
+
+    assert_eq!(
+        std::fs::read_to_string(&output).expect("read config after no-op"),
+        original_body,
+        "no-op onboarding should not rewrite the existing config just to re-encode the same settings"
+    );
+    let transcript = ui.transcript();
+    assert!(
+        transcript
+            .iter()
+            .any(|line| line.contains("existing config kept; no changes were needed")),
+        "successful no-op path should still report that the existing config was reused: {:#?}",
+        transcript
     );
 }
 
@@ -3841,16 +3890,22 @@ fn onboard_preflight_screen_summarizes_status_counts_and_guidance() {
             name: "provider credentials",
             level: crate::onboard_cli::OnboardCheckLevel::Pass,
             detail: "OPENAI_API_KEY is available".to_owned(),
+            non_interactive_warning_policy:
+                crate::onboard_cli::OnboardNonInteractiveWarningPolicy::Block,
         },
         crate::onboard_cli::OnboardCheck {
             name: "provider model probe",
             level: crate::onboard_cli::OnboardCheckLevel::Fail,
             detail: "provider rejected the model list".to_owned(),
+            non_interactive_warning_policy:
+                crate::onboard_cli::OnboardNonInteractiveWarningPolicy::Block,
         },
         crate::onboard_cli::OnboardCheck {
             name: "telegram channel",
             level: crate::onboard_cli::OnboardCheckLevel::Warn,
             detail: "enabled but bot token is missing".to_owned(),
+            non_interactive_warning_policy:
+                crate::onboard_cli::OnboardNonInteractiveWarningPolicy::Block,
         },
     ];
 
@@ -3910,6 +3965,8 @@ fn onboard_preflight_screen_omits_continue_cancel_choices_when_all_checks_are_gr
         name: "provider credentials",
         level: crate::onboard_cli::OnboardCheckLevel::Pass,
         detail: "OPENAI_API_KEY is available".to_owned(),
+        non_interactive_warning_policy:
+            crate::onboard_cli::OnboardNonInteractiveWarningPolicy::Block,
     }];
 
     let lines = crate::onboard_cli::render_preflight_summary_screen_lines(&checks, 80);
@@ -3940,6 +3997,8 @@ fn onboard_preflight_screen_falls_back_to_stacked_rows_when_details_overflow() {
         detail:
             "provider rejected the model list because the configured endpoint requires a different compatibility mode"
                 .to_owned(),
+        non_interactive_warning_policy:
+            crate::onboard_cli::OnboardNonInteractiveWarningPolicy::Block,
     }];
 
     let lines = crate::onboard_cli::render_preflight_summary_screen_lines(&checks, 80);
@@ -3963,6 +4022,8 @@ fn current_setup_preflight_screen_uses_quick_review_progress_copy() {
         name: "provider credentials",
         level: crate::onboard_cli::OnboardCheckLevel::Pass,
         detail: "OPENAI_API_KEY is available".to_owned(),
+        non_interactive_warning_policy:
+            crate::onboard_cli::OnboardNonInteractiveWarningPolicy::Block,
     }];
 
     let lines =
@@ -3986,6 +4047,8 @@ fn detected_setup_preflight_screen_uses_quick_review_progress_copy() {
         name: "provider credentials",
         level: crate::onboard_cli::OnboardCheckLevel::Pass,
         detail: "OPENAI_API_KEY is available".to_owned(),
+        non_interactive_warning_policy:
+            crate::onboard_cli::OnboardNonInteractiveWarningPolicy::Block,
     }];
 
     let lines =
