@@ -2,6 +2,7 @@ use super::super::config::LoongClawConfig;
 use super::ProviderErrorMode;
 use super::persistence::format_provider_error_reply;
 use super::runtime::ConversationRuntime;
+use super::runtime_binding::ConversationRuntimeBinding;
 use super::turn_engine::{ApprovalRequirement, ApprovalRequirementKind, ProviderTurn, TurnResult};
 use serde::Serialize;
 use serde_json::Value;
@@ -545,10 +546,8 @@ pub async fn request_completion_with_raw_fallback<R: ConversationRuntime + ?Size
     kernel_ctx: Option<&KernelContext>,
     raw_reply: &str,
 ) -> String {
-    match runtime
-        .request_completion(config, messages, kernel_ctx)
-        .await
-    {
+    let binding = ConversationRuntimeBinding::from_optional_kernel_context(kernel_ctx);
+    match runtime.request_completion(config, messages, binding).await {
         Ok(final_reply) => {
             let trimmed = final_reply.trim();
             if trimmed.is_empty() {

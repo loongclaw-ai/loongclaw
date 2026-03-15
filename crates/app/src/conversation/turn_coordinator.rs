@@ -58,6 +58,7 @@ use super::runtime::{
     AsyncDelegateSpawnRequest, AsyncDelegateSpawner, ConversationRuntime,
     DefaultConversationRuntime, SessionContext,
 };
+use super::runtime_binding::ConversationRuntimeBinding;
 use super::safe_lane_failure::{
     SafeLaneFailureCode, SafeLaneFailureRouteDecision, SafeLaneFailureRouteSource,
     classify_safe_lane_plan_failure,
@@ -1877,13 +1878,15 @@ impl ConversationTurnCoordinator {
                     ProviderErrorMode::Propagate => Err(error),
                     ProviderErrorMode::InlineMessage => {
                         let synthetic = format_provider_error_reply(&error);
+                        let binding =
+                            ConversationRuntimeBinding::from_optional_kernel_context(kernel_ctx);
                         persist_reply_turns_raw_with_mode(
                             runtime,
                             session_id,
                             user_input,
                             &synthetic,
                             ReplyPersistenceMode::InlineProviderError,
-                            kernel_ctx,
+                            binding,
                         )
                         .await?;
                         Ok(synthetic)
@@ -1906,17 +1909,18 @@ impl ConversationTurnCoordinator {
             AcpConversationTurnEntryDecision::StayOnProvider => {}
         }
 
+        let binding = ConversationRuntimeBinding::from_optional_kernel_context(kernel_ctx);
         if let Some(kernel_ctx) = kernel_ctx {
             runtime.bootstrap(config, session_id, kernel_ctx).await?;
         }
-        let session_context = runtime.session_context(config, session_id, kernel_ctx)?;
+        let session_context = runtime.session_context(config, session_id, binding)?;
         let tool_view = session_context.tool_view.clone();
         let visible_ingress = ingress.filter(|value| value.has_contextual_hints());
         emit_turn_ingress_event(runtime, session_id, visible_ingress, kernel_ctx).await;
         let preparation = ProviderTurnPreparation::from_assembled_context(
             config,
             runtime
-                .build_context(config, session_id, true, kernel_ctx)
+                .build_context(config, session_id, true, binding)
                 .await?,
             user_input,
             visible_ingress,
@@ -1928,12 +1932,7 @@ impl ConversationTurnCoordinator {
             user_input,
             &preparation,
             runtime
-                .request_turn(
-                    config,
-                    &preparation.session.messages,
-                    &tool_view,
-                    kernel_ctx,
-                )
+                .request_turn(config, &preparation.session.messages, &tool_view, binding)
                 .await,
             error_mode,
             kernel_ctx,
@@ -2027,13 +2026,14 @@ impl ConversationTurnCoordinator {
         match executed.outcome {
             AcpConversationTurnExecutionOutcome::Succeeded(success) => {
                 let reply = success.result.output_text.clone();
+                let binding = ConversationRuntimeBinding::from_optional_kernel_context(kernel_ctx);
                 persist_reply_turns_raw_with_mode(
                     runtime,
                     session_id,
                     user_input,
                     &reply,
                     ReplyPersistenceMode::Success,
-                    kernel_ctx,
+                    binding,
                 )
                 .await?;
                 if config.acp.emit_runtime_events {
@@ -2044,13 +2044,14 @@ impl ConversationTurnCoordinator {
                         &success.runtime_events,
                         Some(&success.result),
                         None,
-                        kernel_ctx,
+                        binding,
                     )
                     .await;
                 }
                 Ok(reply)
             }
             AcpConversationTurnExecutionOutcome::Failed(failure) => {
+                let binding = ConversationRuntimeBinding::from_optional_kernel_context(kernel_ctx);
                 if config.acp.emit_runtime_events {
                     let _ = persist_acp_runtime_events(
                         runtime,
@@ -2059,7 +2060,7 @@ impl ConversationTurnCoordinator {
                         &failure.runtime_events,
                         None,
                         Some(failure.error.as_str()),
-                        kernel_ctx,
+                        binding,
                     )
                     .await;
                 }
@@ -2073,7 +2074,7 @@ impl ConversationTurnCoordinator {
                             user_input,
                             &synthetic,
                             ReplyPersistenceMode::InlineProviderError,
-                            kernel_ctx,
+                            binding,
                         )
                         .await?;
                         Ok(synthetic)
@@ -2340,6 +2341,7 @@ async fn persist_turn_checkpoint_event_value<R: ConversationRuntime + ?Sized>(
     failure: Option<TurnCheckpointFailure>,
     kernel_ctx: Option<&KernelContext>,
 ) -> CliResult<()> {
+    let binding = ConversationRuntimeBinding::from_optional_kernel_context(kernel_ctx);
     persist_conversation_event(
         runtime,
         session_id,
@@ -2351,7 +2353,7 @@ async fn persist_turn_checkpoint_event_value<R: ConversationRuntime + ?Sized>(
             "finalization_progress": progress,
             "failure": failure,
         }),
-        kernel_ctx,
+        binding,
     )
     .await
 }
@@ -2719,8 +2721,9 @@ async fn load_turn_checkpoint_tail_runtime_eligibility<R: ConversationRuntime + 
     }
 
     let repair_plan = build_turn_checkpoint_repair_plan(summary);
+    let binding = ConversationRuntimeBinding::from_optional_kernel_context(kernel_ctx);
     let assembled = runtime
-        .build_context(config, session_id, true, kernel_ctx)
+        .build_context(config, session_id, true, binding)
         .await?;
     match TurnCheckpointRepairResumeInput::from_assembled_context(assembled, &entry.checkpoint) {
         Ok(resume_input) => Ok(TurnCheckpointTailRuntimeEligibility::Runnable {
@@ -2782,13 +2785,14 @@ async fn finalize_provider_turn_reply<R: ConversationRuntime + ?Sized>(
     let Some(persistence_mode) = checkpoint.finalization.persistence_mode() else {
         return Ok(tail_phase.reply().to_owned());
     };
+    let binding = ConversationRuntimeBinding::from_optional_kernel_context(kernel_ctx);
     persist_reply_turns_with_mode(
         runtime,
         session_id,
         user_input,
         tail_phase.reply(),
         persistence_mode,
-        kernel_ctx,
+        binding,
     )
     .await?;
 
@@ -3279,7 +3283,7 @@ where
         &self,
         session_context: &SessionContext,
         request: loongclaw_contracts::ToolCoreRequest,
-        kernel_ctx: Option<&KernelContext>,
+        binding: ConversationRuntimeBinding<'_>,
     ) -> Result<loongclaw_contracts::ToolCoreOutcome, String> {
         match crate::tools::canonical_tool_name(request.tool_name.as_str()) {
             "approval_request_resolve" => {
@@ -3318,7 +3322,7 @@ where
                     self.runtime,
                     session_context,
                     request.payload,
-                    kernel_ctx,
+                    binding.kernel_context(),
                 )
                 .await
             }
@@ -3333,7 +3337,7 @@ where
             }
             _ => {
                 self.fallback
-                    .execute_app_tool(session_context, request, kernel_ctx)
+                    .execute_app_tool(session_context, request, binding)
                     .await
             }
         }
@@ -3894,7 +3898,8 @@ async fn execute_provider_turn_lane<R: ConversationRuntime + ?Sized>(
     let had_tool_intents = !turn.tool_intents.is_empty();
     let assistant_preface = turn.assistant_text.clone();
     let lane = preparation.lane_plan.decision.lane;
-    let session_context = match runtime.session_context(config, session_id, kernel_ctx) {
+    let binding = ConversationRuntimeBinding::from_optional_kernel_context(kernel_ctx);
+    let session_context = match runtime.session_context(config, session_id, binding) {
         Ok(session_context) => session_context,
         Err(error) => {
             return ProviderTurnLaneExecution {
@@ -3956,7 +3961,7 @@ async fn execute_provider_turn_lane<R: ConversationRuntime + ?Sized>(
                     turn,
                     &session_context,
                     &app_dispatcher,
-                    kernel_ctx,
+                    binding,
                     ingress,
                 )
                 .await,
@@ -4428,7 +4433,8 @@ async fn emit_safe_lane_event<R: ConversationRuntime + ?Sized>(
     if !should_emit_safe_lane_event(config, event_name, &payload) {
         return;
     }
-    let _ = persist_conversation_event(runtime, session_id, event_name, payload, kernel_ctx).await;
+    let binding = ConversationRuntimeBinding::from_optional_kernel_context(kernel_ctx);
+    let _ = persist_conversation_event(runtime, session_id, event_name, payload, binding).await;
     if let Some(ctx) = kernel_ctx {
         let _ = ctx.kernel.record_audit_event(
             Some(ctx.agent_id()),
@@ -5646,7 +5652,13 @@ async fn execute_single_tool_intent(
     };
 
     match engine
-        .execute_turn_in_context(&turn, session_context, app_dispatcher, kernel_ctx, ingress)
+        .execute_turn_in_context(
+            &turn,
+            session_context,
+            app_dispatcher,
+            ConversationRuntimeBinding::from_optional_kernel_context(kernel_ctx),
+            ingress,
+        )
         .await
     {
         TurnResult::FinalText(output) => Ok(output),

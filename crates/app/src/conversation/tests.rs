@@ -257,7 +257,7 @@ impl ConversationContextEngine for StubContextEngine {
         _config: &LoongClawConfig,
         _session_id: &str,
         _include_system_prompt: bool,
-        _kernel_ctx: Option<&KernelContext>,
+        _binding: ConversationRuntimeBinding<'_>,
     ) -> CliResult<Vec<Value>> {
         Ok(vec![json!({
             "role": "system",
@@ -277,7 +277,7 @@ impl ConversationContextEngine for StubEnvContextEngine {
         _config: &LoongClawConfig,
         _session_id: &str,
         _include_system_prompt: bool,
-        _kernel_ctx: Option<&KernelContext>,
+        _binding: ConversationRuntimeBinding<'_>,
     ) -> CliResult<Vec<Value>> {
         Ok(vec![json!({
             "role": "system",
@@ -301,7 +301,7 @@ impl ConversationContextEngine for StubSystemPromptAdditionEngine {
         _config: &LoongClawConfig,
         _session_id: &str,
         _include_system_prompt: bool,
-        _kernel_ctx: Option<&KernelContext>,
+        _binding: ConversationRuntimeBinding<'_>,
     ) -> CliResult<AssembledConversationContext> {
         Ok(AssembledConversationContext {
             messages: vec![json!({
@@ -318,7 +318,7 @@ impl ConversationContextEngine for StubSystemPromptAdditionEngine {
         _config: &LoongClawConfig,
         _session_id: &str,
         _include_system_prompt: bool,
-        _kernel_ctx: Option<&KernelContext>,
+        _binding: ConversationRuntimeBinding<'_>,
     ) -> CliResult<Vec<Value>> {
         Ok(vec![json!({
             "role": "system",
@@ -402,7 +402,7 @@ impl ConversationContextEngine for RecordingLifecycleContextEngine {
         _config: &LoongClawConfig,
         _session_id: &str,
         _include_system_prompt: bool,
-        _kernel_ctx: Option<&KernelContext>,
+        _binding: ConversationRuntimeBinding<'_>,
     ) -> CliResult<Vec<Value>> {
         Ok(Vec::new())
     }
@@ -797,11 +797,11 @@ impl ConversationRuntime for FakeRuntime {
         &self,
         config: &LoongClawConfig,
         session_id: &str,
-        kernel_ctx: Option<&KernelContext>,
+        binding: ConversationRuntimeBinding<'_>,
     ) -> CliResult<crate::tools::ToolView> {
         match self.tool_view_override.clone() {
             Some(tool_view) => Ok(tool_view),
-            None => DefaultConversationRuntime::default().tool_view(config, session_id, kernel_ctx),
+            None => DefaultConversationRuntime::default().tool_view(config, session_id, binding),
         }
     }
 
@@ -848,7 +848,7 @@ impl ConversationRuntime for FakeRuntime {
         _session_id: &str,
         include_system_prompt: bool,
         tool_view: &crate::tools::ToolView,
-        _kernel_ctx: Option<&KernelContext>,
+        _binding: ConversationRuntimeBinding<'_>,
     ) -> CliResult<Vec<Value>> {
         self.built_tool_views
             .lock()
@@ -869,7 +869,7 @@ impl ConversationRuntime for FakeRuntime {
         _config: &LoongClawConfig,
         session_id: &str,
         include_system_prompt: bool,
-        _kernel_ctx: Option<&KernelContext>,
+        _binding: ConversationRuntimeBinding<'_>,
     ) -> CliResult<AssembledConversationContext> {
         self.build_context_calls
             .lock()
@@ -889,7 +889,7 @@ impl ConversationRuntime for FakeRuntime {
         &self,
         config: &LoongClawConfig,
         messages: &[Value],
-        _kernel_ctx: Option<&KernelContext>,
+        _binding: ConversationRuntimeBinding<'_>,
     ) -> CliResult<String> {
         let mut calls = self.completion_calls.lock().expect("completion calls lock");
         *calls += 1;
@@ -915,7 +915,7 @@ impl ConversationRuntime for FakeRuntime {
         config: &LoongClawConfig,
         messages: &[Value],
         tool_view: &crate::tools::ToolView,
-        _kernel_ctx: Option<&KernelContext>,
+        _binding: ConversationRuntimeBinding<'_>,
     ) -> CliResult<ProviderTurn> {
         let mut calls = self.turn_calls.lock().expect("turn calls lock");
         *calls += 1;
@@ -945,7 +945,7 @@ impl ConversationRuntime for FakeRuntime {
         session_id: &str,
         role: &str,
         content: &str,
-        _kernel_ctx: Option<&KernelContext>,
+        _binding: ConversationRuntimeBinding<'_>,
     ) -> CliResult<()> {
         #[cfg(feature = "memory-sqlite")]
         if let Some(config) = self.durable_memory_config.as_ref() {
@@ -1050,11 +1050,18 @@ fn test_kernel_context_with_memory(
 #[tokio::test]
 async fn default_runtime_supports_injected_context_engine() {
     let runtime = DefaultConversationRuntime::with_context_engine(StubContextEngine);
+    let binding = crate::conversation::ConversationRuntimeBinding::direct();
     let tool_view = runtime
-        .tool_view(&test_config(), "session-injected", None)
+        .tool_view(&test_config(), "session-injected", binding)
         .expect("default runtime tool view");
     let messages = runtime
-        .build_messages(&test_config(), "session-injected", true, &tool_view, None)
+        .build_messages(
+            &test_config(),
+            "session-injected",
+            true,
+            &tool_view,
+            binding,
+        )
         .await
         .expect("build messages via injected context engine");
 
@@ -1069,11 +1076,18 @@ async fn default_runtime_can_resolve_context_engine_from_registry() {
         .expect("register context engine");
     let runtime = DefaultConversationRuntime::from_engine_id(Some("stub-registry"))
         .expect("resolve context engine from registry");
+    let binding = crate::conversation::ConversationRuntimeBinding::direct();
     let tool_view = runtime
-        .tool_view(&test_config(), "session-registry", None)
+        .tool_view(&test_config(), "session-registry", binding)
         .expect("default runtime tool view");
     let messages = runtime
-        .build_messages(&test_config(), "session-registry", true, &tool_view, None)
+        .build_messages(
+            &test_config(),
+            "session-registry",
+            true,
+            &tool_view,
+            binding,
+        )
         .await
         .expect("build messages via registry context engine");
 
@@ -1093,11 +1107,12 @@ async fn default_runtime_prefers_configured_context_engine_when_env_not_set() {
 
     let runtime = DefaultConversationRuntime::from_config_or_env(&config)
         .expect("resolve context engine from config");
+    let binding = ConversationRuntimeBinding::direct();
     let tool_view = runtime
-        .tool_view(&config, "session-config", None)
+        .tool_view(&config, "session-config", binding)
         .expect("configured runtime tool view");
     let messages = runtime
-        .build_messages(&config, "session-config", true, &tool_view, None)
+        .build_messages(&config, "session-config", true, &tool_view, binding)
         .await
         .expect("build messages via configured context engine");
 
@@ -1117,9 +1132,10 @@ fn default_runtime_exposes_context_engine_metadata() {
 async fn default_runtime_build_messages_respects_restricted_tool_view() {
     let runtime = DefaultConversationRuntime::default();
     let view = crate::tools::ToolView::from_tool_names(["file.read"]);
+    let binding = ConversationRuntimeBinding::direct();
 
     let messages = runtime
-        .build_messages(&test_config(), "noop-session", true, &view, None)
+        .build_messages(&test_config(), "noop-session", true, &view, binding)
         .await
         .expect("build messages");
 
@@ -1164,7 +1180,11 @@ fn default_runtime_tool_view_uses_persisted_delegate_child_restrictions() {
 
     let runtime = DefaultConversationRuntime::default();
     let child_view = runtime
-        .tool_view(&config, "child-session", None)
+        .tool_view(
+            &config,
+            "child-session",
+            ConversationRuntimeBinding::direct(),
+        )
         .expect("child tool view");
 
     assert!(child_view.contains("file.read"));
@@ -1198,7 +1218,11 @@ fn default_runtime_tool_view_denies_delegate_for_broken_lineage_child() {
 
     let runtime = DefaultConversationRuntime::default();
     let child_view = runtime
-        .tool_view(&config, "child-session", None)
+        .tool_view(
+            &config,
+            "child-session",
+            ConversationRuntimeBinding::direct(),
+        )
         .expect("child tool view");
 
     assert!(child_view.contains("file.read"));
@@ -1241,7 +1265,11 @@ fn default_runtime_session_context_uses_persisted_parent_session_id() {
 
     let runtime = DefaultConversationRuntime::default();
     let session_context = runtime
-        .session_context(&config, "child-session", None)
+        .session_context(
+            &config,
+            "child-session",
+            ConversationRuntimeBinding::direct(),
+        )
         .expect("session context");
 
     assert_eq!(session_context.session_id, "child-session");
@@ -1319,8 +1347,9 @@ async fn default_runtime_delegates_subagent_lifecycle_to_context_engine_with_ker
 #[tokio::test]
 async fn default_runtime_build_context_applies_system_prompt_addition() {
     let runtime = DefaultConversationRuntime::with_context_engine(StubSystemPromptAdditionEngine);
+    let binding = crate::conversation::ConversationRuntimeBinding::direct();
     let assembled = runtime
-        .build_context(&test_config(), "session-system-addition", true, None)
+        .build_context(&test_config(), "session-system-addition", true, binding)
         .await
         .expect("build context with system prompt addition");
 
@@ -1364,7 +1393,12 @@ async fn default_runtime_build_context_matches_builtin_summary_projection() {
         .expect("append turn 4 should succeed");
 
     let assembled = runtime
-        .build_context(&config, &session_id, true, None)
+        .build_context(
+            &config,
+            &session_id,
+            true,
+            ConversationRuntimeBinding::direct(),
+        )
         .await
         .expect("build context from default runtime");
     let provider_messages = crate::provider::build_messages_for_session(&config, &session_id, true)
@@ -1406,7 +1440,12 @@ async fn default_runtime_build_context_explicit_builtin_system_preserves_profile
         .expect("append turn should succeed");
 
     let assembled = runtime
-        .build_context(&config, &session_id, true, None)
+        .build_context(
+            &config,
+            &session_id,
+            true,
+            ConversationRuntimeBinding::direct(),
+        )
         .await
         .expect("build context from default runtime");
     let provider_messages = crate::provider::build_messages_for_session(&config, &session_id, true)
@@ -1458,7 +1497,12 @@ async fn default_runtime_build_context_fail_open_memory_derivation_preserves_rec
         .expect("append turn 3 should succeed");
 
     let assembled = runtime
-        .build_context(&config, &session_id, true, None)
+        .build_context(
+            &config,
+            &session_id,
+            true,
+            ConversationRuntimeBinding::direct(),
+        )
         .await
         .expect("build context should stay available when memory derivation degrades");
 
@@ -1561,11 +1605,12 @@ async fn default_runtime_prefers_env_context_engine_over_config() {
 
     let runtime = DefaultConversationRuntime::from_config_or_env(&config)
         .expect("resolve context engine from env override");
+    let binding = ConversationRuntimeBinding::direct();
     let tool_view = runtime
-        .tool_view(&config, "session-env-priority", None)
+        .tool_view(&config, "session-env-priority", binding)
         .expect("env-selected runtime tool view");
     let messages = runtime
-        .build_messages(&config, "session-env-priority", true, &tool_view, None)
+        .build_messages(&config, "session-env-priority", true, &tool_view, binding)
         .await
         .expect("build messages via env-selected context engine");
 
@@ -6157,7 +6202,7 @@ async fn turn_engine_routes_app_tools_through_dispatcher() {
             &self,
             session_context: &crate::conversation::SessionContext,
             request: ToolCoreRequest,
-            _kernel_ctx: Option<&KernelContext>,
+            _binding: crate::conversation::ConversationRuntimeBinding<'_>,
         ) -> Result<ToolCoreOutcome, String> {
             self.calls.lock().expect("dispatcher calls lock").push((
                 session_context.session_id.clone(),
@@ -6198,7 +6243,7 @@ async fn turn_engine_routes_app_tools_through_dispatcher() {
             &turn,
             &session_context,
             &dispatcher,
-            Some(&kernel_ctx),
+            crate::conversation::ConversationRuntimeBinding::kernel(&kernel_ctx),
             None,
         )
         .await;
@@ -6235,6 +6280,105 @@ async fn turn_engine_routes_app_tools_through_dispatcher() {
             .expect("dispatcher calls lock")
             .as_slice(),
         &[("root-session".to_owned(), "sessions_list".to_owned())]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn turn_engine_routes_direct_binding_to_app_dispatcher() {
+    use async_trait::async_trait;
+    use loongclaw_contracts::{ToolCoreOutcome, ToolCoreRequest};
+
+    #[derive(Default)]
+    struct BindingRecordingAppDispatcher {
+        bindings: Mutex<Vec<bool>>,
+    }
+
+    #[async_trait]
+    impl crate::conversation::AppToolDispatcher for BindingRecordingAppDispatcher {
+        async fn execute_app_tool(
+            &self,
+            _session_context: &crate::conversation::SessionContext,
+            request: ToolCoreRequest,
+            binding: crate::conversation::ConversationRuntimeBinding<'_>,
+        ) -> Result<ToolCoreOutcome, String> {
+            self.bindings
+                .lock()
+                .expect("dispatcher bindings lock")
+                .push(binding.is_kernel_bound());
+            Ok(ToolCoreOutcome {
+                status: "ok".to_owned(),
+                payload: json!({
+                    "tool_name": request.tool_name,
+                    "binding_scope": if binding.is_kernel_bound() {
+                        "kernel"
+                    } else {
+                        "direct"
+                    },
+                }),
+            })
+        }
+    }
+
+    let dispatcher = BindingRecordingAppDispatcher::default();
+    let engine = TurnEngine::new(1);
+    let turn = ProviderTurn {
+        assistant_text: "".to_owned(),
+        tool_intents: vec![ToolIntent {
+            tool_name: "sessions_list".to_owned(),
+            args_json: json!({}),
+            source: "provider_tool_call".to_owned(),
+            session_id: "root-session".to_owned(),
+            turn_id: "turn-app-direct".to_owned(),
+            tool_call_id: "call-app-direct".to_owned(),
+        }],
+        raw_meta: Value::Null,
+    };
+    let session_context = crate::conversation::SessionContext::root_with_tool_view(
+        "root-session",
+        crate::tools::planned_root_tool_view(),
+    );
+
+    let result = engine
+        .execute_turn_in_context(
+            &turn,
+            &session_context,
+            &dispatcher,
+            crate::conversation::ConversationRuntimeBinding::direct(),
+            None,
+        )
+        .await;
+
+    match result {
+        TurnResult::FinalText(text) => {
+            let line = text.lines().next().expect("tool result line should exist");
+            let payload = line
+                .strip_prefix("[ok] ")
+                .expect("tool result line should keep [ok] prefix");
+            let envelope: Value =
+                serde_json::from_str(payload).expect("tool result envelope should be json");
+            assert_eq!(envelope["tool"], "sessions_list");
+            assert!(
+                envelope["payload_summary"]
+                    .as_str()
+                    .expect("payload summary should be text")
+                    .contains("\"binding_scope\":\"direct\""),
+                "expected direct binding payload in output, got: {text}"
+            );
+        }
+        other @ TurnResult::ToolDenied(_)
+        | other @ TurnResult::ToolError(_)
+        | other @ TurnResult::ProviderError(_) => {
+            panic!("expected FinalText, got: {other:?}")
+        }
+    }
+
+    assert_eq!(
+        dispatcher
+            .bindings
+            .lock()
+            .expect("dispatcher bindings lock")
+            .as_slice(),
+        &[false]
     );
 }
 
@@ -6294,7 +6438,7 @@ async fn default_app_tool_dispatcher_executes_session_wait_for_visible_terminal_
                     "timeout_ms": 50
                 }),
             },
-            None,
+            crate::conversation::ConversationRuntimeBinding::direct(),
         )
         .await
         .expect("session_wait outcome");
@@ -6353,7 +6497,7 @@ async fn child_session_hidden_session_wait_is_rejected_by_default_dispatcher() {
                     "timeout_ms": 10
                 }),
             },
-            None,
+            crate::conversation::ConversationRuntimeBinding::direct(),
         )
         .await
         .expect_err("child should not execute hidden session_wait");
@@ -6413,7 +6557,7 @@ async fn child_session_hidden_sessions_send_is_rejected_by_default_dispatcher() 
                     "text": "hello"
                 }),
             },
-            None,
+            crate::conversation::ConversationRuntimeBinding::direct(),
         )
         .await
         .expect_err("child should not execute hidden sessions_send");
@@ -6459,7 +6603,7 @@ async fn sessions_send_rejects_unknown_target_session() {
                     "text": "hello"
                 }),
             },
-            None,
+            crate::conversation::ConversationRuntimeBinding::direct(),
         )
         .await
         .expect_err("unknown session target must be rejected");
@@ -6513,7 +6657,7 @@ async fn sessions_send_rejects_delegate_child_target() {
                     "text": "hello"
                 }),
             },
-            None,
+            crate::conversation::ConversationRuntimeBinding::direct(),
         )
         .await
         .expect_err("delegate child target must be rejected");
@@ -7102,13 +7246,27 @@ async fn turn_engine_persists_tool_lifecycle_events() {
         audit_event_id: Some("audit-001".to_owned()),
     };
 
-    persist_tool_decision(&runtime, "sess-1", "turn-1", "call-1", &decision, None)
-        .await
-        .expect("persist decision");
+    persist_tool_decision(
+        &runtime,
+        "sess-1",
+        "turn-1",
+        "call-1",
+        &decision,
+        ConversationRuntimeBinding::direct(),
+    )
+    .await
+    .expect("persist decision");
 
-    persist_tool_outcome(&runtime, "sess-1", "turn-1", "call-1", &outcome, None)
-        .await
-        .expect("persist outcome");
+    persist_tool_outcome(
+        &runtime,
+        "sess-1",
+        "turn-1",
+        "call-1",
+        &outcome,
+        ConversationRuntimeBinding::direct(),
+    )
+    .await
+    .expect("persist outcome");
 
     let persisted = runtime.persisted.lock().expect("persisted lock");
     assert_eq!(persisted.len(), 2, "expected two persisted records");
@@ -7196,6 +7354,23 @@ fn build_kernel_context_with_window_turns(
     };
 
     (ctx, invocations)
+}
+
+#[test]
+fn conversation_runtime_binding_direct_reports_no_kernel_context() {
+    let binding = crate::conversation::ConversationRuntimeBinding::direct();
+
+    assert!(!binding.is_kernel_bound());
+    assert!(binding.kernel_context().is_none());
+}
+
+#[test]
+fn conversation_runtime_binding_kernel_exposes_bound_context() {
+    let (kernel_ctx, _invocations) = build_kernel_context(Arc::new(InMemoryAuditSink::default()));
+    let binding = crate::conversation::ConversationRuntimeBinding::kernel(&kernel_ctx);
+
+    assert!(binding.is_kernel_bound());
+    assert!(binding.kernel_context().is_some());
 }
 
 fn build_kernel_context_with_window_turn_sequence(
@@ -7315,10 +7490,11 @@ impl CoreMemoryAdapter for SequencedTestMemoryAdapter {
 async fn persist_turn_routes_through_kernel_when_context_provided() {
     let audit = Arc::new(InMemoryAuditSink::default());
     let (ctx, invocations) = build_kernel_context(audit.clone());
+    let binding = crate::conversation::ConversationRuntimeBinding::kernel(&ctx);
 
     let runtime = DefaultConversationRuntime::default();
     runtime
-        .persist_turn("session-k1", "user", "kernel-hello", Some(&ctx))
+        .persist_turn("session-k1", "user", "kernel-hello", binding)
         .await
         .expect("persist via kernel");
 
@@ -7353,11 +7529,12 @@ async fn build_messages_routes_memory_window_through_kernel_when_context_provide
     let (ctx, invocations) = build_kernel_context(audit.clone());
     let runtime = DefaultConversationRuntime::default();
     let config = test_config();
+    let binding = crate::conversation::ConversationRuntimeBinding::kernel(&ctx);
     let tool_view = runtime
-        .tool_view(&config, "session-k-window", Some(&ctx))
+        .tool_view(&config, "session-k-window", binding)
         .expect("kernel window tool view");
     let messages = runtime
-        .build_messages(&config, "session-k-window", true, &tool_view, Some(&ctx))
+        .build_messages(&config, "session-k-window", true, &tool_view, binding)
         .await
         .expect("build messages via kernel");
 
@@ -7503,7 +7680,12 @@ async fn persist_turn_without_memory_sqlite_is_noop_with_kernel_context() {
         .expect("bootstrap kernel context without memory-sqlite");
     let runtime = DefaultConversationRuntime::default();
     runtime
-        .persist_turn("session-k0", "user", "no-memory", Some(&ctx))
+        .persist_turn(
+            "session-k0",
+            "user",
+            "no-memory",
+            ConversationRuntimeBinding::kernel(&ctx),
+        )
         .await
         .expect("persist should be no-op when memory-sqlite is disabled");
 }
@@ -7595,7 +7777,7 @@ async fn persisted_turn_checkpoint_events_survive_reload_without_polluting_promp
             session_id,
             true,
             &crate::tools::runtime_tool_view_for_config(&config.tools),
-            None,
+            ConversationRuntimeBinding::direct(),
         )
         .await
         .expect("reload prompt history");

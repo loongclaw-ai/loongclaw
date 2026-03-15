@@ -27,9 +27,13 @@ CapabilityToken → PolicyEngine → PolicyExtensionChain → Execution → Audi
 **Current coverage:**
 - `shell.exec` — Kernel-mediated tool execution with capability checks, shell policy extensions, and audit events
 - `file.read` / `file.write` — Kernel-mediated tool execution with filesystem capabilities, file policy extension checks, and audit events
-- Conversation tool turns — Fast-lane and safe-lane inner tool execution now require a bound `KernelContext`; missing kernel authority is rejected at the runtime binding boundary as `no_kernel_context`
-- Memory/runtime/context orchestration — Partially kernelized; some surrounding traits still carry optional kernel context and remain architectural debt rather than full L1 enforcement
+- Conversation tool turns — Fast-lane and safe-lane inner tool execution now flow through an explicit `ConversationRuntimeBinding` (`Kernel` or `Direct`); core tools require a bound `KernelContext`, and missing authority is rejected at the binding boundary as `no_kernel_context`
+- Memory/runtime/context orchestration — Conversation-layer runtime, context, persistence, turn-engine, and app-dispatcher seams now normalize optional kernel access into the explicit runtime binding. Lower-level provider and connector surfaces still carry some raw optional kernel context and remain architectural debt rather than full L1 enforcement
 - Connector/ACP/runtime-only analytics — Not uniformly routed through the L1 policy chain yet
+
+**Conversation runtime binding note:**
+- The binding makes the high-level execution mode explicit: `Kernel` means the turn is allowed to call kernel-mediated core tools; `Direct` means conversation orchestration may continue, but kernel-only tool execution must fail closed.
+- This removes ambiguity from conversation traits and dispatcher seams where `None` previously overloaded multiple meanings such as "direct mode", "not wired yet", or "forgot to pass kernel authority".
 
 ### Capability Tokens
 
