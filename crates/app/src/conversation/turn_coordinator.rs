@@ -43,8 +43,8 @@ use super::persistence::{
     persist_reply_turns_raw_with_mode, persist_reply_turns_with_mode,
 };
 use super::plan_executor::{
-    PlanExecutor, PlanNodeError, PlanNodeErrorKind, PlanNodeExecutor, PlanRunFailure,
-    PlanRunReport, PlanRunStatus,
+    PlanExecutor, PlanNodeAttemptEvent, PlanNodeError, PlanNodeErrorKind, PlanNodeExecutor,
+    PlanRunFailure, PlanRunReport, PlanRunStatus,
 };
 use super::plan_ir::{
     PLAN_GRAPH_VERSION, PlanBudget, PlanEdge, PlanGraph, PlanNode, PlanNodeKind, RiskTier,
@@ -78,7 +78,8 @@ use super::turn_shared::{
     ProviderTurnRequestAction, ReplyPersistenceMode, ReplyResolutionMode, ToolDrivenFollowupKind,
     ToolDrivenFollowupPayload, ToolDrivenReplyBaseDecision, ToolDrivenReplyPhase,
     build_tool_driven_followup_tail, decide_provider_turn_request_action,
-    format_approval_required_reply, request_completion_with_raw_fallback,
+    format_approval_required_reply, next_conversation_turn_id,
+    request_completion_with_raw_fallback, tool_driven_followup_payload,
     tool_result_contains_truncation_signal, user_requested_raw_tool_output,
 };
 #[cfg(feature = "memory-sqlite")]
@@ -746,12 +747,27 @@ struct ProviderTurnPreparation {
 }
 
 impl ProviderTurnPreparation {
+    #[cfg(test)]
     fn from_assembled_context(
         config: &LoongClawConfig,
         assembled_context: AssembledConversationContext,
         user_input: &str,
     ) -> Self {
-        let turn_id = build_provider_turn_scope_id(&assembled_context.messages, user_input);
+        let turn_id = next_conversation_turn_id();
+        Self::from_assembled_context_with_turn_id(
+            config,
+            assembled_context,
+            user_input,
+            turn_id.as_str(),
+        )
+    }
+
+    fn from_assembled_context_with_turn_id(
+        config: &LoongClawConfig,
+        assembled_context: AssembledConversationContext,
+        user_input: &str,
+        turn_id: &str,
+    ) -> Self {
         Self {
             session: ProviderTurnSessionState::from_assembled_context(
                 assembled_context,
@@ -759,7 +775,19 @@ impl ProviderTurnPreparation {
             ),
             lane_plan: ProviderTurnLanePlan::from_user_input(config, user_input),
             raw_tool_output_requested: user_requested_raw_tool_output(user_input),
-            turn_id,
+            turn_id: turn_id.to_owned(),
+        }
+    }
+
+    fn for_followup_messages(&self, messages: Vec<Value>) -> Self {
+        Self {
+            session: ProviderTurnSessionState {
+                messages,
+                estimated_tokens: None,
+            },
+            lane_plan: self.lane_plan.clone(),
+            raw_tool_output_requested: self.raw_tool_output_requested,
+            turn_id: self.turn_id.clone(),
         }
     }
 
@@ -775,18 +803,6 @@ impl ProviderTurnPreparation {
             estimated_tokens: self.session.estimated_tokens,
         }
     }
-}
-
-fn build_provider_turn_scope_id(messages: &[Value], user_input: &str) -> String {
-    let mut visible_context = messages.to_vec();
-    visible_context.push(json!({
-        "role": "user",
-        "content": user_input,
-    }));
-    format!(
-        "turn:{}",
-        checkpoint_context_fingerprint_sha256(&visible_context)
-    )
 }
 
 #[derive(Debug, Clone)]
@@ -829,6 +845,7 @@ struct ProviderTurnLaneExecution {
     lane: ExecutionLane,
     assistant_preface: String,
     had_tool_intents: bool,
+    requires_provider_turn_followup: bool,
     raw_tool_output_requested: bool,
     turn_result: TurnResult,
     safe_lane_terminal_route: Option<SafeLaneFailureRoute>,
@@ -895,20 +912,23 @@ impl ProviderTurnContinuePhase {
         )
     }
 
-    async fn resolve_reply<R: ConversationRuntime + ?Sized>(
+    async fn resolve<R: ConversationRuntime + ?Sized>(
         &self,
         runtime: &R,
+        session_id: &str,
         preparation: &ProviderTurnPreparation,
         user_input: &str,
+        remaining_provider_rounds: usize,
         kernel_ctx: Option<&KernelContext>,
-    ) -> String {
+    ) -> ResolvedProviderTurn {
         resolve_provider_turn_reply(
             runtime,
             &self.followup_config,
+            session_id,
             preparation,
-            &self.lane_execution,
-            &self.reply_phase,
+            self,
             user_input,
+            remaining_provider_rounds,
             kernel_ctx,
         )
         .await
@@ -1816,12 +1836,14 @@ impl ConversationTurnCoordinator {
         }
         let session_context = runtime.session_context(config, session_id, kernel_ctx)?;
         let tool_view = session_context.tool_view.clone();
-        let preparation = ProviderTurnPreparation::from_assembled_context(
+        let turn_id = next_conversation_turn_id();
+        let preparation = ProviderTurnPreparation::from_assembled_context_with_turn_id(
             config,
             runtime
                 .build_context(config, session_id, true, kernel_ctx)
                 .await?,
             user_input,
+            turn_id.as_str(),
         );
         let resolved_turn = resolve_provider_turn(
             config,
@@ -1832,6 +1854,8 @@ impl ConversationTurnCoordinator {
             runtime
                 .request_turn(
                     config,
+                    session_id,
+                    preparation.turn_id.as_str(),
                     &preparation.session.messages,
                     &tool_view,
                     kernel_ctx,
@@ -2103,11 +2127,16 @@ async fn resolve_provider_turn<R: ConversationRuntime + ?Sized>(
                 kernel_ctx,
             )
             .await;
-            let reply = continue_phase
-                .resolve_reply(runtime, preparation, user_input, kernel_ctx)
-                .await;
-            let checkpoint = continue_phase.checkpoint(preparation, user_input, reply.as_str());
-            ResolvedProviderTurn::persist_reply(reply, checkpoint)
+            continue_phase
+                .resolve(
+                    runtime,
+                    session_id,
+                    preparation,
+                    user_input,
+                    config.conversation.turn_loop.max_rounds.max(1),
+                    kernel_ctx,
+                )
+                .await
         }
         ProviderTurnRequestAction::FinalizeInlineProviderError { reply } => {
             ProviderTurnRequestTerminalPhase::persist_inline_provider_error(reply)
@@ -2154,33 +2183,159 @@ async fn prepare_provider_turn_continue_phase<R: ConversationRuntime + ?Sized>(
 
 async fn resolve_provider_turn_reply<R: ConversationRuntime + ?Sized>(
     runtime: &R,
-    config: &LoongClawConfig,
+    _config: &LoongClawConfig,
+    session_id: &str,
     preparation: &ProviderTurnPreparation,
-    lane_execution: &ProviderTurnLaneExecution,
-    phase: &ToolDrivenReplyPhase,
+    continue_phase: &ProviderTurnContinuePhase,
     user_input: &str,
+    remaining_provider_rounds: usize,
     kernel_ctx: Option<&KernelContext>,
-) -> String {
-    match phase.decision() {
-        ToolDrivenReplyBaseDecision::FinalizeDirect { reply } => reply.clone(),
-        ToolDrivenReplyBaseDecision::RequireFollowup {
-            raw_reply,
-            payload: followup,
-        } => {
-            let follow_up_messages = build_turn_reply_followup_messages(
-                &preparation.session.messages,
-                lane_execution.assistant_preface.as_str(),
-                followup.clone(),
-                user_input,
-            );
-            request_completion_with_raw_fallback(
-                runtime,
-                config,
-                &follow_up_messages,
-                kernel_ctx,
-                raw_reply.as_str(),
-            )
-            .await
+) -> ResolvedProviderTurn {
+    enum ReplyLoopDecision {
+        FinalizeDirect(String),
+        Followup {
+            raw_reply: String,
+            payload: ToolDrivenFollowupPayload,
+            requires_completion_pass: bool,
+        },
+    }
+
+    let mut current_preparation = preparation.clone();
+    let mut current_continue_phase = continue_phase.clone();
+    let mut remaining_provider_rounds = remaining_provider_rounds.max(1);
+
+    loop {
+        let reply_decision = match current_continue_phase.reply_phase.decision() {
+            ToolDrivenReplyBaseDecision::FinalizeDirect { reply } => {
+                if current_continue_phase
+                    .lane_execution
+                    .requires_provider_turn_followup
+                    && let Some(payload) = tool_driven_followup_payload(
+                        current_continue_phase.lane_execution.had_tool_intents,
+                        &current_continue_phase.lane_execution.turn_result,
+                    )
+                {
+                    ReplyLoopDecision::Followup {
+                        raw_reply: reply.clone(),
+                        payload,
+                        requires_completion_pass: false,
+                    }
+                } else {
+                    ReplyLoopDecision::FinalizeDirect(reply.clone())
+                }
+            }
+            ToolDrivenReplyBaseDecision::RequireFollowup {
+                raw_reply,
+                payload: followup,
+            } => ReplyLoopDecision::Followup {
+                raw_reply: raw_reply.clone(),
+                payload: followup.clone(),
+                requires_completion_pass: true,
+            },
+        };
+
+        match reply_decision {
+            ReplyLoopDecision::FinalizeDirect(reply) => {
+                let checkpoint = current_continue_phase.checkpoint(preparation, user_input, &reply);
+                return ResolvedProviderTurn::persist_reply(reply, checkpoint);
+            }
+            ReplyLoopDecision::Followup {
+                raw_reply,
+                payload: followup,
+                requires_completion_pass,
+            } => {
+                let follow_up_messages = build_turn_reply_followup_messages(
+                    &current_preparation.session.messages,
+                    current_continue_phase
+                        .lane_execution
+                        .assistant_preface
+                        .as_str(),
+                    followup.clone(),
+                    user_input,
+                );
+                if current_continue_phase
+                    .lane_execution
+                    .requires_provider_turn_followup
+                    && remaining_provider_rounds > 1
+                {
+                    remaining_provider_rounds -= 1;
+                    let followup_preparation =
+                        current_preparation.for_followup_messages(follow_up_messages);
+                    let followup_tool_view = match runtime.tool_view(
+                        &current_continue_phase.followup_config,
+                        session_id,
+                        kernel_ctx,
+                    ) {
+                        Ok(tool_view) => tool_view,
+                        Err(_error) => {
+                            let checkpoint = current_continue_phase.checkpoint(
+                                preparation,
+                                user_input,
+                                raw_reply.as_str(),
+                            );
+                            return ResolvedProviderTurn::persist_reply(raw_reply, checkpoint);
+                        }
+                    };
+                    match decide_provider_turn_request_action(
+                        runtime
+                            .request_turn(
+                                &current_continue_phase.followup_config,
+                                session_id,
+                                followup_preparation.turn_id.as_str(),
+                                &followup_preparation.session.messages,
+                                &followup_tool_view,
+                                kernel_ctx,
+                            )
+                            .await,
+                        ProviderErrorMode::Propagate,
+                    ) {
+                        ProviderTurnRequestAction::Continue { turn } => {
+                            let turn = scope_provider_turn_tool_intents(
+                                turn,
+                                session_id,
+                                followup_preparation.turn_id.as_str(),
+                            );
+                            current_continue_phase = prepare_provider_turn_continue_phase(
+                                &current_continue_phase.followup_config,
+                                runtime,
+                                session_id,
+                                &followup_preparation,
+                                turn,
+                                kernel_ctx,
+                            )
+                            .await;
+                            current_preparation = followup_preparation;
+                            continue;
+                        }
+                        ProviderTurnRequestAction::FinalizeInlineProviderError { .. }
+                        | ProviderTurnRequestAction::ReturnError { .. } => {
+                            let checkpoint = current_continue_phase.checkpoint(
+                                preparation,
+                                user_input,
+                                raw_reply.as_str(),
+                            );
+                            return ResolvedProviderTurn::persist_reply(raw_reply, checkpoint);
+                        }
+                    }
+                }
+                if requires_completion_pass {
+                    let reply = request_completion_with_raw_fallback(
+                        runtime,
+                        &current_continue_phase.followup_config,
+                        &follow_up_messages,
+                        kernel_ctx,
+                        raw_reply.as_str(),
+                    )
+                    .await;
+                    let checkpoint =
+                        current_continue_phase.checkpoint(preparation, user_input, reply.as_str());
+                    return ResolvedProviderTurn::persist_reply(reply, checkpoint);
+                }
+
+                let checkpoint =
+                    current_continue_phase.checkpoint(preparation, user_input, raw_reply.as_str());
+                return ResolvedProviderTurn::persist_reply(raw_reply, checkpoint);
+            }
         }
     }
 }
@@ -3817,6 +3972,9 @@ async fn execute_provider_turn_lane<R: ConversationRuntime + ?Sized>(
     kernel_ctx: Option<&KernelContext>,
 ) -> ProviderTurnLaneExecution {
     let had_tool_intents = !turn.tool_intents.is_empty();
+    let requires_provider_turn_followup = turn.tool_intents.iter().any(|intent| {
+        crate::tools::canonical_tool_name(intent.tool_name.as_str()) == "tool.search"
+    });
     let assistant_preface = turn.assistant_text.clone();
     let lane = preparation.lane_plan.decision.lane;
     let session_context = match runtime.session_context(config, session_id, kernel_ctx) {
@@ -3826,6 +3984,7 @@ async fn execute_provider_turn_lane<R: ConversationRuntime + ?Sized>(
                 lane,
                 assistant_preface,
                 had_tool_intents,
+                requires_provider_turn_followup,
                 raw_tool_output_requested: preparation.raw_tool_output_requested,
                 turn_result: TurnResult::non_retryable_tool_error("session_context_failed", error),
                 safe_lane_terminal_route: None,
@@ -3886,6 +4045,7 @@ async fn execute_provider_turn_lane<R: ConversationRuntime + ?Sized>(
         lane,
         assistant_preface,
         had_tool_intents,
+        requires_provider_turn_followup,
         raw_tool_output_requested: preparation.raw_tool_output_requested,
         turn_result,
         safe_lane_terminal_route,
@@ -6097,6 +6257,7 @@ mod tests {
                 lane: ExecutionLane::Safe,
                 assistant_preface: "preface".to_owned(),
                 had_tool_intents: true,
+                requires_provider_turn_followup: false,
                 raw_tool_output_requested: false,
                 turn_result: TurnResult::ToolError(TurnFailure::retryable(
                     "safe_lane_plan_node_retryable_error",
@@ -6277,6 +6438,7 @@ mod tests {
                 lane: ExecutionLane::Fast,
                 assistant_preface: "preface".to_owned(),
                 had_tool_intents: false,
+                requires_provider_turn_followup: false,
                 raw_tool_output_requested: false,
                 turn_result: TurnResult::FinalText("hello there".to_owned()),
                 safe_lane_terminal_route: None,

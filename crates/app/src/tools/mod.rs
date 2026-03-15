@@ -748,17 +748,8 @@ fn issue_tool_lease(tool_id: &str, payload: &serde_json::Map<String, Value>) -> 
     format!("{encoded_claims}.{signature}")
 }
 
-#[cfg(test)]
 #[allow(dead_code)]
-pub(crate) fn synthesize_test_provider_tool_call(
-    tool_name: &str,
-    args_json: Value,
-) -> (String, Value) {
-    synthesize_test_provider_tool_call_with_scope(tool_name, args_json, None, None)
-}
-
-#[cfg(test)]
-pub(crate) fn synthesize_test_provider_tool_call_with_scope(
+pub(crate) fn bridge_provider_tool_call_with_scope(
     tool_name: &str,
     args_json: Value,
     session_id: Option<&str>,
@@ -781,6 +772,25 @@ pub(crate) fn synthesize_test_provider_tool_call_with_scope(
             "arguments": args_json,
         }),
     )
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn synthesize_test_provider_tool_call(
+    tool_name: &str,
+    args_json: Value,
+) -> (String, Value) {
+    bridge_provider_tool_call_with_scope(tool_name, args_json, None, None)
+}
+
+#[cfg(test)]
+pub(crate) fn synthesize_test_provider_tool_call_with_scope(
+    tool_name: &str,
+    args_json: Value,
+    session_id: Option<&str>,
+    turn_id: Option<&str>,
+) -> (String, Value) {
+    bridge_provider_tool_call_with_scope(tool_name, args_json, session_id, turn_id)
 }
 
 fn validate_tool_lease(

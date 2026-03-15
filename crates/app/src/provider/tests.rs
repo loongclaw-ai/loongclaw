@@ -1926,6 +1926,8 @@ async fn responses_turn_falls_back_to_chat_completions_for_compatible_endpoints(
 
     let turn = request_turn(
         &config,
+        "session-provider-test",
+        "turn-provider-test",
         &[json!({
             "role": "user",
             "content": "turn ping"

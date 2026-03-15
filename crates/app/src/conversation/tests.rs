@@ -915,6 +915,8 @@ impl ConversationRuntime for FakeRuntime {
     async fn request_turn(
         &self,
         config: &LoongClawConfig,
+        _session_id: &str,
+        _turn_id: &str,
         messages: &[Value],
         tool_view: &crate::tools::ToolView,
         _kernel_ctx: Option<&KernelContext>,
@@ -3761,6 +3763,180 @@ async fn handle_turn_with_runtime_tool_turn_uses_natural_language_completion_by_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_turn_with_runtime_tool_search_requests_a_followup_provider_turn() {
+    use super::integration_tests::TurnTestHarness;
+
+    let harness = TurnTestHarness::new();
+    std::fs::write(
+        harness.temp_dir.join("note.md"),
+        "hello from coordinator search followup test",
+    )
+    .expect("seed test note");
+
+    let runtime = FakeRuntime::with_turns_and_completions(
+        vec![],
+        vec![
+            Ok(ProviderTurn {
+                assistant_text: "Let me search for the right tool first.".to_owned(),
+                tool_intents: vec![provider_tool_intent(
+                    "tool.search",
+                    json!({"query": "read note.md", "limit": 3}),
+                    "session-tool-search",
+                    "turn-tool-search",
+                    "call-tool-search",
+                )],
+                raw_meta: Value::Null,
+            }),
+            Ok(ProviderTurn {
+                assistant_text: "Now I'll read the file.".to_owned(),
+                tool_intents: vec![provider_tool_intent(
+                    "file.read",
+                    json!({"path": "note.md"}),
+                    "session-tool-search",
+                    "turn-tool-search",
+                    "call-tool-invoke",
+                )],
+                raw_meta: Value::Null,
+            }),
+        ],
+        vec![Ok(
+            "Summary: the note says hello from coordinator search followup test.".to_owned(),
+        )],
+    );
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &test_config(),
+            "session-tool-search",
+            "search for the right tool, then read and summarize note.md",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            Some(&harness.kernel_ctx),
+        )
+        .await
+        .expect("tool search turn should succeed");
+
+    assert_eq!(
+        reply,
+        "Summary: the note says hello from coordinator search followup test."
+    );
+    assert_eq!(
+        *runtime
+            .completion_calls
+            .lock()
+            .expect("completion calls lock"),
+        1
+    );
+    assert_eq!(*runtime.turn_calls.lock().expect("turn calls lock"), 2);
+
+    let requested_turn_messages = runtime
+        .turn_requested_messages
+        .lock()
+        .expect("turn request lock")
+        .clone();
+    assert_eq!(requested_turn_messages.len(), 2);
+    assert!(
+        requested_turn_messages[1].iter().any(|message| {
+            message.get("role").and_then(Value::as_str) == Some("assistant")
+                && message
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .is_some_and(|content| content.starts_with("[tool_result]\n"))
+        }),
+        "second provider turn should receive tool-search followup context: {requested_turn_messages:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_turn_with_runtime_tool_search_raw_request_still_uses_followup_provider_turn() {
+    use super::integration_tests::TurnTestHarness;
+
+    let harness = TurnTestHarness::new();
+    std::fs::write(
+        harness.temp_dir.join("note.md"),
+        "hello from coordinator raw search followup test",
+    )
+    .expect("seed test note");
+
+    let runtime = FakeRuntime::with_turns_and_completions(
+        vec![],
+        vec![
+            Ok(ProviderTurn {
+                assistant_text: "Let me search for the right tool first.".to_owned(),
+                tool_intents: vec![provider_tool_intent(
+                    "tool.search",
+                    json!({"query": "read note.md", "limit": 3}),
+                    "session-tool-search-raw",
+                    "turn-tool-search-raw",
+                    "call-tool-search-raw",
+                )],
+                raw_meta: Value::Null,
+            }),
+            Ok(ProviderTurn {
+                assistant_text: "Now I'll read the file.".to_owned(),
+                tool_intents: vec![provider_tool_intent(
+                    "file.read",
+                    json!({"path": "note.md"}),
+                    "session-tool-search-raw",
+                    "turn-tool-search-raw",
+                    "call-tool-invoke-raw",
+                )],
+                raw_meta: Value::Null,
+            }),
+        ],
+        vec![Ok("this must not be used".to_owned())],
+    );
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &test_config(),
+            "session-tool-search-raw",
+            "search for the right tool, then read note.md and show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            Some(&harness.kernel_ctx),
+        )
+        .await
+        .expect("raw tool-search turn should succeed");
+
+    assert!(
+        reply.contains("[ok]"),
+        "raw-request mode should keep tool marker after followup, got: {reply}"
+    );
+    assert!(
+        reply.contains("hello from coordinator raw search followup test"),
+        "expected the second-round tool output, got: {reply}"
+    );
+    assert_eq!(
+        *runtime
+            .completion_calls
+            .lock()
+            .expect("completion calls lock"),
+        0
+    );
+    assert_eq!(*runtime.turn_calls.lock().expect("turn calls lock"), 2);
+
+    let requested_turn_messages = runtime
+        .turn_requested_messages
+        .lock()
+        .expect("turn request lock")
+        .clone();
+    assert_eq!(requested_turn_messages.len(), 2);
+    assert!(
+        requested_turn_messages[1].iter().any(|message| {
+            message.get("role").and_then(Value::as_str) == Some("assistant")
+                && message
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .is_some_and(|content| content.starts_with("[tool_result]\n"))
+        }),
+        "second provider turn should still receive tool-search followup context in raw mode: {requested_turn_messages:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn handle_turn_with_runtime_tool_turn_raw_request_skips_second_pass_completion() {
     use super::integration_tests::TurnTestHarness;
 
@@ -3812,6 +3988,89 @@ async fn handle_turn_with_runtime_tool_turn_raw_request_skips_second_pass_comple
         0
     );
     assert_eq!(*runtime.turn_calls.lock().expect("turn calls lock"), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_turn_with_runtime_tool_search_followup_checkpoint_uses_visible_context() {
+    use super::integration_tests::TurnTestHarness;
+
+    let harness = TurnTestHarness::new();
+    std::fs::write(
+        harness.temp_dir.join("note.md"),
+        "hello from coordinator search checkpoint test",
+    )
+    .expect("seed test note");
+
+    let runtime = FakeRuntime::with_turns_and_completions(
+        vec![],
+        vec![
+            Ok(ProviderTurn {
+                assistant_text: "Let me search for the right tool first.".to_owned(),
+                tool_intents: vec![provider_tool_intent(
+                    "tool.search",
+                    json!({"query": "read note.md", "limit": 3}),
+                    "session-tool-search-checkpoint",
+                    "turn-tool-search-checkpoint",
+                    "call-tool-search-checkpoint",
+                )],
+                raw_meta: Value::Null,
+            }),
+            Ok(ProviderTurn {
+                assistant_text: "Now I'll read the file.".to_owned(),
+                tool_intents: vec![provider_tool_intent(
+                    "file.read",
+                    json!({"path": "note.md"}),
+                    "session-tool-search-checkpoint",
+                    "turn-tool-search-checkpoint",
+                    "call-tool-invoke-checkpoint",
+                )],
+                raw_meta: Value::Null,
+            }),
+        ],
+        vec![Ok(
+            "Summary: the note says hello from coordinator search checkpoint test.".to_owned(),
+        )],
+    );
+    let mut config = test_config();
+    config.conversation.compact_enabled = false;
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "session-tool-search-checkpoint",
+            "search for the right tool, then read and summarize note.md",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            Some(&harness.kernel_ctx),
+        )
+        .await
+        .expect("tool-search checkpoint turn should succeed");
+
+    assert_eq!(
+        reply,
+        "Summary: the note says hello from coordinator search checkpoint test."
+    );
+
+    let persisted = runtime.persisted.lock().expect("persisted lock").clone();
+    let payloads = persisted_conversation_event_payloads_by_name(&persisted, "turn_checkpoint");
+    assert_eq!(
+        payloads.len(),
+        2,
+        "expected post-persist and finalization-success events"
+    );
+    assert_eq!(payloads[0]["stage"], "post_persist");
+    assert_eq!(
+        payloads[0]["checkpoint"]["preparation"]["context_message_count"],
+        1
+    );
+    assert_eq!(
+        payloads[0]["checkpoint"]["preparation"]["context_fingerprint_sha256"],
+        test_turn_preparation_context_fingerprint(&[json!({
+            "role": "user",
+            "content": "search for the right tool, then read and summarize note.md"
+        })])
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -6009,14 +6268,19 @@ fn provider_tool_aliases_flow_through_parse_and_turn_validation() {
 
     let turn = extract_provider_turn(&response_body).expect("provider turn");
     assert_eq!(turn.tool_intents.len(), 1);
-    assert_eq!(turn.tool_intents[0].tool_name, "file.read");
+    assert_eq!(turn.tool_intents[0].tool_name, "tool.invoke");
+    assert_eq!(turn.tool_intents[0].args_json["tool_id"], "file.read");
+    assert_eq!(
+        turn.tool_intents[0].args_json["arguments"],
+        serde_json::json!({"path":"README.md"})
+    );
 
     let engine = TurnEngine::new(1);
     let result = engine.validate_turn(&turn);
     match result {
         Err(reason) => {
             assert!(
-                reason.contains("tool_not_provider_exposed"),
+                reason.contains("kernel_context_required"),
                 "reason: {reason}"
             );
         }

@@ -9,17 +9,25 @@ use crate::conversation::turn_engine::{ProviderTurn, ToolIntent};
 use crate::tools;
 
 pub fn extract_provider_turn(body: &Value) -> Option<ProviderTurn> {
-    if let Some(turn) = extract_responses_provider_turn(body) {
+    extract_provider_turn_with_scope(body, None, None)
+}
+
+pub fn extract_provider_turn_with_scope(
+    body: &Value,
+    session_id: Option<&str>,
+    turn_id: Option<&str>,
+) -> Option<ProviderTurn> {
+    if let Some(turn) = extract_responses_provider_turn(body, session_id, turn_id) {
         return Some(turn);
     }
 
     if let Some(message) = openai_message(body) {
         let mut assistant_text = message_content(message).unwrap_or_default();
         let mut raw_meta = message.clone();
-        let mut tool_intents = extract_openai_tool_intents(message);
+        let mut tool_intents = extract_openai_tool_intents(message, session_id, turn_id);
 
         if tool_intents.is_empty() {
-            match extract_inline_function_call_turn(assistant_text.as_str()) {
+            match extract_inline_function_call_turn(assistant_text.as_str(), session_id, turn_id) {
                 InlineFunctionParseResult::Parsed {
                     cleaned_text,
                     tool_intents: inline_tool_intents,
@@ -46,13 +54,13 @@ pub fn extract_provider_turn(body: &Value) -> Option<ProviderTurn> {
     if let Some(message) = bedrock_message(body) {
         return Some(ProviderTurn {
             assistant_text: message_content(message).unwrap_or_default(),
-            tool_intents: extract_bedrock_tool_intents(message),
+            tool_intents: extract_bedrock_tool_intents(message, session_id, turn_id),
             raw_meta: normalize_bedrock_message(message),
         });
     }
 
     let assistant_text = extract_body_content_text(body).unwrap_or_default();
-    let tool_intents = extract_anthropic_tool_intents(body);
+    let tool_intents = extract_anthropic_tool_intents(body, session_id, turn_id);
     if assistant_text.is_empty() && tool_intents.is_empty() {
         return None;
     }
@@ -103,7 +111,31 @@ fn extract_body_content_text(body: &Value) -> Option<String> {
     body_content_value(body).and_then(extract_content_text)
 }
 
-fn extract_openai_tool_intents(message: &Value) -> Vec<ToolIntent> {
+fn build_provider_tool_intent(
+    raw_tool_name: &str,
+    args_json: Value,
+    source: &str,
+    session_id: Option<&str>,
+    turn_id: Option<&str>,
+    tool_call_id: String,
+) -> ToolIntent {
+    let (tool_name, args_json) =
+        tools::bridge_provider_tool_call_with_scope(raw_tool_name, args_json, session_id, turn_id);
+    ToolIntent {
+        tool_name,
+        args_json,
+        source: source.to_owned(),
+        session_id: session_id.unwrap_or_default().to_owned(),
+        turn_id: turn_id.unwrap_or_default().to_owned(),
+        tool_call_id,
+    }
+}
+
+fn extract_openai_tool_intents(
+    message: &Value,
+    session_id: Option<&str>,
+    turn_id: Option<&str>,
+) -> Vec<ToolIntent> {
     message
         .get("tool_calls")
         .and_then(Value::as_array)
@@ -113,7 +145,6 @@ fn extract_openai_tool_intents(message: &Value) -> Vec<ToolIntent> {
                 .filter_map(|call| {
                     let function = call.get("function")?;
                     let raw_tool_name = function.get("name").and_then(Value::as_str)?;
-                    let tool_name = tools::canonical_tool_name(raw_tool_name).to_owned();
                     let args_str = function
                         .get("arguments")
                         .and_then(Value::as_str)
@@ -130,21 +161,25 @@ fn extract_openai_tool_intents(message: &Value) -> Vec<ToolIntent> {
                         .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_owned();
-                    Some(ToolIntent {
-                        tool_name,
+                    Some(build_provider_tool_intent(
+                        raw_tool_name,
                         args_json,
-                        source: "provider_tool_call".to_owned(),
-                        session_id: String::new(),
-                        turn_id: String::new(),
+                        "provider_tool_call",
+                        session_id,
+                        turn_id,
                         tool_call_id,
-                    })
+                    ))
                 })
                 .collect()
         })
         .unwrap_or_default()
 }
 
-fn extract_anthropic_tool_intents(body: &Value) -> Vec<ToolIntent> {
+fn extract_anthropic_tool_intents(
+    body: &Value,
+    session_id: Option<&str>,
+    turn_id: Option<&str>,
+) -> Vec<ToolIntent> {
     body.get("content")
         .and_then(Value::as_array)
         .map(|blocks| {
@@ -155,25 +190,29 @@ fn extract_anthropic_tool_intents(body: &Value) -> Vec<ToolIntent> {
                         return None;
                     }
                     let raw_tool_name = block.get("name").and_then(Value::as_str)?;
-                    Some(ToolIntent {
-                        tool_name: tools::canonical_tool_name(raw_tool_name).to_owned(),
-                        args_json: block.get("input").cloned().unwrap_or_else(|| json!({})),
-                        source: "provider_tool_call".to_owned(),
-                        session_id: String::new(),
-                        turn_id: String::new(),
-                        tool_call_id: block
+                    Some(build_provider_tool_intent(
+                        raw_tool_name,
+                        block.get("input").cloned().unwrap_or_else(|| json!({})),
+                        "provider_tool_call",
+                        session_id,
+                        turn_id,
+                        block
                             .get("id")
                             .and_then(Value::as_str)
                             .unwrap_or("")
                             .to_owned(),
-                    })
+                    ))
                 })
                 .collect()
         })
         .unwrap_or_default()
 }
 
-fn extract_bedrock_tool_intents(message: &Value) -> Vec<ToolIntent> {
+fn extract_bedrock_tool_intents(
+    message: &Value,
+    session_id: Option<&str>,
+    turn_id: Option<&str>,
+) -> Vec<ToolIntent> {
     message
         .get("content")
         .and_then(Value::as_array)
@@ -183,18 +222,18 @@ fn extract_bedrock_tool_intents(message: &Value) -> Vec<ToolIntent> {
                 .filter_map(|block| {
                     let tool_use = block.get("toolUse")?;
                     let raw_tool_name = tool_use.get("name").and_then(Value::as_str)?;
-                    Some(ToolIntent {
-                        tool_name: tools::canonical_tool_name(raw_tool_name).to_owned(),
-                        args_json: tool_use.get("input").cloned().unwrap_or_else(|| json!({})),
-                        source: "provider_tool_call".to_owned(),
-                        session_id: String::new(),
-                        turn_id: String::new(),
-                        tool_call_id: tool_use
+                    Some(build_provider_tool_intent(
+                        raw_tool_name,
+                        tool_use.get("input").cloned().unwrap_or_else(|| json!({})),
+                        "provider_tool_call",
+                        session_id,
+                        turn_id,
+                        tool_use
                             .get("toolUseId")
                             .and_then(Value::as_str)
                             .unwrap_or("")
                             .to_owned(),
-                    })
+                    ))
                 })
                 .collect()
         })
@@ -245,12 +284,16 @@ fn normalize_bedrock_content_block(block: &Value) -> Option<Value> {
     }))
 }
 
-fn extract_responses_provider_turn(body: &Value) -> Option<ProviderTurn> {
+fn extract_responses_provider_turn(
+    body: &Value,
+    session_id: Option<&str>,
+    turn_id: Option<&str>,
+) -> Option<ProviderTurn> {
     let output = response_output_items(body)?;
     let assistant_text = extract_responses_message_content(body).unwrap_or_default();
     let tool_intents = output
         .iter()
-        .filter_map(response_tool_intent_from_item)
+        .filter_map(|item| response_tool_intent_from_item(item, session_id, turn_id))
         .collect::<Vec<_>>();
 
     if assistant_text.is_empty() && tool_intents.is_empty() {
@@ -295,7 +338,11 @@ fn response_output_items(body: &Value) -> Option<&[Value]> {
         .map(Vec::as_slice)
 }
 
-fn response_tool_intent_from_item(item: &Value) -> Option<ToolIntent> {
+fn response_tool_intent_from_item(
+    item: &Value,
+    session_id: Option<&str>,
+    turn_id: Option<&str>,
+) -> Option<ToolIntent> {
     let item_type = item.get("type").and_then(Value::as_str).unwrap_or_default();
     if item_type != "function_call" && item_type != "tool_call" {
         return None;
@@ -329,14 +376,14 @@ fn response_tool_intent_from_item(item: &Value) -> Option<ToolIntent> {
         .unwrap_or("")
         .to_owned();
 
-    Some(ToolIntent {
-        tool_name: tools::canonical_tool_name(raw_tool_name).to_owned(),
+    Some(build_provider_tool_intent(
+        raw_tool_name,
         args_json,
-        source: "provider_tool_call".to_owned(),
-        session_id: String::new(),
-        turn_id: String::new(),
+        "provider_tool_call",
+        session_id,
+        turn_id,
         tool_call_id,
-    })
+    ))
 }
 
 fn extract_content_text(content: &Value) -> Option<String> {
@@ -497,7 +544,11 @@ fn attach_inline_function_parse_telemetry(
     );
 }
 
-fn extract_inline_function_call_turn(text: &str) -> InlineFunctionParseResult {
+fn extract_inline_function_call_turn(
+    text: &str,
+    session_id: Option<&str>,
+    turn_id: Option<&str>,
+) -> InlineFunctionParseResult {
     const FUNCTION_OPEN: &str = "<function=";
     const FUNCTION_CLOSE: &str = "</function>";
 
@@ -572,14 +623,15 @@ fn extract_inline_function_call_turn(text: &str) -> InlineFunctionParseResult {
 
         found_inline_function = true;
         cleaned.push_str(&text[cursor..start]);
-        tool_intents.push(ToolIntent {
-            tool_name: canonical_tool_name,
+        let tool_call_id = format!("inline-call-{}", tool_intents.len());
+        tool_intents.push(build_provider_tool_intent(
+            canonical_tool_name.as_str(),
             args_json,
-            source: "provider_inline_function_call".to_owned(),
-            session_id: String::new(),
-            turn_id: String::new(),
-            tool_call_id: format!("inline-call-{}", tool_intents.len()),
-        });
+            "provider_inline_function_call",
+            session_id,
+            turn_id,
+            tool_call_id,
+        ));
 
         cursor = function_end;
     }
@@ -1096,7 +1148,12 @@ mod tests {
         let turn = extract_provider_turn(&body).expect("turn");
         assert_eq!(turn.assistant_text, "checking");
         assert_eq!(turn.tool_intents.len(), 1);
-        assert_eq!(turn.tool_intents[0].tool_name, "file.read");
+        assert_eq!(turn.tool_intents[0].tool_name, "tool.invoke");
+        assert_eq!(turn.tool_intents[0].args_json["tool_id"], "file.read");
+        assert_eq!(
+            turn.tool_intents[0].args_json["arguments"],
+            json!({"path":"README.md"})
+        );
         assert_eq!(turn.tool_intents[0].tool_call_id, "call_1");
     }
 
@@ -1121,11 +1178,13 @@ mod tests {
         assert_eq!(turn.tool_intents.len(), 1);
         let args = &turn.tool_intents[0].args_json;
         assert!(
-            args.get("_parse_error").is_some(),
+            args["arguments"].get("_parse_error").is_some(),
             "malformed args should surface parse error, got: {args}"
         );
         assert_eq!(
-            args.get("_raw_arguments").and_then(|v| v.as_str()),
+            args["arguments"]
+                .get("_raw_arguments")
+                .and_then(|v| v.as_str()),
             Some("{{not valid json")
         );
     }
@@ -1149,7 +1208,47 @@ mod tests {
         });
         let turn = extract_provider_turn(&body).expect("turn");
         assert_eq!(turn.tool_intents.len(), 1);
-        assert_eq!(turn.tool_intents[0].tool_name, "file.read");
+        assert_eq!(turn.tool_intents[0].tool_name, "tool.invoke");
+        assert_eq!(turn.tool_intents[0].args_json["tool_id"], "file.read");
+    }
+
+    #[test]
+    fn extract_provider_turn_with_scope_rewrites_discoverable_tools_to_tool_invoke() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": "checking",
+                    "tool_calls": [{
+                        "id": "call_compat",
+                        "type": "function",
+                        "function": {
+                            "name": "file.read",
+                            "arguments": "{\"path\":\"README.md\"}"
+                        }
+                    }]
+                }
+            }]
+        });
+
+        let turn =
+            extract_provider_turn_with_scope(&body, Some("session-shape"), Some("turn-shape"))
+                .expect("turn");
+        assert_eq!(turn.assistant_text, "checking");
+        assert_eq!(turn.tool_intents.len(), 1);
+        assert_eq!(turn.tool_intents[0].tool_name, "tool.invoke");
+        assert_eq!(turn.tool_intents[0].session_id, "session-shape");
+        assert_eq!(turn.tool_intents[0].turn_id, "turn-shape");
+        assert_eq!(turn.tool_intents[0].tool_call_id, "call_compat");
+        assert_eq!(turn.tool_intents[0].args_json["tool_id"], "file.read");
+        assert_eq!(
+            turn.tool_intents[0].args_json["arguments"],
+            json!({"path":"README.md"})
+        );
+        assert!(
+            turn.tool_intents[0].args_json["lease"]
+                .as_str()
+                .is_some_and(|lease: &str| !lease.is_empty())
+        );
     }
 
     #[test]
@@ -1185,11 +1284,27 @@ mod tests {
                 }
             ]
         });
-        let turn = extract_provider_turn(&body).expect("responses turn");
+        let turn = extract_provider_turn_with_scope(
+            &body,
+            Some("session-responses"),
+            Some("turn-responses"),
+        )
+        .expect("responses turn");
         assert_eq!(turn.assistant_text, "Reading the file.");
         assert_eq!(turn.tool_intents.len(), 1);
-        assert_eq!(turn.tool_intents[0].tool_name, "file.read");
-        assert_eq!(turn.tool_intents[0].args_json, json!({"path": "README.md"}));
+        assert_eq!(turn.tool_intents[0].tool_name, "tool.invoke");
+        assert_eq!(turn.tool_intents[0].session_id, "session-responses");
+        assert_eq!(turn.tool_intents[0].turn_id, "turn-responses");
+        assert_eq!(turn.tool_intents[0].args_json["tool_id"], "file.read");
+        assert_eq!(
+            turn.tool_intents[0].args_json["arguments"],
+            json!({"path": "README.md"})
+        );
+        assert!(
+            turn.tool_intents[0].args_json["lease"]
+                .as_str()
+                .is_some_and(|lease| !lease.is_empty())
+        );
         assert_eq!(turn.tool_intents[0].tool_call_id, "call_resp_1");
     }
 
@@ -1209,9 +1324,10 @@ mod tests {
             "sorry, that command failed. let me retry with a simpler approach:"
         );
         assert_eq!(turn.tool_intents.len(), 1);
-        assert_eq!(turn.tool_intents[0].tool_name, "shell.exec");
+        assert_eq!(turn.tool_intents[0].tool_name, "tool.invoke");
+        assert_eq!(turn.tool_intents[0].args_json["tool_id"], "shell.exec");
         assert_eq!(
-            turn.tool_intents[0].args_json,
+            turn.tool_intents[0].args_json["arguments"],
             json!({"command":"ls /root"})
         );
         assert_eq!(
@@ -1240,9 +1356,13 @@ mod tests {
             "i can see the Home Assistant skill is installed. let me call it to fetch all entity states."
         );
         assert_eq!(turn.tool_intents.len(), 1);
-        assert_eq!(turn.tool_intents[0].tool_name, "external_skills.invoke");
+        assert_eq!(turn.tool_intents[0].tool_name, "tool.invoke");
         assert_eq!(
-            turn.tool_intents[0].args_json,
+            turn.tool_intents[0].args_json["tool_id"],
+            "external_skills.invoke"
+        );
+        assert_eq!(
+            turn.tool_intents[0].args_json["arguments"],
             json!({"skill_id":"home-assistant-1-0-0","action":"get_states"})
         );
     }
@@ -1350,8 +1470,12 @@ mod tests {
         let turn = extract_provider_turn(&body).expect("turn");
         assert_eq!(turn.assistant_text, "let me retry:");
         assert_eq!(turn.tool_intents.len(), 1);
-        assert_eq!(turn.tool_intents[0].tool_name, "shell.exec");
-        assert_eq!(turn.tool_intents[0].args_json, json!({"command": "ls"}));
+        assert_eq!(turn.tool_intents[0].tool_name, "tool.invoke");
+        assert_eq!(turn.tool_intents[0].args_json["tool_id"], "shell.exec");
+        assert_eq!(
+            turn.tool_intents[0].args_json["arguments"],
+            json!({"command": "ls"})
+        );
     }
 
     #[test]
@@ -1367,8 +1491,12 @@ mod tests {
         let turn = extract_provider_turn(&body).expect("turn");
         assert_eq!(turn.assistant_text, "let me retry:");
         assert_eq!(turn.tool_intents.len(), 1);
-        assert_eq!(turn.tool_intents[0].tool_name, "shell.exec");
-        assert_eq!(turn.tool_intents[0].args_json, json!({"command": "ls"}));
+        assert_eq!(turn.tool_intents[0].tool_name, "tool.invoke");
+        assert_eq!(turn.tool_intents[0].args_json["tool_id"], "shell.exec");
+        assert_eq!(
+            turn.tool_intents[0].args_json["arguments"],
+            json!({"command": "ls"})
+        );
     }
 
     #[test]
@@ -1384,7 +1512,7 @@ mod tests {
         let turn = extract_provider_turn(&body).expect("turn");
         assert_eq!(turn.tool_intents.len(), 1);
         assert_eq!(
-            turn.tool_intents[0].args_json,
+            turn.tool_intents[0].args_json["arguments"],
             json!({
                 "command": "echo",
                 "args": ["hello", "world"],
@@ -1407,7 +1535,7 @@ mod tests {
         let turn = extract_provider_turn(&body).expect("turn");
         assert_eq!(turn.tool_intents.len(), 1);
         assert_eq!(
-            turn.tool_intents[0].args_json,
+            turn.tool_intents[0].args_json["arguments"],
             json!({
                 "command": "true",
                 "args": ["hello"]
@@ -1494,9 +1622,13 @@ mod tests {
         let turn = extract_provider_turn(&body).expect("turn");
         assert_eq!(turn.assistant_text, "checking");
         assert_eq!(turn.tool_intents.len(), 1);
-        assert_eq!(turn.tool_intents[0].tool_name, "file.read");
+        assert_eq!(turn.tool_intents[0].tool_name, "tool.invoke");
         assert_eq!(turn.tool_intents[0].tool_call_id, "toolu_1");
-        assert_eq!(turn.tool_intents[0].args_json["path"], "README.md");
+        assert_eq!(turn.tool_intents[0].args_json["tool_id"], "file.read");
+        assert_eq!(
+            turn.tool_intents[0].args_json["arguments"]["path"],
+            "README.md"
+        );
     }
 
     #[test]
@@ -1526,9 +1658,13 @@ mod tests {
         let turn = extract_provider_turn(&body).expect("turn");
         assert_eq!(turn.assistant_text, "checking");
         assert_eq!(turn.tool_intents.len(), 1);
-        assert_eq!(turn.tool_intents[0].tool_name, "file.read");
+        assert_eq!(turn.tool_intents[0].tool_name, "tool.invoke");
         assert_eq!(turn.tool_intents[0].tool_call_id, "toolu_1");
-        assert_eq!(turn.tool_intents[0].args_json["path"], "README.md");
+        assert_eq!(turn.tool_intents[0].args_json["tool_id"], "file.read");
+        assert_eq!(
+            turn.tool_intents[0].args_json["arguments"]["path"],
+            "README.md"
+        );
         assert_eq!(turn.raw_meta["content"][1]["type"], "tool_use");
         assert_eq!(turn.raw_meta["content"][1]["id"], "toolu_1");
     }
