@@ -831,10 +831,18 @@ async fn execute_tool_intent_via_kernel<D: AppToolDispatcher + ?Sized>(
             crate::tools::resolve_tool_invoke_request(&prepared_request)
         && effective_descriptor.execution_kind == ToolExecutionKind::App
     {
-        let effective_descriptor = tool_catalog()
+        let Some(effective_descriptor) = tool_catalog()
             .descriptor(effective_descriptor.canonical_name)
             .copied()
-            .expect("resolved tool.invoke target should exist in catalog");
+        else {
+            return Err(TurnResult::non_retryable_tool_error(
+                "tool_catalog_drift",
+                format!(
+                    "tool_catalog_drift: missing descriptor for resolved tool.invoke target `{}`",
+                    effective_descriptor.canonical_name
+                ),
+            ));
+        };
         preflight_app_tool_request(
             app_dispatcher,
             session_context,
