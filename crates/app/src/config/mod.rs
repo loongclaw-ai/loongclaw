@@ -36,21 +36,14 @@ pub(crate) use runtime::{normalize_dispatch_account_id, normalize_dispatch_chann
 pub use shared::expand_path;
 #[allow(unused_imports)]
 pub use tools_memory::{
-    ExternalSkillsConfig, MemoryBackendKind, MemoryConfig, MemoryMode, MemoryProfile, ToolConfig,
+    DEFAULT_SHELL_ALLOW, ExternalSkillsConfig, MemoryBackendKind, MemoryConfig, MemoryMode,
+    MemoryProfile, ToolConfig,
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{collections::BTreeSet, env};
-
-    fn required_env_value(key: &str) -> String {
-        env::var(key)
-            .ok()
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| panic!("required env var {key} must be available for test"))
-    }
+    use std::collections::BTreeSet;
 
     #[test]
     fn endpoint_resolution_for_openai_compatible_is_stable() {
@@ -552,27 +545,40 @@ mod tests {
 
     #[test]
     fn provider_api_key_supports_common_explicit_env_reference_formats() {
-        let expected = required_env_value("PATH");
-        let cases = vec!["${PATH}", "$PATH", "env:PATH", "%PATH%"];
+        // Use a dedicated env var instead of PATH — Windows PATH contains `;`
+        // which `split_secret_candidates` treats as a candidate separator,
+        // causing `api_key()` to return only the first segment.
+        let env_key = "LOONGCLAW_TEST_API_KEY_REF";
+        let env_val = "test-secret-value-for-env-ref";
+        crate::process_env::set_var(env_key, env_val);
 
-        for raw_api_key in cases {
+        let cases = vec![
+            format!("${{{env_key}}}"),
+            format!("${env_key}"),
+            format!("env:{env_key}"),
+            format!("%{env_key}%"),
+        ];
+
+        for raw_api_key in &cases {
             let config = ProviderConfig {
                 kind: ProviderKind::Ollama,
-                api_key: Some(raw_api_key.to_owned()),
+                api_key: Some(raw_api_key.clone()),
                 api_key_env: None,
                 ..ProviderConfig::default()
             };
             assert_eq!(
                 config.api_key().as_deref(),
-                Some(expected.as_str()),
+                Some(env_val),
                 "api_key={raw_api_key}"
             );
             assert_eq!(
                 config.authorization_header().as_deref(),
-                Some(format!("Bearer {expected}").as_str()),
+                Some(format!("Bearer {env_val}").as_str()),
                 "authorization_header should resolve env ref for {raw_api_key}"
             );
         }
+
+        crate::process_env::remove_var(env_key);
     }
 
     #[test]
@@ -603,15 +609,22 @@ mod tests {
 
     #[test]
     fn provider_api_key_env_legacy_fallback_still_works() {
-        let expected = required_env_value("PATH");
+        // Use a dedicated env var instead of PATH — Windows PATH contains `;`
+        // which `split_secret_candidates` treats as a candidate separator.
+        let env_key = "LOONGCLAW_TEST_LEGACY_FALLBACK";
+        let env_val = "test-secret-value-for-legacy";
+        crate::process_env::set_var(env_key, env_val);
+
         let config = ProviderConfig {
             kind: ProviderKind::Ollama,
             api_key: None,
-            api_key_env: Some("PATH".to_owned()),
+            api_key_env: Some(env_key.to_owned()),
             ..ProviderConfig::default()
         };
 
-        assert_eq!(config.api_key().as_deref(), Some(expected.as_str()));
+        assert_eq!(config.api_key().as_deref(), Some(env_val));
+
+        crate::process_env::remove_var(env_key);
     }
 
     #[test]

@@ -1,4 +1,3 @@
-use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{
@@ -14,14 +13,14 @@ use crate::{
     contracts::{
         Capability, CapabilityToken, ConnectorCommand, ConnectorOutcome, HarnessRequest, TaskIntent,
     },
-    errors::{KernelError, PolicyError},
+    errors::KernelError,
     harness::{HarnessAdapter, HarnessBroker},
     memory::{
         CoreMemoryAdapter, MemoryCoreOutcome, MemoryCoreRequest, MemoryExtensionAdapter,
         MemoryExtensionOutcome, MemoryExtensionRequest, MemoryPlane,
     },
     pack::VerticalPackManifest,
-    policy::{PolicyContext, PolicyDecision, PolicyEngine, PolicyRequest},
+    policy::PolicyEngine,
     policy_ext::{PolicyExtension, PolicyExtensionChain, PolicyExtensionContext},
     runtime::{
         CoreRuntimeAdapter, RuntimeCoreOutcome, RuntimeCoreRequest, RuntimeExtensionAdapter,
@@ -262,7 +261,7 @@ impl<P: PolicyEngine> LoongClawKernel<P> {
         task: TaskIntent,
     ) -> Result<KernelDispatch, KernelError> {
         let pack = self.get_pack(pack_id)?;
-        let now = self.authorize_pack_operation(pack, token, &task.required_capabilities)?;
+        let now = self.authorize_pack_operation(pack, token, &task.required_capabilities, None)?;
 
         let request = HarnessRequest {
             token_id: token.token_id.clone(),
@@ -302,7 +301,8 @@ impl<P: PolicyEngine> LoongClawKernel<P> {
     ) -> Result<ConnectorDispatch, KernelError> {
         let pack = self.get_pack(pack_id)?;
         self.assert_connector_allowed(pack, &command.connector_name)?;
-        let now = self.authorize_pack_operation(pack, token, &command.required_capabilities)?;
+        let now =
+            self.authorize_pack_operation(pack, token, &command.required_capabilities, None)?;
         let resolved_core_adapter = core_name
             .map(std::string::ToString::to_string)
             .or_else(|| {
@@ -356,7 +356,8 @@ impl<P: PolicyEngine> LoongClawKernel<P> {
     ) -> Result<ConnectorDispatch, KernelError> {
         let pack = self.get_pack(pack_id)?;
         self.assert_connector_allowed(pack, &command.connector_name)?;
-        let now = self.authorize_pack_operation(pack, token, &command.required_capabilities)?;
+        let now =
+            self.authorize_pack_operation(pack, token, &command.required_capabilities, None)?;
         let resolved_core_adapter = core_name
             .map(std::string::ToString::to_string)
             .or_else(|| {
@@ -412,7 +413,7 @@ impl<P: PolicyEngine> LoongClawKernel<P> {
         request: RuntimeCoreRequest,
     ) -> Result<RuntimeCoreOutcome, KernelError> {
         let pack = self.get_pack(pack_id)?;
-        let now = self.authorize_pack_operation(pack, token, required_capabilities)?;
+        let now = self.authorize_pack_operation(pack, token, required_capabilities, None)?;
         let resolved_core_adapter = core_name
             .map(std::string::ToString::to_string)
             .or_else(|| {
@@ -453,7 +454,7 @@ impl<P: PolicyEngine> LoongClawKernel<P> {
         request: RuntimeExtensionRequest,
     ) -> Result<RuntimeExtensionOutcome, KernelError> {
         let pack = self.get_pack(pack_id)?;
-        let now = self.authorize_pack_operation(pack, token, required_capabilities)?;
+        let now = self.authorize_pack_operation(pack, token, required_capabilities, None)?;
         let resolved_core_adapter = core_name
             .map(std::string::ToString::to_string)
             .or_else(|| {
@@ -493,7 +494,16 @@ impl<P: PolicyEngine> LoongClawKernel<P> {
         request: ToolCoreRequest,
     ) -> Result<ToolCoreOutcome, KernelError> {
         let pack = self.get_pack(pack_id)?;
-        let now = self.authorize_pack_operation(pack, token, required_capabilities)?;
+        let tool_policy_params = serde_json::json!({
+            "tool_name": &request.tool_name,
+            "payload": &request.payload,
+        });
+        let now = self.authorize_pack_operation(
+            pack,
+            token,
+            required_capabilities,
+            Some(&tool_policy_params),
+        )?;
         let resolved_core_adapter = core_name
             .map(std::string::ToString::to_string)
             .or_else(|| {
@@ -503,14 +513,6 @@ impl<P: PolicyEngine> LoongClawKernel<P> {
             })
             .unwrap_or_else(|| "default".to_owned());
         let tool_name = request.tool_name.clone();
-        self.enforce_tool_policy(
-            pack,
-            token,
-            now,
-            required_capabilities,
-            &tool_name,
-            &request.payload,
-        )?;
         let outcome = self
             .tool_plane
             .execute_core(core_name, request)
@@ -542,7 +544,16 @@ impl<P: PolicyEngine> LoongClawKernel<P> {
         request: ToolExtensionRequest,
     ) -> Result<ToolExtensionOutcome, KernelError> {
         let pack = self.get_pack(pack_id)?;
-        let now = self.authorize_pack_operation(pack, token, required_capabilities)?;
+        let tool_policy_params = serde_json::json!({
+            "tool_name": &request.extension_action,
+            "payload": &request.payload,
+        });
+        let now = self.authorize_pack_operation(
+            pack,
+            token,
+            required_capabilities,
+            Some(&tool_policy_params),
+        )?;
         let resolved_core_adapter = core_name
             .map(std::string::ToString::to_string)
             .or_else(|| {
@@ -552,14 +563,6 @@ impl<P: PolicyEngine> LoongClawKernel<P> {
             })
             .unwrap_or_else(|| "default".to_owned());
         let action = request.extension_action.clone();
-        self.enforce_tool_policy(
-            pack,
-            token,
-            now,
-            required_capabilities,
-            &action,
-            &request.payload,
-        )?;
         let outcome = self
             .tool_plane
             .execute_extension(extension_name, core_name, request)
@@ -590,7 +593,7 @@ impl<P: PolicyEngine> LoongClawKernel<P> {
         request: MemoryCoreRequest,
     ) -> Result<MemoryCoreOutcome, KernelError> {
         let pack = self.get_pack(pack_id)?;
-        let now = self.authorize_pack_operation(pack, token, required_capabilities)?;
+        let now = self.authorize_pack_operation(pack, token, required_capabilities, None)?;
         let resolved_core_adapter = core_name
             .map(std::string::ToString::to_string)
             .or_else(|| {
@@ -631,7 +634,7 @@ impl<P: PolicyEngine> LoongClawKernel<P> {
         request: MemoryExtensionRequest,
     ) -> Result<MemoryExtensionOutcome, KernelError> {
         let pack = self.get_pack(pack_id)?;
-        let now = self.authorize_pack_operation(pack, token, required_capabilities)?;
+        let now = self.authorize_pack_operation(pack, token, required_capabilities, None)?;
         let resolved_core_adapter = core_name
             .map(std::string::ToString::to_string)
             .or_else(|| {
@@ -673,10 +676,17 @@ impl<P: PolicyEngine> LoongClawKernel<P> {
         pack: &VerticalPackManifest,
         token: &CapabilityToken,
         required_capabilities: &BTreeSet<Capability>,
+        request_parameters: Option<&serde_json::Value>,
     ) -> Result<u64, KernelError> {
         self.assert_pack_grants(pack, required_capabilities)?;
         let now = self.clock.now_epoch_s();
-        self.authorize_or_audit_denial(pack, token, now, required_capabilities)?;
+        self.authorize_or_audit_denial(
+            pack,
+            token,
+            now,
+            required_capabilities,
+            request_parameters,
+        )?;
         Ok(now)
     }
 
@@ -730,59 +740,13 @@ impl<P: PolicyEngine> LoongClawKernel<P> {
         Ok(())
     }
 
-    fn enforce_tool_policy(
-        &self,
-        pack: &VerticalPackManifest,
-        token: &CapabilityToken,
-        now_epoch_s: u64,
-        required_capabilities: &BTreeSet<Capability>,
-        tool_name: &str,
-        parameters: &Value,
-    ) -> Result<(), KernelError> {
-        let policy_request = PolicyRequest {
-            tool_name: tool_name.to_owned(),
-            parameters: parameters.clone(),
-            pack_id: pack.pack_id.clone(),
-            agent_id: token.agent_id.clone(),
-            capabilities_used: required_capabilities.iter().copied().collect(),
-            context: PolicyContext::default(),
-        };
-
-        match self.policy.check_tool_call(&policy_request) {
-            PolicyDecision::Allow => Ok(()),
-            PolicyDecision::Deny(reason) => {
-                let error = PolicyError::ToolCallDenied {
-                    tool_name: tool_name.to_owned(),
-                    reason,
-                };
-                self.record_tool_call_denial(pack, token, now_epoch_s, &error)?;
-                Err(KernelError::Policy(error))
-            }
-            PolicyDecision::RequireApproval(prompt) => {
-                let error = PolicyError::ToolCallApprovalRequired {
-                    tool_name: tool_name.to_owned(),
-                    prompt,
-                };
-                self.record_tool_call_denial(pack, token, now_epoch_s, &error)?;
-                Err(KernelError::Policy(error))
-            }
-            _ => {
-                let error = PolicyError::ExtensionDenied {
-                    extension: "policy".to_owned(),
-                    reason: format!("unexpected policy decision for tool `{tool_name}`"),
-                };
-                self.record_tool_call_denial(pack, token, now_epoch_s, &error)?;
-                Err(KernelError::Policy(error))
-            }
-        }
-    }
-
+    #[cfg(test)]
     pub(crate) fn record_tool_call_denial(
         &self,
         pack: &VerticalPackManifest,
         token: &CapabilityToken,
         now_epoch_s: u64,
-        error: &PolicyError,
+        error: &crate::errors::PolicyError,
     ) -> Result<(), KernelError> {
         self.audit.record(self.new_event(
             now_epoch_s,
@@ -802,6 +766,7 @@ impl<P: PolicyEngine> LoongClawKernel<P> {
         token: &CapabilityToken,
         now_epoch_s: u64,
         required_capabilities: &BTreeSet<Capability>,
+        request_parameters: Option<&serde_json::Value>,
     ) -> Result<(), KernelError> {
         if let Err(policy_error) =
             self.policy
@@ -824,6 +789,7 @@ impl<P: PolicyEngine> LoongClawKernel<P> {
             token,
             now_epoch_s,
             required_capabilities,
+            request_parameters,
         }) {
             self.audit.record(self.new_event(
                 now_epoch_s,

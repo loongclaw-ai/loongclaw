@@ -132,7 +132,7 @@ pub(super) fn resolve_safe_file_path_with_config(
     } else {
         root.join(candidate)
     };
-    let normalized = normalize_without_fs_access(&combined);
+    let normalized = super::normalize_without_fs(&combined);
     resolve_path_within_root(&root, &normalized)
 }
 
@@ -141,7 +141,7 @@ fn canonicalize_or_fallback(path: PathBuf) -> Result<PathBuf, String> {
         return fs::canonicalize(&path)
             .map_err(|error| format!("failed to canonicalize {}: {error}", path.display()));
     }
-    Ok(normalize_without_fs_access(&path))
+    Ok(super::normalize_without_fs(&path))
 }
 
 fn resolve_path_within_root(root: &Path, normalized: &Path) -> Result<PathBuf, String> {
@@ -213,6 +213,7 @@ fn split_existing_ancestor(path: &Path) -> Result<(PathBuf, Vec<OsString>), Stri
     }
 }
 
+#[allow(dead_code)]
 fn normalize_without_fs_access(path: &Path) -> PathBuf {
     let mut parts = Vec::new();
     for component in path.components() {
@@ -272,9 +273,8 @@ mod tests {
         assert!(create_symlink(&outside_file, &link).is_ok());
 
         let config = ToolRuntimeConfig {
-            shell_allowlist: Default::default(),
             file_root: Some(root),
-            external_skills: Default::default(),
+            ..ToolRuntimeConfig::default()
         };
         let error =
             resolve_safe_file_path_with_config("secret-link", &config).expect_err("escape denied");
@@ -296,9 +296,8 @@ mod tests {
         assert!(create_symlink(&outside_dir, &link).is_ok());
 
         let config = ToolRuntimeConfig {
-            shell_allowlist: Default::default(),
             file_root: Some(root),
-            external_skills: Default::default(),
+            ..ToolRuntimeConfig::default()
         };
         let request = ToolCoreRequest {
             tool_name: "file.write".to_owned(),
@@ -322,9 +321,8 @@ mod tests {
         fs::create_dir_all(&root).expect("create root");
 
         let config = ToolRuntimeConfig {
-            shell_allowlist: Default::default(),
             file_root: Some(root.clone()),
-            external_skills: Default::default(),
+            ..ToolRuntimeConfig::default()
         };
         let request = ToolCoreRequest {
             tool_name: "file.write".to_owned(),

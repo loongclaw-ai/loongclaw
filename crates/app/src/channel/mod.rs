@@ -1010,13 +1010,22 @@ fn apply_runtime_env(config: &LoongClawConfig) {
     // Populate the typed tool runtime config so executors never hit env vars
     // on the hot path.  Ignore the error if already initialised.
     let tool_rt = crate::tools::runtime_config::ToolRuntimeConfig {
-        shell_allowlist: config
+        file_root: Some(config.tools.resolved_file_root()),
+        shell_allow: config
             .tools
-            .shell_allowlist
+            .shell_allow
             .iter()
             .map(|s| s.to_ascii_lowercase())
             .collect(),
-        file_root: Some(config.tools.resolved_file_root()),
+        shell_deny: config
+            .tools
+            .shell_deny
+            .iter()
+            .map(|s| s.to_ascii_lowercase())
+            .collect(),
+        shell_default_mode: crate::tools::shell_policy_ext::ShellPolicyDefault::parse(
+            &config.tools.shell_default_mode,
+        ),
         external_skills: crate::tools::runtime_config::ExternalSkillsRuntimePolicy {
             enabled: config.external_skills.enabled,
             require_download_approval: config.external_skills.require_download_approval,

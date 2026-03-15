@@ -30,7 +30,6 @@ pub struct ToolIntent {
 pub struct ToolDecision {
     pub allow: bool,
     pub deny: bool,
-    pub approval_required: bool,
     pub reason: String,
     pub rule_id: String,
 }
@@ -61,7 +60,6 @@ const MAX_TOOL_RESULT_PAYLOAD_SUMMARY_LIMIT_CHARS: usize = 64_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnFailureKind {
-    ApprovalRequired,
     PolicyDenied,
     Retryable,
     NonRetryable,
@@ -77,15 +75,6 @@ pub struct TurnFailure {
 }
 
 impl TurnFailure {
-    pub fn approval_required(code: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self {
-            kind: TurnFailureKind::ApprovalRequired,
-            code: code.into(),
-            reason: reason.into(),
-            retryable: false,
-        }
-    }
-
     pub fn policy_denied(code: impl Into<String>, reason: impl Into<String>) -> Self {
         Self {
             kind: TurnFailureKind::PolicyDenied,
@@ -144,17 +133,12 @@ impl fmt::Display for TurnFailure {
 #[derive(Debug, Clone)]
 pub enum TurnResult {
     FinalText(String),
-    NeedsApproval(TurnFailure),
     ToolDenied(TurnFailure),
     ToolError(TurnFailure),
     ProviderError(TurnFailure),
 }
 
 impl TurnResult {
-    pub fn needs_approval(code: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self::NeedsApproval(TurnFailure::approval_required(code, reason))
-    }
-
     pub fn policy_denied(code: impl Into<String>, reason: impl Into<String>) -> Self {
         Self::ToolDenied(TurnFailure::policy_denied(code, reason))
     }
@@ -174,8 +158,7 @@ impl TurnResult {
     pub fn failure(&self) -> Option<&TurnFailure> {
         match self {
             TurnResult::FinalText(_) => None,
-            TurnResult::NeedsApproval(failure)
-            | TurnResult::ToolDenied(failure)
+            TurnResult::ToolDenied(failure)
             | TurnResult::ToolError(failure)
             | TurnResult::ProviderError(failure) => Some(failure),
         }
@@ -184,7 +167,6 @@ impl TurnResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum KernelFailureClass {
-    ApprovalRequired,
     PolicyDenied,
     RetryableExecution,
     NonRetryable,
@@ -193,9 +175,6 @@ pub(crate) enum KernelFailureClass {
 pub(crate) fn classify_kernel_error(error: &KernelError) -> KernelFailureClass {
     #[allow(clippy::wildcard_enum_match_arm)]
     match error {
-        KernelError::Policy(loongclaw_contracts::PolicyError::ToolCallApprovalRequired {
-            ..
-        }) => KernelFailureClass::ApprovalRequired,
         KernelError::Policy(_)
         | KernelError::PackCapabilityBoundary { .. }
         | KernelError::ConnectorNotAllowed { .. } => KernelFailureClass::PolicyDenied,
@@ -326,7 +305,7 @@ impl TurnEngine {
         }
 
         // All tools validated — execution requires a kernel context
-        TurnResult::needs_approval("kernel_context_required", "kernel_context_required")
+        TurnResult::policy_denied("kernel_context_required", "kernel_context_required")
     }
 
     /// Execute a provider turn with policy-gated tool execution through the kernel.
@@ -390,9 +369,6 @@ impl TurnEngine {
                 Err(e) => {
                     let reason = format!("{e}");
                     return match classify_kernel_error(&e) {
-                        KernelFailureClass::ApprovalRequired => {
-                            TurnResult::needs_approval("kernel_approval_required", reason)
-                        }
                         KernelFailureClass::PolicyDenied => {
                             TurnResult::policy_denied("kernel_policy_denied", reason)
                         }

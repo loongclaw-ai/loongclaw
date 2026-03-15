@@ -11,6 +11,7 @@ pub struct PolicyExtensionContext<'a> {
     pub token: &'a CapabilityToken,
     pub now_epoch_s: u64,
     pub required_capabilities: &'a BTreeSet<Capability>,
+    pub request_parameters: Option<&'a serde_json::Value>,
 }
 
 pub trait PolicyExtension: Send + Sync {

@@ -25,12 +25,27 @@ pub(super) fn build_request_headers(provider: &ProviderConfig) -> CliResult<Head
 }
 
 pub(super) async fn decode_response_body(response: reqwest::Response) -> CliResult<Value> {
-    let raw = response
-        .text()
-        .await
-        .map_err(|error| format!("read response body failed: {error}"))?;
-    if raw.trim().is_empty() {
+    let status = response.status().as_u16();
+    let content_encoding = response
+        .headers()
+        .get("content-encoding")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("none")
+        .to_owned();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("none")
+        .to_owned();
+    let bytes = response.bytes().await.map_err(|error| {
+        format!(
+            "read response body failed: {error} [status={status}, content-encoding={content_encoding}, content-type={content_type}]"
+        )
+    })?;
+    if bytes.is_empty() {
         return Ok(json!({}));
     }
-    Ok(serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| json!({"raw_body": raw})))
+    let text = String::from_utf8_lossy(&bytes);
+    Ok(serde_json::from_str::<Value>(&text).unwrap_or_else(|_| json!({"raw_body": text.as_ref()})))
 }

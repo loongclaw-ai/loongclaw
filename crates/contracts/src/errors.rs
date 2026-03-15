@@ -39,8 +39,6 @@ pub enum PolicyError {
     ExtensionDenied { extension: String, reason: String },
     #[error("tool call denied by policy for `{tool_name}`: {reason}")]
     ToolCallDenied { tool_name: String, reason: String },
-    #[error("tool call requires approval for `{tool_name}`: {prompt}")]
-    ToolCallApprovalRequired { tool_name: String, prompt: String },
 }
 
 #[non_exhaustive]

@@ -26,7 +26,7 @@ semver = "1"
 thiserror = "2"
 time = { version = "0.3.47", features = ["formatting", "local-offset", "macros", "parsing"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net", "io-util", "io-std", "process", "signal"] }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "gzip", "deflate"] }
 futures-util = "0.3"
 sha2 = "0.10"
 flate2 = "1"

@@ -1565,7 +1565,6 @@ mod tests {
 
     fn base_runtime_config() -> ToolRuntimeConfig {
         ToolRuntimeConfig {
-            shell_allowlist: BTreeSet::new(),
             file_root: Some(std::env::temp_dir().join("loongclaw-ext-skills-tests")),
             external_skills: ExternalSkillsRuntimePolicy {
                 enabled: false,
@@ -1575,6 +1574,7 @@ mod tests {
                 install_root: None,
                 auto_expose_installed: true,
             },
+            ..ToolRuntimeConfig::default()
         }
     }
 
@@ -1596,7 +1596,6 @@ mod tests {
 
     fn managed_runtime_config(root: &Path) -> ToolRuntimeConfig {
         ToolRuntimeConfig {
-            shell_allowlist: BTreeSet::new(),
             file_root: Some(root.to_path_buf()),
             external_skills: ExternalSkillsRuntimePolicy {
                 enabled: true,
@@ -1606,6 +1605,7 @@ mod tests {
                 install_root: None,
                 auto_expose_installed: true,
             },
+            ..ToolRuntimeConfig::default()
         }
     }
 

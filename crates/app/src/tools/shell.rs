@@ -7,11 +7,11 @@ use serde_json::{Value, json};
 
 pub(super) fn execute_shell_tool_with_config(
     request: ToolCoreRequest,
-    config: &super::runtime_config::ToolRuntimeConfig,
+    _config: &super::runtime_config::ToolRuntimeConfig,
 ) -> Result<ToolCoreOutcome, String> {
     #[cfg(not(feature = "tool-shell"))]
     {
-        let _ = (request, config);
+        let _ = (request, _config);
         return Err(
             "shell tool is disabled in this build (enable feature `tool-shell`)".to_owned(),
         );
@@ -44,15 +44,6 @@ pub(super) fn execute_shell_tool_with_config(
             .and_then(Value::as_str)
             .map(PathBuf::from)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-
-        let allowlist = &config.shell_allowlist;
-        let normalized_command = command.to_ascii_lowercase();
-        if !allowlist.contains(&normalized_command) {
-            return Err(format!(
-                "shell command `{command}` is not allowed (allowlist={})",
-                allowlist.iter().cloned().collect::<Vec<_>>().join(",")
-            ));
-        }
 
         let output = Command::new(command)
             .args(&args)

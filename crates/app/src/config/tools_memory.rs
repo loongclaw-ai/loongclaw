@@ -12,10 +12,42 @@ pub(crate) const MAX_MEMORY_SLIDING_WINDOW: usize = 128;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolConfig {
-    #[serde(default = "default_shell_allowlist")]
-    pub shell_allowlist: Vec<String>,
     #[serde(default)]
     pub file_root: Option<String>,
+    /// Commands to allow. Defaults to empty — no commands are allowed unless
+    /// explicitly configured.
+    #[serde(default = "default_shell_allow")]
+    pub shell_allow: Vec<String>,
+    /// Commands to hard-deny.
+    #[serde(default)]
+    pub shell_deny: Vec<String>,
+    /// Default policy for unknown commands: "deny" (default) or "allow".
+    #[serde(default = "default_shell_default_mode")]
+    pub shell_default_mode: String,
+}
+
+fn default_shell_default_mode() -> String {
+    "deny".to_owned()
+}
+
+/// Default allow list used when the config file omits `shell_allow`.
+///
+/// Empty by design: no commands are allowed unless the user explicitly
+/// configures `shell_allow` in their config file. This upholds the
+/// default-deny principle — silent implicit permissions are not injected.
+///
+/// Also used by `ToolRuntimeConfig::default()` so the runtime fallback
+/// and a freshly-parsed config file agree on the initial allow set.
+pub const DEFAULT_SHELL_ALLOW: &[&str] = &[];
+
+/// Serde default for `ToolConfig::shell_allow`.
+///
+/// Returns an empty list — no commands are implicitly allowed.
+fn default_shell_allow() -> Vec<String> {
+    DEFAULT_SHELL_ALLOW
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,8 +151,10 @@ pub enum MemoryMode {
 impl Default for ToolConfig {
     fn default() -> Self {
         Self {
-            shell_allowlist: default_shell_allowlist(),
             file_root: None,
+            shell_allow: default_shell_allow(),
+            shell_deny: Vec::new(),
+            shell_default_mode: default_shell_default_mode(),
         }
     }
 }
@@ -144,6 +178,10 @@ impl ToolConfig {
             return expand_path(path);
         }
         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    }
+
+    pub(super) fn validate(&self) -> Vec<ConfigValidationIssue> {
+        Vec::new()
     }
 }
 
@@ -224,10 +262,6 @@ fn default_sqlite_path() -> String {
         .to_string()
 }
 
-fn default_shell_allowlist() -> Vec<String> {
-    vec!["echo".to_owned(), "pwd".to_owned()]
-}
-
 const fn default_require_download_approval() -> bool {
     true
 }
@@ -246,7 +280,6 @@ fn normalize_domain_entries(entries: &[String]) -> Vec<String> {
     }
     normalized.into_iter().collect()
 }
-
 const fn default_sliding_window() -> usize {
     12
 }
@@ -279,6 +312,33 @@ mod tests {
             config.trimmed_profile_note().as_deref(),
             Some("imported preferences")
         );
+    }
+
+    /// When `shell_deny` is absent, it must default to empty — users start
+    /// with no blocked commands beyond the default-deny fallback.
+    #[test]
+    #[cfg(feature = "config-toml")]
+    fn tool_config_deny_defaults_to_empty() {
+        let config: ToolConfig = toml::from_str("").expect("empty toml");
+        assert!(config.shell_deny.is_empty());
+    }
+
+    /// An explicit `shell_allow = []` in the config file must produce an empty
+    /// list, even though the serde default is non-empty.
+    #[test]
+    #[cfg(feature = "config-toml")]
+    fn tool_config_explicit_empty_shell_allow_is_respected() {
+        let config: ToolConfig = toml::from_str("shell_allow = []").expect("toml with empty allow");
+        assert!(config.shell_allow.is_empty());
+    }
+
+    /// An explicit `shell_allow` with custom values replaces the defaults
+    /// entirely; none of the 4 initial commands are injected.
+    #[test]
+    #[cfg(feature = "config-toml")]
+    fn tool_config_explicit_shell_allow_replaces_defaults() {
+        let config: ToolConfig = toml::from_str(r#"shell_allow = ["myapp"]"#).expect("toml");
+        assert_eq!(config.shell_allow, vec!["myapp"]);
     }
 
     #[test]

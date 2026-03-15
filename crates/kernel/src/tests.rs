@@ -25,7 +25,7 @@ use crate::{
         MemoryExtensionOutcome, MemoryExtensionRequest,
     },
     pack::VerticalPackManifest,
-    policy::{PolicyDecision, PolicyEngine, PolicyRequest, StaticPolicyEngine},
+    policy::{PolicyEngine, StaticPolicyEngine},
     policy_ext::{PolicyExtension, PolicyExtensionContext},
     runtime::{
         CoreRuntimeAdapter, RuntimeCoreOutcome, RuntimeCoreRequest, RuntimeExtensionAdapter,
@@ -1017,64 +1017,44 @@ impl PolicyExtension for NoNetworkEgressPolicyExtension {
 #[derive(Debug, Clone, Copy)]
 enum ToolGateMode {
     Deny,
-    RequireApproval,
 }
 
 #[derive(Debug)]
-struct ToolGatePolicyEngine {
-    base: StaticPolicyEngine,
+struct ToolGatePolicyExtension {
     gated_tool: String,
     mode: ToolGateMode,
 }
 
-impl ToolGatePolicyEngine {
+impl ToolGatePolicyExtension {
     fn new(gated_tool: &str, mode: ToolGateMode) -> Self {
         Self {
-            base: StaticPolicyEngine::default(),
             gated_tool: gated_tool.to_owned(),
             mode,
         }
     }
 }
 
-impl PolicyEngine for ToolGatePolicyEngine {
-    fn issue_token(
-        &self,
-        pack: &VerticalPackManifest,
-        agent_id: &str,
-        now_epoch_s: u64,
-        ttl_s: u64,
-    ) -> Result<crate::CapabilityToken, PolicyError> {
-        self.base.issue_token(pack, agent_id, now_epoch_s, ttl_s)
+impl PolicyExtension for ToolGatePolicyExtension {
+    fn name(&self) -> &str {
+        "tool-gate"
     }
 
-    fn authorize(
-        &self,
-        token: &crate::CapabilityToken,
-        runtime_pack_id: &str,
-        now_epoch_s: u64,
-        required: &BTreeSet<Capability>,
-    ) -> Result<(), PolicyError> {
-        self.base
-            .authorize(token, runtime_pack_id, now_epoch_s, required)
-    }
-
-    fn revoke_token(&self, token_id: &str) -> Result<(), PolicyError> {
-        self.base.revoke_token(token_id)
-    }
-
-    fn check_tool_call(&self, request: &PolicyRequest) -> PolicyDecision {
-        if request.tool_name != self.gated_tool {
-            return PolicyDecision::Allow;
+    fn authorize_extension(&self, context: &PolicyExtensionContext<'_>) -> Result<(), PolicyError> {
+        let Some(params) = context.request_parameters else {
+            return Ok(());
+        };
+        let tool_name = params
+            .get("tool_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if tool_name != self.gated_tool {
+            return Ok(());
         }
-
         match self.mode {
-            ToolGateMode::Deny => {
-                PolicyDecision::Deny("blocked by deterministic policy rule".to_owned())
-            }
-            ToolGateMode::RequireApproval => {
-                PolicyDecision::RequireApproval("manual approval required for this tool".to_owned())
-            }
+            ToolGateMode::Deny => Err(PolicyError::ToolCallDenied {
+                tool_name: tool_name.to_owned(),
+                reason: "blocked by deterministic policy rule".to_owned(),
+            }),
         }
     }
 }
@@ -1566,11 +1546,8 @@ async fn audit_event_json_schema_for_plane_invoked_is_stable() {
 async fn tool_core_call_is_denied_when_policy_engine_rejects_rule_of_two_gate() {
     let clock: Arc<FixedClock> = Arc::new(FixedClock::new(1_700_002_000));
     let audit = Arc::new(InMemoryAuditSink::default());
-    let mut kernel = LoongClawKernel::with_runtime(
-        ToolGatePolicyEngine::new("shell.exec", ToolGateMode::Deny),
-        clock.clone(),
-        audit.clone(),
-    );
+    let mut kernel =
+        LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock.clone(), audit.clone());
     kernel
         .register_pack(VerticalPackManifest {
             pack_id: "tool-gate-deny".to_owned(),
@@ -1586,6 +1563,10 @@ async fn tool_core_call_is_denied_when_policy_engine_rejects_rule_of_two_gate() 
         })
         .expect("pack should register");
     kernel.register_core_tool_adapter(MockCoreTool);
+    kernel.register_policy_extension(ToolGatePolicyExtension::new(
+        "shell.exec",
+        ToolGateMode::Deny,
+    ));
 
     let token = kernel
         .issue_token("tool-gate-deny", "agent-deny", 120)
@@ -1620,69 +1601,6 @@ async fn tool_core_call_is_denied_when_policy_engine_rejects_rule_of_two_gate() 
             if pack_id == "tool-gate-deny"
                 && token_id == &token.token_id
                 && reason.contains("tool call denied by policy")
-    ));
-}
-
-#[tokio::test]
-async fn tool_extension_call_reports_approval_required_when_policy_requires_human_gate() {
-    let clock: Arc<FixedClock> = Arc::new(FixedClock::new(1_700_003_000));
-    let audit = Arc::new(InMemoryAuditSink::default());
-    let mut kernel = LoongClawKernel::with_runtime(
-        ToolGatePolicyEngine::new("query_ledger", ToolGateMode::RequireApproval),
-        clock.clone(),
-        audit.clone(),
-    );
-    kernel
-        .register_pack(VerticalPackManifest {
-            pack_id: "tool-gate-approval".to_owned(),
-            domain: "finance".to_owned(),
-            version: "0.1.0".to_owned(),
-            default_route: ExecutionRoute {
-                harness_kind: HarnessKind::EmbeddedPi,
-                adapter: Some("pi-local".to_owned()),
-            },
-            allowed_connectors: BTreeSet::new(),
-            granted_capabilities: BTreeSet::from([Capability::InvokeTool]),
-            metadata: BTreeMap::new(),
-        })
-        .expect("pack should register");
-    kernel.register_core_tool_adapter(MockCoreTool);
-    kernel.register_tool_extension_adapter(MockToolExtension);
-
-    let token = kernel
-        .issue_token("tool-gate-approval", "agent-approval", 120)
-        .expect("token should issue");
-    let required = BTreeSet::from([Capability::InvokeTool]);
-
-    let error = kernel
-        .execute_tool_extension(
-            "tool-gate-approval",
-            &token,
-            &required,
-            "sql-analytics",
-            None,
-            ToolExtensionRequest {
-                extension_action: "query_ledger".to_owned(),
-                payload: json!({"sql": "select * from ledger"}),
-            },
-        )
-        .await
-        .expect_err("tool extension should require approval before execution");
-
-    assert!(matches!(
-        error,
-        KernelError::Policy(PolicyError::ToolCallApprovalRequired { tool_name, .. })
-            if tool_name == "query_ledger"
-    ));
-
-    let events = audit.snapshot();
-    assert_eq!(events.len(), 2);
-    assert!(matches!(
-        &events[1].kind,
-        AuditEventKind::AuthorizationDenied { pack_id, token_id, reason }
-            if pack_id == "tool-gate-approval"
-                && token_id == &token.token_id
-                && reason.contains("requires approval")
     ));
 }
 

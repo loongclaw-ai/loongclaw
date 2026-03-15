@@ -63,6 +63,8 @@ pub(crate) fn bootstrap_kernel_context(
             Capability::InvokeTool,
             Capability::MemoryRead,
             Capability::MemoryWrite,
+            Capability::FilesystemRead,
+            Capability::FilesystemWrite,
         ]),
         metadata: BTreeMap::new(),
     };
@@ -85,6 +87,16 @@ pub(crate) fn bootstrap_kernel_context(
     kernel
         .set_default_core_tool_adapter("mvp-tools")
         .map_err(|e| format!("set default tool adapter failed: {e}"))?;
+
+    // Register policy extensions for unified security enforcement.
+    let tool_rt = crate::tools::runtime_config::get_tool_runtime_config();
+    kernel.register_policy_extension(
+        crate::tools::shell_policy_ext::ToolPolicyExtension::from_config(tool_rt),
+    );
+    let file_root = tool_rt.file_root.clone();
+    kernel.register_policy_extension(crate::tools::file_policy_ext::FilePolicyExtension::new(
+        file_root,
+    ));
 
     let token = kernel
         .issue_token(MVP_PACK_ID, agent_id, ttl_s)

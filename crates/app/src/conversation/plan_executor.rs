@@ -35,7 +35,6 @@ pub enum PlanRunFailure {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanNodeErrorKind {
     Retryable,
-    ApprovalRequired,
     PolicyDenied,
     NonRetryable,
 }
@@ -57,13 +56,6 @@ impl PlanNodeError {
     pub fn policy_denied(message: impl Into<String>) -> Self {
         Self {
             kind: PlanNodeErrorKind::PolicyDenied,
-            message: message.into(),
-        }
-    }
-
-    pub fn approval_required(message: impl Into<String>) -> Self {
-        Self {
-            kind: PlanNodeErrorKind::ApprovalRequired,
             message: message.into(),
         }
     }
@@ -246,7 +238,7 @@ impl PlanExecutor {
                             });
                             // Approval-required failures are terminal until the caller changes
                             // execution context, so retrying the same node cannot make progress.
-                            if normalized.kind == PlanNodeErrorKind::ApprovalRequired
+                            if normalized.kind == PlanNodeErrorKind::PolicyDenied
                                 || attempt == node.max_attempts
                             {
                                 let elapsed_ms = started_at.elapsed().as_millis();
@@ -476,31 +468,31 @@ mod tests {
         }
     }
 
-    struct ApprovalRequiredExecutor {
-        approval_node: String,
+    struct PolicyDeniedExecutor {
+        denied_node: String,
         calls: Mutex<Vec<String>>,
     }
 
-    impl ApprovalRequiredExecutor {
+    impl PolicyDeniedExecutor {
         fn new(node_id: &str) -> Self {
             Self {
-                approval_node: node_id.to_owned(),
+                denied_node: node_id.to_owned(),
                 calls: Mutex::new(Vec::new()),
             }
         }
     }
 
     #[async_trait]
-    impl PlanNodeExecutor for ApprovalRequiredExecutor {
+    impl PlanNodeExecutor for PolicyDeniedExecutor {
         async fn execute(&self, node: &PlanNode, attempt: u8) -> Result<(), PlanNodeError> {
             self.calls
                 .lock()
                 .expect("calls lock")
                 .push(format!("{}#{attempt}", node.id));
 
-            if node.id == self.approval_node {
-                return Err(PlanNodeError::approval_required(format!(
-                    "approval required for {}",
+            if node.id == self.denied_node {
+                return Err(PlanNodeError::policy_denied(format!(
+                    "policy denied for {}",
                     node.id
                 )));
             }
@@ -660,9 +652,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn executor_stops_retrying_after_approval_required_failure() {
+    async fn executor_stops_retrying_after_policy_denied_failure() {
         let graph = sample_graph();
-        let executor = ApprovalRequiredExecutor::new("n2");
+        let executor = PolicyDeniedExecutor::new("n2");
         let report = PlanExecutor::execute(&graph, &executor).await;
 
         #[allow(clippy::wildcard_enum_match_arm)]
@@ -675,13 +667,13 @@ mod tests {
             }) => {
                 assert_eq!(node_id, "n2");
                 assert_eq!(attempts_used, 1);
-                assert_eq!(last_error_kind, PlanNodeErrorKind::ApprovalRequired);
+                assert_eq!(last_error_kind, PlanNodeErrorKind::PolicyDenied);
                 assert!(
-                    last_error.contains("approval required"),
-                    "expected approval-required reason, got: {last_error}"
+                    last_error.contains("policy denied"),
+                    "expected policy-denied reason, got: {last_error}"
                 );
             }
-            other => panic!("expected approval-required node failure, got: {other:?}"),
+            other => panic!("expected policy-denied node failure, got: {other:?}"),
         }
 
         let calls = executor.calls.lock().expect("calls lock").clone();

@@ -548,7 +548,7 @@ fn tool_round_outcome(turn_result: &TurnResult) -> Option<ToolRoundOutcome> {
             fingerprint: text_fingerprint("tool_error", reason),
             failed: true,
         }),
-        TurnResult::NeedsApproval(_) | TurnResult::ProviderError(_) => None,
+        TurnResult::ProviderError(_) => None,
     }
 }
 

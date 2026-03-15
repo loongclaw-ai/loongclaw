@@ -2,6 +2,8 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+use super::shell_policy_ext::ShellPolicyDefault;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalSkillsRuntimePolicy {
     pub enabled: bool,
@@ -29,28 +31,36 @@ impl Default for ExternalSkillsRuntimePolicy {
 ///
 /// Replaces per-call `std::env::var` lookups with a single read from a
 /// process-wide singleton that is populated once at startup.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ToolRuntimeConfig {
-    pub shell_allowlist: BTreeSet<String>,
     pub file_root: Option<PathBuf>,
+    pub shell_allow: BTreeSet<String>,
+    pub shell_deny: BTreeSet<String>,
+    pub shell_default_mode: ShellPolicyDefault,
     pub external_skills: ExternalSkillsRuntimePolicy,
+}
+
+impl Default for ToolRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            file_root: None,
+            shell_allow: crate::config::DEFAULT_SHELL_ALLOW
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect(),
+            shell_deny: BTreeSet::new(),
+            shell_default_mode: ShellPolicyDefault::Deny,
+            external_skills: ExternalSkillsRuntimePolicy::default(),
+        }
+    }
 }
 
 impl ToolRuntimeConfig {
     /// Build a config by reading the legacy environment variables.
     ///
     /// Keeps full backward compatibility for callers that still rely on
-    /// `LOONGCLAW_SHELL_ALLOWLIST` / `LOONGCLAW_FILE_ROOT`.
+    /// `LOONGCLAW_FILE_ROOT`.
     pub fn from_env() -> Self {
-        let shell_allowlist = std::env::var("LOONGCLAW_SHELL_ALLOWLIST")
-            .ok()
-            .unwrap_or_else(|| "echo,pwd".to_owned())
-            .split([',', ';', ' '])
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(str::to_ascii_lowercase)
-            .collect();
-
         let file_root = std::env::var("LOONGCLAW_FILE_ROOT").ok().map(PathBuf::from);
         let enabled = parse_env_bool("LOONGCLAW_EXTERNAL_SKILLS_ENABLED").unwrap_or(false);
         let require_download_approval =
@@ -64,7 +74,6 @@ impl ToolRuntimeConfig {
             parse_env_bool("LOONGCLAW_EXTERNAL_SKILLS_AUTO_EXPOSE_INSTALLED").unwrap_or(true);
 
         Self {
-            shell_allowlist,
             file_root,
             external_skills: ExternalSkillsRuntimePolicy {
                 enabled,
@@ -74,6 +83,7 @@ impl ToolRuntimeConfig {
                 install_root,
                 auto_expose_installed,
             },
+            ..Self::default()
         }
     }
 }
@@ -128,7 +138,6 @@ mod tests {
     #[test]
     fn tool_runtime_config_from_env_defaults() {
         let config = ToolRuntimeConfig::default();
-        assert!(config.shell_allowlist.is_empty());
         assert!(config.file_root.is_none());
         assert!(!config.external_skills.enabled);
         assert!(config.external_skills.require_download_approval);
@@ -138,12 +147,20 @@ mod tests {
         assert!(config.external_skills.auto_expose_installed);
     }
 
+    /// Deny starts empty so users are not forced to carry
+    /// any hardcoded restriction they did not opt into.
     #[test]
-    fn shell_allowlist_uses_injected_config_not_env() {
-        // Build a ToolRuntimeConfig with an explicit allowlist that differs
-        // from any env var that might be set.
+    fn default_deny_is_empty() {
+        let config = ToolRuntimeConfig::default();
+        assert!(config.shell_deny.is_empty());
+    }
+
+    /// Explicit config injection overrides defaults — verifies that
+    /// non-default values survive construction without env-var leakage.
+    #[test]
+    fn explicit_config_injection_overrides_defaults() {
         let config = ToolRuntimeConfig {
-            shell_allowlist: BTreeSet::from(["git".to_owned(), "cargo".to_owned()]),
+            shell_allow: BTreeSet::from(["git".to_owned(), "cargo".to_owned()]),
             file_root: Some(PathBuf::from("/tmp/test-root")),
             external_skills: ExternalSkillsRuntimePolicy {
                 enabled: true,
@@ -153,10 +170,11 @@ mod tests {
                 install_root: Some(PathBuf::from("/tmp/test-root/skills")),
                 auto_expose_installed: false,
             },
+            ..ToolRuntimeConfig::default()
         };
-        assert!(config.shell_allowlist.contains("git"));
-        assert!(config.shell_allowlist.contains("cargo"));
-        assert!(!config.shell_allowlist.contains("echo"));
+        assert!(config.shell_allow.contains("git"));
+        assert!(config.shell_allow.contains("cargo"));
+        assert!(!config.shell_allow.contains("echo"));
         assert_eq!(config.file_root, Some(PathBuf::from("/tmp/test-root")));
         assert!(config.external_skills.enabled);
         assert!(!config.external_skills.require_download_approval);
@@ -169,22 +187,21 @@ mod tests {
     }
 
     #[test]
-    fn from_env_parses_default_allowlist() {
-        // When the env var is not set, from_env falls back to the hardcoded
-        // defaults: echo, pwd.
-        let config = ToolRuntimeConfig::from_env();
-        // We can't guarantee the env var is unset in all CI environments,
-        // but the parser itself should produce a non-empty set either way.
-        assert!(!config.shell_allowlist.is_empty());
+    fn file_root_uses_injected_config() {
+        let config = ToolRuntimeConfig {
+            file_root: Some(PathBuf::from("/tmp/test-root")),
+            ..ToolRuntimeConfig::default()
+        };
+        assert_eq!(config.file_root, Some(PathBuf::from("/tmp/test-root")));
     }
 
     #[cfg(feature = "tool-shell")]
     #[test]
     fn injected_config_overrides_global() {
         let config = ToolRuntimeConfig {
-            shell_allowlist: BTreeSet::from(["echo".to_owned()]),
             file_root: Some(PathBuf::from("/tmp/injected-root")),
-            external_skills: ExternalSkillsRuntimePolicy::default(),
+            shell_allow: BTreeSet::from(["echo".to_owned()]),
+            ..ToolRuntimeConfig::default()
         };
         let result = crate::tools::execute_tool_core_with_config(
             loongclaw_contracts::ToolCoreRequest {

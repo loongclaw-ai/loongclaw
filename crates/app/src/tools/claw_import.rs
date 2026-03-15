@@ -502,7 +502,7 @@ fn resolve_safe_path_with_config(
     } else {
         root.join(candidate)
     };
-    let normalized = normalize_without_fs_access(&combined);
+    let normalized = super::normalize_without_fs(&combined);
     resolve_path_within_root(&root, &normalized)
 }
 
@@ -511,7 +511,7 @@ fn canonicalize_or_fallback(path: PathBuf) -> Result<PathBuf, String> {
         return fs::canonicalize(&path)
             .map_err(|error| format!("failed to canonicalize {}: {error}", path.display()));
     }
-    Ok(normalize_without_fs_access(&path))
+    Ok(super::normalize_without_fs(&path))
 }
 
 fn resolve_path_within_root(root: &Path, normalized: &Path) -> Result<PathBuf, String> {
@@ -580,53 +580,5 @@ fn split_existing_ancestor(path: &Path) -> Result<(PathBuf, Vec<OsString>), Stri
             ));
         };
         cursor = parent.to_path_buf();
-    }
-}
-
-fn normalize_without_fs_access(path: &Path) -> PathBuf {
-    use std::path::Component;
-
-    let mut parts: Vec<OsString> = Vec::new();
-    let mut prefix: Option<OsString> = None;
-    let mut has_root = false;
-
-    for component in path.components() {
-        match component {
-            Component::Prefix(value) => prefix = Some(value.as_os_str().to_owned()),
-            Component::RootDir => has_root = true,
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if let Some(last) = parts.last() {
-                    if last != ".." {
-                        let _ = parts.pop();
-                    } else if !has_root {
-                        parts.push(OsString::from(".."));
-                    }
-                } else if !has_root {
-                    parts.push(OsString::from(".."));
-                }
-            }
-            Component::Normal(value) => parts.push(value.to_owned()),
-        }
-    }
-
-    let mut normalized = PathBuf::new();
-    if let Some(prefix) = prefix {
-        normalized.push(prefix);
-    }
-    if has_root {
-        normalized.push(Path::new(std::path::MAIN_SEPARATOR_STR));
-    }
-    for part in parts {
-        normalized.push(part);
-    }
-    if normalized.as_os_str().is_empty() {
-        if has_root {
-            PathBuf::from(std::path::MAIN_SEPARATOR_STR)
-        } else {
-            PathBuf::from(".")
-        }
-    } else {
-        normalized
     }
 }

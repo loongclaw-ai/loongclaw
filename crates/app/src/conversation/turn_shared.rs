@@ -199,7 +199,7 @@ impl<'a> ToolDrivenReplyKernel<'a> {
                     failure.reason.as_str(),
                 ]))
             }
-            TurnResult::NeedsApproval(_) | TurnResult::ProviderError(_) => None,
+            TurnResult::ProviderError(_) => None,
         }
     }
 
@@ -216,7 +216,7 @@ impl<'a> ToolDrivenReplyKernel<'a> {
                     reason: failure.reason.clone(),
                 })
             }
-            TurnResult::NeedsApproval(_) | TurnResult::ProviderError(_) => None,
+            TurnResult::ProviderError(_) => None,
         }
     }
 
@@ -264,10 +264,6 @@ pub fn compose_assistant_reply(
             } else {
                 text
             }
-        }
-        TurnResult::NeedsApproval(failure) => {
-            let inline = format!("[tool_approval_required] {}", failure.reason);
-            join_non_empty_lines(&[assistant_preface, inline.as_str()])
         }
         TurnResult::ToolDenied(failure) => {
             join_non_empty_lines(&[assistant_preface, failure.reason.as_str()])

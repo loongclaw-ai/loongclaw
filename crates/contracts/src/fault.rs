@@ -91,9 +91,6 @@ impl Fault {
             PolicyError::ToolCallDenied { tool_name, reason } => Self::PolicyDenied {
                 reason: format!("tool {tool_name}: {reason}"),
             },
-            PolicyError::ToolCallApprovalRequired { tool_name, prompt } => Self::PolicyDenied {
-                reason: format!("tool {tool_name} requires approval: {prompt}"),
-            },
         }
     }
 

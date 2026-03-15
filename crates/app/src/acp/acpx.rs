@@ -1689,7 +1689,6 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
-    use crate::acp::{AcpConfigPatch, AcpSessionBootstrap, AcpSessionMode, AcpSessionState};
     use crate::config::{AcpBackendProfilesConfig, AcpConfig, AcpxBackendConfig, LoongClawConfig};
 
     #[cfg(unix)]
