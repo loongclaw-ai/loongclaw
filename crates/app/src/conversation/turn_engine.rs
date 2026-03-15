@@ -722,6 +722,29 @@ fn effective_visible_tool_name(
         .unwrap_or_else(|| descriptor.name.to_owned())
 }
 
+fn provider_tool_denial_should_conceal_name(
+    intent: &ToolIntent,
+    descriptor: &crate::tools::ToolDescriptor,
+) -> bool {
+    if !intent.source.starts_with("provider_") {
+        return false;
+    }
+
+    if !descriptor.is_provider_core() {
+        return true;
+    }
+
+    descriptor.name == "tool.invoke"
+        && effective_visible_tool_name(intent, descriptor) != descriptor.name
+}
+
+fn concealed_provider_tool_denial() -> TurnFailure {
+    TurnFailure::policy_denied(
+        "tool_not_found",
+        "tool_not_found: requested tool is not available",
+    )
+}
+
 fn tool_intent_is_visible(
     session_context: &SessionContext,
     intent: &ToolIntent,
@@ -987,6 +1010,9 @@ impl TurnEngine {
                 return Err(TurnFailure::policy_denied("tool_not_found", reason));
             };
             if !tool_intent_is_visible(session_context, intent, descriptor) {
+                if provider_tool_denial_should_conceal_name(intent, descriptor) {
+                    return Err(concealed_provider_tool_denial());
+                }
                 let reason = format!(
                     "tool_not_visible: {}",
                     effective_visible_tool_name(intent, descriptor)
@@ -994,6 +1020,9 @@ impl TurnEngine {
                 return Err(TurnFailure::policy_denied("tool_not_visible", reason));
             }
             if !crate::tools::is_provider_exposed_tool_name(&intent.tool_name) {
+                if provider_tool_denial_should_conceal_name(intent, descriptor) {
+                    return Err(concealed_provider_tool_denial());
+                }
                 let reason = format!("tool_not_provider_exposed: {}", intent.tool_name);
                 return Err(TurnFailure::policy_denied(
                     "tool_not_provider_exposed",
