@@ -9449,6 +9449,106 @@ async fn handle_turn_with_runtime_executes_sessions_send_via_default_dispatcher(
 
 #[cfg(feature = "memory-sqlite")]
 #[tokio::test]
+async fn handle_turn_with_runtime_requires_approval_before_delegate_execution() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-delegate-approval", "normal-lane")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    config.tools.approval.mode = crate::config::GovernedToolApprovalMode::Strict;
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+
+    let runtime = FakeRuntime::with_turns_and_completions(
+        vec![],
+        vec![
+            Ok(ProviderTurn {
+                assistant_text: "Delegating.".to_owned(),
+                tool_intents: vec![ToolIntent {
+                    tool_name: "delegate".to_owned(),
+                    args_json: json!({
+                        "task": "child task",
+                        "label": "research-subtask"
+                    }),
+                    source: "provider_tool_call".to_owned(),
+                    session_id: "root-session".to_owned(),
+                    turn_id: "turn-delegate-parent".to_owned(),
+                    tool_call_id: "call-delegate-parent".to_owned(),
+                }],
+                raw_meta: Value::Null,
+            }),
+            Ok(ProviderTurn {
+                assistant_text: "Child final output".to_owned(),
+                tool_intents: vec![],
+                raw_meta: Value::Null,
+            }),
+        ],
+        vec![],
+    )
+    .with_durable_memory_config(memory_config.clone());
+    let coordinator = ConversationTurnCoordinator::new();
+
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "root-session",
+            "delegate this task",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            None,
+        )
+        .await
+        .expect("approval reply");
+
+    assert!(
+        reply.contains("[tool_approval_required]"),
+        "expected approval marker, got: {reply}"
+    );
+    assert!(
+        reply.contains("tool: delegate"),
+        "expected delegate tool detail, got: {reply}"
+    );
+    assert_eq!(*runtime.turn_calls.lock().expect("turn calls lock"), 1);
+    assert_eq!(
+        *runtime
+            .completion_calls
+            .lock()
+            .expect("completion calls lock"),
+        0
+    );
+
+    let requests = repo
+        .list_approval_requests_for_session("root-session", None)
+        .expect("list approval requests");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].tool_name, "delegate");
+    assert!(
+        reply.contains(requests[0].approval_request_id.as_str()),
+        "reply should surface approval request id, got: {reply}"
+    );
+    assert!(
+        repo.list_visible_sessions("root-session")
+            .expect("list sessions")
+            .into_iter()
+            .all(|session| session.parent_session_id.as_deref() != Some("root-session")),
+        "delegate child session should not be created before approval"
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
 async fn handle_turn_with_runtime_executes_delegate_via_coordinator() {
     let db_path = std::env::temp_dir().join(format!(
         "{}.sqlite3",
