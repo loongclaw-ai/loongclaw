@@ -6,14 +6,40 @@ use serde_json::{Value, json};
 
 use crate::config::{MemoryBackendKind, MemoryMode};
 
+mod canonical;
 mod kernel_adapter;
+mod orchestrator;
 pub mod runtime_config;
 #[cfg(feature = "memory-sqlite")]
 mod sqlite;
+mod system;
+mod system_registry;
 
+pub use canonical::{
+    CANONICAL_MEMORY_RECORD_TYPE, CanonicalMemoryKind, CanonicalMemoryRecord,
+    INTERNAL_PERSISTED_RECORD_MARKER, MemoryScope, build_conversation_event_content,
+    build_tool_decision_content, build_tool_outcome_content,
+    canonical_memory_record_from_persisted_turn,
+};
 pub use kernel_adapter::MvpMemoryAdapter;
+pub use orchestrator::{
+    BuiltinMemoryOrchestrator, HydratedMemoryContext, MemoryDiagnostics, hydrate_memory_context,
+};
+#[cfg(test)]
+pub use orchestrator::{MemoryOrchestratorTestFaults, ScopedMemoryOrchestratorTestFaults};
 #[cfg(feature = "memory-sqlite")]
 pub use sqlite::ConversationTurn;
+pub use system::{
+    BuiltinMemorySystem, DEFAULT_MEMORY_SYSTEM_ID, MEMORY_SYSTEM_API_VERSION, MemorySystem,
+    MemorySystemCapability, MemorySystemMetadata,
+};
+pub use system_registry::{
+    MEMORY_SYSTEM_ENV, MemorySystemPolicySnapshot, MemorySystemRuntimeSnapshot,
+    MemorySystemSelection, MemorySystemSelectionSource, collect_memory_system_runtime_snapshot,
+    describe_memory_system, list_memory_system_ids, list_memory_system_metadata,
+    memory_system_id_from_env, register_memory_system, resolve_memory_system,
+    resolve_memory_system_selection, supported_memory_system_kind_from_env,
+};
 
 pub const MEMORY_OP_APPEND_TURN: &str = "append_turn";
 pub const MEMORY_OP_WINDOW: &str = "window";
