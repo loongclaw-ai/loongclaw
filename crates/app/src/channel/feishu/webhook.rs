@@ -901,6 +901,25 @@ mod tests {
                 install_root: config.external_skills.resolved_install_root(),
                 auto_expose_installed: config.external_skills.auto_expose_installed,
             },
+            web_fetch: crate::tools::runtime_config::WebFetchRuntimePolicy {
+                enabled: config.tools.web.enabled,
+                allow_private_hosts: config.tools.web.allow_private_hosts,
+                allowed_domains: config
+                    .tools
+                    .web
+                    .normalized_allowed_domains()
+                    .into_iter()
+                    .collect(),
+                blocked_domains: config
+                    .tools
+                    .web
+                    .normalized_blocked_domains()
+                    .into_iter()
+                    .collect(),
+                timeout_seconds: config.tools.web.timeout_seconds,
+                max_bytes: config.tools.web.max_bytes,
+                max_redirects: config.tools.web.max_redirects,
+            },
             #[cfg(feature = "feishu-integration")]
             feishu: crate::tools::runtime_config::FeishuToolRuntimeConfig::from_loongclaw_config(
                 config,

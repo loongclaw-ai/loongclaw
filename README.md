@@ -232,7 +232,7 @@ cargo install --path crates/daemon
    explicitly. Without `--acp` or other ACP-specific chat flags, normal chat stays on the default
    provider/context-engine path.
 
-Run `loongclaw doctor --fix` if anything goes wrong, or when onboarding / ask / chat reports a local health issue.
+Run `loongclaw doctor --fix` if anything goes wrong, or when onboarding / channel setup reports a local health issue.
 
 ### Run Tests
 

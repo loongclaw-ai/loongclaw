@@ -24,7 +24,7 @@ use crate::KernelContext;
 #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
 use crate::acp::{AcpConversationTurnOptions, AcpTurnProvenance};
 #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
-use crate::context::{DEFAULT_TOKEN_TTL_S, bootstrap_kernel_context};
+use crate::context::{DEFAULT_TOKEN_TTL_S, bootstrap_kernel_context_with_runtime_configs};
 
 #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
 use super::config::{
@@ -924,9 +924,21 @@ where
         &context.config,
         Some(context.resolved_path.as_path()),
     );
-    let kernel_ctx = bootstrap_kernel_context(
+    let tool_runtime_config =
+        crate::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(
+            &context.config,
+            Some(context.resolved_path.as_path()),
+        );
+    let memory_runtime_config = Some(
+        crate::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(
+            &context.config.memory,
+        ),
+    );
+    let kernel_ctx = bootstrap_kernel_context_with_runtime_configs(
         spec.family.runtime.serve_bootstrap_agent_id,
         DEFAULT_TOKEN_TTL_S,
+        tool_runtime_config,
+        memory_runtime_config,
     )?;
     let runtime_account_id = context.resolved.runtime_account_id().to_owned();
     let runtime_account_label = context.resolved.runtime_account_label().to_owned();
@@ -1003,7 +1015,22 @@ pub async fn run_telegram_channel(
             &context.config,
             Some(context.resolved_path.as_path()),
         );
-        let kernel_ctx = bootstrap_kernel_context("channel-telegram", DEFAULT_TOKEN_TTL_S)?;
+        let tool_runtime_config =
+            crate::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(
+                &context.config,
+                Some(context.resolved_path.as_path()),
+            );
+        let memory_runtime_config = Some(
+            crate::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(
+                &context.config.memory,
+            ),
+        );
+        let kernel_ctx = bootstrap_kernel_context_with_runtime_configs(
+            "channel-telegram",
+            DEFAULT_TOKEN_TTL_S,
+            tool_runtime_config,
+            memory_runtime_config,
+        )?;
         let token = context.resolved.bot_token().ok_or_else(|| {
             "telegram bot token missing (set telegram.bot_token or env)".to_owned()
         })?;

@@ -11,7 +11,7 @@ use crate::acp::{
     AcpConversationTurnOptions, AcpTurnEventSink, JsonlAcpTurnEventSink,
     resolve_acp_backend_selection,
 };
-use crate::context::{DEFAULT_TOKEN_TTL_S, bootstrap_kernel_context};
+use crate::context::{DEFAULT_TOKEN_TTL_S, bootstrap_kernel_context_with_runtime_configs};
 
 use super::config::{self, ConversationConfig, LoongClawConfig};
 #[cfg(feature = "memory-sqlite")]
@@ -277,7 +277,20 @@ async fn initialize_cli_turn_runtime(
     }
 
     crate::runtime_env::initialize_runtime_environment(&config, Some(&resolved_path));
-    let kernel_ctx = bootstrap_kernel_context(kernel_scope, DEFAULT_TOKEN_TTL_S)?;
+    let tool_runtime_config =
+        crate::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(
+            &config,
+            Some(resolved_path.as_path()),
+        );
+    let memory_runtime_config = Some(
+        crate::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory),
+    );
+    let kernel_ctx = bootstrap_kernel_context_with_runtime_configs(
+        kernel_scope,
+        DEFAULT_TOKEN_TTL_S,
+        tool_runtime_config,
+        memory_runtime_config,
+    )?;
     let explicit_acp_request = options.requests_explicit_acp();
     let effective_bootstrap_mcp_servers = config
         .acp
@@ -296,7 +309,8 @@ async fn initialize_cli_turn_runtime(
 
     #[cfg(feature = "memory-sqlite")]
     let (memory_config, memory_label) = {
-        let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+        let memory_config =
+            crate::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
         let sqlite_path = config.memory.resolved_sqlite_path();
         let initialized = memory::ensure_memory_db_ready(Some(sqlite_path), &memory_config)
             .map_err(|error| format!("failed to initialize sqlite memory: {error}"))?;

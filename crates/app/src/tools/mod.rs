@@ -1,4 +1,3 @@
-#[cfg(test)]
 use std::cell::Cell;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -51,12 +50,10 @@ tokio::task_local! {
     static TRUSTED_INTERNAL_TOOL_PAYLOAD_TASK: bool;
 }
 
-#[cfg(test)]
 thread_local! {
     static TRUSTED_INTERNAL_TOOL_PAYLOAD_DEPTH: Cell<usize> = const { Cell::new(0) };
 }
 
-#[cfg(test)]
 pub(crate) fn with_trusted_internal_tool_payload<T>(f: impl FnOnce() -> T) -> T {
     struct TrustedInternalToolPayloadGuard;
 
@@ -86,12 +83,7 @@ pub(crate) async fn with_trusted_internal_tool_payload_async<T>(
 }
 
 fn trusted_internal_tool_payload_enabled() -> bool {
-    #[cfg(test)]
-    let test_enabled = TRUSTED_INTERNAL_TOOL_PAYLOAD_DEPTH.with(|depth| depth.get() > 0);
-    #[cfg(not(test))]
-    let test_enabled = false;
-
-    test_enabled
+    TRUSTED_INTERNAL_TOOL_PAYLOAD_DEPTH.with(|depth| depth.get() > 0)
         || TRUSTED_INTERNAL_TOOL_PAYLOAD_TASK
             .try_with(|enabled| *enabled)
             .unwrap_or(false)
@@ -502,6 +494,33 @@ pub(crate) fn provider_tool_definitions_with_config(
     #[cfg(feature = "feishu-integration")]
     if feishu_runtime_enabled(config) {
         tools.extend(feishu::feishu_provider_tool_definitions());
+        tools.sort_by(|left, right| tool_function_name(left).cmp(tool_function_name(right)));
+    }
+    tools
+}
+
+pub(crate) fn provider_tool_definitions_for_view_with_config(
+    view: &ToolView,
+    config: Option<&runtime_config::ToolRuntimeConfig>,
+) -> Vec<Value> {
+    let catalog = tool_catalog();
+    let mut tools = view
+        .iter(&catalog)
+        .map(|descriptor| {
+            debug_assert_eq!(descriptor.availability, ToolAvailability::Runtime);
+            descriptor.provider_definition()
+        })
+        .collect::<Vec<_>>();
+    #[cfg(feature = "feishu-integration")]
+    if feishu_runtime_enabled(config) {
+        tools.extend(
+            feishu::feishu_provider_tool_definitions()
+                .into_iter()
+                .filter(|tool| {
+                    feishu::canonical_feishu_tool_name(tool_function_name(tool))
+                        .is_some_and(|name| view.contains(name))
+                }),
+        );
         tools.sort_by(|left, right| tool_function_name(left).cmp(tool_function_name(right)));
     }
     tools
@@ -928,6 +947,15 @@ mod tests {
 
         let root_view = runtime_tool_view_for_config(&config);
         assert!(!root_view.contains("web.fetch"));
+    }
+
+    #[test]
+    fn governance_profile_escalates_web_fetch_network_access() {
+        let profile = governance_profile_for_tool_name("web.fetch");
+
+        assert_eq!(profile.scope, ToolGovernanceScope::Routine);
+        assert_eq!(profile.risk_class, ToolRiskClass::Elevated);
+        assert_eq!(profile.approval_mode, ToolApprovalMode::PolicyDriven);
     }
 
     #[test]

@@ -26,10 +26,8 @@ fn execute_web_fetch_tool_enabled(
     request: ToolCoreRequest,
     config: &super::runtime_config::ToolRuntimeConfig,
 ) -> Result<ToolCoreOutcome, String> {
-    use reqwest::blocking::Client;
     use reqwest::header::{CONTENT_TYPE, LOCATION};
     use std::io::Read;
-    use std::time::Duration;
 
     if !config.web_fetch.enabled {
         return Err("web.fetch is disabled by config.tools.web.enabled=false".to_owned());
@@ -48,19 +46,17 @@ fn execute_web_fetch_tool_enabled(
     let mode = parse_render_mode(payload)?;
     let max_bytes = parse_max_bytes(payload, config.web_fetch.max_bytes)?;
 
-    let client = Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(config.web_fetch.timeout_seconds))
-        .user_agent("LoongClaw-WebFetch/0.1")
-        .build()
-        .map_err(|error| format!("failed to build HTTP client for web.fetch: {error}"))?;
-
     let mut current_url = reqwest::Url::parse(raw_url)
         .map_err(|error| format!("invalid web.fetch url `{raw_url}`: {error}"))?;
-    let mut current_host = validate_fetch_target(&current_url, &config.web_fetch)?;
+    let mut current_target = prepare_fetch_target(&current_url, &config.web_fetch)?;
     let mut redirect_count = 0usize;
 
     loop {
+        let client = build_web_fetch_client(
+            &current_url,
+            &current_target.resolved_socket_addrs,
+            config.web_fetch.timeout_seconds,
+        )?;
         let response = client
             .get(current_url.clone())
             .send()
@@ -90,7 +86,7 @@ fn execute_web_fetch_tool_enabled(
             let next_url = current_url
                 .join(location)
                 .map_err(|error| format!("web.fetch failed to resolve redirect target: {error}"))?;
-            current_host = validate_fetch_target(&next_url, &config.web_fetch)?;
+            current_target = prepare_fetch_target(&next_url, &config.web_fetch)?;
             current_url = next_url;
             redirect_count += 1;
             continue;
@@ -138,7 +134,8 @@ fn execute_web_fetch_tool_enabled(
             .flatten();
         let content = match mode {
             RenderMode::ReadableText if is_html => extract_readable_text_from_html(&raw_text),
-            RenderMode::ReadableText | RenderMode::RawText => raw_text.trim().to_owned(),
+            RenderMode::ReadableText => raw_text.trim().to_owned(),
+            RenderMode::RawText => raw_text,
         };
 
         return Ok(ToolCoreOutcome {
@@ -148,7 +145,7 @@ fn execute_web_fetch_tool_enabled(
                 "tool_name": request.tool_name,
                 "requested_url": raw_url,
                 "final_url": current_url.as_str(),
-                "host": current_host,
+                "host": current_target.host,
                 "status_code": status_code,
                 "content_type": content_type,
                 "mode": mode.as_str(),
@@ -223,11 +220,108 @@ fn parse_max_bytes(payload: &Map<String, Value>, configured_max: usize) -> Resul
 }
 
 #[cfg(feature = "tool-webfetch")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PreparedFetchTarget {
+    host: String,
+    resolved_socket_addrs: Vec<std::net::SocketAddr>,
+}
+
+#[cfg(feature = "tool-webfetch")]
+fn prepare_fetch_target(
+    url: &reqwest::Url,
+    policy: &super::runtime_config::WebFetchRuntimePolicy,
+) -> Result<PreparedFetchTarget, String> {
+    let host = validate_fetch_target(url, policy)?;
+    let resolved_socket_addrs = resolve_fetch_target_socket_addrs(url, host.as_str(), policy)?;
+    Ok(PreparedFetchTarget {
+        host,
+        resolved_socket_addrs,
+    })
+}
+
+#[cfg(feature = "tool-webfetch")]
+fn resolve_fetch_target_socket_addrs(
+    url: &reqwest::Url,
+    host: &str,
+    policy: &super::runtime_config::WebFetchRuntimePolicy,
+) -> Result<Vec<std::net::SocketAddr>, String> {
+    use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| format!("web.fetch url `{url}` has no known port"))?;
+
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        let addr = SocketAddr::new(ip, port);
+        validate_resolved_socket_addrs(&[addr], policy.allow_private_hosts, host)?;
+        return Ok(vec![addr]);
+    }
+
+    let resolved_socket_addrs = (host, port)
+        .to_socket_addrs()
+        .map_err(|error| format!("web.fetch failed to resolve host `{host}`: {error}"))?
+        .collect::<Vec<_>>();
+    validate_resolved_socket_addrs(&resolved_socket_addrs, policy.allow_private_hosts, host)?;
+    Ok(resolved_socket_addrs)
+}
+
+#[cfg(feature = "tool-webfetch")]
+fn validate_resolved_socket_addrs(
+    addrs: &[std::net::SocketAddr],
+    allow_private_hosts: bool,
+    host: &str,
+) -> Result<(), String> {
+    if addrs.is_empty() {
+        return Err(format!("web.fetch resolved no addresses for host `{host}`"));
+    }
+    if allow_private_hosts {
+        return Ok(());
+    }
+
+    for addr in addrs {
+        if is_private_or_special_ip(addr.ip()) {
+            return Err(format!(
+                "web.fetch blocked private or special-use address `{}` for host `{host}`",
+                addr.ip()
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "tool-webfetch")]
+fn build_web_fetch_client(
+    url: &reqwest::Url,
+    resolved_socket_addrs: &[std::net::SocketAddr],
+    timeout_seconds: u64,
+) -> Result<reqwest::blocking::Client, String> {
+    use std::net::IpAddr;
+    use std::time::Duration;
+
+    let mut builder = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(timeout_seconds))
+        .user_agent("LoongClaw-WebFetch/0.1");
+
+    if let Some(host) = url.host_str()
+        && host.parse::<IpAddr>().is_err()
+        && !resolved_socket_addrs.is_empty()
+    {
+        builder = builder.resolve_to_addrs(host, resolved_socket_addrs);
+    }
+
+    builder
+        .build()
+        .map_err(|error| format!("failed to build HTTP client for web.fetch: {error}"))
+}
+
+#[cfg(feature = "tool-webfetch")]
 fn validate_fetch_target(
     url: &reqwest::Url,
     policy: &super::runtime_config::WebFetchRuntimePolicy,
 ) -> Result<String, String> {
-    use std::net::{IpAddr, ToSocketAddrs};
+    use std::net::IpAddr;
 
     match url.scheme() {
         "http" | "https" => {}
@@ -264,35 +358,12 @@ fn validate_fetch_target(
         return Err("web.fetch blocked private or special-use host `localhost`".to_owned());
     }
 
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        if is_private_or_special_ip(ip) {
-            return Err(format!(
-                "web.fetch blocked private or special-use address `{ip}`"
-            ));
-        }
-        return Ok(host);
-    }
-
-    let port = url
-        .port_or_known_default()
-        .ok_or_else(|| format!("web.fetch url `{url}` has no known port"))?;
-    let addrs = (host.as_str(), port)
-        .to_socket_addrs()
-        .map_err(|error| format!("web.fetch failed to resolve host `{host}`: {error}"))?;
-
-    let mut saw_addr = false;
-    for addr in addrs {
-        saw_addr = true;
-        if is_private_or_special_ip(addr.ip()) {
-            return Err(format!(
-                "web.fetch blocked private or special-use address `{}` for host `{host}`",
-                addr.ip()
-            ));
-        }
-    }
-
-    if !saw_addr {
-        return Err(format!("web.fetch resolved no addresses for host `{host}`"));
+    if let Ok(ip) = host.parse::<IpAddr>()
+        && is_private_or_special_ip(ip)
+    {
+        return Err(format!(
+            "web.fetch blocked private or special-use address `{ip}`"
+        ));
     }
 
     Ok(host)
@@ -522,7 +593,7 @@ fn collapse_whitespace(input: &str) -> String {
 mod tests {
     use super::*;
     use std::io::{Read, Write};
-    use std::net::TcpListener;
+    use std::net::{SocketAddr, TcpListener};
     use std::thread;
 
     fn request(payload: Value) -> ToolCoreRequest {
@@ -575,6 +646,45 @@ mod tests {
         format!(
             "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         )
+    }
+
+    #[test]
+    fn build_web_fetch_client_binds_hostname_requests_to_resolved_socket_addresses() {
+        let url = spawn_http_server(|_request| ok_response("text/plain", "resolved by override"));
+        let socket_addr = url
+            .trim_start_matches("http://")
+            .parse::<SocketAddr>()
+            .expect("socket addr");
+        let overridden_url =
+            reqwest::Url::parse(&format!("http://docs.example.test:{}/", socket_addr.port()))
+                .expect("url");
+
+        let client = build_web_fetch_client(&overridden_url, &[socket_addr], 5)
+            .expect("client with explicit resolution override");
+        let response = client
+            .get(overridden_url)
+            .send()
+            .expect("request should use provided socket address");
+
+        assert_eq!(
+            response.text().expect("response body"),
+            "resolved by override"
+        );
+    }
+
+    #[test]
+    fn validate_resolved_socket_addrs_rejects_private_entries_when_private_hosts_are_disabled() {
+        let error = validate_resolved_socket_addrs(
+            &[
+                "93.184.216.34:80".parse().expect("public addr"),
+                "127.0.0.1:80".parse().expect("private addr"),
+            ],
+            false,
+            "docs.example.test",
+        )
+        .expect_err("mixed public/private resolution should be rejected");
+
+        assert!(error.contains("private or special-use"));
     }
 
     #[test]
@@ -770,6 +880,19 @@ mod tests {
 
         assert_eq!(outcome.payload["mode"], "raw_text");
         assert_eq!(outcome.payload["content"], "{\n  \"ok\": true\n}");
+    }
+
+    #[test]
+    fn web_fetch_raw_text_mode_preserves_outer_whitespace() {
+        let url = spawn_http_server(|_request| ok_response("text/plain", "  keep me  \n"));
+
+        let outcome = execute_web_fetch_tool_with_config(
+            request(json!({"url": url, "mode": "raw_text"})),
+            &local_runtime_config(),
+        )
+        .expect("raw_text mode should keep original outer whitespace");
+
+        assert_eq!(outcome.payload["content"], "  keep me  \n");
     }
 
     #[test]

@@ -13,8 +13,8 @@ can recover a broken setup without reverse-engineering runtime internals.
       explains what it changed.
 - [ ] `loongclaw doctor --json` produces stable machine-readable output for
       automation and support tooling.
-- [ ] When `onboard`, `ask`, `chat`, or channel setup hits a common health
-      failure, the CLI points users toward `doctor`.
+- [ ] When `onboard` or channel setup hits a common health failure, the CLI
+      points users toward `doctor`.
 - [ ] Doctor checks cover the current MVP path: config presence, provider
       readiness, SQLite memory readiness, and shipped channel prerequisites.
 

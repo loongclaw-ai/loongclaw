@@ -124,7 +124,7 @@ cargo install --path crates/daemon
    如果你希望这次 CLI chat 显式走 ACP，可以使用 `loongclaw chat --acp`。没有 `--acp`
    或其他 ACP 专用 chat 参数时，普通聊天仍然保持默认的 provider/context-engine 路径。
 
-如果 onboarding / ask / chat 遇到本地健康问题，请运行 `loongclaw doctor --fix`。
+如果 onboarding / channel setup 遇到本地健康问题，请运行 `loongclaw doctor --fix`。
 
 ### 运行测试
 

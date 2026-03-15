@@ -1968,6 +1968,58 @@ async fn responses_turn_falls_back_to_chat_completions_for_compatible_endpoints(
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn request_turn_hides_web_fetch_tool_when_runtime_config_disables_it() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local provider listener");
+    let addr = listener.local_addr().expect("local addr");
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept local provider request");
+        let mut request_buf = [0_u8; 8192];
+        let len = stream.read(&mut request_buf).expect("read request");
+        let request = String::from_utf8_lossy(&request_buf[..len]).to_string();
+
+        let body =
+            r#"{"choices":[{"message":{"role":"assistant","content":"tool visibility ok"}}]}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("write response");
+        request
+    });
+
+    let mut config = test_config(ProviderConfig {
+        kind: ProviderKind::Deepseek,
+        base_url: format!("http://{addr}"),
+        model: "deepseek-chat".to_owned(),
+        api_key: Some("deepseek-test-key".to_owned()),
+        ..ProviderConfig::default()
+    });
+    config.tools.web.enabled = false;
+
+    let turn = request_turn(
+        &config,
+        &[json!({
+            "role": "user",
+            "content": "ping"
+        })],
+        None,
+    )
+    .await
+    .expect("turn request should succeed without advertising disabled web.fetch");
+    assert_eq!(turn.assistant_text, "tool visibility ok");
+
+    let request = server.join().expect("join local provider server");
+    assert!(request.contains("\"tools\""));
+    assert!(
+        !request.contains("\"web_fetch\""),
+        "disabled web.fetch should not be advertised in provider tool schema: {request}"
+    );
+}
+
 #[test]
 fn model_request_error_includes_parseable_failover_snapshot_payload() {
     let error = build_model_request_error(

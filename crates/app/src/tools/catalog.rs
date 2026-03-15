@@ -77,13 +77,12 @@ pub fn governance_profile_for_tool_name(tool_name: &str) -> ToolGovernanceProfil
             risk_class: ToolRiskClass::High,
             approval_mode: ToolApprovalMode::PolicyDriven,
         },
-        "session_archive" | "session_cancel" | "session_recover" | "sessions_send" => {
-            ToolGovernanceProfile {
-                scope: ToolGovernanceScope::Routine,
-                risk_class: ToolRiskClass::Elevated,
-                approval_mode: ToolApprovalMode::PolicyDriven,
-            }
-        }
+        "session_archive" | "session_cancel" | "session_recover" | "sessions_send"
+        | "web.fetch" => ToolGovernanceProfile {
+            scope: ToolGovernanceScope::Routine,
+            risk_class: ToolRiskClass::Elevated,
+            approval_mode: ToolApprovalMode::PolicyDriven,
+        },
         _ => ToolGovernanceProfile {
             scope: ToolGovernanceScope::Routine,
             risk_class: ToolRiskClass::Low,

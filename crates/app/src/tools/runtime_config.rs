@@ -210,7 +210,7 @@ impl ToolRuntimeConfig {
         let auto_expose_installed =
             parse_env_bool("LOONGCLAW_EXTERNAL_SKILLS_AUTO_EXPOSE_INSTALLED").unwrap_or(true);
 
-        Self {
+        let mut runtime = Self {
             file_root,
             config_path,
             web_fetch: WebFetchRuntimePolicy {
@@ -231,24 +231,12 @@ impl ToolRuntimeConfig {
                 auto_expose_installed,
             },
             ..Self::default()
-        }
-        .with_external_skills_policy(ExternalSkillsRuntimePolicy {
-            enabled,
-            require_download_approval,
-            allowed_domains,
-            blocked_domains,
-            install_root,
-            auto_expose_installed,
-        })
-    }
-
-    fn with_external_skills_policy(mut self, external_skills: ExternalSkillsRuntimePolicy) -> Self {
-        self.external_skills = external_skills;
+        };
         #[cfg(feature = "feishu-integration")]
         {
-            self.feishu = FeishuToolRuntimeConfig::from_env();
+            runtime.feishu = FeishuToolRuntimeConfig::from_env();
         }
-        self
+        runtime
     }
 }
 

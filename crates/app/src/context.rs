@@ -40,9 +40,24 @@ impl KernelContext {
 /// Registers a default pack manifest with `InvokeTool`, `MemoryRead`, and
 /// `MemoryWrite` capabilities, then issues a long-lived token for the given
 /// `agent_id`.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn bootstrap_kernel_context(
     agent_id: &str,
     ttl_s: u64,
+) -> Result<KernelContext, String> {
+    bootstrap_kernel_context_with_runtime_configs(
+        agent_id,
+        ttl_s,
+        crate::tools::runtime_config::get_tool_runtime_config().clone(),
+        Some(crate::memory::runtime_config::get_memory_runtime_config().clone()),
+    )
+}
+
+pub(crate) fn bootstrap_kernel_context_with_runtime_configs(
+    agent_id: &str,
+    ttl_s: u64,
+    tool_runtime_config: crate::tools::runtime_config::ToolRuntimeConfig,
+    memory_runtime_config: Option<crate::memory::runtime_config::MemoryRuntimeConfig>,
 ) -> Result<KernelContext, String> {
     let mut kernel = LoongClawKernel::with_runtime(
         StaticPolicyEngine::default(),
@@ -75,7 +90,8 @@ pub(crate) fn bootstrap_kernel_context(
 
     #[cfg(feature = "memory-sqlite")]
     {
-        let mem_config = crate::memory::runtime_config::get_memory_runtime_config().clone();
+        let mem_config = memory_runtime_config
+            .unwrap_or_else(|| crate::memory::runtime_config::get_memory_runtime_config().clone());
         kernel
             .register_core_memory_adapter(crate::memory::MvpMemoryAdapter::with_config(mem_config));
         kernel
@@ -83,13 +99,15 @@ pub(crate) fn bootstrap_kernel_context(
             .map_err(|e| format!("set default memory adapter failed: {e}"))?;
     }
 
-    kernel.register_core_tool_adapter(crate::tools::MvpToolAdapter::new());
+    kernel.register_core_tool_adapter(crate::tools::MvpToolAdapter::with_config(
+        tool_runtime_config.clone(),
+    ));
     kernel
         .set_default_core_tool_adapter("mvp-tools")
         .map_err(|e| format!("set default tool adapter failed: {e}"))?;
 
     // Register policy extensions for unified security enforcement.
-    let tool_rt = crate::tools::runtime_config::get_tool_runtime_config();
+    let tool_rt = &tool_runtime_config;
     kernel.register_policy_extension(
         crate::tools::shell_policy_ext::ToolPolicyExtension::from_config(tool_rt),
     );
@@ -106,4 +124,37 @@ pub(crate) fn bootstrap_kernel_context(
         kernel: Arc::new(kernel),
         token,
     })
+}
+
+#[cfg(all(test, feature = "tool-webfetch"))]
+mod tests {
+    use super::*;
+    use loongclaw_contracts::ToolCoreRequest;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn bootstrap_kernel_context_with_runtime_configs_honors_explicit_tool_policy() {
+        let mut tool_runtime_config = crate::tools::runtime_config::ToolRuntimeConfig::default();
+        tool_runtime_config.web_fetch.enabled = false;
+
+        let kernel_ctx = bootstrap_kernel_context_with_runtime_configs(
+            "context-test-explicit-runtime",
+            60,
+            tool_runtime_config,
+            Some(crate::memory::runtime_config::MemoryRuntimeConfig::default()),
+        )
+        .expect("bootstrap kernel context");
+
+        let error = crate::tools::execute_tool(
+            ToolCoreRequest {
+                tool_name: "web.fetch".to_owned(),
+                payload: json!({ "url": "https://example.com" }),
+            },
+            &kernel_ctx,
+        )
+        .await
+        .expect_err("web.fetch should stay disabled when explicit runtime config disables it");
+
+        assert!(error.contains("config.tools.web.enabled=false"));
+    }
 }
