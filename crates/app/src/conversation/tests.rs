@@ -1240,7 +1240,7 @@ async fn persist_turn_provider_turns_expose_typed_canonical_records() {
         .expect("provider turn should succeed");
 
     let persisted = runtime.persisted.lock().expect("persisted lock").clone();
-    let records = persisted_canonical_records(&persisted);
+    let records = persisted_canonical_records(&persisted_visible_turns(&persisted));
 
     assert_eq!(records.len(), 2);
     assert_eq!(records[0].scope, crate::memory::MemoryScope::Session);
