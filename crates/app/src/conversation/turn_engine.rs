@@ -1044,7 +1044,7 @@ mod tests {
                 &delegate_async_turn("root-session", "turn-1", "call-1"),
                 &session_context,
                 &dispatcher,
-                None,
+                ConversationRuntimeBinding::direct(),
                 None,
             )
             .await;
