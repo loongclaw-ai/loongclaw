@@ -613,6 +613,89 @@ async fn non_interactive_api_key_env_override_clears_existing_inline_api_key() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn interactive_onboard_clear_token_keeps_inline_provider_credential() {
+    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
+    let output_path = unique_temp_path("interactive-clear-inline-credential.toml");
+    let mut existing = mvp::config::LoongClawConfig::default();
+    existing.provider.model = "gpt-4.1".to_owned();
+    existing.provider.api_key = Some("inline-secret".to_owned());
+    existing.provider.api_key_env = Some("OPENAI_API_KEY".to_owned());
+    mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
+
+    let transcript = run_scripted_onboard_flow(
+        crate::onboard_cli::OnboardCommandOptions {
+            output: output_path.to_str().map(str::to_owned),
+            force: false,
+            non_interactive: false,
+            accept_risk: true,
+            provider: None,
+            model: None,
+            api_key_env: None,
+            system_prompt: None,
+            skip_model_probe: true,
+        },
+        ["1", "2", "openai", "gpt-4.1", ":clear", "", "y", "y", "o"],
+        None,
+        None,
+    )
+    .await
+    .expect("run scripted onboarding with explicit credential clear token");
+
+    let raw = std::fs::read_to_string(&output_path).expect("read written onboarding config");
+    assert!(
+        !raw.contains("OPENAI_API_KEY"),
+        "explicit :clear should remove the api-key env binding instead of persisting it: {raw}"
+    );
+
+    let (_, config) =
+        mvp::config::load(output_path.to_str()).expect("load interactive onboarding config");
+    assert_eq!(
+        config.provider.api_key.as_deref(),
+        Some("inline-secret"),
+        "explicit :clear should keep the existing inline provider credential in the saved config: {transcript:#?}"
+    );
+    assert_eq!(config.provider.api_key_env, None);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn interactive_onboard_clear_token_restores_builtin_system_prompt() {
+    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
+    let output_path = unique_temp_path("interactive-clear-system-prompt.toml");
+    let mut existing = mvp::config::LoongClawConfig::default();
+    existing.provider.model = "gpt-4.1".to_owned();
+    existing.provider.api_key = Some("inline-secret".to_owned());
+    existing.cli.system_prompt = "custom review prompt".to_owned();
+    mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
+
+    run_scripted_onboard_flow(
+        crate::onboard_cli::OnboardCommandOptions {
+            output: output_path.to_str().map(str::to_owned),
+            force: false,
+            non_interactive: false,
+            accept_risk: true,
+            provider: None,
+            model: None,
+            api_key_env: None,
+            system_prompt: None,
+            skip_model_probe: true,
+        },
+        ["1", "2", "openai", "gpt-4.1", "", ":clear", "y", "y", "o"],
+        None,
+        None,
+    )
+    .await
+    .expect("run scripted onboarding with explicit system-prompt clear token");
+
+    let (_, config) =
+        mvp::config::load(output_path.to_str()).expect("load interactive onboarding config");
+    assert_eq!(
+        config.cli.system_prompt,
+        mvp::config::CliChannelConfig::default().system_prompt,
+        "explicit :clear should restore the built-in CLI system prompt"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn non_interactive_onboard_uses_the_same_detected_starting_point_order_as_interactive_default()
  {
     let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
@@ -3418,8 +3501,8 @@ fn onboard_api_key_env_screen_explains_suggested_env_and_blank_behavior() {
     assert!(
         lines
             .iter()
-            .any(|line| line.contains("blank keeps inline or oauth credentials")),
-        "credential-env screen should explain when leaving the field blank is valid: {lines:#?}"
+            .any(|line| line == "- type :clear to keep inline or oauth credentials"),
+        "credential-env screen should explain the explicit clear token when Enter uses a non-empty default: {lines:#?}"
     );
 }
 
@@ -3535,8 +3618,8 @@ fn onboard_system_prompt_screen_explains_blank_behavior() {
     assert!(
         lines
             .iter()
-            .any(|line| line.contains("blank keeps the built-in behavior")),
-        "system-prompt screen should explain the blank-value behavior clearly: {lines:#?}"
+            .any(|line| line == "- type :clear to use the built-in behavior"),
+        "system-prompt screen should explain how to restore the built-in behavior when Enter keeps the current prompt: {lines:#?}"
     );
 }
 
