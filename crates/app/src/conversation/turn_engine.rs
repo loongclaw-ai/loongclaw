@@ -680,10 +680,10 @@ fn effective_result_tool_name(intent: &ToolIntent) -> String {
         .get("tool_id")
         .and_then(serde_json::Value::as_str)
         .map(crate::tools::canonical_tool_name)
-        .filter(|tool_name| {
-            crate::tools::is_known_tool_name(tool_name)
-                && !crate::tools::is_provider_exposed_tool_name(tool_name)
+        .and_then(|tool_name| {
+            crate::tools::resolve_tool_execution(tool_name).map(|resolved| resolved.canonical_name)
         })
+        .filter(|tool_name| !crate::tools::is_provider_exposed_tool_name(tool_name))
         .unwrap_or(canonical_tool_name)
         .to_owned()
 }
@@ -727,6 +727,7 @@ fn effective_visible_tool_name(
 fn provider_tool_denial_should_conceal_name(
     intent: &ToolIntent,
     descriptor: &crate::tools::ToolDescriptor,
+    tool_is_visible: bool,
 ) -> bool {
     if !intent.source.starts_with("provider_") {
         return false;
@@ -736,7 +737,8 @@ fn provider_tool_denial_should_conceal_name(
         return true;
     }
 
-    descriptor.name == "tool.invoke"
+    !tool_is_visible
+        && descriptor.name == "tool.invoke"
         && effective_visible_tool_name(intent, descriptor) != descriptor.name
 }
 
@@ -827,6 +829,7 @@ async fn execute_tool_intent_via_kernel<D: AppToolDispatcher + ?Sized>(
     session_context: &SessionContext,
     app_dispatcher: &D,
     kernel_ctx: Option<&KernelContext>,
+    ingress: Option<&ConversationIngressContext>,
 ) -> Result<ToolCoreOutcome, TurnResult> {
     let prepared_request = match kernel_ctx {
         Some(ctx) => crate::tools::prepare_kernel_tool_request(
@@ -851,39 +854,54 @@ async fn execute_tool_intent_via_kernel<D: AppToolDispatcher + ?Sized>(
         ),
     };
 
+    let mut kernel_request = prepared_request;
+    let mut trusted_internal_payload = false;
+
     if descriptor.name == "tool.invoke"
         && let Ok((effective_descriptor, effective_request)) =
-            crate::tools::resolve_tool_invoke_request(&prepared_request)
-        && effective_descriptor.execution_kind == ToolExecutionKind::App
+            crate::tools::resolve_tool_invoke_request(&kernel_request)
     {
-        let Some(effective_descriptor) = tool_catalog()
-            .descriptor(effective_descriptor.canonical_name)
-            .copied()
-        else {
-            return Err(TurnResult::non_retryable_tool_error(
-                "tool_catalog_drift",
-                format!(
-                    "tool_catalog_drift: missing descriptor for resolved tool.invoke target `{}`",
-                    effective_descriptor.canonical_name
-                ),
-            ));
+        if effective_descriptor.execution_kind == ToolExecutionKind::App {
+            let Some(effective_descriptor) = tool_catalog()
+                .descriptor(effective_descriptor.canonical_name)
+                .copied()
+            else {
+                return Err(TurnResult::non_retryable_tool_error(
+                    "tool_catalog_drift",
+                    format!(
+                        "tool_catalog_drift: missing descriptor for resolved tool.invoke target `{}`",
+                        effective_descriptor.canonical_name
+                    ),
+                ));
+            };
+            preflight_app_tool_request(
+                app_dispatcher,
+                session_context,
+                intent,
+                &effective_descriptor,
+                &effective_request,
+                kernel_ctx,
+            )
+            .await?;
+            return execute_app_tool_request(
+                app_dispatcher,
+                session_context,
+                effective_request,
+                kernel_ctx,
+            )
+            .await;
+        }
+
+        let injected = inject_internal_tool_ingress(
+            effective_descriptor.canonical_name,
+            effective_request.payload,
+            ingress,
+        );
+        trusted_internal_payload |= injected.trusted_internal_context;
+        kernel_request = ToolCoreRequest {
+            tool_name: effective_request.tool_name,
+            payload: injected.payload,
         };
-        preflight_app_tool_request(
-            app_dispatcher,
-            session_context,
-            intent,
-            &effective_descriptor,
-            &effective_request,
-            kernel_ctx,
-        )
-        .await?;
-        return execute_app_tool_request(
-            app_dispatcher,
-            session_context,
-            effective_request,
-            kernel_ctx,
-        )
-        .await;
     }
 
     let Some(kernel_ctx) = kernel_ctx else {
@@ -892,31 +910,36 @@ async fn execute_tool_intent_via_kernel<D: AppToolDispatcher + ?Sized>(
             "no_kernel_context",
         ));
     };
-    let caps = crate::tools::required_capabilities_for_request(&prepared_request);
-    kernel_ctx
-        .kernel
-        .execute_tool_core(
-            kernel_ctx.pack_id(),
-            &kernel_ctx.token,
-            &caps,
-            None,
-            prepared_request,
-        )
-        .await
-        .map_err(|error| {
-            let reason = render_kernel_error_reason(&error);
-            match classify_kernel_error(&error) {
-                KernelFailureClass::PolicyDenied => {
-                    TurnResult::policy_denied("kernel_policy_denied", reason)
-                }
-                KernelFailureClass::RetryableExecution => {
-                    TurnResult::retryable_tool_error("tool_execution_failed", reason)
-                }
-                KernelFailureClass::NonRetryable => {
-                    TurnResult::non_retryable_tool_error("kernel_execution_failed", reason)
-                }
+    let injected = crate::tools::inject_internal_tool_search_context(
+        kernel_request.tool_name.as_str(),
+        kernel_request.payload,
+        Some(&session_context.tool_view),
+    );
+    trusted_internal_payload |= injected.trusted_internal_context;
+    let prepared_request = ToolCoreRequest {
+        tool_name: kernel_request.tool_name,
+        payload: injected.payload,
+    };
+    crate::tools::execute_kernel_tool_request(
+        kernel_ctx,
+        prepared_request,
+        trusted_internal_payload,
+    )
+    .await
+    .map_err(|error| {
+        let reason = render_kernel_error_reason(&error);
+        match classify_kernel_error(&error) {
+            KernelFailureClass::PolicyDenied => {
+                TurnResult::policy_denied("kernel_policy_denied", reason)
             }
-        })
+            KernelFailureClass::RetryableExecution => {
+                TurnResult::retryable_tool_error("tool_execution_failed", reason)
+            }
+            KernelFailureClass::NonRetryable => {
+                TurnResult::non_retryable_tool_error("kernel_execution_failed", reason)
+            }
+        }
+    })
 }
 
 /// Single orchestration boundary for tool-call evaluation and execution.
@@ -1013,8 +1036,9 @@ impl TurnEngine {
                 return Err(TurnFailure::policy_denied("tool_not_found", reason));
             };
             if let Some(descriptor) = catalog.resolve(&intent.tool_name) {
-                if !tool_intent_is_visible(session_context, intent, descriptor) {
-                    if provider_tool_denial_should_conceal_name(intent, descriptor) {
+                let tool_is_visible = tool_intent_is_visible(session_context, intent, descriptor);
+                if !tool_is_visible {
+                    if provider_tool_denial_should_conceal_name(intent, descriptor, false) {
                         return Err(concealed_provider_tool_denial());
                     }
                     let reason = format!(
@@ -1023,7 +1047,7 @@ impl TurnEngine {
                     );
                     return Err(TurnFailure::policy_denied("tool_not_visible", reason));
                 }
-                if provider_tool_denial_should_conceal_name(intent, descriptor) {
+                if provider_tool_denial_should_conceal_name(intent, descriptor, true) {
                     return Err(concealed_provider_tool_denial());
                 }
                 if !crate::tools::is_provider_exposed_tool_name(&intent.tool_name) {
@@ -1130,6 +1154,7 @@ impl TurnEngine {
                             session_context,
                             app_dispatcher,
                             kernel_ctx,
+                            ingress,
                         )
                         .await
                         {
@@ -1376,6 +1401,7 @@ mod tests {
                 ),
                 &session_context,
                 &dispatcher,
+                None,
                 None,
             )
             .await;

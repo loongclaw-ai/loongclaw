@@ -196,6 +196,10 @@ impl ToolView {
         self.allowed_names.contains(tool_name)
     }
 
+    pub fn tool_names(&self) -> impl Iterator<Item = &str> {
+        self.allowed_names.iter().map(String::as_str)
+    }
+
     pub fn iter<'a>(
         &'a self,
         catalog: &'a ToolCatalog,

@@ -221,6 +221,8 @@ fn default_tool_runtime_config(temp_dir: PathBuf) -> ToolRuntimeConfig {
         file_root: Some(temp_dir),
         config_path: None,
         external_skills: Default::default(),
+        #[cfg(feature = "feishu-integration")]
+        feishu: None,
     }
 }
 
@@ -625,6 +627,8 @@ mod tests {
                 file_root: Some(temp_dir),
                 config_path: None,
                 external_skills: Default::default(),
+                #[cfg(feature = "feishu-integration")]
+                feishu: None,
             },
         );
 

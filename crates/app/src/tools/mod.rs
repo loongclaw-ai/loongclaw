@@ -49,6 +49,8 @@ pub(crate) use feishu::{DeferredFeishuCardUpdate, drain_deferred_feishu_card_upd
 pub use kernel_adapter::MvpToolAdapter;
 
 pub(crate) const LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY: &str = "_loongclaw";
+const LOONGCLAW_INTERNAL_TOOL_SEARCH_KEY: &str = "tool_search";
+const LOONGCLAW_INTERNAL_TOOL_SEARCH_VISIBLE_TOOL_IDS_KEY: &str = "visible_tool_ids";
 
 tokio::task_local! {
     static TRUSTED_INTERNAL_TOOL_PAYLOAD_TASK: bool;
@@ -104,6 +106,51 @@ fn payload_uses_reserved_internal_tool_context(payload: &Value) -> bool {
     payload
         .as_object()
         .is_some_and(|body| body.contains_key(LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY))
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct InjectedToolPayload {
+    pub payload: Value,
+    pub trusted_internal_context: bool,
+}
+
+pub(crate) fn inject_internal_tool_search_context(
+    tool_name: &str,
+    payload: Value,
+    visible_tool_view: Option<&ToolView>,
+) -> InjectedToolPayload {
+    let Some(visible_tool_view) = visible_tool_view else {
+        return InjectedToolPayload {
+            payload,
+            trusted_internal_context: false,
+        };
+    };
+    if canonical_tool_name(tool_name) != "tool.search" {
+        return InjectedToolPayload {
+            payload,
+            trusted_internal_context: false,
+        };
+    }
+
+    let Value::Object(mut body) = payload else {
+        return InjectedToolPayload {
+            payload,
+            trusted_internal_context: false,
+        };
+    };
+
+    body.insert(
+        LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY.to_owned(),
+        json!({
+            LOONGCLAW_INTERNAL_TOOL_SEARCH_KEY: {
+                LOONGCLAW_INTERNAL_TOOL_SEARCH_VISIBLE_TOOL_IDS_KEY: visible_tool_view.tool_names().collect::<Vec<_>>(),
+            }
+        }),
+    );
+    InjectedToolPayload {
+        payload: Value::Object(body),
+        trusted_internal_context: true,
+    }
 }
 
 /// Execute a tool request, routing through the kernel for
@@ -394,11 +441,14 @@ fn invoked_discoverable_tool_request(payload: &Value) -> Option<(&str, &Value)> 
     if matches!(tool_id, "tool.search" | "tool.invoke") {
         return None;
     }
-    let entry = catalog::find_tool_catalog_entry(tool_id)?;
-    if !entry.is_discoverable() {
+    let resolved = resolve_tool_execution(tool_id)?;
+    if is_provider_exposed_tool_name(resolved.canonical_name) {
         return None;
     }
-    Some((tool_id, payload.get("arguments").unwrap_or(payload)))
+    Some((
+        resolved.canonical_name,
+        payload.get("arguments").unwrap_or(payload),
+    ))
 }
 
 fn claw_import_mode_requires_write(payload: &Value) -> bool {
@@ -464,6 +514,7 @@ pub(crate) fn runtime_tool_view_with_runtime_config(
     ToolView::from_tool_names(names)
 }
 
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct ResolvedToolExecution {
     pub canonical_name: &'static str,
     pub execution_kind: ToolExecutionKind,
@@ -562,21 +613,50 @@ pub struct ToolRegistryEntry {
     pub description: &'static str,
 }
 
+#[derive(Debug, Clone)]
+struct SearchableToolEntry {
+    canonical_name: String,
+    summary: String,
+    argument_hint: String,
+    required_fields: Vec<String>,
+    tags: Vec<String>,
+}
+
 /// Returns a sorted list of all registered tools, gated by feature flags.
 pub fn tool_registry() -> Vec<ToolRegistryEntry> {
     tool_registry_with_config(Some(runtime_config::get_tool_runtime_config()))
 }
 
 pub(crate) fn tool_registry_with_config(
-    _config: Option<&runtime_config::ToolRuntimeConfig>,
+    config: Option<&runtime_config::ToolRuntimeConfig>,
 ) -> Vec<ToolRegistryEntry> {
+    let default_runtime_config;
+    let config = match config {
+        Some(config) => config,
+        None => {
+            default_runtime_config = runtime_config::ToolRuntimeConfig::default();
+            &default_runtime_config
+        }
+    };
+    let default_visible_tool_view =
+        runtime_tool_view_with_runtime_config(&ToolConfig::default(), config);
     let mut entries: Vec<ToolRegistryEntry> = catalog::discoverable_tool_catalog()
         .into_iter()
+        .filter(|entry| default_visible_tool_view.contains(entry.canonical_name))
+        .filter(|entry| tool_search_entry_is_runtime_usable(*entry, config))
         .map(|entry| ToolRegistryEntry {
             name: entry.canonical_name,
             description: entry.summary,
         })
         .collect();
+    #[cfg(feature = "feishu-integration")]
+    if config.feishu.is_some() {
+        entries.extend(
+            feishu::feishu_tool_registry_entries()
+                .into_iter()
+                .filter(|entry| default_visible_tool_view.contains(entry.name)),
+        );
+    }
     entries.sort_by_key(|entry| entry.name);
     entries
 }
@@ -641,6 +721,139 @@ fn provider_tool_definitions_for_view(_view: &ToolView) -> Vec<Value> {
     tools
 }
 
+fn search_argument_hint_from_provider_definition(parameters: &Value) -> String {
+    let Some(properties) = parameters.get("properties").and_then(Value::as_object) else {
+        return String::new();
+    };
+    let required = parameters
+        .get("required")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<BTreeSet<_>>();
+    let mut fields = properties
+        .iter()
+        .map(|(name, schema)| {
+            let schema_type = schema
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("value");
+            let suffix = if required.contains(name.as_str()) {
+                ""
+            } else {
+                "?"
+            };
+            format!("{name}{suffix}:{schema_type}")
+        })
+        .collect::<Vec<_>>();
+    fields.sort();
+    fields.join(",")
+}
+
+fn searchable_entry_from_catalog(entry: catalog::ToolCatalogEntry) -> SearchableToolEntry {
+    SearchableToolEntry {
+        canonical_name: entry.canonical_name.to_owned(),
+        summary: entry.summary.to_owned(),
+        argument_hint: entry.argument_hint.to_owned(),
+        required_fields: entry
+            .required_fields
+            .iter()
+            .map(|field| (*field).to_owned())
+            .collect(),
+        tags: entry.tags.iter().map(|tag| (*tag).to_owned()).collect(),
+    }
+}
+
+#[cfg(feature = "feishu-integration")]
+fn feishu_searchable_entries() -> Vec<SearchableToolEntry> {
+    feishu::feishu_provider_tool_definitions()
+        .into_iter()
+        .filter_map(|tool| {
+            let function = tool.get("function")?;
+            let provider_name = function.get("name")?.as_str()?;
+            let parameters = function
+                .get("parameters")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            Some(SearchableToolEntry {
+                canonical_name: canonical_tool_name(provider_name).to_owned(),
+                summary: function
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                argument_hint: search_argument_hint_from_provider_definition(&parameters),
+                required_fields: parameters
+                    .get("required")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect(),
+                tags: vec!["feishu".to_owned()],
+            })
+        })
+        .collect()
+}
+
+fn search_tool_view_from_payload(
+    payload: &serde_json::Map<String, Value>,
+    config: &runtime_config::ToolRuntimeConfig,
+) -> ToolView {
+    let visible_tool_names = if trusted_internal_tool_payload_enabled() {
+        payload
+            .get(LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY)
+            .and_then(|body| body.get(LOONGCLAW_INTERNAL_TOOL_SEARCH_KEY))
+            .and_then(|body| body.get(LOONGCLAW_INTERNAL_TOOL_SEARCH_VISIBLE_TOOL_IDS_KEY))
+            .and_then(Value::as_array)
+            .map(|tool_names| {
+                tool_names
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(canonical_tool_name)
+                    .collect::<Vec<_>>()
+            })
+    } else {
+        None
+    };
+    match visible_tool_names {
+        Some(visible_tool_names) => ToolView::from_tool_names(visible_tool_names),
+        None => runtime_tool_view_with_runtime_config(&ToolConfig::default(), config),
+    }
+}
+
+fn runtime_discoverable_tool_entries(
+    config: &runtime_config::ToolRuntimeConfig,
+    visible_tool_view: Option<&ToolView>,
+) -> Vec<SearchableToolEntry> {
+    let default_visible_tool_view;
+    let visible_tool_view = match visible_tool_view {
+        Some(view) => view,
+        None => {
+            default_visible_tool_view =
+                runtime_tool_view_with_runtime_config(&ToolConfig::default(), config);
+            &default_visible_tool_view
+        }
+    };
+    let mut entries = catalog::discoverable_tool_catalog()
+        .into_iter()
+        .filter(|entry| visible_tool_view.contains(entry.canonical_name))
+        .filter(|entry| tool_search_entry_is_runtime_usable(*entry, config))
+        .map(searchable_entry_from_catalog)
+        .collect::<Vec<_>>();
+    #[cfg(feature = "feishu-integration")]
+    if config.feishu.is_some() {
+        entries.extend(
+            feishu_searchable_entries()
+                .into_iter()
+                .filter(|entry| visible_tool_view.contains(entry.canonical_name.as_str())),
+        );
+    }
+    entries
+}
+
 pub fn tool_parameter_schema_types() -> BTreeMap<String, BTreeMap<String, &'static str>> {
     let mut tools_by_name = BTreeMap::<String, BTreeMap<String, &'static str>>::new();
     for entry in catalog::all_tool_catalog() {
@@ -690,18 +903,21 @@ fn execute_tool_search_tool_with_config(
         .get(TOOL_SEARCH_GRANTED_CAPABILITIES_FIELD)
         .cloned()
         .and_then(|value| serde_json::from_value::<BTreeSet<Capability>>(value).ok());
+    let visible_tool_view = search_tool_view_from_payload(payload, config);
 
     let query_normalized = query.to_ascii_lowercase();
     let tokens = tokenize_search_query(query_normalized.as_str());
-    let mut ranked: Vec<(u32, Vec<String>, catalog::ToolCatalogEntry)> =
-        catalog::discoverable_tool_catalog()
+    let mut ranked: Vec<(u32, Vec<String>, SearchableToolEntry)> =
+        runtime_discoverable_tool_entries(config, Some(&visible_tool_view))
             .into_iter()
-            .filter(|entry| tool_search_entry_is_runtime_usable(*entry, config))
             .filter(|entry| {
-                tool_search_entry_is_capability_usable(*entry, granted_capabilities.as_ref())
+                tool_search_entry_is_capability_usable(
+                    entry.canonical_name.as_str(),
+                    granted_capabilities.as_ref(),
+                )
             })
             .filter_map(|entry| {
-                let (score, why) = search_score(entry, query_normalized.as_str(), &tokens);
+                let (score, why) = search_score(&entry, query_normalized.as_str(), &tokens);
                 if score == 0 {
                     None
                 } else {
@@ -712,7 +928,7 @@ fn execute_tool_search_tool_with_config(
     ranked.sort_by(|(left_score, _, left), (right_score, _, right)| {
         right_score
             .cmp(left_score)
-            .then_with(|| left.canonical_name.cmp(right.canonical_name))
+            .then_with(|| left.canonical_name.cmp(&right.canonical_name))
     });
 
     let results: Vec<Value> = ranked
@@ -726,7 +942,7 @@ fn execute_tool_search_tool_with_config(
                 "required_fields": entry.required_fields,
                 "tags": entry.tags,
                 "why": why,
-                "lease": issue_tool_lease(entry.canonical_name, payload),
+                "lease": issue_tool_lease(entry.canonical_name.as_str(), payload),
             })
         })
         .collect();
@@ -766,14 +982,13 @@ fn tool_search_entry_is_runtime_usable(
 }
 
 fn tool_search_entry_is_capability_usable(
-    entry: catalog::ToolCatalogEntry,
+    tool_name: &str,
     granted_capabilities: Option<&BTreeSet<Capability>>,
 ) -> bool {
     let Some(granted_capabilities) = granted_capabilities else {
         return true;
     };
-    let required =
-        required_capabilities_for_tool_name_and_payload(entry.canonical_name, &json!({}));
+    let required = required_capabilities_for_tool_name_and_payload(tool_name, &json!({}));
     required
         .iter()
         .all(|capability| granted_capabilities.contains(capability))
@@ -781,7 +996,7 @@ fn tool_search_entry_is_capability_usable(
 
 pub(crate) fn resolve_tool_invoke_request(
     request: &ToolCoreRequest,
-) -> Result<(catalog::ToolCatalogEntry, ToolCoreRequest), String> {
+) -> Result<(ResolvedToolExecution, ToolCoreRequest), String> {
     if canonical_tool_name(request.tool_name.as_str()) != "tool.invoke" {
         return Err(format!(
             "tool_invoke_required: expected `tool.invoke`, got `{}`",
@@ -810,19 +1025,21 @@ pub(crate) fn resolve_tool_invoke_request(
         return Err("tool.invoke payload.arguments must be an object".to_owned());
     }
 
-    let entry = catalog::find_tool_catalog_entry(tool_id)
+    let resolved = resolve_tool_execution(tool_id)
         .ok_or_else(|| format!("tool_not_found: unknown tool `{tool_id}`"))?;
-    if !entry.is_discoverable() {
+    let resolved_tool_name = resolved.canonical_name;
+    if is_provider_exposed_tool_name(resolved_tool_name) {
         return Err(format!(
-            "tool_not_provider_exposed: {tool_id} must be called directly as a core tool"
+            "tool_not_provider_exposed: {} must be called directly as a core tool",
+            resolved_tool_name
         ));
     }
-    validate_tool_lease(tool_id, lease, payload)?;
+    validate_tool_lease(resolved_tool_name, lease, payload)?;
 
     Ok((
-        entry,
+        resolved,
         ToolCoreRequest {
-            tool_name: tool_id.to_owned(),
+            tool_name: resolved_tool_name.to_owned(),
             payload: arguments,
         },
     ))
@@ -853,11 +1070,7 @@ fn tokenize_search_query(query: &str) -> Vec<String> {
         .collect()
 }
 
-fn search_score(
-    entry: catalog::ToolCatalogEntry,
-    query: &str,
-    tokens: &[String],
-) -> (u32, Vec<String>) {
+fn search_score(entry: &SearchableToolEntry, query: &str, tokens: &[String]) -> (u32, Vec<String>) {
     let name = entry.canonical_name.to_ascii_lowercase();
     let summary = entry.summary.to_ascii_lowercase();
     let argument_hint = entry.argument_hint.to_ascii_lowercase();
@@ -1142,6 +1355,8 @@ mod tests {
                 install_root: None,
                 auto_expose_installed: false,
             },
+            #[cfg(feature = "feishu-integration")]
+            feishu: None,
         }
     }
 
@@ -1253,9 +1468,9 @@ mod tests {
         feature = "memory-sqlite"
     ))]
     #[test]
-    fn tool_registry_returns_all_known_tools() {
+    fn tool_registry_returns_runtime_discoverable_tools_for_default_config() {
         let entries = tool_registry();
-        assert_eq!(entries.len(), 26);
+        assert_eq!(entries.len(), 18);
         let names: Vec<&str> = entries.iter().map(|e| e.name).collect();
         assert!(names.contains(&"approval_request_resolve"));
         assert!(names.contains(&"approval_request_status"));
@@ -1263,14 +1478,6 @@ mod tests {
         assert!(names.contains(&"claw.import"));
         assert!(names.contains(&"delegate"));
         assert!(names.contains(&"delegate_async"));
-        assert!(names.contains(&"external_skills.fetch"));
-        assert!(names.contains(&"external_skills.install"));
-        assert!(names.contains(&"external_skills.inspect"));
-        assert!(names.contains(&"external_skills.invoke"));
-        assert!(names.contains(&"external_skills.list"));
-        assert!(names.contains(&"external_skills.policy"));
-        assert!(names.contains(&"external_skills.remove"));
-        assert!(names.contains(&"shell.exec"));
         assert!(names.contains(&"file.read"));
         assert!(names.contains(&"file.write"));
         assert!(names.contains(&"provider.switch"));
@@ -1282,7 +1489,15 @@ mod tests {
         assert!(names.contains(&"session_wait"));
         assert!(names.contains(&"sessions_history"));
         assert!(names.contains(&"sessions_list"));
-        assert!(names.contains(&"sessions_send"));
+        assert!(!names.contains(&"external_skills.fetch"));
+        assert!(!names.contains(&"external_skills.install"));
+        assert!(!names.contains(&"external_skills.inspect"));
+        assert!(!names.contains(&"external_skills.invoke"));
+        assert!(!names.contains(&"external_skills.list"));
+        assert!(names.contains(&"external_skills.policy"));
+        assert!(!names.contains(&"external_skills.remove"));
+        assert!(!names.contains(&"shell.exec"));
+        assert!(!names.contains(&"sessions_send"));
     }
 
     #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
@@ -1684,6 +1899,8 @@ mod tests {
             file_root: Some(root.clone()),
             config_path: None,
             external_skills: runtime_config::ExternalSkillsRuntimePolicy::default(),
+            #[cfg(feature = "feishu-integration")]
+            feishu: None,
         };
         let outcome = execute_tool_core_with_config(
             ToolCoreRequest {
@@ -1726,6 +1943,170 @@ mod tests {
         }));
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn tool_search_respects_visible_tool_ids_from_runtime_context() {
+        let root = std::env::temp_dir().join(format!(
+            "loongclaw-tool-search-visible-filter-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("create fixture root");
+
+        let config = test_tool_runtime_config(root.clone());
+        let outcome = execute_tool_core_with_test_context(
+            ToolCoreRequest {
+                tool_name: "tool.search".to_owned(),
+                payload: json!({
+                    "query": "session history status",
+                    "_loongclaw": {
+                        "tool_search": {
+                            "visible_tool_ids": ["tool.search", "tool.invoke", "file.read"],
+                        }
+                    }
+                }),
+            },
+            &config,
+        )
+        .expect("tool search should succeed");
+
+        let results = outcome.payload["results"].as_array().expect("results");
+        assert!(
+            results.iter().all(|entry| !entry["tool_id"]
+                .as_str()
+                .is_some_and(|tool_id| tool_id.starts_with("session"))),
+            "search should honor the injected visible tool surface: {results:?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn tool_search_rejects_forged_visible_tool_ids_from_untrusted_payload() {
+        let root = std::env::temp_dir().join(format!(
+            "loongclaw-tool-search-visible-forged-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("create fixture root");
+
+        let config = test_tool_runtime_config(root.clone());
+        let error = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "tool.search".to_owned(),
+                payload: json!({
+                    "query": "session history status",
+                    "_loongclaw": {
+                        "tool_search": {
+                            "visible_tool_ids": ["tool.search", "tool.invoke", "file.read"],
+                        }
+                    }
+                }),
+            },
+            &config,
+        )
+        .expect_err("untrusted tool search should reject reserved internal visibility context");
+
+        assert!(
+            error.contains("payload._loongclaw is reserved for trusted internal tool context"),
+            "error={error}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(feature = "feishu-integration")]
+    #[test]
+    fn tool_search_includes_feishu_tools_when_runtime_configured() {
+        let mut config = runtime_config::ToolRuntimeConfig::default();
+        config.feishu = Some(runtime_config::FeishuToolRuntimeConfig {
+            channel: crate::config::FeishuChannelConfig {
+                enabled: true,
+                app_id: Some("cli_a1b2c3".to_owned()),
+                app_secret: Some("app-secret".to_owned()),
+                ..crate::config::FeishuChannelConfig::default()
+            },
+            integration: crate::config::FeishuIntegrationConfig::default(),
+        });
+
+        let outcome = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "tool.search".to_owned(),
+                payload: json!({"query": "feishu message search", "limit": 8}),
+            },
+            &config,
+        )
+        .expect("tool search should succeed");
+
+        let results = outcome.payload["results"].as_array().expect("results");
+        assert!(
+            results
+                .iter()
+                .any(|entry| entry["tool_id"] == "feishu.messages.search"),
+            "feishu runtime tools should be discoverable through tool.search: {results:?}"
+        );
+        assert!(
+            results
+                .iter()
+                .any(|entry| entry["tool_id"] == "feishu.messages.send"),
+            "feishu send should be discoverable through tool.search: {results:?}"
+        );
+    }
+
+    #[cfg(all(feature = "feishu-integration", feature = "channel-feishu"))]
+    #[test]
+    fn tool_invoke_dispatches_feishu_discovered_tool_with_a_valid_lease() {
+        use std::fs;
+
+        let temp_dir = unique_feishu_tool_temp_dir("tool-invoke-feishu-send");
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+        let sqlite_path = temp_dir.join("feishu.sqlite3");
+        let _store = seed_feishu_tool_grant(
+            &sqlite_path,
+            "u-token-tool-invoke-feishu-send",
+            &["offline_access"],
+        );
+        let config =
+            build_feishu_tool_runtime_config("http://127.0.0.1:9".to_owned(), &sqlite_path);
+
+        let search = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "tool.search".to_owned(),
+                payload: json!({"query": "send feishu message", "limit": 8}),
+            },
+            &config,
+        )
+        .expect("tool search should succeed");
+
+        let result = search.payload["results"]
+            .as_array()
+            .expect("results")
+            .iter()
+            .find(|entry| entry["tool_id"] == "feishu.messages.send")
+            .expect("feishu.messages.send search result");
+
+        let error = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "tool.invoke".to_owned(),
+                payload: json!({
+                    "tool_id": "feishu.messages.send",
+                    "lease": result["lease"].clone(),
+                    "arguments": {
+                        "text": "ship by invoke"
+                    }
+                }),
+            },
+            &config,
+        )
+        .expect_err("missing receive_id should fail after discovery-first invoke routing");
+
+        assert!(
+            error.contains("feishu.messages.send requires payload.receive_id"),
+            "error={error}"
+        );
+
+        fs::remove_dir_all(&temp_dir).ok();
     }
 
     #[cfg(feature = "tool-file")]
@@ -1946,7 +2327,7 @@ mod tests {
 
     #[cfg(feature = "feishu-integration")]
     #[test]
-    fn provider_tool_definitions_with_config_includes_feishu_functions_when_runtime_configured() {
+    fn provider_tool_definitions_with_config_remains_core_only_when_feishu_runtime_is_configured() {
         let mut config = runtime_config::ToolRuntimeConfig::default();
         config.feishu = Some(runtime_config::FeishuToolRuntimeConfig {
             channel: crate::config::FeishuChannelConfig {
@@ -1966,19 +2347,7 @@ mod tests {
             .filter_map(Value::as_str)
             .collect::<Vec<_>>();
 
-        assert!(names.contains(&"feishu_whoami"));
-        assert!(names.contains(&"feishu_doc_create"));
-        assert!(names.contains(&"feishu_doc_append"));
-        assert!(names.contains(&"feishu_doc_read"));
-        assert!(names.contains(&"feishu_messages_history"));
-        assert!(names.contains(&"feishu_messages_get"));
-        assert!(names.contains(&"feishu_messages_resource_get"));
-        assert!(names.contains(&"feishu_messages_search"));
-        assert!(names.contains(&"feishu_messages_send"));
-        assert!(names.contains(&"feishu_messages_reply"));
-        assert!(names.contains(&"feishu_card_update"));
-        assert!(names.contains(&"feishu_calendar_list"));
-        assert!(names.contains(&"feishu_calendar_freebusy"));
+        assert_eq!(names, vec!["tool_invoke", "tool_search"]);
     }
 
     #[cfg(feature = "feishu-integration")]
@@ -2039,18 +2408,7 @@ mod tests {
     #[cfg(feature = "feishu-integration")]
     #[test]
     fn provider_tool_definitions_with_config_advertises_feishu_message_write_uuid() {
-        let mut config = runtime_config::ToolRuntimeConfig::default();
-        config.feishu = Some(runtime_config::FeishuToolRuntimeConfig {
-            channel: crate::config::FeishuChannelConfig {
-                enabled: true,
-                app_id: Some("cli_a1b2c3".to_owned()),
-                app_secret: Some("app-secret".to_owned()),
-                ..crate::config::FeishuChannelConfig::default()
-            },
-            integration: crate::config::FeishuIntegrationConfig::default(),
-        });
-
-        let defs = provider_tool_definitions_with_config(Some(&config));
+        let defs = feishu::feishu_provider_tool_definitions();
         let send = defs
             .iter()
             .find(|item| item["function"]["name"] == "feishu_messages_send")
@@ -2073,18 +2431,7 @@ mod tests {
     #[cfg(feature = "feishu-integration")]
     #[test]
     fn provider_tool_definitions_with_config_advertises_feishu_message_post_and_media_payloads() {
-        let mut config = runtime_config::ToolRuntimeConfig::default();
-        config.feishu = Some(runtime_config::FeishuToolRuntimeConfig {
-            channel: crate::config::FeishuChannelConfig {
-                enabled: true,
-                app_id: Some("cli_a1b2c3".to_owned()),
-                app_secret: Some("app-secret".to_owned()),
-                ..crate::config::FeishuChannelConfig::default()
-            },
-            integration: crate::config::FeishuIntegrationConfig::default(),
-        });
-
-        let defs = provider_tool_definitions_with_config(Some(&config));
+        let defs = feishu::feishu_provider_tool_definitions();
         let send = defs
             .iter()
             .find(|item| item["function"]["name"] == "feishu_messages_send")
@@ -2179,18 +2526,7 @@ mod tests {
     #[cfg(feature = "feishu-integration")]
     #[test]
     fn provider_tool_definitions_with_config_advertises_feishu_ingress_defaults() {
-        let mut config = runtime_config::ToolRuntimeConfig::default();
-        config.feishu = Some(runtime_config::FeishuToolRuntimeConfig {
-            channel: crate::config::FeishuChannelConfig {
-                enabled: true,
-                app_id: Some("cli_a1b2c3".to_owned()),
-                app_secret: Some("app-secret".to_owned()),
-                ..crate::config::FeishuChannelConfig::default()
-            },
-            integration: crate::config::FeishuIntegrationConfig::default(),
-        });
-
-        let defs = provider_tool_definitions_with_config(Some(&config));
+        let defs = feishu::feishu_provider_tool_definitions();
         let send = defs
             .iter()
             .find(|item| item["function"]["name"] == "feishu_messages_send")
@@ -2388,18 +2724,7 @@ mod tests {
     #[cfg(feature = "feishu-integration")]
     #[test]
     fn provider_tool_definitions_with_config_advertises_feishu_card_update_shared_semantics() {
-        let mut config = runtime_config::ToolRuntimeConfig::default();
-        config.feishu = Some(runtime_config::FeishuToolRuntimeConfig {
-            channel: crate::config::FeishuChannelConfig {
-                enabled: true,
-                app_id: Some("cli_a1b2c3".to_owned()),
-                app_secret: Some("app-secret".to_owned()),
-                ..crate::config::FeishuChannelConfig::default()
-            },
-            integration: crate::config::FeishuIntegrationConfig::default(),
-        });
-
-        let defs = provider_tool_definitions_with_config(Some(&config));
+        let defs = feishu::feishu_provider_tool_definitions();
         let card_update = defs
             .iter()
             .find(|item| item["function"]["name"] == "feishu_card_update")
@@ -2433,18 +2758,7 @@ mod tests {
     #[cfg(feature = "feishu-integration")]
     #[test]
     fn provider_tool_definitions_with_config_advertises_feishu_card_update_markdown_shortcut() {
-        let mut config = runtime_config::ToolRuntimeConfig::default();
-        config.feishu = Some(runtime_config::FeishuToolRuntimeConfig {
-            channel: crate::config::FeishuChannelConfig {
-                enabled: true,
-                app_id: Some("cli_a1b2c3".to_owned()),
-                app_secret: Some("app-secret".to_owned()),
-                ..crate::config::FeishuChannelConfig::default()
-            },
-            integration: crate::config::FeishuIntegrationConfig::default(),
-        });
-
-        let defs = provider_tool_definitions_with_config(Some(&config));
+        let defs = feishu::feishu_provider_tool_definitions();
         let card_update = defs
             .iter()
             .find(|item| item["function"]["name"] == "feishu_card_update")
@@ -2468,18 +2782,7 @@ mod tests {
     #[cfg(feature = "feishu-integration")]
     #[test]
     fn provider_tool_definitions_with_config_advertises_feishu_card_update_token_budget() {
-        let mut config = runtime_config::ToolRuntimeConfig::default();
-        config.feishu = Some(runtime_config::FeishuToolRuntimeConfig {
-            channel: crate::config::FeishuChannelConfig {
-                enabled: true,
-                app_id: Some("cli_a1b2c3".to_owned()),
-                app_secret: Some("app-secret".to_owned()),
-                ..crate::config::FeishuChannelConfig::default()
-            },
-            integration: crate::config::FeishuIntegrationConfig::default(),
-        });
-
-        let defs = provider_tool_definitions_with_config(Some(&config));
+        let defs = feishu::feishu_provider_tool_definitions();
         let card_update = defs
             .iter()
             .find(|item| item["function"]["name"] == "feishu_card_update")
@@ -2496,18 +2799,7 @@ mod tests {
     #[cfg(feature = "feishu-integration")]
     #[test]
     fn provider_tool_definitions_with_config_advertises_feishu_search_ingress_scope() {
-        let mut config = runtime_config::ToolRuntimeConfig::default();
-        config.feishu = Some(runtime_config::FeishuToolRuntimeConfig {
-            channel: crate::config::FeishuChannelConfig {
-                enabled: true,
-                app_id: Some("cli_a1b2c3".to_owned()),
-                app_secret: Some("app-secret".to_owned()),
-                ..crate::config::FeishuChannelConfig::default()
-            },
-            integration: crate::config::FeishuIntegrationConfig::default(),
-        });
-
-        let defs = provider_tool_definitions_with_config(Some(&config));
+        let defs = feishu::feishu_provider_tool_definitions();
         let search = defs
             .iter()
             .find(|item| item["function"]["name"] == "feishu_messages_search")

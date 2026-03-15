@@ -120,7 +120,6 @@ fn parse_discovery_followup_leases_from_message_content(
 ) -> Option<ProviderToolBridgeContext> {
     let tool_result_text = content.trim().strip_prefix("[tool_result]\n")?;
     let mut discoverable_leases = BTreeMap::new();
-    let catalog = tools::tool_catalog();
 
     for line in tool_result_text.lines() {
         let trimmed = line.trim();
@@ -159,15 +158,11 @@ fn parse_discovery_followup_leases_from_message_content(
             let Some(lease) = result.get("lease").and_then(Value::as_str) else {
                 continue;
             };
-            let canonical_tool_name = tools::canonical_tool_name(tool_id);
-            let Some(descriptor) = catalog.descriptor(canonical_tool_name) else {
+            let Some(discoverable_tool_name) = discoverable_tool_name(tool_id) else {
                 continue;
             };
-            if !descriptor.is_discoverable() {
-                continue;
-            }
             discoverable_leases
-                .entry(descriptor.name.to_owned())
+                .entry(discoverable_tool_name.to_owned())
                 .or_insert_with(|| lease.to_owned());
         }
     }
@@ -226,25 +221,24 @@ fn build_provider_tool_intent(
     bridge_context: &ProviderToolBridgeContext,
 ) -> ToolIntent {
     let canonical_tool_name = tools::canonical_tool_name(raw_tool_name).to_owned();
-    let (tool_name, args_json) =
-        match tools::tool_catalog().descriptor(canonical_tool_name.as_str()) {
-            Some(descriptor) if descriptor.is_discoverable() => bridge_context
+    let (tool_name, args_json) = discoverable_tool_name(canonical_tool_name.as_str())
+        .and_then(|discoverable_tool_name| {
+            bridge_context
                 .discoverable_leases
-                .get(descriptor.name)
+                .get(discoverable_tool_name)
                 .cloned()
                 .map(|lease| {
                     (
                         "tool.invoke".to_owned(),
                         json!({
-                            "tool_id": descriptor.name,
+                            "tool_id": discoverable_tool_name,
                             "lease": lease,
                             "arguments": args_json,
                         }),
                     )
                 })
-                .unwrap_or_else(|| (canonical_tool_name, args_json)),
-            _ => (canonical_tool_name, args_json),
-        };
+        })
+        .unwrap_or((canonical_tool_name, args_json));
     ToolIntent {
         tool_name,
         args_json,
@@ -253,6 +247,12 @@ fn build_provider_tool_intent(
         turn_id: turn_id.unwrap_or_default().to_owned(),
         tool_call_id,
     }
+}
+
+fn discoverable_tool_name(raw_tool_name: &str) -> Option<&'static str> {
+    let resolved = tools::resolve_tool_execution(raw_tool_name)?;
+    (!tools::is_provider_exposed_tool_name(resolved.canonical_name))
+        .then_some(resolved.canonical_name)
 }
 
 fn extract_openai_tool_intents(
@@ -1406,6 +1406,54 @@ mod tests {
             json!({"path":"README.md"})
         );
         assert_eq!(turn.tool_intents[0].args_json["lease"], "lease-openai");
+    }
+
+    #[cfg(feature = "feishu-integration")]
+    #[test]
+    fn extract_provider_turn_with_scope_rewrites_runtime_discovered_feishu_tools_to_tool_invoke_after_search()
+     {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": "updating card",
+                    "tool_calls": [{
+                        "id": "call_feishu_card_update_1",
+                        "type": "function",
+                        "function": {
+                            "name": "feishu_card_update",
+                            "arguments": "{\"markdown\":\"callback updated\"}"
+                        }
+                    }]
+                }
+            }]
+        });
+        let messages = discovery_followup_messages("feishu.card.update", "lease-feishu");
+
+        let turn = extract_provider_turn_with_scope_and_messages(
+            &body,
+            Some("session-feishu"),
+            Some("turn-feishu"),
+            &messages,
+        )
+        .expect("turn");
+        assert_eq!(turn.assistant_text, "updating card");
+        assert_eq!(turn.tool_intents.len(), 1);
+        assert_eq!(turn.tool_intents[0].tool_name, "tool.invoke");
+        assert_eq!(turn.tool_intents[0].session_id, "session-feishu");
+        assert_eq!(turn.tool_intents[0].turn_id, "turn-feishu");
+        assert_eq!(
+            turn.tool_intents[0].tool_call_id,
+            "call_feishu_card_update_1"
+        );
+        assert_eq!(
+            turn.tool_intents[0].args_json["tool_id"],
+            "feishu.card.update"
+        );
+        assert_eq!(
+            turn.tool_intents[0].args_json["arguments"],
+            json!({"markdown":"callback updated"})
+        );
+        assert_eq!(turn.tool_intents[0].args_json["lease"], "lease-feishu");
     }
 
     #[test]

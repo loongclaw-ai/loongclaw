@@ -1,7 +1,5 @@
 # Tool Discovery Architecture Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
-
 **Goal:** Replace the current static provider-wide tool exposure with a discovery-first runtime where only `tool_search` and `tool_invoke` are provider-callable, while non-core tools remain executable behind a lease-validated dispatcher.
 
 **Architecture:** Introduce an app-native tool catalog that separates provider-core tools from discoverable tools. Generate the provider schema and capability snapshot from that catalog, add first-class `tool_search` and `tool_invoke` executors, reject direct provider calls to discoverable tools, and keep real execution routed through the existing kernel-governed tool plane.

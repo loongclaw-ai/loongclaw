@@ -887,6 +887,7 @@ struct ProviderTurnContinuePhase {
     lane_execution: ProviderTurnLaneExecution,
     reply_phase: ToolDrivenReplyPhase,
     followup_config: LoongClawConfig,
+    ingress: Option<ConversationIngressContext>,
 }
 
 impl ProviderTurnContinuePhase {
@@ -894,6 +895,7 @@ impl ProviderTurnContinuePhase {
         tool_intents: usize,
         lane_execution: ProviderTurnLaneExecution,
         followup_config: LoongClawConfig,
+        ingress: Option<&ConversationIngressContext>,
     ) -> Self {
         let reply_phase = lane_execution.reply_phase();
         Self {
@@ -901,6 +903,7 @@ impl ProviderTurnContinuePhase {
             lane_execution,
             reply_phase,
             followup_config,
+            ingress: ingress.cloned(),
         }
     }
 
@@ -947,6 +950,7 @@ impl ProviderTurnContinuePhase {
             user_input,
             remaining_provider_rounds,
             kernel_ctx,
+            self.ingress.as_ref(),
         )
         .await
     }
@@ -2313,7 +2317,7 @@ async fn prepare_provider_turn_continue_phase<R: ConversationRuntime + ?Sized>(
     .await;
     let followup_config =
         ConversationTurnCoordinator::reload_followup_provider_config_after_tool_turn(config, &turn);
-    ProviderTurnContinuePhase::new(tool_intents, lane_execution, followup_config)
+    ProviderTurnContinuePhase::new(tool_intents, lane_execution, followup_config, ingress)
 }
 
 async fn resolve_provider_turn_reply<R: ConversationRuntime + ?Sized>(
@@ -2325,6 +2329,7 @@ async fn resolve_provider_turn_reply<R: ConversationRuntime + ?Sized>(
     user_input: &str,
     remaining_provider_rounds: usize,
     kernel_ctx: Option<&KernelContext>,
+    ingress: Option<&ConversationIngressContext>,
 ) -> ResolvedProviderTurn {
     enum ReplyLoopDecision {
         FinalizeDirect(String),
@@ -2505,6 +2510,7 @@ async fn resolve_provider_turn_reply<R: ConversationRuntime + ?Sized>(
                                 &followup_preparation,
                                 turn,
                                 kernel_ctx,
+                                ingress,
                             )
                             .await;
                             current_preparation = followup_preparation;
@@ -6604,6 +6610,7 @@ mod tests {
                 }),
             },
             config,
+            None,
         );
 
         let checkpoint =
@@ -6779,6 +6786,7 @@ mod tests {
                 safe_lane_terminal_route: None,
             },
             LoongClawConfig::default(),
+            None,
         );
 
         let checkpoint = phase.checkpoint(&preparation, "say hello", "hello there");

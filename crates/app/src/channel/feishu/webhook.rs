@@ -1099,6 +1099,22 @@ mod tests {
                             Json(json!({
                                 "choices": [{
                                     "message": {
+                                        "content": "looking up the right callback card tool",
+                                        "tool_calls": [{
+                                            "id": "call_tool_search_1",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "tool_search",
+                                                "arguments": "{\"query\":\"feishu card update callback token markdown\",\"limit\":1}"
+                                            }
+                                        }]
+                                    }
+                                }]
+                            }))
+                        } else if *turn_index == 2 {
+                            Json(json!({
+                                "choices": [{
+                                    "message": {
                                         "content": "updating card",
                                         "tool_calls": [{
                                             "id": "call_feishu_card_update_1",

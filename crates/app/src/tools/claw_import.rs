@@ -611,6 +611,8 @@ mod tests {
             file_root: Some(root),
             config_path: None,
             external_skills: Default::default(),
+            #[cfg(feature = "feishu-integration")]
+            feishu: None,
         };
         let error = resolve_safe_path_with_config("../outside.toml", &config)
             .expect_err("escape should be denied");

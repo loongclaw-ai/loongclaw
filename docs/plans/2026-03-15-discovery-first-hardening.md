@@ -1,7 +1,5 @@
 # Discovery-First Hardening Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
-
 **Goal:** Harden the discovery-first provider runtime by proving real provider-shape follow-up behavior, summarizing discovery-first runtime telemetry, and fixing the contract in durable architecture docs.
 
 **Architecture:** Extend the existing discovery-first coordinator path rather than adding new infrastructure. Use real provider response shapes in coordinator tests, emit compact discovery-first conversation events only on `tool.search` turns, summarize them in analytics, and document the contract in a living design note.
