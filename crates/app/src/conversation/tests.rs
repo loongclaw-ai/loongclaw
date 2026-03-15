@@ -6249,7 +6249,7 @@ fn turn_engine_no_tool_intents_returns_final_text() {
 
 #[test]
 fn provider_tool_aliases_flow_through_parse_and_turn_validation() {
-    use crate::conversation::turn_engine::TurnEngine;
+    use crate::conversation::turn_engine::{TurnEngine, TurnValidation};
     use crate::provider::extract_provider_turn;
 
     let response_body = serde_json::json!({
@@ -6280,13 +6280,8 @@ fn provider_tool_aliases_flow_through_parse_and_turn_validation() {
     let engine = TurnEngine::new(1);
     let result = engine.validate_turn(&turn);
     match result {
-        Err(reason) => {
-            assert!(
-                reason.contains("kernel_context_required"),
-                "reason: {reason}"
-            );
-        }
-        other => panic!("expected ToolDenied, got {:?}", other),
+        Ok(TurnValidation::ToolExecutionRequired) => {}
+        other => panic!("expected ToolExecutionRequired, got {:?}", other),
     }
 }
 
@@ -12457,9 +12452,18 @@ async fn repair_turn_checkpoint_tail_with_runtime_recovers_discovery_followup_ch
         vec![],
     )
     .with_durable_memory_config(mem_config.clone());
+    let kernel_ctx = test_kernel_context_with_memory(
+        "test-turn-checkpoint-discovery-followup-repair",
+        &mem_config,
+    );
 
     let repair = coordinator
-        .repair_turn_checkpoint_tail_with_runtime(&config, session_id, &retry_runtime, None)
+        .repair_turn_checkpoint_tail_with_runtime(
+            &config,
+            session_id,
+            &retry_runtime,
+            Some(&kernel_ctx),
+        )
         .await
         .expect("discovery followup checkpoint should remain repairable");
     assert_eq!(repair.status().as_str(), "repaired");
