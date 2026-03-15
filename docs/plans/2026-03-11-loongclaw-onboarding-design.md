@@ -4,13 +4,13 @@
 
 **Status:** Approved design for `alpha-test`
 
-**Scope:** Redesign `loongclawd onboard` and the first `chat` entry experience so onboarding feels like a product journey instead of a linear config wizard.
+**Scope:** Redesign `loongclaw onboard` and the first `chat` entry experience so onboarding feels like a product journey instead of a linear config wizard.
 
 ---
 
 ## 1. Product Goal
 
-`loongclawd onboard` should help a first-time user reach a successful first chat in 60 to 90 seconds.
+`loongclaw onboard` should help a first-time user reach a successful first chat in 60 to 90 seconds.
 
 The command should no longer behave like a sequence of free-form prompts. It should behave like a guided operator console with:
 

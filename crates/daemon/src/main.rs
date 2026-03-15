@@ -38,7 +38,7 @@ const PUBLIC_GITHUB_REPO: &str = "loongclaw-ai/loongclaw";
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "loongclawd",
+    name = "loongclaw",
     about = "LoongClaw low-level runtime daemon",
     version
 )]
@@ -612,7 +612,7 @@ fn run_setup_cli(output: Option<&str>, force: bool) -> CliResult<()> {
     {
         println!("setup complete\n- config: {}", path.display());
     }
-    println!("next step: loongclawd chat --config {}", path.display());
+    println!("next step: loongclaw chat --config {}", path.display());
     Ok(())
 }
 

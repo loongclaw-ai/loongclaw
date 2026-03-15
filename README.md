@@ -6,7 +6,7 @@ strict policy boundaries, and highly pluggable runtime orchestration.
 ## Workspace Layout
 
 - `crates/kernel` (`loongclaw-kernel`): core architecture contracts and execution kernel.
-- `crates/daemon` (`loongclaw-daemon` / `loongclawd`): runnable daemon wired to kernel policy and runtime controls.
+- `crates/daemon` (`loongclaw-daemon` / `loongclaw`): runnable daemon wired to kernel policy and runtime controls.
 
 ## Core Design
 
@@ -24,7 +24,7 @@ For architecture boundaries, see [Layered Kernel Design](docs/design-docs/layere
 
 - `loongclaw-kernel`: 41 unit tests passing.
 - `loongclaw-daemon`: 135 unit tests passing.
-- `loongclawd` smoke/spec execution verified.
+- `loongclaw` smoke/spec execution verified.
 - `programmatic` pressure benchmark gate (matrix + baseline) verified.
 - `wasm` cache benchmark gate (cold/hot latency + hit/miss) verified.
 
@@ -51,17 +51,17 @@ For architecture boundaries, see [Layered Kernel Design](docs/design-docs/layere
 ```bash
 cargo test -p loongclaw-kernel
 cargo test -p loongclaw-daemon
-cargo run -p loongclaw-daemon --bin loongclawd
-cargo run -p loongclaw-daemon --bin loongclawd -- onboard
-cargo run -p loongclaw-daemon --bin loongclawd -- setup --force
-cargo run -p loongclaw-daemon --bin loongclawd -- doctor --fix
-cargo run -p loongclaw-daemon --bin loongclawd -- list-models --json
-cargo run -p loongclaw-daemon --bin loongclawd -- chat
-cargo run -p loongclaw-daemon --bin loongclawd -- run-spec --spec examples/spec/runtime-extension.json --print-audit
-cargo run -p loongclaw-daemon --bin loongclawd -- run-spec --spec examples/spec/tool-search.json --print-audit
-cargo run -p loongclaw-daemon --bin loongclawd -- run-spec --spec examples/spec/programmatic-tool-call.json --print-audit
-cargo run -p loongclaw-daemon --bin loongclawd -- benchmark-programmatic-pressure --matrix examples/benchmarks/programmatic-pressure-matrix.json --enforce-gate
-cargo run -p loongclaw-daemon --bin loongclawd -- benchmark-wasm-cache --wasm examples/plugins-wasm/secure_echo.wasm --enforce-gate
+cargo run -p loongclaw-daemon --bin loongclaw
+cargo run -p loongclaw-daemon --bin loongclaw -- onboard
+cargo run -p loongclaw-daemon --bin loongclaw -- setup --force
+cargo run -p loongclaw-daemon --bin loongclaw -- doctor --fix
+cargo run -p loongclaw-daemon --bin loongclaw -- list-models --json
+cargo run -p loongclaw-daemon --bin loongclaw -- chat
+cargo run -p loongclaw-daemon --bin loongclaw -- run-spec --spec examples/spec/runtime-extension.json --print-audit
+cargo run -p loongclaw-daemon --bin loongclaw -- run-spec --spec examples/spec/tool-search.json --print-audit
+cargo run -p loongclaw-daemon --bin loongclaw -- run-spec --spec examples/spec/programmatic-tool-call.json --print-audit
+cargo run -p loongclaw-daemon --bin loongclaw -- benchmark-programmatic-pressure --matrix examples/benchmarks/programmatic-pressure-matrix.json --enforce-gate
+cargo run -p loongclaw-daemon --bin loongclaw -- benchmark-wasm-cache --wasm examples/plugins-wasm/secure_echo.wasm --enforce-gate
 ./scripts/benchmark_programmatic_pressure.sh
 ./scripts/benchmark_wasm_cache.sh
 ```
@@ -70,7 +70,7 @@ Optional runtime tuning:
 
 ```bash
 # default = 32, max = 4096
-LOONGCLAW_WASM_CACHE_CAPACITY=64 cargo run -p loongclaw-daemon --bin loongclawd -- benchmark-wasm-cache --enforce-gate
+LOONGCLAW_WASM_CACHE_CAPACITY=64 cargo run -p loongclaw-daemon --bin loongclaw -- benchmark-wasm-cache --enforce-gate
 ```
 
 One-command install from source:
@@ -117,7 +117,7 @@ api_key_env = "MINIMAX_API_KEY"
 Validate config before runtime startup:
 
 ```bash
-loongclawd validate-config --config ~/.loongclaw/config.toml --json --locale en
+loongclaw validate-config --config ~/.loongclaw/config.toml --json --locale en
 ```
 
 `--json` returns stable diagnostic codes and machine-readable message variables
@@ -133,7 +133,7 @@ JSON output includes:
 CI gate example:
 
 ```bash
-loongclawd validate-config --config ~/.loongclaw/config.toml --output problem-json --fail-on-diagnostics
+loongclaw validate-config --config ~/.loongclaw/config.toml --output problem-json --fail-on-diagnostics
 ```
 
 `--fail-on-diagnostics` exits non-zero when diagnostics are present.

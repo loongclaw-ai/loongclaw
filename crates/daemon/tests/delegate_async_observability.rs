@@ -215,7 +215,7 @@ fn write_delegate_async_config(
 }
 
 fn resolve_daemon_binary_path() -> PathBuf {
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_loongclawd") {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_loongclaw") {
         let resolved = PathBuf::from(path);
         if resolved.is_file() {
             return resolved;
@@ -227,7 +227,7 @@ fn resolve_daemon_binary_path() -> PathBuf {
         .parent()
         .and_then(|path| path.parent())
         .expect("integration test executable should live under target/debug/deps");
-    let fallback = target_debug_dir.join("loongclawd");
+    let fallback = target_debug_dir.join("loongclaw");
     assert!(
         fallback.is_file(),
         "daemon binary not found via env or fallback path: {}",

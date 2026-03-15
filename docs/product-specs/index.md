@@ -41,7 +41,7 @@ As an operator using LoongClaw's tool-calling runtime, I want to inspect active 
 - [x] `memory_search` can search persisted transcript turns across the caller's visible session scope, or within explicitly targeted visible sessions, and return structured recent-first match snippets without searching control-plane `session_events`.
 
 ## Current Limits
-- `delegate_async` uses a subprocess one-shot worker (`loongclawd run-turn`) rather than a durable queue or resident worker pool.
+- `delegate_async` uses a subprocess one-shot worker (`loongclaw run-turn`) rather than a durable queue or resident worker pool.
 - Child session inspection is self-only. A delegated child cannot browse descendants or list the session tree even when nested delegation is enabled.
 - `sessions_send` is intentionally narrow: only known root sessions backed by currently supported Telegram or Feishu targets are eligible.
 - `memory_search` is transcript text search only. It does not claim embedding-based, vector, BM25, hybrid, or semantic memory recall in this phase.

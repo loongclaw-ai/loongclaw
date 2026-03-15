@@ -798,12 +798,12 @@ mod tests {
         };
 
         let plan = build_async_delegate_subprocess_plan(
-            std::path::Path::new("/tmp/loongclawd"),
+            std::path::Path::new("/tmp/loongclaw"),
             Some("/tmp/loongclaw.toml"),
             &request,
         );
 
-        assert_eq!(plan.program, std::path::PathBuf::from("/tmp/loongclawd"));
+        assert_eq!(plan.program, std::path::PathBuf::from("/tmp/loongclaw"));
         assert_eq!(
             plan.args,
             vec![

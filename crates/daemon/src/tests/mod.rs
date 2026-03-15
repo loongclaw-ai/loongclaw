@@ -153,7 +153,7 @@ fn resolve_validate_output_rejects_conflicting_json_and_output_flags() {
 #[test]
 fn run_turn_command_parses_delegate_child_and_timeout() {
     let cli = Cli::try_parse_from([
-        "loongclawd",
+        "loongclaw",
         "run-turn",
         "--config",
         "/tmp/worker.toml",

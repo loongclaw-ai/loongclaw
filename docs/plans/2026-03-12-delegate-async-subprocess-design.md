@@ -119,7 +119,7 @@ The subprocess worker executes exactly one turn for the child session:
 
 Add a new daemon command:
 
-- `loongclawd run-turn`
+- `loongclaw run-turn`
 
 Inputs:
 

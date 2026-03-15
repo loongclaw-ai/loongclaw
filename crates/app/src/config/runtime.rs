@@ -144,7 +144,7 @@ pub fn load(path: Option<&str>) -> CliResult<(PathBuf, LoongClawConfig)> {
     let config_path = path.map(expand_path).unwrap_or_else(default_config_path);
     let raw = fs::read_to_string(&config_path).map_err(|error| {
         format!(
-            "failed to read config {}: {error}. run `loongclawd setup` first",
+            "failed to read config {}: {error}. run `loongclaw setup` first",
             config_path.display()
         )
     })?;
@@ -172,7 +172,7 @@ pub fn validate_file_with_locale(
     let config_path = path.map(expand_path).unwrap_or_else(default_config_path);
     let raw = fs::read_to_string(&config_path).map_err(|error| {
         format!(
-            "failed to read config {}: {error}. run `loongclawd setup` first",
+            "failed to read config {}: {error}. run `loongclaw setup` first",
             config_path.display()
         )
     })?;

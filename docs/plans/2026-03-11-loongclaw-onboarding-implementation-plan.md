@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Rework `loongclawd onboard` into a guided, width-aware first-run flow that reaches a successful first chat with clearer safety, provider, credential, model, and handoff UX.
+**Goal:** Rework `loongclaw onboard` into a guided, width-aware first-run flow that reaches a successful first chat with clearer safety, provider, credential, model, and handoff UX.
 
 **Architecture:** Keep the implementation in the existing line-oriented CLI architecture instead of introducing a heavy TUI framework. Add small rendering helpers for banner selection, footer hints, stateful menus, grouped summaries, and development build labeling, then connect onboarding success directly to improved chat startup messaging.
 
@@ -461,7 +461,7 @@ Expected: onboarding success can hand off into a more informative chat surface.
 Update the quick-start sequence so first-time users are guided toward:
 
 ```text
-loongclawd onboard
+loongclaw onboard
 ```
 
 before manually running `chat`.
@@ -530,7 +530,7 @@ Expected: PASS
 Run:
 
 ```bash
-cargo run -p loongclaw-daemon --bin loongclawd -- onboard
+cargo run -p loongclaw-daemon --bin loongclaw -- onboard
 ```
 
 Expected:
