@@ -77,13 +77,12 @@ pub fn governance_profile_for_tool_name(tool_name: &str) -> ToolGovernanceProfil
             risk_class: ToolRiskClass::High,
             approval_mode: ToolApprovalMode::PolicyDriven,
         },
-        "session_archive" | "session_cancel" | "session_recover" | "sessions_send" => {
-            ToolGovernanceProfile {
-                scope: ToolGovernanceScope::Routine,
-                risk_class: ToolRiskClass::Elevated,
-                approval_mode: ToolApprovalMode::PolicyDriven,
-            }
-        }
+        "session_archive" | "session_cancel" | "session_recover" | "sessions_send"
+        | "web.fetch" => ToolGovernanceProfile {
+            scope: ToolGovernanceScope::Routine,
+            risk_class: ToolRiskClass::Elevated,
+            approval_mode: ToolApprovalMode::PolicyDriven,
+        },
         _ => ToolGovernanceProfile {
             scope: ToolGovernanceScope::Routine,
             risk_class: ToolRiskClass::Low,
@@ -446,6 +445,19 @@ pub fn tool_catalog() -> ToolCatalog {
         });
     }
 
+    #[cfg(feature = "tool-webfetch")]
+    {
+        descriptors.push(ToolDescriptor {
+            name: "web.fetch",
+            provider_name: "web_fetch",
+            aliases: &["web_fetch"],
+            description: "Fetch a public web page with SSRF-safe guards and readable extraction",
+            execution_kind: ToolExecutionKind::Core,
+            availability: ToolAvailability::Runtime,
+            provider_definition_builder: web_fetch_definition,
+        });
+    }
+
     descriptors.sort_by(|left, right| left.name.cmp(right.name));
     ToolCatalog { descriptors }
 }
@@ -550,6 +562,7 @@ fn tool_is_enabled_for_runtime_view(tool_name: &str, config: &ToolConfig) -> boo
         | "session_wait" => config.sessions.enabled,
         "sessions_send" => config.messages.enabled,
         "delegate" | "delegate_async" => config.delegate.enabled,
+        "web.fetch" => config.web.enabled,
         _ => true,
     }
 }
@@ -887,6 +900,38 @@ fn file_write_definition(descriptor: &ToolDescriptor) -> Value {
                     }
                 },
                 "required": ["path", "content"],
+                "additionalProperties": false
+            }
+        }
+    })
+}
+
+fn web_fetch_definition(descriptor: &ToolDescriptor) -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": descriptor.provider_name,
+            "description": descriptor.description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "HTTP or HTTPS URL to fetch."
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["readable_text", "raw_text"],
+                        "description": "How to render the response body. Defaults to `readable_text`."
+                    },
+                    "max_bytes": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": crate::config::MAX_WEB_FETCH_MAX_BYTES,
+                        "description": "Optional per-call read limit in bytes. Cannot exceed the configured runtime max."
+                    }
+                },
+                "required": ["url"],
                 "additionalProperties": false
             }
         }

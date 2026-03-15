@@ -4,7 +4,7 @@
 <h1 align="center">LoongClaw</h1>
 
 <p align="center">
-  <strong>Rust 优先的 Agentic OS 基座 -- 稳定的内核协议、严格的策略边界、即插即用的运行时(runtime)扩展。</strong>
+  <strong>Rust 优先的私有助手运行时：在稳定 Agentic OS 基座之上，提供引导式 onboarding、一次性 ask、修复优先的 doctor，以及安全可扩展的工具能力。</strong>
 </p>
 
 <p align="center">
@@ -38,13 +38,14 @@
 
 ## 什么是 LoongClaw？
 
-LoongClaw 是一个基于Rust构建的 Agentic OS 内核，专注于稳定且轻量的内核协议、严格的策略边界和即插即用的运行时（runtime）扩展，意在实现核心与业务功能的严格分离：
+LoongClaw 是一个基于 Rust 构建的 Agentic OS 运行时，目标是先成为一个可信、可本地运行的私有助手，再成为一个可扩展的平台。核心与业务能力保持严格分离：
 
 - **内核精简稳定** -- 只负责策略、安全和审计，不包含任何额外的业务逻辑，力图保持体积精简，足以在边缘设备上运行
 - **安全边界不可逾越** -- 每个工具调用、内存操作和连接器调用都经过策略引擎管控；高风险操作需要显式人工授权
 - **业务逻辑扩展** -- provider、工具、通道、内存后端都是可替换的适配器扩展，不侵入内核
 - **多语言插件** -- 支持 Rust、WASM及任意语言的进程插件，社区可自由扩展
 - **双向可集成** -- 既能作为内核被其他系统嵌入，也能通过适配器对接外部服务
+- **面向产品的用户入口** -- `onboard`、`ask`、`chat`、`doctor`、人格、记忆档与导入能力都属于一等运行时能力
 
 ## 赞助商
 
@@ -94,7 +95,7 @@ cargo install --path crates/daemon
 
 `--onboard` 现在调用的是不带 `--force` 的 `loongclaw onboard`，因此重复执行这条 quickstart 时会先停止，而不会直接覆盖已有配置。
 
-### 5 分钟内开始首次对话
+### 5 分钟内拿到第一次回答
 
 1. 运行引导式首次配置：
 
@@ -108,7 +109,13 @@ cargo install --path crates/daemon
    export PROVIDER_API_KEY=sk-...
    ```
 
-3. 开始聊天：
+3. 先拿到一次性回答：
+
+   ```bash
+   loongclaw ask --message "你能帮我处理这个仓库里的什么事情？"
+   ```
+
+4. 需要持续会话时，再进入交互式聊天：
 
    ```bash
    loongclaw chat
@@ -117,7 +124,7 @@ cargo install --path crates/daemon
    如果你希望这次 CLI chat 显式走 ACP，可以使用 `loongclaw chat --acp`。没有 `--acp`
    或其他 ACP 专用 chat 参数时，普通聊天仍然保持默认的 provider/context-engine 路径。
 
-遇到问题请运行 `loongclaw doctor --fix`。
+如果 onboarding / channel setup 遇到本地健康问题，请运行 `loongclaw doctor --fix`。
 
 ### 运行测试
 
@@ -250,9 +257,10 @@ auto_expose_installed = true
 
 **MVP 产品层**
 - `onboard` -- 引导式首次运行，带预检诊断
+- `ask` -- 一次性助手回答后退出
 - `doctor` -- 诊断工具，可选安全修复 (`--fix`) 和机器可读输出 (`--json`)
 - `chat` -- 交互式 CLI，滑动窗口对话记忆
-- 核心工具：`shell.exec`、`file.read`、`file.write`、`external_skills.policy`、`external_skills.fetch`、`external_skills.install`、`external_skills.list`、`external_skills.inspect`、`external_skills.invoke`、`external_skills.remove`
+- 核心工具：`web.fetch`、`shell.exec`、`file.read`、`file.write`、`external_skills.policy`、`external_skills.fetch`、`external_skills.install`、`external_skills.list`、`external_skills.inspect`、`external_skills.invoke`、`external_skills.remove`
 - Provider：OpenAI 兼容、火山引擎自定义端点
 - 通道：CLI、Telegram 轮询、飞书加密 webhook
 - ACP 现在作为独立 control plane 建模，不再混入 provider 或 context engine
@@ -331,6 +339,7 @@ contracts (leaf -- 零内部依赖)
 | `memory-sqlite` | SQLite 对话记忆 |
 | `tool-shell` | `shell.exec` 工具 |
 | `tool-file` | `file.read` / `file.write` 工具 |
+| `tool-webfetch` | `web.fetch` 工具 |
 | `channel-cli` | 交互式 CLI 通道 |
 | `channel-telegram` | Telegram 轮询适配器 |
 | `channel-feishu` | 飞书加密 webhook 适配器 |
@@ -364,9 +373,10 @@ cargo build -p loongclaw-daemon --no-default-features --features "channel-cli,pr
 | [核心信念](docs/design-docs/core-beliefs.md) | 10 条核心工程原则 |
 | [分层内核设计](docs/design-docs/layered-kernel-design.md) | 完整 L0-L9 层规格 |
 | [路线图](docs/ROADMAP.md) | 阶段里程碑和验收标准 |
+| [产品感知](docs/PRODUCT_SENSE.md) | 当前 MVP 用户旅程和产品原则 |
 | [可靠性](docs/RELIABILITY.md) | 构建和内核不变量 |
 | [示例](examples/README.md) | Spec 文件、插件示例、基准测试 |
-| [产品规格](docs/product-specs/index.md) | 面向用户的需求（进行中） |
+| [产品规格](docs/product-specs/index.md) | onboarding、ask、doctor、渠道和 WebChat 预期等面向用户的要求 |
 | [变更日志](CHANGELOG.md) | 发布历史 |
 
 ## 配置
@@ -398,7 +408,8 @@ chat_completions_path = "/api/v3/chat/completions"
 ### 工具策略
 
 Shell 执行默认采用**未知命令拒绝**策略——只有明确列入允许名单的命令才能运行。
-文件访问默认沙箱为进程工作目录。
+文件访问默认沙箱为进程工作目录。`web.fetch` 在 MVP 构建中默认可用，但仍会默认阻断
+localhost、私网和特殊用途地址，除非 operator 显式放宽策略。
 
 ```toml
 [tools]
@@ -406,6 +417,14 @@ shell_default_mode = "deny"                          # "deny" | "allow"
 shell_allow = ["echo", "ls", "git", "cargo"]         # 允许的命令
 shell_deny = []                                      # 硬拒绝的命令
 # file_root = "/home/user/project"                   # 默认为 CWD
+
+[tools.web]
+enabled = true
+allowed_domains = ["docs.example.com"]
+blocked_domains = ["*.internal.example"]
+max_bytes = 1048576
+timeout_seconds = 15
+max_redirects = 3
 ```
 
 验证配置：

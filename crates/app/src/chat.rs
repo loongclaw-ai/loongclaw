@@ -11,7 +11,7 @@ use crate::acp::{
     AcpConversationTurnOptions, AcpTurnEventSink, JsonlAcpTurnEventSink,
     resolve_acp_backend_selection,
 };
-use crate::context::{DEFAULT_TOKEN_TTL_S, bootstrap_kernel_context};
+use crate::context::{DEFAULT_TOKEN_TTL_S, bootstrap_kernel_context_with_runtime_configs};
 
 use super::config::{self, ConversationConfig, LoongClawConfig};
 #[cfg(feature = "memory-sqlite")]
@@ -51,115 +51,61 @@ impl CliChatOptions {
     }
 }
 
+struct CliTurnRuntime {
+    resolved_path: PathBuf,
+    config: LoongClawConfig,
+    session_id: String,
+    session_address: ConversationSessionAddress,
+    turn_coordinator: ConversationTurnCoordinator,
+    kernel_ctx: crate::KernelContext,
+    explicit_acp_request: bool,
+    effective_bootstrap_mcp_servers: Vec<String>,
+    effective_working_directory: Option<PathBuf>,
+    memory_label: String,
+    #[cfg(feature = "memory-sqlite")]
+    memory_config: MemoryRuntimeConfig,
+}
+
 #[allow(clippy::print_stdout)] // CLI REPL output
 pub async fn run_cli_chat(
     config_path: Option<&str>,
     session_hint: Option<&str>,
     options: &CliChatOptions,
 ) -> CliResult<()> {
-    let (resolved_path, config) = config::load(config_path)?;
-    if !config.cli.enabled {
-        return Err("CLI channel is disabled by config.cli.enabled=false".to_owned());
-    }
-
-    crate::runtime_env::initialize_runtime_environment(&config, Some(&resolved_path));
-    let kernel_ctx = bootstrap_kernel_context("cli-chat", DEFAULT_TOKEN_TTL_S)?;
+    let runtime =
+        initialize_cli_turn_runtime(config_path, session_hint, options, "cli-chat").await?;
+    print_cli_chat_startup(&runtime, options)?;
 
     #[cfg(feature = "memory-sqlite")]
-    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
-
-    #[cfg(feature = "memory-sqlite")]
-    {
-        let sqlite_path = config.memory.resolved_sqlite_path();
-        let initialized = memory::ensure_memory_db_ready(Some(sqlite_path), &memory_config)
-            .map_err(|error| format!("failed to initialize sqlite memory: {error}"))?;
-        println!(
-            "loongclaw chat started (config={}, memory={})",
-            resolved_path.display(),
-            initialized.display()
-        );
-    }
-    #[cfg(not(feature = "memory-sqlite"))]
-    {
-        println!(
-            "loongclaw chat started (config={}, memory=disabled)",
-            resolved_path.display()
-        );
-    }
-
-    let session_id = session_hint
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("default")
-        .to_owned();
-    let context_engine_selection = resolve_context_engine_selection(&config);
-    let acp_selection = resolve_acp_backend_selection(&config);
-    let dispatch_channels = config.acp.dispatch.allowed_channel_ids()?;
-    let effective_bootstrap_mcp_servers = config
-        .acp
-        .dispatch
-        .bootstrap_mcp_server_names_with_additions(&options.acp_bootstrap_mcp_servers)?;
-    let effective_working_directory = options
-        .acp_working_directory
-        .clone()
-        .or_else(|| config.acp.dispatch.resolved_working_directory());
-    let explicit_acp_request = options.requests_explicit_acp();
-    println!("session={session_id} (type /help for commands, /exit to quit)");
-    println!(
-        "context_engine={} source={}",
-        context_engine_selection.id,
-        context_engine_selection.source.as_str()
-    );
-    println!(
-        "acp_enabled={} dispatch_enabled={} conversation_routing={} allowed_channels={} backend={} source={}",
-        config.acp.enabled,
-        config.acp.dispatch_enabled(),
-        config.acp.dispatch.conversation_routing.as_str(),
-        dispatch_channels.join(","),
-        acp_selection.id,
-        acp_selection.source.as_str()
-    );
-    if explicit_acp_request
-        || !effective_bootstrap_mcp_servers.is_empty()
-        || effective_working_directory.is_some()
-    {
-        let bootstrap_label = if effective_bootstrap_mcp_servers.is_empty() {
-            "-".to_owned()
-        } else {
-            effective_bootstrap_mcp_servers.join(",")
-        };
-        let cwd_label = effective_working_directory
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "-".to_owned());
-        println!(
-            "acp_turn_options explicit={} event_stream={} bootstrap_mcp_servers={bootstrap_label} cwd={cwd_label}",
-            explicit_acp_request, options.acp_event_stream,
-        );
-    }
-    let turn_coordinator = ConversationTurnCoordinator::new();
-
-    #[cfg(feature = "memory-sqlite")]
-    match turn_coordinator
-        .load_turn_checkpoint_diagnostics(&config, &session_id, Some(&kernel_ctx))
+    match runtime
+        .turn_coordinator
+        .load_turn_checkpoint_diagnostics(
+            &runtime.config,
+            &runtime.session_id,
+            Some(&runtime.kernel_ctx),
+        )
         .await
     {
         Ok(diagnostics) => {
-            if let Some(health) = format_turn_checkpoint_startup_health(&session_id, &diagnostics) {
+            if let Some(health) =
+                format_turn_checkpoint_startup_health(&runtime.session_id, &diagnostics)
+            {
                 println!("{health}");
                 if let Some(probe) = diagnostics.runtime_probe() {
                     println!(
                         "{}",
-                        format_turn_checkpoint_runtime_probe(&session_id, probe)
+                        format_turn_checkpoint_runtime_probe(&runtime.session_id, probe)
                     );
                 }
             }
         }
         Err(error) => {
-            println!("turn_checkpoint_health session={session_id} state=unavailable error={error}");
+            println!(
+                "turn_checkpoint_health session={} state=unavailable error={error}",
+                runtime.session_id
+            );
         }
     }
-    let session_address = ConversationSessionAddress::from_session_id(session_id.clone());
     let acp_event_printer = options
         .acp_event_stream
         .then(|| JsonlAcpTurnEventSink::stderr_with_prefix("acp-event> "));
@@ -181,7 +127,7 @@ pub async fn run_cli_chat(
         if input.is_empty() {
             continue;
         }
-        if is_exit_command(&config, input) {
+        if is_exit_command(&runtime.config, input) {
             break;
         }
         if input == "/help" {
@@ -191,51 +137,63 @@ pub async fn run_cli_chat(
         if input == "/history" {
             #[cfg(feature = "memory-sqlite")]
             print_history(
-                &session_id,
-                config.memory.sliding_window,
-                Some(&kernel_ctx),
-                &memory_config,
+                &runtime.session_id,
+                runtime.config.memory.sliding_window,
+                Some(&runtime.kernel_ctx),
+                &runtime.memory_config,
             )
             .await?;
             #[cfg(not(feature = "memory-sqlite"))]
-            print_history(&session_id, config.memory.sliding_window, Some(&kernel_ctx)).await?;
-            continue;
-        }
-        if let Some(limit) = parse_safe_lane_summary_limit(input, config.memory.sliding_window)? {
-            #[cfg(feature = "memory-sqlite")]
-            print_safe_lane_summary(
-                &session_id,
-                limit,
-                &config.conversation,
-                Some(&kernel_ctx),
-                &memory_config,
+            print_history(
+                &runtime.session_id,
+                runtime.config.memory.sliding_window,
+                Some(&runtime.kernel_ctx),
             )
             .await?;
-            #[cfg(not(feature = "memory-sqlite"))]
-            print_safe_lane_summary(&session_id, limit, &config.conversation, Some(&kernel_ctx))
-                .await?;
             continue;
         }
         if let Some(limit) =
-            parse_turn_checkpoint_summary_limit(input, config.memory.sliding_window)?
+            parse_safe_lane_summary_limit(input, runtime.config.memory.sliding_window)?
+        {
+            #[cfg(feature = "memory-sqlite")]
+            print_safe_lane_summary(
+                &runtime.session_id,
+                limit,
+                &runtime.config.conversation,
+                Some(&runtime.kernel_ctx),
+                &runtime.memory_config,
+            )
+            .await?;
+            #[cfg(not(feature = "memory-sqlite"))]
+            print_safe_lane_summary(
+                &runtime.session_id,
+                limit,
+                &runtime.config.conversation,
+                Some(&runtime.kernel_ctx),
+            )
+            .await?;
+            continue;
+        }
+        if let Some(limit) =
+            parse_turn_checkpoint_summary_limit(input, runtime.config.memory.sliding_window)?
         {
             #[cfg(feature = "memory-sqlite")]
             print_turn_checkpoint_summary(
-                &turn_coordinator,
-                &config,
-                &session_id,
+                &runtime.turn_coordinator,
+                &runtime.config,
+                &runtime.session_id,
                 limit,
-                Some(&kernel_ctx),
-                &memory_config,
+                Some(&runtime.kernel_ctx),
+                &runtime.memory_config,
             )
             .await?;
             #[cfg(not(feature = "memory-sqlite"))]
             print_turn_checkpoint_summary(
-                &turn_coordinator,
-                &config,
-                &session_id,
+                &runtime.turn_coordinator,
+                &runtime.config,
+                &runtime.session_id,
                 limit,
-                Some(&kernel_ctx),
+                Some(&runtime.kernel_ctx),
             )
             .await?;
             continue;
@@ -243,52 +201,219 @@ pub async fn run_cli_chat(
         if is_turn_checkpoint_repair_command(input)? {
             #[cfg(feature = "memory-sqlite")]
             print_turn_checkpoint_repair(
-                &turn_coordinator,
-                &config,
-                &session_id,
-                Some(&kernel_ctx),
+                &runtime.turn_coordinator,
+                &runtime.config,
+                &runtime.session_id,
+                Some(&runtime.kernel_ctx),
             )
             .await?;
             #[cfg(not(feature = "memory-sqlite"))]
             print_turn_checkpoint_repair(
-                &turn_coordinator,
-                &config,
-                &session_id,
-                Some(&kernel_ctx),
+                &runtime.turn_coordinator,
+                &runtime.config,
+                &runtime.session_id,
+                Some(&runtime.kernel_ctx),
             )
             .await?;
             continue;
         }
 
-        let acp_options = if explicit_acp_request {
-            AcpConversationTurnOptions::explicit()
-        } else {
-            AcpConversationTurnOptions::automatic()
-        }
-        .with_event_sink(
+        let assistant_text = run_cli_turn(
+            &runtime,
+            input,
+            options,
             acp_event_printer
                 .as_ref()
                 .map(|printer| printer as &dyn AcpTurnEventSink),
         )
-        .with_additional_bootstrap_mcp_servers(&options.acp_bootstrap_mcp_servers)
-        .with_working_directory(options.acp_working_directory.as_deref());
-        let turn_config = reload_cli_turn_config(&config, resolved_path.as_path())?;
-        let assistant_text = turn_coordinator
-            .handle_turn_with_address_and_acp_options(
-                &turn_config,
-                &session_address,
-                input,
-                ProviderErrorMode::InlineMessage,
-                &acp_options,
-                Some(&kernel_ctx),
-            )
-            .await?;
+        .await?;
 
         println!("loongclaw> {assistant_text}");
     }
 
     println!("bye.");
     Ok(())
+}
+
+#[allow(clippy::print_stdout)] // CLI output
+pub async fn run_cli_ask(
+    config_path: Option<&str>,
+    session_hint: Option<&str>,
+    message: &str,
+    options: &CliChatOptions,
+) -> CliResult<()> {
+    let input = message.trim();
+    if input.is_empty() {
+        return Err("ask message must not be empty".to_owned());
+    }
+
+    let runtime =
+        initialize_cli_turn_runtime(config_path, session_hint, options, "cli-ask").await?;
+    let acp_event_printer = options
+        .acp_event_stream
+        .then(|| JsonlAcpTurnEventSink::stderr_with_prefix("acp-event> "));
+    let assistant_text = run_cli_turn(
+        &runtime,
+        input,
+        options,
+        acp_event_printer
+            .as_ref()
+            .map(|printer| printer as &dyn AcpTurnEventSink),
+    )
+    .await?;
+    println!("loongclaw> {assistant_text}");
+    Ok(())
+}
+
+async fn initialize_cli_turn_runtime(
+    config_path: Option<&str>,
+    session_hint: Option<&str>,
+    options: &CliChatOptions,
+    kernel_scope: &'static str,
+) -> CliResult<CliTurnRuntime> {
+    let (resolved_path, config) = config::load(config_path)?;
+    if !config.cli.enabled {
+        return Err("CLI channel is disabled by config.cli.enabled=false".to_owned());
+    }
+
+    crate::runtime_env::initialize_runtime_environment(&config, Some(&resolved_path));
+    let tool_runtime_config =
+        crate::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(
+            &config,
+            Some(resolved_path.as_path()),
+        );
+    let memory_runtime_config = Some(
+        crate::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory),
+    );
+    let kernel_ctx = bootstrap_kernel_context_with_runtime_configs(
+        kernel_scope,
+        DEFAULT_TOKEN_TTL_S,
+        tool_runtime_config,
+        memory_runtime_config,
+    )?;
+    let explicit_acp_request = options.requests_explicit_acp();
+    let effective_bootstrap_mcp_servers = config
+        .acp
+        .dispatch
+        .bootstrap_mcp_server_names_with_additions(&options.acp_bootstrap_mcp_servers)?;
+    let effective_working_directory = options
+        .acp_working_directory
+        .clone()
+        .or_else(|| config.acp.dispatch.resolved_working_directory());
+    let session_id = session_hint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("default")
+        .to_owned();
+    let session_address = ConversationSessionAddress::from_session_id(session_id.clone());
+
+    #[cfg(feature = "memory-sqlite")]
+    let (memory_config, memory_label) = {
+        let memory_config =
+            crate::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+        let sqlite_path = config.memory.resolved_sqlite_path();
+        let initialized = memory::ensure_memory_db_ready(Some(sqlite_path), &memory_config)
+            .map_err(|error| format!("failed to initialize sqlite memory: {error}"))?;
+        (memory_config, initialized.display().to_string())
+    };
+
+    #[cfg(not(feature = "memory-sqlite"))]
+    let memory_label = "disabled".to_owned();
+
+    Ok(CliTurnRuntime {
+        resolved_path,
+        config,
+        session_id,
+        session_address,
+        turn_coordinator: ConversationTurnCoordinator::new(),
+        kernel_ctx,
+        explicit_acp_request,
+        effective_bootstrap_mcp_servers,
+        effective_working_directory,
+        memory_label,
+        #[cfg(feature = "memory-sqlite")]
+        memory_config,
+    })
+}
+
+#[allow(clippy::print_stdout)] // CLI output
+fn print_cli_chat_startup(runtime: &CliTurnRuntime, options: &CliChatOptions) -> CliResult<()> {
+    let context_engine_selection = resolve_context_engine_selection(&runtime.config);
+    let acp_selection = resolve_acp_backend_selection(&runtime.config);
+    let dispatch_channels = runtime.config.acp.dispatch.allowed_channel_ids()?;
+
+    println!(
+        "loongclaw chat started (config={}, memory={})",
+        runtime.resolved_path.display(),
+        runtime.memory_label
+    );
+    println!(
+        "session={} (type /help for commands, /exit to quit)",
+        runtime.session_id
+    );
+    println!(
+        "context_engine={} source={}",
+        context_engine_selection.id,
+        context_engine_selection.source.as_str()
+    );
+    println!(
+        "acp_enabled={} dispatch_enabled={} conversation_routing={} allowed_channels={} backend={} source={}",
+        runtime.config.acp.enabled,
+        runtime.config.acp.dispatch_enabled(),
+        runtime.config.acp.dispatch.conversation_routing.as_str(),
+        dispatch_channels.join(","),
+        acp_selection.id,
+        acp_selection.source.as_str()
+    );
+    if runtime.explicit_acp_request
+        || !runtime.effective_bootstrap_mcp_servers.is_empty()
+        || runtime.effective_working_directory.is_some()
+    {
+        let bootstrap_label = if runtime.effective_bootstrap_mcp_servers.is_empty() {
+            "-".to_owned()
+        } else {
+            runtime.effective_bootstrap_mcp_servers.join(",")
+        };
+        let cwd_label = runtime
+            .effective_working_directory
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "-".to_owned());
+        println!(
+            "acp_turn_options explicit={} event_stream={} bootstrap_mcp_servers={bootstrap_label} cwd={cwd_label}",
+            runtime.explicit_acp_request, options.acp_event_stream,
+        );
+    }
+
+    Ok(())
+}
+
+async fn run_cli_turn(
+    runtime: &CliTurnRuntime,
+    input: &str,
+    _options: &CliChatOptions,
+    event_sink: Option<&dyn AcpTurnEventSink>,
+) -> CliResult<String> {
+    let turn_config = reload_cli_turn_config(&runtime.config, runtime.resolved_path.as_path())?;
+    let acp_options = if runtime.explicit_acp_request {
+        AcpConversationTurnOptions::explicit()
+    } else {
+        AcpConversationTurnOptions::automatic()
+    }
+    .with_event_sink(event_sink)
+    .with_additional_bootstrap_mcp_servers(&runtime.effective_bootstrap_mcp_servers)
+    .with_working_directory(runtime.effective_working_directory.as_deref());
+    runtime
+        .turn_coordinator
+        .handle_turn_with_address_and_acp_options(
+            &turn_config,
+            &runtime.session_address,
+            input,
+            ProviderErrorMode::InlineMessage,
+            &acp_options,
+            Some(&runtime.kernel_ctx),
+        )
+        .await
 }
 
 fn reload_cli_turn_config(
@@ -1148,6 +1273,15 @@ mod tests {
     #[test]
     fn cli_chat_options_keep_automatic_routing_without_explicit_acp_inputs() {
         assert!(!CliChatOptions::default().requests_explicit_acp());
+    }
+
+    #[tokio::test]
+    async fn run_cli_ask_rejects_empty_message() {
+        let error = run_cli_ask(None, None, "   ", &CliChatOptions::default())
+            .await
+            .expect_err("empty one-shot message should fail");
+
+        assert!(error.contains("ask message must not be empty"));
     }
 
     #[test]

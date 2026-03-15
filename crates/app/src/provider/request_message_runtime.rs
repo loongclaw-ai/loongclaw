@@ -11,7 +11,11 @@ pub(super) fn build_system_message(
     config: &LoongClawConfig,
     include_system_prompt: bool,
 ) -> Option<Value> {
-    build_system_message_for_view(config, include_system_prompt, &tools::runtime_tool_view())
+    build_system_message_for_view(
+        config,
+        include_system_prompt,
+        &tools::runtime_tool_view_from_loongclaw_config(config),
+    )
 }
 
 pub(super) fn build_system_message_for_view(
@@ -54,7 +58,11 @@ pub(super) fn build_base_messages(
     config: &LoongClawConfig,
     include_system_prompt: bool,
 ) -> Vec<Value> {
-    build_base_messages_for_view(config, include_system_prompt, &tools::runtime_tool_view())
+    build_base_messages_for_view(
+        config,
+        include_system_prompt,
+        &tools::runtime_tool_view_from_loongclaw_config(config),
+    )
 }
 
 pub(super) fn build_base_messages_for_view(
@@ -89,7 +97,7 @@ pub(super) fn build_messages_for_session(
         config,
         session_id,
         include_system_prompt,
-        &tools::runtime_tool_view(),
+        &tools::runtime_tool_view_from_loongclaw_config(config),
     )
 }
 
@@ -189,6 +197,20 @@ mod tests {
         let content = system["content"].as_str().expect("system content");
         assert!(content.starts_with("Stay concise and technical."));
         assert!(content.contains("[available_tools]"));
+    }
+
+    #[test]
+    fn build_system_message_respects_current_tool_config_when_web_fetch_is_disabled() {
+        let mut config = LoongClawConfig::default();
+        config.tools.web.enabled = false;
+
+        let system = build_system_message(&config, true).expect("system message");
+        let content = system["content"].as_str().expect("system content");
+
+        assert!(
+            !content.contains("web.fetch"),
+            "system message should hide web.fetch when config.tools.web.enabled=false: {content}"
+        );
     }
 
     #[test]

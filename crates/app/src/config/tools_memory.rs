@@ -9,6 +9,14 @@ use super::shared::{
 
 pub(crate) const MIN_MEMORY_SLIDING_WINDOW: usize = 1;
 pub(crate) const MAX_MEMORY_SLIDING_WINDOW: usize = 128;
+pub const DEFAULT_WEB_FETCH_MAX_BYTES: usize = 1024 * 1024;
+pub const DEFAULT_WEB_FETCH_TIMEOUT_SECONDS: u64 = 15;
+pub const DEFAULT_WEB_FETCH_MAX_REDIRECTS: usize = 3;
+pub(crate) const MIN_WEB_FETCH_MAX_BYTES: usize = 1024;
+pub const MAX_WEB_FETCH_MAX_BYTES: usize = 5 * 1024 * 1024;
+pub(crate) const MIN_WEB_FETCH_TIMEOUT_SECONDS: usize = 1;
+pub(crate) const MAX_WEB_FETCH_TIMEOUT_SECONDS: usize = 120;
+pub(crate) const MAX_WEB_FETCH_MAX_REDIRECTS: usize = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolConfig {
@@ -32,6 +40,8 @@ pub struct ToolConfig {
     pub messages: MessageToolConfig,
     #[serde(default)]
     pub delegate: DelegateToolConfig,
+    #[serde(default)]
+    pub web: WebToolConfig,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -92,6 +102,24 @@ pub struct DelegateToolConfig {
     pub child_tool_allowlist: Vec<String>,
     #[serde(default)]
     pub allow_shell_in_child: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WebToolConfig {
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub allow_private_hosts: bool,
+    #[serde(default)]
+    pub allowed_domains: Vec<String>,
+    #[serde(default)]
+    pub blocked_domains: Vec<String>,
+    #[serde(default = "default_web_fetch_max_bytes")]
+    pub max_bytes: usize,
+    #[serde(default = "default_web_fetch_timeout_seconds")]
+    pub timeout_seconds: u64,
+    #[serde(default = "default_web_fetch_max_redirects")]
+    pub max_redirects: usize,
 }
 
 fn default_shell_default_mode() -> String {
@@ -320,6 +348,7 @@ impl Default for ToolConfig {
             sessions: SessionToolConfig::default(),
             messages: MessageToolConfig::default(),
             delegate: DelegateToolConfig::default(),
+            web: WebToolConfig::default(),
         }
     }
 }
@@ -357,6 +386,20 @@ impl Default for DelegateToolConfig {
     }
 }
 
+impl Default for WebToolConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_enabled(),
+            allow_private_hosts: false,
+            allowed_domains: Vec::new(),
+            blocked_domains: Vec::new(),
+            max_bytes: default_web_fetch_max_bytes(),
+            timeout_seconds: default_web_fetch_timeout_seconds(),
+            max_redirects: default_web_fetch_max_redirects(),
+        }
+    }
+}
+
 impl Default for ExternalSkillsConfig {
     fn default() -> Self {
         Self {
@@ -379,7 +422,32 @@ impl ToolConfig {
     }
 
     pub(super) fn validate(&self) -> Vec<ConfigValidationIssue> {
-        Vec::new()
+        let mut issues = Vec::new();
+        if let Err(issue) = validate_numeric_range(
+            "tools.web.max_bytes",
+            self.web.max_bytes,
+            MIN_WEB_FETCH_MAX_BYTES,
+            MAX_WEB_FETCH_MAX_BYTES,
+        ) {
+            issues.push(*issue);
+        }
+        if let Err(issue) = validate_numeric_range(
+            "tools.web.timeout_seconds",
+            self.web.timeout_seconds as usize,
+            MIN_WEB_FETCH_TIMEOUT_SECONDS,
+            MAX_WEB_FETCH_TIMEOUT_SECONDS,
+        ) {
+            issues.push(*issue);
+        }
+        if let Err(issue) = validate_numeric_range(
+            "tools.web.max_redirects",
+            self.web.max_redirects,
+            0,
+            MAX_WEB_FETCH_MAX_REDIRECTS,
+        ) {
+            issues.push(*issue);
+        }
+        issues
     }
 }
 
@@ -394,6 +462,16 @@ impl ExternalSkillsConfig {
 
     pub fn resolved_install_root(&self) -> Option<PathBuf> {
         self.install_root.as_deref().map(expand_path)
+    }
+}
+
+impl WebToolConfig {
+    pub fn normalized_allowed_domains(&self) -> Vec<String> {
+        normalize_domain_entries(&self.allowed_domains)
+    }
+
+    pub fn normalized_blocked_domains(&self) -> Vec<String> {
+        normalize_domain_entries(&self.blocked_domains)
     }
 }
 
@@ -502,6 +580,19 @@ const fn default_delegate_timeout_seconds() -> u64 {
 fn default_delegate_child_tool_allowlist() -> Vec<String> {
     vec!["file.read".to_owned(), "file.write".to_owned()]
 }
+
+const fn default_web_fetch_max_bytes() -> usize {
+    DEFAULT_WEB_FETCH_MAX_BYTES
+}
+
+const fn default_web_fetch_timeout_seconds() -> u64 {
+    DEFAULT_WEB_FETCH_TIMEOUT_SECONDS
+}
+
+const fn default_web_fetch_max_redirects() -> usize {
+    DEFAULT_WEB_FETCH_MAX_REDIRECTS
+}
+
 const fn default_require_download_approval() -> bool {
     true
 }
@@ -559,6 +650,13 @@ mod tests {
             vec!["file.read".to_owned(), "file.write".to_owned()]
         );
         assert!(!config.delegate.allow_shell_in_child);
+        assert!(config.web.enabled);
+        assert!(!config.web.allow_private_hosts);
+        assert!(config.web.allowed_domains.is_empty());
+        assert!(config.web.blocked_domains.is_empty());
+        assert_eq!(config.web.timeout_seconds, 15);
+        assert_eq!(config.web.max_bytes, 1_048_576);
+        assert_eq!(config.web.max_redirects, 3);
     }
 
     #[cfg(feature = "config-toml")]
@@ -612,6 +710,37 @@ child_tool_allowlist = ["file.read", "shell.exec"]
             parsed.tools.delegate.child_tool_allowlist,
             vec!["file.read".to_owned(), "shell.exec".to_owned()]
         );
+    }
+
+    #[cfg(feature = "config-toml")]
+    #[test]
+    fn tool_config_parses_web_fetch_controls_from_toml() {
+        let raw = r#"
+[tools.web]
+enabled = false
+allow_private_hosts = true
+allowed_domains = ["Docs.Example.com", "docs.example.com"]
+blocked_domains = ["internal.example", " INTERNAL.EXAMPLE "]
+timeout_seconds = 9
+max_bytes = 262144
+max_redirects = 1
+"#;
+        let parsed =
+            toml::from_str::<crate::config::LoongClawConfig>(raw).expect("parse tool config");
+
+        assert!(!parsed.tools.web.enabled);
+        assert!(parsed.tools.web.allow_private_hosts);
+        assert_eq!(
+            parsed.tools.web.normalized_allowed_domains(),
+            vec!["docs.example.com".to_owned()]
+        );
+        assert_eq!(
+            parsed.tools.web.normalized_blocked_domains(),
+            vec!["internal.example".to_owned()]
+        );
+        assert_eq!(parsed.tools.web.timeout_seconds, 9);
+        assert_eq!(parsed.tools.web.max_bytes, 262144);
+        assert_eq!(parsed.tools.web.max_redirects, 1);
     }
 
     #[test]
@@ -749,6 +878,47 @@ child_tool_allowlist = ["file.read", "shell.exec"]
                 .resolved_install_root()
                 .expect("install root should resolve")
                 .ends_with("demo-skills")
+        );
+    }
+
+    #[test]
+    fn web_tool_defaults_to_safe_public_fetch_mode() {
+        let config = WebToolConfig::default();
+        assert!(config.enabled);
+        assert!(!config.allow_private_hosts);
+        assert!(config.allowed_domains.is_empty());
+        assert!(config.blocked_domains.is_empty());
+        assert_eq!(config.timeout_seconds, 15);
+        assert_eq!(config.max_bytes, 1_048_576);
+        assert_eq!(config.max_redirects, 3);
+    }
+
+    #[test]
+    fn web_tool_normalized_domains_are_lowercase_and_deduped() {
+        let config = WebToolConfig {
+            enabled: true,
+            allow_private_hosts: false,
+            allowed_domains: vec![
+                "Docs.Example.com".to_owned(),
+                "docs.example.com".to_owned(),
+                "  api.example.com ".to_owned(),
+            ],
+            blocked_domains: vec![
+                "internal.example".to_owned(),
+                " INTERNAL.EXAMPLE ".to_owned(),
+            ],
+            timeout_seconds: 15,
+            max_bytes: 1_048_576,
+            max_redirects: 3,
+        };
+
+        assert_eq!(
+            config.normalized_allowed_domains(),
+            vec!["api.example.com".to_owned(), "docs.example.com".to_owned()]
+        );
+        assert_eq!(
+            config.normalized_blocked_domains(),
+            vec!["internal.example".to_owned()]
         );
     }
 }

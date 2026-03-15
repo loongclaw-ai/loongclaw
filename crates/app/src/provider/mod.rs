@@ -200,7 +200,7 @@ pub async fn request_turn(
     request_turn_in_view(
         config,
         messages,
-        &crate::tools::runtime_tool_view(),
+        &crate::tools::runtime_tool_view_from_loongclaw_config(config),
         kernel_ctx,
     )
     .await
@@ -218,7 +218,10 @@ pub async fn request_turn_in_view(
     let runtime_tool_view =
         crate::tools::runtime_tool_view_with_runtime_config(&config.tools, &tool_runtime_config);
     let tool_definitions = if tool_view == &runtime_tool_view {
-        crate::tools::provider_tool_definitions_with_config(Some(&tool_runtime_config))
+        crate::tools::provider_tool_definitions_for_view_with_config(
+            tool_view,
+            Some(&tool_runtime_config),
+        )
     } else {
         crate::tools::try_provider_tool_definitions_for_view(tool_view)?
     };
