@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tokio::time::{Duration, Instant, sleep_until, timeout};
+use tokio::time::{Duration, Instant, sleep, sleep_until, timeout};
 
 use crate::CliResult;
 use crate::config::{AcpxMcpServerConfig, LoongClawConfig};
@@ -30,6 +30,8 @@ const ACPX_DEFAULT_PERMISSION_MODE: &str = "approve-reads";
 const ACPX_DEFAULT_NON_INTERACTIVE_PERMISSIONS: &str = "fail";
 const ACPX_DEFAULT_QUEUE_OWNER_TTL_SECONDS: f64 = 0.1;
 const ACPX_PERMISSION_DENIED_EXIT_CODE: i32 = 5;
+const ACPX_SPAWN_RETRY_ATTEMPTS: usize = 5;
+const ACPX_SPAWN_RETRY_DELAY: Duration = Duration::from_millis(25);
 const ACPX_MCP_PROXY_NODE_COMMAND: &str = "node";
 const ACPX_MCP_PROXY_SCRIPT_NAME: &str = "loongclaw-acpx-mcp-proxy.mjs";
 const ACPX_MCP_PROXY_SCRIPT_SOURCE: &str = include_str!("assets/acpx-mcp-proxy.mjs");
@@ -1202,16 +1204,7 @@ async fn run_prompt_process(
         });
     }
 
-    let mut process = Command::new(command);
-    process
-        .args(args)
-        .current_dir(cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = process
-        .spawn()
-        .map_err(|error| map_spawn_error(command, cwd, error))?;
+    let mut child = spawn_acpx_child(command, args, cwd, true).await?;
 
     let Some(mut stdin) = child.stdin.take() else {
         return Err("ACPX command spawned without stdin pipe".to_owned());
@@ -1352,20 +1345,7 @@ async fn run_process(
         ));
     }
 
-    let mut process = Command::new(command);
-    process
-        .args(args)
-        .current_dir(cwd)
-        .stdin(if stdin_payload.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = process
-        .spawn()
-        .map_err(|error| map_spawn_error(command, cwd, error))?;
+    let mut child = spawn_acpx_child(command, args, cwd, stdin_payload.is_some()).await?;
 
     if let Some(payload) = stdin_payload {
         let Some(mut stdin) = child.stdin.take() else {
@@ -1459,6 +1439,53 @@ fn map_spawn_error(command: &str, cwd: &str, error: std::io::Error) -> String {
         return format!("acpx command not found: {command}");
     }
     format!("spawn ACPX command failed: {error}")
+}
+
+async fn spawn_acpx_child(
+    command: &str,
+    args: &[String],
+    cwd: &str,
+    pipe_stdin: bool,
+) -> CliResult<tokio::process::Child> {
+    retry_executable_file_busy(|| {
+        let mut process = Command::new(command);
+        process
+            .args(args)
+            .current_dir(cwd)
+            .stdin(if pipe_stdin {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        process.spawn()
+    })
+    .await
+    .map_err(|error| map_spawn_error(command, cwd, error))
+}
+
+async fn retry_executable_file_busy<T, F>(mut operation: F) -> std::io::Result<T>
+where
+    F: FnMut() -> std::io::Result<T>,
+{
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(error)
+                if should_retry_spawn_error(&error) && attempt < ACPX_SPAWN_RETRY_ATTEMPTS =>
+            {
+                sleep(ACPX_SPAWN_RETRY_DELAY).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn should_retry_spawn_error(error: &std::io::Error) -> bool {
+    error.kind() == ErrorKind::ExecutableFileBusy
 }
 
 fn parse_json_lines(stdout: &str) -> Vec<Value> {
@@ -1686,7 +1713,7 @@ mod tests {
     #[cfg(unix)]
     use std::path::{Path, PathBuf};
     #[cfg(unix)]
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     use super::*;
     use crate::config::{AcpBackendProfilesConfig, AcpConfig, AcpxBackendConfig, LoongClawConfig};
@@ -1818,6 +1845,55 @@ mod tests {
             .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp"))
             .count();
         assert_eq!(staging_entries, 0, "staging files should be cleaned up");
+    }
+
+    #[tokio::test]
+    async fn retry_executable_file_busy_retries_until_success() {
+        let attempts = AtomicUsize::new(0);
+
+        let result = retry_executable_file_busy(|| {
+            let attempt = attempts.fetch_add(1, Ordering::Relaxed);
+            if attempt < 2 {
+                Err(std::io::Error::from(ErrorKind::ExecutableFileBusy))
+            } else {
+                Ok("spawned")
+            }
+        })
+        .await
+        .expect("retry should recover once the executable is no longer busy");
+
+        assert_eq!(result, "spawned");
+        assert_eq!(attempts.load(Ordering::Relaxed), 3);
+    }
+
+    #[tokio::test]
+    async fn retry_executable_file_busy_surfaces_non_retryable_error_immediately() {
+        let attempts = AtomicUsize::new(0);
+
+        let error = retry_executable_file_busy::<(), _>(|| {
+            attempts.fetch_add(1, Ordering::Relaxed);
+            Err(std::io::Error::other("boom"))
+        })
+        .await
+        .expect_err("non-retryable spawn errors should surface immediately");
+
+        assert_eq!(error.kind(), ErrorKind::Other);
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn retry_executable_file_busy_stops_after_retry_budget() {
+        let attempts = AtomicUsize::new(0);
+
+        let error = retry_executable_file_busy::<(), _>(|| {
+            attempts.fetch_add(1, Ordering::Relaxed);
+            Err(std::io::Error::from(ErrorKind::ExecutableFileBusy))
+        })
+        .await
+        .expect_err("persistent executable-file-busy errors should stop after the retry budget");
+
+        assert_eq!(error.kind(), ErrorKind::ExecutableFileBusy);
+        assert_eq!(attempts.load(Ordering::Relaxed), ACPX_SPAWN_RETRY_ATTEMPTS);
     }
 
     #[cfg(unix)]
