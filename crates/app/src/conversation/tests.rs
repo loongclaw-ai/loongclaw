@@ -1443,14 +1443,14 @@ async fn persist_turn_explicit_acp_routing_exposes_typed_canonical_records() {
         ],
     );
     let runtime = FakeRuntime::new(Vec::new(), Ok("provider-should-not-run".to_owned()));
-    let orchestrator = ConversationOrchestrator::new();
+    let coordinator = ConversationTurnCoordinator::new();
     let mut config = test_config();
     config.acp.enabled = true;
     config.acp.backend = Some(backend_id.to_owned());
     config.acp.emit_runtime_events = true;
     config.memory.sqlite_path = unique_acp_sqlite_path("typed-explicit");
 
-    let reply = orchestrator
+    let reply = coordinator
         .handle_turn_with_runtime_and_address_and_acp_options(
             &config,
             &ConversationSessionAddress::from_session_id("telegram:typed-explicit"),
@@ -1926,7 +1926,7 @@ async fn persist_turn_automatic_acp_routing_exposes_typed_canonical_records() {
         ],
     );
     let runtime = FakeRuntime::new(Vec::new(), Ok("provider-should-not-run".to_owned()));
-    let orchestrator = ConversationOrchestrator::new();
+    let coordinator = ConversationTurnCoordinator::new();
     let mut config = test_config();
     config.acp.enabled = true;
     config.acp.backend = Some(backend_id.to_owned());
@@ -1935,7 +1935,7 @@ async fn persist_turn_automatic_acp_routing_exposes_typed_canonical_records() {
         crate::config::AcpConversationRoutingMode::AgentPrefixedOnly;
     config.memory.sqlite_path = unique_acp_sqlite_path("typed-automatic");
 
-    let reply = orchestrator
+    let reply = coordinator
         .handle_turn_with_runtime(
             &config,
             "agent:codex:review-thread",
@@ -1990,7 +1990,7 @@ async fn handle_turn_with_runtime_automatic_acp_routing_bypasses_context_engine_
         vec![json!({"role": "system", "content": "sys"})],
         Ok("provider-should-not-run".to_owned()),
     );
-    let orchestrator = ConversationOrchestrator::new();
+    let coordinator = ConversationTurnCoordinator::new();
     let mut config = test_config();
     config.acp.enabled = true;
     config.acp.backend = Some(backend_id.to_owned());
@@ -1998,7 +1998,7 @@ async fn handle_turn_with_runtime_automatic_acp_routing_bypasses_context_engine_
         crate::config::AcpConversationRoutingMode::AgentPrefixedOnly;
     config.memory.sqlite_path = unique_acp_sqlite_path("automatic-lifecycle-bypass");
 
-    let reply = orchestrator
+    let reply = coordinator
         .handle_turn_with_runtime(
             &config,
             "agent:codex:review-thread",
