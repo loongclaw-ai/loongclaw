@@ -1167,7 +1167,10 @@ async fn default_runtime_build_messages_respects_restricted_tool_view() {
 
     assert!(!messages.is_empty());
     let system_content = messages[0]["content"].as_str().expect("system content");
-    assert!(system_content.contains("- file.read:"));
+    assert!(system_content.contains("- tool.search: Discover non-core tools"));
+    assert!(system_content.contains("- tool.invoke: Invoke a discovered non-core tool"));
+    assert!(system_content.contains("Non-core tools are intentionally hidden"));
+    assert!(!system_content.contains("- file.read:"));
     assert!(!system_content.contains("- file.write:"));
     assert!(!system_content.contains("- shell.exec:"));
 }
@@ -4114,17 +4117,16 @@ async fn handle_turn_with_runtime_provider_switch_tool_updates_provider_for_foll
         vec![],
         vec![Ok(ProviderTurn {
             assistant_text: "Switching provider.".to_owned(),
-            tool_intents: vec![ToolIntent {
-                tool_name: "provider_switch".to_owned(),
-                args_json: json!({
+            tool_intents: vec![provider_tool_intent(
+                "provider.switch",
+                json!({
                     "selector": "deepseek",
                     "config_path": canonical_config_path.display().to_string()
                 }),
-                source: "provider_tool_call".to_owned(),
-                session_id: "session-provider-switch".to_owned(),
-                turn_id: "turn-provider-switch-1".to_owned(),
-                tool_call_id: "call-provider-switch".to_owned(),
-            }],
+                "session-provider-switch",
+                "turn-provider-switch-1",
+                "call-provider-switch",
+            )],
             raw_meta: Value::Null,
         })],
         vec![Ok("DeepSeek is now active.".to_owned())],
@@ -9581,14 +9583,13 @@ async fn handle_turn_with_runtime_executes_session_tools_via_default_dispatcher(
         vec![],
         Ok(ProviderTurn {
             assistant_text: "Listing sessions.".to_owned(),
-            tool_intents: vec![ToolIntent {
-                tool_name: "sessions_list".to_owned(),
-                args_json: json!({}),
-                source: "provider_tool_call".to_owned(),
-                session_id: "root-session".to_owned(),
-                turn_id: "turn-session-tools".to_owned(),
-                tool_call_id: "call-session-tools".to_owned(),
-            }],
+            tool_intents: vec![provider_tool_intent(
+                "sessions_list",
+                json!({}),
+                "root-session",
+                "turn-session-tools",
+                "call-session-tools",
+            )],
             raw_meta: Value::Null,
         }),
         Ok("unused".to_owned()),
@@ -9664,17 +9665,16 @@ async fn handle_turn_with_runtime_executes_sessions_send_via_default_dispatcher(
         vec![],
         Ok(ProviderTurn {
             assistant_text: "Sending to known session.".to_owned(),
-            tool_intents: vec![ToolIntent {
-                tool_name: "sessions_send".to_owned(),
-                args_json: json!({
+            tool_intents: vec![provider_tool_intent(
+                "sessions_send",
+                json!({
                     "session_id": "telegram:123",
                     "text": "hello root channel"
                 }),
-                source: "provider_tool_call".to_owned(),
-                session_id: "controller-root".to_owned(),
-                turn_id: "turn-sessions-send".to_owned(),
-                tool_call_id: "call-sessions-send".to_owned(),
-            }],
+                "controller-root",
+                "turn-sessions-send",
+                "call-sessions-send",
+            )],
             raw_meta: Value::Null,
         }),
         Ok("unused".to_owned()),
@@ -9865,17 +9865,16 @@ async fn handle_turn_with_runtime_executes_delegate_via_coordinator() {
         vec![
             Ok(ProviderTurn {
                 assistant_text: "Delegating.".to_owned(),
-                tool_intents: vec![ToolIntent {
-                    tool_name: "delegate".to_owned(),
-                    args_json: json!({
+                tool_intents: vec![provider_tool_intent(
+                    "delegate",
+                    json!({
                         "task": "child task",
                         "label": "research-subtask"
                     }),
-                    source: "provider_tool_call".to_owned(),
-                    session_id: "root-session".to_owned(),
-                    turn_id: "turn-delegate-parent".to_owned(),
-                    tool_call_id: "call-delegate-parent".to_owned(),
-                }],
+                    "root-session",
+                    "turn-delegate-parent",
+                    "call-delegate-parent",
+                )],
                 raw_meta: Value::Null,
             }),
             Ok(ProviderTurn {
@@ -10460,17 +10459,16 @@ async fn handle_turn_with_runtime_delegate_async_queue_failure_rolls_back_child_
         vec![],
         vec![Ok(ProviderTurn {
             assistant_text: "Delegating async.".to_owned(),
-            tool_intents: vec![ToolIntent {
-                tool_name: "delegate_async".to_owned(),
-                args_json: json!({
+            tool_intents: vec![provider_tool_intent(
+                "delegate_async",
+                json!({
                     "task": "child async task",
                     "label": "async-child"
                 }),
-                source: "provider_tool_call".to_owned(),
-                session_id: "root-session".to_owned(),
-                turn_id: "turn-delegate-async-parent".to_owned(),
-                tool_call_id: "call-delegate-async-parent".to_owned(),
-            }],
+                "root-session",
+                "turn-delegate-async-parent",
+                "call-delegate-async-parent",
+            )],
             raw_meta: Value::Null,
         })],
         vec![],
@@ -10539,18 +10537,17 @@ async fn handle_turn_with_runtime_executes_delegate_async_via_coordinator_withou
         vec![],
         vec![Ok(ProviderTurn {
             assistant_text: "Delegating async.".to_owned(),
-            tool_intents: vec![ToolIntent {
-                tool_name: "delegate_async".to_owned(),
-                args_json: json!({
+            tool_intents: vec![provider_tool_intent(
+                "delegate_async",
+                json!({
                     "task": "child async task",
                     "label": "async-child",
                     "timeout_seconds": 9
                 }),
-                source: "provider_tool_call".to_owned(),
-                session_id: "root-session".to_owned(),
-                turn_id: "turn-delegate-async-parent".to_owned(),
-                tool_call_id: "call-delegate-async-parent".to_owned(),
-            }],
+                "root-session",
+                "turn-delegate-async-parent",
+                "call-delegate-async-parent",
+            )],
             raw_meta: Value::Null,
         })],
         vec![],
@@ -10672,17 +10669,16 @@ async fn handle_turn_with_runtime_delegate_async_spawn_failure_is_observable_aft
         vec![],
         vec![Ok(ProviderTurn {
             assistant_text: "Delegating async.".to_owned(),
-            tool_intents: vec![ToolIntent {
-                tool_name: "delegate_async".to_owned(),
-                args_json: json!({
+            tool_intents: vec![provider_tool_intent(
+                "delegate_async",
+                json!({
                     "task": "child async task",
                     "label": "async-child"
                 }),
-                source: "provider_tool_call".to_owned(),
-                session_id: "root-session".to_owned(),
-                turn_id: "turn-delegate-async-parent".to_owned(),
-                tool_call_id: "call-delegate-async-parent".to_owned(),
-            }],
+                "root-session",
+                "turn-delegate-async-parent",
+                "call-delegate-async-parent",
+            )],
             raw_meta: Value::Null,
         })],
         vec![],
@@ -10788,17 +10784,16 @@ async fn handle_turn_with_runtime_delegate_async_spawn_panic_is_observable_after
         vec![],
         vec![Ok(ProviderTurn {
             assistant_text: "Delegating async.".to_owned(),
-            tool_intents: vec![ToolIntent {
-                tool_name: "delegate_async".to_owned(),
-                args_json: json!({
+            tool_intents: vec![provider_tool_intent(
+                "delegate_async",
+                json!({
                     "task": "child async task",
                     "label": "async-child"
                 }),
-                source: "provider_tool_call".to_owned(),
-                session_id: "root-session".to_owned(),
-                turn_id: "turn-delegate-async-parent".to_owned(),
-                tool_call_id: "call-delegate-async-parent".to_owned(),
-            }],
+                "root-session",
+                "turn-delegate-async-parent",
+                "call-delegate-async-parent",
+            )],
             raw_meta: Value::Null,
         })],
         vec![],
@@ -10912,17 +10907,16 @@ async fn handle_turn_with_runtime_delegate_async_spawn_failure_persistence_recov
         vec![],
         vec![Ok(ProviderTurn {
             assistant_text: "Delegating async.".to_owned(),
-            tool_intents: vec![ToolIntent {
-                tool_name: "delegate_async".to_owned(),
-                args_json: json!({
+            tool_intents: vec![provider_tool_intent(
+                "delegate_async",
+                json!({
                     "task": "child async task",
                     "label": "async-child"
                 }),
-                source: "provider_tool_call".to_owned(),
-                session_id: "root-session".to_owned(),
-                turn_id: "turn-delegate-async-parent".to_owned(),
-                tool_call_id: "call-delegate-async-parent".to_owned(),
-            }],
+                "root-session",
+                "turn-delegate-async-parent",
+                "call-delegate-async-parent",
+            )],
             raw_meta: Value::Null,
         })],
         vec![],
@@ -11036,31 +11030,29 @@ async fn handle_turn_with_runtime_delegate_child_cannot_reenter_delegate_by_defa
         vec![
             Ok(ProviderTurn {
                 assistant_text: "Delegating.".to_owned(),
-                tool_intents: vec![ToolIntent {
-                    tool_name: "delegate".to_owned(),
-                    args_json: json!({
+                tool_intents: vec![provider_tool_intent(
+                    "delegate",
+                    json!({
                         "task": "show raw json tool output",
                         "label": "nested-child"
                     }),
-                    source: "provider_tool_call".to_owned(),
-                    session_id: "root-session".to_owned(),
-                    turn_id: "turn-delegate-parent".to_owned(),
-                    tool_call_id: "call-delegate-parent".to_owned(),
-                }],
+                    "root-session",
+                    "turn-delegate-parent",
+                    "call-delegate-parent",
+                )],
                 raw_meta: Value::Null,
             }),
             Ok(ProviderTurn {
                 assistant_text: "Trying nested delegate.".to_owned(),
-                tool_intents: vec![ToolIntent {
-                    tool_name: "delegate".to_owned(),
-                    args_json: json!({
+                tool_intents: vec![provider_tool_intent(
+                    "delegate",
+                    json!({
                         "task": "nested"
                     }),
-                    source: "provider_tool_call".to_owned(),
-                    session_id: "delegate:child".to_owned(),
-                    turn_id: "turn-delegate-child".to_owned(),
-                    tool_call_id: "call-delegate-child".to_owned(),
-                }],
+                    "delegate:child",
+                    "turn-delegate-child",
+                    "call-delegate-child",
+                )],
                 raw_meta: Value::Null,
             }),
         ],
@@ -11121,31 +11113,29 @@ async fn handle_turn_with_runtime_delegate_child_cannot_reenter_delegate_async_b
             vec![
                 Ok(ProviderTurn {
                     assistant_text: "Delegating async.".to_owned(),
-                    tool_intents: vec![ToolIntent {
-                        tool_name: "delegate_async".to_owned(),
-                        args_json: json!({
+                    tool_intents: vec![provider_tool_intent(
+                        "delegate_async",
+                        json!({
                             "task": "show raw json tool output",
                             "label": "nested-child"
                         }),
-                        source: "provider_tool_call".to_owned(),
-                        session_id: "root-session".to_owned(),
-                        turn_id: "turn-delegate-async-parent".to_owned(),
-                        tool_call_id: "call-delegate-async-parent".to_owned(),
-                    }],
+                        "root-session",
+                        "turn-delegate-async-parent",
+                        "call-delegate-async-parent",
+                    )],
                     raw_meta: Value::Null,
                 }),
                 Ok(ProviderTurn {
                     assistant_text: "Trying nested async delegate.".to_owned(),
-                    tool_intents: vec![ToolIntent {
-                        tool_name: "delegate_async".to_owned(),
-                        args_json: json!({
+                    tool_intents: vec![provider_tool_intent(
+                        "delegate_async",
+                        json!({
                             "task": "nested"
                         }),
-                        source: "provider_tool_call".to_owned(),
-                        session_id: "delegate:child".to_owned(),
-                        turn_id: "turn-delegate-async-child".to_owned(),
-                        tool_call_id: "call-delegate-async-child".to_owned(),
-                    }],
+                        "delegate:child",
+                        "turn-delegate-async-child",
+                        "call-delegate-async-child",
+                    )],
                     raw_meta: Value::Null,
                 }),
             ],
@@ -11249,32 +11239,30 @@ async fn handle_turn_with_runtime_delegate_child_can_reenter_when_max_depth_allo
         vec![
             Ok(ProviderTurn {
                 assistant_text: "Delegating from root.".to_owned(),
-                tool_intents: vec![ToolIntent {
-                    tool_name: "delegate".to_owned(),
-                    args_json: json!({
+                tool_intents: vec![provider_tool_intent(
+                    "delegate",
+                    json!({
                         "task": "show raw json tool output",
                         "label": "child"
                     }),
-                    source: "provider_tool_call".to_owned(),
-                    session_id: "root-session".to_owned(),
-                    turn_id: "turn-root".to_owned(),
-                    tool_call_id: "call-root".to_owned(),
-                }],
+                    "root-session",
+                    "turn-root",
+                    "call-root",
+                )],
                 raw_meta: Value::Null,
             }),
             Ok(ProviderTurn {
                 assistant_text: "Delegating from child.".to_owned(),
-                tool_intents: vec![ToolIntent {
-                    tool_name: "delegate".to_owned(),
-                    args_json: json!({
+                tool_intents: vec![provider_tool_intent(
+                    "delegate",
+                    json!({
                         "task": "final grandchild task",
                         "label": "grandchild"
                     }),
-                    source: "provider_tool_call".to_owned(),
-                    session_id: "delegate:child-runtime".to_owned(),
-                    turn_id: "turn-child".to_owned(),
-                    tool_call_id: "call-child".to_owned(),
-                }],
+                    "delegate:child-runtime",
+                    "turn-child",
+                    "call-child",
+                )],
                 raw_meta: Value::Null,
             }),
             Ok(ProviderTurn {
@@ -11375,17 +11363,16 @@ async fn handle_turn_with_runtime_executes_session_wait_via_default_dispatcher()
         vec![],
         Ok(ProviderTurn {
             assistant_text: "Waiting for session completion.".to_owned(),
-            tool_intents: vec![ToolIntent {
-                tool_name: "session_wait".to_owned(),
-                args_json: json!({
+            tool_intents: vec![provider_tool_intent(
+                "session_wait",
+                json!({
                     "session_id": "child-session",
                     "timeout_ms": 50
                 }),
-                source: "provider_tool_call".to_owned(),
-                session_id: "root-session".to_owned(),
-                turn_id: "turn-session-wait".to_owned(),
-                tool_call_id: "call-session-wait".to_owned(),
-            }],
+                "root-session",
+                "turn-session-wait",
+                "call-session-wait",
+            )],
             raw_meta: Value::Null,
         }),
         Ok("unused".to_owned()),
@@ -11454,14 +11441,13 @@ async fn handle_turn_with_runtime_safe_lane_executes_session_tools_via_default_d
         vec![],
         Ok(ProviderTurn {
             assistant_text: "Listing sessions safely.".to_owned(),
-            tool_intents: vec![ToolIntent {
-                tool_name: "sessions_list".to_owned(),
-                args_json: json!({}),
-                source: "provider_tool_call".to_owned(),
-                session_id: "root-session".to_owned(),
-                turn_id: "turn-safe-session-tools".to_owned(),
-                tool_call_id: "call-safe-session-tools".to_owned(),
-            }],
+            tool_intents: vec![provider_tool_intent(
+                "sessions_list",
+                json!({}),
+                "root-session",
+                "turn-safe-session-tools",
+                "call-safe-session-tools",
+            )],
             raw_meta: Value::Null,
         }),
         Ok("unused".to_owned()),
@@ -11534,17 +11520,16 @@ async fn handle_turn_with_runtime_safe_lane_executes_sessions_send_via_default_d
         vec![],
         Ok(ProviderTurn {
             assistant_text: "Sending to known session safely.".to_owned(),
-            tool_intents: vec![ToolIntent {
-                tool_name: "sessions_send".to_owned(),
-                args_json: json!({
+            tool_intents: vec![provider_tool_intent(
+                "sessions_send",
+                json!({
                     "session_id": "telegram:123",
                     "text": "hello safe lane"
                 }),
-                source: "provider_tool_call".to_owned(),
-                session_id: "controller-root".to_owned(),
-                turn_id: "turn-safe-sessions-send".to_owned(),
-                tool_call_id: "call-safe-sessions-send".to_owned(),
-            }],
+                "controller-root",
+                "turn-safe-sessions-send",
+                "call-safe-sessions-send",
+            )],
             raw_meta: Value::Null,
         }),
         Ok("unused".to_owned()),
@@ -11634,17 +11619,16 @@ async fn handle_turn_with_runtime_safe_lane_executes_session_wait_via_default_di
         vec![],
         Ok(ProviderTurn {
             assistant_text: "Waiting for session completion safely.".to_owned(),
-            tool_intents: vec![ToolIntent {
-                tool_name: "session_wait".to_owned(),
-                args_json: json!({
+            tool_intents: vec![provider_tool_intent(
+                "session_wait",
+                json!({
                     "session_id": "child-session",
                     "timeout_ms": 50
                 }),
-                source: "provider_tool_call".to_owned(),
-                session_id: "root-session".to_owned(),
-                turn_id: "turn-safe-session-wait".to_owned(),
-                tool_call_id: "call-safe-session-wait".to_owned(),
-            }],
+                "root-session",
+                "turn-safe-session-wait",
+                "call-safe-session-wait",
+            )],
             raw_meta: Value::Null,
         }),
         Ok("unused".to_owned()),

@@ -453,11 +453,14 @@ pub(crate) fn capability_snapshot_for_view_with_config(
 /// The output shape matches OpenAI-compatible `tools=[{type:function,...}]`.
 /// Order is deterministic for stable prompting/tests.
 pub fn provider_tool_definitions() -> Vec<Value> {
-    try_provider_tool_definitions_for_view(&runtime_tool_view())
-        .expect("runtime tool discovery schema should always be advertisable")
+    provider_tool_definitions_for_view(&runtime_tool_view())
 }
 
 pub fn try_provider_tool_definitions_for_view(_view: &ToolView) -> Result<Vec<Value>, String> {
+    Ok(provider_tool_definitions_for_view(_view))
+}
+
+fn provider_tool_definitions_for_view(_view: &ToolView) -> Vec<Value> {
     let catalog = tool_catalog();
     let mut tools = catalog
         .descriptors()
@@ -468,7 +471,7 @@ pub fn try_provider_tool_definitions_for_view(_view: &ToolView) -> Result<Vec<Va
         .map(ToolDescriptor::provider_definition)
         .collect::<Vec<_>>();
     tools.sort_by(|left, right| tool_function_name(left).cmp(tool_function_name(right)));
-    Ok(tools)
+    tools
 }
 
 pub fn tool_parameter_schema_types() -> BTreeMap<String, BTreeMap<String, &'static str>> {
@@ -1095,6 +1098,7 @@ mod tests {
         assert!(names.contains(&"session_wait"));
         assert!(names.contains(&"sessions_history"));
         assert!(names.contains(&"sessions_list"));
+        assert!(names.contains(&"sessions_send"));
     }
 
     #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
