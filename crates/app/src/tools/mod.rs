@@ -1282,6 +1282,7 @@ mod tests {
         assert!(names.contains(&"session_wait"));
         assert!(names.contains(&"sessions_history"));
         assert!(names.contains(&"sessions_list"));
+        assert!(names.contains(&"sessions_send"));
     }
 
     #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
