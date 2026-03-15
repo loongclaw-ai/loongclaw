@@ -41,8 +41,8 @@ use super::persistence::{
     persist_reply_turns_raw_with_mode, persist_reply_turns_with_mode,
 };
 use super::plan_executor::{
-    PlanExecutor, PlanNodeAttemptEvent, PlanNodeError, PlanNodeErrorKind, PlanNodeExecutor,
-    PlanRunFailure, PlanRunReport, PlanRunStatus,
+    PlanExecutor, PlanNodeError, PlanNodeErrorKind, PlanNodeExecutor, PlanRunFailure,
+    PlanRunReport, PlanRunStatus,
 };
 use super::plan_ir::{
     PLAN_GRAPH_VERSION, PlanBudget, PlanEdge, PlanGraph, PlanNode, PlanNodeKind, RiskTier,
@@ -3857,9 +3857,6 @@ async fn evaluate_safe_lane_round(
         state.tool_node_max_attempts(),
         state.plan_start_tool_index,
     );
-    let Some(kernel_ctx) = kernel_ctx else {
-        return synthetic_safe_lane_round_without_kernel(&plan);
-    };
     let executor = SafeLanePlanNodeExecutor::new(
         turn.tool_intents.as_slice(),
         session_context,
@@ -3879,43 +3876,6 @@ async fn evaluate_safe_lane_round(
         report,
         tool_outputs,
         tool_output_stats,
-    }
-}
-
-fn synthetic_safe_lane_round_without_kernel(plan: &PlanGraph) -> SafeLaneRoundExecution {
-    let ordered_nodes = plan
-        .nodes
-        .iter()
-        .map(|node| node.id.clone())
-        .collect::<Vec<_>>();
-    let node_id = plan
-        .nodes
-        .iter()
-        .find(|node| matches!(node.kind, PlanNodeKind::Tool))
-        .map(|node| node.id.clone())
-        .unwrap_or_else(|| "tool-1".to_owned());
-    let error = "no_kernel_context".to_owned();
-    SafeLaneRoundExecution {
-        report: PlanRunReport {
-            status: PlanRunStatus::Failed(PlanRunFailure::NodeFailed {
-                node_id: node_id.clone(),
-                attempts_used: 1,
-                last_error_kind: PlanNodeErrorKind::PolicyDenied,
-                last_error: error.clone(),
-            }),
-            ordered_nodes,
-            attempts_used: 1,
-            attempt_events: vec![PlanNodeAttemptEvent {
-                node_id,
-                attempt: 1,
-                success: false,
-                error_kind: Some(PlanNodeErrorKind::PolicyDenied),
-                error: Some(error),
-            }],
-            elapsed_ms: 0,
-        },
-        tool_outputs: Vec::new(),
-        tool_output_stats: SafeLaneToolOutputStats::default(),
     }
 }
 
@@ -5022,7 +4982,7 @@ struct SafeLanePlanNodeExecutor<'a> {
     tool_intents: &'a [ToolIntent],
     session_context: &'a SessionContext,
     app_dispatcher: &'a dyn AppToolDispatcher,
-    kernel_ctx: &'a KernelContext,
+    kernel_ctx: Option<&'a KernelContext>,
     verify_output_non_empty: bool,
     tool_outputs: Mutex<Vec<String>>,
     tool_result_payload_summary_limit_chars: usize,
@@ -5033,7 +4993,7 @@ impl<'a> SafeLanePlanNodeExecutor<'a> {
         tool_intents: &'a [ToolIntent],
         session_context: &'a SessionContext,
         app_dispatcher: &'a dyn AppToolDispatcher,
-        kernel_ctx: &'a KernelContext,
+        kernel_ctx: Option<&'a KernelContext>,
         verify_output_non_empty: bool,
         seed_tool_outputs: Vec<String>,
         tool_result_payload_summary_limit_chars: usize,
@@ -5113,7 +5073,7 @@ async fn execute_single_tool_intent(
     intent: &ToolIntent,
     session_context: &SessionContext,
     app_dispatcher: &dyn AppToolDispatcher,
-    kernel_ctx: &KernelContext,
+    kernel_ctx: Option<&KernelContext>,
     payload_summary_limit_chars: usize,
 ) -> Result<String, PlanNodeError> {
     let engine = TurnEngine::with_tool_result_payload_summary_limit(1, payload_summary_limit_chars);
@@ -5124,7 +5084,7 @@ async fn execute_single_tool_intent(
     };
 
     match engine
-        .execute_turn_in_context(&turn, session_context, app_dispatcher, Some(kernel_ctx))
+        .execute_turn_in_context(&turn, session_context, app_dispatcher, kernel_ctx)
         .await
     {
         TurnResult::FinalText(output) => Ok(output),

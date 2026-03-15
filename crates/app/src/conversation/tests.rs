@@ -10630,7 +10630,7 @@ async fn handle_turn_with_runtime_safe_lane_executes_session_tools_via_default_d
         .handle_turn_with_runtime(
             &config,
             "root-session",
-            "deploy safely and show raw json tool output",
+            "deploy to production with secret token and show raw json tool output",
             ProviderErrorMode::Propagate,
             &runtime,
             None,
@@ -10713,7 +10713,7 @@ async fn handle_turn_with_runtime_safe_lane_executes_sessions_send_via_default_d
         .handle_turn_with_runtime(
             &config,
             "controller-root",
-            "deploy safely and show raw json tool output",
+            "deploy to production with secret token and show raw json tool output",
             ProviderErrorMode::Propagate,
             &runtime,
             None,
@@ -10813,7 +10813,7 @@ async fn handle_turn_with_runtime_safe_lane_executes_session_wait_via_default_di
         .handle_turn_with_runtime(
             &config,
             "root-session",
-            "deploy safely and show raw json tool output",
+            "deploy to production with secret token and show raw json tool output",
             ProviderErrorMode::Propagate,
             &runtime,
             None,
