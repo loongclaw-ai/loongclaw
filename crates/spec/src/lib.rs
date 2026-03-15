@@ -9,7 +9,7 @@ pub mod programmatic;
 pub mod spec_execution;
 pub mod spec_runtime;
 
-pub use kernel_bootstrap::{KernelBuilder, default_pack_manifest};
+pub use kernel_bootstrap::{BootstrapBuilder, KernelBuilder, default_pack_manifest};
 pub use programmatic::{
     acquire_programmatic_circuit_slot, execute_programmatic_tool_call,
     record_programmatic_circuit_outcome,
