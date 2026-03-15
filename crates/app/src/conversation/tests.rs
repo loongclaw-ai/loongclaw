@@ -8,6 +8,8 @@ use loongclaw_kernel::{
     CoreMemoryAdapter, FixedClock, InMemoryAuditSink, LoongClawKernel, MemoryCoreOutcome,
     MemoryCoreRequest, StaticPolicyEngine, VerticalPackManifest,
 };
+#[cfg(feature = "memory-sqlite")]
+use rusqlite::Connection;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -36,23 +38,168 @@ struct FakeRuntime {
     seed_messages: Vec<Value>,
     assembled_context_with_system_prompt: Option<AssembledConversationContext>,
     assembled_context_without_system_prompt: Option<AssembledConversationContext>,
+    tool_view_override: Option<crate::tools::ToolView>,
     completion_responses: Mutex<VecDeque<Result<String, String>>>,
     turn_responses: Mutex<VecDeque<Result<ProviderTurn, String>>>,
     after_turn_result: Result<(), String>,
     compact_result: Result<(), String>,
     #[cfg(feature = "memory-sqlite")]
     durable_memory_config: Option<MemoryRuntimeConfig>,
+    #[cfg(feature = "memory-sqlite")]
+    async_delegate_spawner_override: Option<Arc<dyn crate::conversation::AsyncDelegateSpawner>>,
     persisted: Mutex<Vec<(String, String, String)>>,
     bootstrap_calls: Mutex<Vec<String>>,
     ingested_messages: Mutex<Vec<(String, Value)>>,
     requested_messages: Mutex<Vec<Value>>,
     turn_requested_messages: Mutex<Vec<Vec<Value>>>,
     completion_requested_messages: Mutex<Vec<Vec<Value>>>,
+    built_tool_views: Mutex<Vec<crate::tools::ToolView>>,
+    turn_requested_tool_views: Mutex<Vec<crate::tools::ToolView>>,
     build_context_calls: Mutex<Vec<(String, bool)>>,
     completion_calls: Mutex<usize>,
     turn_calls: Mutex<usize>,
     after_turn_calls: Mutex<Vec<(String, String, String, usize)>>,
     compact_calls: Mutex<Vec<(String, usize)>>,
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[derive(Default)]
+struct FakeAsyncDelegateSpawner {
+    requests: Arc<Mutex<Vec<crate::conversation::AsyncDelegateSpawnRequest>>>,
+    spawn_error: Option<String>,
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[async_trait]
+impl crate::conversation::AsyncDelegateSpawner for FakeAsyncDelegateSpawner {
+    async fn spawn(
+        &self,
+        request: crate::conversation::AsyncDelegateSpawnRequest,
+    ) -> Result<(), String> {
+        self.requests
+            .lock()
+            .expect("async delegate requests lock")
+            .push(request);
+        match &self.spawn_error {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+struct PanicAsyncDelegateSpawner;
+
+#[cfg(feature = "memory-sqlite")]
+#[async_trait]
+impl crate::conversation::AsyncDelegateSpawner for PanicAsyncDelegateSpawner {
+    async fn spawn(
+        &self,
+        _request: crate::conversation::AsyncDelegateSpawnRequest,
+    ) -> Result<(), String> {
+        panic!("panic-async-spawn");
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+struct LocalChildRuntimeAsyncDelegateSpawner {
+    config: LoongClawConfig,
+    runtime: Arc<OnceLock<Arc<FakeRuntime>>>,
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[async_trait]
+impl crate::conversation::AsyncDelegateSpawner for LocalChildRuntimeAsyncDelegateSpawner {
+    async fn spawn(
+        &self,
+        request: crate::conversation::AsyncDelegateSpawnRequest,
+    ) -> Result<(), String> {
+        let memory_config = MemoryRuntimeConfig::from_memory_config(&self.config.memory);
+        let repo = crate::session::repository::SessionRepository::new(&memory_config)?;
+        let started = repo.transition_session_with_event_if_current(
+            &request.child_session_id,
+            crate::session::repository::TransitionSessionWithEventIfCurrentRequest {
+                expected_state: crate::session::repository::SessionState::Ready,
+                next_state: crate::session::repository::SessionState::Running,
+                last_error: None,
+                event_kind: "delegate_started".to_owned(),
+                actor_session_id: Some(request.parent_session_id.clone()),
+                event_payload_json: json!({
+                    "task": request.task,
+                    "label": request.label,
+                    "timeout_seconds": request.timeout_seconds,
+                }),
+            },
+        )?;
+        if started.is_none() {
+            return Ok(());
+        }
+
+        let runtime = self
+            .runtime
+            .get()
+            .ok_or_else(|| "test_local_delegate_runtime_missing".to_owned())?;
+        let _ = super::turn_coordinator::run_started_delegate_child_turn_with_runtime(
+            &self.config,
+            runtime.as_ref(),
+            &request.child_session_id,
+            &request.parent_session_id,
+            request.label,
+            &request.task,
+            request.timeout_seconds,
+            None,
+        )
+        .await;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+struct GatedFakeAsyncDelegateSpawner {
+    requests: Arc<Mutex<Vec<crate::conversation::AsyncDelegateSpawnRequest>>>,
+    sender:
+        Mutex<Option<tokio::sync::oneshot::Sender<crate::conversation::AsyncDelegateSpawnRequest>>>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(feature = "memory-sqlite")]
+impl GatedFakeAsyncDelegateSpawner {
+    fn new() -> (
+        Self,
+        tokio::sync::oneshot::Receiver<crate::conversation::AsyncDelegateSpawnRequest>,
+        Arc<tokio::sync::Notify>,
+    ) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let release = Arc::new(tokio::sync::Notify::new());
+        (
+            Self {
+                requests: Arc::new(Mutex::new(Vec::new())),
+                sender: Mutex::new(Some(tx)),
+                release: release.clone(),
+            },
+            rx,
+            release,
+        )
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[async_trait]
+impl crate::conversation::AsyncDelegateSpawner for GatedFakeAsyncDelegateSpawner {
+    async fn spawn(
+        &self,
+        request: crate::conversation::AsyncDelegateSpawnRequest,
+    ) -> Result<(), String> {
+        self.requests
+            .lock()
+            .expect("async delegate requests lock")
+            .push(request.clone());
+        if let Some(sender) = self.sender.lock().expect("gated sender lock").take() {
+            let _ = sender.send(request);
+        }
+        self.release.notified().await;
+        Ok(())
+    }
 }
 
 struct StubContextEngine;
@@ -323,24 +470,34 @@ impl FakeRuntime {
             seed_messages,
             assembled_context_with_system_prompt: None,
             assembled_context_without_system_prompt: None,
+            tool_view_override: None,
             completion_responses: Mutex::new(VecDeque::from(completions)),
             turn_responses: Mutex::new(VecDeque::from(turns)),
             after_turn_result: Ok(()),
             compact_result: Ok(()),
             #[cfg(feature = "memory-sqlite")]
             durable_memory_config: None,
+            #[cfg(feature = "memory-sqlite")]
+            async_delegate_spawner_override: None,
             persisted: Mutex::new(Vec::new()),
             bootstrap_calls: Mutex::new(Vec::new()),
             ingested_messages: Mutex::new(Vec::new()),
             requested_messages: Mutex::new(Vec::new()),
             turn_requested_messages: Mutex::new(Vec::new()),
             completion_requested_messages: Mutex::new(Vec::new()),
+            built_tool_views: Mutex::new(Vec::new()),
+            turn_requested_tool_views: Mutex::new(Vec::new()),
             build_context_calls: Mutex::new(Vec::new()),
             completion_calls: Mutex::new(0),
             turn_calls: Mutex::new(0),
             after_turn_calls: Mutex::new(Vec::new()),
             compact_calls: Mutex::new(Vec::new()),
         }
+    }
+
+    fn with_tool_view(mut self, tool_view: crate::tools::ToolView) -> Self {
+        self.tool_view_override = Some(tool_view);
+        self
     }
 
     fn with_assembled_context(mut self, assembled_context: AssembledConversationContext) -> Self {
@@ -374,6 +531,15 @@ impl FakeRuntime {
         self.durable_memory_config = Some(config);
         self
     }
+
+    #[cfg(feature = "memory-sqlite")]
+    fn with_async_delegate_spawner(
+        mut self,
+        spawner: Arc<dyn crate::conversation::AsyncDelegateSpawner>,
+    ) -> Self {
+        self.async_delegate_spawner_override = Some(spawner);
+        self
+    }
 }
 
 fn unique_acp_test_id(prefix: &str, suffix: &str) -> String {
@@ -384,6 +550,47 @@ fn unique_acp_test_id(prefix: &str, suffix: &str) -> String {
             .expect("clock")
             .as_nanos()
     )
+}
+
+#[cfg(all(feature = "memory-sqlite", feature = "channel-telegram"))]
+fn spawn_telegram_send_server_once() -> (
+    String,
+    std::sync::mpsc::Receiver<String>,
+    std::thread::JoinHandle<()>,
+) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind telegram stub");
+    let addr = listener.local_addr().expect("telegram stub addr");
+    let (request_tx, request_rx) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut request_buf = [0_u8; 8192];
+            let read = stream
+                .read(&mut request_buf)
+                .expect("read telegram request");
+            request_tx
+                .send(String::from_utf8_lossy(&request_buf[..read]).into_owned())
+                .expect("send telegram request capture");
+            let body = serde_json::to_string(&json!({
+                "ok": true,
+                "result": {
+                    "message_id": 1
+                }
+            }))
+            .expect("serialize telegram stub body");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write telegram response");
+        }
+    });
+    (format!("http://{addr}"), request_rx, server)
 }
 
 fn register_routed_acp_backend(
@@ -586,6 +793,26 @@ impl AcpRuntimeBackend for RoutedAcpBackend {
 
 #[async_trait]
 impl ConversationRuntime for FakeRuntime {
+    fn tool_view(
+        &self,
+        config: &LoongClawConfig,
+        session_id: &str,
+        kernel_ctx: Option<&KernelContext>,
+    ) -> CliResult<crate::tools::ToolView> {
+        match self.tool_view_override.clone() {
+            Some(tool_view) => Ok(tool_view),
+            None => DefaultConversationRuntime::default().tool_view(config, session_id, kernel_ctx),
+        }
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    fn async_delegate_spawner(
+        &self,
+        _config: &LoongClawConfig,
+    ) -> Option<Arc<dyn crate::conversation::AsyncDelegateSpawner>> {
+        self.async_delegate_spawner_override.clone()
+    }
+
     async fn bootstrap(
         &self,
         _config: &LoongClawConfig,
@@ -620,8 +847,13 @@ impl ConversationRuntime for FakeRuntime {
         _config: &LoongClawConfig,
         _session_id: &str,
         include_system_prompt: bool,
+        tool_view: &crate::tools::ToolView,
         _kernel_ctx: Option<&KernelContext>,
     ) -> CliResult<Vec<Value>> {
+        self.built_tool_views
+            .lock()
+            .expect("built tool views lock")
+            .push(tool_view.clone());
         let assembled = if include_system_prompt {
             self.assembled_context_with_system_prompt.as_ref()
         } else {
@@ -678,6 +910,7 @@ impl ConversationRuntime for FakeRuntime {
         &self,
         _config: &LoongClawConfig,
         messages: &[Value],
+        tool_view: &crate::tools::ToolView,
         _kernel_ctx: Option<&KernelContext>,
     ) -> CliResult<ProviderTurn> {
         let mut calls = self.turn_calls.lock().expect("turn calls lock");
@@ -687,6 +920,10 @@ impl ConversationRuntime for FakeRuntime {
             .lock()
             .expect("turn request lock")
             .push(messages.to_vec());
+        self.turn_requested_tool_views
+            .lock()
+            .expect("turn request tool views lock")
+            .push(tool_view.clone());
         drop(calls);
         self.turn_responses
             .lock()
@@ -767,8 +1004,11 @@ fn test_config() -> LoongClawConfig {
 #[tokio::test]
 async fn default_runtime_supports_injected_context_engine() {
     let runtime = DefaultConversationRuntime::with_context_engine(StubContextEngine);
+    let tool_view = runtime
+        .tool_view(&test_config(), "session-injected", None)
+        .expect("default runtime tool view");
     let messages = runtime
-        .build_messages(&test_config(), "session-injected", true, None)
+        .build_messages(&test_config(), "session-injected", true, &tool_view, None)
         .await
         .expect("build messages via injected context engine");
 
@@ -783,8 +1023,11 @@ async fn default_runtime_can_resolve_context_engine_from_registry() {
         .expect("register context engine");
     let runtime = DefaultConversationRuntime::from_engine_id(Some("stub-registry"))
         .expect("resolve context engine from registry");
+    let tool_view = runtime
+        .tool_view(&test_config(), "session-registry", None)
+        .expect("default runtime tool view");
     let messages = runtime
-        .build_messages(&test_config(), "session-registry", true, None)
+        .build_messages(&test_config(), "session-registry", true, &tool_view, None)
         .await
         .expect("build messages via registry context engine");
 
@@ -804,8 +1047,11 @@ async fn default_runtime_prefers_configured_context_engine_when_env_not_set() {
 
     let runtime = DefaultConversationRuntime::from_config_or_env(&config)
         .expect("resolve context engine from config");
+    let tool_view = runtime
+        .tool_view(&config, "session-config", None)
+        .expect("configured runtime tool view");
     let messages = runtime
-        .build_messages(&config, "session-config", true, None)
+        .build_messages(&config, "session-config", true, &tool_view, None)
         .await
         .expect("build messages via configured context engine");
 
@@ -819,6 +1065,144 @@ fn default_runtime_exposes_context_engine_metadata() {
     let metadata = runtime.context_engine_metadata();
     assert_eq!(metadata.id, DEFAULT_CONTEXT_ENGINE_ID);
     assert_eq!(metadata.api_version, CONTEXT_ENGINE_API_VERSION);
+}
+
+#[tokio::test]
+async fn default_runtime_build_messages_respects_restricted_tool_view() {
+    let runtime = DefaultConversationRuntime::default();
+    let view = crate::tools::ToolView::from_tool_names(["file.read"]);
+
+    let messages = runtime
+        .build_messages(&test_config(), "noop-session", true, &view, None)
+        .await
+        .expect("build messages");
+
+    assert!(!messages.is_empty());
+    let system_content = messages[0]["content"].as_str().expect("system content");
+    assert!(system_content.contains("- file.read:"));
+    assert!(!system_content.contains("- file.write:"));
+    assert!(!system_content.contains("- shell.exec:"));
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[test]
+fn default_runtime_tool_view_uses_persisted_delegate_child_restrictions() {
+    let mut config = test_config();
+    config.tools.delegate.allow_shell_in_child = false;
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-tool-view", "persisted-child")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+    config.memory.sqlite_path = db_path.display().to_string();
+    let memory_config =
+        crate::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "child-session".to_owned(),
+        kind: crate::session::repository::SessionKind::DelegateChild,
+        parent_session_id: Some("root-session".to_owned()),
+        label: Some("Child".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create child session");
+
+    let runtime = DefaultConversationRuntime::default();
+    let child_view = runtime
+        .tool_view(&config, "child-session", None)
+        .expect("child tool view");
+
+    assert!(child_view.contains("file.read"));
+    assert!(child_view.contains("file.write"));
+    assert!(!child_view.contains("shell.exec"));
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[test]
+fn default_runtime_tool_view_denies_delegate_for_broken_lineage_child() {
+    let mut config = test_config();
+    config.tools.delegate.allow_shell_in_child = false;
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-tool-view", "broken-lineage")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+    config.memory.sqlite_path = db_path.display().to_string();
+    let memory_config =
+        crate::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "child-session".to_owned(),
+        kind: crate::session::repository::SessionKind::DelegateChild,
+        parent_session_id: Some("missing-parent".to_owned()),
+        label: Some("Child".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create child session");
+
+    let runtime = DefaultConversationRuntime::default();
+    let child_view = runtime
+        .tool_view(&config, "child-session", None)
+        .expect("child tool view");
+
+    assert!(child_view.contains("file.read"));
+    assert!(child_view.contains("file.write"));
+    assert!(!child_view.contains("shell.exec"));
+    assert!(!child_view.contains("delegate"));
+    assert!(!child_view.contains("delegate_async"));
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[test]
+fn default_runtime_session_context_uses_persisted_parent_session_id() {
+    let mut config = test_config();
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-session-context", "persisted-child")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+    config.memory.sqlite_path = db_path.display().to_string();
+    let memory_config =
+        crate::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "child-session".to_owned(),
+        kind: crate::session::repository::SessionKind::DelegateChild,
+        parent_session_id: Some("root-session".to_owned()),
+        label: Some("Child".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create child session");
+
+    let runtime = DefaultConversationRuntime::default();
+    let session_context = runtime
+        .session_context(&config, "child-session", None)
+        .expect("session context");
+
+    assert_eq!(session_context.session_id, "child-session");
+    assert_eq!(
+        session_context.parent_session_id.as_deref(),
+        Some("root-session")
+    );
 }
 
 #[tokio::test]
@@ -1127,8 +1511,11 @@ async fn default_runtime_prefers_env_context_engine_over_config() {
 
     let runtime = DefaultConversationRuntime::from_config_or_env(&config)
         .expect("resolve context engine from env override");
+    let tool_view = runtime
+        .tool_view(&config, "session-env-priority", None)
+        .expect("env-selected runtime tool view");
     let messages = runtime
-        .build_messages(&config, "session-env-priority", true, None)
+        .build_messages(&config, "session-env-priority", true, &tool_view, None)
         .await
         .expect("build messages via env-selected context engine");
 
@@ -5550,6 +5937,423 @@ async fn turn_engine_execute_turn_no_kernel_returns_denied() {
     }
 }
 
+#[test]
+fn turn_engine_denies_known_tool_outside_restricted_view() {
+    use crate::conversation::turn_engine::{
+        ProviderTurn, ToolIntent, TurnEngine, TurnFailureKind, TurnResult,
+    };
+
+    let engine = TurnEngine::new(1);
+    let turn = ProviderTurn {
+        assistant_text: "".to_owned(),
+        tool_intents: vec![ToolIntent {
+            tool_name: "shell.exec".to_owned(),
+            args_json: serde_json::json!({"command": "echo", "args": ["hidden"]}),
+            source: "provider_tool_call".to_owned(),
+            session_id: "delegate-child".to_owned(),
+            turn_id: "t1".to_owned(),
+            tool_call_id: "c-hidden".to_owned(),
+        }],
+        raw_meta: serde_json::Value::Null,
+    };
+
+    let result = engine.evaluate_turn_in_view(
+        &turn,
+        &crate::tools::ToolView::from_tool_names(["file.read"]),
+    );
+
+    match result {
+        TurnResult::ToolDenied(failure) => {
+            assert_eq!(failure.kind, TurnFailureKind::PolicyDenied);
+            assert_eq!(failure.code, "tool_not_visible");
+            assert!(
+                failure.reason.contains("tool_not_visible"),
+                "failure={failure:?}"
+            );
+        }
+        other @ TurnResult::FinalText(_)
+        | other @ TurnResult::ToolError(_)
+        | other @ TurnResult::ProviderError(_) => {
+            panic!("expected ToolDenied, got {:?}", other)
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn turn_engine_routes_app_tools_through_dispatcher() {
+    use async_trait::async_trait;
+    use loongclaw_contracts::{ToolCoreOutcome, ToolCoreRequest};
+
+    #[derive(Default)]
+    struct RecordingAppDispatcher {
+        calls: Mutex<Vec<(String, String)>>,
+    }
+
+    #[async_trait]
+    impl crate::conversation::AppToolDispatcher for RecordingAppDispatcher {
+        async fn execute_app_tool(
+            &self,
+            session_context: &crate::conversation::SessionContext,
+            request: ToolCoreRequest,
+            _kernel_ctx: Option<&KernelContext>,
+        ) -> Result<ToolCoreOutcome, String> {
+            self.calls.lock().expect("dispatcher calls lock").push((
+                session_context.session_id.clone(),
+                request.tool_name.clone(),
+            ));
+            Ok(ToolCoreOutcome {
+                status: "ok".to_owned(),
+                payload: json!({
+                    "session_id": session_context.session_id,
+                    "tool_name": request.tool_name,
+                }),
+            })
+        }
+    }
+
+    let dispatcher = RecordingAppDispatcher::default();
+    let engine = TurnEngine::new(1);
+    let turn = ProviderTurn {
+        assistant_text: "".to_owned(),
+        tool_intents: vec![ToolIntent {
+            tool_name: "sessions_list".to_owned(),
+            args_json: json!({}),
+            source: "provider_tool_call".to_owned(),
+            session_id: "root-session".to_owned(),
+            turn_id: "turn-app-1".to_owned(),
+            tool_call_id: "call-app-1".to_owned(),
+        }],
+        raw_meta: Value::Null,
+    };
+    let session_context = crate::conversation::SessionContext::root_with_tool_view(
+        "root-session",
+        crate::tools::planned_root_tool_view(),
+    );
+
+    let result = engine
+        .execute_turn_in_context(&turn, &session_context, &dispatcher, None)
+        .await;
+
+    match result {
+        TurnResult::FinalText(text) => {
+            let line = text.lines().next().expect("tool result line should exist");
+            let payload = line
+                .strip_prefix("[ok] ")
+                .expect("tool result line should keep [ok] prefix");
+            let envelope: Value =
+                serde_json::from_str(payload).expect("tool result envelope should be json");
+            assert_eq!(envelope["tool"], "sessions_list");
+            assert!(
+                envelope["payload_summary"]
+                    .as_str()
+                    .expect("payload summary should be text")
+                    .contains("\"tool_name\":\"sessions_list\""),
+                "expected dispatcher payload in output, got: {text}"
+            );
+        }
+        other @ TurnResult::ToolDenied(_)
+        | other @ TurnResult::ToolError(_)
+        | other @ TurnResult::ProviderError(_) => {
+            panic!("expected FinalText, got: {other:?}")
+        }
+    }
+
+    assert_eq!(
+        dispatcher
+            .calls
+            .lock()
+            .expect("dispatcher calls lock")
+            .as_slice(),
+        &[("root-session".to_owned(), "sessions_list".to_owned())]
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn default_app_tool_dispatcher_executes_session_wait_for_visible_terminal_child_session() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-session-wait", "dispatcher")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "child-session".to_owned(),
+        kind: crate::session::repository::SessionKind::DelegateChild,
+        parent_session_id: Some("root-session".to_owned()),
+        label: Some("Child".to_owned()),
+        state: crate::session::repository::SessionState::Completed,
+    })
+    .expect("create child session");
+    repo.upsert_terminal_outcome(
+        "child-session",
+        "ok",
+        json!({
+            "child_session_id": "child-session",
+            "final_output": "done"
+        }),
+    )
+    .expect("upsert terminal outcome");
+
+    let dispatcher = DefaultAppToolDispatcher::new(memory_config, config.tools.clone());
+    let session_context = SessionContext::root_with_tool_view(
+        "root-session",
+        crate::tools::runtime_tool_view_for_config(&config.tools),
+    );
+
+    let outcome = dispatcher
+        .execute_app_tool(
+            &session_context,
+            loongclaw_contracts::ToolCoreRequest {
+                tool_name: "session_wait".to_owned(),
+                payload: json!({
+                    "session_id": "child-session",
+                    "timeout_ms": 50
+                }),
+            },
+            None,
+        )
+        .await
+        .expect("session_wait outcome");
+
+    assert_eq!(outcome.status, "ok");
+    assert_eq!(outcome.payload["wait_status"], "completed");
+    assert_eq!(outcome.payload["session"]["session_id"], "child-session");
+    assert_eq!(outcome.payload["terminal_outcome"]["status"], "ok");
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn child_session_hidden_session_wait_is_rejected_by_default_dispatcher() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-session-wait", "hidden-child")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "child-session".to_owned(),
+        kind: crate::session::repository::SessionKind::DelegateChild,
+        parent_session_id: Some("root-session".to_owned()),
+        label: Some("Child".to_owned()),
+        state: crate::session::repository::SessionState::Completed,
+    })
+    .expect("create child session");
+
+    let dispatcher = DefaultAppToolDispatcher::new(memory_config, config.tools.clone());
+    let session_context = SessionContext::child(
+        "child-session",
+        "root-session",
+        crate::tools::planned_delegate_child_tool_view(),
+    );
+
+    let error = dispatcher
+        .execute_app_tool(
+            &session_context,
+            loongclaw_contracts::ToolCoreRequest {
+                tool_name: "session_wait".to_owned(),
+                payload: json!({
+                    "session_id": "child-session",
+                    "timeout_ms": 10
+                }),
+            },
+            None,
+        )
+        .await
+        .expect_err("child should not execute hidden session_wait");
+
+    assert!(
+        error.contains("tool_not_visible: session_wait"),
+        "expected tool_not_visible for session_wait, got: {error}"
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn child_session_hidden_sessions_send_is_rejected_by_default_dispatcher() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-sessions-send", "hidden-child")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.tools.messages.enabled = true;
+    config.memory.sqlite_path = db_path.display().to_string();
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "child-session".to_owned(),
+        kind: crate::session::repository::SessionKind::DelegateChild,
+        parent_session_id: Some("root-session".to_owned()),
+        label: Some("Child".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create child session");
+
+    let dispatcher = DefaultAppToolDispatcher::new(memory_config, config.tools.clone());
+    let session_context = SessionContext::child(
+        "child-session",
+        "root-session",
+        crate::tools::delegate_child_tool_view_for_config(&config.tools),
+    );
+
+    let error = dispatcher
+        .execute_app_tool(
+            &session_context,
+            loongclaw_contracts::ToolCoreRequest {
+                tool_name: "sessions_send".to_owned(),
+                payload: json!({
+                    "session_id": "telegram:123",
+                    "text": "hello"
+                }),
+            },
+            None,
+        )
+        .await
+        .expect_err("child should not execute hidden sessions_send");
+
+    assert!(
+        error.contains("tool_not_visible: sessions_send"),
+        "expected tool_not_visible for sessions_send, got: {error}"
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn sessions_send_rejects_unknown_target_session() {
+    let mut config = test_config();
+    config.tools.messages.enabled = true;
+    config.memory.sqlite_path = unique_acp_sqlite_path("sessions-send-unknown-target");
+
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "controller-root".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Controller".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create controller root");
+
+    let dispatcher = DefaultAppToolDispatcher::with_config(memory_config, config.clone());
+    let session_context = SessionContext::root_with_tool_view(
+        "controller-root",
+        crate::tools::runtime_tool_view_for_config(&config.tools),
+    );
+
+    let error = dispatcher
+        .execute_app_tool(
+            &session_context,
+            loongclaw_contracts::ToolCoreRequest {
+                tool_name: "sessions_send".to_owned(),
+                payload: json!({
+                    "session_id": "telegram:999",
+                    "text": "hello"
+                }),
+            },
+            None,
+        )
+        .await
+        .expect_err("unknown session target must be rejected");
+
+    assert!(
+        error.contains("session_not_found: `telegram:999`"),
+        "expected session_not_found error, got: {error}"
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn sessions_send_rejects_delegate_child_target() {
+    let mut config = test_config();
+    config.tools.messages.enabled = true;
+    config.memory.sqlite_path = unique_acp_sqlite_path("sessions-send-child-target");
+
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "controller-root".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Controller".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create controller root");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "telegram:123".to_owned(),
+        kind: crate::session::repository::SessionKind::DelegateChild,
+        parent_session_id: Some("controller-root".to_owned()),
+        label: Some("Pretend Child".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create child target");
+
+    let dispatcher = DefaultAppToolDispatcher::with_config(memory_config, config.clone());
+    let session_context = SessionContext::root_with_tool_view(
+        "controller-root",
+        crate::tools::runtime_tool_view_for_config(&config.tools),
+    );
+
+    let error = dispatcher
+        .execute_app_tool(
+            &session_context,
+            loongclaw_contracts::ToolCoreRequest {
+                tool_name: "sessions_send".to_owned(),
+                payload: json!({
+                    "session_id": "telegram:123",
+                    "text": "hello"
+                }),
+            },
+            None,
+        )
+        .await
+        .expect_err("delegate child target must be rejected");
+
+    assert!(
+        error.contains("sessions_send_not_supported") && error.contains("not a root session"),
+        "expected root-session rejection, got: {error}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn turn_engine_tool_execution_error_is_marked_retryable() {
     use crate::conversation::turn_engine::{
@@ -6378,8 +7182,11 @@ async fn build_messages_routes_memory_window_through_kernel_when_context_provide
     let (ctx, invocations) = build_kernel_context(audit.clone());
     let runtime = DefaultConversationRuntime::default();
     let config = test_config();
+    let tool_view = runtime
+        .tool_view(&config, "session-k-window", Some(&ctx))
+        .expect("kernel window tool view");
     let messages = runtime
-        .build_messages(&config, "session-k-window", true, Some(&ctx))
+        .build_messages(&config, "session-k-window", true, &tool_view, Some(&ctx))
         .await
         .expect("build messages via kernel");
 
@@ -6612,7 +7419,13 @@ async fn persisted_turn_checkpoint_events_survive_reload_without_polluting_promp
     .expect("persist finalized checkpoint");
 
     let messages = runtime
-        .build_messages(&config, session_id, true, None)
+        .build_messages(
+            &config,
+            session_id,
+            true,
+            &crate::tools::runtime_tool_view_for_config(&config.tools),
+            None,
+        )
         .await
         .expect("reload prompt history");
     assert!(
@@ -8230,6 +9043,1621 @@ async fn load_turn_checkpoint_diagnostics_uses_single_kernel_window_snapshot_for
             .expect("build context lock")
             .as_slice(),
         &[(session_id.to_owned(), true)]
+    );
+}
+
+#[tokio::test]
+async fn handle_turn_with_runtime_passes_restricted_tool_view_into_provider_request() {
+    let child_view = crate::tools::ToolView::from_tool_names(["file.read"]);
+    let runtime = FakeRuntime::new(
+        vec![json!({"role": "system", "content": "sys"})],
+        Ok("assistant-reply".to_owned()),
+    )
+    .with_tool_view(child_view.clone());
+    let coordinator = ConversationTurnCoordinator::new();
+
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &test_config(),
+            "delegate-child-session",
+            "hello",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            None,
+        )
+        .await
+        .expect("handle turn success");
+
+    assert_eq!(reply, "assistant-reply");
+    assert_eq!(
+        runtime
+            .turn_requested_tool_views
+            .lock()
+            .expect("turn request tool views lock")
+            .as_slice(),
+        &[child_view]
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn handle_turn_with_runtime_executes_session_tools_via_default_dispatcher() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-session-tools", "normal-lane")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "child-session".to_owned(),
+        kind: crate::session::repository::SessionKind::DelegateChild,
+        parent_session_id: Some("root-session".to_owned()),
+        label: Some("Child".to_owned()),
+        state: crate::session::repository::SessionState::Completed,
+    })
+    .expect("create child session");
+
+    let runtime = FakeRuntime::with_turn_and_completion(
+        vec![],
+        Ok(ProviderTurn {
+            assistant_text: "Listing sessions.".to_owned(),
+            tool_intents: vec![ToolIntent {
+                tool_name: "sessions_list".to_owned(),
+                args_json: json!({}),
+                source: "provider_tool_call".to_owned(),
+                session_id: "root-session".to_owned(),
+                turn_id: "turn-session-tools".to_owned(),
+                tool_call_id: "call-session-tools".to_owned(),
+            }],
+            raw_meta: Value::Null,
+        }),
+        Ok("unused".to_owned()),
+    );
+    let coordinator = ConversationTurnCoordinator::new();
+
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "root-session",
+            "show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            None,
+        )
+        .await
+        .expect("handle turn success");
+
+    assert!(
+        reply.contains("\"tool\":\"sessions_list\""),
+        "expected raw session tool output, got: {reply}"
+    );
+    assert!(
+        reply.contains("child-session"),
+        "expected listed child session in output, got: {reply}"
+    );
+}
+
+#[cfg(all(feature = "memory-sqlite", feature = "channel-telegram"))]
+#[tokio::test]
+async fn handle_turn_with_runtime_executes_sessions_send_via_default_dispatcher() {
+    let (base_url, request_rx, server) = spawn_telegram_send_server_once();
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-sessions-send", "normal-lane")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    config.tools.messages.enabled = true;
+    config.telegram.enabled = true;
+    config.telegram.bot_token = Some("123456:telegram-test-token".to_owned());
+    config.telegram.bot_token_env = None;
+    config.telegram.base_url = base_url;
+    config.telegram.allowed_chat_ids = vec![123];
+
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "controller-root".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Controller".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create controller root");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "telegram:123".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Telegram Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create telegram root");
+    crate::memory::append_turn_direct("telegram:123", "user", "previous inbound", &memory_config)
+        .expect("append prior transcript turn");
+    let before_turns =
+        crate::memory::window_direct("telegram:123", 10, &memory_config).expect("window turns");
+
+    let runtime = FakeRuntime::with_turn_and_completion(
+        vec![],
+        Ok(ProviderTurn {
+            assistant_text: "Sending to known session.".to_owned(),
+            tool_intents: vec![ToolIntent {
+                tool_name: "sessions_send".to_owned(),
+                args_json: json!({
+                    "session_id": "telegram:123",
+                    "text": "hello root channel"
+                }),
+                source: "provider_tool_call".to_owned(),
+                session_id: "controller-root".to_owned(),
+                turn_id: "turn-sessions-send".to_owned(),
+                tool_call_id: "call-sessions-send".to_owned(),
+            }],
+            raw_meta: Value::Null,
+        }),
+        Ok("unused".to_owned()),
+    );
+    let coordinator = ConversationTurnCoordinator::new();
+
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "controller-root",
+            "show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            None,
+        )
+        .await
+        .expect("handle turn success");
+
+    assert!(
+        reply.contains("\"tool\":\"sessions_send\""),
+        "expected raw sessions_send tool output, got: {reply}"
+    );
+    let line = reply.lines().last().expect("tool result line should exist");
+    let payload = line
+        .strip_prefix("[ok] ")
+        .expect("tool result line should keep [ok] prefix");
+    let envelope: Value =
+        serde_json::from_str(payload).expect("tool result envelope should be json");
+    assert!(
+        envelope["payload_summary"]
+            .as_str()
+            .expect("payload summary should be text")
+            .contains("\"delivery\":\"sent\""),
+        "expected send receipt in output, got: {reply}"
+    );
+
+    let request = request_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("telegram request should be captured");
+    assert!(request.starts_with("POST /bot123456:telegram-test-token/sendMessage "));
+    assert!(request.contains("\"chat_id\":123"));
+    assert!(request.contains("\"text\":\"hello root channel\""));
+
+    let after_turns =
+        crate::memory::window_direct("telegram:123", 10, &memory_config).expect("window turns");
+    assert_eq!(after_turns.len(), before_turns.len());
+    assert_eq!(after_turns[0].role, before_turns[0].role);
+    assert_eq!(after_turns[0].content, before_turns[0].content);
+
+    let events = repo
+        .list_recent_events("telegram:123", 10)
+        .expect("list target events");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_kind, "session_message_sent");
+    assert_eq!(
+        events[0].actor_session_id.as_deref(),
+        Some("controller-root")
+    );
+
+    server.join().expect("telegram stub join");
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn handle_turn_with_runtime_executes_delegate_via_coordinator() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-delegate", "normal-lane")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+
+    let runtime = FakeRuntime::with_turns_and_completions(
+        vec![],
+        vec![
+            Ok(ProviderTurn {
+                assistant_text: "Delegating.".to_owned(),
+                tool_intents: vec![ToolIntent {
+                    tool_name: "delegate".to_owned(),
+                    args_json: json!({
+                        "task": "child task",
+                        "label": "research-subtask"
+                    }),
+                    source: "provider_tool_call".to_owned(),
+                    session_id: "root-session".to_owned(),
+                    turn_id: "turn-delegate-parent".to_owned(),
+                    tool_call_id: "call-delegate-parent".to_owned(),
+                }],
+                raw_meta: Value::Null,
+            }),
+            Ok(ProviderTurn {
+                assistant_text: "Child final output".to_owned(),
+                tool_intents: vec![],
+                raw_meta: Value::Null,
+            }),
+        ],
+        vec![],
+    )
+    .with_durable_memory_config(memory_config.clone());
+    let coordinator = ConversationTurnCoordinator::new();
+
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "root-session",
+            "show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            None,
+        )
+        .await
+        .expect("delegate handle turn success");
+
+    assert!(
+        reply.contains("\"tool\":\"delegate\""),
+        "expected raw delegate tool output, got: {reply}"
+    );
+    let line = reply.lines().last().expect("tool result line should exist");
+    let payload = line
+        .strip_prefix("[ok] ")
+        .expect("tool result line should keep [ok] prefix");
+    let envelope: Value =
+        serde_json::from_str(payload).expect("tool result envelope should be json");
+    let payload_summary = envelope["payload_summary"]
+        .as_str()
+        .expect("payload summary should be text");
+    assert!(
+        payload_summary.contains("\"label\":\"research-subtask\""),
+        "expected child label in payload summary, got: {reply}"
+    );
+    assert!(
+        payload_summary.contains("\"final_output\":\"Child final output\""),
+        "expected child final output in payload summary, got: {reply}"
+    );
+    assert!(
+        payload_summary.contains("\"child_session_id\":\"delegate:"),
+        "expected child session id in payload summary, got: {reply}"
+    );
+
+    let child = repo
+        .list_visible_sessions("root-session")
+        .expect("list visible sessions")
+        .into_iter()
+        .find(|session| session.parent_session_id.as_deref() == Some("root-session"))
+        .expect("child session summary");
+    assert_eq!(
+        child.kind,
+        crate::session::repository::SessionKind::DelegateChild
+    );
+    assert_eq!(
+        child.state,
+        crate::session::repository::SessionState::Completed
+    );
+    assert_eq!(child.label.as_deref(), Some("research-subtask"));
+
+    let events = repo
+        .list_recent_events(&child.session_id, 10)
+        .expect("list child events");
+    let event_kinds: Vec<&str> = events
+        .iter()
+        .map(|event| event.event_kind.as_str())
+        .collect();
+    assert!(event_kinds.contains(&"delegate_started"));
+    assert!(event_kinds.contains(&"delegate_completed"));
+
+    let terminal_outcome = repo
+        .load_terminal_outcome(&child.session_id)
+        .expect("load terminal outcome")
+        .expect("terminal outcome row");
+    assert_eq!(terminal_outcome.status, "ok");
+    assert_eq!(
+        terminal_outcome.payload_json["final_output"],
+        "Child final output"
+    );
+
+    let requested = runtime
+        .turn_requested_tool_views
+        .lock()
+        .expect("turn request tool views lock");
+    assert_eq!(requested.len(), 2);
+    assert!(requested[0].contains("delegate"));
+    assert!(!requested[1].contains("delegate"));
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn handle_turn_with_runtime_delegate_async_queue_failure_rolls_back_child_creation() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-delegate-async", "queue-rollback")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+
+    let conn = Connection::open(&db_path).expect("open sqlite connection");
+    conn.execute(
+        "CREATE TRIGGER fail_delegate_queue_event
+         BEFORE INSERT ON session_events
+         BEGIN
+            SELECT RAISE(FAIL, 'forced delegate queue failure');
+         END;",
+        [],
+    )
+    .expect("create session_events failure trigger");
+
+    let spawner = Arc::new(FakeAsyncDelegateSpawner::default());
+    let runtime = FakeRuntime::with_turns_and_completions(
+        vec![],
+        vec![Ok(ProviderTurn {
+            assistant_text: "Delegating async.".to_owned(),
+            tool_intents: vec![ToolIntent {
+                tool_name: "delegate_async".to_owned(),
+                args_json: json!({
+                    "task": "child async task",
+                    "label": "async-child"
+                }),
+                source: "provider_tool_call".to_owned(),
+                session_id: "root-session".to_owned(),
+                turn_id: "turn-delegate-async-parent".to_owned(),
+                tool_call_id: "call-delegate-async-parent".to_owned(),
+            }],
+            raw_meta: Value::Null,
+        })],
+        vec![],
+    )
+    .with_async_delegate_spawner(spawner.clone())
+    .with_durable_memory_config(memory_config.clone());
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "root-session",
+            "show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            None,
+        )
+        .await
+        .expect("delegate_async queue failure reply");
+
+    assert!(
+        reply.contains("insert session event failed"),
+        "reply should surface delegate_async queue failure, got: {reply}"
+    );
+
+    let sessions = repo
+        .list_sessions()
+        .expect("list sessions after queue failure");
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].session_id, "root-session");
+    assert_eq!(
+        spawner
+            .requests
+            .lock()
+            .expect("async delegate requests lock")
+            .len(),
+        0
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn handle_turn_with_runtime_executes_delegate_async_via_coordinator_without_waiting() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-delegate-async", "queued")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+
+    let (gated_spawner, request_rx, release_notify) = GatedFakeAsyncDelegateSpawner::new();
+    let runtime = FakeRuntime::with_turns_and_completions(
+        vec![],
+        vec![Ok(ProviderTurn {
+            assistant_text: "Delegating async.".to_owned(),
+            tool_intents: vec![ToolIntent {
+                tool_name: "delegate_async".to_owned(),
+                args_json: json!({
+                    "task": "child async task",
+                    "label": "async-child",
+                    "timeout_seconds": 9
+                }),
+                source: "provider_tool_call".to_owned(),
+                session_id: "root-session".to_owned(),
+                turn_id: "turn-delegate-async-parent".to_owned(),
+                tool_call_id: "call-delegate-async-parent".to_owned(),
+            }],
+            raw_meta: Value::Null,
+        })],
+        vec![],
+    )
+    .with_async_delegate_spawner(Arc::new(gated_spawner))
+    .with_durable_memory_config(memory_config.clone());
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let queued_call = tokio::spawn(async move {
+        coordinator
+            .handle_turn_with_runtime(
+                &config,
+                "root-session",
+                "show raw json tool output",
+                ProviderErrorMode::Propagate,
+                &runtime,
+                None,
+            )
+            .await
+    });
+
+    let spawn_request = tokio::time::timeout(std::time::Duration::from_millis(250), request_rx)
+        .await
+        .expect("delegate_async should dispatch spawn quickly")
+        .expect("gated async delegate spawn request");
+    let reply = tokio::time::timeout(std::time::Duration::from_millis(250), queued_call)
+        .await
+        .expect("delegate_async should return queued handle without waiting")
+        .expect("join queued delegate_async task")
+        .expect("delegate_async reply");
+
+    assert!(
+        reply.contains("\"tool\":\"delegate_async\""),
+        "expected raw delegate_async tool output, got: {reply}"
+    );
+    let line = reply.lines().last().expect("tool result line should exist");
+    let payload = line
+        .strip_prefix("[ok] ")
+        .expect("tool result line should keep [ok] prefix");
+    let envelope: Value =
+        serde_json::from_str(payload).expect("tool result envelope should be json");
+    let payload_summary = envelope["payload_summary"]
+        .as_str()
+        .expect("payload summary should be text");
+    assert!(
+        payload_summary.contains("\"mode\":\"async\""),
+        "expected async mode in payload summary, got: {reply}"
+    );
+    assert!(
+        payload_summary.contains("\"state\":\"queued\""),
+        "expected queued state in payload summary, got: {reply}"
+    );
+    assert!(
+        payload_summary.contains("\"label\":\"async-child\""),
+        "expected child label in payload summary, got: {reply}"
+    );
+
+    let child = repo
+        .list_visible_sessions("root-session")
+        .expect("list visible sessions")
+        .into_iter()
+        .find(|session| session.parent_session_id.as_deref() == Some("root-session"))
+        .expect("queued child session summary");
+    assert_eq!(spawn_request.child_session_id, child.session_id);
+    assert_eq!(spawn_request.parent_session_id, "root-session");
+    assert_eq!(spawn_request.task, "child async task");
+    assert_eq!(spawn_request.label.as_deref(), Some("async-child"));
+    assert_eq!(spawn_request.timeout_seconds, 9);
+    assert_eq!(child.state, crate::session::repository::SessionState::Ready);
+    assert_eq!(child.label.as_deref(), Some("async-child"));
+
+    let events = repo
+        .list_recent_events(&child.session_id, 10)
+        .expect("list child events");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_kind, "delegate_queued");
+    assert!(
+        repo.load_terminal_outcome(&child.session_id)
+            .expect("load terminal outcome")
+            .is_none()
+    );
+
+    let requested = repo
+        .load_session_summary(&child.session_id)
+        .expect("load child summary")
+        .expect("child summary");
+    assert_eq!(
+        requested.state,
+        crate::session::repository::SessionState::Ready
+    );
+
+    release_notify.notify_waiters();
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn handle_turn_with_runtime_delegate_async_spawn_failure_is_observable_after_queueing() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-delegate-async", "spawn-failed")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+
+    let runtime = FakeRuntime::with_turns_and_completions(
+        vec![],
+        vec![Ok(ProviderTurn {
+            assistant_text: "Delegating async.".to_owned(),
+            tool_intents: vec![ToolIntent {
+                tool_name: "delegate_async".to_owned(),
+                args_json: json!({
+                    "task": "child async task",
+                    "label": "async-child"
+                }),
+                source: "provider_tool_call".to_owned(),
+                session_id: "root-session".to_owned(),
+                turn_id: "turn-delegate-async-parent".to_owned(),
+                tool_call_id: "call-delegate-async-parent".to_owned(),
+            }],
+            raw_meta: Value::Null,
+        })],
+        vec![],
+    )
+    .with_async_delegate_spawner(Arc::new(FakeAsyncDelegateSpawner {
+        requests: Arc::new(Mutex::new(Vec::new())),
+        spawn_error: Some("spawn unavailable".to_owned()),
+    }))
+    .with_durable_memory_config(memory_config.clone());
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "root-session",
+            "show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            None,
+        )
+        .await
+        .expect("delegate_async reply");
+
+    assert!(
+        reply.contains("\"tool\":\"delegate_async\""),
+        "expected raw delegate_async tool output, got: {reply}"
+    );
+
+    let child = tokio::time::timeout(std::time::Duration::from_millis(500), async {
+        loop {
+            let maybe_child = repo
+                .list_visible_sessions("root-session")
+                .expect("list visible sessions")
+                .into_iter()
+                .find(|session| session.parent_session_id.as_deref() == Some("root-session"));
+            if let Some(child) = maybe_child
+                && child.state == crate::session::repository::SessionState::Failed
+            {
+                break child;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("queued delegate child should fail after spawn failure");
+
+    let waited = crate::tools::wait_for_session_with_config(
+        json!({
+            "session_id": child.session_id,
+            "timeout_ms": 500
+        }),
+        "root-session",
+        &memory_config,
+        &config.tools,
+    )
+    .await
+    .expect("session_wait outcome");
+
+    assert_eq!(waited.status, "ok");
+    assert_eq!(waited.payload["wait_status"], "completed");
+    assert_eq!(waited.payload["session"]["state"], "failed");
+    assert_eq!(waited.payload["terminal_outcome"]["status"], "error");
+    assert_eq!(
+        waited.payload["terminal_outcome"]["payload"]["error"],
+        "spawn unavailable"
+    );
+
+    let events = repo
+        .list_recent_events(&child.session_id, 10)
+        .expect("list child events");
+    let event_kinds: Vec<&str> = events
+        .iter()
+        .map(|event| event.event_kind.as_str())
+        .collect();
+    assert!(event_kinds.contains(&"delegate_queued"));
+    assert!(event_kinds.contains(&"delegate_spawn_failed"));
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn handle_turn_with_runtime_delegate_async_spawn_panic_is_observable_after_queueing() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-delegate-async", "spawn-panic")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+
+    let runtime = FakeRuntime::with_turns_and_completions(
+        vec![],
+        vec![Ok(ProviderTurn {
+            assistant_text: "Delegating async.".to_owned(),
+            tool_intents: vec![ToolIntent {
+                tool_name: "delegate_async".to_owned(),
+                args_json: json!({
+                    "task": "child async task",
+                    "label": "async-child"
+                }),
+                source: "provider_tool_call".to_owned(),
+                session_id: "root-session".to_owned(),
+                turn_id: "turn-delegate-async-parent".to_owned(),
+                tool_call_id: "call-delegate-async-parent".to_owned(),
+            }],
+            raw_meta: Value::Null,
+        })],
+        vec![],
+    )
+    .with_async_delegate_spawner(Arc::new(PanicAsyncDelegateSpawner))
+    .with_durable_memory_config(memory_config.clone());
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "root-session",
+            "show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            None,
+        )
+        .await
+        .expect("delegate_async reply");
+
+    assert!(
+        reply.contains("\"tool\":\"delegate_async\""),
+        "expected raw delegate_async tool output, got: {reply}"
+    );
+
+    let child = tokio::time::timeout(std::time::Duration::from_millis(500), async {
+        loop {
+            let maybe_child = repo
+                .list_visible_sessions("root-session")
+                .expect("list visible sessions")
+                .into_iter()
+                .find(|session| session.parent_session_id.as_deref() == Some("root-session"));
+            if let Some(child) = maybe_child
+                && child.state == crate::session::repository::SessionState::Failed
+            {
+                break child;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("queued delegate child should fail after spawn panic");
+
+    let waited = crate::tools::wait_for_session_with_config(
+        json!({
+            "session_id": child.session_id,
+            "timeout_ms": 500
+        }),
+        "root-session",
+        &memory_config,
+        &config.tools,
+    )
+    .await
+    .expect("session_wait outcome");
+
+    assert_eq!(waited.status, "ok");
+    assert_eq!(waited.payload["wait_status"], "completed");
+    assert_eq!(waited.payload["session"]["state"], "failed");
+    assert_eq!(waited.payload["terminal_outcome"]["status"], "error");
+    assert_eq!(
+        waited.payload["terminal_outcome"]["payload"]["error"],
+        "delegate_async_spawn_panic: panic-async-spawn"
+    );
+
+    let events = repo
+        .list_recent_events(&child.session_id, 10)
+        .expect("list child events");
+    let event_kinds: Vec<&str> = events
+        .iter()
+        .map(|event| event.event_kind.as_str())
+        .collect();
+    assert!(event_kinds.contains(&"delegate_queued"));
+    assert!(event_kinds.contains(&"delegate_spawn_failed"));
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn handle_turn_with_runtime_delegate_async_spawn_failure_persistence_recovers() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-delegate-async", "spawn-persist-recovery")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+
+    let conn = Connection::open(&db_path).expect("open sqlite connection");
+    conn.execute(
+        "CREATE TRIGGER fail_async_spawn_terminal_outcome
+         BEFORE INSERT ON session_terminal_outcomes
+         BEGIN
+            SELECT RAISE(FAIL, 'forced async spawn terminal outcome failure');
+         END;",
+        [],
+    )
+    .expect("create terminal outcome failure trigger");
+
+    let runtime = FakeRuntime::with_turns_and_completions(
+        vec![],
+        vec![Ok(ProviderTurn {
+            assistant_text: "Delegating async.".to_owned(),
+            tool_intents: vec![ToolIntent {
+                tool_name: "delegate_async".to_owned(),
+                args_json: json!({
+                    "task": "child async task",
+                    "label": "async-child"
+                }),
+                source: "provider_tool_call".to_owned(),
+                session_id: "root-session".to_owned(),
+                turn_id: "turn-delegate-async-parent".to_owned(),
+                tool_call_id: "call-delegate-async-parent".to_owned(),
+            }],
+            raw_meta: Value::Null,
+        })],
+        vec![],
+    )
+    .with_async_delegate_spawner(Arc::new(FakeAsyncDelegateSpawner {
+        requests: Arc::new(Mutex::new(Vec::new())),
+        spawn_error: Some("spawn unavailable".to_owned()),
+    }))
+    .with_durable_memory_config(memory_config.clone());
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "root-session",
+            "show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            None,
+        )
+        .await
+        .expect("delegate_async reply");
+
+    assert!(
+        reply.contains("\"tool\":\"delegate_async\""),
+        "expected raw delegate_async tool output, got: {reply}"
+    );
+
+    let child = tokio::time::timeout(std::time::Duration::from_millis(500), async {
+        loop {
+            let maybe_child = repo
+                .list_visible_sessions("root-session")
+                .expect("list visible sessions")
+                .into_iter()
+                .find(|session| session.parent_session_id.as_deref() == Some("root-session"));
+            if let Some(child) = maybe_child
+                && child.state == crate::session::repository::SessionState::Failed
+            {
+                break child;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("queued delegate child should recover to failed state");
+
+    assert!(
+        child
+            .last_error
+            .as_deref()
+            .expect("child last_error")
+            .contains("delegate_async_spawn_failure_persist_failed")
+    );
+
+    let events = repo
+        .list_recent_events(&child.session_id, 10)
+        .expect("list child events");
+    let event_kinds: Vec<&str> = events
+        .iter()
+        .map(|event| event.event_kind.as_str())
+        .collect();
+    assert!(event_kinds.contains(&"delegate_queued"));
+    assert!(!event_kinds.contains(&"delegate_spawn_failed"));
+
+    let recovery_event = events
+        .iter()
+        .find(|event| event.event_kind == "delegate_recovery_applied")
+        .expect("delegate recovery event");
+    assert_eq!(
+        recovery_event.payload_json["recovery_kind"],
+        "async_spawn_failure_persist_failed"
+    );
+    assert_eq!(recovery_event.payload_json["recovered_state"], "failed");
+    assert_eq!(
+        recovery_event.payload_json["original_error"],
+        "spawn unavailable"
+    );
+
+    assert!(
+        repo.load_terminal_outcome(&child.session_id)
+            .expect("load terminal outcome")
+            .is_none()
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn handle_turn_with_runtime_delegate_child_cannot_reenter_delegate_by_default() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-delegate", "nested-denied")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+
+    let runtime = FakeRuntime::with_turns_and_completions(
+        vec![],
+        vec![
+            Ok(ProviderTurn {
+                assistant_text: "Delegating.".to_owned(),
+                tool_intents: vec![ToolIntent {
+                    tool_name: "delegate".to_owned(),
+                    args_json: json!({
+                        "task": "show raw json tool output",
+                        "label": "nested-child"
+                    }),
+                    source: "provider_tool_call".to_owned(),
+                    session_id: "root-session".to_owned(),
+                    turn_id: "turn-delegate-parent".to_owned(),
+                    tool_call_id: "call-delegate-parent".to_owned(),
+                }],
+                raw_meta: Value::Null,
+            }),
+            Ok(ProviderTurn {
+                assistant_text: "Trying nested delegate.".to_owned(),
+                tool_intents: vec![ToolIntent {
+                    tool_name: "delegate".to_owned(),
+                    args_json: json!({
+                        "task": "nested"
+                    }),
+                    source: "provider_tool_call".to_owned(),
+                    session_id: "delegate:child".to_owned(),
+                    turn_id: "turn-delegate-child".to_owned(),
+                    tool_call_id: "call-delegate-child".to_owned(),
+                }],
+                raw_meta: Value::Null,
+            }),
+        ],
+        vec![],
+    )
+    .with_durable_memory_config(memory_config.clone());
+    let coordinator = ConversationTurnCoordinator::new();
+
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "root-session",
+            "show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            None,
+        )
+        .await
+        .expect("nested delegate denial reply");
+
+    assert!(
+        reply.contains("tool_not_visible: delegate"),
+        "reply should surface nested delegate denial, got: {reply}"
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn handle_turn_with_runtime_delegate_child_cannot_reenter_delegate_async_by_default() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-delegate-async", "nested-denied")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+
+    let runtime_ref = Arc::new(OnceLock::new());
+    let spawner = Arc::new(LocalChildRuntimeAsyncDelegateSpawner {
+        config: config.clone(),
+        runtime: runtime_ref.clone(),
+    });
+    let runtime = Arc::new(
+        FakeRuntime::with_turns_and_completions(
+            vec![],
+            vec![
+                Ok(ProviderTurn {
+                    assistant_text: "Delegating async.".to_owned(),
+                    tool_intents: vec![ToolIntent {
+                        tool_name: "delegate_async".to_owned(),
+                        args_json: json!({
+                            "task": "show raw json tool output",
+                            "label": "nested-child"
+                        }),
+                        source: "provider_tool_call".to_owned(),
+                        session_id: "root-session".to_owned(),
+                        turn_id: "turn-delegate-async-parent".to_owned(),
+                        tool_call_id: "call-delegate-async-parent".to_owned(),
+                    }],
+                    raw_meta: Value::Null,
+                }),
+                Ok(ProviderTurn {
+                    assistant_text: "Trying nested async delegate.".to_owned(),
+                    tool_intents: vec![ToolIntent {
+                        tool_name: "delegate_async".to_owned(),
+                        args_json: json!({
+                            "task": "nested"
+                        }),
+                        source: "provider_tool_call".to_owned(),
+                        session_id: "delegate:child".to_owned(),
+                        turn_id: "turn-delegate-async-child".to_owned(),
+                        tool_call_id: "call-delegate-async-child".to_owned(),
+                    }],
+                    raw_meta: Value::Null,
+                }),
+            ],
+            vec![],
+        )
+        .with_async_delegate_spawner(spawner)
+        .with_durable_memory_config(memory_config.clone()),
+    );
+    assert!(
+        runtime_ref.set(runtime.clone()).is_ok(),
+        "install local async delegate runtime"
+    );
+    let coordinator = ConversationTurnCoordinator::new();
+
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "root-session",
+            "show raw json tool output",
+            ProviderErrorMode::Propagate,
+            runtime.as_ref(),
+            None,
+        )
+        .await
+        .expect("nested delegate_async denial reply");
+
+    assert!(
+        reply.contains("\"tool\":\"delegate_async\""),
+        "reply should surface queued delegate_async handle, got: {reply}"
+    );
+
+    let child = tokio::time::timeout(std::time::Duration::from_millis(500), async {
+        loop {
+            let maybe_child = repo
+                .list_visible_sessions("root-session")
+                .expect("list visible sessions")
+                .into_iter()
+                .find(|session| session.parent_session_id.as_deref() == Some("root-session"));
+            if let Some(child) = maybe_child
+                && child.state == crate::session::repository::SessionState::Completed
+            {
+                break child;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("async delegate child should complete after nested denial");
+
+    let waited = crate::tools::wait_for_session_with_config(
+        json!({
+            "session_id": child.session_id,
+            "timeout_ms": 500
+        }),
+        "root-session",
+        &memory_config,
+        &config.tools,
+    )
+    .await
+    .expect("session_wait outcome");
+
+    assert_eq!(waited.status, "ok");
+    assert_eq!(waited.payload["wait_status"], "completed");
+    assert_eq!(waited.payload["session"]["state"], "completed");
+    assert_eq!(waited.payload["terminal_outcome"]["status"], "ok");
+    assert!(
+        waited.payload["terminal_outcome"]["payload"]["final_output"]
+            .as_str()
+            .expect("delegate child final output")
+            .contains("tool_not_visible: delegate_async"),
+        "child terminal output should surface nested delegate_async denial, got: {waited:?}"
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn handle_turn_with_runtime_delegate_child_can_reenter_when_max_depth_allows() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-delegate", "nested-allowed")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    config.tools.delegate.max_depth = 2;
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+
+    let runtime = FakeRuntime::with_turns_and_completions(
+        vec![],
+        vec![
+            Ok(ProviderTurn {
+                assistant_text: "Delegating from root.".to_owned(),
+                tool_intents: vec![ToolIntent {
+                    tool_name: "delegate".to_owned(),
+                    args_json: json!({
+                        "task": "show raw json tool output",
+                        "label": "child"
+                    }),
+                    source: "provider_tool_call".to_owned(),
+                    session_id: "root-session".to_owned(),
+                    turn_id: "turn-root".to_owned(),
+                    tool_call_id: "call-root".to_owned(),
+                }],
+                raw_meta: Value::Null,
+            }),
+            Ok(ProviderTurn {
+                assistant_text: "Delegating from child.".to_owned(),
+                tool_intents: vec![ToolIntent {
+                    tool_name: "delegate".to_owned(),
+                    args_json: json!({
+                        "task": "final grandchild task",
+                        "label": "grandchild"
+                    }),
+                    source: "provider_tool_call".to_owned(),
+                    session_id: "delegate:child-runtime".to_owned(),
+                    turn_id: "turn-child".to_owned(),
+                    tool_call_id: "call-child".to_owned(),
+                }],
+                raw_meta: Value::Null,
+            }),
+            Ok(ProviderTurn {
+                assistant_text: "Grandchild final output".to_owned(),
+                tool_intents: vec![],
+                raw_meta: Value::Null,
+            }),
+        ],
+        vec![],
+    )
+    .with_durable_memory_config(memory_config.clone());
+    let coordinator = ConversationTurnCoordinator::new();
+
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "root-session",
+            "show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            None,
+        )
+        .await
+        .expect("nested delegate success");
+
+    assert!(
+        reply.contains("Grandchild final output"),
+        "reply should include nested delegate final output, got: {reply}"
+    );
+
+    let requested = runtime
+        .turn_requested_tool_views
+        .lock()
+        .expect("turn request tool views lock");
+    assert_eq!(requested.len(), 3);
+    assert!(requested[1].contains("delegate"));
+    assert!(!requested[2].contains("delegate"));
+
+    let visible = repo
+        .list_visible_sessions("root-session")
+        .expect("visible sessions");
+    assert!(
+        visible
+            .iter()
+            .any(|session| session.parent_session_id.as_deref() == Some("root-session")),
+        "expected direct child session in visible set: {visible:?}"
+    );
+    assert!(
+        visible
+            .iter()
+            .any(|session| session.parent_session_id.is_some()
+                && session.parent_session_id.as_deref() != Some("root-session")),
+        "expected descendant grandchild session in visible set: {visible:?}"
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn handle_turn_with_runtime_executes_session_wait_via_default_dispatcher() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-session-wait", "normal-lane")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "child-session".to_owned(),
+        kind: crate::session::repository::SessionKind::DelegateChild,
+        parent_session_id: Some("root-session".to_owned()),
+        label: Some("Child".to_owned()),
+        state: crate::session::repository::SessionState::Completed,
+    })
+    .expect("create child session");
+    repo.upsert_terminal_outcome(
+        "child-session",
+        "ok",
+        json!({
+            "child_session_id": "child-session",
+            "final_output": "done"
+        }),
+    )
+    .expect("upsert terminal outcome");
+
+    let runtime = FakeRuntime::with_turn_and_completion(
+        vec![],
+        Ok(ProviderTurn {
+            assistant_text: "Waiting for session completion.".to_owned(),
+            tool_intents: vec![ToolIntent {
+                tool_name: "session_wait".to_owned(),
+                args_json: json!({
+                    "session_id": "child-session",
+                    "timeout_ms": 50
+                }),
+                source: "provider_tool_call".to_owned(),
+                session_id: "root-session".to_owned(),
+                turn_id: "turn-session-wait".to_owned(),
+                tool_call_id: "call-session-wait".to_owned(),
+            }],
+            raw_meta: Value::Null,
+        }),
+        Ok("unused".to_owned()),
+    );
+    let coordinator = ConversationTurnCoordinator::new();
+
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "root-session",
+            "show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            None,
+        )
+        .await
+        .expect("handle turn success");
+
+    assert!(
+        reply.contains("\"tool\":\"session_wait\""),
+        "expected raw session_wait tool output, got: {reply}"
+    );
+    assert!(
+        reply.contains("child-session"),
+        "expected waited child session in output, got: {reply}"
+    );
+    assert!(
+        !reply.contains("tool_not_visible"),
+        "expected dispatcher to execute session_wait, got: {reply}"
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn handle_turn_with_runtime_safe_lane_executes_session_tools_via_default_dispatcher() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-session-tools", "safe-lane")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    config.conversation.safe_lane_plan_execution_enabled = true;
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "child-session".to_owned(),
+        kind: crate::session::repository::SessionKind::DelegateChild,
+        parent_session_id: Some("root-session".to_owned()),
+        label: Some("Child".to_owned()),
+        state: crate::session::repository::SessionState::Completed,
+    })
+    .expect("create child session");
+
+    let runtime = FakeRuntime::with_turn_and_completion(
+        vec![],
+        Ok(ProviderTurn {
+            assistant_text: "Listing sessions safely.".to_owned(),
+            tool_intents: vec![ToolIntent {
+                tool_name: "sessions_list".to_owned(),
+                args_json: json!({}),
+                source: "provider_tool_call".to_owned(),
+                session_id: "root-session".to_owned(),
+                turn_id: "turn-safe-session-tools".to_owned(),
+                tool_call_id: "call-safe-session-tools".to_owned(),
+            }],
+            raw_meta: Value::Null,
+        }),
+        Ok("unused".to_owned()),
+    );
+    let coordinator = ConversationTurnCoordinator::new();
+
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "root-session",
+            "deploy safely and show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            None,
+        )
+        .await
+        .expect("safe-lane handle turn success");
+
+    assert!(
+        reply.contains("\"tool\":\"sessions_list\""),
+        "expected raw session tool output, got: {reply}"
+    );
+    assert!(
+        reply.contains("child-session"),
+        "expected listed child session in output, got: {reply}"
+    );
+}
+
+#[cfg(all(feature = "memory-sqlite", feature = "channel-telegram"))]
+#[tokio::test]
+async fn handle_turn_with_runtime_safe_lane_executes_sessions_send_via_default_dispatcher() {
+    let (base_url, request_rx, server) = spawn_telegram_send_server_once();
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-sessions-send", "safe-lane")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    config.conversation.safe_lane_plan_execution_enabled = true;
+    config.tools.messages.enabled = true;
+    config.telegram.enabled = true;
+    config.telegram.bot_token = Some("123456:telegram-test-token".to_owned());
+    config.telegram.bot_token_env = None;
+    config.telegram.base_url = base_url;
+    config.telegram.allowed_chat_ids = vec![123];
+
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "controller-root".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Controller".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create controller root");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "telegram:123".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Telegram Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create telegram root");
+
+    let runtime = FakeRuntime::with_turn_and_completion(
+        vec![],
+        Ok(ProviderTurn {
+            assistant_text: "Sending to known session safely.".to_owned(),
+            tool_intents: vec![ToolIntent {
+                tool_name: "sessions_send".to_owned(),
+                args_json: json!({
+                    "session_id": "telegram:123",
+                    "text": "hello safe lane"
+                }),
+                source: "provider_tool_call".to_owned(),
+                session_id: "controller-root".to_owned(),
+                turn_id: "turn-safe-sessions-send".to_owned(),
+                tool_call_id: "call-safe-sessions-send".to_owned(),
+            }],
+            raw_meta: Value::Null,
+        }),
+        Ok("unused".to_owned()),
+    );
+    let coordinator = ConversationTurnCoordinator::new();
+
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "controller-root",
+            "deploy safely and show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            None,
+        )
+        .await
+        .expect("safe-lane handle turn success");
+
+    assert!(
+        reply.contains("\"tool\":\"sessions_send\""),
+        "expected raw sessions_send tool output, got: {reply}"
+    );
+    let line = reply.lines().last().expect("tool result line should exist");
+    let payload = line
+        .strip_prefix("[ok] ")
+        .expect("tool result line should keep [ok] prefix");
+    let envelope: Value =
+        serde_json::from_str(payload).expect("tool result envelope should be json");
+    assert!(
+        envelope["payload_summary"]
+            .as_str()
+            .expect("payload summary should be text")
+            .contains("\"delivery\":\"sent\""),
+        "expected send receipt in output, got: {reply}"
+    );
+
+    let request = request_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("telegram request should be captured");
+    assert!(request.contains("\"text\":\"hello safe lane\""));
+
+    server.join().expect("telegram stub join");
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn handle_turn_with_runtime_safe_lane_executes_session_wait_via_default_dispatcher() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-session-wait", "safe-lane")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    config.conversation.safe_lane_plan_execution_enabled = true;
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "child-session".to_owned(),
+        kind: crate::session::repository::SessionKind::DelegateChild,
+        parent_session_id: Some("root-session".to_owned()),
+        label: Some("Child".to_owned()),
+        state: crate::session::repository::SessionState::Completed,
+    })
+    .expect("create child session");
+    repo.upsert_terminal_outcome(
+        "child-session",
+        "ok",
+        json!({
+            "child_session_id": "child-session",
+            "final_output": "done"
+        }),
+    )
+    .expect("upsert terminal outcome");
+
+    let runtime = FakeRuntime::with_turn_and_completion(
+        vec![],
+        Ok(ProviderTurn {
+            assistant_text: "Waiting for session completion safely.".to_owned(),
+            tool_intents: vec![ToolIntent {
+                tool_name: "session_wait".to_owned(),
+                args_json: json!({
+                    "session_id": "child-session",
+                    "timeout_ms": 50
+                }),
+                source: "provider_tool_call".to_owned(),
+                session_id: "root-session".to_owned(),
+                turn_id: "turn-safe-session-wait".to_owned(),
+                tool_call_id: "call-safe-session-wait".to_owned(),
+            }],
+            raw_meta: Value::Null,
+        }),
+        Ok("unused".to_owned()),
+    );
+    let coordinator = ConversationTurnCoordinator::new();
+
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "root-session",
+            "deploy safely and show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            None,
+        )
+        .await
+        .expect("safe-lane handle turn success");
+
+    assert!(
+        reply.contains("\"tool\":\"session_wait\""),
+        "expected raw session_wait tool output, got: {reply}"
+    );
+    assert!(
+        reply.contains("child-session"),
+        "expected waited child session in output, got: {reply}"
+    );
+    assert!(
+        !reply.contains("tool_not_visible"),
+        "expected safe lane dispatcher to execute session_wait, got: {reply}"
     );
 }
 

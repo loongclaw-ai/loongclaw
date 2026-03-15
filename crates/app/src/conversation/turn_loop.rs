@@ -5,13 +5,16 @@ use serde_json::{Value, json};
 
 use crate::CliResult;
 use crate::KernelContext;
+use crate::memory::runtime_config::MemoryRuntimeConfig;
 
 use super::super::config::LoongClawConfig;
 use super::ProviderErrorMode;
 use super::persistence::persist_reply_turns_with_mode;
 use super::runtime::{ConversationRuntime, DefaultConversationRuntime};
 use super::turn_budget::{TurnRoundBudget, TurnRoundBudgetDecision};
-use super::turn_engine::{ProviderTurn, ToolIntent, TurnEngine, TurnResult};
+use super::turn_engine::{
+    DefaultAppToolDispatcher, ProviderTurn, ToolIntent, TurnEngine, TurnResult,
+};
 use super::turn_shared::{
     ProviderTurnRequestAction, ReplyPersistenceMode, ToolDrivenFollowupPayload,
     ToolDrivenReplyBaseDecision, ToolDrivenReplyPhase, build_tool_driven_followup_tail,
@@ -106,9 +109,15 @@ impl ConversationTurnLoop {
         kernel_ctx: Option<&KernelContext>,
     ) -> CliResult<String> {
         let policy = TurnLoopPolicy::from_config(config);
+        let session_context = runtime.session_context(config, session_id, kernel_ctx)?;
+        let tool_view = session_context.tool_view.clone();
+        let app_dispatcher = DefaultAppToolDispatcher::with_config(
+            MemoryRuntimeConfig::from_memory_config(&config.memory),
+            config.clone(),
+        );
         let mut session = initialize_turn_loop_session(
             runtime
-                .build_messages(config, session_id, true, kernel_ctx)
+                .build_messages(config, session_id, true, &tool_view, kernel_ctx)
                 .await?,
             user_input,
             &policy,
@@ -117,7 +126,7 @@ impl ConversationTurnLoop {
         for round_index in 0..policy.max_rounds {
             let turn = match decide_provider_turn_request_action(
                 runtime
-                    .request_turn(config, &session.messages, kernel_ctx)
+                    .request_turn(config, &session.messages, &tool_view, kernel_ctx)
                     .await,
                 error_mode,
             ) {
@@ -151,6 +160,8 @@ impl ConversationTurnLoop {
                 config,
                 &policy,
                 &turn,
+                &session_context,
+                &app_dispatcher,
                 kernel_ctx,
                 &mut session.loop_supervisor,
             )
@@ -296,6 +307,8 @@ async fn evaluate_round_kernel(
     config: &LoongClawConfig,
     policy: &TurnLoopPolicy,
     turn: &ProviderTurn,
+    session_context: &super::runtime::SessionContext,
+    app_dispatcher: &DefaultAppToolDispatcher,
     kernel_ctx: Option<&KernelContext>,
     loop_supervisor: &mut ToolLoopSupervisor,
 ) -> RoundKernelEvaluation {
@@ -310,7 +323,7 @@ async fn evaluate_round_kernel(
             .conversation
             .tool_result_payload_summary_limit_chars(),
     )
-    .execute_turn(turn, kernel_ctx)
+    .execute_turn_in_context(turn, session_context, app_dispatcher, kernel_ctx)
     .await;
     let loop_verdict = if let (Some(signature), Some(name_signature)) = (
         current_tool_signature.as_deref(),

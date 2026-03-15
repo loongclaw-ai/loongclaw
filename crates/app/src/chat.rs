@@ -62,7 +62,7 @@ pub async fn run_cli_chat(
         return Err("CLI channel is disabled by config.cli.enabled=false".to_owned());
     }
 
-    export_runtime_env(&config);
+    crate::runtime_env::initialize_runtime_environment(&config, Some(&resolved_path));
     let kernel_ctx = bootstrap_kernel_context("cli-chat", DEFAULT_TOKEN_TTL_S)?;
 
     #[cfg(feature = "memory-sqlite")]
@@ -1103,51 +1103,6 @@ fn format_milli_ratio(value: Option<u32>) -> String {
     value
         .map(|raw| format!("{:.3}", (raw as f64) / 1000.0))
         .unwrap_or_else(|| "-".to_owned())
-}
-
-fn export_runtime_env(config: &LoongClawConfig) {
-    // Populate the typed tool runtime config so executors never hit env vars
-    // on the hot path.  Ignore the error if already initialised (e.g. tests).
-    let tool_rt = crate::tools::runtime_config::ToolRuntimeConfig {
-        file_root: Some(config.tools.resolved_file_root()),
-        shell_allow: config
-            .tools
-            .shell_allow
-            .iter()
-            .map(|s| s.to_ascii_lowercase())
-            .collect(),
-        shell_deny: config
-            .tools
-            .shell_deny
-            .iter()
-            .map(|s| s.to_ascii_lowercase())
-            .collect(),
-        shell_default_mode: crate::tools::shell_policy_ext::ShellPolicyDefault::parse(
-            &config.tools.shell_default_mode,
-        ),
-        external_skills: crate::tools::runtime_config::ExternalSkillsRuntimePolicy {
-            enabled: config.external_skills.enabled,
-            require_download_approval: config.external_skills.require_download_approval,
-            allowed_domains: config
-                .external_skills
-                .normalized_allowed_domains()
-                .into_iter()
-                .collect(),
-            blocked_domains: config
-                .external_skills
-                .normalized_blocked_domains()
-                .into_iter()
-                .collect(),
-            install_root: config.external_skills.resolved_install_root(),
-            auto_expose_installed: config.external_skills.auto_expose_installed,
-        },
-    };
-    let _ = crate::tools::runtime_config::init_tool_runtime_config(tool_rt);
-
-    // Populate the typed memory runtime config (same pattern as tool config).
-    let memory_rt =
-        crate::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
-    let _ = crate::memory::runtime_config::init_memory_runtime_config(memory_rt);
 }
 
 #[cfg(test)]

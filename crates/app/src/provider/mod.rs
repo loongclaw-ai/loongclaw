@@ -160,6 +160,20 @@ pub fn build_messages_for_session(
     request_message_runtime::build_messages_for_session(config, session_id, include_system_prompt)
 }
 
+pub fn build_messages_for_session_in_view(
+    config: &LoongClawConfig,
+    session_id: &str,
+    include_system_prompt: bool,
+    tool_view: &crate::tools::ToolView,
+) -> CliResult<Vec<Value>> {
+    request_message_runtime::build_messages_for_session_in_view(
+        config,
+        session_id,
+        include_system_prompt,
+        tool_view,
+    )
+}
+
 pub async fn request_completion(
     config: &LoongClawConfig,
     messages: &[Value],
@@ -199,7 +213,23 @@ pub async fn request_turn(
     messages: &[Value],
     kernel_ctx: Option<&KernelContext>,
 ) -> CliResult<crate::conversation::turn_engine::ProviderTurn> {
+    request_turn_in_view(
+        config,
+        messages,
+        &crate::tools::runtime_tool_view(),
+        kernel_ctx,
+    )
+    .await
+}
+
+pub async fn request_turn_in_view(
+    config: &LoongClawConfig,
+    messages: &[Value],
+    tool_view: &crate::tools::ToolView,
+    kernel_ctx: Option<&KernelContext>,
+) -> CliResult<crate::conversation::turn_engine::ProviderTurn> {
     let session = prepare_provider_request_session(config).await?;
+    let tool_definitions = crate::tools::try_provider_tool_definitions_for_view(tool_view)?;
     request_across_model_candidates(
         &config.provider,
         kernel_ctx,
@@ -216,6 +246,7 @@ pub async fn request_turn(
                 session.runtime_contract,
                 &session.capability_profile,
                 auto_model_mode,
+                tool_definitions.as_slice(),
                 auth_profile,
                 &session.endpoint,
                 &session.headers,

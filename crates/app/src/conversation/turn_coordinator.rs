@@ -1,11 +1,21 @@
+#[cfg(feature = "memory-sqlite")]
+use std::any::Any;
 use std::collections::BTreeSet;
+#[cfg(feature = "memory-sqlite")]
+use std::panic::AssertUnwindSafe;
 
 use async_trait::async_trait;
-use loongclaw_contracts::{AuditEventKind, Capability, ExecutionPlane, PlaneTier, ToolCoreRequest};
+#[cfg(feature = "memory-sqlite")]
+use futures_util::FutureExt;
+use loongclaw_contracts::{AuditEventKind, ExecutionPlane, PlaneTier};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+#[cfg(feature = "memory-sqlite")]
+use tokio::runtime::Handle;
 use tokio::sync::Mutex;
+#[cfg(feature = "memory-sqlite")]
+use tokio::time::{Duration, Instant, timeout};
 
 use crate::CliResult;
 use crate::KernelContext;
@@ -14,7 +24,6 @@ use crate::acp::{
     AcpConversationTurnOptions, AcpTurnEventSink, evaluate_acp_conversation_turn_entry_for_address,
     execute_acp_conversation_turn_for_address,
 };
-#[cfg(feature = "memory-sqlite")]
 use crate::memory::runtime_config::MemoryRuntimeConfig;
 
 use super::super::config::LoongClawConfig;
@@ -42,7 +51,10 @@ use super::plan_verifier::{
     PlanVerificationContext, PlanVerificationFailureCode, PlanVerificationPolicy,
     PlanVerificationReport, verify_output,
 };
-use super::runtime::{ConversationRuntime, DefaultConversationRuntime};
+use super::runtime::{
+    AsyncDelegateSpawnRequest, AsyncDelegateSpawner, ConversationRuntime,
+    DefaultConversationRuntime, SessionContext,
+};
 use super::safe_lane_failure::{
     SafeLaneFailureCode, SafeLaneFailureRouteDecision, SafeLaneFailureRouteSource,
     classify_safe_lane_plan_failure,
@@ -57,8 +69,8 @@ use super::turn_budget::{
     SafeLaneFailureRouteReason, SafeLaneReplanBudget,
 };
 use super::turn_engine::{
-    KernelFailureClass, ProviderTurn, ToolIntent, TurnEngine, TurnFailure, TurnFailureKind,
-    TurnResult, classify_kernel_error,
+    AppToolDispatcher, DefaultAppToolDispatcher, ProviderTurn, ToolIntent, TurnEngine, TurnFailure,
+    TurnFailureKind, TurnResult,
 };
 use super::turn_shared::{
     ProviderTurnRequestAction, ReplyPersistenceMode, ReplyResolutionMode, ToolDrivenFollowupKind,
@@ -66,6 +78,16 @@ use super::turn_shared::{
     build_tool_driven_followup_tail, decide_provider_turn_request_action,
     request_completion_with_raw_fallback, tool_result_contains_truncation_signal,
     user_requested_raw_tool_output,
+};
+#[cfg(feature = "memory-sqlite")]
+use crate::session::recovery::{
+    RECOVERY_EVENT_KIND, build_async_spawn_failure_recovery_payload,
+    build_terminal_finalize_recovery_payload,
+};
+#[cfg(feature = "memory-sqlite")]
+use crate::session::repository::{
+    CreateSessionWithEventRequest, FinalizeSessionTerminalRequest, NewSessionRecord, SessionKind,
+    SessionRepository, SessionState, TransitionSessionWithEventIfCurrentRequest,
 };
 
 #[derive(Default)]
@@ -1765,6 +1787,8 @@ impl ConversationTurnCoordinator {
         }
 
         runtime.bootstrap(config, session_id, kernel_ctx).await?;
+        let session_context = runtime.session_context(config, session_id, kernel_ctx)?;
+        let tool_view = session_context.tool_view.clone();
         let preparation = ProviderTurnPreparation::from_assembled_context(
             config,
             runtime
@@ -1779,7 +1803,12 @@ impl ConversationTurnCoordinator {
             user_input,
             &preparation,
             runtime
-                .request_turn(config, &preparation.session.messages, kernel_ctx)
+                .request_turn(
+                    config,
+                    &preparation.session.messages,
+                    &tool_view,
+                    kernel_ctx,
+                )
                 .await,
             error_mode,
             kernel_ctx,
@@ -2696,6 +2725,567 @@ async fn apply_resolved_provider_turn<R: ConversationRuntime + ?Sized>(
         .await
 }
 
+struct CoordinatorAppToolDispatcher<'a, R: ?Sized> {
+    config: &'a LoongClawConfig,
+    runtime: &'a R,
+    fallback: &'a DefaultAppToolDispatcher,
+}
+
+#[async_trait]
+impl<R> AppToolDispatcher for CoordinatorAppToolDispatcher<'_, R>
+where
+    R: ConversationRuntime + ?Sized,
+{
+    async fn execute_app_tool(
+        &self,
+        session_context: &SessionContext,
+        request: loongclaw_contracts::ToolCoreRequest,
+        kernel_ctx: Option<&KernelContext>,
+    ) -> Result<loongclaw_contracts::ToolCoreOutcome, String> {
+        match crate::tools::canonical_tool_name(request.tool_name.as_str()) {
+            "delegate" => {
+                execute_delegate_tool(
+                    self.config,
+                    self.runtime,
+                    session_context,
+                    request.payload,
+                    kernel_ctx,
+                )
+                .await
+            }
+            "delegate_async" => {
+                execute_delegate_async_tool(
+                    self.config,
+                    self.runtime,
+                    session_context,
+                    request.payload,
+                )
+                .await
+            }
+            _ => {
+                self.fallback
+                    .execute_app_tool(session_context, request, kernel_ctx)
+                    .await
+            }
+        }
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+async fn execute_delegate_tool<R: ConversationRuntime + ?Sized>(
+    config: &LoongClawConfig,
+    runtime: &R,
+    session_context: &SessionContext,
+    payload: Value,
+    kernel_ctx: Option<&KernelContext>,
+) -> Result<loongclaw_contracts::ToolCoreOutcome, String> {
+    if !config.tools.delegate.enabled {
+        return Err("app_tool_disabled: delegate is disabled by config".to_owned());
+    }
+
+    let delegate_request = crate::tools::delegate::parse_delegate_request_with_default_timeout(
+        &payload,
+        config.tools.delegate.timeout_seconds,
+    )?;
+    let child_session_id = crate::tools::delegate::next_delegate_session_id();
+    let child_label = delegate_request.label.clone();
+    let repo = SessionRepository::new(&MemoryRuntimeConfig::from_memory_config(&config.memory))?;
+    let current_depth = repo.session_lineage_depth(&session_context.session_id)?;
+    let next_child_depth = current_depth.saturating_add(1);
+    if next_child_depth > config.tools.delegate.max_depth {
+        return Err(format!(
+            "delegate_depth_exceeded: next child depth {next_child_depth} exceeds configured max_depth {}",
+            config.tools.delegate.max_depth
+        ));
+    }
+
+    repo.create_session_with_event(CreateSessionWithEventRequest {
+        session: NewSessionRecord {
+            session_id: child_session_id.clone(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some(session_context.session_id.clone()),
+            label: child_label.clone(),
+            state: SessionState::Running,
+        },
+        event_kind: "delegate_started".to_owned(),
+        actor_session_id: Some(session_context.session_id.clone()),
+        event_payload_json: json!({
+            "task": delegate_request.task.clone(),
+            "label": child_label.clone(),
+            "timeout_seconds": delegate_request.timeout_seconds,
+        }),
+    })?;
+
+    run_started_delegate_child_turn_with_runtime(
+        config,
+        runtime,
+        &child_session_id,
+        &session_context.session_id,
+        child_label,
+        &delegate_request.task,
+        delegate_request.timeout_seconds,
+        kernel_ctx,
+    )
+    .await
+}
+
+#[cfg(feature = "memory-sqlite")]
+async fn execute_delegate_async_tool<R: ConversationRuntime + ?Sized>(
+    config: &LoongClawConfig,
+    runtime: &R,
+    session_context: &SessionContext,
+    payload: Value,
+) -> Result<loongclaw_contracts::ToolCoreOutcome, String> {
+    if !config.tools.delegate.enabled {
+        return Err("app_tool_disabled: delegate is disabled by config".to_owned());
+    }
+
+    let runtime_handle = Handle::try_current()
+        .map_err(|error| format!("delegate_async_runtime_unavailable: {error}"))?;
+    let spawner = runtime
+        .async_delegate_spawner(config)
+        .ok_or_else(|| "delegate_async_not_configured".to_owned())?;
+    let delegate_request = crate::tools::delegate::parse_delegate_request_with_default_timeout(
+        &payload,
+        config.tools.delegate.timeout_seconds,
+    )?;
+    let child_session_id = crate::tools::delegate::next_delegate_session_id();
+    let child_label = delegate_request.label.clone();
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = SessionRepository::new(&memory_config)?;
+    let current_depth = repo.session_lineage_depth(&session_context.session_id)?;
+    let next_child_depth = current_depth.saturating_add(1);
+    if next_child_depth > config.tools.delegate.max_depth {
+        return Err(format!(
+            "delegate_depth_exceeded: next child depth {next_child_depth} exceeds configured max_depth {}",
+            config.tools.delegate.max_depth
+        ));
+    }
+
+    repo.create_session_with_event(CreateSessionWithEventRequest {
+        session: NewSessionRecord {
+            session_id: child_session_id.clone(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some(session_context.session_id.clone()),
+            label: child_label.clone(),
+            state: SessionState::Ready,
+        },
+        event_kind: "delegate_queued".to_owned(),
+        actor_session_id: Some(session_context.session_id.clone()),
+        event_payload_json: json!({
+            "task": delegate_request.task,
+            "label": child_label,
+            "timeout_seconds": delegate_request.timeout_seconds,
+        }),
+    })?;
+
+    spawn_async_delegate_detached(
+        runtime_handle,
+        memory_config,
+        spawner,
+        AsyncDelegateSpawnRequest {
+            child_session_id: child_session_id.clone(),
+            parent_session_id: session_context.session_id.clone(),
+            task: delegate_request.task,
+            label: child_label,
+            timeout_seconds: delegate_request.timeout_seconds,
+        },
+    );
+
+    Ok(crate::tools::delegate::delegate_async_queued_outcome(
+        child_session_id,
+        delegate_request.label,
+        delegate_request.timeout_seconds,
+    ))
+}
+
+#[cfg(not(feature = "memory-sqlite"))]
+async fn execute_delegate_tool<R: ConversationRuntime + ?Sized>(
+    _config: &LoongClawConfig,
+    _runtime: &R,
+    _session_context: &SessionContext,
+    _payload: Value,
+    _kernel_ctx: Option<&KernelContext>,
+) -> Result<loongclaw_contracts::ToolCoreOutcome, String> {
+    Err("delegate requires sqlite memory support (enable feature `memory-sqlite`)".to_owned())
+}
+
+#[cfg(not(feature = "memory-sqlite"))]
+async fn execute_delegate_async_tool<R: ConversationRuntime + ?Sized>(
+    _config: &LoongClawConfig,
+    _runtime: &R,
+    _session_context: &SessionContext,
+    _payload: Value,
+) -> Result<loongclaw_contracts::ToolCoreOutcome, String> {
+    Err("delegate_async requires sqlite memory support (enable feature `memory-sqlite`)".to_owned())
+}
+
+#[cfg(feature = "memory-sqlite")]
+pub(crate) async fn run_started_delegate_child_turn_with_runtime<
+    R: ConversationRuntime + ?Sized,
+>(
+    config: &LoongClawConfig,
+    runtime: &R,
+    child_session_id: &str,
+    parent_session_id: &str,
+    child_label: Option<String>,
+    user_input: &str,
+    timeout_seconds: u64,
+    kernel_ctx: Option<&KernelContext>,
+) -> Result<loongclaw_contracts::ToolCoreOutcome, String> {
+    let repo = SessionRepository::new(&MemoryRuntimeConfig::from_memory_config(&config.memory))?;
+    let start = Instant::now();
+    let child_result = timeout(Duration::from_secs(timeout_seconds), async {
+        AssertUnwindSafe(ConversationTurnCoordinator::new().handle_turn_with_runtime(
+            config,
+            child_session_id,
+            user_input,
+            ProviderErrorMode::Propagate,
+            runtime,
+            kernel_ctx,
+        ))
+        .catch_unwind()
+        .await
+    })
+    .await;
+    let duration_ms = start.elapsed().as_millis() as u64;
+
+    match child_result {
+        Ok(Ok(Ok(final_output))) => {
+            let turn_count = repo
+                .load_session_summary(child_session_id)?
+                .map(|session| session.turn_count)
+                .unwrap_or_default();
+            let outcome = crate::tools::delegate::delegate_success_outcome(
+                child_session_id.to_owned(),
+                child_label,
+                final_output,
+                turn_count,
+                duration_ms,
+            );
+            finalize_delegate_child_terminal_with_recovery(
+                &repo,
+                child_session_id,
+                FinalizeSessionTerminalRequest {
+                    state: SessionState::Completed,
+                    last_error: None,
+                    event_kind: "delegate_completed".to_owned(),
+                    actor_session_id: Some(parent_session_id.to_owned()),
+                    event_payload_json: json!({
+                        "turn_count": turn_count,
+                        "duration_ms": duration_ms,
+                    }),
+                    outcome_status: outcome.status.clone(),
+                    outcome_payload_json: outcome.payload.clone(),
+                },
+            )?;
+            Ok(outcome)
+        }
+        Ok(Ok(Err(error))) => {
+            let outcome = crate::tools::delegate::delegate_error_outcome(
+                child_session_id.to_owned(),
+                child_label,
+                error.clone(),
+                duration_ms,
+            );
+            finalize_delegate_child_terminal_with_recovery(
+                &repo,
+                child_session_id,
+                FinalizeSessionTerminalRequest {
+                    state: SessionState::Failed,
+                    last_error: Some(error.clone()),
+                    event_kind: "delegate_failed".to_owned(),
+                    actor_session_id: Some(parent_session_id.to_owned()),
+                    event_payload_json: json!({
+                        "error": error,
+                        "duration_ms": duration_ms,
+                    }),
+                    outcome_status: outcome.status.clone(),
+                    outcome_payload_json: outcome.payload.clone(),
+                },
+            )?;
+            Ok(outcome)
+        }
+        Ok(Err(panic_payload)) => {
+            let panic_error = format_delegate_child_panic(panic_payload);
+            let outcome = crate::tools::delegate::delegate_error_outcome(
+                child_session_id.to_owned(),
+                child_label,
+                panic_error.clone(),
+                duration_ms,
+            );
+            finalize_delegate_child_terminal_with_recovery(
+                &repo,
+                child_session_id,
+                FinalizeSessionTerminalRequest {
+                    state: SessionState::Failed,
+                    last_error: Some(panic_error.clone()),
+                    event_kind: "delegate_failed".to_owned(),
+                    actor_session_id: Some(parent_session_id.to_owned()),
+                    event_payload_json: json!({
+                        "error": panic_error,
+                        "duration_ms": duration_ms,
+                    }),
+                    outcome_status: outcome.status.clone(),
+                    outcome_payload_json: outcome.payload.clone(),
+                },
+            )?;
+            Ok(outcome)
+        }
+        Err(_) => {
+            let timeout_error = "delegate_timeout".to_owned();
+            let outcome = crate::tools::delegate::delegate_timeout_outcome(
+                child_session_id.to_owned(),
+                child_label,
+                duration_ms,
+            );
+            finalize_delegate_child_terminal_with_recovery(
+                &repo,
+                child_session_id,
+                FinalizeSessionTerminalRequest {
+                    state: SessionState::TimedOut,
+                    last_error: Some(timeout_error.clone()),
+                    event_kind: "delegate_timed_out".to_owned(),
+                    actor_session_id: Some(parent_session_id.to_owned()),
+                    event_payload_json: json!({
+                        "error": timeout_error,
+                        "duration_ms": duration_ms,
+                    }),
+                    outcome_status: outcome.status.clone(),
+                    outcome_payload_json: outcome.payload.clone(),
+                },
+            )?;
+            Ok(outcome)
+        }
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn finalize_async_delegate_spawn_failure(
+    memory_config: &MemoryRuntimeConfig,
+    child_session_id: &str,
+    parent_session_id: &str,
+    label: Option<String>,
+    error: String,
+) -> Result<(), String> {
+    let repo = SessionRepository::new(memory_config)?;
+    let outcome = crate::tools::delegate::delegate_error_outcome(
+        child_session_id.to_owned(),
+        label,
+        error.clone(),
+        0,
+    );
+    repo.finalize_session_terminal(
+        child_session_id,
+        FinalizeSessionTerminalRequest {
+            state: SessionState::Failed,
+            last_error: Some(error.clone()),
+            event_kind: "delegate_spawn_failed".to_owned(),
+            actor_session_id: Some(parent_session_id.to_owned()),
+            event_payload_json: json!({
+                "error": error,
+            }),
+            outcome_status: outcome.status,
+            outcome_payload_json: outcome.payload,
+        },
+    )?;
+    Ok(())
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn finalize_async_delegate_spawn_failure_with_recovery(
+    memory_config: &MemoryRuntimeConfig,
+    child_session_id: &str,
+    parent_session_id: &str,
+    label: Option<String>,
+    error: String,
+) -> Result<(), String> {
+    let recovery_label = label.clone();
+    match finalize_async_delegate_spawn_failure(
+        memory_config,
+        child_session_id,
+        parent_session_id,
+        label,
+        error.clone(),
+    ) {
+        Ok(()) => Ok(()),
+        Err(finalize_error) => {
+            let repo = SessionRepository::new(memory_config)?;
+            let recovery_error = format!(
+                "delegate_async_spawn_failure_persist_failed: {finalize_error}; original spawn error: {error}"
+            );
+            match repo.transition_session_with_event_if_current(
+                child_session_id,
+                TransitionSessionWithEventIfCurrentRequest {
+                    expected_state: SessionState::Ready,
+                    next_state: SessionState::Failed,
+                    last_error: Some(recovery_error.clone()),
+                    event_kind: RECOVERY_EVENT_KIND.to_owned(),
+                    actor_session_id: Some(parent_session_id.to_owned()),
+                    event_payload_json: build_async_spawn_failure_recovery_payload(
+                        recovery_label.as_deref(),
+                        &error,
+                        &recovery_error,
+                    ),
+                },
+            ) {
+                Ok(Some(_)) => Ok(()),
+                Ok(None) => {
+                    let current_state = repo
+                        .load_session(child_session_id)?
+                        .map(|session| session.state.as_str().to_owned())
+                        .unwrap_or_else(|| "missing".to_owned());
+                    Err(format!(
+                        "{recovery_error}; delegate_async_spawn_recovery_skipped_from_state: {current_state}"
+                    ))
+                }
+                Err(recovery_event_error) => match repo.update_session_state_if_current(
+                    child_session_id,
+                    SessionState::Ready,
+                    SessionState::Failed,
+                    Some(recovery_error.clone()),
+                ) {
+                    Ok(Some(_)) => Ok(()),
+                    Ok(None) => {
+                        let current_state = repo
+                            .load_session(child_session_id)?
+                            .map(|session| session.state.as_str().to_owned())
+                            .unwrap_or_else(|| "missing".to_owned());
+                        Err(format!(
+                            "{recovery_error}; delegate_async_spawn_recovery_skipped_from_state: {current_state}"
+                        ))
+                    }
+                    Err(mark_error) => Err(format!(
+                        "{recovery_error}; delegate_async_spawn_recovery_failed: {mark_error}; delegate_async_spawn_recovery_event_failed: {recovery_event_error}"
+                    )),
+                },
+            }
+        }
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn format_async_delegate_spawn_panic(panic_payload: Box<dyn Any + Send>) -> String {
+    let panic_payload = match panic_payload.downcast::<String>() {
+        Ok(message) => return format!("delegate_async_spawn_panic: {}", *message),
+        Err(panic_payload) => panic_payload,
+    };
+    match panic_payload.downcast::<&'static str>() {
+        Ok(message) => format!("delegate_async_spawn_panic: {}", *message),
+        Err(_) => "delegate_async_spawn_panic".to_owned(),
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn spawn_async_delegate_detached(
+    runtime_handle: Handle,
+    memory_config: MemoryRuntimeConfig,
+    spawner: std::sync::Arc<dyn AsyncDelegateSpawner>,
+    request: AsyncDelegateSpawnRequest,
+) {
+    let child_session_id = request.child_session_id.clone();
+    let parent_session_id = request.parent_session_id.clone();
+    let label = request.label.clone();
+    runtime_handle.spawn(async move {
+        let spawn_failure = match AssertUnwindSafe(spawner.spawn(request))
+            .catch_unwind()
+            .await
+        {
+            Ok(Ok(())) => None,
+            Ok(Err(error)) => Some(error),
+            Err(panic_payload) => Some(format_async_delegate_spawn_panic(panic_payload)),
+        };
+        if let Some(error) = spawn_failure {
+            let _ = finalize_async_delegate_spawn_failure_with_recovery(
+                &memory_config,
+                &child_session_id,
+                &parent_session_id,
+                label,
+                error,
+            );
+        }
+    });
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn finalize_delegate_child_terminal_with_recovery(
+    repo: &SessionRepository,
+    child_session_id: &str,
+    request: FinalizeSessionTerminalRequest,
+) -> Result<(), String> {
+    let recovery_request = request.clone();
+    match repo.finalize_session_terminal(child_session_id, request) {
+        Ok(_) => Ok(()),
+        Err(finalize_error) => {
+            let recovery_error = format!("delegate_terminal_finalize_failed: {finalize_error}");
+            match repo.transition_session_with_event_if_current(
+                child_session_id,
+                TransitionSessionWithEventIfCurrentRequest {
+                    expected_state: SessionState::Running,
+                    next_state: SessionState::Failed,
+                    last_error: Some(recovery_error.clone()),
+                    event_kind: RECOVERY_EVENT_KIND.to_owned(),
+                    actor_session_id: recovery_request.actor_session_id.clone(),
+                    event_payload_json: build_terminal_finalize_recovery_payload(
+                        &recovery_request,
+                        &recovery_error,
+                    ),
+                },
+            ) {
+                Ok(Some(_)) => Err(recovery_error),
+                Ok(None) => {
+                    delegate_terminal_recovery_skipped_error(repo, child_session_id, recovery_error)
+                }
+                Err(recovery_event_error) => match repo.update_session_state_if_current(
+                    child_session_id,
+                    SessionState::Running,
+                    SessionState::Failed,
+                    Some(recovery_error.clone()),
+                ) {
+                    Ok(Some(_)) => Err(format!(
+                        "{recovery_error}; delegate_terminal_recovery_event_failed: {recovery_event_error}"
+                    )),
+                    Ok(None) => delegate_terminal_recovery_skipped_error(
+                        repo,
+                        child_session_id,
+                        recovery_error,
+                    ),
+                    Err(mark_error) => Err(format!(
+                        "{recovery_error}; delegate_terminal_recovery_failed: {mark_error}"
+                    )),
+                },
+            }
+        }
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn delegate_terminal_recovery_skipped_error(
+    repo: &SessionRepository,
+    child_session_id: &str,
+    recovery_error: String,
+) -> Result<(), String> {
+    let current_state = repo
+        .load_session(child_session_id)?
+        .map(|session| session.state.as_str().to_owned())
+        .unwrap_or_else(|| "missing".to_owned());
+    Err(format!(
+        "{recovery_error}; delegate_terminal_recovery_skipped_from_state: {current_state}"
+    ))
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn format_delegate_child_panic(panic_payload: Box<dyn Any + Send>) -> String {
+    let panic_payload = match panic_payload.downcast::<String>() {
+        Ok(message) => return format!("delegate_child_panic: {}", *message),
+        Err(panic_payload) => panic_payload,
+    };
+    match panic_payload.downcast::<&'static str>() {
+        Ok(message) => format!("delegate_child_panic: {}", *message),
+        Err(_) => "delegate_child_panic".to_owned(),
+    }
+}
+
 async fn execute_provider_turn_lane<R: ConversationRuntime + ?Sized>(
     config: &LoongClawConfig,
     runtime: &R,
@@ -2707,6 +3297,28 @@ async fn execute_provider_turn_lane<R: ConversationRuntime + ?Sized>(
     let had_tool_intents = !turn.tool_intents.is_empty();
     let assistant_preface = turn.assistant_text.clone();
     let lane = preparation.lane_plan.decision.lane;
+    let session_context = match runtime.session_context(config, session_id, kernel_ctx) {
+        Ok(session_context) => session_context,
+        Err(error) => {
+            return ProviderTurnLaneExecution {
+                lane,
+                assistant_preface,
+                had_tool_intents,
+                raw_tool_output_requested: preparation.raw_tool_output_requested,
+                turn_result: TurnResult::non_retryable_tool_error("session_context_failed", error),
+                safe_lane_terminal_route: None,
+            };
+        }
+    };
+    let base_app_dispatcher = DefaultAppToolDispatcher::with_config(
+        MemoryRuntimeConfig::from_memory_config(&config.memory),
+        config.clone(),
+    );
+    let app_dispatcher = CoordinatorAppToolDispatcher {
+        config,
+        runtime,
+        fallback: &base_app_dispatcher,
+    };
     let (turn_result, safe_lane_terminal_route) = if preparation
         .lane_plan
         .should_use_safe_lane_plan_path(config, &turn)
@@ -2717,6 +3329,8 @@ async fn execute_provider_turn_lane<R: ConversationRuntime + ?Sized>(
             session_id,
             &preparation.lane_plan.decision,
             &turn,
+            &session_context,
+            &app_dispatcher,
             kernel_ctx,
         )
         .await;
@@ -2729,7 +3343,7 @@ async fn execute_provider_turn_lane<R: ConversationRuntime + ?Sized>(
                     .conversation
                     .tool_result_payload_summary_limit_chars(),
             )
-            .execute_turn(&turn, kernel_ctx)
+            .execute_turn_in_context(&turn, &session_context, &app_dispatcher, kernel_ctx)
             .await,
             None,
         )
@@ -2751,6 +3365,8 @@ async fn execute_turn_with_safe_lane_plan<R: ConversationRuntime + ?Sized>(
     session_id: &str,
     lane_decision: &LaneDecision,
     turn: &ProviderTurn,
+    session_context: &SessionContext,
+    app_dispatcher: &dyn AppToolDispatcher,
     kernel_ctx: Option<&KernelContext>,
 ) -> SafeLaneTurnOutcome {
     let governor_history_signals =
@@ -2818,8 +3434,16 @@ async fn execute_turn_with_safe_lane_plan<R: ConversationRuntime + ?Sized>(
         )
         .await;
 
-        let round_execution =
-            evaluate_safe_lane_round(config, lane_decision, turn, kernel_ctx, &state).await;
+        let round_execution = evaluate_safe_lane_round(
+            config,
+            lane_decision,
+            turn,
+            session_context,
+            app_dispatcher,
+            kernel_ctx,
+            &state,
+        )
+        .await;
         state.record_round_execution(&round_execution.report, round_execution.tool_output_stats);
 
         match round_execution.report.status.clone() {
@@ -3140,6 +3764,8 @@ async fn evaluate_safe_lane_round(
     config: &LoongClawConfig,
     lane_decision: &LaneDecision,
     turn: &ProviderTurn,
+    session_context: &SessionContext,
+    app_dispatcher: &dyn AppToolDispatcher,
     kernel_ctx: Option<&KernelContext>,
     state: &SafeLanePlanLoopState,
 ) -> SafeLaneRoundExecution {
@@ -3152,6 +3778,8 @@ async fn evaluate_safe_lane_round(
     );
     let executor = SafeLanePlanNodeExecutor::new(
         turn.tool_intents.as_slice(),
+        session_context,
+        app_dispatcher,
         kernel_ctx,
         config.conversation.safe_lane_verify_output_non_empty,
         state.seed_tool_outputs.clone(),
@@ -4271,6 +4899,8 @@ fn decide_safe_lane_plan_failure_action(
 
 struct SafeLanePlanNodeExecutor<'a> {
     tool_intents: &'a [ToolIntent],
+    session_context: &'a SessionContext,
+    app_dispatcher: &'a dyn AppToolDispatcher,
     kernel_ctx: Option<&'a KernelContext>,
     verify_output_non_empty: bool,
     tool_outputs: Mutex<Vec<String>>,
@@ -4280,6 +4910,8 @@ struct SafeLanePlanNodeExecutor<'a> {
 impl<'a> SafeLanePlanNodeExecutor<'a> {
     fn new(
         tool_intents: &'a [ToolIntent],
+        session_context: &'a SessionContext,
+        app_dispatcher: &'a dyn AppToolDispatcher,
         kernel_ctx: Option<&'a KernelContext>,
         verify_output_non_empty: bool,
         seed_tool_outputs: Vec<String>,
@@ -4287,6 +4919,8 @@ impl<'a> SafeLanePlanNodeExecutor<'a> {
     ) -> Self {
         Self {
             tool_intents,
+            session_context,
+            app_dispatcher,
             kernel_ctx,
             verify_output_non_empty,
             tool_outputs: Mutex::new(seed_tool_outputs),
@@ -4313,6 +4947,8 @@ impl PlanNodeExecutor for SafeLanePlanNodeExecutor<'_> {
                 })?;
                 let output = execute_single_tool_intent(
                     intent,
+                    self.session_context,
+                    self.app_dispatcher,
                     self.kernel_ctx,
                     self.tool_result_payload_summary_limit_chars,
                 )
@@ -4354,42 +4990,38 @@ fn parse_tool_node_index(node_id: &str) -> Result<usize, PlanNodeError> {
 
 async fn execute_single_tool_intent(
     intent: &ToolIntent,
+    session_context: &SessionContext,
+    app_dispatcher: &dyn AppToolDispatcher,
     kernel_ctx: Option<&KernelContext>,
     payload_summary_limit_chars: usize,
 ) -> Result<String, PlanNodeError> {
-    if !crate::tools::is_known_tool_name(&intent.tool_name) {
-        return Err(PlanNodeError::policy_denied(format!(
-            "tool_not_found: {}",
-            intent.tool_name
-        )));
-    }
-    let ctx =
-        kernel_ctx.ok_or_else(|| PlanNodeError::policy_denied("no_kernel_context".to_owned()))?;
-    let request = ToolCoreRequest {
-        tool_name: intent.tool_name.clone(),
-        payload: intent.args_json.clone(),
+    let engine = TurnEngine::with_tool_result_payload_summary_limit(1, payload_summary_limit_chars);
+    let turn = ProviderTurn {
+        assistant_text: String::new(),
+        tool_intents: vec![intent.clone()],
+        raw_meta: Value::Null,
     };
-    let caps = BTreeSet::from([Capability::InvokeTool]);
-    let outcome = ctx
-        .kernel
-        .execute_tool_core(ctx.pack_id(), &ctx.token, &caps, None, request)
+
+    match engine
+        .execute_turn_in_context(&turn, session_context, app_dispatcher, kernel_ctx)
         .await
-        .map_err(|error| {
-            let kind = match classify_kernel_error(&error) {
-                KernelFailureClass::PolicyDenied => PlanNodeErrorKind::PolicyDenied,
-                KernelFailureClass::RetryableExecution => PlanNodeErrorKind::Retryable,
-                KernelFailureClass::NonRetryable => PlanNodeErrorKind::NonRetryable,
-            };
-            PlanNodeError {
-                kind,
-                message: format!("{error}"),
-            }
-        })?;
-    Ok(super::turn_engine::format_tool_result_line_with_limit(
-        intent,
-        &outcome,
-        payload_summary_limit_chars,
-    ))
+    {
+        TurnResult::FinalText(output) => Ok(output),
+        TurnResult::ToolDenied(failure) => Err(PlanNodeError::policy_denied(failure.reason)),
+        TurnResult::ToolError(failure) => Err(PlanNodeError {
+            kind: match failure.kind {
+                TurnFailureKind::Retryable => PlanNodeErrorKind::Retryable,
+                TurnFailureKind::PolicyDenied
+                | TurnFailureKind::NonRetryable
+                | TurnFailureKind::Provider => PlanNodeErrorKind::NonRetryable,
+            },
+            message: failure.reason,
+        }),
+        TurnResult::ProviderError(failure) => Err(PlanNodeError {
+            kind: PlanNodeErrorKind::NonRetryable,
+            message: failure.reason,
+        }),
+    }
 }
 
 #[cfg(test)]

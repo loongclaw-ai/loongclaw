@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 
 use crate::CliResult;
 use crate::config::LoongClawConfig;
-use crate::tools;
+use crate::tools::{self, ToolView};
 
 #[cfg(feature = "memory-sqlite")]
 use crate::memory;
@@ -11,9 +11,18 @@ pub(super) fn build_system_message(
     config: &LoongClawConfig,
     include_system_prompt: bool,
 ) -> Option<Value> {
+    build_system_message_for_view(config, include_system_prompt, &tools::runtime_tool_view())
+}
+
+pub(super) fn build_system_message_for_view(
+    config: &LoongClawConfig,
+    include_system_prompt: bool,
+    tool_view: &ToolView,
+) -> Option<Value> {
     build_system_message_with_tool_runtime_config(
         config,
         include_system_prompt,
+        tool_view,
         tools::runtime_config::get_tool_runtime_config(),
     )
 }
@@ -21,6 +30,7 @@ pub(super) fn build_system_message(
 fn build_system_message_with_tool_runtime_config(
     config: &LoongClawConfig,
     include_system_prompt: bool,
+    tool_view: &ToolView,
     tool_runtime_config: &tools::runtime_config::ToolRuntimeConfig,
 ) -> Option<Value> {
     if !include_system_prompt {
@@ -28,7 +38,7 @@ fn build_system_message_with_tool_runtime_config(
     }
     let system_prompt = config.cli.resolved_system_prompt();
     let system = system_prompt.trim();
-    let snapshot = tools::capability_snapshot_with_config(tool_runtime_config);
+    let snapshot = tools::capability_snapshot_for_view_with_config(tool_view, tool_runtime_config);
     let content = if system.is_empty() {
         snapshot
     } else {
@@ -44,7 +54,15 @@ pub(super) fn build_base_messages(
     config: &LoongClawConfig,
     include_system_prompt: bool,
 ) -> Vec<Value> {
-    build_system_message(config, include_system_prompt)
+    build_base_messages_for_view(config, include_system_prompt, &tools::runtime_tool_view())
+}
+
+pub(super) fn build_base_messages_for_view(
+    config: &LoongClawConfig,
+    include_system_prompt: bool,
+    tool_view: &ToolView,
+) -> Vec<Value> {
+    build_system_message_for_view(config, include_system_prompt, tool_view)
         .into_iter()
         .collect()
 }
@@ -67,7 +85,21 @@ pub(super) fn build_messages_for_session(
     session_id: &str,
     include_system_prompt: bool,
 ) -> CliResult<Vec<Value>> {
-    let mut messages = build_base_messages(config, include_system_prompt);
+    build_messages_for_session_in_view(
+        config,
+        session_id,
+        include_system_prompt,
+        &tools::runtime_tool_view(),
+    )
+}
+
+pub(super) fn build_messages_for_session_in_view(
+    config: &LoongClawConfig,
+    session_id: &str,
+    include_system_prompt: bool,
+    tool_view: &ToolView,
+) -> CliResult<Vec<Value>> {
+    let mut messages = build_base_messages_for_view(config, include_system_prompt, tool_view);
     messages.extend(load_memory_window_messages(config, session_id)?);
     Ok(messages)
 }

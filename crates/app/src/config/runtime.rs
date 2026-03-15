@@ -1194,4 +1194,27 @@ api_key_env = "{secret}"
 
         let _ = fs::remove_file(path);
     }
+
+    #[test]
+    #[cfg(feature = "config-toml")]
+    fn tool_config_round_trips_session_and_delegate_settings() {
+        let mut config = LoongClawConfig::default();
+        config.tools.sessions.visibility = crate::config::tools_memory::SessionVisibility::SelfOnly;
+        config.tools.sessions.list_limit = 12;
+        config.tools.sessions.history_limit = 34;
+        config.tools.messages.enabled = true;
+        config.tools.delegate.enabled = false;
+        config.tools.delegate.max_depth = 2;
+        config.tools.delegate.timeout_seconds = 90;
+        config.tools.delegate.allow_shell_in_child = true;
+        config.tools.delegate.child_tool_allowlist =
+            vec!["file.read".to_owned(), "shell.exec".to_owned()];
+
+        let encoded = encode_toml_config(&config).expect("encode config");
+        let parsed = toml::from_str::<LoongClawConfig>(&encoded).expect("parse encoded config");
+
+        assert_eq!(parsed.tools.sessions, config.tools.sessions);
+        assert_eq!(parsed.tools.messages, config.tools.messages);
+        assert_eq!(parsed.tools.delegate, config.tools.delegate);
+    }
 }

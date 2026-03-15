@@ -327,6 +327,34 @@ fn ensure_sqlite_schema(path: &PathBuf) -> Result<(), String> {
           ts INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_turns_session_id ON turns(session_id, id);
+        CREATE TABLE IF NOT EXISTS sessions(
+          session_id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL,
+          parent_session_id TEXT NULL,
+          label TEXT NULL,
+          state TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          last_error TEXT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_sessions_parent_session_id
+          ON sessions(parent_session_id, updated_at, session_id);
+        CREATE TABLE IF NOT EXISTS session_events(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL,
+          event_kind TEXT NOT NULL,
+          actor_session_id TEXT NULL,
+          payload_json TEXT NOT NULL,
+          ts INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_events_session_id
+          ON session_events(session_id, id);
+        CREATE TABLE IF NOT EXISTS session_terminal_outcomes(
+          session_id TEXT PRIMARY KEY,
+          status TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          recorded_at INTEGER NOT NULL
+        );
         ",
     )
     .map_err(|error| format!("initialize sqlite memory schema failed: {error}"))?;

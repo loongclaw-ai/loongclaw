@@ -1735,6 +1735,7 @@ dependencies = [
  "base64",
  "cbc",
  "flate2",
+ "futures-util",
  "http 1.4.0",
  "loongclaw-contracts",
  "loongclaw-kernel",

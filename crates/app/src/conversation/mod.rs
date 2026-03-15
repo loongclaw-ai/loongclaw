@@ -38,8 +38,9 @@ pub use context_engine_registry::{
 pub use lane_arbiter::{ExecutionLane, LaneArbiterPolicy, LaneDecision};
 #[allow(unused_imports)]
 pub use runtime::{
-    ContextCompactionPolicySnapshot, ContextEngineRuntimeSnapshot, ContextEngineSelection,
-    ContextEngineSelectionSource, ConversationRuntime, DefaultConversationRuntime,
+    AsyncDelegateSpawnRequest, AsyncDelegateSpawner, ContextCompactionPolicySnapshot,
+    ContextEngineRuntimeSnapshot, ContextEngineSelection, ContextEngineSelectionSource,
+    ConversationRuntime, DefaultConversationRuntime, SessionContext,
     collect_context_engine_runtime_snapshot, resolve_context_engine_selection,
 };
 pub use safe_lane_failure::{
@@ -59,8 +60,8 @@ pub use turn_coordinator::{
     TurnCheckpointTailRepairStatus,
 };
 pub use turn_engine::{
-    ProviderTurn, ToolDecision, ToolIntent, ToolOutcome, TurnEngine, TurnFailure, TurnFailureKind,
-    TurnResult,
+    AppToolDispatcher, DefaultAppToolDispatcher, NoopAppToolDispatcher, ProviderTurn, ToolDecision,
+    ToolIntent, ToolOutcome, TurnEngine, TurnFailure, TurnFailureKind, TurnResult,
 };
 pub use turn_loop::ConversationTurnLoop;
 

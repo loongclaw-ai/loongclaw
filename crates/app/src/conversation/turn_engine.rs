@@ -1,13 +1,26 @@
 use std::collections::BTreeSet;
 use std::fmt;
 use std::ops::Deref;
+use std::sync::Arc;
 
+use async_trait::async_trait;
 use loongclaw_contracts::{
     Capability, KernelError, ToolCoreOutcome, ToolCoreRequest, ToolPlaneError,
 };
 use serde::{Deserialize, Serialize};
 
+use crate::config::{LoongClawConfig, SessionVisibility, ToolConfig};
 use crate::context::KernelContext;
+use crate::memory::runtime_config::MemoryRuntimeConfig;
+#[cfg(feature = "memory-sqlite")]
+use crate::session::repository::{SessionKind, SessionRepository};
+use crate::tools::{
+    ToolExecutionKind, ToolView, delegate_child_tool_view_for_config,
+    delegate_child_tool_view_for_config_with_delegate, runtime_tool_view,
+    runtime_tool_view_for_config, tool_catalog,
+};
+
+use super::runtime::SessionContext;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProviderTurn {
@@ -185,6 +198,180 @@ pub(crate) fn classify_kernel_error(error: &KernelError) -> KernelFailureClass {
     }
 }
 
+#[async_trait]
+pub trait AppToolDispatcher: Send + Sync {
+    async fn execute_app_tool(
+        &self,
+        session_context: &SessionContext,
+        request: ToolCoreRequest,
+        kernel_ctx: Option<&KernelContext>,
+    ) -> Result<ToolCoreOutcome, String>;
+}
+
+pub struct NoopAppToolDispatcher;
+
+#[async_trait]
+impl AppToolDispatcher for NoopAppToolDispatcher {
+    async fn execute_app_tool(
+        &self,
+        _session_context: &SessionContext,
+        request: ToolCoreRequest,
+        _kernel_ctx: Option<&KernelContext>,
+    ) -> Result<ToolCoreOutcome, String> {
+        Err(format!("app_tool_not_implemented: {}", request.tool_name))
+    }
+}
+
+#[derive(Clone)]
+pub struct DefaultAppToolDispatcher {
+    memory_config: MemoryRuntimeConfig,
+    tool_config: ToolConfig,
+    app_config: Option<Arc<LoongClawConfig>>,
+}
+
+impl DefaultAppToolDispatcher {
+    pub fn new(memory_config: MemoryRuntimeConfig, tool_config: ToolConfig) -> Self {
+        Self {
+            memory_config,
+            tool_config,
+            app_config: None,
+        }
+    }
+
+    pub fn with_config(memory_config: MemoryRuntimeConfig, app_config: LoongClawConfig) -> Self {
+        Self {
+            memory_config,
+            tool_config: app_config.tools.clone(),
+            app_config: Some(Arc::new(app_config)),
+        }
+    }
+
+    pub fn runtime() -> Self {
+        Self::new(
+            crate::memory::runtime_config::get_memory_runtime_config().clone(),
+            ToolConfig::default(),
+        )
+    }
+
+    fn effective_tool_config_for_session(&self, session_context: &SessionContext) -> ToolConfig {
+        let mut tool_config = self.tool_config.clone();
+        if session_context.parent_session_id.is_some() {
+            tool_config.sessions.visibility = SessionVisibility::SelfOnly;
+        }
+        tool_config
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    fn effective_tool_view_for_session(
+        &self,
+        session_context: &SessionContext,
+    ) -> Result<ToolView, String> {
+        let repo = SessionRepository::new(&self.memory_config)?;
+        if let Some(session) = repo.load_session(&session_context.session_id)? {
+            if session.parent_session_id.is_some() {
+                let depth = repo
+                    .session_lineage_depth(&session_context.session_id)
+                    .map_err(|error| {
+                        format!(
+                            "compute session lineage depth for dispatcher tool view failed: {error}"
+                        )
+                    })?;
+                let allow_nested_delegate = depth < self.tool_config.delegate.max_depth;
+                return Ok(delegate_child_tool_view_for_config_with_delegate(
+                    &self.tool_config,
+                    allow_nested_delegate,
+                ));
+            }
+            return Ok(runtime_tool_view_for_config(&self.tool_config));
+        }
+        if repo
+            .load_session_summary_with_legacy_fallback(&session_context.session_id)?
+            .is_some_and(|session| session.kind == SessionKind::DelegateChild)
+        {
+            return Ok(delegate_child_tool_view_for_config(&self.tool_config));
+        }
+        Ok(runtime_tool_view_for_config(&self.tool_config))
+    }
+
+    #[cfg(not(feature = "memory-sqlite"))]
+    fn effective_tool_view_for_session(
+        &self,
+        _session_context: &SessionContext,
+    ) -> Result<ToolView, String> {
+        Ok(runtime_tool_view_for_config(&self.tool_config))
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    async fn execute_sessions_send(
+        &self,
+        session_context: &SessionContext,
+        payload: serde_json::Value,
+    ) -> Result<ToolCoreOutcome, String> {
+        let app_config = self
+            .app_config
+            .as_ref()
+            .ok_or_else(|| "sessions_send_not_configured".to_owned())?;
+        let effective_tool_config = self.effective_tool_config_for_session(session_context);
+        crate::tools::messaging::execute_sessions_send_with_config(
+            payload,
+            &session_context.session_id,
+            &self.memory_config,
+            &effective_tool_config,
+            app_config.as_ref(),
+        )
+        .await
+    }
+}
+
+impl Default for DefaultAppToolDispatcher {
+    fn default() -> Self {
+        Self::runtime()
+    }
+}
+
+#[async_trait]
+impl AppToolDispatcher for DefaultAppToolDispatcher {
+    async fn execute_app_tool(
+        &self,
+        session_context: &SessionContext,
+        request: ToolCoreRequest,
+        _kernel_ctx: Option<&KernelContext>,
+    ) -> Result<ToolCoreOutcome, String> {
+        let canonical_tool_name = crate::tools::canonical_tool_name(request.tool_name.as_str());
+        let effective_tool_view = self.effective_tool_view_for_session(session_context)?;
+        if let Some(descriptor) = tool_catalog().descriptor(canonical_tool_name)
+            && descriptor.execution_kind == ToolExecutionKind::App
+            && (!session_context.tool_view.contains(descriptor.name)
+                || !effective_tool_view.contains(descriptor.name))
+        {
+            return Err(format!("tool_not_visible: {}", descriptor.name));
+        }
+
+        let effective_tool_config = self.effective_tool_config_for_session(session_context);
+        if canonical_tool_name == "session_wait" {
+            return crate::tools::wait_for_session_with_config(
+                request.payload,
+                &session_context.session_id,
+                &self.memory_config,
+                &effective_tool_config,
+            )
+            .await;
+        }
+        #[cfg(feature = "memory-sqlite")]
+        if canonical_tool_name == "sessions_send" {
+            return self
+                .execute_sessions_send(session_context, request.payload)
+                .await;
+        }
+        crate::tools::execute_app_tool_with_config(
+            request,
+            &session_context.session_id,
+            &self.memory_config,
+            &effective_tool_config,
+        )
+    }
+}
+
 #[allow(dead_code)]
 pub(crate) fn format_tool_result_line(intent: &ToolIntent, outcome: &ToolCoreOutcome) -> String {
     format_tool_result_line_with_limit(intent, outcome, TOOL_RESULT_PAYLOAD_SUMMARY_LIMIT_CHARS)
@@ -286,6 +473,18 @@ impl TurnEngine {
     /// Evaluate a provider turn and produce a deterministic result.
     /// Does NOT execute tools — just validates and gates.
     pub fn evaluate_turn(&self, turn: &ProviderTurn) -> TurnResult {
+        self.evaluate_turn_in_view(turn, &runtime_tool_view())
+    }
+
+    pub fn evaluate_turn_in_view(&self, turn: &ProviderTurn, tool_view: &ToolView) -> TurnResult {
+        self.evaluate_turn_in_context(turn, &session_context_from_turn(turn, tool_view.clone()))
+    }
+
+    pub fn evaluate_turn_in_context(
+        &self,
+        turn: &ProviderTurn,
+        session_context: &SessionContext,
+    ) -> TurnResult {
         // No tool intents → just return the text
         if turn.tool_intents.is_empty() {
             return TurnResult::FinalText(turn.assistant_text.clone());
@@ -297,10 +496,15 @@ impl TurnEngine {
         }
 
         // Check each tool intent
+        let catalog = tool_catalog();
         for intent in &turn.tool_intents {
-            if !crate::tools::is_known_tool_name(&intent.tool_name) {
+            let Some(descriptor) = catalog.resolve(&intent.tool_name) else {
                 let reason = format!("tool_not_found: {}", intent.tool_name);
                 return TurnResult::policy_denied("tool_not_found", reason);
+            };
+            if !session_context.tool_view.contains(descriptor.name) {
+                let reason = format!("tool_not_visible: {}", intent.tool_name);
+                return TurnResult::policy_denied("tool_not_visible", reason);
             }
         }
 
@@ -315,11 +519,37 @@ impl TurnEngine {
     /// 2. Too many intents → `ToolDenied("max_tool_steps_exceeded")`
     /// 3. Unknown tool → `ToolDenied("tool_not_found: ...")`
     /// 4. No kernel context → `ToolDenied("no_kernel_context")`
-    /// 5. Policy/capability check via kernel → `NeedsApproval` or `ToolDenied`
+    /// 5. Policy/capability check via kernel → `ToolDenied`
     /// 6. Execute tool → map result to `TurnResult`
     pub async fn execute_turn(
         &self,
         turn: &ProviderTurn,
+        kernel_ctx: Option<&KernelContext>,
+    ) -> TurnResult {
+        self.execute_turn_in_view(turn, &runtime_tool_view(), kernel_ctx)
+            .await
+    }
+
+    pub async fn execute_turn_in_view(
+        &self,
+        turn: &ProviderTurn,
+        tool_view: &ToolView,
+        kernel_ctx: Option<&KernelContext>,
+    ) -> TurnResult {
+        self.execute_turn_in_context(
+            turn,
+            &session_context_from_turn(turn, tool_view.clone()),
+            &DefaultAppToolDispatcher::runtime(),
+            kernel_ctx,
+        )
+        .await
+    }
+
+    pub async fn execute_turn_in_context<D: AppToolDispatcher + ?Sized>(
+        &self,
+        turn: &ProviderTurn,
+        session_context: &SessionContext,
+        app_dispatcher: &D,
         kernel_ctx: Option<&KernelContext>,
     ) -> TurnResult {
         // No tool intents → just return the text
@@ -333,56 +563,110 @@ impl TurnEngine {
         }
 
         // Check each tool intent is known
+        let catalog = tool_catalog();
         for intent in &turn.tool_intents {
-            if !crate::tools::is_known_tool_name(&intent.tool_name) {
+            let Some(descriptor) = catalog.resolve(&intent.tool_name) else {
                 let reason = format!("tool_not_found: {}", intent.tool_name);
                 return TurnResult::policy_denied("tool_not_found", reason);
+            };
+            if !session_context.tool_view.contains(descriptor.name) {
+                let reason = format!("tool_not_visible: {}", intent.tool_name);
+                return TurnResult::policy_denied("tool_not_visible", reason);
             }
         }
 
-        // Require kernel context for execution
-        let ctx = match kernel_ctx {
-            Some(ctx) => ctx,
-            None => return TurnResult::policy_denied("no_kernel_context", "no_kernel_context"),
-        };
-
-        // Execute each tool intent through the kernel
         let mut outputs = Vec::new();
         for intent in &turn.tool_intents {
+            let Some(descriptor) = catalog.resolve(&intent.tool_name) else {
+                let reason = format!("tool_not_found: {}", intent.tool_name);
+                return TurnResult::policy_denied("tool_not_found", reason);
+            };
             let request = ToolCoreRequest {
-                tool_name: intent.tool_name.clone(),
+                tool_name: descriptor.name.to_owned(),
                 payload: intent.args_json.clone(),
             };
-            let caps = BTreeSet::from([Capability::InvokeTool]);
-            match ctx
-                .kernel
-                .execute_tool_core(ctx.pack_id(), &ctx.token, &caps, None, request)
-                .await
-            {
-                Ok(outcome) => {
-                    outputs.push(format_tool_result_line_with_limit(
-                        intent,
-                        &outcome,
-                        self.tool_result_payload_summary_limit_chars,
-                    ));
-                }
-                Err(e) => {
-                    let reason = format!("{e}");
-                    return match classify_kernel_error(&e) {
-                        KernelFailureClass::PolicyDenied => {
-                            TurnResult::policy_denied("kernel_policy_denied", reason)
-                        }
-                        KernelFailureClass::RetryableExecution => {
-                            TurnResult::retryable_tool_error("tool_execution_failed", reason)
-                        }
-                        KernelFailureClass::NonRetryable => {
-                            TurnResult::non_retryable_tool_error("kernel_execution_failed", reason)
+            let outcome = match descriptor.execution_kind {
+                ToolExecutionKind::Core => {
+                    let ctx = match kernel_ctx {
+                        Some(ctx) => ctx,
+                        None => {
+                            return TurnResult::policy_denied(
+                                "no_kernel_context",
+                                "no_kernel_context",
+                            );
                         }
                     };
+                    let caps = BTreeSet::from([Capability::InvokeTool]);
+                    match ctx
+                        .kernel
+                        .execute_tool_core(ctx.pack_id(), &ctx.token, &caps, None, request)
+                        .await
+                    {
+                        Ok(outcome) => outcome,
+                        Err(e) => {
+                            let reason = format!("{e}");
+                            return match classify_kernel_error(&e) {
+                                KernelFailureClass::PolicyDenied => {
+                                    TurnResult::policy_denied("kernel_policy_denied", reason)
+                                }
+                                KernelFailureClass::RetryableExecution => {
+                                    TurnResult::retryable_tool_error(
+                                        "tool_execution_failed",
+                                        reason,
+                                    )
+                                }
+                                KernelFailureClass::NonRetryable => {
+                                    TurnResult::non_retryable_tool_error(
+                                        "kernel_execution_failed",
+                                        reason,
+                                    )
+                                }
+                            };
+                        }
+                    }
                 }
-            }
+                ToolExecutionKind::App => match app_dispatcher
+                    .execute_app_tool(session_context, request, kernel_ctx)
+                    .await
+                {
+                    Ok(outcome) => outcome,
+                    Err(reason) if reason.starts_with("tool_not_visible:") => {
+                        return TurnResult::policy_denied("tool_not_visible", reason);
+                    }
+                    Err(reason)
+                        if reason.starts_with("tool_not_found:")
+                            || reason.starts_with("app_tool_not_found:") =>
+                    {
+                        return TurnResult::policy_denied("tool_not_found", reason);
+                    }
+                    Err(reason) if reason.starts_with("app_tool_disabled:") => {
+                        return TurnResult::policy_denied("app_tool_disabled", reason);
+                    }
+                    Err(reason) => {
+                        return TurnResult::non_retryable_tool_error(
+                            "app_tool_execution_failed",
+                            reason,
+                        );
+                    }
+                },
+            };
+
+            outputs.push(format_tool_result_line_with_limit(
+                intent,
+                &outcome,
+                self.tool_result_payload_summary_limit_chars,
+            ));
         }
 
         TurnResult::FinalText(outputs.join("\n"))
     }
+}
+
+fn session_context_from_turn(turn: &ProviderTurn, tool_view: ToolView) -> SessionContext {
+    let session_id = turn
+        .tool_intents
+        .first()
+        .map(|intent| intent.session_id.as_str())
+        .unwrap_or("default");
+    SessionContext::root_with_tool_view(session_id, tool_view)
 }

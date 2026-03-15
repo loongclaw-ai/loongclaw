@@ -8,9 +8,10 @@ pub mod memory;
 pub mod migration;
 pub mod prompt;
 pub mod provider;
+pub mod runtime_env;
+pub mod session;
 pub mod tools;
 
-#[cfg(test)]
 mod process_env;
 #[cfg(test)]
 pub(crate) mod test_support;
