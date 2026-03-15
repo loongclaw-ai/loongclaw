@@ -8,6 +8,8 @@
 use super::*;
 use std::collections::VecDeque;
 use std::ffi::OsString;
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
 use std::sync::MutexGuard;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -152,9 +154,12 @@ impl ScriptedOnboardUi {
     }
 
     fn next_input(&mut self, label: &str) -> crate::CliResult<String> {
-        self.inputs
-            .pop_front()
-            .ok_or_else(|| format!("missing scripted input for {label}"))
+        self.inputs.pop_front().ok_or_else(|| {
+            format!(
+                "missing scripted input for {label}; transcript so far:\n{}",
+                self.outputs.join("\n")
+            )
+        })
     }
 }
 
@@ -194,12 +199,24 @@ async fn run_scripted_onboard_flow(
     workspace_root: Option<PathBuf>,
     codex_config_path: Option<PathBuf>,
 ) -> crate::CliResult<Vec<String>> {
+    run_scripted_onboard_flow_with_context(
+        options,
+        inputs,
+        crate::onboard_cli::OnboardRuntimeContext::new_for_tests(
+            80,
+            workspace_root,
+            codex_config_path,
+        ),
+    )
+    .await
+}
+
+async fn run_scripted_onboard_flow_with_context(
+    options: crate::onboard_cli::OnboardCommandOptions,
+    inputs: impl IntoIterator<Item = impl Into<String>>,
+    context: crate::onboard_cli::OnboardRuntimeContext,
+) -> crate::CliResult<Vec<String>> {
     let mut ui = ScriptedOnboardUi::new(inputs);
-    let context = crate::onboard_cli::OnboardRuntimeContext::new_for_tests(
-        80,
-        workspace_root,
-        codex_config_path,
-    );
     crate::onboard_cli::run_onboard_cli_with_ui(options, &mut ui, &context).await?;
     Ok(ui.transcript())
 }
@@ -223,6 +240,62 @@ fn extract_success_section_lines(transcript: &[String]) -> Vec<String> {
         .position(|line| line == "onboarding complete")
         .expect("transcript should include success section");
     transcript[start..].to_vec()
+}
+
+fn start_local_model_probe_server(
+    expected_requests: usize,
+) -> (SocketAddr, std::thread::JoinHandle<Vec<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local provider test listener");
+    let addr = listener.local_addr().expect("local addr");
+    let server = std::thread::spawn(move || {
+        let mut requests = Vec::new();
+        for _ in 0..expected_requests {
+            let (mut stream, _) = listener.accept().expect("accept local provider request");
+            let mut request_buf = [0_u8; 8192];
+            let len = stream.read(&mut request_buf).expect("read request");
+            let request = String::from_utf8_lossy(&request_buf[..len]).to_string();
+            requests.push(request.clone());
+
+            let (status_line, body) = if request.starts_with("GET /v1/models ") {
+                (
+                    "HTTP/1.1 200 OK",
+                    r#"{"data":[{"id":"openai/gpt-5.1-codex"}]}"#.to_owned(),
+                )
+            } else {
+                (
+                    "HTTP/1.1 404 Not Found",
+                    r#"{"error":{"message":"unexpected request"}}"#.to_owned(),
+                )
+            };
+
+            let response = format!(
+                "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+        }
+        requests
+    });
+    (addr, server)
+}
+
+fn default_non_interactive_onboard_options(
+    output: &std::path::Path,
+) -> crate::onboard_cli::OnboardCommandOptions {
+    crate::onboard_cli::OnboardCommandOptions {
+        output: Some(output.display().to_string()),
+        force: false,
+        non_interactive: true,
+        accept_risk: true,
+        provider: None,
+        model: None,
+        api_key_env: None,
+        system_prompt: None,
+        skip_model_probe: false,
+    }
 }
 
 #[test]
@@ -355,6 +428,373 @@ fn non_interactive_requires_explicit_risk_acknowledgement() {
         .expect("risk gate should pass after acknowledgement");
     crate::onboard_cli::validate_non_interactive_risk_gate(false, false)
         .expect("interactive mode should not require explicit flag");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn non_interactive_onboard_rejects_unresolved_preflight_warnings() {
+    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
+    let root = unique_temp_path("non-interactive-warning-root");
+    std::fs::create_dir_all(&root).expect("create test root");
+    let output = root.join("loongclaw.toml");
+
+    let (addr, server) = start_local_model_probe_server(1);
+
+    let mut config = mvp::config::LoongClawConfig::default();
+    config.provider.base_url = format!("http://{addr}");
+    config.provider.model = "openai/gpt-5.1-codex".to_owned();
+    config.provider.wire_api = mvp::config::ProviderWireApi::Responses;
+    config.provider.api_key = Some("test-openai-key".to_owned());
+    mvp::config::write(Some(output.to_string_lossy().as_ref()), &config, true)
+        .expect("write existing config");
+
+    let mut ui = ScriptedOnboardUi::new(std::iter::empty::<String>());
+    let context = crate::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, None);
+    let error = crate::onboard_cli::run_onboard_cli_with_ui(
+        default_non_interactive_onboard_options(&output),
+        &mut ui,
+        &context,
+    )
+    .await
+    .expect_err("non-interactive onboarding should stop on unresolved warnings");
+
+    assert!(
+        error.contains("unresolved") && error.contains("warning"),
+        "unexpected warning-gate error: {error}"
+    );
+
+    let requests = server.join().expect("join local provider server");
+    assert!(
+        requests.iter().any(|request| {
+            let normalized = request.to_ascii_lowercase();
+            request.starts_with("GET /v1/models ")
+                && normalized.contains("authorization: bearer test-openai-key")
+        }),
+        "warning reproduction should still perform the model probe before the warning gate: {requests:#?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn non_interactive_onboard_allows_explicit_skip_model_probe_warning() {
+    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
+    let root = unique_temp_path("non-interactive-skip-model-probe-root");
+    std::fs::create_dir_all(&root).expect("create test root");
+    let output = root.join("loongclaw.toml");
+    unsafe {
+        std::env::set_var("OPENAI_API_KEY", "test-openai-key");
+    }
+
+    let mut options = default_non_interactive_onboard_options(&output);
+    options.skip_model_probe = true;
+    options.model = Some("openai/gpt-5.1-codex".to_owned());
+
+    let mut ui = ScriptedOnboardUi::new(std::iter::empty::<String>());
+    let context = crate::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, None);
+    crate::onboard_cli::run_onboard_cli_with_ui(options, &mut ui, &context)
+        .await
+        .expect("explicitly skipped model probe should not block non-interactive onboarding");
+
+    let raw = std::fs::read_to_string(&output).expect("read written onboarding config");
+    assert!(
+        raw.contains("api_key = \"${OPENAI_API_KEY}\""),
+        "onboarding should persist the default provider credential as a canonical env reference: {raw}"
+    );
+    assert!(
+        !raw.contains("api_key_env"),
+        "canonical onboarding config should not persist the legacy api_key_env field: {raw}"
+    );
+
+    let (_, config) = mvp::config::load(Some(output.to_string_lossy().as_ref()))
+        .expect("load written onboarding config");
+    assert_eq!(config.provider.model, "openai/gpt-5.1-codex");
+    assert_eq!(
+        config.provider.api_key.as_deref(),
+        Some("${OPENAI_API_KEY}")
+    );
+    assert_eq!(
+        config.provider.api_key(),
+        Some("test-openai-key".to_owned()),
+        "loaded config should still resolve the canonical env reference at runtime"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn non_interactive_api_key_env_override_clears_existing_oauth_credentials() {
+    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
+    let root = unique_temp_path("non-interactive-api-key-env-override-root");
+    std::fs::create_dir_all(&root).expect("create test root");
+    let output = root.join("loongclaw.toml");
+    unsafe {
+        std::env::set_var("OPENAI_API_KEY", "test-openai-key");
+    }
+
+    let mut existing = mvp::config::LoongClawConfig::default();
+    existing.provider.model = "openai/gpt-5.1-codex".to_owned();
+    existing.provider.oauth_access_token = Some("${OPENAI_CODEX_OAUTH_TOKEN}".to_owned());
+    mvp::config::write(Some(output.to_string_lossy().as_ref()), &existing, true)
+        .expect("write existing config with oauth credential");
+
+    let mut options = default_non_interactive_onboard_options(&output);
+    options.force = true;
+    options.skip_model_probe = true;
+    options.api_key_env = Some("OPENAI_API_KEY".to_owned());
+    options.model = Some("openai/gpt-5.1-codex".to_owned());
+
+    let mut ui = ScriptedOnboardUi::new(std::iter::empty::<String>());
+    let context = crate::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, None);
+    crate::onboard_cli::run_onboard_cli_with_ui(options, &mut ui, &context)
+        .await
+        .expect("explicit api key env override should succeed");
+
+    let raw = std::fs::read_to_string(&output).expect("read written onboarding config");
+    assert!(
+        raw.contains("api_key = \"${OPENAI_API_KEY}\""),
+        "api key env override should persist the selected api key source: {raw}"
+    );
+    assert!(
+        !raw.contains("OPENAI_CODEX_OAUTH_TOKEN"),
+        "api key env override should clear stale oauth credentials instead of keeping both sources: {raw}"
+    );
+
+    let (_, config) = mvp::config::load(Some(output.to_string_lossy().as_ref()))
+        .expect("load written onboarding config");
+    assert_eq!(config.provider.oauth_access_token, None);
+    assert_eq!(
+        config.provider.api_key.as_deref(),
+        Some("${OPENAI_API_KEY}"),
+        "reloaded config should keep only the selected api key credential source"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn non_interactive_api_key_env_override_clears_existing_inline_api_key() {
+    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
+    let root = unique_temp_path("non-interactive-inline-api-key-override-root");
+    std::fs::create_dir_all(&root).expect("create test root");
+    let output = root.join("loongclaw.toml");
+    unsafe {
+        std::env::set_var("OPENAI_API_KEY", "test-openai-key");
+    }
+
+    let mut existing = mvp::config::LoongClawConfig::default();
+    existing.provider.model = "openai/gpt-5.1-codex".to_owned();
+    existing.provider.api_key = Some("inline-secret".to_owned());
+    mvp::config::write(Some(output.to_string_lossy().as_ref()), &existing, true)
+        .expect("write existing config with inline api key");
+
+    let mut options = default_non_interactive_onboard_options(&output);
+    options.force = true;
+    options.skip_model_probe = true;
+    options.api_key_env = Some("OPENAI_API_KEY".to_owned());
+    options.model = Some("openai/gpt-5.1-codex".to_owned());
+
+    let mut ui = ScriptedOnboardUi::new(std::iter::empty::<String>());
+    let context = crate::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, None);
+    crate::onboard_cli::run_onboard_cli_with_ui(options, &mut ui, &context)
+        .await
+        .expect("explicit api key env override should succeed");
+
+    let raw = std::fs::read_to_string(&output).expect("read written onboarding config");
+    assert!(
+        raw.contains("api_key = \"${OPENAI_API_KEY}\""),
+        "api key env override should persist the selected api key source: {raw}"
+    );
+    assert!(
+        !raw.contains("inline-secret"),
+        "api key env override should remove the old inline secret instead of persisting both credential forms: {raw}"
+    );
+
+    let (_, config) = mvp::config::load(Some(output.to_string_lossy().as_ref()))
+        .expect("load written onboarding config");
+    assert_eq!(
+        config.provider.api_key.as_deref(),
+        Some("${OPENAI_API_KEY}"),
+        "reloaded config should keep only the selected api key env reference"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn non_interactive_onboard_uses_the_same_detected_starting_point_order_as_interactive_default()
+ {
+    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
+    unsafe {
+        std::env::set_var("OPENAI_API_KEY", "openai-test-token");
+        std::env::set_var("DEEPSEEK_API_KEY", "deepseek-test-token");
+    }
+
+    let root = unique_temp_path("non-interactive-starting-point-order");
+    std::fs::create_dir_all(&root).expect("create test root");
+    let interactive_output = root.join("interactive.toml");
+    let non_interactive_output = root.join("non-interactive.toml");
+
+    let (addr, server) = start_local_model_probe_server(2);
+
+    let z_openai_codex = root.join("z-openai.toml");
+    std::fs::write(
+        &z_openai_codex,
+        format!(
+            r#"
+model_provider = "openai"
+model = "openai/gpt-5.1-codex"
+
+[model_providers.openai]
+base_url = "http://{addr}"
+wire_api = "chat_completions"
+requires_openai_auth = true
+"#
+        ),
+    )
+    .expect("write openai codex config");
+
+    let a_deepseek_codex = root.join("a-deepseek.toml");
+    std::fs::write(
+        &a_deepseek_codex,
+        format!(
+            r#"
+model_provider = "deepseek"
+model = "deepseek-chat"
+
+[model_providers.deepseek]
+base_url = "http://{addr}"
+wire_api = "chat_completions"
+requires_openai_auth = true
+"#
+        ),
+    )
+    .expect("write deepseek codex config");
+
+    let codex_paths = vec![z_openai_codex.clone(), a_deepseek_codex.clone()];
+    let interactive_context =
+        crate::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, codex_paths.clone());
+    let interactive_transcript = run_scripted_onboard_flow_with_context(
+        crate::onboard_cli::OnboardCommandOptions {
+            output: Some(interactive_output.display().to_string()),
+            force: false,
+            non_interactive: false,
+            accept_risk: true,
+            provider: None,
+            model: None,
+            api_key_env: None,
+            system_prompt: None,
+            skip_model_probe: false,
+        },
+        vec![
+            "1".to_owned(),
+            "1".to_owned(),
+            "1".to_owned(),
+            "y".to_owned(),
+        ],
+        interactive_context,
+    )
+    .await
+    .expect("run interactive onboarding");
+
+    let (_, interactive_config) = mvp::config::load(Some(
+        interactive_output
+            .to_str()
+            .expect("interactive output path should be valid utf-8"),
+    ))
+    .expect("load interactive onboarding config");
+    assert_eq!(
+        interactive_config.provider.kind,
+        mvp::config::ProviderKind::Deepseek,
+        "interactive default should follow the sorted starting-point order and pick the alphabetically first detected source: {interactive_transcript:#?}"
+    );
+    assert_eq!(interactive_config.provider.model, "deepseek-chat");
+
+    let non_interactive_context =
+        crate::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, codex_paths);
+    let mut ui = ScriptedOnboardUi::new(std::iter::empty::<String>());
+    crate::onboard_cli::run_onboard_cli_with_ui(
+        crate::onboard_cli::OnboardCommandOptions {
+            output: Some(non_interactive_output.display().to_string()),
+            force: false,
+            non_interactive: true,
+            accept_risk: true,
+            provider: None,
+            model: None,
+            api_key_env: None,
+            system_prompt: None,
+            skip_model_probe: false,
+        },
+        &mut ui,
+        &non_interactive_context,
+    )
+    .await
+    .expect("run non-interactive onboarding");
+
+    let (_, non_interactive_config) = mvp::config::load(Some(
+        non_interactive_output
+            .to_str()
+            .expect("non-interactive output path should be valid utf-8"),
+    ))
+    .expect("load non-interactive onboarding config");
+    assert_eq!(
+        non_interactive_config.provider.kind, interactive_config.provider.kind,
+        "non-interactive onboarding should reuse the same detected starting-point ordering as the interactive default"
+    );
+    assert_eq!(
+        non_interactive_config.provider.model,
+        interactive_config.provider.model
+    );
+
+    let requests = server.join().expect("join local provider server");
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.starts_with("GET /v1/models "))
+            .count(),
+        2,
+        "both onboarding runs should probe exactly one selected provider each: {requests:#?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn onboard_restores_original_config_when_memory_bootstrap_fails_after_write() {
+    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
+    let root = unique_temp_path("memory-bootstrap-rollback-root");
+    std::fs::create_dir_all(&root).expect("create test root");
+    let output = root.join("loongclaw.toml");
+    let invalid_sqlite_dir = root.join("memory-dir");
+    std::fs::create_dir_all(&invalid_sqlite_dir).expect("create invalid sqlite directory");
+
+    let (addr, server) = start_local_model_probe_server(1);
+
+    let mut config = mvp::config::LoongClawConfig::default();
+    config.provider.base_url = format!("http://{addr}");
+    config.provider.model = "openai/gpt-5.1-codex".to_owned();
+    config.provider.api_key = Some("test-openai-key".to_owned());
+    config.memory.sqlite_path = invalid_sqlite_dir.display().to_string();
+    mvp::config::write(Some(output.to_string_lossy().as_ref()), &config, true)
+        .expect("write existing config");
+    let original_body = std::fs::read_to_string(&output).expect("read original config");
+
+    let mut options = default_non_interactive_onboard_options(&output);
+    options.force = true;
+    options.model = Some("gpt-4.1-mini".to_owned());
+
+    let mut ui = ScriptedOnboardUi::new(std::iter::empty::<String>());
+    let context = crate::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, None);
+    let error = crate::onboard_cli::run_onboard_cli_with_ui(options, &mut ui, &context)
+        .await
+        .expect_err("memory bootstrap failure should abort onboarding");
+
+    assert!(
+        error.contains("failed to bootstrap sqlite memory"),
+        "unexpected bootstrap failure error: {error}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&output).expect("read config after rollback"),
+        original_body,
+        "onboarding should restore the original config when post-write bootstrap fails"
+    );
+
+    let requests = server.join().expect("join local provider server");
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.starts_with("GET /v1/models ")),
+        "post-write rollback path should still reach the provider model probe before bootstrap: {requests:#?}"
+    );
 }
 
 #[test]

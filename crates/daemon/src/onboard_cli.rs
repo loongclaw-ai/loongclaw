@@ -305,6 +305,13 @@ struct ConfigWritePlan {
     backup_path: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone)]
+struct OnboardWriteRecovery {
+    output_preexisted: bool,
+    backup_path: Option<PathBuf>,
+    keep_backup_on_success: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OnboardShortcutKind {
     CurrentSetup,
@@ -478,11 +485,7 @@ pub(crate) async fn run_onboard_cli_with_ui(
         let default_api_key_env = preferred_api_key_env_default(&config);
         let selected_api_key_env =
             resolve_api_key_env_selection(&options, &config, default_api_key_env, ui, context)?;
-        config.provider.api_key_env = if selected_api_key_env.trim().is_empty() {
-            None
-        } else {
-            Some(selected_api_key_env)
-        };
+        apply_selected_api_key_env(&mut config.provider, selected_api_key_env);
 
         if let Some(system_prompt) =
             resolve_system_prompt_selection(&options, &config, ui, context)?
@@ -528,6 +531,10 @@ pub(crate) async fn run_onboard_cli_with_ui(
     let has_warnings = checks
         .iter()
         .any(|check| check.level == OnboardCheckLevel::Warn);
+    let has_blocking_non_interactive_warnings = checks.iter().any(|check| {
+        check.level == OnboardCheckLevel::Warn
+            && !is_explicitly_accepted_non_interactive_warning(check, &options)
+    });
     let existing_output_config = load_existing_output_config(&output_path);
     let skip_config_write = should_skip_config_write(existing_output_config.as_ref(), &config);
 
@@ -543,6 +550,12 @@ pub(crate) async fn run_onboard_cli_with_ui(
         if has_failures {
             return Err(
                 "onboard preflight failed. rerun with --skip-model-probe if your provider blocks model listing during setup"
+                    .to_owned(),
+            );
+        }
+        if has_blocking_non_interactive_warnings {
+            return Err(
+                "onboard preflight failed: unresolved warnings require interactive review; rerun without --non-interactive to inspect and confirm them"
                     .to_owned(),
             );
         }
@@ -584,28 +597,57 @@ pub(crate) async fn run_onboard_cli_with_ui(
         }
     }
 
-    let (path, config_status) = if skip_config_write {
+    let (path, config_status, write_recovery) = if skip_config_write {
         (
             output_path.clone(),
             Some("existing config kept; no changes were needed".to_owned()),
+            None,
         )
     } else {
         let write_plan = resolve_write_plan(&output_path, &options, ui, context)?;
-        prepare_output_path_for_write(&output_path, &write_plan, ui)?;
-        let path = mvp::config::write(options.output.as_deref(), &config, write_plan.force)?;
-        (path, None)
+        let write_recovery = prepare_output_path_for_write(&output_path, &write_plan, ui)?;
+        let path = match mvp::config::write(options.output.as_deref(), &config, write_plan.force) {
+            Ok(path) => path,
+            Err(error) => {
+                return Err(rollback_onboard_write_failure(
+                    &output_path,
+                    &write_recovery,
+                    error,
+                ));
+            }
+        };
+        (path, None, Some(write_recovery))
     };
     #[cfg(feature = "memory-sqlite")]
     let memory_path = {
         let mem_config =
             mvp::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
-        mvp::memory::ensure_memory_db_ready(Some(config.memory.resolved_sqlite_path()), &mem_config)
-            .map_err(|error| format!("failed to bootstrap sqlite memory: {error}"))?
+        match mvp::memory::ensure_memory_db_ready(
+            Some(config.memory.resolved_sqlite_path()),
+            &mem_config,
+        ) {
+            Ok(path) => path,
+            Err(error) => {
+                let failure = format!("failed to bootstrap sqlite memory: {error}");
+                if let Some(write_recovery) = write_recovery.as_ref() {
+                    return Err(rollback_onboard_write_failure(
+                        &output_path,
+                        write_recovery,
+                        failure,
+                    ));
+                }
+                return Err(failure);
+            }
+        }
     };
 
     let memory_path_display = Some(memory_path.display().to_string());
     #[cfg(not(feature = "memory-sqlite"))]
     let memory_path_display: Option<String> = None;
+
+    if let Some(write_recovery) = write_recovery.as_ref() {
+        write_recovery.finish_success();
+    }
 
     let success_summary = build_onboarding_success_summary_with_memory(
         &path,
@@ -895,6 +937,22 @@ fn resolve_api_key_env_selection(
     Ok(value.trim().to_owned())
 }
 
+fn apply_selected_api_key_env(
+    provider: &mut mvp::config::ProviderConfig,
+    selected_api_key_env: String,
+) {
+    let selected_api_key_env = selected_api_key_env.trim();
+    if selected_api_key_env.is_empty() {
+        provider.set_api_key_env(None);
+        return;
+    }
+
+    provider.api_key = None;
+    provider.oauth_access_token = None;
+    provider.set_oauth_access_token_env(None);
+    provider.set_api_key_env(Some(selected_api_key_env.to_owned()));
+}
+
 fn resolve_system_prompt_selection(
     options: &OnboardCommandOptions,
     config: &mvp::config::LoongClawConfig,
@@ -1041,6 +1099,15 @@ fn provider_transport_check(config: &mvp::config::LoongClawConfig) -> OnboardChe
         },
         detail: readiness.detail,
     }
+}
+
+fn is_explicitly_accepted_non_interactive_warning(
+    check: &OnboardCheck,
+    options: &OnboardCommandOptions,
+) -> bool {
+    options.skip_model_probe
+        && check.name == "provider model probe"
+        && check.detail == "skipped by --skip-model-probe"
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1500,17 +1567,19 @@ fn select_non_interactive_starting_config(
                 starting_config_selection_from_current_candidate(candidate, current_setup_state)
             })
             .unwrap_or_else(default_starting_config_selection),
-        OnboardEntryChoice::ImportDetectedSetup => import_candidates
-            .into_iter()
-            .next()
-            .map(|candidate| {
-                starting_config_selection_from_import_candidate(
-                    candidate,
-                    all_candidates,
-                    current_setup_state,
-                )
-            })
-            .unwrap_or_else(default_starting_config_selection),
+        OnboardEntryChoice::ImportDetectedSetup => {
+            sort_starting_point_candidates(import_candidates)
+                .into_iter()
+                .map(|candidate| {
+                    starting_config_selection_from_import_candidate(
+                        candidate,
+                        all_candidates,
+                        current_setup_state,
+                    )
+                })
+                .next()
+                .unwrap_or_else(default_starting_config_selection)
+        }
         OnboardEntryChoice::StartFresh => default_starting_config_selection(),
     }
 }
@@ -4148,21 +4217,93 @@ fn prepare_output_path_for_write(
     output_path: &Path,
     plan: &ConfigWritePlan,
     ui: &mut impl OnboardUi,
-) -> CliResult<()> {
-    if let Some(backup_path) = plan.backup_path.as_deref() {
+) -> CliResult<OnboardWriteRecovery> {
+    let output_preexisted = output_path.exists();
+    let keep_backup_on_success = plan.backup_path.is_some();
+    let backup_path = if output_preexisted {
+        Some(
+            plan.backup_path
+                .clone()
+                .unwrap_or(resolve_rollback_backup_path(output_path)?),
+        )
+    } else {
+        None
+    };
+
+    if let Some(backup_path) = backup_path.as_deref() {
         backup_existing_config(output_path, backup_path)?;
+    }
+    if let Some(backup_path) = plan.backup_path.as_deref() {
         print_message(
             ui,
             format!("Backed up existing config to: {}", backup_path.display()),
         )?;
     }
-    Ok(())
+    Ok(OnboardWriteRecovery {
+        output_preexisted,
+        backup_path,
+        keep_backup_on_success,
+    })
 }
 
 pub(crate) fn backup_existing_config(output_path: &Path, backup_path: &Path) -> CliResult<()> {
     fs::copy(output_path, backup_path)
         .map_err(|error| format!("failed to backup config: {error}"))?;
     Ok(())
+}
+
+impl OnboardWriteRecovery {
+    fn rollback(&self, output_path: &Path) -> CliResult<()> {
+        if self.output_preexisted {
+            let backup_path = self
+                .backup_path
+                .as_deref()
+                .ok_or_else(|| "missing rollback backup for existing config".to_owned())?;
+            fs::copy(backup_path, output_path).map_err(|error| {
+                format!(
+                    "failed to restore original config {} from backup {}: {error}",
+                    output_path.display(),
+                    backup_path.display(),
+                )
+            })?;
+            self.finish_success();
+            return Ok(());
+        }
+
+        if output_path.exists() {
+            fs::remove_file(output_path).map_err(|error| {
+                format!(
+                    "failed to remove partial config {} after onboarding failure: {error}",
+                    output_path.display()
+                )
+            })?;
+        }
+        self.finish_success();
+        Ok(())
+    }
+
+    fn finish_success(&self) {
+        if self.keep_backup_on_success {
+            return;
+        }
+        if let Some(backup_path) = self.backup_path.as_deref() {
+            let _ = fs::remove_file(backup_path);
+        }
+    }
+}
+
+fn rollback_onboard_write_failure(
+    output_path: &Path,
+    write_recovery: &OnboardWriteRecovery,
+    failure: impl Into<String>,
+) -> String {
+    let failure = failure.into();
+    match write_recovery.rollback(output_path) {
+        Ok(()) => failure,
+        Err(rollback_error) => {
+            format!("{failure}; additionally failed to restore original config: {rollback_error}")
+        }
+    }
 }
 
 fn resolve_backup_path(original: &Path) -> CliResult<PathBuf> {
@@ -4181,6 +4322,27 @@ fn resolve_backup_path_at(original: &Path, timestamp: OffsetDateTime) -> CliResu
     Ok(parent.join(format!("{}.toml.bak-{}", file_stem, formatted_timestamp)))
 }
 
+fn resolve_rollback_backup_path(original: &Path) -> CliResult<PathBuf> {
+    let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
+    resolve_rollback_backup_path_at(original, now)
+}
+
+fn resolve_rollback_backup_path_at(
+    original: &Path,
+    timestamp: OffsetDateTime,
+) -> CliResult<PathBuf> {
+    let parent = original.parent().unwrap_or(Path::new("."));
+    let file_name = original
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "config.toml".to_owned());
+
+    let formatted_timestamp = format_backup_timestamp_at(timestamp)?;
+    Ok(parent.join(format!(
+        ".{file_name}.onboard-rollback-{formatted_timestamp}"
+    )))
+}
+
 fn format_backup_timestamp_at(timestamp: OffsetDateTime) -> CliResult<String> {
     timestamp
         .format(BACKUP_TIMESTAMP_FORMAT)
@@ -4190,6 +4352,53 @@ fn format_backup_timestamp_at(timestamp: OffsetDateTime) -> CliResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn import_candidate_with_domain_status(
+        source_kind: crate::migration::ImportSourceKind,
+        source: &str,
+        domains: impl IntoIterator<
+            Item = (
+                crate::migration::SetupDomainKind,
+                crate::migration::PreviewStatus,
+            ),
+        >,
+    ) -> ImportCandidate {
+        ImportCandidate {
+            source_kind,
+            source: source.to_owned(),
+            config: mvp::config::LoongClawConfig::default(),
+            surfaces: Vec::new(),
+            domains: domains
+                .into_iter()
+                .map(|(kind, status)| crate::migration::DomainPreview {
+                    kind,
+                    status,
+                    decision: Some(crate::migration::types::PreviewDecision::UseDetected),
+                    source: source.to_owned(),
+                    summary: format!("{} {}", kind.label(), status.label()),
+                })
+                .collect(),
+            channel_candidates: Vec::new(),
+            workspace_guidance: Vec::new(),
+        }
+    }
+
+    fn recommended_import_entry_options() -> Vec<OnboardEntryOption> {
+        vec![
+            OnboardEntryOption {
+                choice: OnboardEntryChoice::ImportDetectedSetup,
+                label: "Use detected starting point",
+                detail: "detected setup is recommended".to_owned(),
+                recommended: true,
+            },
+            OnboardEntryOption {
+                choice: OnboardEntryChoice::StartFresh,
+                label: "Start fresh",
+                detail: "configure from scratch".to_owned(),
+                recommended: false,
+            },
+        ]
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_preflight_checks_includes_provider_transport_review_for_responses_compatibility_mode()
@@ -4210,6 +4419,54 @@ mod tests {
                         .contains("retry chat_completions automatically")
             }),
             "preflight should surface transport review before writing a Responses-compatible config: {checks:#?}"
+        );
+    }
+
+    #[test]
+    fn select_non_interactive_starting_config_uses_sorted_detected_candidate_priority() {
+        let codex_candidate = import_candidate_with_domain_status(
+            crate::migration::ImportSourceKind::CodexConfig,
+            "Codex config at ~/.codex/config.toml",
+            [(
+                crate::migration::SetupDomainKind::Provider,
+                crate::migration::PreviewStatus::Ready,
+            )],
+        );
+        let environment_candidate = import_candidate_with_domain_status(
+            crate::migration::ImportSourceKind::Environment,
+            "your current environment",
+            [
+                (
+                    crate::migration::SetupDomainKind::Provider,
+                    crate::migration::PreviewStatus::Ready,
+                ),
+                (
+                    crate::migration::SetupDomainKind::Channels,
+                    crate::migration::PreviewStatus::Ready,
+                ),
+                (
+                    crate::migration::SetupDomainKind::WorkspaceGuidance,
+                    crate::migration::PreviewStatus::Ready,
+                ),
+            ],
+        );
+        let all_candidates = vec![codex_candidate, environment_candidate];
+
+        let selection = select_non_interactive_starting_config(
+            crate::migration::CurrentSetupState::Absent,
+            &recommended_import_entry_options(),
+            None,
+            all_candidates.clone(),
+            &all_candidates,
+        );
+
+        assert_eq!(
+            selection
+                .review_candidate
+                .as_ref()
+                .map(|candidate| candidate.source_kind),
+            Some(crate::migration::ImportSourceKind::Environment),
+            "non-interactive onboarding should reuse the same sorted detected-candidate priority as the interactive chooser: {selection:#?}"
         );
     }
 
