@@ -273,13 +273,16 @@ Focus: ship a low-friction daily-usable daemon entry for non-developers.
 Delivered in current baseline:
 
 - `onboard` command as the primary first-run configuration and diagnostics flow
+- `ask` command as the one-shot assistant fast path
 - `chat` command as baseline CLI channel
+- `doctor` repair loop with `--fix` and machine-readable output
 - first-party Telegram polling channel adapter
 - first-party Feishu webhook channel adapter
 - SQLite-backed conversation memory with sliding-window retrieval
-- core tool execution for `shell.exec`, `file.read`, `file.write`
+- core tool execution for `shell.exec`, `file.read`, `file.write`, `web.fetch`
 - one-command source install scripts (`scripts/install.sh`, `scripts/install.ps1`)
 - Cargo feature flags for MVP packaging controls
+- product specs for onboarding, one-shot ask, doctor, channel setup, and WebChat expectations
 - modular channel/provider architecture for extension-safe evolution:
   - `app/channel/feishu/*` split into adapter/payload/webhook layers
   - Feishu encrypted webhook payload decrypt lane with signature verification
@@ -298,12 +301,15 @@ Remaining deliverables:
   - prebuilt binaries
   - one-command onboarding on macOS/Linux/Windows
   - guided onboarding flow and diagnostics
+- browser-facing assistant surface:
+  - WebChat implementation
+  - browser/web automation beyond `web.fetch`
 
 Acceptance criteria:
 
-- a new user can install and complete first successful chat in <= 5 minutes
+- a new user can install and complete a first successful `ask` or `chat` in <= 5 minutes
 - local memory persistence is stable across process restarts
-- shell/file tools obey policy constraints and emit auditable outcomes
+- shell/file/web tools obey policy constraints and emit auditable outcomes
 - channel/provider modules can be toggled by feature flags without core code edits
 
 ## Quality Gate Matrix (Always On)

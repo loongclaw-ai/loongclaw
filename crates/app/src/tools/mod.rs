@@ -23,6 +23,8 @@ pub mod runtime_config;
 mod session;
 mod shell;
 pub mod shell_policy_ext;
+#[cfg(feature = "tool-webfetch")]
+mod web_fetch;
 
 pub use catalog::{
     ToolApprovalMode, ToolAvailability, ToolCatalog, ToolDescriptor, ToolExecutionKind,
@@ -239,6 +241,8 @@ pub fn execute_tool_core_with_config(
         "provider.switch" => {
             provider_switch::execute_provider_switch_tool_with_config(request, config)
         }
+        #[cfg(feature = "tool-webfetch")]
+        "web.fetch" => web_fetch::execute_web_fetch_tool_with_config(request, config),
         _ => Err(format!(
             "tool_not_found: unknown tool `{}`",
             request.tool_name
@@ -381,6 +385,13 @@ fn _shape_examples() -> BTreeMap<&'static str, Value> {
                 "path": "notes.txt",
                 "content": "hello",
                 "create_dirs": true
+            }),
+        ),
+        (
+            "web.fetch",
+            json!({
+                "url": "https://docs.example.com/page",
+                "mode": "readable_text"
             }),
         ),
     ])
@@ -537,6 +548,9 @@ mod tests {
             snapshot.contains("- sessions_list: List visible sessions and their high-level state")
         );
         assert!(snapshot.contains("- shell.exec: Execute shell commands"));
+        assert!(snapshot.contains(
+            "- web.fetch: Fetch a public web page with SSRF-safe guards and readable extraction"
+        ));
 
         // Verify sorted order matches the catalog snapshot emitted to providers.
         let lines: Vec<&str> = snapshot.lines().skip(1).collect();
@@ -566,6 +580,7 @@ mod tests {
             "- sessions_history",
             "- sessions_list",
             "- shell.exec",
+            "- web.fetch",
         ];
         assert_eq!(lines.len(), ordered_prefixes.len());
         for (line, prefix) in lines.iter().zip(ordered_prefixes) {
@@ -584,7 +599,7 @@ mod tests {
     #[test]
     fn tool_registry_returns_all_known_tools() {
         let entries = tool_registry();
-        assert_eq!(entries.len(), 25);
+        assert_eq!(entries.len(), 26);
         let names: Vec<&str> = entries.iter().map(|e| e.name).collect();
         assert!(names.contains(&"approval_request_resolve"));
         assert!(names.contains(&"approval_request_status"));
@@ -611,6 +626,7 @@ mod tests {
         assert!(names.contains(&"session_wait"));
         assert!(names.contains(&"sessions_history"));
         assert!(names.contains(&"sessions_list"));
+        assert!(names.contains(&"web.fetch"));
     }
 
     #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
@@ -647,7 +663,7 @@ mod tests {
         let defs = try_provider_tool_definitions_for_view(&planned_root_tool_view())
             .expect("all tools should now be advertisable");
 
-        assert_eq!(defs.len(), 26);
+        assert_eq!(defs.len(), 27);
     }
 
     #[cfg(feature = "memory-sqlite")]
@@ -681,6 +697,16 @@ mod tests {
             !view.contains(tool_name),
             "expected runtime view to keep `{tool_name}` hidden"
         );
+        assert!(view.contains("web.fetch"));
+    }
+
+    #[test]
+    fn runtime_tool_view_hides_web_fetch_when_disabled() {
+        let mut config = crate::config::ToolConfig::default();
+        config.web.enabled = false;
+
+        let root_view = runtime_tool_view_for_config(&config);
+        assert!(!root_view.contains("web.fetch"));
     }
 
     #[test]
@@ -746,7 +772,7 @@ mod tests {
     #[test]
     fn provider_tool_definitions_are_stable_and_complete() {
         let defs = provider_tool_definitions();
-        assert_eq!(defs.len(), 25);
+        assert_eq!(defs.len(), 26);
 
         let names: Vec<&str> = defs
             .iter()
@@ -781,7 +807,8 @@ mod tests {
                 "session_wait",
                 "sessions_history",
                 "sessions_list",
-                "shell_exec"
+                "shell_exec",
+                "web_fetch",
             ]
         );
 
@@ -900,6 +927,29 @@ mod tests {
     }
 
     #[test]
+    fn provider_tool_definitions_include_web_fetch_when_enabled() {
+        let defs = try_provider_tool_definitions_for_view(&runtime_tool_view_for_config(
+            &crate::config::ToolConfig::default(),
+        ))
+        .expect("runtime-visible tool schemas");
+        let web_fetch = defs
+            .iter()
+            .find(|item| item["function"]["name"] == "web_fetch")
+            .expect("web_fetch definition");
+        let properties = web_fetch["function"]["parameters"]["properties"]
+            .as_object()
+            .expect("web_fetch properties");
+        assert!(properties.contains_key("url"));
+        assert!(properties.contains_key("mode"));
+        assert!(properties.contains_key("max_bytes"));
+        assert_eq!(
+            properties["max_bytes"]["maximum"],
+            json!(5 * 1024 * 1024),
+            "web.fetch schema should advertise the compile-time hard cap instead of the default runtime limit"
+        );
+    }
+
+    #[test]
     fn canonical_tool_name_maps_known_aliases() {
         assert_eq!(canonical_tool_name("claw_import"), "claw.import");
         assert_eq!(
@@ -935,6 +985,7 @@ mod tests {
         assert_eq!(canonical_tool_name("provider_switch"), "provider.switch");
         assert_eq!(canonical_tool_name("shell_exec"), "shell.exec");
         assert_eq!(canonical_tool_name("shell"), "shell.exec");
+        assert_eq!(canonical_tool_name("web_fetch"), "web.fetch");
         assert_eq!(canonical_tool_name("file.read"), "file.read");
     }
 
@@ -965,6 +1016,8 @@ mod tests {
         assert!(is_known_tool_name("shell.exec"));
         assert!(is_known_tool_name("shell_exec"));
         assert!(is_known_tool_name("shell"));
+        assert!(is_known_tool_name("web.fetch"));
+        assert!(is_known_tool_name("web_fetch"));
         assert!(!is_known_tool_name("nonexistent.tool"));
     }
 

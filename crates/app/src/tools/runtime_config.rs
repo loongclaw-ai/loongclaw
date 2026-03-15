@@ -27,6 +27,31 @@ impl Default for ExternalSkillsRuntimePolicy {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebFetchRuntimePolicy {
+    pub enabled: bool,
+    pub allow_private_hosts: bool,
+    pub allowed_domains: BTreeSet<String>,
+    pub blocked_domains: BTreeSet<String>,
+    pub timeout_seconds: u64,
+    pub max_bytes: usize,
+    pub max_redirects: usize,
+}
+
+impl Default for WebFetchRuntimePolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            allow_private_hosts: false,
+            allowed_domains: BTreeSet::new(),
+            blocked_domains: BTreeSet::new(),
+            timeout_seconds: crate::config::DEFAULT_WEB_FETCH_TIMEOUT_SECONDS,
+            max_bytes: crate::config::DEFAULT_WEB_FETCH_MAX_BYTES,
+            max_redirects: crate::config::DEFAULT_WEB_FETCH_MAX_REDIRECTS,
+        }
+    }
+}
+
 /// Typed runtime configuration for tool executors.
 ///
 /// Replaces per-call `std::env::var` lookups with a single read from a
@@ -38,6 +63,7 @@ pub struct ToolRuntimeConfig {
     pub shell_deny: BTreeSet<String>,
     pub shell_default_mode: ShellPolicyDefault,
     pub config_path: Option<PathBuf>,
+    pub web_fetch: WebFetchRuntimePolicy,
     pub external_skills: ExternalSkillsRuntimePolicy,
 }
 
@@ -52,6 +78,7 @@ impl Default for ToolRuntimeConfig {
             shell_deny: BTreeSet::new(),
             shell_default_mode: ShellPolicyDefault::Deny,
             config_path: None,
+            web_fetch: WebFetchRuntimePolicy::default(),
             external_skills: ExternalSkillsRuntimePolicy::default(),
         }
     }
@@ -67,6 +94,19 @@ impl ToolRuntimeConfig {
         let config_path = std::env::var("LOONGCLAW_CONFIG_PATH")
             .ok()
             .map(PathBuf::from);
+        let web_fetch_enabled = parse_env_bool("LOONGCLAW_WEB_FETCH_ENABLED").unwrap_or(true);
+        let web_fetch_allow_private_hosts =
+            parse_env_bool("LOONGCLAW_WEB_FETCH_ALLOW_PRIVATE_HOSTS").unwrap_or(false);
+        let web_fetch_allowed_domains =
+            parse_env_domain_list("LOONGCLAW_WEB_FETCH_ALLOWED_DOMAINS");
+        let web_fetch_blocked_domains =
+            parse_env_domain_list("LOONGCLAW_WEB_FETCH_BLOCKED_DOMAINS");
+        let web_fetch_timeout_seconds = parse_env_u64("LOONGCLAW_WEB_FETCH_TIMEOUT_SECONDS")
+            .unwrap_or(crate::config::DEFAULT_WEB_FETCH_TIMEOUT_SECONDS);
+        let web_fetch_max_bytes = parse_env_usize("LOONGCLAW_WEB_FETCH_MAX_BYTES")
+            .unwrap_or(crate::config::DEFAULT_WEB_FETCH_MAX_BYTES);
+        let web_fetch_max_redirects = parse_env_usize("LOONGCLAW_WEB_FETCH_MAX_REDIRECTS")
+            .unwrap_or(crate::config::DEFAULT_WEB_FETCH_MAX_REDIRECTS);
         let enabled = parse_env_bool("LOONGCLAW_EXTERNAL_SKILLS_ENABLED").unwrap_or(false);
         let require_download_approval =
             parse_env_bool("LOONGCLAW_EXTERNAL_SKILLS_REQUIRE_DOWNLOAD_APPROVAL").unwrap_or(true);
@@ -81,6 +121,15 @@ impl ToolRuntimeConfig {
         Self {
             file_root,
             config_path,
+            web_fetch: WebFetchRuntimePolicy {
+                enabled: web_fetch_enabled,
+                allow_private_hosts: web_fetch_allow_private_hosts,
+                allowed_domains: web_fetch_allowed_domains,
+                blocked_domains: web_fetch_blocked_domains,
+                timeout_seconds: web_fetch_timeout_seconds,
+                max_bytes: web_fetch_max_bytes,
+                max_redirects: web_fetch_max_redirects,
+            },
             external_skills: ExternalSkillsRuntimePolicy {
                 enabled,
                 require_download_approval,
@@ -103,6 +152,18 @@ fn parse_env_bool(key: &str) -> Option<bool> {
             _ => None,
         }
     })
+}
+
+fn parse_env_u64(key: &str) -> Option<u64> {
+    std::env::var(key)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+}
+
+fn parse_env_usize(key: &str) -> Option<usize> {
+    std::env::var(key)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
 }
 
 fn parse_env_domain_list(key: &str) -> BTreeSet<String> {
@@ -146,6 +207,13 @@ mod tests {
         let config = ToolRuntimeConfig::default();
         assert!(config.file_root.is_none());
         assert!(config.config_path.is_none());
+        assert!(config.web_fetch.enabled);
+        assert!(!config.web_fetch.allow_private_hosts);
+        assert!(config.web_fetch.allowed_domains.is_empty());
+        assert!(config.web_fetch.blocked_domains.is_empty());
+        assert_eq!(config.web_fetch.timeout_seconds, 15);
+        assert_eq!(config.web_fetch.max_bytes, 1_048_576);
+        assert_eq!(config.web_fetch.max_redirects, 3);
         assert!(!config.external_skills.enabled);
         assert!(config.external_skills.require_download_approval);
         assert!(config.external_skills.allowed_domains.is_empty());
@@ -170,6 +238,15 @@ mod tests {
             shell_allow: BTreeSet::from(["git".to_owned(), "cargo".to_owned()]),
             file_root: Some(PathBuf::from("/tmp/test-root")),
             config_path: Some(PathBuf::from("/tmp/test-root/loongclaw.toml")),
+            web_fetch: WebFetchRuntimePolicy {
+                enabled: false,
+                allow_private_hosts: true,
+                allowed_domains: BTreeSet::from(["docs.example.com".to_owned()]),
+                blocked_domains: BTreeSet::from(["internal.example".to_owned()]),
+                timeout_seconds: 9,
+                max_bytes: 262_144,
+                max_redirects: 1,
+            },
             external_skills: ExternalSkillsRuntimePolicy {
                 enabled: true,
                 require_download_approval: false,
@@ -188,6 +265,23 @@ mod tests {
             config.config_path,
             Some(PathBuf::from("/tmp/test-root/loongclaw.toml"))
         );
+        assert!(!config.web_fetch.enabled);
+        assert!(config.web_fetch.allow_private_hosts);
+        assert!(
+            config
+                .web_fetch
+                .allowed_domains
+                .contains("docs.example.com")
+        );
+        assert!(
+            config
+                .web_fetch
+                .blocked_domains
+                .contains("internal.example")
+        );
+        assert_eq!(config.web_fetch.timeout_seconds, 9);
+        assert_eq!(config.web_fetch.max_bytes, 262_144);
+        assert_eq!(config.web_fetch.max_redirects, 1);
         assert!(config.external_skills.enabled);
         assert!(!config.external_skills.require_download_approval);
         assert!(config.external_skills.allowed_domains.contains("skills.sh"));
@@ -235,6 +329,16 @@ mod tests {
 
     #[test]
     fn from_env_parses_external_skills_policy() {
+        crate::process_env::set_var("LOONGCLAW_WEB_FETCH_ENABLED", "false");
+        crate::process_env::set_var("LOONGCLAW_WEB_FETCH_ALLOW_PRIVATE_HOSTS", "true");
+        crate::process_env::set_var(
+            "LOONGCLAW_WEB_FETCH_ALLOWED_DOMAINS",
+            "docs.example.com,api.example.com",
+        );
+        crate::process_env::set_var("LOONGCLAW_WEB_FETCH_BLOCKED_DOMAINS", "internal.example");
+        crate::process_env::set_var("LOONGCLAW_WEB_FETCH_TIMEOUT_SECONDS", "9");
+        crate::process_env::set_var("LOONGCLAW_WEB_FETCH_MAX_BYTES", "262144");
+        crate::process_env::set_var("LOONGCLAW_WEB_FETCH_MAX_REDIRECTS", "1");
         crate::process_env::set_var("LOONGCLAW_EXTERNAL_SKILLS_ENABLED", "true");
         crate::process_env::set_var(
             "LOONGCLAW_EXTERNAL_SKILLS_REQUIRE_DOWNLOAD_APPROVAL",
@@ -255,6 +359,24 @@ mod tests {
         crate::process_env::set_var("LOONGCLAW_EXTERNAL_SKILLS_AUTO_EXPOSE_INSTALLED", "false");
 
         let config = ToolRuntimeConfig::from_env();
+        assert!(!config.web_fetch.enabled);
+        assert!(config.web_fetch.allow_private_hosts);
+        assert!(
+            config
+                .web_fetch
+                .allowed_domains
+                .contains("docs.example.com")
+        );
+        assert!(config.web_fetch.allowed_domains.contains("api.example.com"));
+        assert!(
+            config
+                .web_fetch
+                .blocked_domains
+                .contains("internal.example")
+        );
+        assert_eq!(config.web_fetch.timeout_seconds, 9);
+        assert_eq!(config.web_fetch.max_bytes, 262_144);
+        assert_eq!(config.web_fetch.max_redirects, 1);
         assert!(config.external_skills.enabled);
         assert!(!config.external_skills.require_download_approval);
         assert!(config.external_skills.allowed_domains.contains("skills.sh"));
@@ -276,6 +398,13 @@ mod tests {
         );
         assert!(!config.external_skills.auto_expose_installed);
 
+        crate::process_env::remove_var("LOONGCLAW_WEB_FETCH_ENABLED");
+        crate::process_env::remove_var("LOONGCLAW_WEB_FETCH_ALLOW_PRIVATE_HOSTS");
+        crate::process_env::remove_var("LOONGCLAW_WEB_FETCH_ALLOWED_DOMAINS");
+        crate::process_env::remove_var("LOONGCLAW_WEB_FETCH_BLOCKED_DOMAINS");
+        crate::process_env::remove_var("LOONGCLAW_WEB_FETCH_TIMEOUT_SECONDS");
+        crate::process_env::remove_var("LOONGCLAW_WEB_FETCH_MAX_BYTES");
+        crate::process_env::remove_var("LOONGCLAW_WEB_FETCH_MAX_REDIRECTS");
         crate::process_env::remove_var("LOONGCLAW_EXTERNAL_SKILLS_ENABLED");
         crate::process_env::remove_var("LOONGCLAW_EXTERNAL_SKILLS_REQUIRE_DOWNLOAD_APPROVAL");
         crate::process_env::remove_var("LOONGCLAW_EXTERNAL_SKILLS_ALLOWED_DOMAINS");
@@ -305,5 +434,26 @@ mod tests {
             Some(PathBuf::from("/tmp/managed-skills"))
         );
         assert!(!policy.auto_expose_installed);
+    }
+
+    #[test]
+    fn web_fetch_policy_struct_construction() {
+        let policy = WebFetchRuntimePolicy {
+            enabled: false,
+            allow_private_hosts: true,
+            allowed_domains: BTreeSet::from(["docs.example.com".to_owned()]),
+            blocked_domains: BTreeSet::from(["internal.example".to_owned()]),
+            timeout_seconds: 9,
+            max_bytes: 262_144,
+            max_redirects: 1,
+        };
+
+        assert!(!policy.enabled);
+        assert!(policy.allow_private_hosts);
+        assert!(policy.allowed_domains.contains("docs.example.com"));
+        assert!(policy.blocked_domains.contains("internal.example"));
+        assert_eq!(policy.timeout_seconds, 9);
+        assert_eq!(policy.max_bytes, 262_144);
+        assert_eq!(policy.max_redirects, 1);
     }
 }
