@@ -102,8 +102,8 @@ impl PromptWindowQueryDiagnostics {
 }
 
 const SUMMARY_FORMAT_VERSION: i64 = 1;
-const SQLITE_MEMORY_SCHEMA_VERSION: i64 = 3;
-const SQLITE_CURRENT_SCHEMA_OBJECT_COUNT: i64 = 6;
+const SQLITE_MEMORY_SCHEMA_VERSION: i64 = 4;
+const SQLITE_CURRENT_SCHEMA_OBJECT_COUNT: i64 = 9;
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 const SQLITE_PREPARED_STATEMENT_CACHE_CAPACITY: usize = 16;
 const SQL_INSERT_TURN: &str = "INSERT INTO turns(session_id, session_turn_index, role, content, ts) VALUES (?1, ?2, ?3, ?4, ?5)";
@@ -141,11 +141,14 @@ const SQL_COUNT_CURRENT_SCHEMA_OBJECTS: &str = "SELECT COUNT(*)
                         'turns',
                         'memory_session_state',
                         'memory_summary_checkpoints',
-                        'memory_summary_checkpoint_bodies'
+                        'memory_summary_checkpoint_bodies',
+                        'approval_requests',
+                        'approval_grants'
                     ))
                 OR (type = 'index' AND name IN (
                         'idx_turns_session_id',
-                        'idx_turns_session_turn_index'
+                        'idx_turns_session_turn_index',
+                        'idx_approval_requests_session_status_requested_at'
                     ))";
 const SQL_QUERY_RECENT_PROMPT_TURNS_WITH_CHECKPOINT_META: &str = "SELECT turns.id,
              turns.role,
@@ -999,6 +1002,33 @@ fn open_sqlite_connection_with_diagnostics(
                 REFERENCES memory_summary_checkpoints(session_id) ON DELETE CASCADE,
               summary_body TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS approval_requests(
+              approval_request_id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              turn_id TEXT NOT NULL,
+              tool_call_id TEXT NOT NULL,
+              tool_name TEXT NOT NULL,
+              approval_key TEXT NOT NULL,
+              status TEXT NOT NULL,
+              decision TEXT NULL,
+              request_payload_json TEXT NOT NULL,
+              governance_snapshot_json TEXT NOT NULL,
+              requested_at INTEGER NOT NULL,
+              resolved_at INTEGER NULL,
+              resolved_by_session_id TEXT NULL,
+              executed_at INTEGER NULL,
+              last_error TEXT NULL
+            );
+            CREATE TABLE IF NOT EXISTS approval_grants(
+              scope_session_id TEXT NOT NULL,
+              approval_key TEXT NOT NULL,
+              created_by_session_id TEXT NULL,
+              created_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL,
+              PRIMARY KEY(scope_session_id, approval_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_approval_requests_session_status_requested_at
+              ON approval_requests(session_id, status, requested_at DESC, approval_request_id);
             ",
         )
         .map_err(|error| format!("initialize sqlite memory schema failed: {error}"))?;
@@ -1007,6 +1037,7 @@ fn open_sqlite_connection_with_diagnostics(
 
     if user_version < SQLITE_MEMORY_SCHEMA_VERSION {
         ensure_turn_session_index_and_state_metadata(&conn)?;
+        ensure_approval_lifecycle_tables(&conn)?;
         ensure_summary_checkpoint_storage_layout(&conn)?;
         write_sqlite_user_version(&conn, SQLITE_MEMORY_SCHEMA_VERSION)?;
     }
@@ -1138,6 +1169,46 @@ fn ensure_turn_session_index_and_state_metadata(conn: &Connection) -> Result<(),
         [],
     )
     .map_err(|error| format!("remove stale session turn count metadata failed: {error}"))?;
+
+    Ok(())
+}
+
+fn ensure_approval_lifecycle_tables(conn: &Connection) -> Result<(), String> {
+    #[cfg(test)]
+    test_support::record_sqlite_schema_repair("approval_lifecycle");
+
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS approval_requests(
+          approval_request_id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          turn_id TEXT NOT NULL,
+          tool_call_id TEXT NOT NULL,
+          tool_name TEXT NOT NULL,
+          approval_key TEXT NOT NULL,
+          status TEXT NOT NULL,
+          decision TEXT NULL,
+          request_payload_json TEXT NOT NULL,
+          governance_snapshot_json TEXT NOT NULL,
+          requested_at INTEGER NOT NULL,
+          resolved_at INTEGER NULL,
+          resolved_by_session_id TEXT NULL,
+          executed_at INTEGER NULL,
+          last_error TEXT NULL
+        );
+        CREATE TABLE IF NOT EXISTS approval_grants(
+          scope_session_id TEXT NOT NULL,
+          approval_key TEXT NOT NULL,
+          created_by_session_id TEXT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY(scope_session_id, approval_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_approval_requests_session_status_requested_at
+          ON approval_requests(session_id, status, requested_at DESC, approval_request_id);
+        ",
+    )
+    .map_err(|error| format!("ensure approval lifecycle storage failed: {error}"))?;
 
     Ok(())
 }

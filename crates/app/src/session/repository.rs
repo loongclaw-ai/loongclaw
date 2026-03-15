@@ -93,6 +93,127 @@ pub struct SessionTerminalOutcomeRecord {
     pub recorded_at: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalRequestStatus {
+    Pending,
+    Approved,
+    Executing,
+    Executed,
+    Denied,
+    Expired,
+    Cancelled,
+}
+
+impl ApprovalRequestStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Approved => "approved",
+            Self::Executing => "executing",
+            Self::Executed => "executed",
+            Self::Denied => "denied",
+            Self::Expired => "expired",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    fn from_db(value: &str) -> Result<Self, String> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "approved" => Ok(Self::Approved),
+            "executing" => Ok(Self::Executing),
+            "executed" => Ok(Self::Executed),
+            "denied" => Ok(Self::Denied),
+            "expired" => Ok(Self::Expired),
+            "cancelled" => Ok(Self::Cancelled),
+            _ => Err(format!("unknown approval request status `{value}`")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalDecision {
+    ApproveOnce,
+    ApproveAlways,
+    Deny,
+}
+
+impl ApprovalDecision {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ApproveOnce => "approve_once",
+            Self::ApproveAlways => "approve_always",
+            Self::Deny => "deny",
+        }
+    }
+
+    fn from_db(value: &str) -> Result<Self, String> {
+        match value {
+            "approve_once" => Ok(Self::ApproveOnce),
+            "approve_always" => Ok(Self::ApproveAlways),
+            "deny" => Ok(Self::Deny),
+            _ => Err(format!("unknown approval decision `{value}`")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApprovalRequestRecord {
+    pub approval_request_id: String,
+    pub session_id: String,
+    pub turn_id: String,
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub approval_key: String,
+    pub status: ApprovalRequestStatus,
+    pub decision: Option<ApprovalDecision>,
+    pub request_payload_json: Value,
+    pub governance_snapshot_json: Value,
+    pub requested_at: i64,
+    pub resolved_at: Option<i64>,
+    pub resolved_by_session_id: Option<String>,
+    pub executed_at: Option<i64>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewApprovalRequestRecord {
+    pub approval_request_id: String,
+    pub session_id: String,
+    pub turn_id: String,
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub approval_key: String,
+    pub request_payload_json: Value,
+    pub governance_snapshot_json: Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransitionApprovalRequestIfCurrentRequest {
+    pub expected_status: ApprovalRequestStatus,
+    pub next_status: ApprovalRequestStatus,
+    pub decision: Option<ApprovalDecision>,
+    pub resolved_by_session_id: Option<String>,
+    pub executed_at: Option<i64>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalGrantRecord {
+    pub scope_session_id: String,
+    pub approval_key: String,
+    pub created_by_session_id: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewApprovalGrantRecord {
+    pub scope_session_id: String,
+    pub approval_key: String,
+    pub created_by_session_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionSummaryRecord {
     pub session_id: String,
@@ -722,6 +843,365 @@ impl SessionRepository {
         Self::load_terminal_outcome_with_conn(&conn, &session_id)
     }
 
+    pub fn ensure_approval_request(
+        &self,
+        record: NewApprovalRequestRecord,
+    ) -> Result<ApprovalRequestRecord, String> {
+        let approval_request_id =
+            normalize_required_text(&record.approval_request_id, "approval_request_id")?;
+        let session_id = normalize_required_text(&record.session_id, "session_id")?;
+        let turn_id = normalize_required_text(&record.turn_id, "turn_id")?;
+        let tool_call_id = normalize_required_text(&record.tool_call_id, "tool_call_id")?;
+        let tool_name = normalize_required_text(&record.tool_name, "tool_name")?;
+        let approval_key = normalize_required_text(&record.approval_key, "approval_key")?;
+        if self.load_session(&session_id)?.is_none() {
+            return Err(format!("session `{session_id}` not found"));
+        }
+
+        let encoded_request_payload = serde_json::to_string(&record.request_payload_json)
+            .map_err(|error| format!("encode approval request payload failed: {error}"))?;
+        let encoded_governance_snapshot =
+            serde_json::to_string(&record.governance_snapshot_json)
+                .map_err(|error| format!("encode approval governance snapshot failed: {error}"))?;
+        let requested_at = unix_ts_now();
+        let conn = self.open_connection()?;
+        match conn.execute(
+            "INSERT INTO approval_requests(
+                approval_request_id,
+                session_id,
+                turn_id,
+                tool_call_id,
+                tool_name,
+                approval_key,
+                status,
+                decision,
+                request_payload_json,
+                governance_snapshot_json,
+                requested_at,
+                resolved_at,
+                resolved_by_session_id,
+                executed_at,
+                last_error
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9, ?10, NULL, NULL, NULL, NULL)",
+            params![
+                approval_request_id,
+                session_id,
+                turn_id,
+                tool_call_id,
+                tool_name,
+                approval_key,
+                ApprovalRequestStatus::Pending.as_str(),
+                encoded_request_payload,
+                encoded_governance_snapshot,
+                requested_at,
+            ],
+        ) {
+            Ok(_) => {}
+            Err(error) if error.to_string().contains("UNIQUE constraint failed") => {
+                return self
+                    .load_approval_request(&approval_request_id)?
+                    .ok_or_else(|| {
+                        format!(
+                            "approval request `{approval_request_id}` missing after concurrent insert"
+                        )
+                    });
+            }
+            Err(error) => return Err(format!("insert approval request row failed: {error}")),
+        }
+
+        self.load_approval_request(&approval_request_id)?
+            .ok_or_else(|| {
+                format!("approval request `{approval_request_id}` disappeared after insert")
+            })
+    }
+
+    pub fn load_approval_request(
+        &self,
+        approval_request_id: &str,
+    ) -> Result<Option<ApprovalRequestRecord>, String> {
+        let approval_request_id =
+            normalize_required_text(approval_request_id, "approval_request_id")?;
+        let conn = self.open_connection()?;
+        let raw = conn
+            .query_row(
+                "SELECT
+                    approval_request_id,
+                    session_id,
+                    turn_id,
+                    tool_call_id,
+                    tool_name,
+                    approval_key,
+                    status,
+                    decision,
+                    request_payload_json,
+                    governance_snapshot_json,
+                    requested_at,
+                    resolved_at,
+                    resolved_by_session_id,
+                    executed_at,
+                    last_error
+                 FROM approval_requests
+                 WHERE approval_request_id = ?1",
+                params![approval_request_id],
+                |row| {
+                    Ok(RawApprovalRequestRecord {
+                        approval_request_id: row.get(0)?,
+                        session_id: row.get(1)?,
+                        turn_id: row.get(2)?,
+                        tool_call_id: row.get(3)?,
+                        tool_name: row.get(4)?,
+                        approval_key: row.get(5)?,
+                        status: row.get(6)?,
+                        decision: row.get(7)?,
+                        request_payload_json: row.get(8)?,
+                        governance_snapshot_json: row.get(9)?,
+                        requested_at: row.get(10)?,
+                        resolved_at: row.get(11)?,
+                        resolved_by_session_id: row.get(12)?,
+                        executed_at: row.get(13)?,
+                        last_error: row.get(14)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| format!("load approval request row failed: {error}"))?;
+        raw.map(ApprovalRequestRecord::try_from_raw).transpose()
+    }
+
+    pub fn list_approval_requests_for_session(
+        &self,
+        session_id: &str,
+        status: Option<ApprovalRequestStatus>,
+    ) -> Result<Vec<ApprovalRequestRecord>, String> {
+        let session_id = normalize_required_text(session_id, "session_id")?;
+        let conn = self.open_connection()?;
+        let mut requests = Vec::new();
+        match status {
+            Some(status) => {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT
+                            approval_request_id,
+                            session_id,
+                            turn_id,
+                            tool_call_id,
+                            tool_name,
+                            approval_key,
+                            status,
+                            decision,
+                            request_payload_json,
+                            governance_snapshot_json,
+                            requested_at,
+                            resolved_at,
+                            resolved_by_session_id,
+                            executed_at,
+                            last_error
+                         FROM approval_requests
+                         WHERE session_id = ?1 AND status = ?2
+                         ORDER BY requested_at DESC, approval_request_id ASC",
+                    )
+                    .map_err(|error| {
+                        format!("prepare approval request list query failed: {error}")
+                    })?;
+                let rows = stmt
+                    .query_map(params![session_id, status.as_str()], |row| {
+                        Ok(RawApprovalRequestRecord {
+                            approval_request_id: row.get(0)?,
+                            session_id: row.get(1)?,
+                            turn_id: row.get(2)?,
+                            tool_call_id: row.get(3)?,
+                            tool_name: row.get(4)?,
+                            approval_key: row.get(5)?,
+                            status: row.get(6)?,
+                            decision: row.get(7)?,
+                            request_payload_json: row.get(8)?,
+                            governance_snapshot_json: row.get(9)?,
+                            requested_at: row.get(10)?,
+                            resolved_at: row.get(11)?,
+                            resolved_by_session_id: row.get(12)?,
+                            executed_at: row.get(13)?,
+                            last_error: row.get(14)?,
+                        })
+                    })
+                    .map_err(|error| format!("query approval request list failed: {error}"))?;
+                for row in rows {
+                    let raw = row
+                        .map_err(|error| format!("decode approval request row failed: {error}"))?;
+                    requests.push(ApprovalRequestRecord::try_from_raw(raw)?);
+                }
+            }
+            None => {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT
+                            approval_request_id,
+                            session_id,
+                            turn_id,
+                            tool_call_id,
+                            tool_name,
+                            approval_key,
+                            status,
+                            decision,
+                            request_payload_json,
+                            governance_snapshot_json,
+                            requested_at,
+                            resolved_at,
+                            resolved_by_session_id,
+                            executed_at,
+                            last_error
+                         FROM approval_requests
+                         WHERE session_id = ?1
+                         ORDER BY requested_at DESC, approval_request_id ASC",
+                    )
+                    .map_err(|error| {
+                        format!("prepare approval request list query failed: {error}")
+                    })?;
+                let rows = stmt
+                    .query_map(params![session_id], |row| {
+                        Ok(RawApprovalRequestRecord {
+                            approval_request_id: row.get(0)?,
+                            session_id: row.get(1)?,
+                            turn_id: row.get(2)?,
+                            tool_call_id: row.get(3)?,
+                            tool_name: row.get(4)?,
+                            approval_key: row.get(5)?,
+                            status: row.get(6)?,
+                            decision: row.get(7)?,
+                            request_payload_json: row.get(8)?,
+                            governance_snapshot_json: row.get(9)?,
+                            requested_at: row.get(10)?,
+                            resolved_at: row.get(11)?,
+                            resolved_by_session_id: row.get(12)?,
+                            executed_at: row.get(13)?,
+                            last_error: row.get(14)?,
+                        })
+                    })
+                    .map_err(|error| format!("query approval request list failed: {error}"))?;
+                for row in rows {
+                    let raw = row
+                        .map_err(|error| format!("decode approval request row failed: {error}"))?;
+                    requests.push(ApprovalRequestRecord::try_from_raw(raw)?);
+                }
+            }
+        }
+        Ok(requests)
+    }
+
+    pub fn transition_approval_request_if_current(
+        &self,
+        approval_request_id: &str,
+        request: TransitionApprovalRequestIfCurrentRequest,
+    ) -> Result<Option<ApprovalRequestRecord>, String> {
+        let approval_request_id =
+            normalize_required_text(approval_request_id, "approval_request_id")?;
+        let resolved_by_session_id = normalize_optional_text(request.resolved_by_session_id);
+        let last_error = normalize_optional_text(request.last_error);
+        let decision = request.decision.map(ApprovalDecision::as_str);
+        let resolution_ts = matches!(
+            request.next_status,
+            ApprovalRequestStatus::Approved | ApprovalRequestStatus::Denied
+        )
+        .then(unix_ts_now);
+        let conn = self.open_connection()?;
+        let affected = conn
+            .execute(
+                "UPDATE approval_requests
+                 SET status = ?3,
+                     decision = CASE WHEN ?4 IS NULL THEN decision ELSE ?4 END,
+                     resolved_at = CASE WHEN ?5 IS NULL THEN resolved_at ELSE ?5 END,
+                     resolved_by_session_id = CASE WHEN ?6 IS NULL THEN resolved_by_session_id ELSE ?6 END,
+                     executed_at = CASE WHEN ?7 IS NULL THEN executed_at ELSE ?7 END,
+                     last_error = ?8
+                 WHERE approval_request_id = ?1 AND status = ?2",
+                params![
+                    approval_request_id,
+                    request.expected_status.as_str(),
+                    request.next_status.as_str(),
+                    decision,
+                    resolution_ts,
+                    resolved_by_session_id,
+                    request.executed_at,
+                    last_error,
+                ],
+            )
+            .map_err(|error| format!("conditionally update approval request failed: {error}"))?;
+        if affected == 0 {
+            return Ok(None);
+        }
+
+        self.load_approval_request(&approval_request_id)?
+            .map(Some)
+            .ok_or_else(|| {
+                format!("approval request `{approval_request_id}` missing after conditional update")
+            })
+    }
+
+    pub fn upsert_approval_grant(
+        &self,
+        record: NewApprovalGrantRecord,
+    ) -> Result<ApprovalGrantRecord, String> {
+        let scope_session_id =
+            normalize_required_text(&record.scope_session_id, "scope_session_id")?;
+        let approval_key = normalize_required_text(&record.approval_key, "approval_key")?;
+        if self.load_session(&scope_session_id)?.is_none() {
+            return Err(format!("session `{scope_session_id}` not found"));
+        }
+        let created_by_session_id = normalize_optional_text(record.created_by_session_id);
+        let ts = unix_ts_now();
+        let conn = self.open_connection()?;
+        conn.execute(
+            "INSERT INTO approval_grants(
+                scope_session_id,
+                approval_key,
+                created_by_session_id,
+                created_at,
+                updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(scope_session_id, approval_key) DO UPDATE SET
+                created_by_session_id = COALESCE(excluded.created_by_session_id, approval_grants.created_by_session_id),
+                updated_at = excluded.updated_at",
+            params![scope_session_id, approval_key, created_by_session_id, ts, ts],
+        )
+        .map_err(|error| format!("upsert approval grant failed: {error}"))?;
+
+        self.load_approval_grant(&scope_session_id, &approval_key)?
+            .ok_or_else(|| {
+                format!(
+                    "approval grant `{}:{}` disappeared after upsert",
+                    scope_session_id, approval_key
+                )
+            })
+    }
+
+    pub fn load_approval_grant(
+        &self,
+        scope_session_id: &str,
+        approval_key: &str,
+    ) -> Result<Option<ApprovalGrantRecord>, String> {
+        let scope_session_id = normalize_required_text(scope_session_id, "scope_session_id")?;
+        let approval_key = normalize_required_text(approval_key, "approval_key")?;
+        let conn = self.open_connection()?;
+        let raw = conn
+            .query_row(
+                "SELECT scope_session_id, approval_key, created_by_session_id, created_at, updated_at
+                 FROM approval_grants
+                 WHERE scope_session_id = ?1 AND approval_key = ?2",
+                params![scope_session_id, approval_key],
+                |row| {
+                    Ok(RawApprovalGrantRecord {
+                        scope_session_id: row.get(0)?,
+                        approval_key: row.get(1)?,
+                        created_by_session_id: row.get(2)?,
+                        created_at: row.get(3)?,
+                        updated_at: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| format!("load approval grant failed: {error}"))?;
+        raw.map(ApprovalGrantRecord::try_from_raw).transpose()
+    }
+
     pub fn upsert_terminal_outcome(
         &self,
         session_id: &str,
@@ -1343,6 +1823,34 @@ struct RawSessionTerminalOutcomeRecord {
     recorded_at: i64,
 }
 
+#[derive(Debug)]
+struct RawApprovalRequestRecord {
+    approval_request_id: String,
+    session_id: String,
+    turn_id: String,
+    tool_call_id: String,
+    tool_name: String,
+    approval_key: String,
+    status: String,
+    decision: Option<String>,
+    request_payload_json: String,
+    governance_snapshot_json: String,
+    requested_at: i64,
+    resolved_at: Option<i64>,
+    resolved_by_session_id: Option<String>,
+    executed_at: Option<i64>,
+    last_error: Option<String>,
+}
+
+#[derive(Debug)]
+struct RawApprovalGrantRecord {
+    scope_session_id: String,
+    approval_key: String,
+    created_by_session_id: Option<String>,
+    created_at: i64,
+    updated_at: i64,
+}
+
 impl SessionRecord {
     fn try_from_raw(raw: RawSessionRecord) -> Result<Self, String> {
         Ok(Self {
@@ -1399,6 +1907,46 @@ impl SessionTerminalOutcomeRecord {
                 format!("decode session terminal outcome payload failed: {error}")
             })?,
             recorded_at: raw.recorded_at,
+        })
+    }
+}
+
+impl ApprovalRequestRecord {
+    fn try_from_raw(raw: RawApprovalRequestRecord) -> Result<Self, String> {
+        Ok(Self {
+            approval_request_id: raw.approval_request_id,
+            session_id: raw.session_id,
+            turn_id: raw.turn_id,
+            tool_call_id: raw.tool_call_id,
+            tool_name: raw.tool_name,
+            approval_key: raw.approval_key,
+            status: ApprovalRequestStatus::from_db(&raw.status)?,
+            decision: raw
+                .decision
+                .as_deref()
+                .map(ApprovalDecision::from_db)
+                .transpose()?,
+            request_payload_json: serde_json::from_str(&raw.request_payload_json)
+                .map_err(|error| format!("decode approval request payload failed: {error}"))?,
+            governance_snapshot_json: serde_json::from_str(&raw.governance_snapshot_json)
+                .map_err(|error| format!("decode approval governance snapshot failed: {error}"))?,
+            requested_at: raw.requested_at,
+            resolved_at: raw.resolved_at,
+            resolved_by_session_id: raw.resolved_by_session_id,
+            executed_at: raw.executed_at,
+            last_error: raw.last_error,
+        })
+    }
+}
+
+impl ApprovalGrantRecord {
+    fn try_from_raw(raw: RawApprovalGrantRecord) -> Result<Self, String> {
+        Ok(Self {
+            scope_session_id: raw.scope_session_id,
+            approval_key: raw.approval_key,
+            created_by_session_id: raw.created_by_session_id,
+            created_at: raw.created_at,
+            updated_at: raw.updated_at,
         })
     }
 }
@@ -2360,6 +2908,336 @@ mod tests {
                 .expect("last recent event")
                 .event_kind,
             "delegate_completed"
+        );
+    }
+
+    #[test]
+    fn approval_request_repository_persists_pending_request() {
+        let config = isolated_memory_config("approval-request-create");
+        let repo = SessionRepository::new(&config).expect("repository");
+        repo.create_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create root session");
+
+        let created = repo
+            .ensure_approval_request(NewApprovalRequestRecord {
+                approval_request_id: "apr_123".to_owned(),
+                session_id: "root-session".to_owned(),
+                turn_id: "turn-123".to_owned(),
+                tool_call_id: "call-123".to_owned(),
+                tool_name: "delegate_async".to_owned(),
+                approval_key: "tool:delegate_async".to_owned(),
+                request_payload_json: json!({
+                    "tool_name": "delegate_async",
+                    "payload": {
+                        "task": "inspect child issue"
+                    }
+                }),
+                governance_snapshot_json: json!({
+                    "reason": "governed_tool_requires_approval",
+                    "rule_id": "medium_balanced_delegate_async"
+                }),
+            })
+            .expect("persist approval request");
+
+        assert_eq!(created.approval_request_id, "apr_123");
+        assert_eq!(created.session_id, "root-session");
+        assert_eq!(created.tool_name, "delegate_async");
+        assert_eq!(created.approval_key, "tool:delegate_async");
+        assert_eq!(created.status, ApprovalRequestStatus::Pending);
+        assert_eq!(created.decision, None);
+        assert_eq!(
+            created.request_payload_json["payload"]["task"],
+            "inspect child issue"
+        );
+        assert_eq!(
+            created.governance_snapshot_json["rule_id"],
+            "medium_balanced_delegate_async"
+        );
+        assert!(created.resolved_at.is_none());
+        assert!(created.executed_at.is_none());
+        assert!(created.last_error.is_none());
+
+        let loaded = repo
+            .load_approval_request("apr_123")
+            .expect("load approval request")
+            .expect("approval request row");
+        assert_eq!(loaded, created);
+    }
+
+    #[test]
+    fn approval_request_repository_duplicate_create_returns_existing_row() {
+        let config = isolated_memory_config("approval-request-idempotent");
+        let repo = SessionRepository::new(&config).expect("repository");
+        repo.create_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create root session");
+
+        let first = repo
+            .ensure_approval_request(NewApprovalRequestRecord {
+                approval_request_id: "apr_duplicate".to_owned(),
+                session_id: "root-session".to_owned(),
+                turn_id: "turn-1".to_owned(),
+                tool_call_id: "call-1".to_owned(),
+                tool_name: "delegate".to_owned(),
+                approval_key: "tool:delegate".to_owned(),
+                request_payload_json: json!({
+                    "tool_name": "delegate",
+                    "payload": {
+                        "task": "original"
+                    }
+                }),
+                governance_snapshot_json: json!({
+                    "reason": "first_reason",
+                    "rule_id": "first_rule"
+                }),
+            })
+            .expect("persist first approval request");
+        let second = repo
+            .ensure_approval_request(NewApprovalRequestRecord {
+                approval_request_id: "apr_duplicate".to_owned(),
+                session_id: "root-session".to_owned(),
+                turn_id: "turn-2".to_owned(),
+                tool_call_id: "call-2".to_owned(),
+                tool_name: "delegate_async".to_owned(),
+                approval_key: "tool:delegate_async".to_owned(),
+                request_payload_json: json!({
+                    "tool_name": "delegate_async",
+                    "payload": {
+                        "task": "should_be_ignored"
+                    }
+                }),
+                governance_snapshot_json: json!({
+                    "reason": "second_reason",
+                    "rule_id": "second_rule"
+                }),
+            })
+            .expect("persist second approval request");
+
+        assert_eq!(second.approval_request_id, first.approval_request_id);
+        assert_eq!(second.turn_id, first.turn_id);
+        assert_eq!(second.tool_call_id, first.tool_call_id);
+        assert_eq!(second.tool_name, first.tool_name);
+        assert_eq!(second.approval_key, first.approval_key);
+        assert_eq!(second.request_payload_json, first.request_payload_json);
+        assert_eq!(
+            second.governance_snapshot_json,
+            first.governance_snapshot_json
+        );
+    }
+
+    #[test]
+    fn approval_request_repository_transitions_status_if_current() {
+        let config = isolated_memory_config("approval-request-transition");
+        let repo = SessionRepository::new(&config).expect("repository");
+        repo.create_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create root session");
+
+        repo.ensure_approval_request(NewApprovalRequestRecord {
+            approval_request_id: "apr-transition".to_owned(),
+            session_id: "root-session".to_owned(),
+            turn_id: "turn-1".to_owned(),
+            tool_call_id: "call-1".to_owned(),
+            tool_name: "delegate".to_owned(),
+            approval_key: "tool:delegate".to_owned(),
+            request_payload_json: json!({
+                "tool_name": "delegate"
+            }),
+            governance_snapshot_json: json!({
+                "reason": "requires_review",
+                "rule_id": "delegate_review"
+            }),
+        })
+        .expect("persist approval request");
+
+        let approved = repo
+            .transition_approval_request_if_current(
+                "apr-transition",
+                TransitionApprovalRequestIfCurrentRequest {
+                    expected_status: ApprovalRequestStatus::Pending,
+                    next_status: ApprovalRequestStatus::Approved,
+                    decision: Some(ApprovalDecision::ApproveOnce),
+                    resolved_by_session_id: Some("root-session".to_owned()),
+                    executed_at: None,
+                    last_error: None,
+                },
+            )
+            .expect("transition approval request")
+            .expect("transition result");
+        assert_eq!(approved.status, ApprovalRequestStatus::Approved);
+        assert_eq!(approved.decision, Some(ApprovalDecision::ApproveOnce));
+        assert_eq!(approved.resolved_by_session_id.as_deref(), Some("root-session"));
+        assert!(approved.resolved_at.is_some());
+        assert!(approved.executed_at.is_none());
+        assert!(approved.last_error.is_none());
+
+        let noop = repo
+            .transition_approval_request_if_current(
+                "apr-transition",
+                TransitionApprovalRequestIfCurrentRequest {
+                    expected_status: ApprovalRequestStatus::Pending,
+                    next_status: ApprovalRequestStatus::Denied,
+                    decision: Some(ApprovalDecision::Deny),
+                    resolved_by_session_id: Some("root-session".to_owned()),
+                    executed_at: None,
+                    last_error: Some("should not apply".to_owned()),
+                },
+            )
+            .expect("stale transition should not error");
+        assert!(noop.is_none());
+    }
+
+    #[test]
+    fn approval_request_repository_persists_session_scoped_runtime_grant() {
+        let config = isolated_memory_config("approval-grant-upsert");
+        let repo = SessionRepository::new(&config).expect("repository");
+        repo.create_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create root session");
+
+        let created = repo
+            .upsert_approval_grant(NewApprovalGrantRecord {
+                scope_session_id: "root-session".to_owned(),
+                approval_key: "tool:delegate_async".to_owned(),
+                created_by_session_id: Some("operator-session".to_owned()),
+            })
+            .expect("upsert approval grant");
+        assert_eq!(created.scope_session_id, "root-session");
+        assert_eq!(created.approval_key, "tool:delegate_async");
+        assert_eq!(
+            created.created_by_session_id.as_deref(),
+            Some("operator-session")
+        );
+
+        let loaded = repo
+            .load_approval_grant("root-session", "tool:delegate_async")
+            .expect("load approval grant")
+            .expect("approval grant row");
+        assert_eq!(loaded, created);
+    }
+
+    #[test]
+    fn approval_request_repository_lists_requests_for_session_and_status() {
+        let config = isolated_memory_config("approval-request-list");
+        let repo = SessionRepository::new(&config).expect("repository");
+        repo.create_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create root session");
+        repo.create_session(NewSessionRecord {
+            session_id: "child-session".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Child".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create child session");
+
+        repo.ensure_approval_request(NewApprovalRequestRecord {
+            approval_request_id: "apr-root-pending".to_owned(),
+            session_id: "root-session".to_owned(),
+            turn_id: "turn-root-pending".to_owned(),
+            tool_call_id: "call-root-pending".to_owned(),
+            tool_name: "delegate".to_owned(),
+            approval_key: "tool:delegate".to_owned(),
+            request_payload_json: json!({
+                "tool_name": "delegate"
+            }),
+            governance_snapshot_json: json!({
+                "rule_id": "root_pending"
+            }),
+        })
+        .expect("persist root pending request");
+        repo.ensure_approval_request(NewApprovalRequestRecord {
+            approval_request_id: "apr-root-approved".to_owned(),
+            session_id: "root-session".to_owned(),
+            turn_id: "turn-root-approved".to_owned(),
+            tool_call_id: "call-root-approved".to_owned(),
+            tool_name: "delegate_async".to_owned(),
+            approval_key: "tool:delegate_async".to_owned(),
+            request_payload_json: json!({
+                "tool_name": "delegate_async"
+            }),
+            governance_snapshot_json: json!({
+                "rule_id": "root_approved"
+            }),
+        })
+        .expect("persist root approved request");
+        repo.transition_approval_request_if_current(
+            "apr-root-approved",
+            TransitionApprovalRequestIfCurrentRequest {
+                expected_status: ApprovalRequestStatus::Pending,
+                next_status: ApprovalRequestStatus::Approved,
+                decision: Some(ApprovalDecision::ApproveAlways),
+                resolved_by_session_id: Some("root-session".to_owned()),
+                executed_at: None,
+                last_error: None,
+            },
+        )
+        .expect("transition root approved request")
+        .expect("approved root request");
+        repo.ensure_approval_request(NewApprovalRequestRecord {
+            approval_request_id: "apr-child-pending".to_owned(),
+            session_id: "child-session".to_owned(),
+            turn_id: "turn-child-pending".to_owned(),
+            tool_call_id: "call-child-pending".to_owned(),
+            tool_name: "delegate".to_owned(),
+            approval_key: "tool:delegate".to_owned(),
+            request_payload_json: json!({
+                "tool_name": "delegate"
+            }),
+            governance_snapshot_json: json!({
+                "rule_id": "child_pending"
+            }),
+        })
+        .expect("persist child pending request");
+
+        let all_root_requests = repo
+            .list_approval_requests_for_session("root-session", None)
+            .expect("list root approval requests");
+        assert_eq!(all_root_requests.len(), 2);
+        let root_ids = all_root_requests
+            .iter()
+            .map(|record| record.approval_request_id.as_str())
+            .collect::<Vec<_>>();
+        assert!(root_ids.contains(&"apr-root-pending"));
+        assert!(root_ids.contains(&"apr-root-approved"));
+
+        let pending_root_requests = repo
+            .list_approval_requests_for_session(
+                "root-session",
+                Some(ApprovalRequestStatus::Pending),
+            )
+            .expect("list pending root approval requests");
+        assert_eq!(pending_root_requests.len(), 1);
+        assert_eq!(
+            pending_root_requests[0].approval_request_id,
+            "apr-root-pending"
         );
     }
 }
