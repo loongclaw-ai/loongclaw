@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fmt;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -894,6 +895,15 @@ impl TurnEngine {
                     }
                 }
                 ToolExecutionKind::App => {
+                    let catalog = crate::tools::tool_catalog();
+                    let Some(descriptor) = catalog.resolve(resolved_tool.canonical_name) else {
+                        let reason =
+                            format!("tool_descriptor_missing: {}", resolved_tool.canonical_name);
+                        return TurnResult::non_retryable_tool_error(
+                            "tool_descriptor_missing",
+                            reason,
+                        );
+                    };
                     match app_dispatcher
                         .maybe_require_approval(session_context, intent, descriptor, kernel_ctx)
                         .await
@@ -1029,6 +1039,7 @@ mod tests {
                 &session_context,
                 &dispatcher,
                 None,
+                None,
             )
             .await;
 
@@ -1087,10 +1098,10 @@ mod tests {
         let turn = delegate_async_turn("root-session", "turn-reuse", "call-reuse");
 
         let first = TurnEngine::new(4)
-            .execute_turn_in_context(&turn, &session_context, &dispatcher, None)
+            .execute_turn_in_context(&turn, &session_context, &dispatcher, None, None)
             .await;
         let second = TurnEngine::new(4)
-            .execute_turn_in_context(&turn, &session_context, &dispatcher, None)
+            .execute_turn_in_context(&turn, &session_context, &dispatcher, None, None)
             .await;
 
         let first_request_id = match first {

@@ -5539,7 +5539,7 @@ struct SafeLanePlanNodeExecutor<'a> {
     tool_intents: &'a [ToolIntent],
     session_context: &'a SessionContext,
     app_dispatcher: &'a dyn AppToolDispatcher,
-    kernel_ctx: &'a KernelContext,
+    kernel_ctx: Option<&'a KernelContext>,
     ingress: Option<&'a ConversationIngressContext>,
     verify_output_non_empty: bool,
     tool_outputs: Mutex<Vec<String>>,
@@ -5551,7 +5551,7 @@ impl<'a> SafeLanePlanNodeExecutor<'a> {
         tool_intents: &'a [ToolIntent],
         session_context: &'a SessionContext,
         app_dispatcher: &'a dyn AppToolDispatcher,
-        kernel_ctx: &'a KernelContext,
+        kernel_ctx: Option<&'a KernelContext>,
         ingress: Option<&'a ConversationIngressContext>,
         verify_output_non_empty: bool,
         seed_tool_outputs: Vec<String>,
@@ -5634,7 +5634,7 @@ async fn execute_single_tool_intent(
     intent: &ToolIntent,
     session_context: &SessionContext,
     app_dispatcher: &dyn AppToolDispatcher,
-    kernel_ctx: &KernelContext,
+    kernel_ctx: Option<&KernelContext>,
     ingress: Option<&ConversationIngressContext>,
     payload_summary_limit_chars: usize,
 ) -> Result<String, PlanNodeError> {
@@ -5646,13 +5646,7 @@ async fn execute_single_tool_intent(
     };
 
     match engine
-        .execute_turn_in_context(
-            &turn,
-            session_context,
-            app_dispatcher,
-            Some(kernel_ctx),
-            ingress,
-        )
+        .execute_turn_in_context(&turn, session_context, app_dispatcher, kernel_ctx, ingress)
         .await
     {
         TurnResult::FinalText(output) => Ok(output),
