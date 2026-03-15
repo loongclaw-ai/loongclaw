@@ -614,7 +614,7 @@ fn execute_skills_command_policy_set_rejects_invalid_domain_rules() {
                 command: crate::skills_cli::SkillsPolicyCommands::Set {
                     enabled: Some(true),
                     require_download_approval: None,
-                    allowed_domains: vec!["https://skills.sh/demo.tgz".to_owned()],
+                    allowed_domains: vec!["not-a-domain".to_owned()],
                     clear_allowed_domains: false,
                     blocked_domains: Vec::new(),
                     clear_blocked_domains: false,
