@@ -1595,6 +1595,8 @@ requires_openai_auth = true
         .expect("load imported config");
     let turn = mvp::provider::request_turn(
         &imported,
+        "import-codex-session",
+        "import-codex-turn",
         &[json!({
             "role": "user",
             "content": "ping"
