@@ -10157,17 +10157,16 @@ async fn handle_turn_with_runtime_requires_approval_before_delegate_execution() 
         vec![
             Ok(ProviderTurn {
                 assistant_text: "Delegating.".to_owned(),
-                tool_intents: vec![ToolIntent {
-                    tool_name: "delegate".to_owned(),
-                    args_json: json!({
+                tool_intents: vec![provider_tool_intent(
+                    "delegate",
+                    json!({
                         "task": "child task",
                         "label": "research-subtask"
                     }),
-                    source: "provider_tool_call".to_owned(),
-                    session_id: "root-session".to_owned(),
-                    turn_id: "turn-delegate-parent".to_owned(),
-                    tool_call_id: "call-delegate-parent".to_owned(),
-                }],
+                    "root-session",
+                    "turn-delegate-parent",
+                    "call-delegate-parent",
+                )],
                 raw_meta: Value::Null,
             }),
             Ok(ProviderTurn {
@@ -10419,17 +10418,16 @@ async fn handle_turn_with_runtime_approval_request_resolve_replays_delegate_for_
         vec![
             Ok(ProviderTurn {
                 assistant_text: "resolving approval".to_owned(),
-                tool_intents: vec![ToolIntent {
-                    tool_name: "approval_request_resolve".to_owned(),
-                    args_json: json!({
+                tool_intents: vec![provider_tool_intent(
+                    "approval_request_resolve",
+                    json!({
                         "approval_request_id": "apr-delegate-1",
                         "decision": "approve_once"
                     }),
-                    source: "provider_tool_call".to_owned(),
-                    session_id: "root-session".to_owned(),
-                    turn_id: "turn-approval-resolve".to_owned(),
-                    tool_call_id: "call-approval-resolve".to_owned(),
-                }],
+                    "root-session",
+                    "turn-approval-resolve",
+                    "call-approval-resolve",
+                )],
                 raw_meta: Value::Null,
             }),
             Ok(ProviderTurn {
@@ -10562,17 +10560,16 @@ async fn handle_turn_with_runtime_approval_request_resolve_approve_always_reuses
         vec![
             Ok(ProviderTurn {
                 assistant_text: "resolving approval".to_owned(),
-                tool_intents: vec![ToolIntent {
-                    tool_name: "approval_request_resolve".to_owned(),
-                    args_json: json!({
+                tool_intents: vec![provider_tool_intent(
+                    "approval_request_resolve",
+                    json!({
                         "approval_request_id": "apr-delegate-always",
                         "decision": "approve_always"
                     }),
-                    source: "provider_tool_call".to_owned(),
-                    session_id: "root-session".to_owned(),
-                    turn_id: "turn-approval-resolve".to_owned(),
-                    tool_call_id: "call-approval-resolve".to_owned(),
-                }],
+                    "root-session",
+                    "turn-approval-resolve",
+                    "call-approval-resolve",
+                )],
                 raw_meta: Value::Null,
             }),
             Ok(ProviderTurn {
@@ -10626,17 +10623,16 @@ async fn handle_turn_with_runtime_approval_request_resolve_approve_always_reuses
         vec![
             Ok(ProviderTurn {
                 assistant_text: "delegating with grant".to_owned(),
-                tool_intents: vec![ToolIntent {
-                    tool_name: "delegate".to_owned(),
-                    args_json: json!({
+                tool_intents: vec![provider_tool_intent(
+                    "delegate",
+                    json!({
                         "task": "second child task",
                         "label": "granted-subtask"
                     }),
-                    source: "provider_tool_call".to_owned(),
-                    session_id: "root-session".to_owned(),
-                    turn_id: "turn-after-grant".to_owned(),
-                    tool_call_id: "call-after-grant".to_owned(),
-                }],
+                    "root-session",
+                    "turn-after-grant",
+                    "call-after-grant",
+                )],
                 raw_meta: Value::Null,
             }),
             Ok(ProviderTurn {
@@ -10737,17 +10733,16 @@ async fn handle_turn_with_runtime_approval_request_resolve_deny_does_not_replay_
         vec![
             Ok(ProviderTurn {
                 assistant_text: "denying approval".to_owned(),
-                tool_intents: vec![ToolIntent {
-                    tool_name: "approval_request_resolve".to_owned(),
-                    args_json: json!({
+                tool_intents: vec![provider_tool_intent(
+                    "approval_request_resolve",
+                    json!({
                         "approval_request_id": "apr-delegate-deny",
                         "decision": "deny"
                     }),
-                    source: "provider_tool_call".to_owned(),
-                    session_id: "root-session".to_owned(),
-                    turn_id: "turn-approval-deny".to_owned(),
-                    tool_call_id: "call-approval-deny".to_owned(),
-                }],
+                    "root-session",
+                    "turn-approval-deny",
+                    "call-approval-deny",
+                )],
                 raw_meta: Value::Null,
             }),
             Ok(ProviderTurn {

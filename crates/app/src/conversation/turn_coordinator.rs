@@ -44,8 +44,8 @@ use super::persistence::{
     persist_reply_turns_raw_with_mode, persist_reply_turns_with_mode,
 };
 use super::plan_executor::{
-    PlanExecutor, PlanNodeAttemptEvent, PlanNodeError, PlanNodeErrorKind, PlanNodeExecutor,
-    PlanRunFailure, PlanRunReport, PlanRunStatus,
+    PlanExecutor, PlanNodeError, PlanNodeErrorKind, PlanNodeExecutor, PlanRunFailure,
+    PlanRunReport, PlanRunStatus,
 };
 use super::plan_ir::{
     PLAN_GRAPH_VERSION, PlanBudget, PlanEdge, PlanGraph, PlanNode, PlanNodeKind, RiskTier,

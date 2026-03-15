@@ -1215,13 +1215,19 @@ mod tests {
     }
 
     fn delegate_async_turn(session_id: &str, turn_id: &str, tool_call_id: &str) -> ProviderTurn {
+        let (tool_name, args_json) = crate::tools::synthesize_test_provider_tool_call_with_scope(
+            "delegate_async",
+            json!({
+                "task": "inspect the child task"
+            }),
+            Some(session_id),
+            Some(turn_id),
+        );
         ProviderTurn {
             assistant_text: "queueing child delegate".to_owned(),
             tool_intents: vec![ToolIntent {
-                tool_name: "delegate_async".to_owned(),
-                args_json: json!({
-                    "task": "inspect the child task"
-                }),
+                tool_name,
+                args_json,
                 source: "assistant".to_owned(),
                 session_id: session_id.to_owned(),
                 turn_id: turn_id.to_owned(),
@@ -1236,26 +1242,7 @@ mod tests {
         turn_id: &str,
         tool_call_id: &str,
     ) -> ProviderTurn {
-        let (tool_name, args_json) = crate::tools::synthesize_test_provider_tool_call_with_scope(
-            "delegate_async",
-            json!({
-                "task": "inspect the child task"
-            }),
-            Some(session_id),
-            Some(turn_id),
-        );
-        ProviderTurn {
-            assistant_text: "queueing discovered child delegate".to_owned(),
-            tool_intents: vec![ToolIntent {
-                tool_name,
-                args_json,
-                source: "assistant".to_owned(),
-                session_id: session_id.to_owned(),
-                turn_id: turn_id.to_owned(),
-                tool_call_id: tool_call_id.to_owned(),
-            }],
-            raw_meta: json!({}),
-        }
+        delegate_async_turn(session_id, turn_id, tool_call_id)
     }
 
     #[tokio::test]
