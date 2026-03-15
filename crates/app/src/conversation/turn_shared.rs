@@ -67,6 +67,7 @@ pub fn tool_driven_followup_payload(
         TurnResult::FinalText(text) => {
             Some(ToolDrivenFollowupPayload::ToolResult { text: text.clone() })
         }
+        TurnResult::NeedsApproval(_) => None,
         TurnResult::ToolDenied(failure) | TurnResult::ToolError(failure) => {
             Some(ToolDrivenFollowupPayload::ToolFailure {
                 reason: failure.reason.clone(),
