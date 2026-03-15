@@ -6743,6 +6743,7 @@ fn provider_hidden_tool_denial_does_not_leak_name() {
             );
         }
         other @ TurnResult::FinalText(_)
+        | other @ TurnResult::NeedsApproval(_)
         | other @ TurnResult::ToolError(_)
         | other @ TurnResult::ProviderError(_) => {
             panic!("expected ToolDenied, got {:?}", other)
