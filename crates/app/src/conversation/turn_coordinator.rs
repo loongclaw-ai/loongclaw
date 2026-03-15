@@ -912,6 +912,14 @@ impl ProviderTurnContinuePhase {
         )
     }
 
+    fn tool_intent_count(&self) -> usize {
+        match self.request {
+            TurnCheckpointRequest::Continue { tool_intents } => tool_intents,
+            TurnCheckpointRequest::FinalizeInlineProviderError
+            | TurnCheckpointRequest::ReturnError => 0,
+        }
+    }
+
     async fn resolve<R: ConversationRuntime + ?Sized>(
         &self,
         runtime: &R,
@@ -2203,8 +2211,33 @@ async fn resolve_provider_turn_reply<R: ConversationRuntime + ?Sized>(
     let mut current_preparation = preparation.clone();
     let mut current_continue_phase = continue_phase.clone();
     let mut remaining_provider_rounds = remaining_provider_rounds.max(1);
+    let mut provider_round_index = 0usize;
 
     loop {
+        if current_continue_phase
+            .lane_execution
+            .requires_provider_turn_followup
+        {
+            emit_discovery_first_event(
+                runtime,
+                session_id,
+                "discovery_first_search_round",
+                json!({
+                    "provider_round": provider_round_index,
+                    "search_tool_calls": current_continue_phase.tool_intent_count(),
+                    "raw_tool_output_requested": current_continue_phase
+                        .lane_execution
+                        .raw_tool_output_requested,
+                    "initial_estimated_tokens": estimate_tokens_for_messages(
+                        current_preparation.session.estimated_tokens,
+                        &current_preparation.session.messages,
+                    ),
+                }),
+                kernel_ctx,
+            )
+            .await;
+        }
+
         let reply_decision = match current_continue_phase.reply_phase.decision() {
             ToolDrivenReplyBaseDecision::FinalizeDirect { reply } => {
                 if current_continue_phase
@@ -2259,6 +2292,14 @@ async fn resolve_provider_turn_reply<R: ConversationRuntime + ?Sized>(
                     && remaining_provider_rounds > 1
                 {
                     remaining_provider_rounds -= 1;
+                    let initial_estimated_tokens = estimate_tokens_for_messages(
+                        current_preparation.session.estimated_tokens,
+                        &current_preparation.session.messages,
+                    );
+                    let followup_estimated_tokens = estimate_tokens(&follow_up_messages);
+                    let followup_added_estimated_tokens = initial_estimated_tokens
+                        .zip(followup_estimated_tokens)
+                        .map(|(initial, followup)| followup.saturating_sub(initial));
                     let followup_preparation =
                         current_preparation.for_followup_messages(follow_up_messages);
                     let followup_tool_view = match runtime.tool_view(
@@ -2276,6 +2317,22 @@ async fn resolve_provider_turn_reply<R: ConversationRuntime + ?Sized>(
                             return ResolvedProviderTurn::persist_reply(raw_reply, checkpoint);
                         }
                     };
+                    emit_discovery_first_event(
+                        runtime,
+                        session_id,
+                        "discovery_first_followup_requested",
+                        json!({
+                            "provider_round": provider_round_index.saturating_add(1),
+                            "raw_tool_output_requested": current_continue_phase
+                                .lane_execution
+                                .raw_tool_output_requested,
+                            "initial_estimated_tokens": initial_estimated_tokens,
+                            "followup_estimated_tokens": followup_estimated_tokens,
+                            "followup_added_estimated_tokens": followup_added_estimated_tokens,
+                        }),
+                        kernel_ctx,
+                    )
+                    .await;
                     match decide_provider_turn_request_action(
                         runtime
                             .request_turn(
@@ -2295,6 +2352,25 @@ async fn resolve_provider_turn_reply<R: ConversationRuntime + ?Sized>(
                                 session_id,
                                 followup_preparation.turn_id.as_str(),
                             );
+                            let followup_result = summarize_discovery_first_followup_turn(&turn);
+                            emit_discovery_first_event(
+                                runtime,
+                                session_id,
+                                "discovery_first_followup_result",
+                                json!({
+                                    "provider_round": provider_round_index.saturating_add(1),
+                                    "outcome": followup_result.outcome,
+                                    "followup_tool_name": followup_result.followup_tool_name,
+                                    "followup_target_tool_id": followup_result.followup_target_tool_id,
+                                    "resolved_to_tool_invoke": followup_result
+                                        .resolved_to_tool_invoke,
+                                    "raw_tool_output_requested": current_continue_phase
+                                        .lane_execution
+                                        .raw_tool_output_requested,
+                                }),
+                                kernel_ctx,
+                            )
+                            .await;
                             current_continue_phase = prepare_provider_turn_continue_phase(
                                 &current_continue_phase.followup_config,
                                 runtime,
@@ -2305,10 +2381,28 @@ async fn resolve_provider_turn_reply<R: ConversationRuntime + ?Sized>(
                             )
                             .await;
                             current_preparation = followup_preparation;
+                            provider_round_index = provider_round_index.saturating_add(1);
                             continue;
                         }
                         ProviderTurnRequestAction::FinalizeInlineProviderError { .. }
                         | ProviderTurnRequestAction::ReturnError { .. } => {
+                            emit_discovery_first_event(
+                                runtime,
+                                session_id,
+                                "discovery_first_followup_result",
+                                json!({
+                                    "provider_round": provider_round_index.saturating_add(1),
+                                    "outcome": "provider_error",
+                                    "followup_tool_name": Value::Null,
+                                    "followup_target_tool_id": Value::Null,
+                                    "resolved_to_tool_invoke": false,
+                                    "raw_tool_output_requested": current_continue_phase
+                                        .lane_execution
+                                        .raw_tool_output_requested,
+                                }),
+                                kernel_ctx,
+                            )
+                            .await;
                             let checkpoint = current_continue_phase.checkpoint(
                                 preparation,
                                 user_input,
@@ -2387,6 +2481,78 @@ fn build_turn_reply_followup_messages(
         |_, text| text.to_owned(),
     ));
     messages
+}
+
+#[derive(Debug)]
+struct DiscoveryFirstFollowupTurnSummary {
+    outcome: String,
+    followup_tool_name: Option<String>,
+    followup_target_tool_id: Option<String>,
+    resolved_to_tool_invoke: bool,
+}
+
+fn summarize_discovery_first_followup_turn(
+    turn: &ProviderTurn,
+) -> DiscoveryFirstFollowupTurnSummary {
+    let Some(intent) = turn.tool_intents.first() else {
+        return DiscoveryFirstFollowupTurnSummary {
+            outcome: "final_reply".to_owned(),
+            followup_tool_name: None,
+            followup_target_tool_id: None,
+            resolved_to_tool_invoke: false,
+        };
+    };
+
+    let canonical_tool_name =
+        crate::tools::canonical_tool_name(intent.tool_name.as_str()).to_owned();
+    let resolved_to_tool_invoke = canonical_tool_name == "tool.invoke";
+    let followup_target_tool_id = resolved_to_tool_invoke
+        .then(|| {
+            intent
+                .args_json
+                .get("tool_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .flatten();
+
+    DiscoveryFirstFollowupTurnSummary {
+        outcome: canonical_tool_name.clone(),
+        followup_tool_name: Some(canonical_tool_name),
+        followup_target_tool_id,
+        resolved_to_tool_invoke,
+    }
+}
+
+fn estimate_tokens_for_messages(
+    estimated_tokens: Option<usize>,
+    messages: &[Value],
+) -> Option<usize> {
+    estimated_tokens.or_else(|| estimate_tokens(messages))
+}
+
+async fn emit_discovery_first_event<R: ConversationRuntime + ?Sized>(
+    runtime: &R,
+    session_id: &str,
+    event_name: &str,
+    payload: Value,
+    kernel_ctx: Option<&KernelContext>,
+) {
+    let _ = persist_conversation_event(runtime, session_id, event_name, payload, kernel_ctx).await;
+    if let Some(ctx) = kernel_ctx {
+        let _ = ctx.kernel.record_audit_event(
+            Some(ctx.agent_id()),
+            AuditEventKind::PlaneInvoked {
+                pack_id: ctx.pack_id().to_owned(),
+                plane: ExecutionPlane::Runtime,
+                tier: PlaneTier::Core,
+                primary_adapter: "conversation.discovery_first".to_owned(),
+                delegated_core_adapter: None,
+                operation: format!("conversation.discovery_first.{event_name}"),
+                required_capabilities: Vec::new(),
+            },
+        );
+    }
 }
 
 async fn persist_turn_checkpoint_event<R: ConversationRuntime + ?Sized>(

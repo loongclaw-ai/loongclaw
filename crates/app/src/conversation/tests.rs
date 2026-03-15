@@ -655,6 +655,93 @@ fn persisted_conversation_event_payloads_by_name(
         .collect()
 }
 
+fn provider_turn_from_body(body: Value, session_id: &str, turn_id: &str) -> ProviderTurn {
+    crate::provider::extract_provider_turn_with_scope(&body, Some(session_id), Some(turn_id))
+        .expect("provider body should parse into a turn")
+}
+
+fn assert_discovery_first_followup_summary(
+    persisted: &[(String, String, String)],
+    raw_tool_output_requested: bool,
+    expected_target_tool_id: &str,
+) {
+    let summary = super::analytics::summarize_discovery_first_events(
+        persisted
+            .iter()
+            .filter_map(|(_, role, content)| (role == "assistant").then_some(content.as_str())),
+    );
+    assert_eq!(summary.search_round_events, 1);
+    assert_eq!(summary.followup_requested_events, 1);
+    assert_eq!(summary.followup_result_events, 1);
+    assert_eq!(
+        summary.raw_output_followup_events,
+        u32::from(raw_tool_output_requested)
+    );
+    assert_eq!(summary.search_to_invoke_hits, 1);
+    assert_eq!(
+        summary.latest_followup_outcome.as_deref(),
+        Some("tool.invoke")
+    );
+    assert_eq!(
+        summary.latest_followup_tool_name.as_deref(),
+        Some("tool.invoke")
+    );
+    assert_eq!(
+        summary.latest_followup_target_tool_id.as_deref(),
+        Some(expected_target_tool_id)
+    );
+    assert!(
+        summary.aggregate_added_estimated_tokens > 0,
+        "follow-up telemetry should record a positive added token estimate: {summary:?}"
+    );
+}
+
+async fn run_provider_shape_tool_search_followup(
+    session_id: &str,
+    user_input: &str,
+    note_contents: &str,
+    first_body: Value,
+    second_body: Value,
+    completion: Result<String, String>,
+) -> (String, FakeRuntime) {
+    use super::integration_tests::TurnTestHarness;
+
+    let harness = TurnTestHarness::new();
+    std::fs::write(harness.temp_dir.join("note.md"), note_contents).expect("seed test note");
+
+    let runtime = FakeRuntime::with_turns_and_completions(
+        vec![],
+        vec![
+            Ok(provider_turn_from_body(
+                first_body,
+                session_id,
+                &format!("{session_id}-provider-turn-0"),
+            )),
+            Ok(provider_turn_from_body(
+                second_body,
+                session_id,
+                &format!("{session_id}-provider-turn-1"),
+            )),
+        ],
+        vec![completion],
+    );
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &test_config(),
+            session_id,
+            user_input,
+            ProviderErrorMode::Propagate,
+            &runtime,
+            Some(&harness.kernel_ctx),
+        )
+        .await
+        .expect("provider-shape discovery-first followup should succeed");
+
+    (reply, runtime)
+}
+
 fn is_internal_assistant_record(content: &str) -> bool {
     serde_json::from_str::<Value>(content)
         .ok()
@@ -3937,6 +4024,309 @@ async fn handle_turn_with_runtime_tool_search_raw_request_still_uses_followup_pr
         }),
         "second provider turn should still receive tool-search followup context in raw mode: {requested_turn_messages:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_turn_with_runtime_provider_shape_tool_search_followup_openai_chat_completions() {
+    let (reply, runtime) = run_provider_shape_tool_search_followup(
+        "session-provider-shape-openai",
+        "search for the right tool, then read and summarize note.md",
+        "hello from openai provider-shape discovery followup test",
+        json!({
+            "choices": [{
+                "message": {
+                    "content": "Let me search for the right tool first.",
+                    "tool_calls": [{
+                        "id": "call-openai-search",
+                        "type": "function",
+                        "function": {
+                            "name": "tool_search",
+                            "arguments": "{\"query\":\"read note.md\",\"limit\":3}"
+                        }
+                    }]
+                }
+            }]
+        }),
+        json!({
+            "choices": [{
+                "message": {
+                    "content": "Now I'll read the file.",
+                    "tool_calls": [{
+                        "id": "call-openai-read",
+                        "type": "function",
+                        "function": {
+                            "name": "file_read",
+                            "arguments": "{\"path\":\"note.md\"}"
+                        }
+                    }]
+                }
+            }]
+        }),
+        Ok(
+            "Summary: the note says hello from openai provider-shape discovery followup test."
+                .to_owned(),
+        ),
+    )
+    .await;
+
+    assert_eq!(
+        reply,
+        "Summary: the note says hello from openai provider-shape discovery followup test."
+    );
+    assert_eq!(*runtime.turn_calls.lock().expect("turn calls lock"), 2);
+    assert_eq!(
+        *runtime
+            .completion_calls
+            .lock()
+            .expect("completion calls lock"),
+        1
+    );
+
+    let requested_turn_messages = runtime
+        .turn_requested_messages
+        .lock()
+        .expect("turn request lock")
+        .clone();
+    assert_eq!(requested_turn_messages.len(), 2);
+    assert!(
+        requested_turn_messages[1].iter().any(|message| {
+            message.get("role").and_then(Value::as_str) == Some("assistant")
+                && message
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .is_some_and(|content| content.starts_with("[tool_result]\n"))
+        }),
+        "second provider turn should receive tool-search followup context: {requested_turn_messages:?}"
+    );
+
+    let persisted = runtime.persisted.lock().expect("persisted lock").clone();
+    assert_discovery_first_followup_summary(&persisted, false, "file.read");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_turn_with_runtime_provider_shape_tool_search_followup_responses() {
+    let (reply, runtime) = run_provider_shape_tool_search_followup(
+        "session-provider-shape-responses",
+        "search for the right tool, then read and summarize note.md",
+        "hello from responses provider-shape discovery followup test",
+        json!({
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "Let me search for the right tool first."}
+                    ]
+                },
+                {
+                    "type": "function_call",
+                    "name": "tool_search",
+                    "arguments": "{\"query\":\"read note.md\",\"limit\":3}",
+                    "call_id": "call-responses-search"
+                }
+            ]
+        }),
+        json!({
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "Now I'll read the file."}
+                    ]
+                },
+                {
+                    "type": "function_call",
+                    "name": "file_read",
+                    "arguments": "{\"path\":\"note.md\"}",
+                    "call_id": "call-responses-read"
+                }
+            ]
+        }),
+        Ok(
+            "Summary: the note says hello from responses provider-shape discovery followup test."
+                .to_owned(),
+        ),
+    )
+    .await;
+
+    assert_eq!(
+        reply,
+        "Summary: the note says hello from responses provider-shape discovery followup test."
+    );
+    assert_eq!(*runtime.turn_calls.lock().expect("turn calls lock"), 2);
+
+    let persisted = runtime.persisted.lock().expect("persisted lock").clone();
+    assert_discovery_first_followup_summary(&persisted, false, "file.read");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_turn_with_runtime_provider_shape_tool_search_followup_anthropic() {
+    let (reply, runtime) = run_provider_shape_tool_search_followup(
+        "session-provider-shape-anthropic",
+        "search for the right tool, then read and summarize note.md",
+        "hello from anthropic provider-shape discovery followup test",
+        json!({
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Let me search for the right tool first."
+                },
+                {
+                    "type": "tool_use",
+                    "id": "toolu-search",
+                    "name": "tool_search",
+                    "input": {
+                        "query": "read note.md",
+                        "limit": 3
+                    }
+                }
+            ]
+        }),
+        json!({
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Now I'll read the file."
+                },
+                {
+                    "type": "tool_use",
+                    "id": "toolu-read",
+                    "name": "file_read",
+                    "input": {
+                        "path": "note.md"
+                    }
+                }
+            ]
+        }),
+        Ok(
+            "Summary: the note says hello from anthropic provider-shape discovery followup test."
+                .to_owned(),
+        ),
+    )
+    .await;
+
+    assert_eq!(
+        reply,
+        "Summary: the note says hello from anthropic provider-shape discovery followup test."
+    );
+    assert_eq!(*runtime.turn_calls.lock().expect("turn calls lock"), 2);
+
+    let persisted = runtime.persisted.lock().expect("persisted lock").clone();
+    assert_discovery_first_followup_summary(&persisted, false, "file.read");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_turn_with_runtime_provider_shape_tool_search_followup_bedrock() {
+    let (reply, runtime) = run_provider_shape_tool_search_followup(
+        "session-provider-shape-bedrock",
+        "search for the right tool, then read and summarize note.md",
+        "hello from bedrock provider-shape discovery followup test",
+        json!({
+            "output": {
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "text": "Let me search for the right tool first."
+                        },
+                        {
+                            "toolUse": {
+                                "toolUseId": "toolu-search",
+                                "name": "tool_search",
+                                "input": {
+                                    "query": "read note.md",
+                                    "limit": 3
+                                }
+                            }
+                        }
+                    ]
+                }
+            },
+            "stopReason": "tool_use"
+        }),
+        json!({
+            "output": {
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "text": "Now I'll read the file."
+                        },
+                        {
+                            "toolUse": {
+                                "toolUseId": "toolu-read",
+                                "name": "file_read",
+                                "input": {
+                                    "path": "note.md"
+                                }
+                            }
+                        }
+                    ]
+                }
+            },
+            "stopReason": "tool_use"
+        }),
+        Ok(
+            "Summary: the note says hello from bedrock provider-shape discovery followup test."
+                .to_owned(),
+        ),
+    )
+    .await;
+
+    assert_eq!(
+        reply,
+        "Summary: the note says hello from bedrock provider-shape discovery followup test."
+    );
+    assert_eq!(*runtime.turn_calls.lock().expect("turn calls lock"), 2);
+
+    let persisted = runtime.persisted.lock().expect("persisted lock").clone();
+    assert_discovery_first_followup_summary(&persisted, false, "file.read");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_turn_with_runtime_provider_shape_tool_search_followup_inline_raw_output() {
+    let (reply, runtime) = run_provider_shape_tool_search_followup(
+        "session-provider-shape-inline",
+        "search for the right tool, then read note.md and show raw json tool output",
+        "hello from inline provider-shape discovery followup raw test",
+        json!({
+            "choices": [{
+                "message": {
+                    "content": "Let me search for the right tool first.\n<function=tool_search><parameter=query>read note.md</parameter><parameter=limit>3</parameter></function>"
+                }
+            }]
+        }),
+        json!({
+            "choices": [{
+                "message": {
+                    "content": "Now I'll read the file.\n<function=file_read><parameter=path>note.md</parameter></function>"
+                }
+            }]
+        }),
+        Ok("unused completion".to_owned()),
+    )
+    .await;
+
+    assert!(
+        reply.contains("[ok]"),
+        "raw-request mode should return the invoked tool output, got: {reply}"
+    );
+    assert!(
+        reply.contains("hello from inline provider-shape discovery followup raw test"),
+        "expected second-round invoked tool output, got: {reply}"
+    );
+    assert_eq!(*runtime.turn_calls.lock().expect("turn calls lock"), 2);
+    assert_eq!(
+        *runtime
+            .completion_calls
+            .lock()
+            .expect("completion calls lock"),
+        0
+    );
+
+    let persisted = runtime.persisted.lock().expect("persisted lock").clone();
+    assert_discovery_first_followup_summary(&persisted, true, "file.read");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
