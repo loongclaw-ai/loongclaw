@@ -782,8 +782,9 @@ fn execute_skills_command_policy_set_rejects_invalid_domain_rules() {
                     approve_policy_update: true,
                 },
             },
-        })
-        .expect_err("policy set should reject invalid domain rules");
+        },
+    )
+    .expect_err("policy set should reject invalid domain rules");
     assert!(
         error.contains("invalid domain rule for --allow-domain"),
         "invalid domain error should point operators at the malformed rule: {error}"

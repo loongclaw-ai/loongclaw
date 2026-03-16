@@ -99,13 +99,24 @@ impl FakeProviderBuilder {
             .tool_calls
             .into_iter()
             .enumerate()
-            .map(|(i, (name, args))| ToolIntent {
-                tool_name: name,
-                args_json: args,
-                source: "fake_provider".to_owned(),
-                session_id: "test-session".to_owned(),
-                turn_id: "test-turn".to_owned(),
-                tool_call_id: format!("call-{i}"),
+            .map(|(i, (name, args))| {
+                // Bridge non-provider-exposed tools through tool.invoke with a
+                // valid lease, mirroring what the real provider shape layer does.
+                let (bridged_name, bridged_args) =
+                    crate::tools::bridge_provider_tool_call_with_scope(
+                        &name,
+                        args,
+                        Some("test-session"),
+                        Some("test-turn"),
+                    );
+                ToolIntent {
+                    tool_name: bridged_name,
+                    args_json: bridged_args,
+                    source: "fake_provider".to_owned(),
+                    session_id: "test-session".to_owned(),
+                    turn_id: "test-turn".to_owned(),
+                    tool_call_id: format!("call-{i}"),
+                }
             })
             .collect();
 

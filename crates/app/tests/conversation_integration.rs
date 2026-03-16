@@ -21,8 +21,16 @@ fn fake_provider_builder_with_tool_call() {
         .build();
     assert_eq!(turn.assistant_text, "checking file");
     assert_eq!(turn.tool_intents.len(), 1);
-    assert_eq!(turn.tool_intents[0].tool_name, "file.read");
-    assert_eq!(turn.tool_intents[0].args_json, json!({"path": "test.txt"}));
+    // Discoverable tools are bridged through tool.invoke with a lease.
+    assert_eq!(turn.tool_intents[0].tool_name, "tool.invoke");
+    assert_eq!(
+        turn.tool_intents[0].args_json["tool_id"],
+        json!("file.read")
+    );
+    assert_eq!(
+        turn.tool_intents[0].args_json["arguments"],
+        json!({"path": "test.txt"})
+    );
     assert!(!turn.tool_intents[0].tool_call_id.is_empty());
 }
 
@@ -284,12 +292,12 @@ async fn integ_malformed_tool_args_returns_error() {
     match result {
         TurnResult::ToolError(err) => {
             assert!(
-                err.contains("payload must be an object"),
-                "expected 'payload must be an object' in error, got: {err}"
+                err.contains("must be an object"),
+                "expected 'must be an object' in error, got: {err}"
             );
         }
         other => {
-            panic!("expected ToolError with 'payload must be an object', got: {other:?}");
+            panic!("expected ToolError with 'must be an object', got: {other:?}");
         }
     }
 }
