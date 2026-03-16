@@ -583,6 +583,39 @@ fn migration_classify_current_setup_treats_prompt_and_memory_metadata_as_repaira
 }
 
 #[test]
+fn migration_classify_current_setup_ignores_home_drift_for_default_memory_path() {
+    let home_a = unique_temp_dir("classify-home-drift-a");
+    let home_b = unique_temp_dir("classify-home-drift-b");
+    std::fs::create_dir_all(&home_a).expect("create first classify home");
+    std::fs::create_dir_all(&home_b).expect("create second classify home");
+
+    let path = unique_temp_dir("classify-home-drift").join("config.toml");
+    {
+        let _guard =
+            MigrationEnvironmentGuard::set(&[("HOME", Some(home_a.to_string_lossy().as_ref()))]);
+
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.provider.kind = mvp::config::ProviderKind::Ollama;
+        let profile = config.provider.kind.profile();
+        config.provider.base_url = profile.base_url.to_owned();
+        config.provider.chat_completions_path = profile.chat_completions_path.to_owned();
+        config.provider.api_key_env = None;
+        config.provider.oauth_access_token_env = None;
+        mvp::config::write(Some(path.to_string_lossy().as_ref()), &config, true)
+            .expect("write legacy-style config under first home");
+    }
+
+    let _guard =
+        MigrationEnvironmentGuard::set(&[("HOME", Some(home_b.to_string_lossy().as_ref()))]);
+
+    assert_eq!(
+        crate::migration::discovery::classify_current_setup(&path),
+        crate::migration::types::CurrentSetupState::LegacyOrIncomplete,
+        "default memory sqlite path drift from HOME changes should not force a legacy selection-only config into the repairable bucket"
+    );
+}
+
+#[test]
 fn migration_build_import_candidate_detects_provider_env_pointer_only_changes() {
     let mut config = mvp::config::LoongClawConfig::default();
     config.provider.api_key_env = Some("LOONGCLAW_CUSTOM_OPENAI_KEY".to_owned());
