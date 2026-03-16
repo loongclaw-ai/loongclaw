@@ -314,16 +314,19 @@ fn collect_assistant_contents_from_memory_window_payload(
     let turns = turns_payload.and_then(Value::as_array).ok_or_else(|| {
         AssistantHistoryLoadError::kernel_malformed_payload("missing or non-array turns")
     })?;
-    Ok(turns
-        .iter()
-        .filter_map(|turn| {
-            (turn.get("role").and_then(Value::as_str) == Some("assistant"))
-                .then(|| {
-                    turn.get("content")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                })
-                .map(ToOwned::to_owned)
-        })
-        .collect())
+    let mut assistant_contents = Vec::new();
+    for (index, turn) in turns.iter().enumerate() {
+        if turn.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+
+        let content = turn.get("content").and_then(Value::as_str).ok_or_else(|| {
+            AssistantHistoryLoadError::kernel_malformed_payload(format!(
+                "assistant turn at index {index} missing or non-string content"
+            ))
+        })?;
+        assistant_contents.push(content.to_owned());
+    }
+
+    Ok(assistant_contents)
 }
