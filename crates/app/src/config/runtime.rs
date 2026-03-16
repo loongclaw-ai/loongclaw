@@ -1460,13 +1460,14 @@ fn next_available_provider_profile_id(
     if !providers.contains_key(base_profile_id) {
         return base_profile_id.to_owned();
     }
-    for suffix in 2.. {
+    let max_suffix = providers.len().saturating_add(2);
+    for suffix in 2..=max_suffix {
         let candidate = format!("{base_profile_id}-{suffix}");
         if !providers.contains_key(&candidate) {
             return candidate;
         }
     }
-    unreachable!("provider profile id suffix search should always terminate")
+    format!("{base_profile_id}-{max_suffix}")
 }
 
 fn recover_active_provider_from_legacy_config(
