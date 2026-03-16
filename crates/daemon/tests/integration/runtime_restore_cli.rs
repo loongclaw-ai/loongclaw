@@ -8,6 +8,7 @@
 use super::*;
 use serde_json::Value;
 use std::{
+    collections::BTreeMap,
     ffi::OsString,
     fs,
     path::{Path, PathBuf},
@@ -321,6 +322,18 @@ fn runtime_snapshot_artifact_json_redacts_inline_provider_secrets_from_restore_s
                 kind: mvp::config::ProviderKind::Deepseek,
                 model: "deepseek-chat".to_owned(),
                 api_key: Some("literal-secret-value".to_owned()),
+                headers: BTreeMap::from([
+                    (
+                        "anthropic-api-key".to_owned(),
+                        "literal-header-secret".to_owned(),
+                    ),
+                    (
+                        "anthropic-version".to_owned(),
+                        "2023-06-01".to_owned(),
+                    ),
+                    ("x-goog-api-key".to_owned(), "${GOOGLE_API_KEY}".to_owned()),
+                    ("user-agent".to_owned(), "loongclaw-test-suite".to_owned()),
+                ]),
                 ..Default::default()
             },
         },
@@ -330,17 +343,23 @@ fn runtime_snapshot_artifact_json_redacts_inline_provider_secrets_from_restore_s
 
     let (_artifact_path, _snapshot, payload) = write_snapshot_artifact(&root, &config_path);
 
-    let provider = &payload["restore_spec"]["provider"]["profiles"]["deepseek-lab"]["provider"];
-    assert!(provider["api_key"].is_null());
-    assert!(provider["oauth_access_token"].is_null());
+    let profile = &payload["restore_spec"]["provider"]["profiles"]["deepseek-lab"];
+    assert!(profile["api_key"].is_null());
+    assert!(profile["oauth_access_token"].is_null());
+    assert!(profile["headers"]["anthropic-api-key"].is_null());
+    assert_eq!(profile["headers"]["anthropic-version"], "2023-06-01");
+    assert_eq!(profile["headers"]["x-goog-api-key"], "${GOOGLE_API_KEY}");
+    assert_eq!(profile["headers"]["user-agent"], "loongclaw-test-suite");
     assert!(
         payload["restore_spec"]["warnings"]
             .as_array()
             .expect("warnings should be an array")
             .iter()
             .filter_map(Value::as_str)
-            .any(|warning| warning.contains("deepseek-lab")),
-        "restore spec should surface a warning for redacted inline credentials"
+            .any(|warning| {
+                warning.contains("deepseek-lab") && warning.contains("anthropic-api-key")
+            }),
+        "restore spec should surface a warning for redacted inline provider headers"
     );
 }
 

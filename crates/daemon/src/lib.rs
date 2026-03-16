@@ -1570,11 +1570,9 @@ fn normalize_runtime_snapshot_restore_provider_profile(
         .provider
         .headers
         .iter()
-        .filter_map(|(header_name, header_value)| {
-            runtime_snapshot_provider_header_is_secret(header_name)
-                .then_some((header_name, header_value))
+        .filter(|(header_name, header_value)| {
+            !runtime_snapshot_provider_header_is_safe_to_persist(header_name, header_value)
         })
-        .filter(|(_, header_value)| !runtime_snapshot_is_env_reference_literal(header_value))
         .map(|(header_name, _)| header_name.clone())
         .collect::<Vec<_>>();
     for header_name in header_keys_to_remove {
@@ -1603,11 +1601,28 @@ fn runtime_snapshot_redact_provider_secret_field(
     true
 }
 
-fn runtime_snapshot_provider_header_is_secret(header_name: &str) -> bool {
+fn runtime_snapshot_provider_header_is_safe_to_persist(
+    header_name: &str,
+    header_value: &str,
+) -> bool {
+    if header_value.trim().is_empty() || runtime_snapshot_is_env_reference_literal(header_value) {
+        return true;
+    }
+
+    let normalized = header_name.trim().to_ascii_lowercase();
     matches!(
-        header_name.trim().to_ascii_lowercase().as_str(),
-        "authorization" | "proxy-authorization" | "x-api-key" | "api-key"
-    )
+        normalized.as_str(),
+        "accept"
+            | "accept-charset"
+            | "accept-encoding"
+            | "accept-language"
+            | "cache-control"
+            | "content-language"
+            | "content-type"
+            | "pragma"
+            | "user-agent"
+    ) || normalized.ends_with("-version")
+        || normalized.ends_with("-beta")
 }
 
 fn runtime_snapshot_canonical_env_reference(env_name: Option<&str>) -> Option<String> {
