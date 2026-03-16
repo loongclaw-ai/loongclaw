@@ -791,11 +791,13 @@ fn resolve_guided_prompt_path(
     {
         return GuidedPromptPath::NativePromptPack;
     }
-    if config.cli.uses_native_prompt_pack() {
-        return GuidedPromptPath::NativePromptPack;
-    }
-    if !config.cli.system_prompt.trim().is_empty() {
-        return GuidedPromptPath::InlineOverride;
+    if options.non_interactive {
+        if config.cli.uses_native_prompt_pack() {
+            return GuidedPromptPath::NativePromptPack;
+        }
+        if !config.cli.system_prompt.trim().is_empty() {
+            return GuidedPromptPath::InlineOverride;
+        }
     }
     GuidedPromptPath::NativePromptPack
 }
