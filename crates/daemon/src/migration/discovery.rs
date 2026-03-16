@@ -31,7 +31,7 @@ struct CodexModelProviderConfig {
     requires_openai_auth: Option<bool>,
 }
 
-pub(crate) fn classify_current_setup(output_path: &Path) -> CurrentSetupState {
+pub fn classify_current_setup(output_path: &Path) -> CurrentSetupState {
     if !output_path.exists() {
         return CurrentSetupState::Absent;
     }
@@ -67,9 +67,8 @@ pub(crate) fn classify_current_setup(output_path: &Path) -> CurrentSetupState {
     CurrentSetupState::Repairable
 }
 
-#[cfg(test)]
 #[allow(dead_code)]
-pub(crate) fn collect_import_candidates_with_paths(
+pub fn collect_import_candidates_with_paths(
     output_path: &Path,
     codex_config_path: Option<&Path>,
     workspace_root: Option<&Path>,
@@ -81,7 +80,7 @@ pub(crate) fn collect_import_candidates_with_paths(
     collect_import_candidates_with_path_list(output_path, &codex_config_paths, workspace_root)
 }
 
-pub(crate) fn collect_import_candidates_with_path_list(
+pub fn collect_import_candidates_with_path_list(
     output_path: &Path,
     codex_config_paths: &[PathBuf],
     workspace_root: Option<&Path>,
@@ -96,8 +95,7 @@ pub(crate) fn collect_import_candidates_with_path_list(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn collect_import_candidates_with_paths_and_readiness(
+pub fn collect_import_candidates_with_paths_and_readiness(
     output_path: &Path,
     codex_config_path: Option<&Path>,
     workspace_root: Option<&Path>,
@@ -115,7 +113,7 @@ pub(crate) fn collect_import_candidates_with_paths_and_readiness(
     )
 }
 
-pub(crate) fn collect_import_candidates_with_path_list_and_readiness(
+pub fn collect_import_candidates_with_path_list_and_readiness(
     output_path: &Path,
     codex_config_paths: &[PathBuf],
     workspace_root: Option<&Path>,
@@ -182,7 +180,7 @@ pub(crate) fn collect_import_candidates_with_path_list_and_readiness(
     Ok(candidates)
 }
 
-pub(crate) fn build_import_candidate(
+pub fn build_import_candidate(
     source_kind: ImportSourceKind,
     source: String,
     config: mvp::config::LoongClawConfig,
@@ -213,7 +211,7 @@ pub(crate) fn build_import_candidate(
     })
 }
 
-pub(crate) fn detect_import_starting_config_with_channel_readiness(
+pub fn detect_import_starting_config_with_channel_readiness(
     readiness: ChannelImportReadiness,
 ) -> mvp::config::LoongClawConfig {
     apply_channel_import_readiness(mvp::config::LoongClawConfig::default(), readiness)
@@ -227,13 +225,13 @@ fn apply_channel_import_readiness(
     config
 }
 
-pub(crate) fn resolve_channel_import_readiness_from_config(
+pub fn resolve_channel_import_readiness_from_config(
     config: &mvp::config::LoongClawConfig,
 ) -> ChannelImportReadiness {
     channels::resolve_import_readiness(config)
 }
 
-pub(crate) fn detect_workspace_guidance(root: &Path) -> Vec<WorkspaceGuidanceCandidate> {
+pub fn detect_workspace_guidance(root: &Path) -> Vec<WorkspaceGuidanceCandidate> {
     let mut guidance = Vec::new();
     for kind in [
         WorkspaceGuidanceKind::Agents,
@@ -252,15 +250,14 @@ pub(crate) fn detect_workspace_guidance(root: &Path) -> Vec<WorkspaceGuidanceCan
     guidance
 }
 
-#[cfg(test)]
-pub(crate) fn collect_import_surfaces(config: &mvp::config::LoongClawConfig) -> Vec<ImportSurface> {
+pub fn collect_import_surfaces(config: &mvp::config::LoongClawConfig) -> Vec<ImportSurface> {
     collect_import_surfaces_with_channel_readiness(
         config,
         &resolve_channel_import_readiness_from_config(config),
     )
 }
 
-pub(crate) fn collect_import_surfaces_with_channel_readiness(
+pub fn collect_import_surfaces_with_channel_readiness(
     config: &mvp::config::LoongClawConfig,
     readiness: &ChannelImportReadiness,
 ) -> Vec<ImportSurface> {
@@ -462,7 +459,7 @@ fn load_codex_import_candidate(
     ))
 }
 
-pub(crate) fn default_detected_codex_config_paths() -> Vec<PathBuf> {
+pub fn default_detected_codex_config_paths() -> Vec<PathBuf> {
     default_codex_config_paths()
 }
 

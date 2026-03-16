@@ -21,6 +21,7 @@ tool-shell = []
 tool-file = []
 tool-browser = ["dep:scraper"]
 tool-webfetch = []
+test-support = []
 
 [dependencies]
 loongclaw-contracts = { path = "../contracts" }

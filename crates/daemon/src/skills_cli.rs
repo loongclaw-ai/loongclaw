@@ -6,7 +6,7 @@ use serde_json::{Map, Value, json};
 use std::{collections::BTreeSet, path::Path};
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
-pub(crate) enum SkillsCommands {
+pub enum SkillsCommands {
     /// List discovered external skills across managed, user, and project scopes
     List,
     /// Inspect one resolved external skill
@@ -30,7 +30,7 @@ pub(crate) enum SkillsCommands {
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
-pub(crate) enum SkillsPolicyCommands {
+pub enum SkillsPolicyCommands {
     /// Show the persisted external-skills runtime policy
     #[command(visible_alias = "show")]
     Get,
@@ -59,19 +59,19 @@ pub(crate) enum SkillsPolicyCommands {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct SkillsCommandOptions {
+pub struct SkillsCommandOptions {
     pub config: Option<String>,
     pub json: bool,
     pub command: SkillsCommands,
 }
 
 #[derive(Debug)]
-pub(crate) struct SkillsCommandExecution {
+pub struct SkillsCommandExecution {
     pub resolved_config_path: String,
     pub outcome: ToolCoreOutcome,
 }
 
-pub(crate) fn run_skills_cli(options: SkillsCommandOptions) -> CliResult<()> {
+pub fn run_skills_cli(options: SkillsCommandOptions) -> CliResult<()> {
     let as_json = options.json;
     let execution = execute_skills_command(options)?;
     if as_json {
@@ -85,9 +85,7 @@ pub(crate) fn run_skills_cli(options: SkillsCommandOptions) -> CliResult<()> {
     Ok(())
 }
 
-pub(crate) fn execute_skills_command(
-    options: SkillsCommandOptions,
-) -> CliResult<SkillsCommandExecution> {
+pub fn execute_skills_command(options: SkillsCommandOptions) -> CliResult<SkillsCommandExecution> {
     let (resolved_path, mut config) = mvp::config::load(options.config.as_deref())?;
     let outcome = match options.command {
         SkillsCommands::Policy { command } => {
@@ -301,7 +299,7 @@ fn normalize_domain_inputs(flag: &str, entries: Vec<String>) -> CliResult<Vec<St
     Ok(normalized.into_iter().collect())
 }
 
-pub(crate) fn skills_cli_json(execution: &SkillsCommandExecution) -> Value {
+pub fn skills_cli_json(execution: &SkillsCommandExecution) -> Value {
     json!({
         "config": execution.resolved_config_path,
         "status": execution.outcome.status,
@@ -309,7 +307,7 @@ pub(crate) fn skills_cli_json(execution: &SkillsCommandExecution) -> Value {
     })
 }
 
-pub(crate) fn render_skills_cli_text(execution: &SkillsCommandExecution) -> CliResult<String> {
+pub fn render_skills_cli_text(execution: &SkillsCommandExecution) -> CliResult<String> {
     let payload = &execution.outcome.payload;
     let tool_name = payload
         .get("tool_name")

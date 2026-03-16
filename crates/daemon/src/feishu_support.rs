@@ -11,7 +11,7 @@ use loongclaw_app as mvp;
 use loongclaw_spec::CliResult;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub(crate) enum FeishuAuthCapability {
+pub enum FeishuAuthCapability {
     ReadOnly,
     DocWrite,
     MessageWrite,
@@ -19,7 +19,7 @@ pub(crate) enum FeishuAuthCapability {
 }
 
 impl FeishuAuthCapability {
-    pub(crate) fn as_cli_value(self) -> &'static str {
+    pub fn as_cli_value(self) -> &'static str {
         match self {
             Self::ReadOnly => "read-only",
             Self::DocWrite => "doc-write",
@@ -30,7 +30,7 @@ impl FeishuAuthCapability {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct FeishuGrantRecommendations {
+pub struct FeishuGrantRecommendations {
     pub auth_start_command: Option<String>,
     pub select_command: Option<String>,
     pub missing_required_scopes: Vec<String>,
@@ -41,14 +41,14 @@ pub(crate) struct FeishuGrantRecommendations {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct FeishuAccountRecommendations {
+pub struct FeishuAccountRecommendations {
     pub auth_start_command: Option<String>,
     pub select_command: Option<String>,
     pub selection_required: bool,
     pub stale_selected_open_id: Option<String>,
 }
 
-pub(crate) struct FeishuDaemonContext {
+pub struct FeishuDaemonContext {
     pub config_path: PathBuf,
     pub config: mvp::config::LoongClawConfig,
     pub resolved: mvp::config::ResolvedFeishuChannelConfig,
@@ -69,7 +69,7 @@ impl FeishuDaemonContext {
     }
 }
 
-pub(crate) fn load_feishu_daemon_context(
+pub fn load_feishu_daemon_context(
     config_path: Option<&str>,
     account: Option<&str>,
 ) -> CliResult<FeishuDaemonContext> {
@@ -89,25 +89,25 @@ pub(crate) fn load_feishu_daemon_context(
     })
 }
 
-pub(crate) fn unix_ts_now() -> i64 {
+pub fn unix_ts_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
         .unwrap_or_default()
 }
 
-pub(crate) fn generate_oauth_state() -> String {
+pub fn generate_oauth_state() -> String {
     random_urlsafe_token(24)
 }
 
-pub(crate) fn build_pkce_pair() -> (String, String) {
+pub fn build_pkce_pair() -> (String, String) {
     let verifier = random_urlsafe_token(32);
     let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(Sha256::digest(verifier.as_bytes()));
     (verifier, challenge)
 }
 
-pub(crate) fn resolve_scopes(
+pub fn resolve_scopes(
     default_scopes: &[String],
     override_scopes: &[String],
     capabilities: &[FeishuAuthCapability],
@@ -160,7 +160,7 @@ pub(crate) fn resolve_scopes(
     scopes
 }
 
-pub(crate) fn normalized_auth_start_capabilities(
+pub fn normalized_auth_start_capabilities(
     capabilities: &[FeishuAuthCapability],
     include_message_write: bool,
 ) -> Vec<FeishuAuthCapability> {
@@ -176,7 +176,7 @@ pub(crate) fn normalized_auth_start_capabilities(
     normalized
 }
 
-pub(crate) fn feishu_auth_start_command_hint(
+pub fn feishu_auth_start_command_hint(
     configured_account_id: &str,
     include_message_write: bool,
     include_doc_write: bool,
@@ -195,7 +195,7 @@ pub(crate) fn feishu_auth_start_command_hint(
     parts.join(" ")
 }
 
-pub(crate) fn feishu_auth_select_command_hint(configured_account_id: &str) -> String {
+pub fn feishu_auth_select_command_hint(configured_account_id: &str) -> String {
     let mut parts = vec!["loongclaw feishu auth select".to_owned()];
     let configured_account_id = configured_account_id.trim();
     if !configured_account_id.is_empty() {
@@ -205,7 +205,7 @@ pub(crate) fn feishu_auth_select_command_hint(configured_account_id: &str) -> St
     parts.join(" ")
 }
 
-pub(crate) fn recommended_auth_start_command_for_grant(
+pub fn recommended_auth_start_command_for_grant(
     configured_account_id: &str,
     grant: Option<&mvp::feishu::FeishuGrant>,
     now_s: i64,
@@ -230,7 +230,7 @@ pub(crate) fn recommended_auth_start_command_for_grant(
     ))
 }
 
-pub(crate) fn build_grant_recommendations(
+pub fn build_grant_recommendations(
     configured_account_id: &str,
     grant: Option<&mvp::feishu::FeishuGrant>,
     now_s: i64,
@@ -256,7 +256,7 @@ pub(crate) fn build_grant_recommendations(
     }
 }
 
-pub(crate) fn build_account_recommendations(
+pub fn build_account_recommendations(
     configured_account_id: &str,
     inventory: &mvp::feishu::FeishuGrantInventory,
 ) -> FeishuAccountRecommendations {
@@ -273,8 +273,7 @@ pub(crate) fn build_account_recommendations(
     }
 }
 
-#[cfg(test)]
-pub(crate) fn resolve_selected_grant(
+pub fn resolve_selected_grant(
     store: &mvp::feishu::FeishuTokenStore,
     account_id: &str,
     open_id: Option<&str>,

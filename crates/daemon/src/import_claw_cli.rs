@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[value(rename_all = "snake_case")]
-pub(crate) enum ImportClawMode {
+pub enum ImportClawMode {
     Apply,
     Plan,
     Discover,
@@ -46,7 +46,7 @@ impl ImportClawMode {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ImportClawCommandOptions {
+pub struct ImportClawCommandOptions {
     pub input: Option<String>,
     pub output: Option<String>,
     pub source: Option<String>,
@@ -59,11 +59,11 @@ pub(crate) struct ImportClawCommandOptions {
     pub force: bool,
 }
 
-pub(crate) fn parse_legacy_claw_source(raw: &str) -> Option<mvp::migration::LegacyClawSource> {
+pub fn parse_legacy_claw_source(raw: &str) -> Option<mvp::migration::LegacyClawSource> {
     mvp::migration::LegacyClawSource::from_id(raw)
 }
 
-pub(crate) fn run_import_claw_cli(options: ImportClawCommandOptions) -> CliResult<()> {
+pub fn run_import_claw_cli(options: ImportClawCommandOptions) -> CliResult<()> {
     let output_path = resolve_output_path(options.output.as_deref());
     let input_path = options.input.as_deref().map(mvp::config::expand_path);
 

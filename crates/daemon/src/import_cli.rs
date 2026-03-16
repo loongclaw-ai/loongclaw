@@ -10,7 +10,7 @@ use serde::Serialize;
 use crate::migration::{self, ImportCandidate, ImportSourceKind, SetupDomainKind};
 
 #[derive(Debug, Clone)]
-pub(crate) struct ImportCommandOptions {
+pub struct ImportCommandOptions {
     pub output: Option<String>,
     pub force: bool,
     pub preview: bool,
@@ -23,7 +23,7 @@ pub(crate) struct ImportCommandOptions {
     pub exclude: Vec<String>,
 }
 
-pub(crate) async fn run_import_cli(options: ImportCommandOptions) -> CliResult<()> {
+pub async fn run_import_cli(options: ImportCommandOptions) -> CliResult<()> {
     let output_path = options
         .output
         .as_deref()
@@ -117,11 +117,11 @@ pub(crate) async fn run_import_cli(options: ImportCommandOptions) -> CliResult<(
     )
 }
 
-pub(crate) fn parse_import_source_selector(raw: &str) -> Option<ImportSourceKind> {
+pub fn parse_import_source_selector(raw: &str) -> Option<ImportSourceKind> {
     ImportSourceKind::parse_import_cli_selector(raw)
 }
 
-pub(crate) fn parse_import_domain_selector(raw: &str) -> Option<migration::SetupDomainKind> {
+pub fn parse_import_domain_selector(raw: &str) -> Option<migration::SetupDomainKind> {
     migration::SetupDomainKind::parse_selector(raw)
 }
 
@@ -142,7 +142,7 @@ fn parse_domain_selectors(
     Ok(domains)
 }
 
-pub(crate) fn resolve_selected_domains(
+pub fn resolve_selected_domains(
     candidate: &ImportCandidate,
     include: &[migration::SetupDomainKind],
     exclude: &[migration::SetupDomainKind],
@@ -162,7 +162,7 @@ pub(crate) fn resolve_selected_domains(
     selected
 }
 
-pub(crate) fn apply_selected_domains_to_config(
+pub fn apply_selected_domains_to_config(
     base: &mvp::config::LoongClawConfig,
     candidate: &ImportCandidate,
     selected: &[migration::SetupDomainKind],
@@ -241,7 +241,7 @@ fn filter_candidate_by_selected_domains(
     })
 }
 
-pub(crate) fn surface_matches_selected_domains(
+pub fn surface_matches_selected_domains(
     surface: &migration::ImportSurface,
     selected: &BTreeSet<migration::SetupDomainKind>,
 ) -> bool {
@@ -256,16 +256,14 @@ fn candidate_matches_source_path(
         .is_some_and(|candidate_path| candidate_path == requested_source_path)
 }
 
-#[cfg(test)]
-pub(crate) fn render_import_preview_lines_for_width(
+pub fn render_import_preview_lines_for_width(
     candidate: &ImportCandidate,
     width: usize,
 ) -> Vec<String> {
     render_import_preview_lines_for_candidates(candidate, std::slice::from_ref(candidate), width)
 }
 
-#[cfg(test)]
-pub(crate) fn render_import_preview_lines_for_candidates(
+pub fn render_import_preview_lines_for_candidates(
     candidate: &ImportCandidate,
     all_candidates: &[ImportCandidate],
     width: usize,
@@ -314,8 +312,7 @@ fn render_import_preview_lines_for_candidates_with_style(
     lines
 }
 
-#[cfg(test)]
-pub(crate) fn render_import_apply_summary_lines_for_width(
+pub fn render_import_apply_summary_lines_for_width(
     output_path: &Path,
     candidate: &ImportCandidate,
     selected_domains: &[SetupDomainKind],
@@ -499,7 +496,7 @@ struct ImportPreviewProviderProfile {
     active_candidate: bool,
 }
 
-pub(crate) fn render_import_preview_json(candidates: &[ImportCandidate]) -> CliResult<String> {
+pub fn render_import_preview_json(candidates: &[ImportCandidate]) -> CliResult<String> {
     let preview = candidates
         .iter()
         .map(|candidate| {
@@ -576,7 +573,7 @@ fn detect_render_width() -> usize {
         .unwrap_or(80)
 }
 
-pub(crate) fn select_apply_candidate_index(candidates: &[ImportCandidate]) -> CliResult<usize> {
+pub fn select_apply_candidate_index(candidates: &[ImportCandidate]) -> CliResult<usize> {
     if candidates.len() == 1 {
         return Ok(0);
     }
@@ -608,8 +605,7 @@ pub(crate) fn select_apply_candidate_index(candidates: &[ImportCandidate]) -> Cl
     ))
 }
 
-#[cfg(test)]
-pub(crate) fn resolve_import_provider_selection(
+pub fn resolve_import_provider_selection(
     current_provider: &mvp::config::ProviderConfig,
     all_candidates: &[ImportCandidate],
     candidate: &ImportCandidate,
@@ -637,7 +633,7 @@ pub(crate) fn resolve_import_provider_selection(
                     .imported_choices
                     .iter()
                     .find(|choice| choice.profile_id == profile_id)
-                    .expect("resolved provider choice should exist in plan");
+                    .expect("resolved provider choice should exist in plan"); // invariant: selector matched
                 return Ok(choice.config.clone());
             }
             migration::ImportedChoiceSelectorResolution::Ambiguous(profile_ids) => {
@@ -812,7 +808,7 @@ fn apply_provider_profiles_to_config(
     Ok(())
 }
 
-pub(crate) fn apply_import_candidate(
+pub fn apply_import_candidate(
     output_path: &Path,
     force: bool,
     all_candidates: &[ImportCandidate],

@@ -68,7 +68,7 @@ struct PreviewDecisionDescriptor {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ImportSourceKind {
+pub enum ImportSourceKind {
     RecommendedPlan,
     CurrentSetup,
     ExistingLoongClawConfig,
@@ -79,7 +79,7 @@ pub(crate) enum ImportSourceKind {
 }
 
 impl ImportSourceKind {
-    pub(crate) fn parse_import_cli_selector(raw: &str) -> Option<Self> {
+    pub fn parse_import_cli_selector(raw: &str) -> Option<Self> {
         let normalized = raw.trim().to_ascii_lowercase().replace('-', "_");
         IMPORT_CLI_SOURCE_SELECTORS
             .iter()
@@ -87,7 +87,7 @@ impl ImportSourceKind {
             .find(|kind| kind.matches_selector(&normalized))
     }
 
-    pub(crate) fn supported_import_cli_selector_list() -> String {
+    pub fn supported_import_cli_selector_list() -> String {
         IMPORT_CLI_SOURCE_SELECTORS
             .iter()
             .map(|kind| kind.primary_selector())
@@ -95,23 +95,23 @@ impl ImportSourceKind {
             .join(", ")
     }
 
-    pub(crate) const fn import_cli_selector(self) -> &'static str {
+    pub const fn import_cli_selector(self) -> &'static str {
         self.primary_selector()
     }
 
-    pub(crate) const fn direct_starting_point_rank(self) -> usize {
+    pub const fn direct_starting_point_rank(self) -> usize {
         self.descriptor().direct_starting_point_rank
     }
 
-    pub(crate) fn onboarding_label(source_kind: Option<Self>, source: &str) -> String {
+    pub fn onboarding_label(source_kind: Option<Self>, source: &str) -> String {
         crate::source_presentation::onboarding_source_label(source_kind, source)
     }
 
-    pub(crate) const fn default_domain_decision(self) -> Option<PreviewDecision> {
+    pub const fn default_domain_decision(self) -> Option<PreviewDecision> {
         self.descriptor().default_domain_decision
     }
 
-    pub(crate) const fn direct_starting_point_reason(self) -> Option<&'static str> {
+    pub const fn direct_starting_point_reason(self) -> Option<&'static str> {
         self.descriptor().direct_starting_point_reason
     }
 
@@ -175,7 +175,7 @@ impl ImportSourceKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum SetupDomainKind {
+pub enum SetupDomainKind {
     Provider,
     Channels,
     Cli,
@@ -185,7 +185,7 @@ pub(crate) enum SetupDomainKind {
 }
 
 impl SetupDomainKind {
-    pub(crate) fn parse_selector(raw: &str) -> Option<Self> {
+    pub fn parse_selector(raw: &str) -> Option<Self> {
         let normalized = raw.trim().to_ascii_lowercase().replace('-', "_");
         SETUP_DOMAIN_SELECTORS
             .iter()
@@ -193,7 +193,7 @@ impl SetupDomainKind {
             .find(|kind| kind.matches_selector(&normalized))
     }
 
-    pub(crate) fn supported_selector_list() -> String {
+    pub fn supported_selector_list() -> String {
         SETUP_DOMAIN_SELECTORS
             .iter()
             .map(|kind| kind.primary_selector())
@@ -201,18 +201,15 @@ impl SetupDomainKind {
             .join(", ")
     }
 
-    pub(crate) const fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         self.descriptor().label
     }
 
-    pub(crate) const fn changes_config(self) -> bool {
+    pub const fn changes_config(self) -> bool {
         self.descriptor().changes_config
     }
 
-    pub(crate) const fn starting_point_reason(
-        self,
-        decision: PreviewDecision,
-    ) -> Option<&'static str> {
+    pub const fn starting_point_reason(self, decision: PreviewDecision) -> Option<&'static str> {
         let descriptor = self.descriptor();
         match decision {
             PreviewDecision::KeepCurrent => descriptor.keep_current_reason,
@@ -292,14 +289,14 @@ impl SetupDomainKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum PreviewStatus {
+pub enum PreviewStatus {
     Ready,
     NeedsReview,
     Unavailable,
 }
 
 impl PreviewStatus {
-    pub(crate) const fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         self.descriptor().label
     }
 
@@ -318,7 +315,7 @@ impl PreviewStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum PreviewDecision {
+pub enum PreviewDecision {
     KeepCurrent,
     UseDetected,
     Supplement,
@@ -327,15 +324,15 @@ pub(crate) enum PreviewDecision {
 }
 
 impl PreviewDecision {
-    pub(crate) const fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         self.descriptor().label
     }
 
-    pub(crate) const fn outcome_label(self) -> &'static str {
+    pub const fn outcome_label(self) -> &'static str {
         self.descriptor().outcome_label
     }
 
-    pub(crate) const fn outcome_rank(self) -> u8 {
+    pub const fn outcome_rank(self) -> u8 {
         self.descriptor().outcome_rank
     }
 
@@ -372,7 +369,7 @@ impl PreviewDecision {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum CurrentSetupState {
+pub enum CurrentSetupState {
     Absent,
     Healthy,
     Repairable,
@@ -380,18 +377,18 @@ pub(crate) enum CurrentSetupState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct DomainPreview {
-    pub(crate) kind: SetupDomainKind,
-    pub(crate) status: PreviewStatus,
+pub struct DomainPreview {
+    pub kind: SetupDomainKind,
+    pub status: PreviewStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) decision: Option<PreviewDecision>,
-    pub(crate) source: String,
-    pub(crate) summary: String,
+    pub decision: Option<PreviewDecision>,
+    pub source: String,
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum WorkspaceGuidanceKind {
+pub enum WorkspaceGuidanceKind {
     Agents,
     Claude,
     Gemini,
@@ -399,7 +396,7 @@ pub(crate) enum WorkspaceGuidanceKind {
 }
 
 impl WorkspaceGuidanceKind {
-    pub(crate) const fn file_name(self) -> &'static str {
+    pub const fn file_name(self) -> &'static str {
         match self {
             WorkspaceGuidanceKind::Agents => "AGENTS.md",
             WorkspaceGuidanceKind::Claude => "CLAUDE.md",
@@ -410,50 +407,50 @@ impl WorkspaceGuidanceKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct WorkspaceGuidanceCandidate {
-    pub(crate) kind: WorkspaceGuidanceKind,
-    pub(crate) path: String,
+pub struct WorkspaceGuidanceCandidate {
+    pub kind: WorkspaceGuidanceKind,
+    pub path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct ChannelCandidate {
-    pub(crate) id: &'static str,
-    pub(crate) label: &'static str,
-    pub(crate) status: PreviewStatus,
-    pub(crate) source: String,
-    pub(crate) summary: String,
+pub struct ChannelCandidate {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub status: PreviewStatus,
+    pub source: String,
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ImportSurfaceLevel {
+pub enum ImportSurfaceLevel {
     Ready,
     Review,
     Blocked,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct ImportSurface {
-    pub(crate) name: &'static str,
-    pub(crate) domain: SetupDomainKind,
-    pub(crate) level: ImportSurfaceLevel,
-    pub(crate) detail: String,
+pub struct ImportSurface {
+    pub name: &'static str,
+    pub domain: SetupDomainKind,
+    pub level: ImportSurfaceLevel,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct ImportCandidate {
-    pub(crate) source_kind: ImportSourceKind,
-    pub(crate) source: String,
-    pub(crate) config: mvp::config::LoongClawConfig,
-    pub(crate) surfaces: Vec<ImportSurface>,
-    pub(crate) domains: Vec<DomainPreview>,
-    pub(crate) channel_candidates: Vec<ChannelCandidate>,
-    pub(crate) workspace_guidance: Vec<WorkspaceGuidanceCandidate>,
+pub struct ImportCandidate {
+    pub source_kind: ImportSourceKind,
+    pub source: String,
+    pub config: mvp::config::LoongClawConfig,
+    pub surfaces: Vec<ImportSurface>,
+    pub domains: Vec<DomainPreview>,
+    pub channel_candidates: Vec<ChannelCandidate>,
+    pub workspace_guidance: Vec<WorkspaceGuidanceCandidate>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ChannelCredentialState {
+pub enum ChannelCredentialState {
     #[default]
     Missing,
     Partial,
@@ -461,25 +458,24 @@ pub(crate) enum ChannelCredentialState {
 }
 
 impl ChannelCredentialState {
-    pub(crate) const fn is_ready(self) -> bool {
+    pub const fn is_ready(self) -> bool {
         matches!(self, Self::Ready)
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
-pub(crate) struct ChannelImportReadiness {
+pub struct ChannelImportReadiness {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     channel_states: BTreeMap<String, ChannelCredentialState>,
 }
 
 impl ChannelImportReadiness {
-    #[cfg(test)]
-    pub(crate) fn with_state(mut self, channel_id: &str, state: ChannelCredentialState) -> Self {
+    pub fn with_state(mut self, channel_id: &str, state: ChannelCredentialState) -> Self {
         self.set_state(channel_id, state);
         self
     }
 
-    pub(crate) fn set_state(&mut self, channel_id: &str, state: ChannelCredentialState) {
+    pub fn set_state(&mut self, channel_id: &str, state: ChannelCredentialState) {
         if state == ChannelCredentialState::Missing {
             self.channel_states.remove(channel_id);
         } else {
@@ -487,14 +483,14 @@ impl ChannelImportReadiness {
         }
     }
 
-    pub(crate) fn state(&self, channel_id: &str) -> ChannelCredentialState {
+    pub fn state(&self, channel_id: &str) -> ChannelCredentialState {
         self.channel_states
             .get(channel_id)
             .copied()
             .unwrap_or(ChannelCredentialState::Missing)
     }
 
-    pub(crate) fn is_ready(&self, channel_id: &str) -> bool {
+    pub fn is_ready(&self, channel_id: &str) -> bool {
         self.state(channel_id).is_ready()
     }
 }

@@ -4,36 +4,36 @@ use loongclaw_app as mvp;
 
 use super::{ImportCandidate, ImportSourceKind, PreviewStatus, SetupDomainKind};
 
-pub(crate) const PROVIDER_SELECTOR_PLACEHOLDER: &str = mvp::config::PROVIDER_SELECTOR_PLACEHOLDER;
-pub(crate) const PROVIDER_SELECTOR_NOTE: &str = mvp::config::PROVIDER_SELECTOR_NOTE;
+pub const PROVIDER_SELECTOR_PLACEHOLDER: &str = mvp::config::PROVIDER_SELECTOR_PLACEHOLDER;
+pub const PROVIDER_SELECTOR_NOTE: &str = mvp::config::PROVIDER_SELECTOR_NOTE;
 const PROVIDER_SELECTION_MERGE_NOTE: &str = "other detected settings stay merged";
 const COMPACT_SELECTOR_DETAIL_WIDTH: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ImportedChoiceSelectorResolution {
+pub enum ImportedChoiceSelectorResolution {
     Match(String),
     Ambiguous(Vec<String>),
     NoMatch,
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct ProviderSelectionPlan {
-    pub(crate) imported_choices: Vec<ImportedProviderChoice>,
-    pub(crate) default_kind: Option<mvp::config::ProviderKind>,
-    pub(crate) default_profile_id: Option<String>,
-    pub(crate) requires_explicit_choice: bool,
+pub struct ProviderSelectionPlan {
+    pub imported_choices: Vec<ImportedProviderChoice>,
+    pub default_kind: Option<mvp::config::ProviderKind>,
+    pub default_profile_id: Option<String>,
+    pub requires_explicit_choice: bool,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ImportedProviderChoice {
-    pub(crate) profile_id: String,
-    pub(crate) kind: mvp::config::ProviderKind,
-    pub(crate) source: String,
-    pub(crate) summary: String,
-    pub(crate) config: mvp::config::ProviderConfig,
+pub struct ImportedProviderChoice {
+    pub profile_id: String,
+    pub kind: mvp::config::ProviderKind,
+    pub source: String,
+    pub summary: String,
+    pub config: mvp::config::ProviderConfig,
 }
 
-pub(crate) fn build_provider_selection_plan_for_candidate(
+pub fn build_provider_selection_plan_for_candidate(
     selected_candidate: &ImportCandidate,
     all_candidates: &[ImportCandidate],
 ) -> ProviderSelectionPlan {
@@ -135,7 +135,7 @@ pub(crate) fn build_provider_selection_plan_for_candidate(
     }
 }
 
-pub(crate) fn resolve_provider_config_from_selection(
+pub fn resolve_provider_config_from_selection(
     current_provider: &mvp::config::ProviderConfig,
     plan: &ProviderSelectionPlan,
     selected_kind: mvp::config::ProviderKind,
@@ -157,7 +157,7 @@ fn fresh_provider_config_for_kind(kind: mvp::config::ProviderKind) -> mvp::confi
     mvp::config::ProviderConfig::fresh_for_kind(kind)
 }
 
-pub(crate) fn provider_profile_merge_key(provider: &mvp::config::ProviderConfig) -> String {
+pub fn provider_profile_merge_key(provider: &mvp::config::ProviderConfig) -> String {
     let endpoint = provider
         .endpoint
         .as_deref()
@@ -176,7 +176,7 @@ pub(crate) fn provider_profile_merge_key(provider: &mvp::config::ProviderConfig)
     format!("{}|{}|{}", provider.kind.as_str(), endpoint, model)
 }
 
-pub(crate) fn merge_provider_config(
+pub fn merge_provider_config(
     existing: &mvp::config::ProviderConfig,
     incoming: &mvp::config::ProviderConfig,
 ) -> mvp::config::ProviderConfig {
@@ -222,7 +222,7 @@ pub(crate) fn merge_provider_config(
     merged
 }
 
-pub(crate) fn resolve_choice_by_selector_resolution(
+pub fn resolve_choice_by_selector_resolution(
     plan: &ProviderSelectionPlan,
     selector: &str,
 ) -> ImportedChoiceSelectorResolution {
@@ -239,8 +239,7 @@ pub(crate) fn resolve_choice_by_selector_resolution(
     }
 }
 
-#[cfg(test)]
-pub(crate) fn resolve_choice_by_selector<'a>(
+pub fn resolve_choice_by_selector<'a>(
     plan: &'a ProviderSelectionPlan,
     selector: &str,
 ) -> Option<&'a ImportedProviderChoice> {
@@ -254,25 +253,25 @@ pub(crate) fn resolve_choice_by_selector<'a>(
         .find(|choice| choice.profile_id == profile_id)
 }
 
-pub(crate) fn accepted_selectors_for_choice(
+pub fn accepted_selectors_for_choice(
     plan: &ProviderSelectionPlan,
     profile_id: &str,
 ) -> Vec<String> {
     mvp::config::accepted_provider_selectors(provider_selector_profiles(plan), profile_id)
 }
 
-pub(crate) fn preferred_selector_for_choice(
+pub fn preferred_selector_for_choice(
     plan: &ProviderSelectionPlan,
     profile_id: &str,
 ) -> Option<String> {
     mvp::config::preferred_provider_selector(provider_selector_profiles(plan), profile_id)
 }
 
-pub(crate) fn selector_catalog(plan: &ProviderSelectionPlan) -> Vec<String> {
+pub fn selector_catalog(plan: &ProviderSelectionPlan) -> Vec<String> {
     mvp::config::provider_selector_catalog(provider_selector_profiles(plan))
 }
 
-pub(crate) fn recommendation_hint(plan: &ProviderSelectionPlan) -> Option<String> {
+pub fn recommendation_hint(plan: &ProviderSelectionPlan) -> Option<String> {
     mvp::config::provider_selector_recommendation_hint(
         provider_selector_profiles(plan),
         plan.imported_choices
@@ -281,14 +280,11 @@ pub(crate) fn recommendation_hint(plan: &ProviderSelectionPlan) -> Option<String
     )
 }
 
-pub(crate) fn describe_choice(plan: &ProviderSelectionPlan, profile_id: &str) -> Option<String> {
+pub fn describe_choice(plan: &ProviderSelectionPlan, profile_id: &str) -> Option<String> {
     mvp::config::describe_provider_selector_target(provider_selector_profiles(plan), profile_id)
 }
 
-pub(crate) fn describe_matching_choices(
-    plan: &ProviderSelectionPlan,
-    profile_ids: &[String],
-) -> String {
+pub fn describe_matching_choices(plan: &ProviderSelectionPlan, profile_ids: &[String]) -> String {
     profile_ids
         .iter()
         .filter_map(|profile_id| describe_choice(plan, profile_id))
@@ -296,7 +292,7 @@ pub(crate) fn describe_matching_choices(
         .join(", ")
 }
 
-pub(crate) fn recommendation_hint_for_profile_ids(
+pub fn recommendation_hint_for_profile_ids(
     plan: &ProviderSelectionPlan,
     profile_ids: &[String],
 ) -> Option<String> {
@@ -306,7 +302,7 @@ pub(crate) fn recommendation_hint_for_profile_ids(
     )
 }
 
-pub(crate) fn guidance_lines(plan: &ProviderSelectionPlan, width: usize) -> Vec<String> {
+pub fn guidance_lines(plan: &ProviderSelectionPlan, width: usize) -> Vec<String> {
     let mut lines = Vec::new();
     if width >= COMPACT_SELECTOR_DETAIL_WIDTH {
         lines.push(format!(
@@ -330,7 +326,7 @@ pub(crate) fn guidance_lines(plan: &ProviderSelectionPlan, width: usize) -> Vec<
     lines
 }
 
-pub(crate) fn selector_detail_line(
+pub fn selector_detail_line(
     plan: &ProviderSelectionPlan,
     profile_id: &str,
     width: usize,
@@ -344,7 +340,7 @@ pub(crate) fn selector_detail_line(
     Some(format!("selectors: {}", selectors.join(", ")))
 }
 
-pub(crate) fn format_ambiguous_selector_error(
+pub fn format_ambiguous_selector_error(
     plan: &ProviderSelectionPlan,
     selector: &str,
     profile_ids: &[String],
@@ -359,7 +355,7 @@ pub(crate) fn format_ambiguous_selector_error(
     )
 }
 
-pub(crate) fn format_unknown_selector_error(
+pub fn format_unknown_selector_error(
     plan: &ProviderSelectionPlan,
     invalid_selector_message: &str,
 ) -> String {
@@ -374,7 +370,7 @@ pub(crate) fn format_unknown_selector_error(
     )
 }
 
-pub(crate) fn unresolved_choice_note_segments(plan: &ProviderSelectionPlan) -> Vec<String> {
+pub fn unresolved_choice_note_segments(plan: &ProviderSelectionPlan) -> Vec<String> {
     let mut segments = vec![
         PROVIDER_SELECTION_MERGE_NOTE.to_owned(),
         format!(

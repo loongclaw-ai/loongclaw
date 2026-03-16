@@ -14,7 +14,7 @@ const BACKUP_TIMESTAMP_FORMAT: &[FormatItem<'static>] =
 const ONBOARD_CLEAR_INPUT_TOKEN: &str = ":clear";
 
 #[derive(Debug, Clone)]
-pub(crate) struct OnboardCommandOptions {
+pub struct OnboardCommandOptions {
     pub output: Option<String>,
     pub force: bool,
     pub non_interactive: bool,
@@ -26,7 +26,7 @@ pub(crate) struct OnboardCommandOptions {
     pub skip_model_probe: bool,
 }
 
-pub(crate) trait OnboardUi {
+pub trait OnboardUi {
     fn print_line(&mut self, line: &str) -> CliResult<()>;
     fn prompt_with_default(&mut self, label: &str, default: &str) -> CliResult<String>;
     fn prompt_required(&mut self, label: &str) -> CliResult<String>;
@@ -34,7 +34,7 @@ pub(crate) trait OnboardUi {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct OnboardRuntimeContext {
+pub struct OnboardRuntimeContext {
     render_width: usize,
     workspace_root: Option<PathBuf>,
     codex_config_paths: Vec<PathBuf>,
@@ -49,8 +49,7 @@ impl OnboardRuntimeContext {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn new_for_tests(
+    pub fn new_for_tests(
         render_width: usize,
         workspace_root: Option<PathBuf>,
         codex_config_paths: impl IntoIterator<Item = PathBuf>,
@@ -134,14 +133,14 @@ fn is_explicit_onboard_clear_input(raw: &str) -> bool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OnboardCheckLevel {
+pub enum OnboardCheckLevel {
     Pass,
     Warn,
     Fail,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum OnboardNonInteractiveWarningPolicy {
+pub enum OnboardNonInteractiveWarningPolicy {
     #[default]
     Block,
     AcceptedBySkipModelProbe,
@@ -156,52 +155,52 @@ struct OnboardCheckCounts {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OnboardCheck {
-    pub(crate) name: &'static str,
-    pub(crate) level: OnboardCheckLevel,
-    pub(crate) detail: String,
-    pub(crate) non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy,
+pub struct OnboardCheck {
+    pub name: &'static str,
+    pub level: OnboardCheckLevel,
+    pub detail: String,
+    pub non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ImportSurfaceLevel {
+pub enum ImportSurfaceLevel {
     Ready,
     Review,
     Blocked,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ImportSurface {
-    pub(crate) name: &'static str,
-    pub(crate) domain: crate::migration::SetupDomainKind,
-    pub(crate) level: ImportSurfaceLevel,
-    pub(crate) detail: String,
+pub struct ImportSurface {
+    pub name: &'static str,
+    pub domain: crate::migration::SetupDomainKind,
+    pub level: ImportSurfaceLevel,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ImportCandidate {
-    pub(crate) source_kind: crate::migration::ImportSourceKind,
-    pub(crate) source: String,
-    pub(crate) config: mvp::config::LoongClawConfig,
-    pub(crate) surfaces: Vec<ImportSurface>,
-    pub(crate) domains: Vec<crate::migration::DomainPreview>,
-    pub(crate) channel_candidates: Vec<crate::migration::ChannelCandidate>,
-    pub(crate) workspace_guidance: Vec<crate::migration::WorkspaceGuidanceCandidate>,
+pub struct ImportCandidate {
+    pub source_kind: crate::migration::ImportSourceKind,
+    pub source: String,
+    pub config: mvp::config::LoongClawConfig,
+    pub surfaces: Vec<ImportSurface>,
+    pub domains: Vec<crate::migration::DomainPreview>,
+    pub channel_candidates: Vec<crate::migration::ChannelCandidate>,
+    pub workspace_guidance: Vec<crate::migration::WorkspaceGuidanceCandidate>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OnboardEntryChoice {
+pub enum OnboardEntryChoice {
     ContinueCurrentSetup,
     ImportDetectedSetup,
     StartFresh,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OnboardEntryOption {
-    pub(crate) choice: OnboardEntryChoice,
-    pub(crate) label: &'static str,
-    pub(crate) detail: String,
-    pub(crate) recommended: bool,
+pub struct OnboardEntryOption {
+    pub choice: OnboardEntryChoice,
+    pub label: &'static str,
+    pub detail: String,
+    pub recommended: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -387,35 +386,35 @@ enum OnboardShortcutChoice {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OnboardingSuccessSummary {
-    pub(crate) import_source: Option<String>,
-    pub(crate) config_path: String,
-    pub(crate) config_status: Option<String>,
-    pub(crate) provider: String,
-    pub(crate) saved_provider_profiles: Vec<String>,
-    pub(crate) model: String,
-    pub(crate) transport: String,
-    pub(crate) credential: Option<OnboardingCredentialSummary>,
-    pub(crate) memory_path: Option<String>,
-    pub(crate) channels: Vec<String>,
-    pub(crate) domain_outcomes: Vec<OnboardingDomainOutcome>,
-    pub(crate) next_actions: Vec<OnboardingAction>,
+pub struct OnboardingSuccessSummary {
+    pub import_source: Option<String>,
+    pub config_path: String,
+    pub config_status: Option<String>,
+    pub provider: String,
+    pub saved_provider_profiles: Vec<String>,
+    pub model: String,
+    pub transport: String,
+    pub credential: Option<OnboardingCredentialSummary>,
+    pub memory_path: Option<String>,
+    pub channels: Vec<String>,
+    pub domain_outcomes: Vec<OnboardingDomainOutcome>,
+    pub next_actions: Vec<OnboardingAction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OnboardingCredentialSummary {
-    pub(crate) label: &'static str,
-    pub(crate) value: String,
+pub struct OnboardingCredentialSummary {
+    pub label: &'static str,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OnboardingDomainOutcome {
-    pub(crate) kind: crate::migration::SetupDomainKind,
-    pub(crate) decision: crate::migration::types::PreviewDecision,
+pub struct OnboardingDomainOutcome {
+    pub kind: crate::migration::SetupDomainKind,
+    pub decision: crate::migration::types::PreviewDecision,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OnboardingActionKind {
+pub enum OnboardingActionKind {
     Ask,
     Chat,
     Channel,
@@ -423,21 +422,21 @@ pub(crate) enum OnboardingActionKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OnboardingAction {
-    pub(crate) kind: OnboardingActionKind,
-    pub(crate) label: String,
-    pub(crate) command: String,
+pub struct OnboardingAction {
+    pub kind: OnboardingActionKind,
+    pub label: String,
+    pub command: String,
 }
 
-pub(crate) type ChannelImportReadiness = crate::migration::ChannelImportReadiness;
+pub type ChannelImportReadiness = crate::migration::ChannelImportReadiness;
 
-pub(crate) async fn run_onboard_cli(options: OnboardCommandOptions) -> CliResult<()> {
+pub async fn run_onboard_cli(options: OnboardCommandOptions) -> CliResult<()> {
     let context = OnboardRuntimeContext::capture();
     let mut ui = StdioOnboardUi;
     run_onboard_cli_with_ui(options, &mut ui, &context).await
 }
 
-pub(crate) async fn run_onboard_cli_with_ui(
+pub async fn run_onboard_cli_with_ui(
     options: OnboardCommandOptions,
     ui: &mut impl OnboardUi,
     context: &OnboardRuntimeContext,
@@ -682,8 +681,7 @@ pub(crate) async fn run_onboard_cli_with_ui(
     Ok(())
 }
 
-#[cfg(test)]
-pub(crate) fn build_channel_onboarding_follow_up_lines(
+pub fn build_channel_onboarding_follow_up_lines(
     config: &mvp::config::LoongClawConfig,
 ) -> Vec<String> {
     let inventory = mvp::channel::channel_inventory(config);
@@ -791,7 +789,7 @@ fn resolve_provider_selection(
     }
 }
 
-pub(crate) fn resolve_provider_config_from_selector(
+pub fn resolve_provider_config_from_selector(
     current_provider: &mvp::config::ProviderConfig,
     provider_selection: &crate::migration::ProviderSelectionPlan,
     selector: &str,
@@ -858,7 +856,7 @@ pub(crate) fn resolve_provider_config_from_selector(
     ))
 }
 
-pub(crate) fn build_provider_selection_plan_for_candidate(
+pub fn build_provider_selection_plan_for_candidate(
     selected_candidate: &ImportCandidate,
     all_candidates: &[ImportCandidate],
 ) -> crate::migration::ProviderSelectionPlan {
@@ -873,8 +871,7 @@ pub(crate) fn build_provider_selection_plan_for_candidate(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn resolve_provider_config_from_selection(
+pub fn resolve_provider_config_from_selection(
     current_provider: &mvp::config::ProviderConfig,
     plan: &crate::migration::ProviderSelectionPlan,
     selected_kind: mvp::config::ProviderKind,
@@ -1121,7 +1118,7 @@ fn provider_model_probe_failure_check(
     }
 }
 
-pub(crate) fn provider_credential_check(config: &mvp::config::LoongClawConfig) -> OnboardCheck {
+pub fn provider_credential_check(config: &mvp::config::LoongClawConfig) -> OnboardCheck {
     let provider = &config.provider;
     let provider_prefix = provider_check_detail_prefix(config);
     let inline_oauth = provider
@@ -1205,18 +1202,18 @@ fn is_explicitly_accepted_non_interactive_warning(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProviderCredentialEnvField {
+pub enum ProviderCredentialEnvField {
     ApiKey,
     OAuthAccessToken,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProviderCredentialEnvBinding {
-    pub(crate) field: ProviderCredentialEnvField,
-    pub(crate) env_name: String,
+pub struct ProviderCredentialEnvBinding {
+    pub field: ProviderCredentialEnvField,
+    pub env_name: String,
 }
 
-pub(crate) fn provider_credential_env_hints(provider: &mvp::config::ProviderConfig) -> Vec<String> {
+pub fn provider_credential_env_hints(provider: &mvp::config::ProviderConfig) -> Vec<String> {
     let mut hints = Vec::new();
     push_provider_credential_env_hint(&mut hints, provider.oauth_access_token_env.as_deref());
     push_provider_credential_env_hint(&mut hints, provider.api_key_env.as_deref());
@@ -1225,13 +1222,11 @@ pub(crate) fn provider_credential_env_hints(provider: &mvp::config::ProviderConf
     hints
 }
 
-pub(crate) fn provider_credential_env_hint(
-    provider: &mvp::config::ProviderConfig,
-) -> Option<String> {
+pub fn provider_credential_env_hint(provider: &mvp::config::ProviderConfig) -> Option<String> {
     provider_credential_env_hints(provider).into_iter().next()
 }
 
-pub(crate) fn preferred_provider_credential_env_binding(
+pub fn preferred_provider_credential_env_binding(
     provider: &mvp::config::ProviderConfig,
 ) -> Option<ProviderCredentialEnvBinding> {
     provider
@@ -1295,7 +1290,7 @@ fn render_provider_credential_source_value(raw: Option<&str>) -> Option<String> 
     normalize_provider_credential_env_name(raw?).map(|env_name| format!("${{{env_name}}}"))
 }
 
-pub(crate) fn preferred_api_key_env_default(config: &mvp::config::LoongClawConfig) -> String {
+pub fn preferred_api_key_env_default(config: &mvp::config::LoongClawConfig) -> String {
     let provider = &config.provider;
     if let Some(api_key_env) = provider
         .api_key_env
@@ -1333,7 +1328,7 @@ pub(crate) fn preferred_api_key_env_default(config: &mvp::config::LoongClawConfi
         .to_owned()
 }
 
-pub(crate) fn directory_preflight_check(name: &'static str, target: &Path) -> OnboardCheck {
+pub fn directory_preflight_check(name: &'static str, target: &Path) -> OnboardCheck {
     if target.exists() {
         return match fs::metadata(target) {
             Ok(metadata) if metadata.is_dir() => OnboardCheck {
@@ -1392,7 +1387,7 @@ pub(crate) fn directory_preflight_check(name: &'static str, target: &Path) -> On
     }
 }
 
-pub(crate) fn collect_channel_preflight_checks(
+pub fn collect_channel_preflight_checks(
     config: &mvp::config::LoongClawConfig,
 ) -> Vec<OnboardCheck> {
     crate::migration::channels::collect_channel_preflight_checks(config)
@@ -1402,7 +1397,6 @@ pub(crate) fn collect_channel_preflight_checks(
             level: match check.level {
                 crate::migration::channels::ChannelCheckLevel::Pass => OnboardCheckLevel::Pass,
                 crate::migration::channels::ChannelCheckLevel::Warn => OnboardCheckLevel::Warn,
-                #[cfg(test)]
                 crate::migration::channels::ChannelCheckLevel::Fail => OnboardCheckLevel::Fail,
             },
             detail: check.detail,
@@ -1411,16 +1405,14 @@ pub(crate) fn collect_channel_preflight_checks(
         .collect()
 }
 
-#[cfg(test)]
-pub(crate) fn collect_import_surfaces(config: &mvp::config::LoongClawConfig) -> Vec<ImportSurface> {
+pub fn collect_import_surfaces(config: &mvp::config::LoongClawConfig) -> Vec<ImportSurface> {
     crate::migration::collect_import_surfaces(config)
         .into_iter()
         .map(import_surface_from_migration)
         .collect()
 }
 
-#[cfg(test)]
-pub(crate) fn collect_import_surfaces_with_channel_readiness(
+pub fn collect_import_surfaces_with_channel_readiness(
     config: &mvp::config::LoongClawConfig,
     readiness: ChannelImportReadiness,
 ) -> Vec<ImportSurface> {
@@ -1558,7 +1550,7 @@ fn load_import_starting_config(
     }
 }
 
-pub(crate) fn build_onboard_entry_options(
+pub fn build_onboard_entry_options(
     current_setup_state: crate::migration::CurrentSetupState,
     candidates: &[ImportCandidate],
 ) -> Vec<OnboardEntryOption> {
@@ -1708,8 +1700,7 @@ fn print_onboard_entry_options(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn render_onboard_entry_screen_lines(
+pub fn render_onboard_entry_screen_lines(
     current_setup_state: crate::migration::CurrentSetupState,
     current_candidate: Option<&ImportCandidate>,
     import_candidates: &[ImportCandidate],
@@ -2054,8 +2045,7 @@ fn select_interactive_import_starting_config(
     Ok(default_starting_config_selection())
 }
 
-#[cfg(test)]
-pub(crate) fn collect_import_candidates_with_paths(
+pub fn collect_import_candidates_with_paths(
     output_path: &Path,
     codex_config_path: Option<&Path>,
     readiness: ChannelImportReadiness,
@@ -2161,8 +2151,7 @@ fn print_import_candidate_preview(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn render_single_detected_setup_preview_screen_lines(
+pub fn render_single_detected_setup_preview_screen_lines(
     candidate: &ImportCandidate,
     all_candidates: &[ImportCandidate],
     width: usize,
@@ -2257,8 +2246,7 @@ fn build_onboard_review_candidate_with_guidance(
     })
 }
 
-#[cfg(test)]
-pub(crate) fn render_onboard_review_lines_with_guidance(
+pub fn render_onboard_review_lines_with_guidance(
     config: &mvp::config::LoongClawConfig,
     import_source: Option<&str>,
     workspace_guidance: &[crate::migration::WorkspaceGuidanceCandidate],
@@ -2275,8 +2263,7 @@ pub(crate) fn render_onboard_review_lines_with_guidance(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn render_current_setup_review_lines_with_guidance(
+pub fn render_current_setup_review_lines_with_guidance(
     config: &mvp::config::LoongClawConfig,
     import_source: Option<&str>,
     workspace_guidance: &[crate::migration::WorkspaceGuidanceCandidate],
@@ -2293,8 +2280,7 @@ pub(crate) fn render_current_setup_review_lines_with_guidance(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn render_detected_setup_review_lines_with_guidance(
+pub fn render_detected_setup_review_lines_with_guidance(
     config: &mvp::config::LoongClawConfig,
     import_source: Option<&str>,
     workspace_guidance: &[crate::migration::WorkspaceGuidanceCandidate],
@@ -2451,8 +2437,7 @@ fn render_onboard_review_lines_with_guidance_and_style(
     lines
 }
 
-#[cfg(test)]
-pub(crate) fn build_onboarding_success_summary(
+pub fn build_onboarding_success_summary(
     path: &Path,
     config: &mvp::config::LoongClawConfig,
     import_source: Option<&str>,
@@ -2548,8 +2533,7 @@ fn render_onboarding_success_summary(summary: &OnboardingSuccessSummary) -> Vec<
     render_onboarding_success_summary_with_width_and_style(summary, detect_render_width(), true)
 }
 
-#[cfg(test)]
-pub(crate) fn render_onboarding_success_summary_with_width(
+pub fn render_onboarding_success_summary_with_width(
     summary: &OnboardingSuccessSummary,
     width: usize,
 ) -> Vec<String> {
@@ -2897,8 +2881,7 @@ fn render_onboard_input_screen(
     lines
 }
 
-#[cfg(test)]
-pub(crate) fn render_continue_current_setup_screen_lines(
+pub fn render_continue_current_setup_screen_lines(
     config: &mvp::config::LoongClawConfig,
     width: usize,
 ) -> Vec<String> {
@@ -2911,8 +2894,7 @@ pub(crate) fn render_continue_current_setup_screen_lines(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn render_continue_detected_setup_screen_lines(
+pub fn render_continue_detected_setup_screen_lines(
     config: &mvp::config::LoongClawConfig,
     import_source: &str,
     width: usize,
@@ -2977,8 +2959,7 @@ fn render_shortcut_default_choice_footer_line(shortcut_kind: OnboardShortcutKind
     render_default_choice_footer_line("1", shortcut_kind.default_choice_description())
 }
 
-#[cfg(test)]
-pub(crate) fn render_onboarding_risk_screen_lines(width: usize) -> Vec<String> {
+pub fn render_onboarding_risk_screen_lines(width: usize) -> Vec<String> {
     render_onboarding_risk_screen_lines_with_style(width, false)
 }
 
@@ -3020,16 +3001,11 @@ fn render_onboarding_risk_screen_lines_with_style(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn render_preflight_summary_screen_lines(
-    checks: &[OnboardCheck],
-    width: usize,
-) -> Vec<String> {
+pub fn render_preflight_summary_screen_lines(checks: &[OnboardCheck], width: usize) -> Vec<String> {
     render_preflight_summary_screen_lines_with_style(checks, width, ReviewFlowStyle::Guided, false)
 }
 
-#[cfg(test)]
-pub(crate) fn render_current_setup_preflight_summary_screen_lines(
+pub fn render_current_setup_preflight_summary_screen_lines(
     checks: &[OnboardCheck],
     width: usize,
 ) -> Vec<String> {
@@ -3041,8 +3017,7 @@ pub(crate) fn render_current_setup_preflight_summary_screen_lines(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn render_detected_setup_preflight_summary_screen_lines(
+pub fn render_detected_setup_preflight_summary_screen_lines(
     checks: &[OnboardCheck],
     width: usize,
 ) -> Vec<String> {
@@ -3128,8 +3103,7 @@ fn render_preflight_summary_screen_lines_with_style(
     lines
 }
 
-#[cfg(test)]
-pub(crate) fn render_write_confirmation_screen_lines(
+pub fn render_write_confirmation_screen_lines(
     config_path: &str,
     warnings_kept: bool,
     width: usize,
@@ -3143,8 +3117,7 @@ pub(crate) fn render_write_confirmation_screen_lines(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn render_current_setup_write_confirmation_screen_lines(
+pub fn render_current_setup_write_confirmation_screen_lines(
     config_path: &str,
     warnings_kept: bool,
     width: usize,
@@ -3158,8 +3131,7 @@ pub(crate) fn render_current_setup_write_confirmation_screen_lines(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn render_detected_setup_write_confirmation_screen_lines(
+pub fn render_detected_setup_write_confirmation_screen_lines(
     config_path: &str,
     warnings_kept: bool,
     width: usize,
@@ -3515,8 +3487,7 @@ fn render_starting_point_selection_footer_lines(
     vec![first_hint]
 }
 
-#[cfg(test)]
-pub(crate) fn render_starting_point_selection_screen_lines(
+pub fn render_starting_point_selection_screen_lines(
     candidates: &[ImportCandidate],
     width: usize,
 ) -> Vec<String> {
@@ -3563,8 +3534,7 @@ fn render_starting_point_selection_screen_lines_with_style(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn render_provider_selection_screen_lines(
+pub fn render_provider_selection_screen_lines(
     plan: &crate::migration::ProviderSelectionPlan,
     width: usize,
 ) -> Vec<String> {
@@ -3646,8 +3616,7 @@ fn render_provider_selection_default_choice_footer_line(
     ))
 }
 
-#[cfg(test)]
-pub(crate) fn render_model_selection_screen_lines(
+pub fn render_model_selection_screen_lines(
     config: &mvp::config::LoongClawConfig,
     width: usize,
 ) -> Vec<String> {
@@ -3659,8 +3628,7 @@ pub(crate) fn render_model_selection_screen_lines(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn render_model_selection_screen_lines_with_default(
+pub fn render_model_selection_screen_lines_with_default(
     config: &mvp::config::LoongClawConfig,
     prompt_default: &str,
     width: usize,
@@ -3703,8 +3671,7 @@ fn render_model_selection_screen_lines_with_style(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn render_api_key_env_selection_screen_lines(
+pub fn render_api_key_env_selection_screen_lines(
     config: &mvp::config::LoongClawConfig,
     default_api_key_env: &str,
     width: usize,
@@ -3718,8 +3685,7 @@ pub(crate) fn render_api_key_env_selection_screen_lines(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn render_api_key_env_selection_screen_lines_with_default(
+pub fn render_api_key_env_selection_screen_lines_with_default(
     config: &mvp::config::LoongClawConfig,
     default_api_key_env: &str,
     prompt_default: &str,
@@ -3784,8 +3750,7 @@ fn render_api_key_env_selection_screen_lines_with_style(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn render_system_prompt_selection_screen_lines(
+pub fn render_system_prompt_selection_screen_lines(
     config: &mvp::config::LoongClawConfig,
     width: usize,
 ) -> Vec<String> {
@@ -3797,8 +3762,7 @@ pub(crate) fn render_system_prompt_selection_screen_lines(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn render_system_prompt_selection_screen_lines_with_default(
+pub fn render_system_prompt_selection_screen_lines_with_default(
     config: &mvp::config::LoongClawConfig,
     prompt_default: &str,
     width: usize,
@@ -3836,11 +3800,7 @@ fn render_system_prompt_selection_screen_lines_with_style(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn render_existing_config_write_screen_lines(
-    config_path: &str,
-    width: usize,
-) -> Vec<String> {
+pub fn render_existing_config_write_screen_lines(config_path: &str, width: usize) -> Vec<String> {
     render_existing_config_write_screen_lines_with_style(config_path, width, false)
 }
 
@@ -4040,8 +4000,7 @@ fn prompt_onboard_shortcut_choice(ui: &mut impl OnboardUi) -> CliResult<OnboardS
     }
 }
 
-#[cfg(test)]
-pub(crate) fn detect_import_starting_config_with_channel_readiness(
+pub fn detect_import_starting_config_with_channel_readiness(
     readiness: ChannelImportReadiness,
 ) -> mvp::config::LoongClawConfig {
     crate::migration::detect_import_starting_config_with_channel_readiness(to_migration_readiness(
@@ -4155,7 +4114,7 @@ fn enabled_channel_ids(config: &mvp::config::LoongClawConfig) -> Vec<String> {
     config.enabled_channel_ids()
 }
 
-pub(crate) fn validate_non_interactive_risk_gate(
+pub fn validate_non_interactive_risk_gate(
     non_interactive: bool,
     accept_risk: bool,
 ) -> CliResult<()> {
@@ -4168,7 +4127,7 @@ pub(crate) fn validate_non_interactive_risk_gate(
     Ok(())
 }
 
-pub(crate) fn should_offer_current_setup_shortcut(
+pub fn should_offer_current_setup_shortcut(
     options: &OnboardCommandOptions,
     current_setup_state: crate::migration::CurrentSetupState,
     entry_choice: OnboardEntryChoice,
@@ -4179,7 +4138,7 @@ pub(crate) fn should_offer_current_setup_shortcut(
         && !onboard_has_explicit_overrides(options)
 }
 
-pub(crate) fn should_offer_detected_setup_shortcut(
+pub fn should_offer_detected_setup_shortcut(
     options: &OnboardCommandOptions,
     entry_choice: OnboardEntryChoice,
     provider_selection: &crate::migration::ProviderSelectionPlan,
@@ -4237,32 +4196,30 @@ fn load_existing_output_config(output_path: &Path) -> Option<mvp::config::LoongC
         .map(|(_, config)| config)
 }
 
-pub(crate) fn should_skip_config_write(
+pub fn should_skip_config_write(
     existing_config: Option<&mvp::config::LoongClawConfig>,
     draft: &mvp::config::LoongClawConfig,
 ) -> bool {
     existing_config.is_some_and(|existing| existing == draft)
 }
 
-pub(crate) fn parse_provider_kind(raw: &str) -> Option<mvp::config::ProviderKind> {
+pub fn parse_provider_kind(raw: &str) -> Option<mvp::config::ProviderKind> {
     mvp::config::ProviderKind::parse(raw)
 }
 
-pub(crate) fn provider_default_api_key_env(
-    kind: mvp::config::ProviderKind,
-) -> Option<&'static str> {
+pub fn provider_default_api_key_env(kind: mvp::config::ProviderKind) -> Option<&'static str> {
     kind.default_api_key_env()
 }
 
-pub(crate) fn provider_kind_id(kind: mvp::config::ProviderKind) -> &'static str {
+pub fn provider_kind_id(kind: mvp::config::ProviderKind) -> &'static str {
     kind.as_str()
 }
 
-pub(crate) fn provider_kind_display_name(kind: mvp::config::ProviderKind) -> &'static str {
+pub fn provider_kind_display_name(kind: mvp::config::ProviderKind) -> &'static str {
     kind.display_name()
 }
 
-pub(crate) fn supported_provider_list() -> String {
+pub fn supported_provider_list() -> String {
     mvp::config::ProviderKind::all_sorted()
         .iter()
         .map(|kind| kind.as_str())
@@ -4366,7 +4323,7 @@ fn prepare_output_path_for_write(
     })
 }
 
-pub(crate) fn backup_existing_config(output_path: &Path, backup_path: &Path) -> CliResult<()> {
+pub fn backup_existing_config(output_path: &Path, backup_path: &Path) -> CliResult<()> {
     fs::copy(output_path, backup_path)
         .map_err(|error| format!("failed to backup config: {error}"))?;
     Ok(())

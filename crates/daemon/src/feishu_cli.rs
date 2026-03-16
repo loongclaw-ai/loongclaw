@@ -16,7 +16,7 @@ use crate::feishu_support::{
 const DEFAULT_FEISHU_REDIRECT_URI: &str = "http://127.0.0.1:34819/callback";
 
 #[derive(Subcommand, Debug)]
-pub(crate) enum FeishuCommand {
+pub enum FeishuCommand {
     /// Start or inspect user OAuth grants and state
     Auth {
         #[command(subcommand)]
@@ -58,7 +58,7 @@ pub(crate) enum FeishuCommand {
 }
 
 #[derive(Subcommand, Debug)]
-pub(crate) enum FeishuAuthCommand {
+pub enum FeishuAuthCommand {
     /// Generate an OAuth authorize URL and persist short-lived state locally
     Start(FeishuAuthStartArgs),
     /// Exchange an OAuth authorization code for a stored user grant
@@ -74,7 +74,7 @@ pub(crate) enum FeishuAuthCommand {
 }
 
 #[derive(Subcommand, Debug)]
-pub(crate) enum FeishuDocCommand {
+pub enum FeishuDocCommand {
     /// Create a Feishu docx document and optionally insert initial markdown or html content
     Create(FeishuDocCreateArgs),
     /// Append markdown or html content to an existing Feishu docx document
@@ -82,13 +82,13 @@ pub(crate) enum FeishuDocCommand {
 }
 
 #[derive(Subcommand, Debug)]
-pub(crate) enum FeishuReadCommand {
+pub enum FeishuReadCommand {
     /// Read a Feishu docx document
     Doc(FeishuReadDocArgs),
 }
 
 #[derive(Subcommand, Debug)]
-pub(crate) enum FeishuMessagesCommand {
+pub enum FeishuMessagesCommand {
     /// Read message history for a container such as a chat
     History(FeishuMessagesHistoryArgs),
     /// Fetch one message detail record
@@ -98,13 +98,13 @@ pub(crate) enum FeishuMessagesCommand {
 }
 
 #[derive(Subcommand, Debug)]
-pub(crate) enum FeishuSearchCommand {
+pub enum FeishuSearchCommand {
     /// Search Feishu messages
     Messages(FeishuSearchMessagesArgs),
 }
 
 #[derive(Subcommand, Debug)]
-pub(crate) enum FeishuCalendarCommand {
+pub enum FeishuCalendarCommand {
     /// List calendars or fetch primary calendars
     List(FeishuCalendarListArgs),
     /// Fetch free/busy data for a user or room
@@ -112,7 +112,7 @@ pub(crate) enum FeishuCalendarCommand {
 }
 
 #[derive(Args, Debug, Clone)]
-pub(crate) struct FeishuCommonArgs {
+pub struct FeishuCommonArgs {
     #[arg(long)]
     pub config: Option<String>,
     #[arg(long)]
@@ -122,7 +122,7 @@ pub(crate) struct FeishuCommonArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-pub(crate) struct FeishuGrantArgs {
+pub struct FeishuGrantArgs {
     #[command(flatten)]
     pub common: FeishuCommonArgs,
     #[arg(long)]
@@ -130,7 +130,7 @@ pub(crate) struct FeishuGrantArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-pub(crate) struct FeishuAuthStartArgs {
+pub struct FeishuAuthStartArgs {
     #[command(flatten)]
     pub common: FeishuCommonArgs,
     #[arg(long, default_value = DEFAULT_FEISHU_REDIRECT_URI)]
@@ -146,7 +146,7 @@ pub(crate) struct FeishuAuthStartArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-pub(crate) struct FeishuAuthExchangeArgs {
+pub struct FeishuAuthExchangeArgs {
     #[command(flatten)]
     pub common: FeishuCommonArgs,
     #[arg(long)]
@@ -156,13 +156,13 @@ pub(crate) struct FeishuAuthExchangeArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-pub(crate) struct FeishuAuthListArgs {
+pub struct FeishuAuthListArgs {
     #[command(flatten)]
     pub common: FeishuCommonArgs,
 }
 
 #[derive(Args, Debug, Clone)]
-pub(crate) struct FeishuAuthSelectArgs {
+pub struct FeishuAuthSelectArgs {
     #[command(flatten)]
     pub common: FeishuCommonArgs,
     #[arg(long)]
@@ -170,7 +170,7 @@ pub(crate) struct FeishuAuthSelectArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-pub(crate) struct FeishuReadDocArgs {
+pub struct FeishuReadDocArgs {
     #[command(flatten)]
     pub grant: FeishuGrantArgs,
     #[arg(long)]
@@ -180,7 +180,7 @@ pub(crate) struct FeishuReadDocArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-pub(crate) struct FeishuDocCreateArgs {
+pub struct FeishuDocCreateArgs {
     #[command(flatten)]
     pub grant: FeishuGrantArgs,
     #[arg(long)]
@@ -196,7 +196,7 @@ pub(crate) struct FeishuDocCreateArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-pub(crate) struct FeishuDocAppendArgs {
+pub struct FeishuDocAppendArgs {
     #[command(flatten)]
     pub grant: FeishuGrantArgs,
     #[arg(long)]
@@ -214,7 +214,7 @@ pub(crate) struct FeishuDocAppendArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-pub(crate) struct FeishuMessagesHistoryArgs {
+pub struct FeishuMessagesHistoryArgs {
     #[command(flatten)]
     pub grant: FeishuGrantArgs,
     #[arg(long, default_value = "chat")]
@@ -234,7 +234,7 @@ pub(crate) struct FeishuMessagesHistoryArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-pub(crate) struct FeishuMessagesGetArgs {
+pub struct FeishuMessagesGetArgs {
     #[command(flatten)]
     pub grant: FeishuGrantArgs,
     #[arg(long)]
@@ -242,7 +242,7 @@ pub(crate) struct FeishuMessagesGetArgs {
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
-pub(crate) enum FeishuMessageResourceCliType {
+pub enum FeishuMessageResourceCliType {
     Image,
     #[value(alias = "audio", alias = "media")]
     File,
@@ -258,7 +258,7 @@ impl FeishuMessageResourceCliType {
 }
 
 #[derive(Args, Debug, Clone)]
-pub(crate) struct FeishuMessagesResourceArgs {
+pub struct FeishuMessagesResourceArgs {
     #[command(flatten)]
     pub grant: FeishuGrantArgs,
     #[arg(long)]
@@ -272,7 +272,7 @@ pub(crate) struct FeishuMessagesResourceArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-pub(crate) struct FeishuSearchMessagesArgs {
+pub struct FeishuSearchMessagesArgs {
     #[command(flatten)]
     pub grant: FeishuGrantArgs,
     #[arg(long)]
@@ -302,7 +302,7 @@ pub(crate) struct FeishuSearchMessagesArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-pub(crate) struct FeishuCalendarListArgs {
+pub struct FeishuCalendarListArgs {
     #[command(flatten)]
     pub grant: FeishuGrantArgs,
     #[arg(long, default_value_t = false)]
@@ -318,7 +318,7 @@ pub(crate) struct FeishuCalendarListArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-pub(crate) struct FeishuCalendarFreebusyArgs {
+pub struct FeishuCalendarFreebusyArgs {
     #[command(flatten)]
     pub grant: FeishuGrantArgs,
     #[arg(long)]
@@ -340,7 +340,7 @@ pub(crate) struct FeishuCalendarFreebusyArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-pub(crate) struct FeishuSendArgs {
+pub struct FeishuSendArgs {
     #[command(flatten)]
     pub grant: FeishuGrantArgs,
     #[arg(long)]
@@ -368,7 +368,7 @@ pub(crate) struct FeishuSendArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-pub(crate) struct FeishuReplyArgs {
+pub struct FeishuReplyArgs {
     #[command(flatten)]
     pub grant: FeishuGrantArgs,
     #[arg(long)]
@@ -396,7 +396,7 @@ pub(crate) struct FeishuReplyArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-pub(crate) struct FeishuServeArgs {
+pub struct FeishuServeArgs {
     #[command(flatten)]
     pub common: FeishuCommonArgs,
     #[arg(long)]
@@ -405,7 +405,7 @@ pub(crate) struct FeishuServeArgs {
     pub path: Option<String>,
 }
 
-pub(crate) async fn run_feishu_command(command: FeishuCommand) -> CliResult<()> {
+pub async fn run_feishu_command(command: FeishuCommand) -> CliResult<()> {
     match command {
         FeishuCommand::Auth { command } => match command {
             FeishuAuthCommand::Start(args) => {
@@ -520,7 +520,7 @@ pub(crate) async fn run_feishu_command(command: FeishuCommand) -> CliResult<()> 
     Ok(())
 }
 
-pub(crate) async fn execute_feishu_auth_start(args: &FeishuAuthStartArgs) -> CliResult<Value> {
+pub async fn execute_feishu_auth_start(args: &FeishuAuthStartArgs) -> CliResult<Value> {
     let context = load_feishu_daemon_context(
         args.common.config.as_deref(),
         args.common.account.as_deref(),
@@ -574,9 +574,7 @@ pub(crate) async fn execute_feishu_auth_start(args: &FeishuAuthStartArgs) -> Cli
     }))
 }
 
-pub(crate) async fn execute_feishu_auth_exchange(
-    args: &FeishuAuthExchangeArgs,
-) -> CliResult<Value> {
+pub async fn execute_feishu_auth_exchange(args: &FeishuAuthExchangeArgs) -> CliResult<Value> {
     let context = load_feishu_daemon_context(
         args.common.config.as_deref(),
         args.common.account.as_deref(),
@@ -623,7 +621,7 @@ pub(crate) async fn execute_feishu_auth_exchange(
     }))
 }
 
-pub(crate) async fn execute_feishu_auth_list(args: &FeishuAuthListArgs) -> CliResult<Value> {
+pub async fn execute_feishu_auth_list(args: &FeishuAuthListArgs) -> CliResult<Value> {
     let context = load_feishu_daemon_context(
         args.common.config.as_deref(),
         args.common.account.as_deref(),
@@ -662,7 +660,7 @@ pub(crate) async fn execute_feishu_auth_list(args: &FeishuAuthListArgs) -> CliRe
     }))
 }
 
-pub(crate) async fn execute_feishu_auth_select(args: &FeishuAuthSelectArgs) -> CliResult<Value> {
+pub async fn execute_feishu_auth_select(args: &FeishuAuthSelectArgs) -> CliResult<Value> {
     let context = load_feishu_daemon_context(
         args.common.config.as_deref(),
         args.common.account.as_deref(),
@@ -701,7 +699,7 @@ pub(crate) async fn execute_feishu_auth_select(args: &FeishuAuthSelectArgs) -> C
     }))
 }
 
-pub(crate) async fn execute_feishu_auth_status(args: &FeishuGrantArgs) -> CliResult<Value> {
+pub async fn execute_feishu_auth_status(args: &FeishuGrantArgs) -> CliResult<Value> {
     let context = load_feishu_daemon_context(
         args.common.config.as_deref(),
         args.common.account.as_deref(),
@@ -831,7 +829,7 @@ pub(crate) async fn execute_feishu_auth_status(args: &FeishuGrantArgs) -> CliRes
     }))
 }
 
-pub(crate) async fn execute_feishu_auth_revoke(args: &FeishuGrantArgs) -> CliResult<Value> {
+pub async fn execute_feishu_auth_revoke(args: &FeishuGrantArgs) -> CliResult<Value> {
     let context = load_feishu_daemon_context(
         args.common.config.as_deref(),
         args.common.account.as_deref(),
@@ -871,7 +869,7 @@ pub(crate) async fn execute_feishu_auth_revoke(args: &FeishuGrantArgs) -> CliRes
     }))
 }
 
-pub(crate) async fn execute_feishu_whoami(args: &FeishuGrantArgs) -> CliResult<Value> {
+pub async fn execute_feishu_whoami(args: &FeishuGrantArgs) -> CliResult<Value> {
     let context = load_feishu_daemon_context(
         args.common.config.as_deref(),
         args.common.account.as_deref(),
@@ -892,7 +890,7 @@ pub(crate) async fn execute_feishu_whoami(args: &FeishuGrantArgs) -> CliResult<V
     }))
 }
 
-pub(crate) async fn execute_feishu_read_doc(args: &FeishuReadDocArgs) -> CliResult<Value> {
+pub async fn execute_feishu_read_doc(args: &FeishuReadDocArgs) -> CliResult<Value> {
     let (context, grant) = load_context_and_fresh_grant(&args.grant).await?;
     let client = context.build_client()?;
     let document = mvp::feishu::resources::docs::fetch_document_content(
@@ -911,7 +909,7 @@ pub(crate) async fn execute_feishu_read_doc(args: &FeishuReadDocArgs) -> CliResu
     }))
 }
 
-pub(crate) async fn execute_feishu_doc_create(args: &FeishuDocCreateArgs) -> CliResult<Value> {
+pub async fn execute_feishu_doc_create(args: &FeishuDocCreateArgs) -> CliResult<Value> {
     let (context, grant) = load_context_and_fresh_grant(&args.grant).await?;
     ensure_grant_has_any_scope(
         &grant,
@@ -970,7 +968,7 @@ pub(crate) async fn execute_feishu_doc_create(args: &FeishuDocCreateArgs) -> Cli
     }))
 }
 
-pub(crate) async fn execute_feishu_doc_append(args: &FeishuDocAppendArgs) -> CliResult<Value> {
+pub async fn execute_feishu_doc_append(args: &FeishuDocAppendArgs) -> CliResult<Value> {
     let (context, grant) = load_context_and_fresh_grant(&args.grant).await?;
     ensure_grant_has_any_scope(
         &grant,
@@ -1022,9 +1020,7 @@ pub(crate) async fn execute_feishu_doc_append(args: &FeishuDocAppendArgs) -> Cli
     }))
 }
 
-pub(crate) async fn execute_feishu_messages_history(
-    args: &FeishuMessagesHistoryArgs,
-) -> CliResult<Value> {
+pub async fn execute_feishu_messages_history(args: &FeishuMessagesHistoryArgs) -> CliResult<Value> {
     let (context, grant) = load_context_and_fresh_grant(&args.grant).await?;
     let client = context.build_client()?;
     let tenant_access_token = client.get_tenant_access_token().await?;
@@ -1051,7 +1047,7 @@ pub(crate) async fn execute_feishu_messages_history(
     }))
 }
 
-pub(crate) async fn execute_feishu_messages_get(args: &FeishuMessagesGetArgs) -> CliResult<Value> {
+pub async fn execute_feishu_messages_get(args: &FeishuMessagesGetArgs) -> CliResult<Value> {
     let (context, grant) = load_context_and_fresh_grant(&args.grant).await?;
     let client = context.build_client()?;
     let tenant_access_token = client.get_tenant_access_token().await?;
@@ -1070,7 +1066,7 @@ pub(crate) async fn execute_feishu_messages_get(args: &FeishuMessagesGetArgs) ->
     }))
 }
 
-pub(crate) async fn execute_feishu_messages_resource(
+pub async fn execute_feishu_messages_resource(
     args: &FeishuMessagesResourceArgs,
 ) -> CliResult<Value> {
     let (context, grant) = load_context_and_fresh_grant(&args.grant).await?;
@@ -1120,9 +1116,7 @@ pub(crate) async fn execute_feishu_messages_resource(
     }))
 }
 
-pub(crate) async fn execute_feishu_search_messages(
-    args: &FeishuSearchMessagesArgs,
-) -> CliResult<Value> {
+pub async fn execute_feishu_search_messages(args: &FeishuSearchMessagesArgs) -> CliResult<Value> {
     let (context, grant) = load_context_and_fresh_grant(&args.grant).await?;
     let client = context.build_client()?;
     let page = mvp::feishu::resources::messages::search_messages(
@@ -1153,9 +1147,7 @@ pub(crate) async fn execute_feishu_search_messages(
     }))
 }
 
-pub(crate) async fn execute_feishu_calendar_list(
-    args: &FeishuCalendarListArgs,
-) -> CliResult<Value> {
+pub async fn execute_feishu_calendar_list(args: &FeishuCalendarListArgs) -> CliResult<Value> {
     let (context, grant) = load_context_and_fresh_grant(&args.grant).await?;
     let client = context.build_client()?;
     if args.primary {
@@ -1193,7 +1185,7 @@ pub(crate) async fn execute_feishu_calendar_list(
     }))
 }
 
-pub(crate) async fn execute_feishu_calendar_freebusy(
+pub async fn execute_feishu_calendar_freebusy(
     args: &FeishuCalendarFreebusyArgs,
 ) -> CliResult<Value> {
     let (context, grant) = load_context_and_fresh_grant(&args.grant).await?;
@@ -1235,7 +1227,7 @@ pub(crate) async fn execute_feishu_calendar_freebusy(
     }))
 }
 
-pub(crate) async fn execute_feishu_send(args: &FeishuSendArgs) -> CliResult<Value> {
+pub async fn execute_feishu_send(args: &FeishuSendArgs) -> CliResult<Value> {
     let (context, grant) = load_context_and_fresh_grant(&args.grant).await?;
     ensure_grant_has_any_scope(
         &grant,
@@ -1293,7 +1285,7 @@ pub(crate) async fn execute_feishu_send(args: &FeishuSendArgs) -> CliResult<Valu
     }))
 }
 
-pub(crate) async fn execute_feishu_reply(args: &FeishuReplyArgs) -> CliResult<Value> {
+pub async fn execute_feishu_reply(args: &FeishuReplyArgs) -> CliResult<Value> {
     let (context, grant) = load_context_and_fresh_grant(&args.grant).await?;
     ensure_grant_has_any_scope(
         &grant,
@@ -2618,10 +2610,10 @@ fn render_calendar_freebusy_text(payload: &Value) -> CliResult<String> {
     Ok(lines.join("\n"))
 }
 
-#[cfg(test)]
 mod render_tests {
     use super::*;
 
+    #[allow(dead_code)]
     fn sample_grant_summary(selected: bool, effective_selected: bool) -> Value {
         json!({
             "selected": selected,

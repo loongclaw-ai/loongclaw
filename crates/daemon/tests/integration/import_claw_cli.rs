@@ -24,31 +24,31 @@ fn write_file(root: &Path, relative: &str, content: &str) {
 #[test]
 fn parse_legacy_claw_source_accepts_supported_ids() {
     assert_eq!(
-        crate::import_claw_cli::parse_legacy_claw_source("nanobot"),
+        loongclaw_daemon::import_claw_cli::parse_legacy_claw_source("nanobot"),
         Some(mvp::migration::LegacyClawSource::Nanobot)
     );
     assert_eq!(
-        crate::import_claw_cli::parse_legacy_claw_source("openclaw"),
+        loongclaw_daemon::import_claw_cli::parse_legacy_claw_source("openclaw"),
         Some(mvp::migration::LegacyClawSource::OpenClaw)
     );
     assert_eq!(
-        crate::import_claw_cli::parse_legacy_claw_source("picoclaw"),
+        loongclaw_daemon::import_claw_cli::parse_legacy_claw_source("picoclaw"),
         Some(mvp::migration::LegacyClawSource::PicoClaw)
     );
     assert_eq!(
-        crate::import_claw_cli::parse_legacy_claw_source("zeroclaw"),
+        loongclaw_daemon::import_claw_cli::parse_legacy_claw_source("zeroclaw"),
         Some(mvp::migration::LegacyClawSource::ZeroClaw)
     );
     assert_eq!(
-        crate::import_claw_cli::parse_legacy_claw_source("nanoclaw"),
+        loongclaw_daemon::import_claw_cli::parse_legacy_claw_source("nanoclaw"),
         Some(mvp::migration::LegacyClawSource::NanoClaw)
     );
     assert_eq!(
-        crate::import_claw_cli::parse_legacy_claw_source("auto"),
+        loongclaw_daemon::import_claw_cli::parse_legacy_claw_source("auto"),
         Some(mvp::migration::LegacyClawSource::Unknown)
     );
     assert_eq!(
-        crate::import_claw_cli::parse_legacy_claw_source("unsupported"),
+        loongclaw_daemon::import_claw_cli::parse_legacy_claw_source("unsupported"),
         None
     );
 }
@@ -72,18 +72,20 @@ fn run_import_claw_cli_writes_nativeized_config() {
     );
 
     let output_path = output_root.join("loongclaw.toml");
-    crate::import_claw_cli::run_import_claw_cli(crate::import_claw_cli::ImportClawCommandOptions {
-        input: Some(legacy_root.display().to_string()),
-        output: Some(output_path.display().to_string()),
-        source: Some("nanobot".to_owned()),
-        mode: crate::import_claw_cli::ImportClawMode::Apply,
-        json: false,
-        source_id: None,
-        safe_profile_merge: false,
-        primary_source_id: None,
-        apply_external_skills_plan: false,
-        force: true,
-    })
+    loongclaw_daemon::import_claw_cli::run_import_claw_cli(
+        loongclaw_daemon::import_claw_cli::ImportClawCommandOptions {
+            input: Some(legacy_root.display().to_string()),
+            output: Some(output_path.display().to_string()),
+            source: Some("nanobot".to_owned()),
+            mode: loongclaw_daemon::import_claw_cli::ImportClawMode::Apply,
+            json: false,
+            source_id: None,
+            safe_profile_merge: false,
+            primary_source_id: None,
+            apply_external_skills_plan: false,
+            force: true,
+        },
+    )
     .expect("import command should succeed");
 
     let (_, config) = mvp::config::load(Some(&output_path.display().to_string()))
@@ -126,18 +128,20 @@ fn run_import_claw_cli_plan_mode_returns_preview_without_writing() {
         "# Soul\n\nAlways prefer concise shell output. updated by nanobot.\n",
     );
     let output_path = output_root.join("preview-only.toml");
-    crate::import_claw_cli::run_import_claw_cli(crate::import_claw_cli::ImportClawCommandOptions {
-        input: Some(legacy_root.display().to_string()),
-        output: Some(output_path.display().to_string()),
-        source: Some("nanobot".to_owned()),
-        mode: crate::import_claw_cli::ImportClawMode::Plan,
-        json: false,
-        source_id: None,
-        safe_profile_merge: false,
-        primary_source_id: None,
-        apply_external_skills_plan: false,
-        force: true,
-    })
+    loongclaw_daemon::import_claw_cli::run_import_claw_cli(
+        loongclaw_daemon::import_claw_cli::ImportClawCommandOptions {
+            input: Some(legacy_root.display().to_string()),
+            output: Some(output_path.display().to_string()),
+            source: Some("nanobot".to_owned()),
+            mode: loongclaw_daemon::import_claw_cli::ImportClawMode::Plan,
+            json: false,
+            source_id: None,
+            safe_profile_merge: false,
+            primary_source_id: None,
+            apply_external_skills_plan: false,
+            force: true,
+        },
+    )
     .expect("plan mode should succeed");
 
     assert!(
@@ -170,18 +174,20 @@ fn run_import_claw_cli_apply_selected_mode_writes_manifest_and_config() {
     );
 
     let output_path = output_root.join("selected.toml");
-    crate::import_claw_cli::run_import_claw_cli(crate::import_claw_cli::ImportClawCommandOptions {
-        input: Some(discovery_root.display().to_string()),
-        output: Some(output_path.display().to_string()),
-        source: None,
-        mode: crate::import_claw_cli::ImportClawMode::ApplySelected,
-        json: false,
-        source_id: Some("openclaw".to_owned()),
-        safe_profile_merge: false,
-        primary_source_id: None,
-        apply_external_skills_plan: false,
-        force: true,
-    })
+    loongclaw_daemon::import_claw_cli::run_import_claw_cli(
+        loongclaw_daemon::import_claw_cli::ImportClawCommandOptions {
+            input: Some(discovery_root.display().to_string()),
+            output: Some(output_path.display().to_string()),
+            source: None,
+            mode: loongclaw_daemon::import_claw_cli::ImportClawMode::ApplySelected,
+            json: false,
+            source_id: Some("openclaw".to_owned()),
+            safe_profile_merge: false,
+            primary_source_id: None,
+            apply_external_skills_plan: false,
+            force: true,
+        },
+    )
     .expect("apply_selected mode should succeed");
 
     assert!(output_path.exists(), "selected import should write config");
@@ -223,18 +229,20 @@ fn run_import_claw_cli_apply_selected_mode_can_apply_external_skill_plan() {
     );
 
     let output_path = output_root.join("selected-external.toml");
-    crate::import_claw_cli::run_import_claw_cli(crate::import_claw_cli::ImportClawCommandOptions {
-        input: Some(discovery_root.display().to_string()),
-        output: Some(output_path.display().to_string()),
-        source: None,
-        mode: crate::import_claw_cli::ImportClawMode::ApplySelected,
-        json: false,
-        source_id: Some("openclaw".to_owned()),
-        safe_profile_merge: false,
-        primary_source_id: None,
-        apply_external_skills_plan: true,
-        force: true,
-    })
+    loongclaw_daemon::import_claw_cli::run_import_claw_cli(
+        loongclaw_daemon::import_claw_cli::ImportClawCommandOptions {
+            input: Some(discovery_root.display().to_string()),
+            output: Some(output_path.display().to_string()),
+            source: None,
+            mode: loongclaw_daemon::import_claw_cli::ImportClawMode::ApplySelected,
+            json: false,
+            source_id: Some("openclaw".to_owned()),
+            safe_profile_merge: false,
+            primary_source_id: None,
+            apply_external_skills_plan: true,
+            force: true,
+        },
+    )
     .expect("apply_selected mode with external skills should succeed");
 
     let raw = fs::read_to_string(&output_path).expect("read generated config");

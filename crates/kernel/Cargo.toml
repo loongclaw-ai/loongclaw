@@ -13,6 +13,9 @@ serde_json.workspace = true
 semver.workspace = true
 thiserror.workspace = true
 
+[features]
+test-support = []
+
 [dev-dependencies]
 proptest = "1"
 tokio.workspace = true

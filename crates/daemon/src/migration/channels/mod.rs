@@ -11,39 +11,37 @@ mod feishu;
 mod telegram;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ChannelPreview {
-    pub(crate) candidate: ChannelCandidate,
-    pub(crate) surface: ImportSurface,
+pub struct ChannelPreview {
+    pub candidate: ChannelCandidate,
+    pub surface: ImportSurface,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ChannelCheckLevel {
+pub enum ChannelCheckLevel {
     Pass,
     Warn,
-    #[cfg(test)]
     Fail,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ChannelPreflightCheck {
-    pub(crate) name: &'static str,
-    pub(crate) level: ChannelCheckLevel,
-    pub(crate) detail: String,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ChannelDoctorCheck {
-    pub(crate) name: &'static str,
-    pub(crate) level: ChannelCheckLevel,
-    pub(crate) detail: String,
+pub struct ChannelPreflightCheck {
+    pub name: &'static str,
+    pub level: ChannelCheckLevel,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ChannelNextAction {
-    pub(crate) id: &'static str,
-    pub(crate) label: &'static str,
-    pub(crate) command: String,
+pub struct ChannelDoctorCheck {
+    pub name: &'static str,
+    pub level: ChannelCheckLevel,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelNextAction {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub command: String,
 }
 
 struct ChannelAdapter {
@@ -54,7 +52,6 @@ struct ChannelAdapter {
     readiness_state: fn(&mvp::config::LoongClawConfig) -> ChannelCredentialState,
     apply_import_readiness: fn(&mut mvp::config::LoongClawConfig, ChannelCredentialState),
     collect_preflight_checks: fn(&mvp::config::LoongClawConfig) -> Vec<ChannelPreflightCheck>,
-    #[cfg(test)]
     collect_doctor_checks: fn(&mvp::config::LoongClawConfig) -> Vec<ChannelDoctorCheck>,
     apply_default_env_bindings: fn(&mut mvp::config::LoongClawConfig) -> Vec<String>,
 }
@@ -67,7 +64,6 @@ const REGISTRY: [ChannelAdapter; 2] = [
         readiness_state: telegram::readiness_state,
         apply_import_readiness: telegram::apply_import_readiness,
         collect_preflight_checks: telegram::collect_preflight_checks,
-        #[cfg(test)]
         collect_doctor_checks: telegram::collect_doctor_checks,
         apply_default_env_bindings: telegram::apply_default_env_bindings,
     },
@@ -78,29 +74,26 @@ const REGISTRY: [ChannelAdapter; 2] = [
         readiness_state: feishu::readiness_state,
         apply_import_readiness: feishu::apply_import_readiness,
         collect_preflight_checks: feishu::collect_preflight_checks,
-        #[cfg(test)]
         collect_doctor_checks: feishu::collect_doctor_checks,
         apply_default_env_bindings: feishu::apply_default_env_bindings,
     },
 ];
 
-pub(crate) fn registered_channel_ids() -> Vec<&'static str> {
+pub fn registered_channel_ids() -> Vec<&'static str> {
     mvp::config::service_channel_descriptors()
         .into_iter()
         .filter_map(|descriptor| find_adapter(descriptor.id).map(|_| descriptor.id))
         .collect()
 }
 
-pub(crate) fn registered_enabled_channel_ids(
-    config: &mvp::config::LoongClawConfig,
-) -> Vec<&'static str> {
+pub fn registered_enabled_channel_ids(config: &mvp::config::LoongClawConfig) -> Vec<&'static str> {
     enabled_channel_adapters(config)
         .into_iter()
         .map(|adapter| adapter.id)
         .collect()
 }
 
-pub(crate) fn collect_channel_previews(
+pub fn collect_channel_previews(
     config: &mvp::config::LoongClawConfig,
     readiness: &ChannelImportReadiness,
     source: &str,
@@ -111,9 +104,7 @@ pub(crate) fn collect_channel_previews(
         .collect()
 }
 
-pub(crate) fn resolve_import_readiness(
-    config: &mvp::config::LoongClawConfig,
-) -> ChannelImportReadiness {
+pub fn resolve_import_readiness(config: &mvp::config::LoongClawConfig) -> ChannelImportReadiness {
     let mut readiness = ChannelImportReadiness::default();
     for adapter in ordered_channel_adapters() {
         readiness.set_state(adapter.id, (adapter.readiness_state)(config));
@@ -121,7 +112,7 @@ pub(crate) fn resolve_import_readiness(
     readiness
 }
 
-pub(crate) fn enabled_channels_have_blockers(
+pub fn enabled_channels_have_blockers(
     config: &mvp::config::LoongClawConfig,
     readiness: &ChannelImportReadiness,
 ) -> bool {
@@ -130,7 +121,7 @@ pub(crate) fn enabled_channels_have_blockers(
         .any(|channel_id| !readiness.is_ready(channel_id))
 }
 
-pub(crate) fn apply_detected_import_readiness(
+pub fn apply_detected_import_readiness(
     config: &mut mvp::config::LoongClawConfig,
     readiness: &ChannelImportReadiness,
 ) {
@@ -139,7 +130,7 @@ pub(crate) fn apply_detected_import_readiness(
     }
 }
 
-pub(crate) fn apply_selected_channels(
+pub fn apply_selected_channels(
     target: &mut mvp::config::LoongClawConfig,
     source: &mvp::config::LoongClawConfig,
     channel_ids: &[&str],
@@ -153,7 +144,7 @@ pub(crate) fn apply_selected_channels(
     changed
 }
 
-pub(crate) fn collect_channel_preflight_checks(
+pub fn collect_channel_preflight_checks(
     config: &mvp::config::LoongClawConfig,
 ) -> Vec<ChannelPreflightCheck> {
     enabled_channel_adapters(config)
@@ -162,8 +153,7 @@ pub(crate) fn collect_channel_preflight_checks(
         .collect()
 }
 
-#[cfg(test)]
-pub(crate) fn collect_channel_doctor_checks(
+pub fn collect_channel_doctor_checks(
     config: &mvp::config::LoongClawConfig,
 ) -> Vec<ChannelDoctorCheck> {
     enabled_channel_adapters(config)
@@ -172,7 +162,7 @@ pub(crate) fn collect_channel_doctor_checks(
         .collect()
 }
 
-pub(crate) fn apply_default_channel_env_bindings(
+pub fn apply_default_channel_env_bindings(
     config: &mut mvp::config::LoongClawConfig,
 ) -> Vec<String> {
     ordered_channel_adapters()
@@ -181,7 +171,7 @@ pub(crate) fn apply_default_channel_env_bindings(
         .collect()
 }
 
-pub(crate) fn collect_channel_next_actions(
+pub fn collect_channel_next_actions(
     config: &mvp::config::LoongClawConfig,
     config_path: &str,
 ) -> Vec<ChannelNextAction> {

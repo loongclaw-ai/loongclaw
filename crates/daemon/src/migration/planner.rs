@@ -11,7 +11,7 @@ use super::types::{
     PreviewStatus, SetupDomainKind, WorkspaceGuidanceCandidate,
 };
 
-pub(crate) fn compose_recommended_import_candidate(
+pub fn compose_recommended_import_candidate(
     candidates: &[ImportCandidate],
 ) -> Option<ImportCandidate> {
     if candidates.len() < 2 {
@@ -83,7 +83,7 @@ pub(crate) fn compose_recommended_import_candidate(
     Some(candidate)
 }
 
-pub(crate) fn prepend_recommended_import_candidate(
+pub fn prepend_recommended_import_candidate(
     mut candidates: Vec<ImportCandidate>,
 ) -> Vec<ImportCandidate> {
     if let Some(candidate) = compose_recommended_import_candidate(&candidates) {

@@ -1,14 +1,14 @@
 use loongclaw_app as mvp;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ImportedProviderTransport {
-    pub(crate) base_url: String,
-    pub(crate) chat_completions_path: String,
-    pub(crate) wire_api: mvp::config::ProviderWireApi,
+pub struct ImportedProviderTransport {
+    pub base_url: String,
+    pub chat_completions_path: String,
+    pub wire_api: mvp::config::ProviderWireApi,
 }
 
 impl ImportedProviderTransport {
-    pub(crate) fn from_provider(provider: &mvp::config::ProviderConfig) -> Self {
+    pub fn from_provider(provider: &mvp::config::ProviderConfig) -> Self {
         Self {
             base_url: provider.base_url.clone(),
             chat_completions_path: provider.chat_completions_path.clone(),
@@ -16,11 +16,11 @@ impl ImportedProviderTransport {
         }
     }
 
-    pub(crate) fn default_for_kind(kind: mvp::config::ProviderKind) -> Self {
+    pub fn default_for_kind(kind: mvp::config::ProviderKind) -> Self {
         Self::from_provider(&mvp::config::ProviderConfig::fresh_for_kind(kind))
     }
 
-    pub(crate) fn from_optional_overrides(
+    pub fn from_optional_overrides(
         kind: mvp::config::ProviderKind,
         base_url: Option<&str>,
         chat_completions_path: Option<&str>,
@@ -38,14 +38,14 @@ impl ImportedProviderTransport {
         }
     }
 
-    pub(crate) fn apply_to_provider(&self, provider: &mut mvp::config::ProviderConfig) {
+    pub fn apply_to_provider(&self, provider: &mut mvp::config::ProviderConfig) {
         provider.base_url = self.base_url.clone();
         provider.chat_completions_path = self.chat_completions_path.clone();
         provider.wire_api = self.wire_api;
     }
 }
 
-pub(crate) fn supplement_provider_transport(
+pub fn supplement_provider_transport(
     target: &mut mvp::config::ProviderConfig,
     source: &mvp::config::ProviderConfig,
 ) -> bool {

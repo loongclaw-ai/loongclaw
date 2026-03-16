@@ -11,39 +11,39 @@ const SUGGESTED_STARTING_POINT_LABEL: &str = "suggested starting point";
 const EXISTING_CONFIG_SOURCE_PREFIX: &str = "existing config at ";
 const CODEX_CONFIG_SOURCE_PREFIX: &str = "Codex config at ";
 
-pub(crate) const fn recommended_plan_source_label() -> &'static str {
+pub const fn recommended_plan_source_label() -> &'static str {
     RECOMMENDED_PLAN_SOURCE_LABEL
 }
 
-pub(crate) const fn environment_source_label() -> &'static str {
+pub const fn environment_source_label() -> &'static str {
     ENVIRONMENT_SOURCE_LABEL
 }
 
-pub(crate) const fn workspace_source_label() -> &'static str {
+pub const fn workspace_source_label() -> &'static str {
     WORKSPACE_SOURCE_LABEL
 }
 
-pub(crate) const fn current_onboarding_draft_source_label() -> &'static str {
+pub const fn current_onboarding_draft_source_label() -> &'static str {
     CURRENT_ONBOARDING_DRAFT_SOURCE_LABEL
 }
 
-pub(crate) const fn workspace_guidance_rollup_label() -> &'static str {
+pub const fn workspace_guidance_rollup_label() -> &'static str {
     WORKSPACE_GUIDANCE_ROLLUP_LABEL
 }
 
-pub(crate) const fn suggested_starting_point_label() -> &'static str {
+pub const fn suggested_starting_point_label() -> &'static str {
     SUGGESTED_STARTING_POINT_LABEL
 }
 
-pub(crate) fn existing_loongclaw_config_source_label(path: &Path) -> String {
+pub fn existing_loongclaw_config_source_label(path: &Path) -> String {
     format!("{EXISTING_CONFIG_SOURCE_PREFIX}{}", path.display())
 }
 
-pub(crate) fn codex_config_source_label(path: &Path) -> String {
+pub fn codex_config_source_label(path: &Path) -> String {
     format!("{CODEX_CONFIG_SOURCE_PREFIX}{}", path.display())
 }
 
-pub(crate) fn source_path(source_kind: Option<ImportSourceKind>, source: &str) -> Option<PathBuf> {
+pub fn source_path(source_kind: Option<ImportSourceKind>, source: &str) -> Option<PathBuf> {
     let trimmed = source.trim();
     let raw_path = match source_kind {
         Some(ImportSourceKind::ExistingLoongClawConfig) => {
@@ -59,10 +59,7 @@ pub(crate) fn source_path(source_kind: Option<ImportSourceKind>, source: &str) -
     Some(PathBuf::from(raw_path.trim()))
 }
 
-pub(crate) fn onboarding_source_label(
-    source_kind: Option<ImportSourceKind>,
-    source: &str,
-) -> String {
+pub fn onboarding_source_label(source_kind: Option<ImportSourceKind>, source: &str) -> String {
     if matches!(source_kind, Some(ImportSourceKind::RecommendedPlan))
         || source_matches(source, recommended_plan_source_label())
     {
@@ -72,7 +69,7 @@ pub(crate) fn onboarding_source_label(
     }
 }
 
-pub(crate) fn rollup_source_label(source: &str) -> Option<String> {
+pub fn rollup_source_label(source: &str) -> Option<String> {
     let trimmed = source.trim();
     if trimmed.is_empty()
         || source_matches(trimmed, "multiple sources")

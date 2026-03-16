@@ -75,5 +75,7 @@ pub use tool::{
     ToolExtensionRequest, ToolPlane, ToolTier,
 };
 
+pub mod test_support;
+
 #[cfg(test)]
 mod tests;

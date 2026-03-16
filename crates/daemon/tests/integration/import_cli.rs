@@ -74,7 +74,7 @@ fn provider_choice_preview_env_guard() -> ImportEnvironmentGuard {
     ])
 }
 
-fn sample_import_candidate() -> crate::migration::types::ImportCandidate {
+fn sample_import_candidate() -> loongclaw_daemon::migration::types::ImportCandidate {
     let mut config = mvp::config::LoongClawConfig::default();
     config.provider.kind = mvp::config::ProviderKind::Openrouter;
     config.provider.model = "openrouter/openai/gpt-5.1".to_owned();
@@ -85,69 +85,71 @@ fn sample_import_candidate() -> crate::migration::types::ImportCandidate {
     config.tools.file_root = Some("~/workspace/demo".to_owned());
     config.memory.sqlite_path = "~/.loongclaw/demo.sqlite".to_owned();
 
-    crate::migration::types::ImportCandidate {
-        source_kind: crate::migration::types::ImportSourceKind::CodexConfig,
+    loongclaw_daemon::migration::types::ImportCandidate {
+        source_kind: loongclaw_daemon::migration::types::ImportSourceKind::CodexConfig,
         source: "Codex config at ~/.codex/config.toml".to_owned(),
         config,
         surfaces: Vec::new(),
         domains: vec![
-            crate::migration::types::DomainPreview {
-                kind: crate::migration::types::SetupDomainKind::Provider,
-                status: crate::migration::types::PreviewStatus::Ready,
-                decision: Some(crate::migration::types::PreviewDecision::UseDetected),
+            loongclaw_daemon::migration::types::DomainPreview {
+                kind: loongclaw_daemon::migration::types::SetupDomainKind::Provider,
+                status: loongclaw_daemon::migration::types::PreviewStatus::Ready,
+                decision: Some(loongclaw_daemon::migration::types::PreviewDecision::UseDetected),
                 source: "Codex config at ~/.codex/config.toml".to_owned(),
                 summary: "openrouter · openrouter/openai/gpt-5.1".to_owned(),
             },
-            crate::migration::types::DomainPreview {
-                kind: crate::migration::types::SetupDomainKind::Channels,
-                status: crate::migration::types::PreviewStatus::Ready,
-                decision: Some(crate::migration::types::PreviewDecision::UseDetected),
+            loongclaw_daemon::migration::types::DomainPreview {
+                kind: loongclaw_daemon::migration::types::SetupDomainKind::Channels,
+                status: loongclaw_daemon::migration::types::PreviewStatus::Ready,
+                decision: Some(loongclaw_daemon::migration::types::PreviewDecision::UseDetected),
                 source: "Codex config at ~/.codex/config.toml".to_owned(),
                 summary: "telegram Ready".to_owned(),
             },
-            crate::migration::types::DomainPreview {
-                kind: crate::migration::types::SetupDomainKind::Cli,
-                status: crate::migration::types::PreviewStatus::Ready,
-                decision: Some(crate::migration::types::PreviewDecision::UseDetected),
+            loongclaw_daemon::migration::types::DomainPreview {
+                kind: loongclaw_daemon::migration::types::SetupDomainKind::Cli,
+                status: loongclaw_daemon::migration::types::PreviewStatus::Ready,
+                decision: Some(loongclaw_daemon::migration::types::PreviewDecision::UseDetected),
                 source: "Codex config at ~/.codex/config.toml".to_owned(),
                 summary: "custom CLI behavior detected".to_owned(),
             },
-            crate::migration::types::DomainPreview {
-                kind: crate::migration::types::SetupDomainKind::Tools,
-                status: crate::migration::types::PreviewStatus::NeedsReview,
-                decision: Some(crate::migration::types::PreviewDecision::UseDetected),
+            loongclaw_daemon::migration::types::DomainPreview {
+                kind: loongclaw_daemon::migration::types::SetupDomainKind::Tools,
+                status: loongclaw_daemon::migration::types::PreviewStatus::NeedsReview,
+                decision: Some(loongclaw_daemon::migration::types::PreviewDecision::UseDetected),
                 source: "Codex config at ~/.codex/config.toml".to_owned(),
                 summary: "workspace root ~/workspace/demo".to_owned(),
             },
-            crate::migration::types::DomainPreview {
-                kind: crate::migration::types::SetupDomainKind::WorkspaceGuidance,
-                status: crate::migration::types::PreviewStatus::Ready,
-                decision: Some(crate::migration::types::PreviewDecision::UseDetected),
+            loongclaw_daemon::migration::types::DomainPreview {
+                kind: loongclaw_daemon::migration::types::SetupDomainKind::WorkspaceGuidance,
+                status: loongclaw_daemon::migration::types::PreviewStatus::Ready,
+                decision: Some(loongclaw_daemon::migration::types::PreviewDecision::UseDetected),
                 source: "workspace".to_owned(),
                 summary: "AGENTS.md".to_owned(),
             },
         ],
-        channel_candidates: vec![crate::migration::types::ChannelCandidate {
+        channel_candidates: vec![loongclaw_daemon::migration::types::ChannelCandidate {
             id: "telegram",
             label: "telegram",
-            status: crate::migration::types::PreviewStatus::Ready,
+            status: loongclaw_daemon::migration::types::PreviewStatus::Ready,
             source: "Codex config at ~/.codex/config.toml".to_owned(),
             summary: "token resolved · can enable during onboarding".to_owned(),
         }],
-        workspace_guidance: vec![crate::migration::types::WorkspaceGuidanceCandidate {
-            kind: crate::migration::types::WorkspaceGuidanceKind::Agents,
-            path: "/tmp/project/AGENTS.md".to_owned(),
-        }],
+        workspace_guidance: vec![
+            loongclaw_daemon::migration::types::WorkspaceGuidanceCandidate {
+                kind: loongclaw_daemon::migration::types::WorkspaceGuidanceKind::Agents,
+                path: "/tmp/project/AGENTS.md".to_owned(),
+            },
+        ],
     }
 }
 
 fn import_candidate_with_provider(
-    source_kind: crate::migration::types::ImportSourceKind,
+    source_kind: loongclaw_daemon::migration::types::ImportSourceKind,
     source: &str,
     kind: mvp::config::ProviderKind,
     model: &str,
     credential_env: &str,
-) -> crate::migration::types::ImportCandidate {
+) -> loongclaw_daemon::migration::types::ImportCandidate {
     let mut candidate = sample_import_candidate();
     let profile = kind.profile();
     candidate.source_kind = source_kind;
@@ -157,17 +159,17 @@ fn import_candidate_with_provider(
     candidate.config.provider.chat_completions_path = profile.chat_completions_path.to_owned();
     candidate.config.provider.model = model.to_owned();
     candidate.config.provider.api_key_env = Some(credential_env.to_owned());
-    candidate
-        .domains
-        .retain(|domain| domain.kind != crate::migration::types::SetupDomainKind::Provider);
+    candidate.domains.retain(|domain| {
+        domain.kind != loongclaw_daemon::migration::types::SetupDomainKind::Provider
+    });
     candidate.domains.insert(
         0,
-        crate::migration::types::DomainPreview {
-            kind: crate::migration::types::SetupDomainKind::Provider,
-            status: crate::migration::types::PreviewStatus::Ready,
-            decision: Some(crate::migration::types::PreviewDecision::UseDetected),
+        loongclaw_daemon::migration::types::DomainPreview {
+            kind: loongclaw_daemon::migration::types::SetupDomainKind::Provider,
+            status: loongclaw_daemon::migration::types::PreviewStatus::Ready,
+            decision: Some(loongclaw_daemon::migration::types::PreviewDecision::UseDetected),
             source: source.to_owned(),
-            summary: crate::provider_presentation::provider_identity_summary(
+            summary: loongclaw_daemon::provider_presentation::provider_identity_summary(
                 &candidate.config.provider,
             ),
         },
@@ -178,27 +180,27 @@ fn import_candidate_with_provider(
 #[test]
 fn import_cli_parse_source_selector_accepts_known_values() {
     assert_eq!(
-        crate::import_cli::parse_import_source_selector("recommended"),
-        Some(crate::migration::types::ImportSourceKind::RecommendedPlan)
+        loongclaw_daemon::import_cli::parse_import_source_selector("recommended"),
+        Some(loongclaw_daemon::migration::types::ImportSourceKind::RecommendedPlan)
     );
     assert_eq!(
-        crate::import_cli::parse_import_source_selector("composed"),
-        Some(crate::migration::types::ImportSourceKind::RecommendedPlan)
+        loongclaw_daemon::import_cli::parse_import_source_selector("composed"),
+        Some(loongclaw_daemon::migration::types::ImportSourceKind::RecommendedPlan)
     );
     assert_eq!(
-        crate::import_cli::parse_import_source_selector("codex"),
-        Some(crate::migration::types::ImportSourceKind::CodexConfig)
+        loongclaw_daemon::import_cli::parse_import_source_selector("codex"),
+        Some(loongclaw_daemon::migration::types::ImportSourceKind::CodexConfig)
     );
     assert_eq!(
-        crate::import_cli::parse_import_source_selector("existing"),
-        Some(crate::migration::types::ImportSourceKind::ExistingLoongClawConfig)
+        loongclaw_daemon::import_cli::parse_import_source_selector("existing"),
+        Some(loongclaw_daemon::migration::types::ImportSourceKind::ExistingLoongClawConfig)
     );
     assert_eq!(
-        crate::import_cli::parse_import_source_selector("env"),
-        Some(crate::migration::types::ImportSourceKind::Environment)
+        loongclaw_daemon::import_cli::parse_import_source_selector("env"),
+        Some(loongclaw_daemon::migration::types::ImportSourceKind::Environment)
     );
     assert_eq!(
-        crate::import_cli::parse_import_source_selector("unknown"),
+        loongclaw_daemon::import_cli::parse_import_source_selector("unknown"),
         None
     );
 }
@@ -206,11 +208,11 @@ fn import_cli_parse_source_selector_accepts_known_values() {
 #[test]
 fn import_cli_parse_source_selector_rejects_non_importable_values() {
     assert_eq!(
-        crate::import_cli::parse_import_source_selector("current"),
+        loongclaw_daemon::import_cli::parse_import_source_selector("current"),
         None
     );
     assert_eq!(
-        crate::import_cli::parse_import_source_selector("path"),
+        loongclaw_daemon::import_cli::parse_import_source_selector("path"),
         None
     );
 }
@@ -218,19 +220,19 @@ fn import_cli_parse_source_selector_rejects_non_importable_values() {
 #[test]
 fn import_cli_parse_domain_selector_accepts_known_values() {
     assert_eq!(
-        crate::import_cli::parse_import_domain_selector("provider"),
-        Some(crate::migration::types::SetupDomainKind::Provider)
+        loongclaw_daemon::import_cli::parse_import_domain_selector("provider"),
+        Some(loongclaw_daemon::migration::types::SetupDomainKind::Provider)
     );
     assert_eq!(
-        crate::import_cli::parse_import_domain_selector("workspace_guidance"),
-        Some(crate::migration::types::SetupDomainKind::WorkspaceGuidance)
+        loongclaw_daemon::import_cli::parse_import_domain_selector("workspace_guidance"),
+        Some(loongclaw_daemon::migration::types::SetupDomainKind::WorkspaceGuidance)
     );
     assert_eq!(
-        crate::import_cli::parse_import_domain_selector("workspace-guidance"),
-        Some(crate::migration::types::SetupDomainKind::WorkspaceGuidance)
+        loongclaw_daemon::import_cli::parse_import_domain_selector("workspace-guidance"),
+        Some(loongclaw_daemon::migration::types::SetupDomainKind::WorkspaceGuidance)
     );
     assert_eq!(
-        crate::import_cli::parse_import_domain_selector("unknown"),
+        loongclaw_daemon::import_cli::parse_import_domain_selector("unknown"),
         None
     );
 }
@@ -238,11 +240,11 @@ fn import_cli_parse_domain_selector_accepts_known_values() {
 #[test]
 fn import_cli_supported_selector_lists_stay_canonical() {
     assert_eq!(
-        crate::migration::types::ImportSourceKind::supported_import_cli_selector_list(),
+        loongclaw_daemon::migration::types::ImportSourceKind::supported_import_cli_selector_list(),
         "recommended, existing, codex, env"
     );
     assert_eq!(
-        crate::migration::types::SetupDomainKind::supported_selector_list(),
+        loongclaw_daemon::migration::types::SetupDomainKind::supported_selector_list(),
         "provider, channels, cli, memory, tools, workspace_guidance"
     );
 }
@@ -251,57 +253,62 @@ fn import_cli_supported_selector_lists_stay_canonical() {
 fn import_cli_resolve_selected_domains_respects_include_and_exclude() {
     let candidate = sample_import_candidate();
 
-    let selected = crate::import_cli::resolve_selected_domains(
+    let selected = loongclaw_daemon::import_cli::resolve_selected_domains(
         &candidate,
         &[
-            crate::migration::types::SetupDomainKind::Provider,
-            crate::migration::types::SetupDomainKind::Channels,
-            crate::migration::types::SetupDomainKind::Tools,
+            loongclaw_daemon::migration::types::SetupDomainKind::Provider,
+            loongclaw_daemon::migration::types::SetupDomainKind::Channels,
+            loongclaw_daemon::migration::types::SetupDomainKind::Tools,
         ],
-        &[crate::migration::types::SetupDomainKind::Tools],
+        &[loongclaw_daemon::migration::types::SetupDomainKind::Tools],
     );
 
     assert_eq!(
         selected,
         vec![
-            crate::migration::types::SetupDomainKind::Provider,
-            crate::migration::types::SetupDomainKind::Channels,
+            loongclaw_daemon::migration::types::SetupDomainKind::Provider,
+            loongclaw_daemon::migration::types::SetupDomainKind::Channels,
         ]
     );
 }
 
 #[test]
 fn import_cli_surface_matches_future_channel_surfaces_without_hardcoded_names() {
-    let selected_channels =
-        std::collections::BTreeSet::from([crate::migration::types::SetupDomainKind::Channels]);
-    let selected_cli =
-        std::collections::BTreeSet::from([crate::migration::types::SetupDomainKind::Cli]);
-    let future_channel_surface = crate::migration::types::ImportSurface {
+    let selected_channels = std::collections::BTreeSet::from([
+        loongclaw_daemon::migration::types::SetupDomainKind::Channels,
+    ]);
+    let selected_cli = std::collections::BTreeSet::from([
+        loongclaw_daemon::migration::types::SetupDomainKind::Cli,
+    ]);
+    let future_channel_surface = loongclaw_daemon::migration::types::ImportSurface {
         name: "slack channel",
-        domain: crate::migration::types::SetupDomainKind::Channels,
-        level: crate::migration::types::ImportSurfaceLevel::Ready,
+        domain: loongclaw_daemon::migration::types::SetupDomainKind::Channels,
+        level: loongclaw_daemon::migration::types::ImportSurfaceLevel::Ready,
         detail: "token resolved".to_owned(),
     };
-    let cli_surface = crate::migration::types::ImportSurface {
+    let cli_surface = loongclaw_daemon::migration::types::ImportSurface {
         name: "cli channel",
-        domain: crate::migration::types::SetupDomainKind::Cli,
-        level: crate::migration::types::ImportSurfaceLevel::Ready,
+        domain: loongclaw_daemon::migration::types::SetupDomainKind::Cli,
+        level: loongclaw_daemon::migration::types::ImportSurfaceLevel::Ready,
         detail: "custom CLI behavior detected".to_owned(),
     };
 
     assert!(
-        crate::import_cli::surface_matches_selected_domains(
+        loongclaw_daemon::import_cli::surface_matches_selected_domains(
             &future_channel_surface,
             &selected_channels
         ),
         "channel domain matching should use typed metadata for future channel surfaces"
     );
     assert!(
-        crate::import_cli::surface_matches_selected_domains(&cli_surface, &selected_cli),
+        loongclaw_daemon::import_cli::surface_matches_selected_domains(&cli_surface, &selected_cli),
         "cli channel surface should remain mapped to the cli domain"
     );
     assert!(
-        !crate::import_cli::surface_matches_selected_domains(&cli_surface, &selected_channels),
+        !loongclaw_daemon::import_cli::surface_matches_selected_domains(
+            &cli_surface,
+            &selected_channels
+        ),
         "cli channel surface should not be folded into the generic channels domain"
     );
 }
@@ -319,10 +326,12 @@ fn import_cli_apply_selected_domains_preserves_unselected_existing_values() {
     base.tools.file_root = Some("~/workspace/current".to_owned());
 
     let selected = vec![
-        crate::migration::types::SetupDomainKind::Channels,
-        crate::migration::types::SetupDomainKind::Cli,
+        loongclaw_daemon::migration::types::SetupDomainKind::Channels,
+        loongclaw_daemon::migration::types::SetupDomainKind::Cli,
     ];
-    let applied = crate::import_cli::apply_selected_domains_to_config(&base, &candidate, &selected);
+    let applied = loongclaw_daemon::import_cli::apply_selected_domains_to_config(
+        &base, &candidate, &selected,
+    );
 
     assert_eq!(
         applied.provider.kind,
@@ -360,10 +369,10 @@ fn import_cli_apply_selected_channels_supplements_existing_channel_fields() {
     base.telegram.allowed_chat_ids = vec![42];
     base.telegram.polling_timeout_s = 90;
 
-    let applied = crate::import_cli::apply_selected_domains_to_config(
+    let applied = loongclaw_daemon::import_cli::apply_selected_domains_to_config(
         &base,
         &candidate,
-        &[crate::migration::types::SetupDomainKind::Channels],
+        &[loongclaw_daemon::migration::types::SetupDomainKind::Channels],
     );
 
     assert_eq!(
@@ -384,35 +393,37 @@ fn import_cli_apply_selected_channels_supplements_existing_channel_fields() {
 
 #[test]
 fn import_cli_render_preview_lists_domain_status_and_source() {
-    let candidate = crate::migration::types::ImportCandidate {
-        source_kind: crate::migration::types::ImportSourceKind::CodexConfig,
+    let candidate = loongclaw_daemon::migration::types::ImportCandidate {
+        source_kind: loongclaw_daemon::migration::types::ImportSourceKind::CodexConfig,
         source: "Codex config at ~/.codex/config.toml".to_owned(),
         config: mvp::config::LoongClawConfig::default(),
         surfaces: Vec::new(),
         domains: vec![
-            crate::migration::types::DomainPreview {
-                kind: crate::migration::types::SetupDomainKind::Provider,
-                status: crate::migration::types::PreviewStatus::Ready,
-                decision: Some(crate::migration::types::PreviewDecision::UseDetected),
+            loongclaw_daemon::migration::types::DomainPreview {
+                kind: loongclaw_daemon::migration::types::SetupDomainKind::Provider,
+                status: loongclaw_daemon::migration::types::PreviewStatus::Ready,
+                decision: Some(loongclaw_daemon::migration::types::PreviewDecision::UseDetected),
                 source: "Codex config at ~/.codex/config.toml".to_owned(),
                 summary: "OpenAI · openai/gpt-5.1-codex".to_owned(),
             },
-            crate::migration::types::DomainPreview {
-                kind: crate::migration::types::SetupDomainKind::WorkspaceGuidance,
-                status: crate::migration::types::PreviewStatus::Ready,
-                decision: Some(crate::migration::types::PreviewDecision::UseDetected),
+            loongclaw_daemon::migration::types::DomainPreview {
+                kind: loongclaw_daemon::migration::types::SetupDomainKind::WorkspaceGuidance,
+                status: loongclaw_daemon::migration::types::PreviewStatus::Ready,
+                decision: Some(loongclaw_daemon::migration::types::PreviewDecision::UseDetected),
                 source: "workspace".to_owned(),
                 summary: "AGENTS.md".to_owned(),
             },
         ],
         channel_candidates: Vec::new(),
-        workspace_guidance: vec![crate::migration::types::WorkspaceGuidanceCandidate {
-            kind: crate::migration::types::WorkspaceGuidanceKind::Agents,
-            path: "/tmp/project/AGENTS.md".to_owned(),
-        }],
+        workspace_guidance: vec![
+            loongclaw_daemon::migration::types::WorkspaceGuidanceCandidate {
+                kind: loongclaw_daemon::migration::types::WorkspaceGuidanceKind::Agents,
+                path: "/tmp/project/AGENTS.md".to_owned(),
+            },
+        ],
     };
 
-    let lines = crate::import_cli::render_import_preview_lines_for_width(&candidate, 80);
+    let lines = loongclaw_daemon::import_cli::render_import_preview_lines_for_width(&candidate, 80);
 
     assert!(
         lines.iter().any(|line| line.contains("provider")),
@@ -432,8 +443,10 @@ fn import_cli_render_preview_lists_domain_status_and_source() {
 
 #[test]
 fn import_cli_render_preview_includes_brand_header_and_title() {
-    let lines =
-        crate::import_cli::render_import_preview_lines_for_width(&sample_import_candidate(), 80);
+    let lines = loongclaw_daemon::import_cli::render_import_preview_lines_for_width(
+        &sample_import_candidate(),
+        80,
+    );
 
     assert!(
         lines[0].starts_with("██╗"),
@@ -452,14 +465,14 @@ fn import_cli_render_preview_includes_brand_header_and_title() {
 #[test]
 fn import_cli_render_preview_labels_candidate_position_when_multiple_candidates() {
     let recommended = import_candidate_with_provider(
-        crate::migration::types::ImportSourceKind::RecommendedPlan,
+        loongclaw_daemon::migration::types::ImportSourceKind::RecommendedPlan,
         "recommended import plan",
         mvp::config::ProviderKind::Openai,
         "openai/gpt-5.1-codex",
         "OPENAI_API_KEY",
     );
     let env = import_candidate_with_provider(
-        crate::migration::types::ImportSourceKind::Environment,
+        loongclaw_daemon::migration::types::ImportSourceKind::Environment,
         "your current environment",
         mvp::config::ProviderKind::Deepseek,
         "deepseek-chat",
@@ -467,13 +480,16 @@ fn import_cli_render_preview_labels_candidate_position_when_multiple_candidates(
     );
     let all_candidates = vec![recommended.clone(), env.clone()];
 
-    let first = crate::import_cli::render_import_preview_lines_for_candidates(
+    let first = loongclaw_daemon::import_cli::render_import_preview_lines_for_candidates(
         &recommended,
         &all_candidates,
         80,
     );
-    let second =
-        crate::import_cli::render_import_preview_lines_for_candidates(&env, &all_candidates, 80);
+    let second = loongclaw_daemon::import_cli::render_import_preview_lines_for_candidates(
+        &env,
+        &all_candidates,
+        80,
+    );
 
     assert!(
         first.iter().any(|line| line == "candidate 1 of 2"),
@@ -488,13 +504,13 @@ fn import_cli_render_preview_labels_candidate_position_when_multiple_candidates(
 #[test]
 fn import_cli_apply_summary_wraps_long_path_and_domains_for_narrow_width() {
     let candidate = sample_import_candidate();
-    let lines = crate::import_cli::render_import_apply_summary_lines_for_width(
+    let lines = loongclaw_daemon::import_cli::render_import_apply_summary_lines_for_width(
         std::path::Path::new("/tmp/shared workspace/loongclaw config.toml"),
         &candidate,
         &[
-            crate::migration::types::SetupDomainKind::Provider,
-            crate::migration::types::SetupDomainKind::Channels,
-            crate::migration::types::SetupDomainKind::WorkspaceGuidance,
+            loongclaw_daemon::migration::types::SetupDomainKind::Provider,
+            loongclaw_daemon::migration::types::SetupDomainKind::Channels,
+            loongclaw_daemon::migration::types::SetupDomainKind::WorkspaceGuidance,
         ],
         &candidate.config,
         true,
@@ -552,10 +568,10 @@ fn import_cli_apply_summary_wraps_long_path_and_domains_for_narrow_width() {
 #[test]
 fn import_cli_apply_summary_distinguishes_new_config_creation() {
     let candidate = sample_import_candidate();
-    let lines = crate::import_cli::render_import_apply_summary_lines_for_width(
+    let lines = loongclaw_daemon::import_cli::render_import_apply_summary_lines_for_width(
         std::path::Path::new("/tmp/loongclaw-config.toml"),
         &candidate,
-        &[crate::migration::types::SetupDomainKind::Channels],
+        &[loongclaw_daemon::migration::types::SetupDomainKind::Channels],
         &candidate.config,
         false,
         80,
@@ -578,10 +594,10 @@ fn import_cli_apply_summary_distinguishes_new_config_creation() {
 #[test]
 fn import_cli_apply_summary_includes_registry_channel_actions() {
     let candidate = sample_import_candidate();
-    let lines = crate::import_cli::render_import_apply_summary_lines_for_width(
+    let lines = loongclaw_daemon::import_cli::render_import_apply_summary_lines_for_width(
         std::path::Path::new("/tmp/loongclaw-config.toml"),
         &candidate,
-        &[crate::migration::types::SetupDomainKind::Channels],
+        &[loongclaw_daemon::migration::types::SetupDomainKind::Channels],
         &candidate.config,
         false,
         120,
@@ -606,10 +622,10 @@ fn import_cli_apply_summary_includes_registry_channel_actions() {
 fn import_cli_apply_summary_uses_channel_handoff_when_cli_is_disabled() {
     let mut candidate = sample_import_candidate();
     candidate.config.cli.enabled = false;
-    let lines = crate::import_cli::render_import_apply_summary_lines_for_width(
+    let lines = loongclaw_daemon::import_cli::render_import_apply_summary_lines_for_width(
         std::path::Path::new("/tmp/loongclaw-config.toml"),
         &candidate,
-        &[crate::migration::types::SetupDomainKind::Channels],
+        &[loongclaw_daemon::migration::types::SetupDomainKind::Channels],
         &candidate.config,
         false,
         120,
@@ -633,28 +649,28 @@ fn import_cli_apply_summary_uses_channel_handoff_when_cli_is_disabled() {
 fn import_cli_render_preview_marks_provider_choice_required_for_unresolved_recommended_plan() {
     let _env_guard = provider_choice_preview_env_guard();
     let mut recommended = sample_import_candidate();
-    recommended.source_kind = crate::migration::types::ImportSourceKind::RecommendedPlan;
+    recommended.source_kind = loongclaw_daemon::migration::types::ImportSourceKind::RecommendedPlan;
     recommended.source = "recommended import plan".to_owned();
-    recommended
-        .domains
-        .retain(|domain| domain.kind != crate::migration::types::SetupDomainKind::Provider);
+    recommended.domains.retain(|domain| {
+        domain.kind != loongclaw_daemon::migration::types::SetupDomainKind::Provider
+    });
 
     let openai = import_candidate_with_provider(
-        crate::migration::types::ImportSourceKind::CodexConfig,
+        loongclaw_daemon::migration::types::ImportSourceKind::CodexConfig,
         "Codex config at ~/.codex/config.toml",
         mvp::config::ProviderKind::Openai,
         "openai/gpt-5.1-codex",
         "OPENAI_API_KEY",
     );
     let deepseek = import_candidate_with_provider(
-        crate::migration::types::ImportSourceKind::Environment,
+        loongclaw_daemon::migration::types::ImportSourceKind::Environment,
         "your current environment",
         mvp::config::ProviderKind::Deepseek,
         "deepseek-chat",
         "DEEPSEEK_API_KEY",
     );
 
-    let lines = crate::import_cli::render_import_preview_lines_for_candidates(
+    let lines = loongclaw_daemon::import_cli::render_import_preview_lines_for_candidates(
         &recommended,
         &[recommended.clone(), openai, deepseek],
         80,
@@ -680,25 +696,25 @@ fn import_cli_render_preview_marks_provider_choice_required_for_unresolved_recom
 fn import_cli_render_preview_explains_provider_conflict_apply_behavior() {
     let _env_guard = provider_choice_preview_env_guard();
     let mut recommended = sample_import_candidate();
-    recommended.source_kind = crate::migration::types::ImportSourceKind::RecommendedPlan;
+    recommended.source_kind = loongclaw_daemon::migration::types::ImportSourceKind::RecommendedPlan;
     recommended.source = "recommended import plan".to_owned();
-    recommended
-        .domains
-        .retain(|domain| domain.kind != crate::migration::types::SetupDomainKind::Provider);
+    recommended.domains.retain(|domain| {
+        domain.kind != loongclaw_daemon::migration::types::SetupDomainKind::Provider
+    });
 
-    let lines = crate::import_cli::render_import_preview_lines_for_candidates(
+    let lines = loongclaw_daemon::import_cli::render_import_preview_lines_for_candidates(
         &recommended,
         &[
             recommended.clone(),
             import_candidate_with_provider(
-                crate::migration::types::ImportSourceKind::CodexConfig,
+                loongclaw_daemon::migration::types::ImportSourceKind::CodexConfig,
                 "Codex config at ~/.codex/config.toml",
                 mvp::config::ProviderKind::Openai,
                 "openai/gpt-5.1-codex",
                 "OPENAI_API_KEY",
             ),
             import_candidate_with_provider(
-                crate::migration::types::ImportSourceKind::Environment,
+                loongclaw_daemon::migration::types::ImportSourceKind::Environment,
                 "your current environment",
                 mvp::config::ProviderKind::Deepseek,
                 "deepseek-chat",
@@ -717,7 +733,7 @@ fn import_cli_render_preview_explains_provider_conflict_apply_behavior() {
     assert!(
         lines.iter().any(|line| line.contains(&format!(
             "--provider {}",
-            crate::migration::provider_selection::PROVIDER_SELECTOR_PLACEHOLDER
+            loongclaw_daemon::migration::provider_selection::PROVIDER_SELECTOR_PLACEHOLDER
         ))),
         "preview should direct power users to the explicit provider flag: {lines:#?}"
     );
@@ -739,25 +755,25 @@ fn import_cli_render_preview_explains_provider_conflict_apply_behavior() {
 fn import_cli_render_preview_wraps_provider_choices_for_narrow_width() {
     let _env_guard = provider_choice_preview_env_guard();
     let mut recommended = sample_import_candidate();
-    recommended.source_kind = crate::migration::types::ImportSourceKind::RecommendedPlan;
+    recommended.source_kind = loongclaw_daemon::migration::types::ImportSourceKind::RecommendedPlan;
     recommended.source = "recommended import plan".to_owned();
-    recommended
-        .domains
-        .retain(|domain| domain.kind != crate::migration::types::SetupDomainKind::Provider);
+    recommended.domains.retain(|domain| {
+        domain.kind != loongclaw_daemon::migration::types::SetupDomainKind::Provider
+    });
 
-    let lines = crate::import_cli::render_import_preview_lines_for_candidates(
+    let lines = loongclaw_daemon::import_cli::render_import_preview_lines_for_candidates(
         &recommended,
         &[
             recommended.clone(),
             import_candidate_with_provider(
-                crate::migration::types::ImportSourceKind::CodexConfig,
+                loongclaw_daemon::migration::types::ImportSourceKind::CodexConfig,
                 "Codex config at ~/.codex/agents/loongclaw/config.toml",
                 mvp::config::ProviderKind::Openai,
                 "openai/gpt-5.1-codex",
                 "OPENAI_API_KEY",
             ),
             import_candidate_with_provider(
-                crate::migration::types::ImportSourceKind::Environment,
+                loongclaw_daemon::migration::types::ImportSourceKind::Environment,
                 "your current environment",
                 mvp::config::ProviderKind::Deepseek,
                 "deepseek-chat",
@@ -811,25 +827,25 @@ fn import_cli_render_preview_wraps_provider_choices_for_narrow_width() {
 fn import_cli_render_preview_falls_back_to_stacked_provider_rows_when_medium_width_overflows() {
     let _env_guard = provider_choice_preview_env_guard();
     let mut recommended = sample_import_candidate();
-    recommended.source_kind = crate::migration::types::ImportSourceKind::RecommendedPlan;
+    recommended.source_kind = loongclaw_daemon::migration::types::ImportSourceKind::RecommendedPlan;
     recommended.source = "recommended import plan".to_owned();
-    recommended
-        .domains
-        .retain(|domain| domain.kind != crate::migration::types::SetupDomainKind::Provider);
+    recommended.domains.retain(|domain| {
+        domain.kind != loongclaw_daemon::migration::types::SetupDomainKind::Provider
+    });
 
-    let lines = crate::import_cli::render_import_preview_lines_for_candidates(
+    let lines = loongclaw_daemon::import_cli::render_import_preview_lines_for_candidates(
         &recommended,
         &[
             recommended.clone(),
             import_candidate_with_provider(
-                crate::migration::types::ImportSourceKind::CodexConfig,
+                loongclaw_daemon::migration::types::ImportSourceKind::CodexConfig,
                 "Codex config at ~/.codex/agents/loongclaw/config.toml",
                 mvp::config::ProviderKind::Openai,
                 "openai/gpt-5.1-codex",
                 "OPENAI_API_KEY",
             ),
             import_candidate_with_provider(
-                crate::migration::types::ImportSourceKind::Environment,
+                loongclaw_daemon::migration::types::ImportSourceKind::Environment,
                 "your current environment",
                 mvp::config::ProviderKind::Deepseek,
                 "deepseek-chat",
@@ -862,9 +878,11 @@ fn import_cli_render_preview_surfaces_responses_transport_for_provider_candidate
     candidate.config.provider.model = "deepseek-chat".to_owned();
     candidate.config.provider.wire_api = mvp::config::ProviderWireApi::Responses;
     candidate.domains[0].summary =
-        crate::provider_presentation::provider_identity_summary(&candidate.config.provider);
+        loongclaw_daemon::provider_presentation::provider_identity_summary(
+            &candidate.config.provider,
+        );
 
-    let lines = crate::import_cli::render_import_preview_lines_for_width(&candidate, 80);
+    let lines = loongclaw_daemon::import_cli::render_import_preview_lines_for_width(&candidate, 80);
 
     assert!(
         lines.iter().any(|line| {
@@ -877,14 +895,14 @@ fn import_cli_render_preview_surfaces_responses_transport_for_provider_candidate
 #[test]
 fn import_cli_render_preview_keeps_provider_choice_transport_visible_on_wide_width() {
     let mut recommended = sample_import_candidate();
-    recommended.source_kind = crate::migration::types::ImportSourceKind::RecommendedPlan;
+    recommended.source_kind = loongclaw_daemon::migration::types::ImportSourceKind::RecommendedPlan;
     recommended.source = "recommended import plan".to_owned();
-    recommended
-        .domains
-        .retain(|domain| domain.kind != crate::migration::types::SetupDomainKind::Provider);
+    recommended.domains.retain(|domain| {
+        domain.kind != loongclaw_daemon::migration::types::SetupDomainKind::Provider
+    });
 
     let mut deepseek = import_candidate_with_provider(
-        crate::migration::types::ImportSourceKind::Environment,
+        loongclaw_daemon::migration::types::ImportSourceKind::Environment,
         "your current environment",
         mvp::config::ProviderKind::Deepseek,
         "deepseek-chat",
@@ -892,14 +910,16 @@ fn import_cli_render_preview_keeps_provider_choice_transport_visible_on_wide_wid
     );
     deepseek.config.provider.wire_api = mvp::config::ProviderWireApi::Responses;
     deepseek.domains[0].summary =
-        crate::provider_presentation::provider_identity_summary(&deepseek.config.provider);
+        loongclaw_daemon::provider_presentation::provider_identity_summary(
+            &deepseek.config.provider,
+        );
 
-    let lines = crate::import_cli::render_import_preview_lines_for_candidates(
+    let lines = loongclaw_daemon::import_cli::render_import_preview_lines_for_candidates(
         &recommended,
         &[
             recommended.clone(),
             import_candidate_with_provider(
-                crate::migration::types::ImportSourceKind::CodexConfig,
+                loongclaw_daemon::migration::types::ImportSourceKind::CodexConfig,
                 "Codex config at ~/.codex/config.toml",
                 mvp::config::ProviderKind::Openai,
                 "openai/gpt-5.1-codex",
@@ -928,7 +948,7 @@ fn import_cli_json_preview_redacts_config_secrets() {
     candidate.config.provider.api_key = Some("super-secret-provider-key".to_owned());
     candidate.config.telegram.bot_token = Some("123456:telegram-secret".to_owned());
 
-    let payload = crate::import_cli::render_import_preview_json(&[candidate])
+    let payload = loongclaw_daemon::import_cli::render_import_preview_json(&[candidate])
         .expect("json preview should render");
 
     assert!(
@@ -952,23 +972,23 @@ fn import_cli_json_preview_redacts_config_secrets() {
 #[test]
 fn import_cli_json_preview_includes_provider_selection_requirements() {
     let mut recommended = sample_import_candidate();
-    recommended.source_kind = crate::migration::types::ImportSourceKind::RecommendedPlan;
+    recommended.source_kind = loongclaw_daemon::migration::types::ImportSourceKind::RecommendedPlan;
     recommended.source = "recommended import plan".to_owned();
-    recommended
-        .domains
-        .retain(|domain| domain.kind != crate::migration::types::SetupDomainKind::Provider);
+    recommended.domains.retain(|domain| {
+        domain.kind != loongclaw_daemon::migration::types::SetupDomainKind::Provider
+    });
 
-    let payload = crate::import_cli::render_import_preview_json(&[
+    let payload = loongclaw_daemon::import_cli::render_import_preview_json(&[
         recommended.clone(),
         import_candidate_with_provider(
-            crate::migration::types::ImportSourceKind::CodexConfig,
+            loongclaw_daemon::migration::types::ImportSourceKind::CodexConfig,
             "Codex config at ~/.codex/config.toml",
             mvp::config::ProviderKind::Openai,
             "openai/gpt-5.1-codex",
             "OPENAI_API_KEY",
         ),
         import_candidate_with_provider(
-            crate::migration::types::ImportSourceKind::Environment,
+            loongclaw_daemon::migration::types::ImportSourceKind::Environment,
             "your current environment",
             mvp::config::ProviderKind::Deepseek,
             "deepseek-chat",
@@ -994,14 +1014,14 @@ fn import_cli_json_preview_includes_provider_selection_requirements() {
 #[test]
 fn import_cli_json_preview_includes_provider_choice_transport() {
     let mut recommended = sample_import_candidate();
-    recommended.source_kind = crate::migration::types::ImportSourceKind::RecommendedPlan;
+    recommended.source_kind = loongclaw_daemon::migration::types::ImportSourceKind::RecommendedPlan;
     recommended.source = "recommended import plan".to_owned();
-    recommended
-        .domains
-        .retain(|domain| domain.kind != crate::migration::types::SetupDomainKind::Provider);
+    recommended.domains.retain(|domain| {
+        domain.kind != loongclaw_daemon::migration::types::SetupDomainKind::Provider
+    });
 
     let mut deepseek = import_candidate_with_provider(
-        crate::migration::types::ImportSourceKind::Environment,
+        loongclaw_daemon::migration::types::ImportSourceKind::Environment,
         "your current environment",
         mvp::config::ProviderKind::Deepseek,
         "deepseek-chat",
@@ -1009,12 +1029,14 @@ fn import_cli_json_preview_includes_provider_choice_transport() {
     );
     deepseek.config.provider.wire_api = mvp::config::ProviderWireApi::Responses;
     deepseek.domains[0].summary =
-        crate::provider_presentation::provider_identity_summary(&deepseek.config.provider);
+        loongclaw_daemon::provider_presentation::provider_identity_summary(
+            &deepseek.config.provider,
+        );
 
-    let payload = crate::import_cli::render_import_preview_json(&[
+    let payload = loongclaw_daemon::import_cli::render_import_preview_json(&[
         recommended.clone(),
         import_candidate_with_provider(
-            crate::migration::types::ImportSourceKind::CodexConfig,
+            loongclaw_daemon::migration::types::ImportSourceKind::CodexConfig,
             "Codex config at ~/.codex/config.toml",
             mvp::config::ProviderKind::Openai,
             "openai/gpt-5.1-codex",
@@ -1032,8 +1054,9 @@ fn import_cli_json_preview_includes_provider_choice_transport() {
 
 #[test]
 fn import_cli_json_preview_includes_source_path_for_path_level_selection() {
-    let payload = crate::import_cli::render_import_preview_json(&[sample_import_candidate()])
-        .expect("json preview should render");
+    let payload =
+        loongclaw_daemon::import_cli::render_import_preview_json(&[sample_import_candidate()])
+            .expect("json preview should render");
 
     assert!(
         payload.contains("\"source_path\": \"~/.codex/config.toml\""),
@@ -1043,27 +1066,27 @@ fn import_cli_json_preview_includes_source_path_for_path_level_selection() {
 
 #[test]
 fn import_cli_apply_prefers_recommended_plan_when_multiple_candidates_exist() {
-    let recommended = crate::migration::types::ImportCandidate {
-        source_kind: crate::migration::types::ImportSourceKind::RecommendedPlan,
+    let recommended = loongclaw_daemon::migration::types::ImportCandidate {
+        source_kind: loongclaw_daemon::migration::types::ImportSourceKind::RecommendedPlan,
         source: "recommended import plan".to_owned(),
         ..sample_import_candidate()
     };
     let candidates = vec![
         sample_import_candidate(),
-        crate::migration::types::ImportCandidate {
-            source_kind: crate::migration::types::ImportSourceKind::Environment,
+        loongclaw_daemon::migration::types::ImportCandidate {
+            source_kind: loongclaw_daemon::migration::types::ImportSourceKind::Environment,
             source: "your current environment".to_owned(),
             ..sample_import_candidate()
         },
         recommended,
     ];
 
-    let selected = crate::import_cli::select_apply_candidate_index(&candidates)
+    let selected = loongclaw_daemon::import_cli::select_apply_candidate_index(&candidates)
         .expect("recommended plan should be selected automatically");
 
     assert_eq!(
         candidates[selected].source_kind,
-        crate::migration::types::ImportSourceKind::RecommendedPlan
+        loongclaw_daemon::migration::types::ImportSourceKind::RecommendedPlan
     );
 }
 
@@ -1071,14 +1094,14 @@ fn import_cli_apply_prefers_recommended_plan_when_multiple_candidates_exist() {
 fn import_cli_apply_requires_explicit_source_without_recommended_plan() {
     let candidates = vec![
         sample_import_candidate(),
-        crate::migration::types::ImportCandidate {
-            source_kind: crate::migration::types::ImportSourceKind::Environment,
+        loongclaw_daemon::migration::types::ImportCandidate {
+            source_kind: loongclaw_daemon::migration::types::ImportSourceKind::Environment,
             source: "your current environment".to_owned(),
             ..sample_import_candidate()
         },
     ];
 
-    let error = crate::import_cli::select_apply_candidate_index(&candidates)
+    let error = loongclaw_daemon::import_cli::select_apply_candidate_index(&candidates)
         .expect_err("multiple raw candidates should still require --from");
 
     assert!(
@@ -1094,7 +1117,7 @@ fn import_cli_apply_reports_ambiguous_sources_when_from_filter_still_matches_mul
     let mut second = sample_import_candidate();
     second.source = "Codex config at ~/.codex/agents/loongclaw/config.toml".to_owned();
 
-    let error = crate::import_cli::select_apply_candidate_index(&[first, second])
+    let error = loongclaw_daemon::import_cli::select_apply_candidate_index(&[first, second])
         .expect_err("multiple candidates from the same source kind should remain ambiguous");
 
     assert!(
@@ -1115,7 +1138,7 @@ fn import_cli_apply_reports_ambiguous_sources_when_from_filter_still_matches_mul
 fn import_cli_apply_accepts_single_selected_source_without_recommended_plan() {
     let candidates = vec![sample_import_candidate()];
 
-    let selected = crate::import_cli::select_apply_candidate_index(&candidates)
+    let selected = loongclaw_daemon::import_cli::select_apply_candidate_index(&candidates)
         .expect("a single selected source should be directly applicable");
 
     assert_eq!(selected, 0);
@@ -1150,18 +1173,20 @@ model = "deepseek-chat"
     let _env_guard =
         ImportEnvironmentGuard::set(&[("HOME", Some(home.to_string_lossy().as_ref()))]);
 
-    let error = crate::import_cli::run_import_cli(crate::import_cli::ImportCommandOptions {
-        output: Some(output_path.display().to_string()),
-        force: false,
-        preview: false,
-        apply: true,
-        json: false,
-        from: Some("codex".to_owned()),
-        source_path: None,
-        provider: None,
-        include: Vec::new(),
-        exclude: Vec::new(),
-    })
+    let error = loongclaw_daemon::import_cli::run_import_cli(
+        loongclaw_daemon::import_cli::ImportCommandOptions {
+            output: Some(output_path.display().to_string()),
+            force: false,
+            preview: false,
+            apply: true,
+            json: false,
+            from: Some("codex".to_owned()),
+            source_path: None,
+            provider: None,
+            include: Vec::new(),
+            exclude: Vec::new(),
+        },
+    )
     .await
     .expect_err("multiple detected codex configs should require path-level disambiguation");
 
@@ -1210,18 +1235,20 @@ model = "deepseek-chat"
         ("DEEPSEEK_API_KEY", Some("deepseek-test-key")),
     ]);
 
-    crate::import_cli::run_import_cli(crate::import_cli::ImportCommandOptions {
-        output: Some(output_path.display().to_string()),
-        force: false,
-        preview: false,
-        apply: true,
-        json: false,
-        from: Some("codex".to_owned()),
-        source_path: Some("~/.codex/agents/loongclaw/config.toml".to_owned()),
-        provider: None,
-        include: Vec::new(),
-        exclude: Vec::new(),
-    })
+    loongclaw_daemon::import_cli::run_import_cli(
+        loongclaw_daemon::import_cli::ImportCommandOptions {
+            output: Some(output_path.display().to_string()),
+            force: false,
+            preview: false,
+            apply: true,
+            json: false,
+            from: Some("codex".to_owned()),
+            source_path: Some("~/.codex/agents/loongclaw/config.toml".to_owned()),
+            provider: None,
+            include: Vec::new(),
+            exclude: Vec::new(),
+        },
+    )
     .await
     .expect("source-path-selected codex import should apply cleanly");
 
@@ -1317,18 +1344,20 @@ requires_openai_auth = true
         ),
     ]);
 
-    crate::import_cli::run_import_cli(crate::import_cli::ImportCommandOptions {
-        output: Some(output_path.display().to_string()),
-        force: false,
-        preview: false,
-        apply: true,
-        json: false,
-        from: Some("codex".to_owned()),
-        source_path: None,
-        provider: None,
-        include: Vec::new(),
-        exclude: Vec::new(),
-    })
+    loongclaw_daemon::import_cli::run_import_cli(
+        loongclaw_daemon::import_cli::ImportCommandOptions {
+            output: Some(output_path.display().to_string()),
+            force: false,
+            preview: false,
+            apply: true,
+            json: false,
+            from: Some("codex".to_owned()),
+            source_path: None,
+            provider: None,
+            include: Vec::new(),
+            exclude: Vec::new(),
+        },
+    )
     .await
     .expect("codex import should apply cleanly");
 
@@ -1458,18 +1487,20 @@ requires_openai_auth = true
         ("OPENAI_API_KEY", Some("test-openai-key")),
     ]);
 
-    crate::import_cli::run_import_cli(crate::import_cli::ImportCommandOptions {
-        output: Some(output_path.display().to_string()),
-        force: false,
-        preview: false,
-        apply: true,
-        json: false,
-        from: Some("codex".to_owned()),
-        source_path: None,
-        provider: None,
-        include: Vec::new(),
-        exclude: Vec::new(),
-    })
+    loongclaw_daemon::import_cli::run_import_cli(
+        loongclaw_daemon::import_cli::ImportCommandOptions {
+            output: Some(output_path.display().to_string()),
+            force: false,
+            preview: false,
+            apply: true,
+            json: false,
+            from: Some("codex".to_owned()),
+            source_path: None,
+            provider: None,
+            include: Vec::new(),
+            exclude: Vec::new(),
+        },
+    )
     .await
     .expect("codex import should apply cleanly");
 
@@ -1593,18 +1624,20 @@ requires_openai_auth = true
         ("OPENAI_API_KEY", Some("test-openai-key")),
     ]);
 
-    crate::import_cli::run_import_cli(crate::import_cli::ImportCommandOptions {
-        output: Some(output_path.display().to_string()),
-        force: false,
-        preview: false,
-        apply: true,
-        json: false,
-        from: Some("codex".to_owned()),
-        source_path: None,
-        provider: None,
-        include: Vec::new(),
-        exclude: Vec::new(),
-    })
+    loongclaw_daemon::import_cli::run_import_cli(
+        loongclaw_daemon::import_cli::ImportCommandOptions {
+            output: Some(output_path.display().to_string()),
+            force: false,
+            preview: false,
+            apply: true,
+            json: false,
+            from: Some("codex".to_owned()),
+            source_path: None,
+            provider: None,
+            include: Vec::new(),
+            exclude: Vec::new(),
+        },
+    )
     .await
     .expect("codex import should apply cleanly");
 
@@ -1644,25 +1677,25 @@ requires_openai_auth = true
 #[test]
 fn import_cli_provider_selection_requires_explicit_choice_for_unresolved_recommended_plan() {
     let mut recommended = sample_import_candidate();
-    recommended.source_kind = crate::migration::types::ImportSourceKind::RecommendedPlan;
+    recommended.source_kind = loongclaw_daemon::migration::types::ImportSourceKind::RecommendedPlan;
     recommended.source = "recommended import plan".to_owned();
-    recommended
-        .domains
-        .retain(|domain| domain.kind != crate::migration::types::SetupDomainKind::Provider);
+    recommended.domains.retain(|domain| {
+        domain.kind != loongclaw_daemon::migration::types::SetupDomainKind::Provider
+    });
 
-    let error = crate::import_cli::resolve_import_provider_selection(
+    let error = loongclaw_daemon::import_cli::resolve_import_provider_selection(
         &mvp::config::ProviderConfig::default(),
         &[
             recommended.clone(),
             import_candidate_with_provider(
-                crate::migration::types::ImportSourceKind::CodexConfig,
+                loongclaw_daemon::migration::types::ImportSourceKind::CodexConfig,
                 "Codex config at ~/.codex/config.toml",
                 mvp::config::ProviderKind::Openai,
                 "openai/gpt-5.1-codex",
                 "OPENAI_API_KEY",
             ),
             import_candidate_with_provider(
-                crate::migration::types::ImportSourceKind::Environment,
+                loongclaw_daemon::migration::types::ImportSourceKind::Environment,
                 "your current environment",
                 mvp::config::ProviderKind::Deepseek,
                 "deepseek-chat",
@@ -1683,25 +1716,25 @@ fn import_cli_provider_selection_requires_explicit_choice_for_unresolved_recomme
 #[test]
 fn import_cli_provider_selection_accepts_manual_choice_for_unresolved_recommended_plan() {
     let mut recommended = sample_import_candidate();
-    recommended.source_kind = crate::migration::types::ImportSourceKind::RecommendedPlan;
+    recommended.source_kind = loongclaw_daemon::migration::types::ImportSourceKind::RecommendedPlan;
     recommended.source = "recommended import plan".to_owned();
-    recommended
-        .domains
-        .retain(|domain| domain.kind != crate::migration::types::SetupDomainKind::Provider);
+    recommended.domains.retain(|domain| {
+        domain.kind != loongclaw_daemon::migration::types::SetupDomainKind::Provider
+    });
 
-    let provider = crate::import_cli::resolve_import_provider_selection(
+    let provider = loongclaw_daemon::import_cli::resolve_import_provider_selection(
         &mvp::config::ProviderConfig::default(),
         &[
             recommended.clone(),
             import_candidate_with_provider(
-                crate::migration::types::ImportSourceKind::CodexConfig,
+                loongclaw_daemon::migration::types::ImportSourceKind::CodexConfig,
                 "Codex config at ~/.codex/config.toml",
                 mvp::config::ProviderKind::Openai,
                 "openai/gpt-5.1-codex",
                 "OPENAI_API_KEY",
             ),
             import_candidate_with_provider(
-                crate::migration::types::ImportSourceKind::Environment,
+                loongclaw_daemon::migration::types::ImportSourceKind::Environment,
                 "your current environment",
                 mvp::config::ProviderKind::Deepseek,
                 "deepseek-chat",
@@ -1720,9 +1753,9 @@ fn import_cli_provider_selection_accepts_manual_choice_for_unresolved_recommende
 
 #[test]
 fn provider_selection_resolve_choice_by_kind_prefers_default_profile_id() {
-    let plan = crate::migration::ProviderSelectionPlan {
+    let plan = loongclaw_daemon::migration::ProviderSelectionPlan {
         imported_choices: vec![
-            crate::migration::ImportedProviderChoice {
+            loongclaw_daemon::migration::ImportedProviderChoice {
                 profile_id: "openai-main".to_owned(),
                 kind: mvp::config::ProviderKind::Openai,
                 source: "Codex config at ~/.codex/config.toml".to_owned(),
@@ -1733,7 +1766,7 @@ fn provider_selection_resolve_choice_by_kind_prefers_default_profile_id() {
                     ..mvp::config::ProviderConfig::default()
                 },
             },
-            crate::migration::ImportedProviderChoice {
+            loongclaw_daemon::migration::ImportedProviderChoice {
                 profile_id: "openai-reasoning".to_owned(),
                 kind: mvp::config::ProviderKind::Openai,
                 source: "your current environment".to_owned(),
@@ -1750,16 +1783,16 @@ fn provider_selection_resolve_choice_by_kind_prefers_default_profile_id() {
         requires_explicit_choice: false,
     };
 
-    let choice = crate::migration::resolve_choice_by_selector(&plan, "openai")
+    let choice = loongclaw_daemon::migration::resolve_choice_by_selector(&plan, "openai")
         .expect("kind selector should prefer the plan default profile when multiple same-kind profiles exist");
     assert_eq!(choice.profile_id, "openai-reasoning");
 }
 
 #[test]
 fn provider_selection_recommendation_hint_prefers_short_human_selectors() {
-    let plan = crate::migration::ProviderSelectionPlan {
+    let plan = loongclaw_daemon::migration::ProviderSelectionPlan {
         imported_choices: vec![
-            crate::migration::ImportedProviderChoice {
+            loongclaw_daemon::migration::ImportedProviderChoice {
                 profile_id: "openai-reasoning".to_owned(),
                 kind: mvp::config::ProviderKind::Openai,
                 source: "your current environment".to_owned(),
@@ -1770,7 +1803,7 @@ fn provider_selection_recommendation_hint_prefers_short_human_selectors() {
                     ..mvp::config::ProviderConfig::default()
                 },
             },
-            crate::migration::ImportedProviderChoice {
+            loongclaw_daemon::migration::ImportedProviderChoice {
                 profile_id: "openai-main".to_owned(),
                 kind: mvp::config::ProviderKind::Openai,
                 source: "Codex config at ~/.codex/config.toml".to_owned(),
@@ -1781,7 +1814,7 @@ fn provider_selection_recommendation_hint_prefers_short_human_selectors() {
                     ..mvp::config::ProviderConfig::default()
                 },
             },
-            crate::migration::ImportedProviderChoice {
+            loongclaw_daemon::migration::ImportedProviderChoice {
                 profile_id: "deepseek-main".to_owned(),
                 kind: mvp::config::ProviderKind::Deepseek,
                 source: "another source".to_owned(),
@@ -1799,20 +1832,20 @@ fn provider_selection_recommendation_hint_prefers_short_human_selectors() {
     };
 
     assert_eq!(
-        crate::migration::recommendation_hint(&plan),
+        loongclaw_daemon::migration::recommendation_hint(&plan),
         Some("try one of: openai, gpt-5, deepseek".to_owned())
     );
     assert_eq!(
-        crate::migration::preferred_selector_for_choice(&plan, "openai-main"),
+        loongclaw_daemon::migration::preferred_selector_for_choice(&plan, "openai-main"),
         Some("gpt-5".to_owned())
     );
 }
 
 #[test]
 fn provider_selection_resolve_choice_by_model_accepts_unique_model_name() {
-    let plan = crate::migration::ProviderSelectionPlan {
+    let plan = loongclaw_daemon::migration::ProviderSelectionPlan {
         imported_choices: vec![
-            crate::migration::ImportedProviderChoice {
+            loongclaw_daemon::migration::ImportedProviderChoice {
                 profile_id: "openai-main".to_owned(),
                 kind: mvp::config::ProviderKind::Openai,
                 source: "Codex config at ~/.codex/config.toml".to_owned(),
@@ -1823,7 +1856,7 @@ fn provider_selection_resolve_choice_by_model_accepts_unique_model_name() {
                     ..mvp::config::ProviderConfig::default()
                 },
             },
-            crate::migration::ImportedProviderChoice {
+            loongclaw_daemon::migration::ImportedProviderChoice {
                 profile_id: "deepseek-main".to_owned(),
                 kind: mvp::config::ProviderKind::Deepseek,
                 source: "your current environment".to_owned(),
@@ -1840,16 +1873,16 @@ fn provider_selection_resolve_choice_by_model_accepts_unique_model_name() {
         requires_explicit_choice: false,
     };
 
-    let choice = crate::migration::resolve_choice_by_selector(&plan, "deepseek-chat")
+    let choice = loongclaw_daemon::migration::resolve_choice_by_selector(&plan, "deepseek-chat")
         .expect("model selector should resolve to the unique matching imported profile");
     assert_eq!(choice.profile_id, "deepseek-main");
 }
 
 #[test]
 fn provider_selection_resolve_choice_by_model_suffix_accepts_unique_suffix() {
-    let plan = crate::migration::ProviderSelectionPlan {
+    let plan = loongclaw_daemon::migration::ProviderSelectionPlan {
         imported_choices: vec![
-            crate::migration::ImportedProviderChoice {
+            loongclaw_daemon::migration::ImportedProviderChoice {
                 profile_id: "openrouter-main".to_owned(),
                 kind: mvp::config::ProviderKind::Openrouter,
                 source: "Codex config at ~/.codex/config.toml".to_owned(),
@@ -1860,7 +1893,7 @@ fn provider_selection_resolve_choice_by_model_suffix_accepts_unique_suffix() {
                     ..mvp::config::ProviderConfig::default()
                 },
             },
-            crate::migration::ImportedProviderChoice {
+            loongclaw_daemon::migration::ImportedProviderChoice {
                 profile_id: "deepseek-main".to_owned(),
                 kind: mvp::config::ProviderKind::Deepseek,
                 source: "your current environment".to_owned(),
@@ -1877,7 +1910,7 @@ fn provider_selection_resolve_choice_by_model_suffix_accepts_unique_suffix() {
         requires_explicit_choice: false,
     };
 
-    let choice = crate::migration::resolve_choice_by_selector(&plan, "gpt-5.1-codex")
+    let choice = loongclaw_daemon::migration::resolve_choice_by_selector(&plan, "gpt-5.1-codex")
         .expect("model suffix selector should resolve to the unique matching imported profile");
     assert_eq!(choice.profile_id, "openrouter-main");
 }
@@ -1885,25 +1918,25 @@ fn provider_selection_resolve_choice_by_model_suffix_accepts_unique_suffix() {
 #[test]
 fn import_cli_provider_selection_reports_ambiguous_model_selector() {
     let mut recommended = sample_import_candidate();
-    recommended.source_kind = crate::migration::types::ImportSourceKind::RecommendedPlan;
+    recommended.source_kind = loongclaw_daemon::migration::types::ImportSourceKind::RecommendedPlan;
     recommended.source = "recommended import plan".to_owned();
-    recommended
-        .domains
-        .retain(|domain| domain.kind != crate::migration::types::SetupDomainKind::Provider);
+    recommended.domains.retain(|domain| {
+        domain.kind != loongclaw_daemon::migration::types::SetupDomainKind::Provider
+    });
 
-    let error = crate::import_cli::resolve_import_provider_selection(
+    let error = loongclaw_daemon::import_cli::resolve_import_provider_selection(
         &mvp::config::ProviderConfig::default(),
         &[
             recommended.clone(),
             import_candidate_with_provider(
-                crate::migration::types::ImportSourceKind::CodexConfig,
+                loongclaw_daemon::migration::types::ImportSourceKind::CodexConfig,
                 "Codex config at ~/.codex/config.toml",
                 mvp::config::ProviderKind::Openai,
                 "gpt-5",
                 "OPENAI_API_KEY",
             ),
             import_candidate_with_provider(
-                crate::migration::types::ImportSourceKind::Environment,
+                loongclaw_daemon::migration::types::ImportSourceKind::Environment,
                 "your current environment",
                 mvp::config::ProviderKind::Openrouter,
                 "gpt-5",
@@ -1926,25 +1959,25 @@ fn import_cli_provider_selection_reports_ambiguous_model_selector() {
 #[test]
 fn import_cli_provider_selection_unknown_selector_lists_accepted_selectors() {
     let mut recommended = sample_import_candidate();
-    recommended.source_kind = crate::migration::types::ImportSourceKind::RecommendedPlan;
+    recommended.source_kind = loongclaw_daemon::migration::types::ImportSourceKind::RecommendedPlan;
     recommended.source = "recommended import plan".to_owned();
-    recommended
-        .domains
-        .retain(|domain| domain.kind != crate::migration::types::SetupDomainKind::Provider);
+    recommended.domains.retain(|domain| {
+        domain.kind != loongclaw_daemon::migration::types::SetupDomainKind::Provider
+    });
 
-    let error = crate::import_cli::resolve_import_provider_selection(
+    let error = loongclaw_daemon::import_cli::resolve_import_provider_selection(
         &mvp::config::ProviderConfig::default(),
         &[
             recommended.clone(),
             import_candidate_with_provider(
-                crate::migration::types::ImportSourceKind::CodexConfig,
+                loongclaw_daemon::migration::types::ImportSourceKind::CodexConfig,
                 "Codex config at ~/.codex/config.toml",
                 mvp::config::ProviderKind::Openai,
                 "openai/gpt-5.1-codex",
                 "OPENAI_API_KEY",
             ),
             import_candidate_with_provider(
-                crate::migration::types::ImportSourceKind::Environment,
+                loongclaw_daemon::migration::types::ImportSourceKind::Environment,
                 "your current environment",
                 mvp::config::ProviderKind::Deepseek,
                 "deepseek-chat",
@@ -1972,28 +2005,28 @@ async fn import_cli_apply_recommended_import_retains_multiple_same_kind_provider
     let output_path = temp_root.join("config.toml");
 
     let mut recommended = sample_import_candidate();
-    recommended.source_kind = crate::migration::types::ImportSourceKind::RecommendedPlan;
+    recommended.source_kind = loongclaw_daemon::migration::types::ImportSourceKind::RecommendedPlan;
     recommended.source = "recommended import plan".to_owned();
-    recommended
-        .domains
-        .retain(|domain| domain.kind != crate::migration::types::SetupDomainKind::Provider);
+    recommended.domains.retain(|domain| {
+        domain.kind != loongclaw_daemon::migration::types::SetupDomainKind::Provider
+    });
 
     let codex = import_candidate_with_provider(
-        crate::migration::types::ImportSourceKind::CodexConfig,
+        loongclaw_daemon::migration::types::ImportSourceKind::CodexConfig,
         "Codex config at ~/.codex/config.toml",
         mvp::config::ProviderKind::Openai,
         "gpt-5",
         "OPENAI_MAIN_API_KEY",
     );
     let env = import_candidate_with_provider(
-        crate::migration::types::ImportSourceKind::Environment,
+        loongclaw_daemon::migration::types::ImportSourceKind::Environment,
         "your current environment",
         mvp::config::ProviderKind::Openai,
         "o4-mini",
         "OPENAI_REASONING_API_KEY",
     );
 
-    crate::import_cli::apply_import_candidate(
+    loongclaw_daemon::import_cli::apply_import_candidate(
         &output_path,
         true,
         &[recommended.clone(), codex, env],
@@ -2042,8 +2075,9 @@ async fn import_cli_apply_recommended_import_retains_multiple_same_kind_provider
 
 #[test]
 fn import_cli_preview_json_reports_provider_profiles_and_active_provider() {
-    let payload = crate::import_cli::render_import_preview_json(&[sample_import_candidate()])
-        .expect("preview json should serialize");
+    let payload =
+        loongclaw_daemon::import_cli::render_import_preview_json(&[sample_import_candidate()])
+            .expect("preview json should serialize");
 
     assert!(
         payload.contains("\"provider_profiles\""),
@@ -2078,14 +2112,14 @@ async fn import_cli_apply_supplements_existing_provider_profiles_without_replaci
         .expect("write base config");
 
     let candidate = import_candidate_with_provider(
-        crate::migration::types::ImportSourceKind::Environment,
+        loongclaw_daemon::migration::types::ImportSourceKind::Environment,
         "your current environment",
         mvp::config::ProviderKind::Deepseek,
         "deepseek-chat",
         "DEEPSEEK_API_KEY",
     );
 
-    crate::import_cli::apply_import_candidate(
+    loongclaw_daemon::import_cli::apply_import_candidate(
         &output_path,
         true,
         std::slice::from_ref(&candidate),
@@ -2109,10 +2143,10 @@ fn import_cli_apply_summary_surfaces_transport_summary() {
     candidate.config.provider.model = "deepseek-chat".to_owned();
     candidate.config.provider.wire_api = mvp::config::ProviderWireApi::Responses;
 
-    let lines = crate::import_cli::render_import_apply_summary_lines_for_width(
+    let lines = loongclaw_daemon::import_cli::render_import_apply_summary_lines_for_width(
         std::path::Path::new("/tmp/loongclaw-config.toml"),
         &candidate,
-        &[crate::migration::types::SetupDomainKind::Provider],
+        &[loongclaw_daemon::migration::types::SetupDomainKind::Provider],
         &candidate.config,
         false,
         90,
@@ -2150,10 +2184,10 @@ fn import_cli_apply_summary_reports_active_provider_and_saved_profiles() {
         }),
     );
 
-    let lines = crate::import_cli::render_import_apply_summary_lines_for_width(
+    let lines = loongclaw_daemon::import_cli::render_import_apply_summary_lines_for_width(
         std::path::Path::new("/tmp/loongclaw-config.toml"),
         &candidate,
-        &[crate::migration::types::SetupDomainKind::Provider],
+        &[loongclaw_daemon::migration::types::SetupDomainKind::Provider],
         &resolved,
         true,
         90,

@@ -1,19 +1,19 @@
 use crate::migration::{CurrentSetupState, ImportSourceKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ReviewFlowKind {
+pub enum ReviewFlowKind {
     Guided,
     QuickCurrentSetup,
     QuickDetectedSetup,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ReviewFlowCopy {
-    pub(crate) progress_line: &'static str,
-    pub(crate) header_subtitle: &'static str,
+pub struct ReviewFlowCopy {
+    pub progress_line: &'static str,
+    pub header_subtitle: &'static str,
 }
 
-pub(crate) const fn review_flow_copy(kind: ReviewFlowKind) -> ReviewFlowCopy {
+pub const fn review_flow_copy(kind: ReviewFlowKind) -> ReviewFlowCopy {
     match kind {
         ReviewFlowKind::Guided => ReviewFlowCopy {
             progress_line: "step 5 of 5 · review",
@@ -31,22 +31,22 @@ pub(crate) const fn review_flow_copy(kind: ReviewFlowKind) -> ReviewFlowCopy {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ShortcutKind {
+pub enum ShortcutKind {
     CurrentSetup,
     DetectedSetup,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ShortcutCopy {
-    pub(crate) review_flow_kind: ReviewFlowKind,
-    pub(crate) subtitle: &'static str,
-    pub(crate) title: &'static str,
-    pub(crate) summary_line: &'static str,
-    pub(crate) primary_label: &'static str,
-    pub(crate) default_choice_description: &'static str,
+pub struct ShortcutCopy {
+    pub review_flow_kind: ReviewFlowKind,
+    pub subtitle: &'static str,
+    pub title: &'static str,
+    pub summary_line: &'static str,
+    pub primary_label: &'static str,
+    pub default_choice_description: &'static str,
 }
 
-pub(crate) const fn shortcut_copy(kind: ShortcutKind) -> ShortcutCopy {
+pub const fn shortcut_copy(kind: ShortcutKind) -> ShortcutCopy {
     match kind {
         ShortcutKind::CurrentSetup => ShortcutCopy {
             review_flow_kind: ReviewFlowKind::QuickCurrentSetup,
@@ -68,41 +68,41 @@ pub(crate) const fn shortcut_copy(kind: ShortcutKind) -> ShortcutCopy {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EntryChoiceKind {
+pub enum EntryChoiceKind {
     CurrentSetup,
     DetectedSetup,
     StartFresh,
 }
 
-pub(crate) const fn current_setup_option_label() -> &'static str {
+pub const fn current_setup_option_label() -> &'static str {
     "Continue current setup"
 }
 
-pub(crate) const fn detected_setup_option_label() -> &'static str {
+pub const fn detected_setup_option_label() -> &'static str {
     "Use detected starting point"
 }
 
-pub(crate) const fn start_fresh_option_label() -> &'static str {
+pub const fn start_fresh_option_label() -> &'static str {
     "Start fresh"
 }
 
-pub(crate) const fn detected_settings_section_heading() -> &'static str {
+pub const fn detected_settings_section_heading() -> &'static str {
     "Detected settings"
 }
 
-pub(crate) const fn entry_choice_section_heading() -> &'static str {
+pub const fn entry_choice_section_heading() -> &'static str {
     "Choose how to start"
 }
 
-pub(crate) const fn adjust_settings_label() -> &'static str {
+pub const fn adjust_settings_label() -> &'static str {
     "Adjust settings"
 }
 
-pub(crate) const fn start_fresh_option_detail() -> &'static str {
+pub const fn start_fresh_option_detail() -> &'static str {
     "Configure provider, channels, and local behavior from scratch."
 }
 
-pub(crate) const fn current_setup_state_label(state: CurrentSetupState) -> &'static str {
+pub const fn current_setup_state_label(state: CurrentSetupState) -> &'static str {
     match state {
         CurrentSetupState::Absent => "absent",
         CurrentSetupState::Healthy => "healthy",
@@ -111,7 +111,7 @@ pub(crate) const fn current_setup_state_label(state: CurrentSetupState) -> &'sta
     }
 }
 
-pub(crate) const fn current_setup_option_detail(state: CurrentSetupState) -> &'static str {
+pub const fn current_setup_option_detail(state: CurrentSetupState) -> &'static str {
     match state {
         CurrentSetupState::Healthy => "Current config looks healthy and ready to keep using.",
         CurrentSetupState::Repairable => {
@@ -124,7 +124,7 @@ pub(crate) const fn current_setup_option_detail(state: CurrentSetupState) -> &'s
     }
 }
 
-pub(crate) fn import_option_detail(
+pub fn import_option_detail(
     has_current_setup: bool,
     recommended_plan_available: bool,
     detected_source_count: usize,
@@ -158,7 +158,7 @@ pub(crate) fn import_option_detail(
     }
 }
 
-pub(crate) const fn detected_coverage_prefix(recommended_plan_available: bool) -> &'static str {
+pub const fn detected_coverage_prefix(recommended_plan_available: bool) -> &'static str {
     if recommended_plan_available {
         "- suggested starting point covers: "
     } else {
@@ -166,11 +166,11 @@ pub(crate) const fn detected_coverage_prefix(recommended_plan_available: bool) -
     }
 }
 
-pub(crate) const fn suggested_starting_point_ready_line() -> &'static str {
+pub const fn suggested_starting_point_ready_line() -> &'static str {
     "- suggested starting point: ready"
 }
 
-pub(crate) const fn entry_default_choice_description(choice: EntryChoiceKind) -> &'static str {
+pub const fn entry_default_choice_description(choice: EntryChoiceKind) -> &'static str {
     match choice {
         EntryChoiceKind::CurrentSetup => "continue current setup",
         EntryChoiceKind::DetectedSetup => "the detected starting point",
@@ -178,27 +178,27 @@ pub(crate) const fn entry_default_choice_description(choice: EntryChoiceKind) ->
     }
 }
 
-pub(crate) const fn shortcut_continue_detail() -> &'static str {
+pub const fn shortcut_continue_detail() -> &'static str {
     "skip detailed edits and continue to quick review"
 }
 
-pub(crate) const fn shortcut_adjust_detail() -> &'static str {
+pub const fn shortcut_adjust_detail() -> &'static str {
     "review provider, model, credentials, and cli behavior"
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RiskScreenCopy {
-    pub(crate) subtitle: &'static str,
-    pub(crate) title: &'static str,
-    pub(crate) continue_label: &'static str,
-    pub(crate) continue_detail: &'static str,
-    pub(crate) cancel_label: &'static str,
-    pub(crate) cancel_detail: &'static str,
-    pub(crate) default_choice_description: &'static str,
-    pub(crate) confirm_prompt: &'static str,
+pub struct RiskScreenCopy {
+    pub subtitle: &'static str,
+    pub title: &'static str,
+    pub continue_label: &'static str,
+    pub continue_detail: &'static str,
+    pub cancel_label: &'static str,
+    pub cancel_detail: &'static str,
+    pub default_choice_description: &'static str,
+    pub confirm_prompt: &'static str,
 }
 
-pub(crate) const fn risk_screen_copy() -> RiskScreenCopy {
+pub const fn risk_screen_copy() -> RiskScreenCopy {
     RiskScreenCopy {
         subtitle: "security check before setup",
         title: "security check",
@@ -211,55 +211,55 @@ pub(crate) const fn risk_screen_copy() -> RiskScreenCopy {
     }
 }
 
-pub(crate) const fn preflight_header_title() -> &'static str {
+pub const fn preflight_header_title() -> &'static str {
     "verify before write"
 }
 
-pub(crate) const fn preflight_section_title() -> &'static str {
+pub const fn preflight_section_title() -> &'static str {
     "preflight checks"
 }
 
-pub(crate) const fn preflight_attention_summary_line() -> &'static str {
+pub const fn preflight_attention_summary_line() -> &'static str {
     "- some checks need attention before write"
 }
 
-pub(crate) const fn preflight_green_summary_line() -> &'static str {
+pub const fn preflight_green_summary_line() -> &'static str {
     "- all checks are green for this draft"
 }
 
-pub(crate) const fn preflight_probe_rerun_hint() -> &'static str {
+pub const fn preflight_probe_rerun_hint() -> &'static str {
     "- rerun with --skip-model-probe if your provider blocks model listing during setup"
 }
 
-pub(crate) const fn preflight_continue_label() -> &'static str {
+pub const fn preflight_continue_label() -> &'static str {
     "Continue anyway"
 }
 
-pub(crate) const fn preflight_continue_detail() -> &'static str {
+pub const fn preflight_continue_detail() -> &'static str {
     "accept the remaining warnings and continue with this draft"
 }
 
-pub(crate) const fn preflight_cancel_label() -> &'static str {
+pub const fn preflight_cancel_label() -> &'static str {
     "Cancel"
 }
 
-pub(crate) const fn preflight_cancel_detail() -> &'static str {
+pub const fn preflight_cancel_detail() -> &'static str {
     "stop here and return without writing any config"
 }
 
-pub(crate) const fn preflight_default_choice_description() -> &'static str {
+pub const fn preflight_default_choice_description() -> &'static str {
     "cancel"
 }
 
-pub(crate) const fn preflight_confirm_prompt() -> &'static str {
+pub const fn preflight_confirm_prompt() -> &'static str {
     "Continue anyway"
 }
 
-pub(crate) const fn write_confirmation_title() -> &'static str {
+pub const fn write_confirmation_title() -> &'static str {
     "ready to write config"
 }
 
-pub(crate) const fn write_confirmation_status_line(warnings_kept: bool) -> &'static str {
+pub const fn write_confirmation_status_line(warnings_kept: bool) -> &'static str {
     if warnings_kept {
         "- warnings were kept by choice"
     } else {
@@ -267,41 +267,39 @@ pub(crate) const fn write_confirmation_status_line(warnings_kept: bool) -> &'sta
     }
 }
 
-pub(crate) const fn write_confirmation_label() -> &'static str {
+pub const fn write_confirmation_label() -> &'static str {
     "Write config"
 }
 
-pub(crate) const fn write_confirmation_detail() -> &'static str {
+pub const fn write_confirmation_detail() -> &'static str {
     "persist this onboarding draft to the target path"
 }
 
-pub(crate) const fn write_confirmation_cancel_label() -> &'static str {
+pub const fn write_confirmation_cancel_label() -> &'static str {
     "Cancel"
 }
 
-pub(crate) const fn write_confirmation_cancel_detail() -> &'static str {
+pub const fn write_confirmation_cancel_detail() -> &'static str {
     "return without writing any config"
 }
 
-pub(crate) const fn write_confirmation_default_choice_description() -> &'static str {
+pub const fn write_confirmation_default_choice_description() -> &'static str {
     "write config"
 }
 
-pub(crate) const fn write_confirmation_prompt() -> &'static str {
+pub const fn write_confirmation_prompt() -> &'static str {
     "Write config"
 }
 
-pub(crate) const fn start_fresh_starting_point_fit_line() -> &'static str {
+pub const fn start_fresh_starting_point_fit_line() -> &'static str {
     "good fit: start clean with full control"
 }
 
-pub(crate) const fn start_fresh_starting_point_detail_line() -> &'static str {
+pub const fn start_fresh_starting_point_detail_line() -> &'static str {
     "configure provider, channels, and local behavior from scratch"
 }
 
-pub(crate) const fn starting_point_footer_description(
-    first_kind: ImportSourceKind,
-) -> &'static str {
+pub const fn starting_point_footer_description(first_kind: ImportSourceKind) -> &'static str {
     match first_kind {
         ImportSourceKind::RecommendedPlan => "the suggested starting point",
         ImportSourceKind::CurrentSetup
@@ -312,27 +310,27 @@ pub(crate) const fn starting_point_footer_description(
     }
 }
 
-pub(crate) const fn starting_point_selection_subtitle() -> &'static str {
+pub const fn starting_point_selection_subtitle() -> &'static str {
     "choose the starting point for this setup"
 }
 
-pub(crate) const fn starting_point_selection_title() -> &'static str {
+pub const fn starting_point_selection_title() -> &'static str {
     "choose detected starting point"
 }
 
-pub(crate) const fn starting_point_selection_hint() -> &'static str {
+pub const fn starting_point_selection_hint() -> &'static str {
     "detected settings can still supplement the chosen starting point when they do not conflict"
 }
 
-pub(crate) const fn single_detected_starting_point_preview_subtitle() -> &'static str {
+pub const fn single_detected_starting_point_preview_subtitle() -> &'static str {
     "review the detected starting point"
 }
 
-pub(crate) const fn single_detected_starting_point_preview_title() -> &'static str {
+pub const fn single_detected_starting_point_preview_title() -> &'static str {
     "review detected starting point"
 }
 
-pub(crate) const fn single_detected_starting_point_preview_footer() -> &'static str {
+pub const fn single_detected_starting_point_preview_footer() -> &'static str {
     "continuing with the only detected starting point"
 }
 

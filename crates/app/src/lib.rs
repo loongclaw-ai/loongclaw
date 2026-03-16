@@ -16,8 +16,14 @@ pub mod session;
 pub mod tools;
 
 mod process_env;
-#[cfg(test)]
-pub(crate) mod test_support;
+#[allow(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::missing_panics_doc
+)]
+#[doc(hidden)]
+pub mod test_support;
 
 pub use context::KernelContext;
 /// Result type for MVP CLI operations.

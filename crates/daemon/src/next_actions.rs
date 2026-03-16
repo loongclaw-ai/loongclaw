@@ -1,9 +1,9 @@
 use loongclaw_app as mvp;
 
-pub(crate) use mvp::chat::DEFAULT_FIRST_PROMPT as DEFAULT_FIRST_ASK_MESSAGE;
+pub use mvp::chat::DEFAULT_FIRST_PROMPT as DEFAULT_FIRST_ASK_MESSAGE;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum SetupNextActionKind {
+pub enum SetupNextActionKind {
     Ask,
     Chat,
     Channel,
@@ -11,13 +11,13 @@ pub(crate) enum SetupNextActionKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SetupNextAction {
-    pub(crate) kind: SetupNextActionKind,
-    pub(crate) label: String,
-    pub(crate) command: String,
+pub struct SetupNextAction {
+    pub kind: SetupNextActionKind,
+    pub label: String,
+    pub command: String,
 }
 
-pub(crate) fn collect_setup_next_actions(
+pub fn collect_setup_next_actions(
     config: &mvp::config::LoongClawConfig,
     config_path: &str,
 ) -> Vec<SetupNextAction> {

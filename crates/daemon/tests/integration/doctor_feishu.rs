@@ -56,13 +56,16 @@ fn doctor_reports_missing_feishu_grant_when_channel_is_enabled() {
     let config = sample_feishu_config(&temp_dir);
     let mut fixes = Vec::new();
 
-    let checks = crate::doctor_cli::check_feishu_integration(&config, false, &mut fixes);
+    let checks = loongclaw_daemon::doctor_cli::check_feishu_integration(&config, false, &mut fixes);
 
     let grant_check = checks
         .iter()
         .find(|check| check.name.contains("feishu user grant"))
         .expect("grant check should exist");
-    assert_eq!(grant_check.level, crate::doctor_cli::DoctorCheckLevel::Warn);
+    assert_eq!(
+        grant_check.level,
+        loongclaw_daemon::doctor_cli::DoctorCheckLevel::Warn
+    );
     assert!(grant_check.detail.contains("missing stored user grant"));
     assert!(
         grant_check
@@ -76,14 +79,14 @@ fn doctor_reports_feishu_grant_freshness_when_valid_grant_exists() {
     let temp_dir = temp_doctor_feishu_dir("valid-grant");
     fs::create_dir_all(&temp_dir).expect("create temp dir");
     let config = sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     store
         .save_grant(&sample_grant("feishu_main", now_s))
         .expect("seed feishu grant");
     let mut fixes = Vec::new();
 
-    let checks = crate::doctor_cli::check_feishu_integration(&config, false, &mut fixes);
+    let checks = loongclaw_daemon::doctor_cli::check_feishu_integration(&config, false, &mut fixes);
 
     let freshness_check = checks
         .iter()
@@ -91,14 +94,17 @@ fn doctor_reports_feishu_grant_freshness_when_valid_grant_exists() {
         .expect("token freshness check should exist");
     assert_eq!(
         freshness_check.level,
-        crate::doctor_cli::DoctorCheckLevel::Pass
+        loongclaw_daemon::doctor_cli::DoctorCheckLevel::Pass
     );
 
     let scope_check = checks
         .iter()
         .find(|check| check.name.contains("feishu scope coverage"))
         .expect("scope coverage check should exist");
-    assert_eq!(scope_check.level, crate::doctor_cli::DoctorCheckLevel::Pass);
+    assert_eq!(
+        scope_check.level,
+        loongclaw_daemon::doctor_cli::DoctorCheckLevel::Pass
+    );
 }
 
 #[test]
@@ -106,13 +112,13 @@ fn doctor_warns_when_feishu_grant_lacks_doc_write_scope() {
     let temp_dir = temp_doctor_feishu_dir("doc-write-scope-missing");
     fs::create_dir_all(&temp_dir).expect("create temp dir");
     let config = sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let grant = sample_grant("feishu_main", now_s);
     store.save_grant(&grant).expect("seed feishu grant");
     let mut fixes = Vec::new();
 
-    let checks = crate::doctor_cli::check_feishu_integration(&config, false, &mut fixes);
+    let checks = loongclaw_daemon::doctor_cli::check_feishu_integration(&config, false, &mut fixes);
 
     let doc_write_check = checks
         .iter()
@@ -120,7 +126,7 @@ fn doctor_warns_when_feishu_grant_lacks_doc_write_scope() {
         .expect("doc write readiness check should exist");
     assert_eq!(
         doc_write_check.level,
-        crate::doctor_cli::DoctorCheckLevel::Warn
+        loongclaw_daemon::doctor_cli::DoctorCheckLevel::Warn
     );
     assert!(doc_write_check.detail.contains("doc_write_ready=false"));
     assert!(doc_write_check.detail.contains("docx:document"));
@@ -136,7 +142,7 @@ fn doctor_passes_when_feishu_grant_has_doc_write_scope_without_rerun_hint() {
     let temp_dir = temp_doctor_feishu_dir("doc-write-scope-ready");
     fs::create_dir_all(&temp_dir).expect("create temp dir");
     let config = sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant("feishu_main", now_s);
     grant.scopes = mvp::feishu::FeishuGrantScopeSet::from_scopes([
@@ -148,7 +154,7 @@ fn doctor_passes_when_feishu_grant_has_doc_write_scope_without_rerun_hint() {
     store.save_grant(&grant).expect("seed feishu grant");
     let mut fixes = Vec::new();
 
-    let checks = crate::doctor_cli::check_feishu_integration(&config, false, &mut fixes);
+    let checks = loongclaw_daemon::doctor_cli::check_feishu_integration(&config, false, &mut fixes);
 
     let doc_write_check = checks
         .iter()
@@ -156,7 +162,7 @@ fn doctor_passes_when_feishu_grant_has_doc_write_scope_without_rerun_hint() {
         .expect("doc write readiness check should exist");
     assert_eq!(
         doc_write_check.level,
-        crate::doctor_cli::DoctorCheckLevel::Pass
+        loongclaw_daemon::doctor_cli::DoctorCheckLevel::Pass
     );
     assert!(doc_write_check.detail.contains("doc_write_ready=true"));
     assert!(!doc_write_check.detail.contains("rerun `"));
@@ -167,7 +173,7 @@ fn doctor_warns_when_feishu_grant_lacks_message_write_scope() {
     let temp_dir = temp_doctor_feishu_dir("write-scope-missing");
     fs::create_dir_all(&temp_dir).expect("create temp dir");
     let config = sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant("feishu_main", now_s);
     grant.scopes = mvp::feishu::FeishuGrantScopeSet::from_scopes([
@@ -178,13 +184,16 @@ fn doctor_warns_when_feishu_grant_lacks_message_write_scope() {
     store.save_grant(&grant).expect("seed feishu grant");
     let mut fixes = Vec::new();
 
-    let checks = crate::doctor_cli::check_feishu_integration(&config, false, &mut fixes);
+    let checks = loongclaw_daemon::doctor_cli::check_feishu_integration(&config, false, &mut fixes);
 
     let write_check = checks
         .iter()
         .find(|check| check.name.contains("feishu message write readiness"))
         .expect("message write readiness check should exist");
-    assert_eq!(write_check.level, crate::doctor_cli::DoctorCheckLevel::Warn);
+    assert_eq!(
+        write_check.level,
+        loongclaw_daemon::doctor_cli::DoctorCheckLevel::Warn
+    );
     assert!(write_check.detail.contains("write_ready=false"));
     assert!(write_check.detail.contains("im:message:send_as_bot"));
     assert!(
@@ -199,7 +208,7 @@ fn doctor_passes_when_feishu_grant_has_message_write_scope_without_rerun_hint() 
     let temp_dir = temp_doctor_feishu_dir("write-scope-ready");
     fs::create_dir_all(&temp_dir).expect("create temp dir");
     let config = sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant("feishu_main", now_s);
     grant.scopes = mvp::feishu::FeishuGrantScopeSet::from_scopes([
@@ -211,13 +220,16 @@ fn doctor_passes_when_feishu_grant_has_message_write_scope_without_rerun_hint() 
     store.save_grant(&grant).expect("seed feishu grant");
     let mut fixes = Vec::new();
 
-    let checks = crate::doctor_cli::check_feishu_integration(&config, false, &mut fixes);
+    let checks = loongclaw_daemon::doctor_cli::check_feishu_integration(&config, false, &mut fixes);
 
     let write_check = checks
         .iter()
         .find(|check| check.name.contains("feishu message write readiness"))
         .expect("message write readiness check should exist");
-    assert_eq!(write_check.level, crate::doctor_cli::DoctorCheckLevel::Pass);
+    assert_eq!(
+        write_check.level,
+        loongclaw_daemon::doctor_cli::DoctorCheckLevel::Pass
+    );
     assert!(write_check.detail.contains("write_ready=true"));
     assert!(!write_check.detail.contains("rerun `"));
 }
@@ -227,7 +239,7 @@ fn doctor_warns_when_multiple_feishu_grants_exist_without_selected_default() {
     let temp_dir = temp_doctor_feishu_dir("multi-grant-no-selection");
     fs::create_dir_all(&temp_dir).expect("create temp dir");
     let config = sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     store
         .save_grant(&sample_grant("feishu_main", now_s))
@@ -238,7 +250,7 @@ fn doctor_warns_when_multiple_feishu_grants_exist_without_selected_default() {
     store.save_grant(&second).expect("seed second feishu grant");
     let mut fixes = Vec::new();
 
-    let checks = crate::doctor_cli::check_feishu_integration(&config, false, &mut fixes);
+    let checks = loongclaw_daemon::doctor_cli::check_feishu_integration(&config, false, &mut fixes);
 
     let selection_check = checks
         .iter()
@@ -246,7 +258,7 @@ fn doctor_warns_when_multiple_feishu_grants_exist_without_selected_default() {
         .expect("selected grant check should exist");
     assert_eq!(
         selection_check.level,
-        crate::doctor_cli::DoctorCheckLevel::Warn
+        loongclaw_daemon::doctor_cli::DoctorCheckLevel::Warn
     );
     assert!(selection_check.detail.contains("multiple stored grants"));
     assert!(
@@ -261,7 +273,7 @@ fn doctor_reports_selected_feishu_grant_when_default_exists() {
     let temp_dir = temp_doctor_feishu_dir("multi-grant-selected");
     fs::create_dir_all(&temp_dir).expect("create temp dir");
     let config = sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     store
         .save_grant(&sample_grant("feishu_main", now_s))
@@ -275,7 +287,7 @@ fn doctor_reports_selected_feishu_grant_when_default_exists() {
         .expect("persist selected grant");
     let mut fixes = Vec::new();
 
-    let checks = crate::doctor_cli::check_feishu_integration(&config, false, &mut fixes);
+    let checks = loongclaw_daemon::doctor_cli::check_feishu_integration(&config, false, &mut fixes);
 
     let selection_check = checks
         .iter()
@@ -283,7 +295,7 @@ fn doctor_reports_selected_feishu_grant_when_default_exists() {
         .expect("selected grant check should exist");
     assert_eq!(
         selection_check.level,
-        crate::doctor_cli::DoctorCheckLevel::Pass
+        loongclaw_daemon::doctor_cli::DoctorCheckLevel::Pass
     );
     assert!(selection_check.detail.contains("selected_open_id=ou_456"));
 }
@@ -293,7 +305,7 @@ fn doctor_uses_effective_selected_grant_for_freshness_and_scope_checks() {
     let temp_dir = temp_doctor_feishu_dir("selected-grant-health");
     fs::create_dir_all(&temp_dir).expect("create temp dir");
     let config = sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
 
     let mut selected = sample_grant("feishu_main", now_s);
@@ -323,7 +335,7 @@ fn doctor_uses_effective_selected_grant_for_freshness_and_scope_checks() {
         .expect("persist selected grant");
 
     let mut fixes = Vec::new();
-    let checks = crate::doctor_cli::check_feishu_integration(&config, false, &mut fixes);
+    let checks = loongclaw_daemon::doctor_cli::check_feishu_integration(&config, false, &mut fixes);
 
     let freshness_check = checks
         .iter()
@@ -331,7 +343,7 @@ fn doctor_uses_effective_selected_grant_for_freshness_and_scope_checks() {
         .expect("token freshness check should exist");
     assert_eq!(
         freshness_check.level,
-        crate::doctor_cli::DoctorCheckLevel::Warn
+        loongclaw_daemon::doctor_cli::DoctorCheckLevel::Warn
     );
     assert!(
         freshness_check
@@ -344,7 +356,10 @@ fn doctor_uses_effective_selected_grant_for_freshness_and_scope_checks() {
         .iter()
         .find(|check| check.name.contains("feishu scope coverage"))
         .expect("scope coverage check should exist");
-    assert_eq!(scope_check.level, crate::doctor_cli::DoctorCheckLevel::Warn);
+    assert_eq!(
+        scope_check.level,
+        loongclaw_daemon::doctor_cli::DoctorCheckLevel::Warn
+    );
     assert!(scope_check.detail.contains("effective_open_id=ou_selected"));
     assert!(
         scope_check
@@ -358,7 +373,7 @@ fn doctor_warns_when_selected_open_id_is_stale_but_single_grant_routes_implicitl
     let temp_dir = temp_doctor_feishu_dir("stale-selected-single-grant");
     fs::create_dir_all(&temp_dir).expect("create temp dir");
     let config = sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     store
         .save_grant(&sample_grant("feishu_main", now_s))
@@ -368,7 +383,7 @@ fn doctor_warns_when_selected_open_id_is_stale_but_single_grant_routes_implicitl
         .expect("persist stale selected grant");
     let mut fixes = Vec::new();
 
-    let checks = crate::doctor_cli::check_feishu_integration(&config, false, &mut fixes);
+    let checks = loongclaw_daemon::doctor_cli::check_feishu_integration(&config, false, &mut fixes);
 
     let selection_check = checks
         .iter()
@@ -376,7 +391,7 @@ fn doctor_warns_when_selected_open_id_is_stale_but_single_grant_routes_implicitl
         .expect("selected grant check should exist");
     assert_eq!(
         selection_check.level,
-        crate::doctor_cli::DoctorCheckLevel::Warn
+        loongclaw_daemon::doctor_cli::DoctorCheckLevel::Warn
     );
     assert!(
         selection_check
@@ -391,7 +406,7 @@ fn doctor_warns_when_effective_grant_is_ambiguous_without_selected_default() {
     let temp_dir = temp_doctor_feishu_dir("ambiguous-effective-grant");
     fs::create_dir_all(&temp_dir).expect("create temp dir");
     let config = sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     store
         .save_grant(&sample_grant("feishu_main", now_s))
@@ -402,7 +417,7 @@ fn doctor_warns_when_effective_grant_is_ambiguous_without_selected_default() {
     store.save_grant(&second).expect("seed second grant");
     let mut fixes = Vec::new();
 
-    let checks = crate::doctor_cli::check_feishu_integration(&config, false, &mut fixes);
+    let checks = loongclaw_daemon::doctor_cli::check_feishu_integration(&config, false, &mut fixes);
 
     let freshness_check = checks
         .iter()
@@ -410,7 +425,7 @@ fn doctor_warns_when_effective_grant_is_ambiguous_without_selected_default() {
         .expect("token freshness check should exist");
     assert_eq!(
         freshness_check.level,
-        crate::doctor_cli::DoctorCheckLevel::Warn
+        loongclaw_daemon::doctor_cli::DoctorCheckLevel::Warn
     );
     assert!(
         freshness_check
@@ -427,7 +442,10 @@ fn doctor_warns_when_effective_grant_is_ambiguous_without_selected_default() {
         .iter()
         .find(|check| check.name.contains("feishu message write readiness"))
         .expect("message write readiness check should exist");
-    assert_eq!(write_check.level, crate::doctor_cli::DoctorCheckLevel::Warn);
+    assert_eq!(
+        write_check.level,
+        loongclaw_daemon::doctor_cli::DoctorCheckLevel::Warn
+    );
     assert!(
         write_check
             .detail

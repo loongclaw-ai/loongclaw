@@ -5,9 +5,14 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[lib]
+name = "loongclaw_daemon"
+path = "src/lib.rs"
+
 [features]
 default = ["mvp"]
 mvp = ["loongclaw-app/default", "memory-sqlite"]
+test-support = []
 channel-cli = ["loongclaw-app/channel-cli"]
 channel-telegram = ["loongclaw-app/channel-telegram"]
 channel-feishu = ["loongclaw-app/channel-feishu"]
@@ -37,6 +42,7 @@ chrono.workspace = true
 base64.workspace = true
 rand.workspace = true
 sha2.workspace = true
+ed25519-dalek.workspace = true
 
 [[bin]]
 name = "loongclaw"
@@ -44,7 +50,6 @@ path = "src/main.rs"
 
 [dev-dependencies]
 axum.workspace = true
-ed25519-dalek.workspace = true
 loongclaw-spec = { path = "../spec", features = ["test-hooks"] }
 sha2.workspace = true
 wat = "1"

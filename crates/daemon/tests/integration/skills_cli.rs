@@ -128,7 +128,7 @@ fn skills_install_cli_parses_global_flags_after_subcommand() {
             assert_eq!(config.as_deref(), Some("/tmp/loongclaw.toml"));
             assert!(json);
             match command {
-                crate::skills_cli::SkillsCommands::Install {
+                loongclaw_daemon::skills_cli::SkillsCommands::Install {
                     path,
                     skill_id,
                     replace,
@@ -137,10 +137,10 @@ fn skills_install_cli_parses_global_flags_after_subcommand() {
                     assert_eq!(skill_id.as_deref(), Some("release-skill"));
                     assert!(replace);
                 }
-                other @ crate::skills_cli::SkillsCommands::List
-                | other @ crate::skills_cli::SkillsCommands::Info { .. }
-                | other @ crate::skills_cli::SkillsCommands::Remove { .. }
-                | other @ crate::skills_cli::SkillsCommands::Policy { .. } => {
+                other @ loongclaw_daemon::skills_cli::SkillsCommands::List
+                | other @ loongclaw_daemon::skills_cli::SkillsCommands::Info { .. }
+                | other @ loongclaw_daemon::skills_cli::SkillsCommands::Remove { .. }
+                | other @ loongclaw_daemon::skills_cli::SkillsCommands::Policy { .. } => {
                     panic!("unexpected skills subcommand parsed: {other:?}")
                 }
             }
@@ -172,8 +172,8 @@ fn skills_policy_set_cli_parses_domain_and_approval_flags() {
 
     match cli.command {
         Some(Commands::Skills { command, .. }) => match command {
-            crate::skills_cli::SkillsCommands::Policy { command } => match command {
-                crate::skills_cli::SkillsPolicyCommands::Set {
+            loongclaw_daemon::skills_cli::SkillsCommands::Policy { command } => match command {
+                loongclaw_daemon::skills_cli::SkillsPolicyCommands::Set {
                     enabled,
                     require_download_approval,
                     allowed_domains,
@@ -190,15 +190,15 @@ fn skills_policy_set_cli_parses_domain_and_approval_flags() {
                     assert!(!clear_allowed_domains);
                     assert!(!clear_blocked_domains);
                 }
-                other @ crate::skills_cli::SkillsPolicyCommands::Get
-                | other @ crate::skills_cli::SkillsPolicyCommands::Reset { .. } => {
+                other @ loongclaw_daemon::skills_cli::SkillsPolicyCommands::Get
+                | other @ loongclaw_daemon::skills_cli::SkillsPolicyCommands::Reset { .. } => {
                     panic!("unexpected policy subcommand parsed: {other:?}")
                 }
             },
-            other @ crate::skills_cli::SkillsCommands::List
-            | other @ crate::skills_cli::SkillsCommands::Info { .. }
-            | other @ crate::skills_cli::SkillsCommands::Install { .. }
-            | other @ crate::skills_cli::SkillsCommands::Remove { .. } => {
+            other @ loongclaw_daemon::skills_cli::SkillsCommands::List
+            | other @ loongclaw_daemon::skills_cli::SkillsCommands::Info { .. }
+            | other @ loongclaw_daemon::skills_cli::SkillsCommands::Install { .. }
+            | other @ loongclaw_daemon::skills_cli::SkillsCommands::Remove { .. } => {
                 panic!("unexpected skills subcommand parsed: {other:?}")
             }
         },
@@ -219,17 +219,18 @@ fn execute_skills_command_installs_lists_inspects_and_removes_skill() {
         "# Demo Skill\n\nUse this skill when release discipline matters.\n",
     );
 
-    let install =
-        crate::skills_cli::execute_skills_command(crate::skills_cli::SkillsCommandOptions {
+    let install = loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
             config: Some(config_path.display().to_string()),
             json: false,
-            command: crate::skills_cli::SkillsCommands::Install {
+            command: loongclaw_daemon::skills_cli::SkillsCommands::Install {
                 path: "source/demo-skill".to_owned(),
                 skill_id: None,
                 replace: false,
             },
-        })
-        .expect("skills install should succeed");
+        },
+    )
+    .expect("skills install should succeed");
     assert!(
         install.resolved_config_path.ends_with("loongclaw.toml"),
         "resolved config path should be returned for CLI rendering"
@@ -238,17 +239,18 @@ fn execute_skills_command_installs_lists_inspects_and_removes_skill() {
     assert_eq!(install.outcome.payload["display_name"], "Demo Skill");
     assert_eq!(install.outcome.payload["replaced"], false);
 
-    let replace_install =
-        crate::skills_cli::execute_skills_command(crate::skills_cli::SkillsCommandOptions {
+    let replace_install = loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
             config: Some(config_path.display().to_string()),
             json: false,
-            command: crate::skills_cli::SkillsCommands::Install {
+            command: loongclaw_daemon::skills_cli::SkillsCommands::Install {
                 path: "source/demo-skill".to_owned(),
                 skill_id: None,
                 replace: true,
             },
-        })
-        .expect("skills replace should succeed");
+        },
+    )
+    .expect("skills replace should succeed");
     assert_eq!(replace_install.outcome.payload["skill_id"], "demo-skill");
     assert_eq!(
         replace_install.outcome.payload["display_name"],
@@ -256,11 +258,13 @@ fn execute_skills_command_installs_lists_inspects_and_removes_skill() {
     );
     assert_eq!(replace_install.outcome.payload["replaced"], true);
 
-    let list = crate::skills_cli::execute_skills_command(crate::skills_cli::SkillsCommandOptions {
-        config: Some(config_path.display().to_string()),
-        json: false,
-        command: crate::skills_cli::SkillsCommands::List,
-    })
+    let list = loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
+            config: Some(config_path.display().to_string()),
+            json: false,
+            command: loongclaw_daemon::skills_cli::SkillsCommands::List,
+        },
+    )
     .expect("skills list should succeed");
     let listed_demo_skill = list.outcome.payload["skills"]
         .as_array()
@@ -270,13 +274,15 @@ fn execute_skills_command_installs_lists_inspects_and_removes_skill() {
         .expect("managed skill should appear in CLI list");
     assert_eq!(listed_demo_skill["display_name"], "Demo Skill");
 
-    let info = crate::skills_cli::execute_skills_command(crate::skills_cli::SkillsCommandOptions {
-        config: Some(config_path.display().to_string()),
-        json: false,
-        command: crate::skills_cli::SkillsCommands::Info {
-            skill_id: "demo-skill".to_owned(),
+    let info = loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
+            config: Some(config_path.display().to_string()),
+            json: false,
+            command: loongclaw_daemon::skills_cli::SkillsCommands::Info {
+                skill_id: "demo-skill".to_owned(),
+            },
         },
-    })
+    )
     .expect("skills info should succeed");
     assert_eq!(info.outcome.payload["skill"]["skill_id"], "demo-skill");
     assert!(
@@ -287,24 +293,26 @@ fn execute_skills_command_installs_lists_inspects_and_removes_skill() {
         "inspect path should surface a preview of SKILL.md"
     );
 
-    let remove =
-        crate::skills_cli::execute_skills_command(crate::skills_cli::SkillsCommandOptions {
+    let remove = loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
             config: Some(config_path.display().to_string()),
             json: false,
-            command: crate::skills_cli::SkillsCommands::Remove {
+            command: loongclaw_daemon::skills_cli::SkillsCommands::Remove {
                 skill_id: "demo-skill".to_owned(),
             },
-        })
-        .expect("skills remove should succeed");
+        },
+    )
+    .expect("skills remove should succeed");
     assert_eq!(remove.outcome.payload["removed"], true);
 
-    let list_after_remove =
-        crate::skills_cli::execute_skills_command(crate::skills_cli::SkillsCommandOptions {
+    let list_after_remove = loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
             config: Some(config_path.display().to_string()),
             json: false,
-            command: crate::skills_cli::SkillsCommands::List,
-        })
-        .expect("skills list after remove should succeed");
+            command: loongclaw_daemon::skills_cli::SkillsCommands::List,
+        },
+    )
+    .expect("skills list after remove should succeed");
     assert_eq!(
         list_after_remove.outcome.payload["skills"],
         serde_json::json!([])
@@ -500,15 +508,16 @@ fn execute_skills_command_policy_round_trips_persisted_config() {
     let config_string = config_path.display().to_string();
     let install_root = root.join("managed-skills").display().to_string();
 
-    let initial =
-        crate::skills_cli::execute_skills_command(crate::skills_cli::SkillsCommandOptions {
+    let initial = loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
             config: Some(config_string.clone()),
             json: false,
-            command: crate::skills_cli::SkillsCommands::Policy {
-                command: crate::skills_cli::SkillsPolicyCommands::Get,
+            command: loongclaw_daemon::skills_cli::SkillsCommands::Policy {
+                command: loongclaw_daemon::skills_cli::SkillsPolicyCommands::Get,
             },
-        })
-        .expect("policy get should succeed");
+        },
+    )
+    .expect("policy get should succeed");
     assert_eq!(initial.outcome.payload["persisted"], true);
     assert_eq!(initial.outcome.payload["policy"]["enabled"], false);
     assert_eq!(
@@ -528,25 +537,27 @@ fn execute_skills_command_policy_round_trips_persisted_config() {
         install_root
     );
 
-    let set = crate::skills_cli::execute_skills_command(crate::skills_cli::SkillsCommandOptions {
-        config: Some(config_string.clone()),
-        json: false,
-        command: crate::skills_cli::SkillsCommands::Policy {
-            command: crate::skills_cli::SkillsPolicyCommands::Set {
-                enabled: Some(true),
-                require_download_approval: Some(false),
-                allowed_domains: vec![
-                    " Skills.SH ".to_owned(),
-                    "clawhub.io".to_owned(),
-                    "skills.sh".to_owned(),
-                ],
-                clear_allowed_domains: false,
-                blocked_domains: vec!["*.EVIL.example".to_owned(), "*.evil.example".to_owned()],
-                clear_blocked_domains: false,
-                approve_policy_update: true,
+    let set = loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
+            config: Some(config_string.clone()),
+            json: false,
+            command: loongclaw_daemon::skills_cli::SkillsCommands::Policy {
+                command: loongclaw_daemon::skills_cli::SkillsPolicyCommands::Set {
+                    enabled: Some(true),
+                    require_download_approval: Some(false),
+                    allowed_domains: vec![
+                        " Skills.SH ".to_owned(),
+                        "clawhub.io".to_owned(),
+                        "skills.sh".to_owned(),
+                    ],
+                    clear_allowed_domains: false,
+                    blocked_domains: vec!["*.EVIL.example".to_owned(), "*.evil.example".to_owned()],
+                    clear_blocked_domains: false,
+                    approve_policy_update: true,
+                },
             },
         },
-    })
+    )
     .expect("policy set should succeed");
     assert_eq!(set.outcome.payload["persisted"], true);
     assert_eq!(set.outcome.payload["config_updated"], true);
@@ -582,17 +593,18 @@ fn execute_skills_command_policy_round_trips_persisted_config() {
     );
     assert!(!reloaded.external_skills.auto_expose_installed);
 
-    let reset =
-        crate::skills_cli::execute_skills_command(crate::skills_cli::SkillsCommandOptions {
+    let reset = loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
             config: Some(config_string.clone()),
             json: false,
-            command: crate::skills_cli::SkillsCommands::Policy {
-                command: crate::skills_cli::SkillsPolicyCommands::Reset {
+            command: loongclaw_daemon::skills_cli::SkillsCommands::Policy {
+                command: loongclaw_daemon::skills_cli::SkillsPolicyCommands::Reset {
                     approve_policy_update: true,
                 },
             },
-        })
-        .expect("policy reset should succeed");
+        },
+    )
+    .expect("policy reset should succeed");
     assert_eq!(reset.outcome.payload["persisted"], true);
     assert_eq!(reset.outcome.payload["config_updated"], true);
     assert_eq!(reset.outcome.payload["policy"]["enabled"], false);
@@ -609,15 +621,16 @@ fn execute_skills_command_policy_round_trips_persisted_config() {
         serde_json::json!([])
     );
 
-    let final_get =
-        crate::skills_cli::execute_skills_command(crate::skills_cli::SkillsCommandOptions {
+    let final_get = loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
             config: Some(config_string),
             json: false,
-            command: crate::skills_cli::SkillsCommands::Policy {
-                command: crate::skills_cli::SkillsPolicyCommands::Get,
+            command: loongclaw_daemon::skills_cli::SkillsCommands::Policy {
+                command: loongclaw_daemon::skills_cli::SkillsPolicyCommands::Get,
             },
-        })
-        .expect("policy get after reset should succeed");
+        },
+    )
+    .expect("policy get after reset should succeed");
     assert_eq!(final_get.outcome.payload["policy"]["enabled"], false);
     assert_eq!(
         final_get.outcome.payload["policy"]["require_download_approval"],
@@ -667,21 +680,23 @@ fn execute_skills_command_policy_set_normalizes_domain_rules_for_persistence() {
     let config_path = write_external_skills_config(&root, false);
     let config_string = config_path.display().to_string();
 
-    let set = crate::skills_cli::execute_skills_command(crate::skills_cli::SkillsCommandOptions {
-        config: Some(config_string.clone()),
-        json: false,
-        command: crate::skills_cli::SkillsCommands::Policy {
-            command: crate::skills_cli::SkillsPolicyCommands::Set {
-                enabled: Some(true),
-                require_download_approval: None,
-                allowed_domains: vec!["https://Skills.SH/catalog".to_owned()],
-                clear_allowed_domains: false,
-                blocked_domains: vec!["HTTPS://evil.example/download".to_owned()],
-                clear_blocked_domains: false,
-                approve_policy_update: true,
+    let set = loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
+            config: Some(config_string.clone()),
+            json: false,
+            command: loongclaw_daemon::skills_cli::SkillsCommands::Policy {
+                command: loongclaw_daemon::skills_cli::SkillsPolicyCommands::Set {
+                    enabled: Some(true),
+                    require_download_approval: None,
+                    allowed_domains: vec!["https://Skills.SH/catalog".to_owned()],
+                    clear_allowed_domains: false,
+                    blocked_domains: vec!["HTTPS://evil.example/download".to_owned()],
+                    clear_blocked_domains: false,
+                    approve_policy_update: true,
+                },
             },
         },
-    })
+    )
     .expect("policy set should normalize domain rules before writing config");
 
     assert_eq!(
@@ -713,12 +728,12 @@ fn execute_skills_command_policy_set_requires_explicit_approval() {
     let config_path = write_external_skills_config(&root, false);
     let config_string = config_path.display().to_string();
 
-    let error =
-        crate::skills_cli::execute_skills_command(crate::skills_cli::SkillsCommandOptions {
+    let error = loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
             config: Some(config_string.as_str().to_owned()),
             json: false,
-            command: crate::skills_cli::SkillsCommands::Policy {
-                command: crate::skills_cli::SkillsPolicyCommands::Set {
+            command: loongclaw_daemon::skills_cli::SkillsCommands::Policy {
+                command: loongclaw_daemon::skills_cli::SkillsPolicyCommands::Set {
                     enabled: Some(true),
                     require_download_approval: None,
                     allowed_domains: Vec::new(),
@@ -728,8 +743,9 @@ fn execute_skills_command_policy_set_requires_explicit_approval() {
                     approve_policy_update: false,
                 },
             },
-        })
-        .expect_err("policy set should require explicit approval");
+        },
+    )
+    .expect_err("policy set should require explicit approval");
     assert!(
         error.contains("--approve-policy-update"),
         "approval error should direct operators to the explicit authorization flag: {error}"
@@ -751,12 +767,12 @@ fn execute_skills_command_policy_set_rejects_invalid_domain_rules() {
     let config_path = write_external_skills_config(&root, false);
     let config_string = config_path.display().to_string();
 
-    let error =
-        crate::skills_cli::execute_skills_command(crate::skills_cli::SkillsCommandOptions {
+    let error = loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
             config: Some(config_string.clone()),
             json: false,
-            command: crate::skills_cli::SkillsCommands::Policy {
-                command: crate::skills_cli::SkillsPolicyCommands::Set {
+            command: loongclaw_daemon::skills_cli::SkillsCommands::Policy {
+                command: loongclaw_daemon::skills_cli::SkillsPolicyCommands::Set {
                     enabled: Some(true),
                     require_download_approval: None,
                     allowed_domains: vec!["not-a-domain".to_owned()],
@@ -766,8 +782,9 @@ fn execute_skills_command_policy_set_rejects_invalid_domain_rules() {
                     approve_policy_update: true,
                 },
             },
-        })
-        .expect_err("policy set should reject invalid domain rules");
+        },
+    )
+    .expect_err("policy set should reject invalid domain rules");
     assert!(
         error.contains("invalid domain rule for --allow-domain"),
         "invalid domain error should point operators at the malformed rule: {error}"
@@ -784,8 +801,8 @@ fn execute_skills_command_policy_set_rejects_invalid_domain_rules() {
 
 #[test]
 fn render_skills_cli_text_surfaces_operator_install_summary() {
-    let rendered =
-        crate::skills_cli::render_skills_cli_text(&crate::skills_cli::SkillsCommandExecution {
+    let rendered = loongclaw_daemon::skills_cli::render_skills_cli_text(
+        &loongclaw_daemon::skills_cli::SkillsCommandExecution {
             resolved_config_path: "/tmp/loongclaw.toml".to_owned(),
             outcome: kernel::ToolCoreOutcome {
                 status: "ok".to_owned(),
@@ -798,8 +815,9 @@ fn render_skills_cli_text_surfaces_operator_install_summary() {
                     "replaced": true
                 }),
             },
-        })
-        .expect("install payload should render");
+        },
+    )
+    .expect("install payload should render");
 
     assert!(rendered.contains("config=/tmp/loongclaw.toml"));
     assert!(rendered.contains("installed skill_id=demo-skill"));
@@ -809,19 +827,21 @@ fn render_skills_cli_text_surfaces_operator_install_summary() {
 
 #[test]
 fn skills_cli_json_wraps_config_status_and_result_payload() {
-    let rendered = crate::skills_cli::skills_cli_json(&crate::skills_cli::SkillsCommandExecution {
-        resolved_config_path: "/tmp/loongclaw.toml".to_owned(),
-        outcome: kernel::ToolCoreOutcome {
-            status: "ok".to_owned(),
-            payload: serde_json::json!({
-                "tool_name": "skills.policy",
-                "action": "get",
-                "policy": {
-                    "enabled": true
-                }
-            }),
+    let rendered = loongclaw_daemon::skills_cli::skills_cli_json(
+        &loongclaw_daemon::skills_cli::SkillsCommandExecution {
+            resolved_config_path: "/tmp/loongclaw.toml".to_owned(),
+            outcome: kernel::ToolCoreOutcome {
+                status: "ok".to_owned(),
+                payload: serde_json::json!({
+                    "tool_name": "skills.policy",
+                    "action": "get",
+                    "policy": {
+                        "enabled": true
+                    }
+                }),
+            },
         },
-    });
+    );
 
     assert_eq!(rendered["config"], "/tmp/loongclaw.toml");
     assert_eq!(rendered["status"], "ok");

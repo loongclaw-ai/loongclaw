@@ -8,7 +8,7 @@ use loongclaw_spec::CliResult;
 use serde_json::json;
 
 #[derive(Debug, Clone)]
-pub(crate) struct DoctorCommandOptions {
+pub struct DoctorCommandOptions {
     pub config: Option<String>,
     pub fix: bool,
     pub json: bool,
@@ -16,17 +16,17 @@ pub(crate) struct DoctorCommandOptions {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DoctorCheckLevel {
+pub enum DoctorCheckLevel {
     Pass,
     Warn,
     Fail,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct DoctorCheck {
-    pub(crate) name: String,
-    pub(crate) level: DoctorCheckLevel,
-    pub(crate) detail: String,
+pub struct DoctorCheck {
+    pub name: String,
+    pub level: DoctorCheckLevel,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -42,7 +42,7 @@ struct DoctorChannelCheckSpec {
     runtime_name: Option<&'static str>,
 }
 
-pub(crate) async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
+pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
     let (config_path, mut config) = mvp::config::load(options.config.as_deref())?;
     let mut checks = Vec::new();
     let mut fixes = Vec::new();
@@ -251,7 +251,7 @@ fn check_channel_surfaces(config: &mvp::config::LoongClawConfig) -> Vec<DoctorCh
     build_channel_surface_checks(&snapshots)
 }
 
-pub(crate) fn check_feishu_integration(
+pub fn check_feishu_integration(
     config: &mvp::config::LoongClawConfig,
     fix: bool,
     fixes: &mut Vec<String>,
@@ -1001,8 +1001,7 @@ fn provider_model_probe_failure_check(
         ),
     }
 }
-
-#[cfg(test)]
+#[allow(dead_code)]
 fn collect_channel_doctor_checks(config: &mvp::config::LoongClawConfig) -> Vec<DoctorCheck> {
     crate::migration::channels::collect_channel_doctor_checks(config)
         .into_iter()
@@ -1018,7 +1017,7 @@ fn collect_channel_doctor_checks(config: &mvp::config::LoongClawConfig) -> Vec<D
         .collect()
 }
 
-pub(crate) fn resolve_secret_value(inline: Option<&str>, env_key: Option<&str>) -> Option<String> {
+pub fn resolve_secret_value(inline: Option<&str>, env_key: Option<&str>) -> Option<String> {
     if let Some(value) = inline.map(str::trim).filter(|value| !value.is_empty()) {
         return Some(value.to_owned());
     }

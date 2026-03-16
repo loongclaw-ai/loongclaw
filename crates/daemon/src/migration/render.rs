@@ -14,7 +14,7 @@ fn push_source_label(labels: &mut Vec<String>, seen: &mut BTreeSet<String>, labe
     }
 }
 
-pub(crate) fn candidate_source_rollup_labels(candidate: &ImportCandidate) -> Vec<String> {
+pub fn candidate_source_rollup_labels(candidate: &ImportCandidate) -> Vec<String> {
     let mut labels = Vec::new();
     let mut seen = BTreeSet::new();
 
@@ -183,10 +183,7 @@ fn render_wide_provider_choice_line(
     )
 }
 
-pub(crate) fn render_candidate_preview_lines(
-    candidate: &ImportCandidate,
-    width: usize,
-) -> Vec<String> {
+pub fn render_candidate_preview_lines(candidate: &ImportCandidate, width: usize) -> Vec<String> {
     let mut lines =
         loongclaw_app::presentation::render_wrapped_text_line("source: ", &candidate.source, width);
     let source_labels = candidate_source_rollup_labels(candidate);
@@ -256,10 +253,7 @@ pub(crate) fn render_candidate_preview_lines(
     lines
 }
 
-pub(crate) fn render_provider_selection_lines(
-    plan: &ProviderSelectionPlan,
-    width: usize,
-) -> Vec<String> {
+pub fn render_provider_selection_lines(plan: &ProviderSelectionPlan, width: usize) -> Vec<String> {
     if plan.imported_choices.is_empty()
         || (!plan.requires_explicit_choice && plan.imported_choices.len() <= 1)
     {

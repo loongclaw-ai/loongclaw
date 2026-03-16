@@ -1,18 +1,18 @@
 use loongclaw_app as mvp;
 
-pub(crate) fn guided_provider_label(kind: mvp::config::ProviderKind) -> &'static str {
+pub fn guided_provider_label(kind: mvp::config::ProviderKind) -> &'static str {
     kind.display_name()
 }
 
-pub(crate) fn provider_choice_label(profile_id: &str, kind: mvp::config::ProviderKind) -> String {
+pub fn provider_choice_label(profile_id: &str, kind: mvp::config::ProviderKind) -> String {
     format!("{} [{profile_id}]", guided_provider_label(kind))
 }
 
-pub(crate) fn provider_identity_summary(config: &mvp::config::ProviderConfig) -> String {
+pub fn provider_identity_summary(config: &mvp::config::ProviderConfig) -> String {
     provider_identity_summary_with_credential_state(config, provider_credential_state(config))
 }
 
-pub(crate) fn active_provider_label(config: &mvp::config::LoongClawConfig) -> String {
+pub fn active_provider_label(config: &mvp::config::LoongClawConfig) -> String {
     config
         .active_provider_id()
         .and_then(|profile_id| config.providers.get(profile_id))
@@ -20,7 +20,7 @@ pub(crate) fn active_provider_label(config: &mvp::config::LoongClawConfig) -> St
         .unwrap_or_else(|| guided_provider_label(config.provider.kind).to_owned())
 }
 
-pub(crate) fn active_provider_detail_label(config: &mvp::config::LoongClawConfig) -> String {
+pub fn active_provider_detail_label(config: &mvp::config::LoongClawConfig) -> String {
     let profile_id = config
         .active_provider_id()
         .unwrap_or(config.provider.kind.profile().id);
@@ -32,7 +32,7 @@ pub(crate) fn active_provider_detail_label(config: &mvp::config::LoongClawConfig
     format!("{} [{profile_id}]", guided_provider_label(kind))
 }
 
-pub(crate) fn saved_provider_profile_ids(config: &mvp::config::LoongClawConfig) -> Vec<String> {
+pub fn saved_provider_profile_ids(config: &mvp::config::LoongClawConfig) -> Vec<String> {
     if config.providers.is_empty() {
         return vec![
             config
@@ -53,7 +53,7 @@ pub(crate) fn saved_provider_profile_ids(config: &mvp::config::LoongClawConfig) 
     profile_ids
 }
 
-pub(crate) fn render_provider_profile_state_lines(
+pub fn render_provider_profile_state_lines(
     config: &mvp::config::LoongClawConfig,
     width: usize,
     single_provider_prefix: Option<&str>,
@@ -66,7 +66,7 @@ pub(crate) fn render_provider_profile_state_lines(
     )
 }
 
-pub(crate) fn render_provider_profile_state_lines_from_parts(
+pub fn render_provider_profile_state_lines_from_parts(
     active_provider_label: &str,
     saved_provider_profiles: &[String],
     width: usize,
@@ -97,7 +97,7 @@ pub(crate) fn render_provider_profile_state_lines_from_parts(
         .unwrap_or_default()
 }
 
-pub(crate) fn provider_identity_summary_with_credential_state(
+pub fn provider_identity_summary_with_credential_state(
     config: &mvp::config::ProviderConfig,
     credential_state: &str,
 ) -> String {
@@ -109,7 +109,7 @@ pub(crate) fn provider_identity_summary_with_credential_state(
     )
 }
 
-pub(crate) fn provider_credential_state(config: &mvp::config::ProviderConfig) -> &'static str {
+pub fn provider_credential_state(config: &mvp::config::ProviderConfig) -> &'static str {
     if config.authorization_header().is_some() {
         "credentials resolved"
     } else {

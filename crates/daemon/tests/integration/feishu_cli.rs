@@ -334,15 +334,15 @@ fn feishu_resource_subcommands_parse() {
     let Some(Commands::Feishu { command }) = parsed.command else {
         panic!("expected feishu command");
     };
-    let crate::feishu_cli::FeishuCommand::Messages { command } = command else {
+    let loongclaw_daemon::feishu_cli::FeishuCommand::Messages { command } = command else {
         panic!("expected feishu messages command");
     };
-    let crate::feishu_cli::FeishuMessagesCommand::Resource(args) = command else {
+    let loongclaw_daemon::feishu_cli::FeishuMessagesCommand::Resource(args) = command else {
         panic!("expected feishu messages resource command");
     };
     assert!(matches!(
         args.resource_type,
-        crate::feishu_cli::FeishuMessageResourceCliType::File
+        loongclaw_daemon::feishu_cli::FeishuMessageResourceCliType::File
     ));
 
     Cli::try_parse_from([
@@ -521,7 +521,7 @@ async fn feishu_send_command_requires_confirmed_write_scope() {
         );
     let (base_url, server) = spawn_mock_feishu_server(router).await;
     let config_path = write_sample_feishu_config_with_base_url(&temp_dir, &base_url);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant("feishu_main", "ou_123", "u-token-1", "r-token-1", now_s);
     grant.scopes = mvp::feishu::FeishuGrantScopeSet::from_scopes(["offline_access"]);
@@ -530,27 +530,29 @@ async fn feishu_send_command_requires_confirmed_write_scope() {
         .set_selected_grant("feishu_main", "ou_123", now_s + 1)
         .expect("select send grant");
 
-    let error = crate::feishu_cli::execute_feishu_send(&crate::feishu_cli::FeishuSendArgs {
-        grant: crate::feishu_cli::FeishuGrantArgs {
-            common: crate::feishu_cli::FeishuCommonArgs {
-                config: Some(config_path.display().to_string()),
-                account: Some("feishu_main".to_owned()),
-                json: true,
+    let error = loongclaw_daemon::feishu_cli::execute_feishu_send(
+        &loongclaw_daemon::feishu_cli::FeishuSendArgs {
+            grant: loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+                common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
+                    config: Some(config_path.display().to_string()),
+                    account: Some("feishu_main".to_owned()),
+                    json: true,
+                },
+                open_id: None,
             },
-            open_id: None,
+            receive_id_type: None,
+            receive_id: "oc_demo".to_owned(),
+            text: Some("hello".to_owned()),
+            post_json: None,
+            image_key: None,
+            file_key: None,
+            image_path: None,
+            file_path: None,
+            file_type: None,
+            card: false,
+            uuid: None,
         },
-        receive_id_type: None,
-        receive_id: "oc_demo".to_owned(),
-        text: Some("hello".to_owned()),
-        post_json: None,
-        image_key: None,
-        file_key: None,
-        image_path: None,
-        file_path: None,
-        file_type: None,
-        card: false,
-        uuid: None,
-    })
+    )
     .await
     .expect_err("send should reject grants without a confirmed write scope");
 
@@ -614,7 +616,7 @@ async fn feishu_send_command_uses_tenant_token_receive_id_override_and_uuid() {
         );
     let (base_url, server) = spawn_mock_feishu_server(router).await;
     let config_path = write_sample_feishu_config_with_base_url(&temp_dir, &base_url);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant("feishu_main", "ou_123", "u-token-1", "r-token-1", now_s);
     grant.scopes =
@@ -624,27 +626,29 @@ async fn feishu_send_command_uses_tenant_token_receive_id_override_and_uuid() {
         .set_selected_grant("feishu_main", "ou_123", now_s + 1)
         .expect("select send grant");
 
-    let payload = crate::feishu_cli::execute_feishu_send(&crate::feishu_cli::FeishuSendArgs {
-        grant: crate::feishu_cli::FeishuGrantArgs {
-            common: crate::feishu_cli::FeishuCommonArgs {
-                config: Some(config_path.display().to_string()),
-                account: Some("feishu_main".to_owned()),
-                json: true,
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_send(
+        &loongclaw_daemon::feishu_cli::FeishuSendArgs {
+            grant: loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+                common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
+                    config: Some(config_path.display().to_string()),
+                    account: Some("feishu_main".to_owned()),
+                    json: true,
+                },
+                open_id: Some("ou_123".to_owned()),
             },
-            open_id: Some("ou_123".to_owned()),
+            receive_id_type: Some("chat_id".to_owned()),
+            receive_id: "oc_send_demo".to_owned(),
+            text: Some("operator send with uuid".to_owned()),
+            post_json: None,
+            image_key: None,
+            file_key: None,
+            image_path: None,
+            file_path: None,
+            file_type: None,
+            card: false,
+            uuid: Some("send-uuid-1".to_owned()),
         },
-        receive_id_type: Some("chat_id".to_owned()),
-        receive_id: "oc_send_demo".to_owned(),
-        text: Some("operator send with uuid".to_owned()),
-        post_json: None,
-        image_key: None,
-        file_key: None,
-        image_path: None,
-        file_path: None,
-        file_type: None,
-        card: false,
-        uuid: Some("send-uuid-1".to_owned()),
-    })
+    )
     .await
     .expect("execute feishu send");
 
@@ -724,7 +728,7 @@ async fn feishu_send_command_supports_post_content() {
         );
     let (base_url, server) = spawn_mock_feishu_server(router).await;
     let config_path = write_sample_feishu_config_with_base_url(&temp_dir, &base_url);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant(
         "feishu_main",
@@ -740,9 +744,9 @@ async fn feishu_send_command_supports_post_content() {
         .set_selected_grant("feishu_main", "ou_123", now_s + 1)
         .expect("select send post grant");
 
-    let payload = crate::feishu_cli::execute_feishu_send(&crate::feishu_cli::FeishuSendArgs {
-        grant: crate::feishu_cli::FeishuGrantArgs {
-            common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_send(&loongclaw_daemon::feishu_cli::FeishuSendArgs {
+        grant: loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+            common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                 config: Some(config_path.display().to_string()),
                 account: Some("feishu_main".to_owned()),
                 json: true,
@@ -854,7 +858,7 @@ async fn feishu_send_command_uploads_image_path_and_sends_image_message() {
         );
     let (base_url, server) = spawn_mock_feishu_server(router).await;
     let config_path = write_sample_feishu_config_with_base_url(&temp_dir, &base_url);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant(
         "feishu_main",
@@ -870,27 +874,29 @@ async fn feishu_send_command_uploads_image_path_and_sends_image_message() {
         .set_selected_grant("feishu_main", "ou_123", now_s + 1)
         .expect("select send image grant");
 
-    let payload = crate::feishu_cli::execute_feishu_send(&crate::feishu_cli::FeishuSendArgs {
-        grant: crate::feishu_cli::FeishuGrantArgs {
-            common: crate::feishu_cli::FeishuCommonArgs {
-                config: Some(config_path.display().to_string()),
-                account: Some("feishu_main".to_owned()),
-                json: true,
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_send(
+        &loongclaw_daemon::feishu_cli::FeishuSendArgs {
+            grant: loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+                common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
+                    config: Some(config_path.display().to_string()),
+                    account: Some("feishu_main".to_owned()),
+                    json: true,
+                },
+                open_id: Some("ou_123".to_owned()),
             },
-            open_id: Some("ou_123".to_owned()),
+            receive_id_type: Some("chat_id".to_owned()),
+            receive_id: "oc_send_image".to_owned(),
+            text: None,
+            post_json: None,
+            card: false,
+            uuid: Some("send-image-uuid-1".to_owned()),
+            image_key: None,
+            file_key: None,
+            image_path: Some(image_path.display().to_string()),
+            file_path: None,
+            file_type: None,
         },
-        receive_id_type: Some("chat_id".to_owned()),
-        receive_id: "oc_send_image".to_owned(),
-        text: None,
-        post_json: None,
-        card: false,
-        uuid: Some("send-image-uuid-1".to_owned()),
-        image_key: None,
-        file_key: None,
-        image_path: Some(image_path.display().to_string()),
-        file_path: None,
-        file_type: None,
-    })
+    )
     .await
     .expect("execute feishu send image");
 
@@ -962,7 +968,7 @@ async fn feishu_reply_command_uses_tenant_token_and_thread_flag() {
         );
     let (base_url, server) = spawn_mock_feishu_server(router).await;
     let config_path = write_sample_feishu_config_with_base_url(&temp_dir, &base_url);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant("feishu_main", "ou_123", "u-token-1", "r-token-1", now_s);
     grant.scopes =
@@ -972,27 +978,29 @@ async fn feishu_reply_command_uses_tenant_token_and_thread_flag() {
         .set_selected_grant("feishu_main", "ou_123", now_s + 1)
         .expect("select reply grant");
 
-    let payload = crate::feishu_cli::execute_feishu_reply(&crate::feishu_cli::FeishuReplyArgs {
-        grant: crate::feishu_cli::FeishuGrantArgs {
-            common: crate::feishu_cli::FeishuCommonArgs {
-                config: Some(config_path.display().to_string()),
-                account: Some("feishu_main".to_owned()),
-                json: true,
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_reply(
+        &loongclaw_daemon::feishu_cli::FeishuReplyArgs {
+            grant: loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+                common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
+                    config: Some(config_path.display().to_string()),
+                    account: Some("feishu_main".to_owned()),
+                    json: true,
+                },
+                open_id: None,
             },
-            open_id: None,
+            message_id: "om_parent_1".to_owned(),
+            text: Some("threaded operator reply".to_owned()),
+            post_json: None,
+            image_key: None,
+            file_key: None,
+            image_path: None,
+            file_path: None,
+            file_type: None,
+            card: false,
+            reply_in_thread: true,
+            uuid: Some("reply-uuid-1".to_owned()),
         },
-        message_id: "om_parent_1".to_owned(),
-        text: Some("threaded operator reply".to_owned()),
-        post_json: None,
-        image_key: None,
-        file_key: None,
-        image_path: None,
-        file_path: None,
-        file_type: None,
-        card: false,
-        reply_in_thread: true,
-        uuid: Some("reply-uuid-1".to_owned()),
-    })
+    )
     .await
     .expect("execute feishu reply");
 
@@ -1069,7 +1077,7 @@ async fn feishu_reply_command_supports_post_content() {
         );
     let (base_url, server) = spawn_mock_feishu_server(router).await;
     let config_path = write_sample_feishu_config_with_base_url(&temp_dir, &base_url);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant(
         "feishu_main",
@@ -1085,9 +1093,9 @@ async fn feishu_reply_command_supports_post_content() {
         .set_selected_grant("feishu_main", "ou_123", now_s + 1)
         .expect("select reply post grant");
 
-    let payload = crate::feishu_cli::execute_feishu_reply(&crate::feishu_cli::FeishuReplyArgs {
-        grant: crate::feishu_cli::FeishuGrantArgs {
-            common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_reply(&loongclaw_daemon::feishu_cli::FeishuReplyArgs {
+        grant: loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+            common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                 config: Some(config_path.display().to_string()),
                 account: Some("feishu_main".to_owned()),
                 json: true,
@@ -1202,7 +1210,7 @@ async fn feishu_reply_command_uploads_file_path_and_sends_file_message() {
         );
     let (base_url, server) = spawn_mock_feishu_server(router).await;
     let config_path = write_sample_feishu_config_with_base_url(&temp_dir, &base_url);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant(
         "feishu_main",
@@ -1218,27 +1226,29 @@ async fn feishu_reply_command_uploads_file_path_and_sends_file_message() {
         .set_selected_grant("feishu_main", "ou_123", now_s + 1)
         .expect("select reply file grant");
 
-    let payload = crate::feishu_cli::execute_feishu_reply(&crate::feishu_cli::FeishuReplyArgs {
-        grant: crate::feishu_cli::FeishuGrantArgs {
-            common: crate::feishu_cli::FeishuCommonArgs {
-                config: Some(config_path.display().to_string()),
-                account: Some("feishu_main".to_owned()),
-                json: true,
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_reply(
+        &loongclaw_daemon::feishu_cli::FeishuReplyArgs {
+            grant: loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+                common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
+                    config: Some(config_path.display().to_string()),
+                    account: Some("feishu_main".to_owned()),
+                    json: true,
+                },
+                open_id: None,
             },
-            open_id: None,
+            message_id: "om_parent_file_cli".to_owned(),
+            text: None,
+            post_json: None,
+            card: false,
+            reply_in_thread: false,
+            uuid: Some("reply-file-uuid-1".to_owned()),
+            image_key: None,
+            file_key: None,
+            image_path: None,
+            file_path: Some(file_path.display().to_string()),
+            file_type: Some("stream".to_owned()),
         },
-        message_id: "om_parent_file_cli".to_owned(),
-        text: None,
-        post_json: None,
-        card: false,
-        reply_in_thread: false,
-        uuid: Some("reply-file-uuid-1".to_owned()),
-        image_key: None,
-        file_key: None,
-        image_path: None,
-        file_path: Some(file_path.display().to_string()),
-        file_type: Some("stream".to_owned()),
-    })
+    )
     .await
     .expect("execute feishu reply file");
 
@@ -1273,8 +1283,8 @@ async fn feishu_reply_command_uploads_file_path_and_sends_file_message() {
 async fn feishu_auth_start_persists_oauth_state_and_authorize_url() {
     let temp_dir = temp_feishu_cli_dir("auth-start");
     let config_path = write_sample_feishu_config(&temp_dir);
-    let args = crate::feishu_cli::FeishuAuthStartArgs {
-        common: crate::feishu_cli::FeishuCommonArgs {
+    let args = loongclaw_daemon::feishu_cli::FeishuAuthStartArgs {
+        common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
             config: Some(config_path.display().to_string()),
             account: Some("feishu_main".to_owned()),
             json: true,
@@ -1286,7 +1296,7 @@ async fn feishu_auth_start_persists_oauth_state_and_authorize_url() {
         include_message_write: false,
     };
 
-    let payload = crate::feishu_cli::execute_feishu_auth_start(&args)
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_auth_start(&args)
         .await
         .expect("execute feishu auth start");
 
@@ -1323,8 +1333,8 @@ async fn feishu_auth_start_persists_oauth_state_and_authorize_url() {
 async fn feishu_auth_start_can_include_recommended_message_write_scopes() {
     let temp_dir = temp_feishu_cli_dir("auth-start-write");
     let config_path = write_sample_feishu_config(&temp_dir);
-    let args = crate::feishu_cli::FeishuAuthStartArgs {
-        common: crate::feishu_cli::FeishuCommonArgs {
+    let args = loongclaw_daemon::feishu_cli::FeishuAuthStartArgs {
+        common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
             config: Some(config_path.display().to_string()),
             account: Some("feishu_main".to_owned()),
             json: true,
@@ -1336,7 +1346,7 @@ async fn feishu_auth_start_can_include_recommended_message_write_scopes() {
         include_message_write: true,
     };
 
-    let payload = crate::feishu_cli::execute_feishu_auth_start(&args)
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_auth_start(&args)
         .await
         .expect("execute feishu auth start");
 
@@ -1370,8 +1380,8 @@ async fn feishu_auth_start_can_include_recommended_message_write_scopes() {
 async fn feishu_auth_start_capability_can_expand_read_and_write_scope_bundles() {
     let temp_dir = temp_feishu_cli_dir("auth-start-capability-all");
     let config_path = write_sample_feishu_config(&temp_dir);
-    let args = crate::feishu_cli::FeishuAuthStartArgs {
-        common: crate::feishu_cli::FeishuCommonArgs {
+    let args = loongclaw_daemon::feishu_cli::FeishuAuthStartArgs {
+        common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
             config: Some(config_path.display().to_string()),
             account: Some("feishu_main".to_owned()),
             json: true,
@@ -1379,11 +1389,11 @@ async fn feishu_auth_start_capability_can_expand_read_and_write_scope_bundles() 
         redirect_uri: "http://127.0.0.1:34819/callback".to_owned(),
         principal_hint: Some("operator".to_owned()),
         scopes: vec!["offline_access".to_owned()],
-        capabilities: vec![crate::feishu_support::FeishuAuthCapability::All],
+        capabilities: vec![loongclaw_daemon::feishu_support::FeishuAuthCapability::All],
         include_message_write: false,
     };
 
-    let payload = crate::feishu_cli::execute_feishu_auth_start(&args)
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_auth_start(&args)
         .await
         .expect("execute feishu auth start");
     let state = payload.get("state").and_then(Value::as_str).expect("state");
@@ -1456,7 +1466,7 @@ async fn feishu_auth_exchange_sets_selected_open_id_for_new_grant() {
         );
     let (base_url, server) = spawn_mock_feishu_server(router).await;
     let config_path = write_sample_feishu_config_with_base_url(&temp_dir, &base_url);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     store
         .save_oauth_state_record(&mvp::feishu::FeishuOauthStateRecord {
@@ -1471,9 +1481,9 @@ async fn feishu_auth_exchange_sets_selected_open_id_for_new_grant() {
         })
         .expect("seed oauth state");
 
-    let payload = crate::feishu_cli::execute_feishu_auth_exchange(
-        &crate::feishu_cli::FeishuAuthExchangeArgs {
-            common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_auth_exchange(
+        &loongclaw_daemon::feishu_cli::FeishuAuthExchangeArgs {
+            common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                 config: Some(config_path.display().to_string()),
                 account: Some("feishu_main".to_owned()),
                 json: true,
@@ -1564,7 +1574,7 @@ async fn feishu_whoami_refreshes_expired_grant_and_updates_store() {
         );
     let (base_url, server) = spawn_mock_feishu_server(router).await;
     let config_path = write_sample_feishu_config_with_base_url(&temp_dir, &base_url);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut expired_grant =
         sample_grant("feishu_main", "ou_123", "u-token-old", "r-token-old", now_s);
@@ -1574,14 +1584,16 @@ async fn feishu_whoami_refreshes_expired_grant_and_updates_store() {
         .save_grant(&expired_grant)
         .expect("seed expired grant");
 
-    let payload = crate::feishu_cli::execute_feishu_whoami(&crate::feishu_cli::FeishuGrantArgs {
-        common: crate::feishu_cli::FeishuCommonArgs {
-            config: Some(config_path.display().to_string()),
-            account: Some("feishu_main".to_owned()),
-            json: true,
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_whoami(
+        &loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+            common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
+                config: Some(config_path.display().to_string()),
+                account: Some("feishu_main".to_owned()),
+                json: true,
+            },
+            open_id: Some("ou_123".to_owned()),
         },
-        open_id: Some("ou_123".to_owned()),
-    })
+    )
     .await
     .expect("execute feishu whoami");
 
@@ -1647,7 +1659,7 @@ async fn feishu_whoami_includes_configured_account_in_payload_for_account_alias(
         "feishu_secondary",
         &base_url,
     );
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     store
         .save_grant(&sample_grant(
@@ -1659,14 +1671,16 @@ async fn feishu_whoami_includes_configured_account_in_payload_for_account_alias(
         ))
         .expect("seed alias grant");
 
-    let payload = crate::feishu_cli::execute_feishu_whoami(&crate::feishu_cli::FeishuGrantArgs {
-        common: crate::feishu_cli::FeishuCommonArgs {
-            config: Some(config_path.display().to_string()),
-            account: Some("work".to_owned()),
-            json: true,
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_whoami(
+        &loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+            common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
+                config: Some(config_path.display().to_string()),
+                account: Some("work".to_owned()),
+                json: true,
+            },
+            open_id: Some("ou_123".to_owned()),
         },
-        open_id: Some("ou_123".to_owned()),
-    })
+    )
     .await
     .expect("execute feishu whoami");
 
@@ -1718,7 +1732,7 @@ async fn feishu_whoami_accepts_unique_runtime_account_id_for_configured_alias() 
         "feishu_secondary",
         &base_url,
     );
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     store
         .save_grant(&sample_grant(
@@ -1730,14 +1744,16 @@ async fn feishu_whoami_accepts_unique_runtime_account_id_for_configured_alias() 
         ))
         .expect("seed alias grant");
 
-    let payload = crate::feishu_cli::execute_feishu_whoami(&crate::feishu_cli::FeishuGrantArgs {
-        common: crate::feishu_cli::FeishuCommonArgs {
-            config: Some(config_path.display().to_string()),
-            account: Some("feishu_secondary".to_owned()),
-            json: true,
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_whoami(
+        &loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+            common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
+                config: Some(config_path.display().to_string()),
+                account: Some("feishu_secondary".to_owned()),
+                json: true,
+            },
+            open_id: Some("ou_123".to_owned()),
         },
-        open_id: Some("ou_123".to_owned()),
-    })
+    )
     .await
     .expect("execute feishu whoami with runtime account alias");
 
@@ -1786,14 +1802,16 @@ async fn feishu_whoami_reports_ambiguous_runtime_account_id_for_multiple_configu
     config.feishu_integration.sqlite_path = sqlite_path.display().to_string();
     mvp::config::write(config_path.to_str(), &config, true).expect("write sample feishu config");
 
-    let error = crate::feishu_cli::execute_feishu_whoami(&crate::feishu_cli::FeishuGrantArgs {
-        common: crate::feishu_cli::FeishuCommonArgs {
-            config: Some(config_path.display().to_string()),
-            account: Some("feishu_shared".to_owned()),
-            json: true,
+    let error = loongclaw_daemon::feishu_cli::execute_feishu_whoami(
+        &loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+            common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
+                config: Some(config_path.display().to_string()),
+                account: Some("feishu_shared".to_owned()),
+                json: true,
+            },
+            open_id: Some("ou_123".to_owned()),
         },
-        open_id: Some("ou_123".to_owned()),
-    })
+    )
     .await
     .expect_err("ambiguous runtime account should fail");
 
@@ -1808,7 +1826,7 @@ async fn feishu_whoami_reports_ambiguous_runtime_account_id_for_multiple_configu
 async fn feishu_auth_list_reports_multiple_grants_for_account() {
     let temp_dir = temp_feishu_cli_dir("auth-list");
     let config_path = write_sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
 
     let mut first = sample_grant(
@@ -1829,16 +1847,17 @@ async fn feishu_auth_list_reports_multiple_grants_for_account() {
     second.refreshed_at_s = now_s;
     store.save_grant(&second).expect("seed second grant");
 
-    let payload =
-        crate::feishu_cli::execute_feishu_auth_list(&crate::feishu_cli::FeishuAuthListArgs {
-            common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_auth_list(
+        &loongclaw_daemon::feishu_cli::FeishuAuthListArgs {
+            common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                 config: Some(config_path.display().to_string()),
                 account: Some("feishu_main".to_owned()),
                 json: true,
             },
-        })
-        .await
-        .expect("execute feishu auth list");
+        },
+    )
+    .await
+    .expect("execute feishu auth list");
 
     assert_eq!(payload["account_id"], "feishu_main");
     assert_eq!(payload["grant_count"], 2);
@@ -1868,7 +1887,7 @@ async fn feishu_auth_list_reports_multiple_grants_for_account() {
 async fn feishu_auth_list_marks_single_grant_as_effectively_selected() {
     let temp_dir = temp_feishu_cli_dir("auth-list-single-effective");
     let config_path = write_sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
 
     store
@@ -1881,16 +1900,17 @@ async fn feishu_auth_list_marks_single_grant_as_effectively_selected() {
         ))
         .expect("seed grant");
 
-    let payload =
-        crate::feishu_cli::execute_feishu_auth_list(&crate::feishu_cli::FeishuAuthListArgs {
-            common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_auth_list(
+        &loongclaw_daemon::feishu_cli::FeishuAuthListArgs {
+            common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                 config: Some(config_path.display().to_string()),
                 account: Some("feishu_main".to_owned()),
                 json: true,
             },
-        })
-        .await
-        .expect("execute feishu auth list");
+        },
+    )
+    .await
+    .expect("execute feishu auth list");
 
     assert_eq!(payload["selected_open_id"], Value::Null);
     assert_eq!(payload["effective_open_id"], "ou_123");
@@ -1903,7 +1923,7 @@ async fn feishu_auth_list_marks_single_grant_as_effectively_selected() {
 async fn feishu_auth_list_clears_stale_selected_open_id_without_false_selected_flags() {
     let temp_dir = temp_feishu_cli_dir("auth-list-stale-selection");
     let config_path = write_sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
 
     store
@@ -1928,16 +1948,17 @@ async fn feishu_auth_list_clears_stale_selected_open_id_without_false_selected_f
         .set_selected_grant("feishu_main", "ou_missing", now_s + 2)
         .expect("persist stale selected grant");
 
-    let payload =
-        crate::feishu_cli::execute_feishu_auth_list(&crate::feishu_cli::FeishuAuthListArgs {
-            common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_auth_list(
+        &loongclaw_daemon::feishu_cli::FeishuAuthListArgs {
+            common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                 config: Some(config_path.display().to_string()),
                 account: Some("feishu_main".to_owned()),
                 json: true,
             },
-        })
-        .await
-        .expect("execute feishu auth list");
+        },
+    )
+    .await
+    .expect("execute feishu auth list");
 
     assert_eq!(payload["selected_open_id"], Value::Null);
     assert_eq!(
@@ -1961,7 +1982,7 @@ async fn feishu_auth_list_clears_stale_selected_open_id_without_false_selected_f
 async fn feishu_auth_select_persists_selected_grant_for_account() {
     let temp_dir = temp_feishu_cli_dir("auth-select");
     let config_path = write_sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
 
     store
@@ -1983,17 +2004,18 @@ async fn feishu_auth_select_persists_selected_grant_for_account() {
         ))
         .expect("seed second grant");
 
-    let payload =
-        crate::feishu_cli::execute_feishu_auth_select(&crate::feishu_cli::FeishuAuthSelectArgs {
-            common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_auth_select(
+        &loongclaw_daemon::feishu_cli::FeishuAuthSelectArgs {
+            common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                 config: Some(config_path.display().to_string()),
                 account: Some("feishu_main".to_owned()),
                 json: true,
             },
             open_id: "ou_456".to_owned(),
-        })
-        .await
-        .expect("execute feishu auth select");
+        },
+    )
+    .await
+    .expect("execute feishu auth select");
 
     assert_eq!(payload["account_id"], "feishu_main");
     assert_eq!(payload["selected_open_id"], "ou_456");
@@ -2013,17 +2035,18 @@ async fn feishu_auth_select_uses_configured_account_in_missing_grant_error() {
     let config_path =
         write_sample_feishu_config_with_account_alias(&temp_dir, "work", "feishu_secondary");
 
-    let error =
-        crate::feishu_cli::execute_feishu_auth_select(&crate::feishu_cli::FeishuAuthSelectArgs {
-            common: crate::feishu_cli::FeishuCommonArgs {
+    let error = loongclaw_daemon::feishu_cli::execute_feishu_auth_select(
+        &loongclaw_daemon::feishu_cli::FeishuAuthSelectArgs {
+            common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                 config: Some(config_path.display().to_string()),
                 account: Some("work".to_owned()),
                 json: true,
             },
             open_id: "ou_missing".to_owned(),
-        })
-        .await
-        .expect_err("select should fail for an unknown explicit open_id");
+        },
+    )
+    .await
+    .expect_err("select should fail for an unknown explicit open_id");
 
     assert!(error.contains("account `work`"));
     assert!(error.contains("loongclaw feishu auth list --account work"));
@@ -2035,7 +2058,7 @@ async fn feishu_auth_select_includes_configured_account_in_payload() {
     let temp_dir = temp_feishu_cli_dir("auth-select-configured-account-payload");
     let config_path =
         write_sample_feishu_config_with_account_alias(&temp_dir, "work", "feishu_secondary");
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
 
     store
@@ -2048,17 +2071,18 @@ async fn feishu_auth_select_includes_configured_account_in_payload() {
         ))
         .expect("seed grant");
 
-    let payload =
-        crate::feishu_cli::execute_feishu_auth_select(&crate::feishu_cli::FeishuAuthSelectArgs {
-            common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_auth_select(
+        &loongclaw_daemon::feishu_cli::FeishuAuthSelectArgs {
+            common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                 config: Some(config_path.display().to_string()),
                 account: Some("work".to_owned()),
                 json: true,
             },
             open_id: "ou_123".to_owned(),
-        })
-        .await
-        .expect("execute feishu auth select");
+        },
+    )
+    .await
+    .expect("execute feishu auth select");
 
     assert_eq!(payload["account_id"], "feishu_secondary");
     assert_eq!(payload["configured_account"], "work");
@@ -2069,7 +2093,7 @@ async fn feishu_auth_select_includes_configured_account_in_payload() {
 async fn feishu_auth_status_without_open_id_summarizes_multiple_grants() {
     let temp_dir = temp_feishu_cli_dir("auth-status-multi");
     let config_path = write_sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
 
     let mut first = sample_grant(
@@ -2089,17 +2113,18 @@ async fn feishu_auth_status_without_open_id_summarizes_multiple_grants() {
     second.refreshed_at_s = now_s;
     store.save_grant(&second).expect("seed second grant");
 
-    let payload =
-        crate::feishu_cli::execute_feishu_auth_status(&crate::feishu_cli::FeishuGrantArgs {
-            common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_auth_status(
+        &loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+            common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                 config: Some(config_path.display().to_string()),
                 account: Some("feishu_main".to_owned()),
                 json: true,
             },
             open_id: None,
-        })
-        .await
-        .expect("execute feishu auth status");
+        },
+    )
+    .await
+    .expect("execute feishu auth status");
 
     assert_eq!(payload["status_scope"], "account");
     assert_eq!(payload["grant_count"], 2);
@@ -2135,7 +2160,7 @@ async fn feishu_auth_status_without_open_id_summarizes_multiple_grants() {
 async fn feishu_auth_status_without_open_id_uses_effective_selected_grant_when_present() {
     let temp_dir = temp_feishu_cli_dir("auth-status-selected-default");
     let config_path = write_sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
 
     store
@@ -2160,17 +2185,18 @@ async fn feishu_auth_status_without_open_id_uses_effective_selected_grant_when_p
         .set_selected_grant("feishu_main", "ou_456", now_s + 2)
         .expect("persist selected grant");
 
-    let payload =
-        crate::feishu_cli::execute_feishu_auth_status(&crate::feishu_cli::FeishuGrantArgs {
-            common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_auth_status(
+        &loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+            common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                 config: Some(config_path.display().to_string()),
                 account: Some("feishu_main".to_owned()),
                 json: true,
             },
             open_id: None,
-        })
-        .await
-        .expect("execute feishu auth status");
+        },
+    )
+    .await
+    .expect("execute feishu auth status");
 
     assert_eq!(payload["status_scope"], "grant");
     assert_eq!(payload["selected_open_id"], "ou_456");
@@ -2184,7 +2210,7 @@ async fn feishu_auth_status_without_open_id_uses_effective_selected_grant_when_p
 async fn feishu_auth_status_account_scope_clears_stale_selected_open_id() {
     let temp_dir = temp_feishu_cli_dir("auth-status-stale-selection");
     let config_path = write_sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
 
     store
@@ -2209,17 +2235,18 @@ async fn feishu_auth_status_account_scope_clears_stale_selected_open_id() {
         .set_selected_grant("feishu_main", "ou_missing", now_s + 2)
         .expect("persist stale selected grant");
 
-    let payload =
-        crate::feishu_cli::execute_feishu_auth_status(&crate::feishu_cli::FeishuGrantArgs {
-            common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_auth_status(
+        &loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+            common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                 config: Some(config_path.display().to_string()),
                 account: Some("feishu_main".to_owned()),
                 json: true,
             },
             open_id: None,
-        })
-        .await
-        .expect("execute feishu auth status");
+        },
+    )
+    .await
+    .expect("execute feishu auth status");
 
     assert_eq!(payload["status_scope"], "account");
     assert_eq!(payload["selected_open_id"], Value::Null);
@@ -2234,7 +2261,7 @@ async fn feishu_auth_status_account_scope_clears_stale_selected_open_id() {
 async fn feishu_auth_status_recommends_account_scoped_reauthorize_for_missing_write_scope() {
     let temp_dir = temp_feishu_cli_dir("auth-status-write-remediation");
     let config_path = write_sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
 
     let mut grant = sample_grant("feishu_main", "ou_123", "u-token-1", "r-token-1", now_s);
@@ -2245,17 +2272,18 @@ async fn feishu_auth_status_recommends_account_scoped_reauthorize_for_missing_wr
     ]);
     store.save_grant(&grant).expect("seed grant");
 
-    let payload =
-        crate::feishu_cli::execute_feishu_auth_status(&crate::feishu_cli::FeishuGrantArgs {
-            common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_auth_status(
+        &loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+            common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                 config: Some(config_path.display().to_string()),
                 account: Some("feishu_main".to_owned()),
                 json: true,
             },
             open_id: Some("ou_123".to_owned()),
-        })
-        .await
-        .expect("execute feishu auth status");
+        },
+    )
+    .await
+    .expect("execute feishu auth status");
 
     assert_eq!(payload["status_scope"], "grant");
     assert_eq!(payload["doc_write_status"]["ready"], false);
@@ -2276,17 +2304,18 @@ async fn feishu_auth_status_without_grant_recommends_readonly_auth_start() {
     let temp_dir = temp_feishu_cli_dir("auth-status-no-grant");
     let config_path = write_sample_feishu_config(&temp_dir);
 
-    let payload =
-        crate::feishu_cli::execute_feishu_auth_status(&crate::feishu_cli::FeishuGrantArgs {
-            common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_auth_status(
+        &loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+            common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                 config: Some(config_path.display().to_string()),
                 account: Some("feishu_main".to_owned()),
                 json: true,
             },
             open_id: Some("ou_missing".to_owned()),
-        })
-        .await
-        .expect("execute feishu auth status");
+        },
+    )
+    .await
+    .expect("execute feishu auth status");
 
     assert_eq!(payload["status_scope"], "grant");
     assert_eq!(payload["status"]["has_grant"], false);
@@ -2305,7 +2334,7 @@ async fn feishu_auth_status_without_grant_recommends_readonly_auth_start() {
 async fn feishu_auth_status_with_missing_open_id_reports_available_grants() {
     let temp_dir = temp_feishu_cli_dir("auth-status-missing-open-id");
     let config_path = write_sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
 
     store
@@ -2327,17 +2356,18 @@ async fn feishu_auth_status_with_missing_open_id_reports_available_grants() {
         ))
         .expect("seed second grant");
 
-    let payload =
-        crate::feishu_cli::execute_feishu_auth_status(&crate::feishu_cli::FeishuGrantArgs {
-            common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_auth_status(
+        &loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+            common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                 config: Some(config_path.display().to_string()),
                 account: Some("feishu_main".to_owned()),
                 json: true,
             },
             open_id: Some("ou_missing".to_owned()),
-        })
-        .await
-        .expect("execute feishu auth status");
+        },
+    )
+    .await
+    .expect("execute feishu auth status");
 
     assert_eq!(payload["status_scope"], "grant");
     assert_eq!(payload["requested_open_id"], "ou_missing");
@@ -2362,7 +2392,7 @@ async fn feishu_auth_status_with_missing_open_id_reports_available_grants() {
 async fn feishu_auth_revoke_reports_missing_explicit_open_id() {
     let temp_dir = temp_feishu_cli_dir("auth-revoke-missing-open-id");
     let config_path = write_sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
 
     store
@@ -2375,17 +2405,18 @@ async fn feishu_auth_revoke_reports_missing_explicit_open_id() {
         ))
         .expect("seed grant");
 
-    let error =
-        crate::feishu_cli::execute_feishu_auth_revoke(&crate::feishu_cli::FeishuGrantArgs {
-            common: crate::feishu_cli::FeishuCommonArgs {
+    let error = loongclaw_daemon::feishu_cli::execute_feishu_auth_revoke(
+        &loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+            common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                 config: Some(config_path.display().to_string()),
                 account: Some("feishu_main".to_owned()),
                 json: true,
             },
             open_id: Some("ou_missing".to_owned()),
-        })
-        .await
-        .expect_err("revoke should fail for an unknown explicit open_id");
+        },
+    )
+    .await
+    .expect_err("revoke should fail for an unknown explicit open_id");
 
     assert!(error.contains("open_id `ou_missing`"));
     assert!(error.contains("ou_123"));
@@ -2398,7 +2429,7 @@ async fn feishu_auth_revoke_reports_missing_explicit_open_id() {
 async fn feishu_auth_revoke_reports_remaining_effective_grant_after_deleting_selected_grant() {
     let temp_dir = temp_feishu_cli_dir("auth-revoke-selected-single-remaining");
     let config_path = write_sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
 
     store
@@ -2423,17 +2454,18 @@ async fn feishu_auth_revoke_reports_remaining_effective_grant_after_deleting_sel
         .set_selected_grant("feishu_main", "ou_456", now_s + 2)
         .expect("persist selected grant");
 
-    let payload =
-        crate::feishu_cli::execute_feishu_auth_revoke(&crate::feishu_cli::FeishuGrantArgs {
-            common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_auth_revoke(
+        &loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+            common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                 config: Some(config_path.display().to_string()),
                 account: Some("feishu_main".to_owned()),
                 json: true,
             },
             open_id: Some("ou_456".to_owned()),
-        })
-        .await
-        .expect("revoke selected grant");
+        },
+    )
+    .await
+    .expect("revoke selected grant");
 
     assert_eq!(payload["deleted"], true);
     assert_eq!(payload["open_id"], "ou_456");
@@ -2448,7 +2480,7 @@ async fn feishu_auth_revoke_reports_remaining_effective_grant_after_deleting_sel
 async fn feishu_auth_revoke_reports_reselection_needed_when_multiple_grants_remain() {
     let temp_dir = temp_feishu_cli_dir("auth-revoke-selected-multi-remaining");
     let config_path = write_sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
 
     store
@@ -2482,17 +2514,18 @@ async fn feishu_auth_revoke_reports_reselection_needed_when_multiple_grants_rema
         .set_selected_grant("feishu_main", "ou_789", now_s + 3)
         .expect("persist selected grant");
 
-    let payload =
-        crate::feishu_cli::execute_feishu_auth_revoke(&crate::feishu_cli::FeishuGrantArgs {
-            common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_auth_revoke(
+        &loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+            common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                 config: Some(config_path.display().to_string()),
                 account: Some("feishu_main".to_owned()),
                 json: true,
             },
             open_id: Some("ou_789".to_owned()),
-        })
-        .await
-        .expect("revoke selected grant");
+        },
+    )
+    .await
+    .expect("revoke selected grant");
 
     assert_eq!(payload["deleted"], true);
     assert_eq!(payload["open_id"], "ou_789");
@@ -2510,7 +2543,7 @@ async fn feishu_auth_revoke_reports_reselection_needed_when_multiple_grants_rema
 async fn feishu_whoami_requires_open_id_when_multiple_grants_exist_without_selection() {
     let temp_dir = temp_feishu_cli_dir("whoami-multi-grant");
     let config_path = write_sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
 
     store
@@ -2532,14 +2565,16 @@ async fn feishu_whoami_requires_open_id_when_multiple_grants_exist_without_selec
         ))
         .expect("seed second grant");
 
-    let error = crate::feishu_cli::execute_feishu_whoami(&crate::feishu_cli::FeishuGrantArgs {
-        common: crate::feishu_cli::FeishuCommonArgs {
-            config: Some(config_path.display().to_string()),
-            account: Some("feishu_main".to_owned()),
-            json: true,
+    let error = loongclaw_daemon::feishu_cli::execute_feishu_whoami(
+        &loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+            common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
+                config: Some(config_path.display().to_string()),
+                account: Some("feishu_main".to_owned()),
+                json: true,
+            },
+            open_id: None,
         },
-        open_id: None,
-    })
+    )
     .await
     .expect_err("whoami should require explicit selection when multiple grants exist");
 
@@ -2552,7 +2587,7 @@ async fn feishu_whoami_requires_open_id_when_multiple_grants_exist_without_selec
 async fn feishu_whoami_reports_missing_explicit_open_id() {
     let temp_dir = temp_feishu_cli_dir("whoami-missing-open-id");
     let config_path = write_sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
 
     store
@@ -2565,14 +2600,16 @@ async fn feishu_whoami_reports_missing_explicit_open_id() {
         ))
         .expect("seed grant");
 
-    let error = crate::feishu_cli::execute_feishu_whoami(&crate::feishu_cli::FeishuGrantArgs {
-        common: crate::feishu_cli::FeishuCommonArgs {
-            config: Some(config_path.display().to_string()),
-            account: Some("feishu_main".to_owned()),
-            json: true,
+    let error = loongclaw_daemon::feishu_cli::execute_feishu_whoami(
+        &loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+            common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
+                config: Some(config_path.display().to_string()),
+                account: Some("feishu_main".to_owned()),
+                json: true,
+            },
+            open_id: Some("ou_missing".to_owned()),
         },
-        open_id: Some("ou_missing".to_owned()),
-    })
+    )
     .await
     .expect_err("whoami should fail for an unknown explicit open_id");
 
@@ -2587,7 +2624,7 @@ async fn feishu_whoami_reports_missing_explicit_open_id() {
 async fn feishu_read_doc_requires_open_id_when_multiple_grants_exist_without_selection() {
     let temp_dir = temp_feishu_cli_dir("read-doc-multi-grant");
     let config_path = write_sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
 
     store
@@ -2609,18 +2646,20 @@ async fn feishu_read_doc_requires_open_id_when_multiple_grants_exist_without_sel
         ))
         .expect("seed second grant");
 
-    let error = crate::feishu_cli::execute_feishu_read_doc(&crate::feishu_cli::FeishuReadDocArgs {
-        grant: crate::feishu_cli::FeishuGrantArgs {
-            common: crate::feishu_cli::FeishuCommonArgs {
-                config: Some(config_path.display().to_string()),
-                account: Some("feishu_main".to_owned()),
-                json: true,
+    let error = loongclaw_daemon::feishu_cli::execute_feishu_read_doc(
+        &loongclaw_daemon::feishu_cli::FeishuReadDocArgs {
+            grant: loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+                common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
+                    config: Some(config_path.display().to_string()),
+                    account: Some("feishu_main".to_owned()),
+                    json: true,
+                },
+                open_id: None,
             },
-            open_id: None,
+            url: "https://open.feishu.cn/docx/doxcnDemo".to_owned(),
+            lang: Some(1),
         },
-        url: "https://open.feishu.cn/docx/doxcnDemo".to_owned(),
-        lang: Some(1),
-    })
+    )
     .await
     .expect_err("read doc should require explicit selection when multiple grants exist");
 
@@ -2660,7 +2699,7 @@ async fn feishu_calendar_freebusy_uses_open_id_type_for_implicit_selected_user()
     );
     let (base_url, server) = spawn_mock_feishu_server(router).await;
     let config_path = write_sample_feishu_config_with_base_url(&temp_dir, &base_url);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     store
         .save_grant(&sample_grant(
@@ -2672,10 +2711,10 @@ async fn feishu_calendar_freebusy_uses_open_id_type_for_implicit_selected_user()
         ))
         .expect("seed grant");
 
-    let payload = crate::feishu_cli::execute_feishu_calendar_freebusy(
-        &crate::feishu_cli::FeishuCalendarFreebusyArgs {
-            grant: crate::feishu_cli::FeishuGrantArgs {
-                common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_calendar_freebusy(
+        &loongclaw_daemon::feishu_cli::FeishuCalendarFreebusyArgs {
+            grant: loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+                common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                     config: Some(config_path.display().to_string()),
                     account: Some("feishu_main".to_owned()),
                     json: true,
@@ -2766,7 +2805,7 @@ async fn feishu_messages_history_fetches_tenant_token_before_im_request() {
         );
     let (base_url, server) = spawn_mock_feishu_server(router).await;
     let config_path = write_sample_feishu_config_with_base_url(&temp_dir, &base_url);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     store
         .save_grant(&sample_grant(
@@ -2778,10 +2817,10 @@ async fn feishu_messages_history_fetches_tenant_token_before_im_request() {
         ))
         .expect("seed grant");
 
-    let payload = crate::feishu_cli::execute_feishu_messages_history(
-        &crate::feishu_cli::FeishuMessagesHistoryArgs {
-            grant: crate::feishu_cli::FeishuGrantArgs {
-                common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_messages_history(
+        &loongclaw_daemon::feishu_cli::FeishuMessagesHistoryArgs {
+            grant: loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+                common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                     config: Some(config_path.display().to_string()),
                     account: Some("feishu_main".to_owned()),
                     json: true,
@@ -2878,7 +2917,7 @@ async fn feishu_messages_history_includes_configured_account_in_payload_for_acco
         "feishu_secondary",
         &base_url,
     );
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     store
         .save_grant(&sample_grant(
@@ -2890,10 +2929,10 @@ async fn feishu_messages_history_includes_configured_account_in_payload_for_acco
         ))
         .expect("seed alias grant");
 
-    let payload = crate::feishu_cli::execute_feishu_messages_history(
-        &crate::feishu_cli::FeishuMessagesHistoryArgs {
-            grant: crate::feishu_cli::FeishuGrantArgs {
-                common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_messages_history(
+        &loongclaw_daemon::feishu_cli::FeishuMessagesHistoryArgs {
+            grant: loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+                common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                     config: Some(config_path.display().to_string()),
                     account: Some("work".to_owned()),
                     json: true,
@@ -2957,7 +2996,7 @@ async fn feishu_search_messages_uses_user_grant_token_directly() {
     );
     let (base_url, server) = spawn_mock_feishu_server(router).await;
     let config_path = write_sample_feishu_config_with_base_url(&temp_dir, &base_url);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     store
         .save_grant(&sample_grant(
@@ -2969,10 +3008,10 @@ async fn feishu_search_messages_uses_user_grant_token_directly() {
         ))
         .expect("seed grant");
 
-    let payload = crate::feishu_cli::execute_feishu_search_messages(
-        &crate::feishu_cli::FeishuSearchMessagesArgs {
-            grant: crate::feishu_cli::FeishuGrantArgs {
-                common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_search_messages(
+        &loongclaw_daemon::feishu_cli::FeishuSearchMessagesArgs {
+            grant: loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+                common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                     config: Some(config_path.display().to_string()),
                     account: Some("feishu_main".to_owned()),
                     json: true,
@@ -3039,7 +3078,7 @@ async fn feishu_read_doc_uses_user_grant_token_directly() {
     );
     let (base_url, server) = spawn_mock_feishu_server(router).await;
     let config_path = write_sample_feishu_config_with_base_url(&temp_dir, &base_url);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     store
         .save_grant(&sample_grant(
@@ -3051,10 +3090,10 @@ async fn feishu_read_doc_uses_user_grant_token_directly() {
         ))
         .expect("seed grant");
 
-    let payload =
-        crate::feishu_cli::execute_feishu_read_doc(&crate::feishu_cli::FeishuReadDocArgs {
-            grant: crate::feishu_cli::FeishuGrantArgs {
-                common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_read_doc(
+        &loongclaw_daemon::feishu_cli::FeishuReadDocArgs {
+            grant: loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+                common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                     config: Some(config_path.display().to_string()),
                     account: Some("feishu_main".to_owned()),
                     json: true,
@@ -3063,9 +3102,10 @@ async fn feishu_read_doc_uses_user_grant_token_directly() {
             },
             url: "https://open.feishu.cn/docx/doxcnDemo".to_owned(),
             lang: Some(1),
-        })
-        .await
-        .expect("execute read doc");
+        },
+    )
+    .await
+    .expect("execute read doc");
 
     assert_eq!(payload["document"]["document_id"], "doxcnDemo");
     assert_eq!(payload["document"]["content"], "hello from docs");
@@ -3166,7 +3206,7 @@ async fn feishu_doc_create_uses_user_grant_token_and_inserts_initial_content() {
         );
     let (base_url, server) = spawn_mock_feishu_server(router).await;
     let config_path = write_sample_feishu_config_with_base_url(&temp_dir, &base_url);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant(
         "feishu_main",
@@ -3179,10 +3219,10 @@ async fn feishu_doc_create_uses_user_grant_token_and_inserts_initial_content() {
         mvp::feishu::FeishuGrantScopeSet::from_scopes(["offline_access", "docx:document"]);
     store.save_grant(&grant).expect("seed grant");
 
-    let payload =
-        crate::feishu_cli::execute_feishu_doc_create(&crate::feishu_cli::FeishuDocCreateArgs {
-            grant: crate::feishu_cli::FeishuGrantArgs {
-                common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_doc_create(
+        &loongclaw_daemon::feishu_cli::FeishuDocCreateArgs {
+            grant: loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+                common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                     config: Some(config_path.display().to_string()),
                     account: Some("feishu_main".to_owned()),
                     json: true,
@@ -3194,9 +3234,10 @@ async fn feishu_doc_create_uses_user_grant_token_and_inserts_initial_content() {
             content: Some("# Release Plan".to_owned()),
             content_path: None,
             content_type: Some("markdown".to_owned()),
-        })
-        .await
-        .expect("execute doc create");
+        },
+    )
+    .await
+    .expect("execute doc create");
 
     assert_eq!(payload["document"]["document_id"], "doxcnCreated");
     assert_eq!(payload["content_inserted"], true);
@@ -3317,7 +3358,7 @@ async fn feishu_doc_create_reads_content_path_and_infers_markdown_type() {
         );
     let (base_url, server) = spawn_mock_feishu_server(router).await;
     let config_path = write_sample_feishu_config_with_base_url(&temp_dir, &base_url);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant(
         "feishu_main",
@@ -3330,10 +3371,10 @@ async fn feishu_doc_create_reads_content_path_and_infers_markdown_type() {
         mvp::feishu::FeishuGrantScopeSet::from_scopes(["offline_access", "docx:document"]);
     store.save_grant(&grant).expect("seed grant");
 
-    let payload =
-        crate::feishu_cli::execute_feishu_doc_create(&crate::feishu_cli::FeishuDocCreateArgs {
-            grant: crate::feishu_cli::FeishuGrantArgs {
-                common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_doc_create(
+        &loongclaw_daemon::feishu_cli::FeishuDocCreateArgs {
+            grant: loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+                common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                     config: Some(config_path.display().to_string()),
                     account: Some("feishu_main".to_owned()),
                     json: true,
@@ -3345,9 +3386,10 @@ async fn feishu_doc_create_reads_content_path_and_infers_markdown_type() {
             content: None,
             content_path: Some(content_path.display().to_string()),
             content_type: None,
-        })
-        .await
-        .expect("execute doc create from content path");
+        },
+    )
+    .await
+    .expect("execute doc create from content path");
 
     assert_eq!(payload["content_inserted"], true);
     assert_eq!(payload["content_type"], "markdown");
@@ -3422,7 +3464,7 @@ async fn feishu_doc_append_uses_user_grant_token_and_appends_content() {
         );
     let (base_url, server) = spawn_mock_feishu_server(router).await;
     let config_path = write_sample_feishu_config_with_base_url(&temp_dir, &base_url);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant(
         "feishu_main",
@@ -3435,10 +3477,10 @@ async fn feishu_doc_append_uses_user_grant_token_and_appends_content() {
         mvp::feishu::FeishuGrantScopeSet::from_scopes(["offline_access", "docx:document"]);
     store.save_grant(&grant).expect("seed grant");
 
-    let payload =
-        crate::feishu_cli::execute_feishu_doc_append(&crate::feishu_cli::FeishuDocAppendArgs {
-            grant: crate::feishu_cli::FeishuGrantArgs {
-                common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_doc_append(
+        &loongclaw_daemon::feishu_cli::FeishuDocAppendArgs {
+            grant: loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+                common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                     config: Some(config_path.display().to_string()),
                     account: Some("feishu_main".to_owned()),
                     json: true,
@@ -3449,9 +3491,10 @@ async fn feishu_doc_append_uses_user_grant_token_and_appends_content() {
             content: Some("Follow-up note".to_owned()),
             content_path: None,
             content_type: None,
-        })
-        .await
-        .expect("execute doc append");
+        },
+    )
+    .await
+    .expect("execute doc append");
 
     assert_eq!(payload["document"]["document_id"], "doxcnExisting");
     assert_eq!(payload["inserted_block_count"], 1);
@@ -3596,7 +3639,7 @@ async fn feishu_doc_append_supports_oversized_table_subtree() {
         );
     let (base_url, server) = spawn_mock_feishu_server(router).await;
     let config_path = write_sample_feishu_config_with_base_url(&temp_dir, &base_url);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant(
         "feishu_main",
@@ -3609,10 +3652,10 @@ async fn feishu_doc_append_supports_oversized_table_subtree() {
         mvp::feishu::FeishuGrantScopeSet::from_scopes(["offline_access", "docx:document"]);
     store.save_grant(&grant).expect("seed grant");
 
-    let payload =
-        crate::feishu_cli::execute_feishu_doc_append(&crate::feishu_cli::FeishuDocAppendArgs {
-            grant: crate::feishu_cli::FeishuGrantArgs {
-                common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_doc_append(
+        &loongclaw_daemon::feishu_cli::FeishuDocAppendArgs {
+            grant: loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+                common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                     config: Some(config_path.display().to_string()),
                     account: Some("feishu_main".to_owned()),
                     json: true,
@@ -3623,9 +3666,10 @@ async fn feishu_doc_append_supports_oversized_table_subtree() {
             content: Some("oversized table subtree".to_owned()),
             content_path: None,
             content_type: None,
-        })
-        .await
-        .expect("execute doc append oversized table subtree");
+        },
+    )
+    .await
+    .expect("execute doc append oversized table subtree");
 
     assert_eq!(payload["document"]["document_id"], "doxcnExisting");
     assert_eq!(payload["inserted_block_count"], 1003);
@@ -3746,7 +3790,7 @@ async fn feishu_doc_append_supports_oversized_callout_subtree() {
         );
     let (base_url, server) = spawn_mock_feishu_server(router).await;
     let config_path = write_sample_feishu_config_with_base_url(&temp_dir, &base_url);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant(
         "feishu_main",
@@ -3759,10 +3803,10 @@ async fn feishu_doc_append_supports_oversized_callout_subtree() {
         mvp::feishu::FeishuGrantScopeSet::from_scopes(["offline_access", "docx:document"]);
     store.save_grant(&grant).expect("seed grant");
 
-    let payload =
-        crate::feishu_cli::execute_feishu_doc_append(&crate::feishu_cli::FeishuDocAppendArgs {
-            grant: crate::feishu_cli::FeishuGrantArgs {
-                common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_doc_append(
+        &loongclaw_daemon::feishu_cli::FeishuDocAppendArgs {
+            grant: loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+                common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                     config: Some(config_path.display().to_string()),
                     account: Some("feishu_main".to_owned()),
                     json: true,
@@ -3773,9 +3817,10 @@ async fn feishu_doc_append_supports_oversized_callout_subtree() {
             content: Some("oversized callout subtree".to_owned()),
             content_path: None,
             content_type: None,
-        })
-        .await
-        .expect("execute doc append oversized callout subtree");
+        },
+    )
+    .await
+    .expect("execute doc append oversized callout subtree");
 
     assert_eq!(payload["document"]["document_id"], "doxcnExisting");
     assert_eq!(payload["inserted_block_count"], 1002);
@@ -3906,7 +3951,7 @@ async fn feishu_doc_append_supports_oversized_grid_subtree() {
         );
     let (base_url, server) = spawn_mock_feishu_server(router).await;
     let config_path = write_sample_feishu_config_with_base_url(&temp_dir, &base_url);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant(
         "feishu_main",
@@ -3919,10 +3964,10 @@ async fn feishu_doc_append_supports_oversized_grid_subtree() {
         mvp::feishu::FeishuGrantScopeSet::from_scopes(["offline_access", "docx:document"]);
     store.save_grant(&grant).expect("seed grant");
 
-    let payload =
-        crate::feishu_cli::execute_feishu_doc_append(&crate::feishu_cli::FeishuDocAppendArgs {
-            grant: crate::feishu_cli::FeishuGrantArgs {
-                common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_doc_append(
+        &loongclaw_daemon::feishu_cli::FeishuDocAppendArgs {
+            grant: loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+                common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                     config: Some(config_path.display().to_string()),
                     account: Some("feishu_main".to_owned()),
                     json: true,
@@ -3933,9 +3978,10 @@ async fn feishu_doc_append_supports_oversized_grid_subtree() {
             content: Some("oversized grid subtree".to_owned()),
             content_path: None,
             content_type: None,
-        })
-        .await
-        .expect("execute doc append oversized grid subtree");
+        },
+    )
+    .await
+    .expect("execute doc append oversized grid subtree");
 
     assert_eq!(payload["document"]["document_id"], "doxcnExisting");
     assert_eq!(payload["inserted_block_count"], 1003);
@@ -4021,7 +4067,7 @@ async fn feishu_doc_append_reads_html_content_path_and_infers_html_type() {
         );
     let (base_url, server) = spawn_mock_feishu_server(router).await;
     let config_path = write_sample_feishu_config_with_base_url(&temp_dir, &base_url);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant(
         "feishu_main",
@@ -4034,10 +4080,10 @@ async fn feishu_doc_append_reads_html_content_path_and_infers_html_type() {
         mvp::feishu::FeishuGrantScopeSet::from_scopes(["offline_access", "docx:document"]);
     store.save_grant(&grant).expect("seed grant");
 
-    let payload =
-        crate::feishu_cli::execute_feishu_doc_append(&crate::feishu_cli::FeishuDocAppendArgs {
-            grant: crate::feishu_cli::FeishuGrantArgs {
-                common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_doc_append(
+        &loongclaw_daemon::feishu_cli::FeishuDocAppendArgs {
+            grant: loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+                common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                     config: Some(config_path.display().to_string()),
                     account: Some("feishu_main".to_owned()),
                     json: true,
@@ -4048,9 +4094,10 @@ async fn feishu_doc_append_reads_html_content_path_and_infers_html_type() {
             content: None,
             content_path: Some(content_path.display().to_string()),
             content_type: None,
-        })
-        .await
-        .expect("execute doc append from content path");
+        },
+    )
+    .await
+    .expect("execute doc append from content path");
 
     assert_eq!(payload["content_type"], "html");
 
@@ -4076,7 +4123,7 @@ async fn feishu_doc_append_rejects_content_and_content_path_together() {
         .expect("create content parent");
     std::fs::write(&content_path, "Follow-up note").expect("write content fixture");
     let config_path = write_sample_feishu_config(&temp_dir);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant(
         "feishu_main",
@@ -4089,10 +4136,10 @@ async fn feishu_doc_append_rejects_content_and_content_path_together() {
         mvp::feishu::FeishuGrantScopeSet::from_scopes(["offline_access", "docx:document"]);
     store.save_grant(&grant).expect("seed grant");
 
-    let error =
-        crate::feishu_cli::execute_feishu_doc_append(&crate::feishu_cli::FeishuDocAppendArgs {
-            grant: crate::feishu_cli::FeishuGrantArgs {
-                common: crate::feishu_cli::FeishuCommonArgs {
+    let error = loongclaw_daemon::feishu_cli::execute_feishu_doc_append(
+        &loongclaw_daemon::feishu_cli::FeishuDocAppendArgs {
+            grant: loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+                common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                     config: Some(config_path.display().to_string()),
                     account: Some("feishu_main".to_owned()),
                     json: true,
@@ -4103,9 +4150,10 @@ async fn feishu_doc_append_rejects_content_and_content_path_together() {
             content: Some("inline".to_owned()),
             content_path: Some(content_path.display().to_string()),
             content_type: None,
-        })
-        .await
-        .expect_err("doc append should reject mixed content sources");
+        },
+    )
+    .await
+    .expect_err("doc append should reject mixed content sources");
 
     assert_eq!(
         error,
@@ -4147,7 +4195,7 @@ async fn feishu_calendar_primary_uses_user_grant_token_and_defaults_open_id() {
     );
     let (base_url, server) = spawn_mock_feishu_server(router).await;
     let config_path = write_sample_feishu_config_with_base_url(&temp_dir, &base_url);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     store
         .save_grant(&sample_grant(
@@ -4159,10 +4207,10 @@ async fn feishu_calendar_primary_uses_user_grant_token_and_defaults_open_id() {
         ))
         .expect("seed grant");
 
-    let payload = crate::feishu_cli::execute_feishu_calendar_list(
-        &crate::feishu_cli::FeishuCalendarListArgs {
-            grant: crate::feishu_cli::FeishuGrantArgs {
-                common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_calendar_list(
+        &loongclaw_daemon::feishu_cli::FeishuCalendarListArgs {
+            grant: loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+                common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                     config: Some(config_path.display().to_string()),
                     account: Some("feishu_main".to_owned()),
                     json: true,
@@ -4258,7 +4306,7 @@ async fn feishu_messages_get_fetches_tenant_token_before_im_detail_request() {
         );
     let (base_url, server) = spawn_mock_feishu_server(router).await;
     let config_path = write_sample_feishu_config_with_base_url(&temp_dir, &base_url);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     store
         .save_grant(&sample_grant(
@@ -4270,10 +4318,10 @@ async fn feishu_messages_get_fetches_tenant_token_before_im_detail_request() {
         ))
         .expect("seed grant");
 
-    let payload =
-        crate::feishu_cli::execute_feishu_messages_get(&crate::feishu_cli::FeishuMessagesGetArgs {
-            grant: crate::feishu_cli::FeishuGrantArgs {
-                common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_messages_get(
+        &loongclaw_daemon::feishu_cli::FeishuMessagesGetArgs {
+            grant: loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+                common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                     config: Some(config_path.display().to_string()),
                     account: Some("feishu_main".to_owned()),
                     json: true,
@@ -4281,9 +4329,10 @@ async fn feishu_messages_get_fetches_tenant_token_before_im_detail_request() {
                 open_id: Some("ou_123".to_owned()),
             },
             message_id: "om_1".to_owned(),
-        })
-        .await
-        .expect("execute message detail");
+        },
+    )
+    .await
+    .expect("execute message detail");
 
     assert_eq!(payload["message"]["message_id"], "om_1");
     assert_eq!(payload["message"]["sender_id"], "ou_123");
@@ -4355,7 +4404,7 @@ async fn feishu_messages_resource_downloads_binary_to_output_path() {
         );
     let (base_url, server) = spawn_mock_feishu_server(router).await;
     let config_path = write_sample_feishu_config_with_base_url(&temp_dir, &base_url);
-    let now_s = crate::feishu_support::unix_ts_now();
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::feishu::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     store
         .save_grant(&sample_grant(
@@ -4367,10 +4416,10 @@ async fn feishu_messages_resource_downloads_binary_to_output_path() {
         ))
         .expect("seed grant");
 
-    let payload = crate::feishu_cli::execute_feishu_messages_resource(
-        &crate::feishu_cli::FeishuMessagesResourceArgs {
-            grant: crate::feishu_cli::FeishuGrantArgs {
-                common: crate::feishu_cli::FeishuCommonArgs {
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_messages_resource(
+        &loongclaw_daemon::feishu_cli::FeishuMessagesResourceArgs {
+            grant: loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+                common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
                     config: Some(config_path.display().to_string()),
                     account: Some("feishu_main".to_owned()),
                     json: true,
@@ -4379,7 +4428,7 @@ async fn feishu_messages_resource_downloads_binary_to_output_path() {
             },
             message_id: "om_resource_1".to_owned(),
             file_key: "file_resource_1".to_owned(),
-            resource_type: crate::feishu_cli::FeishuMessageResourceCliType::File,
+            resource_type: loongclaw_daemon::feishu_cli::FeishuMessageResourceCliType::File,
             output: output_path.display().to_string(),
         },
     )
