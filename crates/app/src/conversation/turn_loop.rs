@@ -483,7 +483,11 @@ fn append_tool_driven_followup_messages(
         payload,
         user_input,
         loop_warning_reason,
-        |label, text| followup_payload_budget.truncate_payload(label, text),
+        |label, text| {
+            let reduced =
+                crate::conversation::turn_shared::reduce_followup_payload_for_model(label, text);
+            followup_payload_budget.truncate_payload(label, reduced.as_str())
+        },
     ));
 }
 
@@ -500,7 +504,11 @@ fn append_repeated_tool_guard_followup_messages(
         reason,
         user_input,
         latest_tool_context,
-        |label, text| followup_payload_budget.truncate_payload(label, text),
+        |label, text| {
+            let reduced =
+                crate::conversation::turn_shared::reduce_followup_payload_for_model(label, text);
+            followup_payload_budget.truncate_payload(label, reduced.as_str())
+        },
     ));
 }
 
@@ -945,6 +953,158 @@ mod tests {
             system_content.contains("suffix-marker"),
             "system context should preserve the tail of large invoke instructions"
         );
+    }
+
+    #[test]
+    fn append_tool_driven_followup_messages_reduces_file_read_payload_summary() {
+        let mut messages = Vec::new();
+        let mut budget = FollowupPayloadBudget::new(8_000, 20_000);
+        let content = (0..96)
+            .map(|index| format!("line {index}: {}", "x".repeat(48)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let payload_summary = serde_json::json!({
+            "adapter": "core-tools",
+            "tool_name": "file.read",
+            "path": "/repo/README.md",
+            "bytes": 8_192,
+            "truncated": false,
+            "content": content,
+        })
+        .to_string();
+        let tool_result = format!(
+            "[ok] {}",
+            serde_json::json!({
+                "status": "ok",
+                "tool": "file.read",
+                "tool_call_id": "call-file",
+                "payload_summary": payload_summary,
+                "payload_chars": 8_192,
+                "payload_truncated": false
+            })
+        );
+
+        append_tool_driven_followup_messages(
+            &mut messages,
+            "preface",
+            &ToolDrivenFollowupPayload::ToolResult { text: tool_result },
+            "summarize README.md",
+            &mut budget,
+            None,
+        );
+
+        let assistant_tool_result = messages
+            .iter()
+            .find(|message| {
+                message.get("role") == Some(&Value::String("assistant".to_owned()))
+                    && message
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .is_some_and(|content| content.starts_with("[tool_result]\n[ok] "))
+            })
+            .and_then(|message| message.get("content"))
+            .and_then(Value::as_str)
+            .expect("assistant tool_result followup message should exist");
+        let line = assistant_tool_result
+            .lines()
+            .nth(1)
+            .expect("assistant tool_result should keep payload line");
+        let envelope: Value = serde_json::from_str(
+            line.strip_prefix("[ok] ")
+                .expect("tool result line should preserve status prefix"),
+        )
+        .expect("reduced followup envelope should stay valid json");
+        let summary: Value = serde_json::from_str(
+            envelope["payload_summary"]
+                .as_str()
+                .expect("payload summary should stay encoded json"),
+        )
+        .expect("file.read payload summary should stay valid json");
+
+        assert_eq!(envelope["tool"], "file.read");
+        assert_eq!(envelope["payload_truncated"], true);
+        assert_eq!(summary["path"], "/repo/README.md");
+        assert_eq!(summary["bytes"], 8_192);
+        assert_eq!(summary["truncated"], false);
+        assert!(summary.get("content_preview").is_some());
+        assert!(summary.get("content_chars").is_some());
+        assert_eq!(summary["content_truncated"], true);
+    }
+
+    #[test]
+    fn append_repeated_tool_guard_followup_messages_reduces_file_read_payload_summary() {
+        let mut messages = Vec::new();
+        let mut budget = FollowupPayloadBudget::new(8_000, 20_000);
+        let content = (0..96)
+            .map(|index| format!("line {index}: {}", "x".repeat(48)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let payload_summary = serde_json::json!({
+            "adapter": "core-tools",
+            "tool_name": "file.read",
+            "path": "/repo/README.md",
+            "bytes": 8_192,
+            "truncated": false,
+            "content": content,
+        })
+        .to_string();
+        let tool_result = format!(
+            "[ok] {}",
+            serde_json::json!({
+                "status": "ok",
+                "tool": "file.read",
+                "tool_call_id": "call-file",
+                "payload_summary": payload_summary,
+                "payload_chars": 8_192,
+                "payload_truncated": false
+            })
+        );
+
+        append_repeated_tool_guard_followup_messages(
+            &mut messages,
+            "preface",
+            "stop",
+            "summarize README.md",
+            Some(("tool_result", tool_result.as_str())),
+            &mut budget,
+        );
+
+        let assistant_tool_result = messages
+            .iter()
+            .find(|message| {
+                message.get("role") == Some(&Value::String("assistant".to_owned()))
+                    && message
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .is_some_and(|content| content.starts_with("[tool_result]\n[ok] "))
+            })
+            .and_then(|message| message.get("content"))
+            .and_then(Value::as_str)
+            .expect("assistant tool_result followup message should exist");
+        let line = assistant_tool_result
+            .lines()
+            .nth(1)
+            .expect("assistant tool_result should keep payload line");
+        let envelope: Value = serde_json::from_str(
+            line.strip_prefix("[ok] ")
+                .expect("tool result line should preserve status prefix"),
+        )
+        .expect("reduced guard followup envelope should stay valid json");
+        let summary: Value = serde_json::from_str(
+            envelope["payload_summary"]
+                .as_str()
+                .expect("payload summary should stay encoded json"),
+        )
+        .expect("file.read payload summary should stay valid json");
+
+        assert_eq!(envelope["tool"], "file.read");
+        assert_eq!(envelope["payload_truncated"], true);
+        assert_eq!(summary["path"], "/repo/README.md");
+        assert_eq!(summary["bytes"], 8_192);
+        assert_eq!(summary["truncated"], false);
+        assert!(summary.get("content_preview").is_some());
+        assert!(summary.get("content_chars").is_some());
+        assert_eq!(summary["content_truncated"], true);
     }
 
     #[test]
