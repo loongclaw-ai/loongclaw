@@ -2170,6 +2170,9 @@ mod tests {
 
     #[test]
     fn channel_inventory_exposes_grouped_channel_surfaces() {
+        let mut env = crate::test_support::ScopedEnv::new();
+        env.remove("TELEGRAM_BOT_TOKEN");
+
         let config = LoongClawConfig::default();
         let inventory = channel_inventory(&config);
 

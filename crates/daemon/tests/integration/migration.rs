@@ -693,6 +693,8 @@ fn channel_preview_order_follows_shared_service_channel_catalog_order() {
 
 #[test]
 fn resolve_channel_import_readiness_reports_partial_channel_credentials() {
+    let _env = MigrationEnvironmentGuard::set(&[("TELEGRAM_BOT_TOKEN", None)]);
+
     let mut config = mvp::config::LoongClawConfig::default();
     config.feishu.app_id = Some("cli_a1b2c3".to_owned());
 
@@ -1198,6 +1200,8 @@ fn migration_render_preview_summarizes_multi_source_inputs() {
 #[test]
 fn migration_compose_recommended_candidate_supplements_channels_without_overwriting_ready_provider()
 {
+    let _env = MigrationEnvironmentGuard::set(&[("TELEGRAM_BOT_TOKEN", None)]);
+
     let mut existing = mvp::config::LoongClawConfig::default();
     existing.provider.api_key = Some("openai-secret".to_owned());
     existing.provider.model = "openai/gpt-5.1-codex".to_owned();
@@ -1404,6 +1408,8 @@ fn migration_compose_recommended_candidate_supplements_channel_fields_across_sou
 
 #[test]
 fn migration_compose_recommended_candidate_preserves_current_custom_provider_endpoint() {
+    let _env = MigrationEnvironmentGuard::set(&[("TELEGRAM_BOT_TOKEN", None)]);
+
     let mut existing = mvp::config::LoongClawConfig::default();
     existing.provider.kind = mvp::config::ProviderKind::Openrouter;
     existing.provider.model = "openrouter/openai/gpt-5.1".to_owned();
@@ -1566,6 +1572,8 @@ fn migration_compose_recommended_candidate_supplements_provider_transport_tuning
 
 #[test]
 fn migration_compose_recommended_candidate_avoids_provider_auto_pick_on_cross_source_conflict() {
+    let _env = MigrationEnvironmentGuard::set(&[("TELEGRAM_BOT_TOKEN", None)]);
+
     let mut codex = mvp::config::LoongClawConfig::default();
     codex.provider.model = "openai/gpt-5.1-codex".to_owned();
     codex.provider.api_key = Some("openai-secret".to_owned());
