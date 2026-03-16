@@ -19,6 +19,68 @@ use super::analytics::{
 };
 use super::runtime_binding::ConversationRuntimeBinding;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AssistantHistoryLoadErrorCode {
+    DirectReadFailed,
+    KernelRequestFailed,
+    KernelNonOkStatus,
+}
+
+impl AssistantHistoryLoadErrorCode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::DirectReadFailed => "direct_read_failed",
+            Self::KernelRequestFailed => "kernel_request_failed",
+            Self::KernelNonOkStatus => "kernel_non_ok_status",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AssistantHistoryLoadError {
+    code: AssistantHistoryLoadErrorCode,
+    message: String,
+}
+
+impl AssistantHistoryLoadError {
+    #[cfg(feature = "memory-sqlite")]
+    fn direct_read_failed(error: impl std::fmt::Display) -> Self {
+        Self {
+            code: AssistantHistoryLoadErrorCode::DirectReadFailed,
+            message: format!("load turn checkpoint summary failed: {error}"),
+        }
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    fn kernel_request_failed(error: impl std::fmt::Display) -> Self {
+        Self {
+            code: AssistantHistoryLoadErrorCode::KernelRequestFailed,
+            message: format!("load assistant history via kernel failed: {error}"),
+        }
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    fn kernel_non_ok_status(status: impl AsRef<str>) -> Self {
+        Self {
+            code: AssistantHistoryLoadErrorCode::KernelNonOkStatus,
+            message: format!(
+                "load assistant history via kernel returned non-ok status: {}",
+                status.as_ref()
+            ),
+        }
+    }
+
+    pub(crate) fn code(&self) -> AssistantHistoryLoadErrorCode {
+        self.code
+    }
+}
+
+impl std::fmt::Display for AssistantHistoryLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TurnCheckpointLatestEntry {
     pub summary: TurnCheckpointEventSummary,
@@ -175,6 +237,18 @@ pub(crate) async fn load_assistant_contents_from_session_window(
     binding: ConversationRuntimeBinding<'_>,
     memory_config: &MemoryRuntimeConfig,
 ) -> CliResult<Vec<String>> {
+    load_assistant_contents_from_session_window_detailed(session_id, limit, binding, memory_config)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(feature = "memory-sqlite")]
+pub(crate) async fn load_assistant_contents_from_session_window_detailed(
+    session_id: &str,
+    limit: usize,
+    binding: ConversationRuntimeBinding<'_>,
+    memory_config: &MemoryRuntimeConfig,
+) -> Result<Vec<String>, AssistantHistoryLoadError> {
     if let Some(ctx) = binding.kernel_context() {
         let request = MemoryCoreRequest {
             operation: memory::MEMORY_OP_WINDOW.to_owned(),
@@ -189,12 +263,11 @@ pub(crate) async fn load_assistant_contents_from_session_window(
             .kernel
             .execute_memory_core(ctx.pack_id(), &ctx.token, &caps, None, request)
             .await
-            .map_err(|error| format!("load assistant history via kernel failed: {error}"))?;
+            .map_err(AssistantHistoryLoadError::kernel_request_failed)?;
 
         if outcome.status != "ok" {
-            return Err(format!(
-                "load assistant history via kernel returned non-ok status: {}",
-                outcome.status
+            return Err(AssistantHistoryLoadError::kernel_non_ok_status(
+                &outcome.status,
             ));
         }
 
@@ -204,7 +277,7 @@ pub(crate) async fn load_assistant_contents_from_session_window(
     }
 
     let turns = memory::window_direct(session_id, limit, memory_config)
-        .map_err(|error| format!("load turn checkpoint summary failed: {error}"))?;
+        .map_err(AssistantHistoryLoadError::direct_read_failed)?;
     Ok(turns
         .iter()
         .filter_map(|turn| (turn.role == "assistant").then_some(turn.content.clone()))

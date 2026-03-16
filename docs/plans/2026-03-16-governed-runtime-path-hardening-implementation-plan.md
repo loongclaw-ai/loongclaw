@@ -12,7 +12,7 @@ as the authority boundary instead of implicit downgrade behavior.
 
 ---
 
-### Task 1: Lock the scope in docs and GitHub issue text
+## Task 1: Lock the scope in docs and GitHub issue text
 
 **Files:**
 - Create: `docs/plans/2026-03-16-governed-runtime-path-hardening-design.md`
@@ -36,7 +36,7 @@ Open a GitHub bug issue describing:
 
 Expected: issue exists before PR creation and uses the repository template.
 
-### Task 2: Add RED tests for the hardening slice
+## Task 2: Add RED tests for the hardening slice
 
 **Files:**
 - Modify: `crates/app/src/conversation/tests.rs`
@@ -63,7 +63,7 @@ Run:
 Expected: FAIL before implementation because binding is still dropped and
 kernel-bound history still falls back.
 
-### Task 3: Preserve binding through async delegate spawn
+## Task 3: Preserve binding through async delegate spawn
 
 **Files:**
 - Modify: `crates/app/src/conversation/runtime.rs`
@@ -85,7 +85,7 @@ and then into `run_started_delegate_child_turn_with_runtime(...)`.
 
 Adjust fake/local async delegate spawners to preserve and/or record the binding.
 
-### Task 4: Fail closed for kernel-bound history reads
+## Task 4: Fail closed for kernel-bound history reads
 
 **Files:**
 - Modify: `crates/app/src/conversation/session_history.rs`
@@ -108,10 +108,10 @@ Retain the direct sqlite path only for `ConversationRuntimeBinding::Direct`.
 **Step 4: Preserve observability in fail-open consumers**
 
 Where higher-level orchestration still chooses to proceed without governor
-history, surface explicit history load status/error diagnostics instead of
+history, surface explicit history load status/error-code diagnostics instead of
 collapsing the failure into a silent default.
 
-### Task 5: Refresh architecture/security docs
+## Task 5: Refresh architecture/security docs
 
 **Files:**
 - Modify: `ARCHITECTURE.md`
@@ -127,7 +127,7 @@ language that matches the current governed-versus-direct split.
 Document that conversation runtime now uses explicit binding semantics, while
 some outer app/channel paths still remain direct follow-up work.
 
-### Task 6: Verify, commit, and deliver
+## Task 6: Verify, commit, and deliver
 
 **Files:**
 - Modify only the files in this scoped slice

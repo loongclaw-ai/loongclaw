@@ -65,8 +65,8 @@ use super::safe_lane_failure::{
 };
 #[cfg(feature = "memory-sqlite")]
 use super::session_history::{
-    load_assistant_contents_from_session_window, load_latest_turn_checkpoint_entry,
-    load_turn_checkpoint_history_snapshot,
+    AssistantHistoryLoadErrorCode, load_assistant_contents_from_session_window_detailed,
+    load_latest_turn_checkpoint_entry, load_turn_checkpoint_history_snapshot,
 };
 use super::turn_budget::{
     EscalatingAttemptBudget, SafeLaneBackpressureBudget, SafeLaneContinuationBudgetDecision,
@@ -522,7 +522,7 @@ struct SafeLaneSessionGovernorDecision {
     engaged: bool,
     history_window_turns: usize,
     history_load_status: SafeLaneGovernorHistoryLoadStatus,
-    history_load_error: Option<String>,
+    history_load_error: Option<AssistantHistoryLoadErrorCode>,
     failed_final_status_events: u32,
     failed_final_status_threshold: u32,
     failed_threshold_triggered: bool,
@@ -552,7 +552,7 @@ impl SafeLaneSessionGovernorDecision {
             "engaged": self.engaged,
             "history_window_turns": self.history_window_turns,
             "history_load_status": self.history_load_status.as_str(),
-            "history_load_error": self.history_load_error,
+            "history_load_error": self.history_load_error.map(|error| error.as_str()),
             "failed_final_status_events": self.failed_final_status_events,
             "failed_final_status_threshold": self.failed_final_status_threshold,
             "failed_threshold_triggered": self.failed_threshold_triggered,
@@ -581,7 +581,7 @@ impl SafeLaneSessionGovernorDecision {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct SafeLaneGovernorHistorySignals {
     history_load_status: SafeLaneGovernorHistoryLoadStatus,
-    history_load_error: Option<String>,
+    history_load_error: Option<AssistantHistoryLoadErrorCode>,
     summary: SafeLaneEventSummary,
     final_status_failed_samples: Vec<bool>,
     backpressure_failure_samples: Vec<bool>,
@@ -5319,7 +5319,7 @@ fn decide_safe_lane_session_governor(
         engaged,
         history_window_turns,
         history_load_status: history.history_load_status,
-        history_load_error: history.history_load_error.clone(),
+        history_load_error: history.history_load_error,
         failed_final_status_events,
         failed_final_status_threshold,
         failed_threshold_triggered,
@@ -5366,7 +5366,7 @@ async fn load_safe_lane_history_signals_for_governor(
     #[cfg(feature = "memory-sqlite")]
     {
         let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
-        return match load_assistant_contents_from_session_window(
+        return match load_assistant_contents_from_session_window_detailed(
             session_id,
             window_turns,
             binding,
@@ -5379,7 +5379,7 @@ async fn load_safe_lane_history_signals_for_governor(
             }
             Err(error) => SafeLaneGovernorHistorySignals {
                 history_load_status: SafeLaneGovernorHistoryLoadStatus::Unavailable,
-                history_load_error: Some(error),
+                history_load_error: Some(error.code()),
                 ..SafeLaneGovernorHistorySignals::default()
             },
         };
