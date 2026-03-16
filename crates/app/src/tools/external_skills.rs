@@ -22,10 +22,6 @@ const DEFAULT_MAX_DOWNLOAD_BYTES: usize = 5 * 1024 * 1024;
 const HARD_MAX_DOWNLOAD_BYTES: usize = 20 * 1024 * 1024;
 #[cfg(test)]
 const INSTALLED_SKILL_SNAPSHOT_HINT: &str = "installed managed external skill; use external_skills.inspect or external_skills.invoke for details";
-const USER_SKILL_SNAPSHOT_HINT: &str =
-    "user external skill; use external_skills.inspect or external_skills.invoke for details";
-const PROJECT_SKILL_SNAPSHOT_HINT: &str =
-    "project external skill; use external_skills.inspect or external_skills.invoke for details";
 const PROJECT_DISCOVERY_DIRS: [(&str, usize); 4] = [
     (".agents/skills", 0),
     (".codex/skills", 1),
@@ -1571,6 +1567,7 @@ fn discover_skill_inventory(
     });
     Ok(inventory)
 }
+#[cfg(test)]
 pub(super) fn installed_skill_snapshot_lines_with_config(
     config: &super::runtime_config::ToolRuntimeConfig,
 ) -> Result<Vec<String>, String> {
@@ -1578,19 +1575,18 @@ pub(super) fn installed_skill_snapshot_lines_with_config(
     if !policy.enabled || !policy.auto_expose_installed {
         return Ok(Vec::new());
     }
-    Ok(discover_skill_inventory(config)?
+    let install_root = resolve_install_root(config);
+    let index = load_installed_skill_index(&install_root)?;
+    Ok(index
         .skills
         .into_iter()
         .filter_map(|entry| {
             if !entry.active {
                 return None;
             }
-            let hint = match entry.scope {
-                DiscoveredSkillScope::Managed => INSTALLED_SKILL_SNAPSHOT_HINT,
-                DiscoveredSkillScope::User => USER_SKILL_SNAPSHOT_HINT,
-                DiscoveredSkillScope::Project => PROJECT_SKILL_SNAPSHOT_HINT,
-            };
-            Some(format!("- {}: {}", entry.skill_id, hint))
+            rehydrate_installed_skill_entry(&install_root, entry)
+                .ok()
+                .map(|entry| format!("- {}: {}", entry.skill_id, INSTALLED_SKILL_SNAPSHOT_HINT))
         })
         .collect())
 }
