@@ -294,13 +294,6 @@ impl ReviewFlowStyle {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum SystemPromptSelection {
-    KeepCurrent,
-    RestoreBuiltIn,
-    Set(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 struct OnboardScreenOption {
     key: String,
     label: String,
@@ -533,16 +526,10 @@ pub(crate) async fn run_onboard_cli_with_ui(
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            config.cli.prompt_pack_id = None;
-            config.cli.personality = None;
-            config.cli.system_prompt_addendum = None;
-            config.cli.system_prompt = system_prompt.to_owned();
+            apply_explicit_system_prompt_override(&options, &mut config, system_prompt)?;
         } else {
             let personality = resolve_personality_selection(&options, &config, ui, context)?;
-            config.cli.prompt_pack_id = Some(mvp::prompt::DEFAULT_PROMPT_PACK_ID.to_owned());
-            config.cli.personality = Some(personality);
-            config.cli.system_prompt_addendum = None;
-            config.cli.refresh_native_system_prompt();
+            apply_native_prompt_personality(&mut config, personality);
         }
 
         config.memory.profile = resolve_memory_profile_selection(&options, &config, ui, context)?;
@@ -964,7 +951,8 @@ fn resolve_api_key_env_selection(
     context: &OnboardRuntimeContext,
 ) -> CliResult<String> {
     if options.non_interactive {
-        return validate_provider_credential_env_input(
+        return normalize_provider_credential_env_selection(
+            config,
             options
                 .api_key_env
                 .as_deref()
@@ -989,7 +977,7 @@ fn resolve_api_key_env_selection(
     )?;
     loop {
         let value = ui.prompt_with_default("Credential env var", initial)?;
-        match validate_provider_credential_env_input(&value) {
+        match normalize_provider_credential_env_selection(config, &value) {
             Ok(normalized) => return Ok(normalized),
             Err(error) => print_message(ui, error)?,
         }
@@ -1090,6 +1078,66 @@ fn resolve_memory_profile_selection(
             ),
         )?;
     }
+}
+
+fn apply_explicit_system_prompt_override(
+    options: &OnboardCommandOptions,
+    config: &mut mvp::config::LoongClawConfig,
+    raw_system_prompt: &str,
+) -> CliResult<()> {
+    let trimmed = raw_system_prompt.trim();
+    if is_explicit_onboard_clear_input(trimmed) {
+        let personality = options
+            .personality
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                parse_prompt_personality(value).ok_or_else(|| {
+                    format!(
+                        "unsupported --personality value \"{value}\". supported: {}",
+                        supported_personality_list()
+                    )
+                })
+            })
+            .transpose()?
+            .unwrap_or_else(|| config.cli.resolved_personality());
+        apply_native_prompt_personality(config, personality);
+        return Ok(());
+    }
+
+    config.cli.prompt_pack_id = None;
+    config.cli.personality = None;
+    config.cli.system_prompt_addendum = None;
+    config.cli.system_prompt = trimmed.to_owned();
+    Ok(())
+}
+
+fn apply_native_prompt_personality(
+    config: &mut mvp::config::LoongClawConfig,
+    personality: mvp::prompt::PromptPersonality,
+) {
+    config.cli.prompt_pack_id = Some(mvp::prompt::DEFAULT_PROMPT_PACK_ID.to_owned());
+    config.cli.personality = Some(personality);
+    config.cli.system_prompt_addendum = None;
+    config.cli.refresh_native_system_prompt();
+}
+
+fn normalize_provider_credential_env_selection(
+    config: &mvp::config::LoongClawConfig,
+    raw: &str,
+) -> CliResult<String> {
+    if is_explicit_onboard_clear_input(raw) {
+        if provider_supports_blank_api_key_env(config) {
+            return Ok(String::new());
+        }
+        return Err(
+            "clear is only available when inline or oauth credentials are already configured"
+                .to_owned(),
+        );
+    }
+
+    validate_provider_credential_env_input(raw)
 }
 
 fn validate_provider_credential_env_input(raw: &str) -> CliResult<String> {
@@ -2991,6 +3039,13 @@ fn render_default_choice_footer_line(key: &str, description: &str) -> String {
 
 fn render_default_input_hint_line(description: impl AsRef<str>) -> String {
     format!("- press Enter to {}", description.as_ref())
+}
+
+fn render_clear_input_hint_line(description: impl AsRef<str>) -> String {
+    format!(
+        "- type {ONBOARD_CLEAR_INPUT_TOKEN} to {}",
+        description.as_ref()
+    )
 }
 
 fn render_onboard_section_heading(title: &str) -> String {
@@ -5075,6 +5130,8 @@ mod tests {
                 provider: None,
                 model: None,
                 api_key_env: None,
+                personality: None,
+                memory_profile: None,
                 system_prompt: None,
                 skip_model_probe: false,
             },
@@ -5092,13 +5149,13 @@ mod tests {
     }
 
     #[test]
-    fn resolve_system_prompt_selection_accepts_explicit_clear_token_in_interactive_mode() {
+    fn apply_explicit_system_prompt_override_clear_restores_rendered_native_prompt() {
         let mut config = mvp::config::LoongClawConfig::default();
         config.cli.system_prompt = "be terse and code-focused".to_owned();
-        let mut ui = TestOnboardUi::with_inputs([":clear"]);
-        let context = OnboardRuntimeContext::new_for_tests(80, None, std::iter::empty::<PathBuf>());
+        config.cli.prompt_pack_id = None;
+        config.cli.personality = None;
 
-        let selected = resolve_system_prompt_selection(
+        apply_explicit_system_prompt_override(
             &OnboardCommandOptions {
                 output: None,
                 force: false,
@@ -5107,30 +5164,38 @@ mod tests {
                 provider: None,
                 model: None,
                 api_key_env: None,
-                system_prompt: None,
+                personality: Some("friendly_collab".to_owned()),
+                memory_profile: None,
+                system_prompt: Some(":clear".to_owned()),
                 skip_model_probe: false,
             },
-            &config,
-            &mut ui,
-            &context,
+            &mut config,
+            ":clear",
         )
-        .expect("resolve system prompt selection");
+        .expect("restore native system prompt");
 
         assert_eq!(
-            selected,
-            SystemPromptSelection::RestoreBuiltIn,
-            "typing :clear should restore the built-in system prompt instead of keeping the literal token"
+            config.cli.prompt_pack_id(),
+            Some(mvp::prompt::DEFAULT_PROMPT_PACK_ID),
+            "clear token should restore the native prompt pack"
+        );
+        assert_eq!(
+            config.cli.personality,
+            Some(mvp::prompt::PromptPersonality::FriendlyCollab),
+            "explicit personality should be reused when restoring the native prompt"
+        );
+        assert_eq!(
+            config.cli.system_prompt,
+            config.cli.rendered_native_system_prompt(),
+            "restoring the native prompt should refresh the rendered built-in prompt"
         );
     }
 
     #[test]
-    fn resolve_system_prompt_selection_keeps_current_prompt_when_interactive_default_is_used() {
+    fn apply_explicit_system_prompt_override_sets_inline_prompt_and_disables_native_pack() {
         let mut config = mvp::config::LoongClawConfig::default();
-        config.cli.system_prompt = "be terse and code-focused".to_owned();
-        let mut ui = TestOnboardUi::with_inputs(std::iter::empty::<&str>());
-        let context = OnboardRuntimeContext::new_for_tests(80, None, std::iter::empty::<PathBuf>());
 
-        let selected = resolve_system_prompt_selection(
+        apply_explicit_system_prompt_override(
             &OnboardCommandOptions {
                 output: None,
                 force: false,
@@ -5139,66 +5204,28 @@ mod tests {
                 provider: None,
                 model: None,
                 api_key_env: None,
-                system_prompt: None,
-                skip_model_probe: false,
-            },
-            &config,
-            &mut ui,
-            &context,
-        )
-        .expect("resolve system prompt selection");
-
-        assert_eq!(
-            selected,
-            SystemPromptSelection::KeepCurrent,
-            "using the prompt default should keep the current system prompt when no override is prefilled"
-        );
-    }
-
-    #[test]
-    fn resolve_system_prompt_selection_keeps_prefilled_override_when_interactive_default_is_used() {
-        let mut config = mvp::config::LoongClawConfig::default();
-        config.cli.system_prompt = "be terse and code-focused".to_owned();
-        let mut ui = TestOnboardUi::with_inputs(std::iter::empty::<&str>());
-        let context = OnboardRuntimeContext::new_for_tests(80, None, std::iter::empty::<PathBuf>());
-
-        let selected = resolve_system_prompt_selection(
-            &OnboardCommandOptions {
-                output: None,
-                force: false,
-                non_interactive: false,
-                accept_risk: true,
-                provider: None,
-                model: None,
-                api_key_env: None,
+                personality: None,
+                memory_profile: None,
                 system_prompt: Some("prefer concise code reviews".to_owned()),
                 skip_model_probe: false,
             },
-            &config,
-            &mut ui,
-            &context,
+            &mut config,
+            "prefer concise code reviews",
         )
-        .expect("resolve system prompt selection");
+        .expect("apply inline system prompt override");
 
         assert_eq!(
-            selected,
-            SystemPromptSelection::Set("prefer concise code reviews".to_owned()),
-            "using the prompt default should still apply a prefilled system prompt override"
+            config.cli.prompt_pack_id(),
+            None,
+            "explicit inline system prompts should disable the native prompt pack"
         );
-    }
-
-    #[test]
-    fn apply_selected_system_prompt_restore_uses_rendered_native_prompt() {
-        let mut config = mvp::config::LoongClawConfig::default();
-        config.cli.system_prompt = "custom review prompt".to_owned();
-        config.cli.system_prompt_addendum = Some("Prefer concrete remediation steps.".to_owned());
-        let expected = config.cli.rendered_native_system_prompt();
-
-        apply_selected_system_prompt(&mut config, SystemPromptSelection::RestoreBuiltIn);
-
         assert_eq!(
-            config.cli.system_prompt, expected,
-            "restoring the built-in prompt should respect the active native prompt rendering inputs"
+            config.cli.personality, None,
+            "inline system prompt overrides should clear personality presets"
+        );
+        assert_eq!(
+            config.cli.system_prompt, "prefer concise code reviews",
+            "inline system prompt overrides should persist the provided prompt body"
         );
     }
 
@@ -5219,6 +5246,8 @@ mod tests {
             provider: None,
             model: None,
             api_key_env: None,
+            personality: None,
+            memory_profile: None,
             system_prompt: None,
             skip_model_probe: true,
         };

@@ -1949,7 +1949,7 @@ mod tests {
 
         assert!(
             next_steps.iter().any(|step| {
-                step == "Try a one-shot task: loongclaw ask --config '/tmp/loongclaw.toml' --message \"Summarize this repository and suggest the best next step.\""
+                step == "Try a one-shot task: loongclaw ask --config '/tmp/loongclaw.toml' --message \"say hello and verify this setup\""
             }),
             "green doctor runs should hand the user into ask immediately: {next_steps:#?}"
         );

@@ -1,7 +1,5 @@
 use loongclaw_app as mvp;
 
-pub(crate) use mvp::chat::DEFAULT_FIRST_PROMPT as DEFAULT_FIRST_ASK_MESSAGE;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SetupNextActionKind {
     Ask,
@@ -22,6 +20,7 @@ pub(crate) fn collect_setup_next_actions(
     config: &mvp::config::LoongClawConfig,
     config_path: &str,
 ) -> Vec<SetupNextAction> {
+    let quoted_config_path = shell_quote(config_path);
     let mut actions = Vec::new();
     if config.cli.enabled {
         actions.push(SetupNextAction {
@@ -30,7 +29,7 @@ pub(crate) fn collect_setup_next_actions(
             command: format!(
                 "{} ask --config {} --message \"say hello and verify this setup\"",
                 mvp::config::CLI_COMMAND_NAME,
-                config_path
+                quoted_config_path
             ),
             detail: "run one quick message to verify provider, personality, and memory".to_owned(),
         });
@@ -38,9 +37,9 @@ pub(crate) fn collect_setup_next_actions(
             kind: SetupNextActionKind::Chat,
             label: "chat".to_owned(),
             command: format!(
-                "{} chat --config '{}'",
+                "{} chat --config {}",
                 mvp::config::CLI_COMMAND_NAME,
-                config_path
+                quoted_config_path
             ),
             detail: "open the interactive CLI session after the one-shot smoke test".to_owned(),
         });
@@ -65,11 +64,15 @@ pub(crate) fn collect_setup_next_actions(
             command: format!(
                 "{} doctor --config {}",
                 mvp::config::CLI_COMMAND_NAME,
-                config_path
+                quoted_config_path
             ),
             detail: "inspect and repair the config when no direct runtime handoff is ready"
                 .to_owned(),
         });
     }
     actions
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }

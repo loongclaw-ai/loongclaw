@@ -308,6 +308,8 @@ fn default_non_interactive_onboard_options(
         provider: None,
         model: None,
         api_key_env: None,
+        personality: None,
+        memory_profile: None,
         system_prompt: None,
         skip_model_probe: false,
     }
@@ -849,10 +851,14 @@ async fn interactive_onboard_clear_token_keeps_inline_provider_credential() {
             provider: None,
             model: None,
             api_key_env: None,
+            personality: None,
+            memory_profile: None,
             system_prompt: None,
             skip_model_probe: true,
         },
-        ["1", "2", "openai", "gpt-4.1", ":clear", "", "y", "y", "o"],
+        [
+            "1", "2", "openai", "gpt-4.1", ":clear", "", "", "y", "y", "o",
+        ],
         None,
         None,
     )
@@ -885,7 +891,7 @@ async fn interactive_onboard_clear_token_restores_builtin_system_prompt() {
     existing.cli.system_prompt = "custom review prompt".to_owned();
     mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
 
-    run_scripted_onboard_flow(
+    let transcript = run_scripted_onboard_flow(
         crate::onboard_cli::OnboardCommandOptions {
             output: output_path.to_str().map(str::to_owned),
             force: false,
@@ -894,15 +900,22 @@ async fn interactive_onboard_clear_token_restores_builtin_system_prompt() {
             provider: None,
             model: None,
             api_key_env: None,
-            system_prompt: None,
+            personality: None,
+            memory_profile: None,
+            system_prompt: Some(":clear".to_owned()),
             skip_model_probe: true,
         },
-        ["1", "2", "openai", "gpt-4.1", "", ":clear", "y", "y", "o"],
+        ["1", "2", "openai", "gpt-4.1", "", "", "y", "y", "o"],
         None,
         None,
     )
     .await
     .expect("run scripted onboarding with explicit system-prompt clear token");
+    let joined = transcript.join("\n");
+    assert!(
+        !joined.contains("choose assistant personality"),
+        "explicit system-prompt overrides should keep the happy path out of raw prompt/personality editing: {transcript:#?}"
+    );
 
     let (_, config) =
         mvp::config::load(output_path.to_str()).expect("load interactive onboarding config");
@@ -975,6 +988,8 @@ requires_openai_auth = true
             provider: None,
             model: None,
             api_key_env: None,
+            personality: None,
+            memory_profile: None,
             system_prompt: None,
             skip_model_probe: false,
         },
@@ -1014,6 +1029,8 @@ requires_openai_auth = true
             provider: None,
             model: None,
             api_key_env: None,
+            personality: None,
+            memory_profile: None,
             system_prompt: None,
             skip_model_probe: false,
         },
@@ -4082,7 +4099,7 @@ fn onboarding_success_summary_reports_import_source_and_enabled_channels() {
     assert!(
         summary.next_actions.iter().any(|action| action
             .command
-            .contains("loongclaw ask --config /tmp/loongclaw-config.toml")),
+            .contains("loongclaw ask --config '/tmp/loongclaw-config.toml'")),
         "success summary should keep a direct ask handoff for the shortest first-success path: {summary:#?}"
     );
 }
@@ -5243,8 +5260,11 @@ fn render_onboarding_success_summary_compacts_for_narrow_width() {
     assert!(
         lines
             .iter()
-            .any(|line| line == "  /tmp/loongclaw-config.toml"),
-        "narrow renderer should wrap the long config path onto an indented continuation line: {lines:#?}"
+            .any(|line| line == "  '/tmp/loongclaw-config.toml' --message")
+            || lines
+                .iter()
+                .any(|line| line == "  '/tmp/loongclaw-config.toml'"),
+        "narrow renderer should wrap the shell-quoted config path onto an indented continuation line: {lines:#?}"
     );
     assert!(
         lines.iter().any(|line| line == "also available"),
@@ -5293,8 +5313,6 @@ fn onboarding_success_summary_includes_brand_header() {
     );
 
     let lines = crate::onboard_cli::render_onboarding_success_summary_with_width(&summary, 80);
-    let rendered = lines.join(" ");
-
     assert!(
         lines[0].starts_with("██╗"),
         "success summary should start with the shared LOONGCLAW brand block: {lines:#?}"
@@ -5311,7 +5329,7 @@ fn onboarding_success_summary_includes_brand_header() {
         lines
             .iter()
             .any(|line| line
-                .contains("start here: loongclaw ask --config /tmp/loongclaw-config.toml")),
+                .contains("start here: loongclaw ask --config '/tmp/loongclaw-config.toml'")),
         "success summary should elevate ask as the primary handoff command: {lines:#?}"
     );
 }
@@ -5362,7 +5380,7 @@ fn onboarding_success_summary_reports_existing_config_kept() {
         next_actions: vec![crate::onboard_cli::OnboardingAction {
             kind: crate::onboard_cli::OnboardingActionKind::Ask,
             label: "ask".to_owned(),
-            command: "loongclaw ask --config /tmp/loongclaw-config.toml --message \"say hello and verify this setup\"".to_owned(),
+            command: "loongclaw ask --config '/tmp/loongclaw-config.toml' --message \"say hello and verify this setup\"".to_owned(),
             detail: "run one quick message to verify provider, personality, and memory".to_owned(),
         }],
     };
@@ -5449,7 +5467,7 @@ fn onboarding_success_summary_groups_domain_outcomes_by_decision() {
         next_actions: vec![crate::onboard_cli::OnboardingAction {
             kind: crate::onboard_cli::OnboardingActionKind::Ask,
             label: "ask".to_owned(),
-            command: "loongclaw ask --config /tmp/loongclaw-config.toml --message \"say hello and verify this setup\"".to_owned(),
+            command: "loongclaw ask --config '/tmp/loongclaw-config.toml' --message \"say hello and verify this setup\"".to_owned(),
             detail: "run one quick message to verify provider, personality, and memory".to_owned(),
         }],
     };
@@ -5512,7 +5530,7 @@ fn onboarding_success_summary_wraps_domain_outcomes_for_narrow_width() {
         next_actions: vec![crate::onboard_cli::OnboardingAction {
             kind: crate::onboard_cli::OnboardingActionKind::Ask,
             label: "ask".to_owned(),
-            command: "loongclaw ask --config /tmp/loongclaw-config.toml --message \"say hello and verify this setup\"".to_owned(),
+            command: "loongclaw ask --config '/tmp/loongclaw-config.toml' --message \"say hello and verify this setup\"".to_owned(),
             detail: "run one quick message to verify provider, personality, and memory".to_owned(),
         }],
     };
@@ -5544,13 +5562,11 @@ fn onboarding_success_summary_groups_secondary_channel_actions_after_primary_han
     let path = PathBuf::from("/tmp/loongclaw-config.toml");
     let summary = crate::onboard_cli::build_onboarding_success_summary(&path, &config, None);
     let lines = crate::onboard_cli::render_onboarding_success_summary_with_width(&summary, 80);
-    let rendered = lines.join(" ");
-
     assert!(
         lines
             .iter()
             .any(|line| line
-                .contains("start here: loongclaw ask --config /tmp/loongclaw-config.toml")),
+                .contains("start here: loongclaw ask --config '/tmp/loongclaw-config.toml'")),
         "wide success summary should call out ask as the single primary next action: {lines:#?}"
     );
     assert!(
@@ -5560,19 +5576,19 @@ fn onboarding_success_summary_groups_secondary_channel_actions_after_primary_han
     assert!(
         lines
             .iter()
-            .any(|line| line == "- chat: loongclaw chat --config /tmp/loongclaw-config.toml"),
+            .any(|line| line == "- chat: loongclaw chat --config '/tmp/loongclaw-config.toml'"),
         "wide success summary should keep the interactive CLI path as a secondary action: {lines:#?}"
     );
     assert!(
         lines
             .iter()
             .any(|line| line
-                == "- feishu: loongclaw feishu-serve --config /tmp/loongclaw-config.toml"),
+                == "- feishu: loongclaw feishu-serve --config '/tmp/loongclaw-config.toml'"),
         "wide success summary should list feishu as a secondary action in alphabetical order: {lines:#?}"
     );
     assert!(
         lines.iter().any(|line| line
-            == "- telegram: loongclaw telegram-serve --config /tmp/loongclaw-config.toml"),
+            == "- telegram: loongclaw telegram-serve --config '/tmp/loongclaw-config.toml'"),
         "wide success summary should list telegram as a secondary action after feishu: {lines:#?}"
     );
 }
@@ -5599,7 +5615,7 @@ fn onboarding_success_summary_uses_channel_handoff_when_cli_is_disabled() {
     );
     assert!(
         lines.iter().all(|line| !line
-            .starts_with("start here: loongclaw ask --config /tmp/loongclaw-config.toml")),
+            .starts_with("start here: loongclaw ask --config '/tmp/loongclaw-config.toml'")),
         "success summary should not keep chat as the primary handoff once cli is disabled: {lines:#?}"
     );
 }
