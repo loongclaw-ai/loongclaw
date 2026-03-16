@@ -658,15 +658,6 @@ fn collapse_whitespace(input: &str) -> String {
 }
 
 #[cfg(test)]
-fn clear_browser_sessions() {
-    if let Ok(mut sessions) = browser_sessions().lock() {
-        // Only clear the default scope so that tests using custom scope IDs
-        // (e.g. "scope-a", "scope-b") are not disrupted by parallel tests.
-        sessions.remove(DEFAULT_BROWSER_SCOPE_ID);
-    }
-}
-
-#[cfg(test)]
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
@@ -681,6 +672,15 @@ mod tests {
             tool_name: tool_name.to_owned(),
             payload,
         }
+    }
+
+    /// Create a request with a test-specific browser scope to isolate from parallel tests.
+    fn scoped_request(tool_name: &str, mut payload: Value, scope: &str) -> ToolCoreRequest {
+        payload.as_object_mut().unwrap().insert(
+            super::super::BROWSER_SESSION_SCOPE_FIELD.to_owned(),
+            json!(scope),
+        );
+        request(tool_name, payload)
     }
 
     fn local_browser_config() -> super::super::runtime_config::ToolRuntimeConfig {
@@ -801,7 +801,6 @@ mod tests {
 
     #[test]
     fn browser_open_requires_enabled_runtime() {
-        clear_browser_sessions();
         let mut config = local_browser_config();
         config.browser.enabled = false;
 
@@ -816,7 +815,6 @@ mod tests {
 
     #[test]
     fn browser_open_rejects_private_hosts_by_default() {
-        clear_browser_sessions();
         let config = super::super::runtime_config::ToolRuntimeConfig::default();
         let base_url = "http://127.0.0.1:6553".to_owned();
 
@@ -831,7 +829,6 @@ mod tests {
 
     #[test]
     fn browser_open_rejects_caller_supplied_session_id() {
-        clear_browser_sessions();
         let config = local_browser_config();
 
         let error = execute_browser_tool_with_config(
@@ -848,12 +845,11 @@ mod tests {
 
     #[test]
     fn browser_open_discovers_safe_links_and_page_text() {
-        clear_browser_sessions();
         let (base_url, handle) = spawn_browser_fixture_server(1);
         let config = local_browser_config();
 
         let outcome = execute_browser_tool_with_config(
-            request("browser.open", json!({"url": base_url})),
+            scoped_request("browser.open", json!({"url": base_url}), "test-open-links"),
             &config,
         )
         .expect("browser.open should succeed");
@@ -883,12 +879,11 @@ mod tests {
 
     #[test]
     fn browser_extract_returns_links_and_selector_text() {
-        clear_browser_sessions();
         let (base_url, handle) = spawn_browser_fixture_server(1);
         let config = local_browser_config();
 
         let opened = execute_browser_tool_with_config(
-            request("browser.open", json!({"url": base_url})),
+            scoped_request("browser.open", json!({"url": base_url}), "test-extract"),
             &config,
         )
         .expect("browser.open should succeed");
@@ -898,9 +893,10 @@ mod tests {
             .to_owned();
 
         let links = execute_browser_tool_with_config(
-            request(
+            scoped_request(
                 "browser.extract",
                 json!({"session_id": &session_id, "mode": "links"}),
+                "test-extract",
             ),
             &config,
         )
@@ -908,13 +904,14 @@ mod tests {
         assert_eq!(links.payload["links"][0]["text"], json!("Continue"));
 
         let selector_text = execute_browser_tool_with_config(
-            request(
+            scoped_request(
                 "browser.extract",
                 json!({
                     "session_id": session_id,
                     "mode": "selector_text",
                     "selector": ".feature"
                 }),
+                "test-extract",
             ),
             &config,
         )
@@ -925,12 +922,11 @@ mod tests {
 
     #[test]
     fn browser_click_follows_discovered_link_with_cookie_session() {
-        clear_browser_sessions();
         let (base_url, handle) = spawn_browser_fixture_server(2);
         let config = local_browser_config();
 
         let opened = execute_browser_tool_with_config(
-            request("browser.open", json!({"url": base_url})),
+            scoped_request("browser.open", json!({"url": base_url}), "test-click"),
             &config,
         )
         .expect("browser.open should succeed");
@@ -940,9 +936,10 @@ mod tests {
             .to_owned();
 
         let clicked = execute_browser_tool_with_config(
-            request(
+            scoped_request(
                 "browser.click",
                 json!({"session_id": session_id, "link_id": 1}),
+                "test-click",
             ),
             &config,
         )
@@ -961,7 +958,6 @@ mod tests {
 
     #[test]
     fn browser_sessions_are_isolated_by_internal_scope() {
-        clear_browser_sessions();
         let (base_url, handle) = spawn_browser_fixture_server(1);
         let config = local_browser_config();
 
@@ -999,7 +995,6 @@ mod tests {
 
     #[test]
     fn browser_scope_eviction_is_limited_per_scope() {
-        clear_browser_sessions();
         let (base_url, handle) = spawn_browser_fixture_server(2);
         let mut config = local_browser_config();
         config.browser.max_sessions = 1;
