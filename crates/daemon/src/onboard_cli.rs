@@ -3311,10 +3311,7 @@ fn render_onboarding_risk_screen_lines_with_style(
     )
 }
 
-pub fn render_preflight_summary_screen_lines(
-    checks: &[OnboardCheck],
-    width: usize,
-) -> Vec<String> {
+pub fn render_preflight_summary_screen_lines(checks: &[OnboardCheck], width: usize) -> Vec<String> {
     render_preflight_summary_screen_lines_with_style(
         checks,
         width,
@@ -4317,10 +4314,7 @@ fn render_memory_profile_selection_screen_lines_with_style(
     )
 }
 
-pub fn render_existing_config_write_screen_lines(
-    config_path: &str,
-    width: usize,
-) -> Vec<String> {
+pub fn render_existing_config_write_screen_lines(config_path: &str, width: usize) -> Vec<String> {
     render_existing_config_write_screen_lines_with_style(config_path, width, false)
 }
 
@@ -4759,7 +4753,6 @@ pub fn parse_provider_kind(raw: &str) -> Option<mvp::config::ProviderKind> {
     mvp::config::ProviderKind::parse(raw)
 }
 
-pub fn provider_default_api_key_env(kind: mvp::config::ProviderKind) -> Option<&'static str> {
 pub fn parse_prompt_personality(raw: &str) -> Option<mvp::prompt::PromptPersonality> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "calm_engineering" | "engineering" | "calm" => {
@@ -4787,6 +4780,8 @@ pub fn parse_memory_profile(raw: &str) -> Option<mvp::config::MemoryProfile> {
         _ => None,
     }
 }
+
+pub fn provider_default_api_key_env(kind: mvp::config::ProviderKind) -> Option<&'static str> {
     kind.default_api_key_env()
 }
 
@@ -4798,7 +4793,6 @@ pub fn provider_kind_display_name(kind: mvp::config::ProviderKind) -> &'static s
     kind.display_name()
 }
 
-pub fn supported_provider_list() -> String {
 pub fn prompt_personality_id(personality: mvp::prompt::PromptPersonality) -> &'static str {
     match personality {
         mvp::prompt::PromptPersonality::CalmEngineering => "calm_engineering",
@@ -4814,6 +4808,8 @@ pub fn memory_profile_id(profile: mvp::config::MemoryProfile) -> &'static str {
         mvp::config::MemoryProfile::ProfilePlusWindow => "profile_plus_window",
     }
 }
+
+pub fn supported_provider_list() -> String {
     mvp::config::ProviderKind::all_sorted()
         .iter()
         .map(|kind| kind.as_str())
