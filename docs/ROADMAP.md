@@ -284,7 +284,11 @@ Delivered in current baseline:
 - release-first install flow with checksum-verified prebuilt binaries and explicit source fallback (`scripts/install.sh`, `scripts/install.ps1`)
 - runtime-visible tool advertising so capability snapshots and provider tool schemas follow the actually enabled tool surface
 - Cargo feature flags for MVP packaging controls
-- product specs for installation, onboarding, one-shot ask, doctor, browser automation, tool surface, channel setup, and WebChat expectations
+- product specs for installation, onboarding, one-shot ask, doctor, browser automation, tool surface, channel setup, runtime experiment, and WebChat expectations
+- experiment-state operator surface foundation:
+  - `runtime-snapshot` persists lineage-aware runtime checkpoint artifacts
+  - `runtime-restore` replays a persisted checkpoint as a dry-run or apply plan
+  - `runtime-experiment start|finish|show` records baseline snapshot, mutation summary, result snapshot, evaluation metrics, warnings, and final decision
 - modular channel/provider architecture for extension-safe evolution:
   - `app/channel/feishu/*` split into adapter/payload/webhook layers
   - Feishu encrypted webhook payload decrypt lane with signature verification
@@ -302,10 +306,8 @@ Remaining deliverables:
 - beginner installation hardening:
   - sustain tagged release publishing across macOS/Linux/Windows
   - expand beyond installer scripts into package-manager distribution only after release adoption is stable
-- experiment-state operator surface:
-  - keep runtime snapshot lineage and runtime restore as the checkpoint/replay substrate
-  - add a minimal experiment-run record layer that links baseline snapshot, mutation summary, result snapshot, evaluation metrics, and promotion decision
-  - use that record layer as the prerequisite for later evaluator pipelines and automated skill-optimization loops
+- experiment-state operator surface follow-through:
+  - use the shipped snapshot/restore/experiment record layer as the prerequisite for later evaluator pipelines and automated skill-optimization loops
 - managed browser automation companion:
   - keep `browser.open`, `browser.extract`, and `browser.click` as the shipped safe browser lane
   - partial governed adapter skeleton now exists for richer page actions:

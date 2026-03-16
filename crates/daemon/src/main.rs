@@ -208,6 +208,9 @@ async fn main() {
                 apply,
             },
         ),
+        Commands::RuntimeExperiment { command } => {
+            runtime_experiment_cli::run_runtime_experiment_cli(command)
+        }
         Commands::ListContextEngines { config, json } => {
             run_list_context_engines_cli(config.as_deref(), json)
         }
