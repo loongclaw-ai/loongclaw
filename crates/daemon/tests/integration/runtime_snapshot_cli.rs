@@ -138,7 +138,7 @@ fn write_runtime_snapshot_config(root: &Path) -> (PathBuf, mvp::config::LoongCla
             provider: mvp::config::ProviderConfig {
                 kind: mvp::config::ProviderKind::Deepseek,
                 model: "deepseek-chat".to_owned(),
-                api_key: Some("${RUNTIME_SNAPSHOT_DEEPSEEK_KEY}".to_owned()),
+                api_key: Some("demo-token".to_owned()),
                 ..Default::default()
             },
         },
