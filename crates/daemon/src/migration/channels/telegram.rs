@@ -1,6 +1,5 @@
 use loongclaw_app as mvp;
 
-#[cfg(any(test, feature = "test-support"))]
 use super::ChannelDoctorCheck;
 use super::ensure_default_env_binding;
 use super::{ChannelCheckLevel, ChannelPreflightCheck, ChannelPreview, build_channel_preview};
@@ -112,7 +111,6 @@ pub(super) fn collect_preflight_checks(
     }]
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub(super) fn collect_doctor_checks(
     config: &mvp::config::LoongClawConfig,
 ) -> Vec<ChannelDoctorCheck> {

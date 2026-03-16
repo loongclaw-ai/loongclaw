@@ -2610,7 +2610,6 @@ fn render_calendar_freebusy_text(payload: &Value) -> CliResult<String> {
     Ok(lines.join("\n"))
 }
 
-#[cfg(any(test, feature = "test-support"))]
 mod render_tests {
     use super::*;
 

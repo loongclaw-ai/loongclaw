@@ -470,7 +470,6 @@ pub struct ChannelImportReadiness {
 }
 
 impl ChannelImportReadiness {
-    #[cfg(any(test, feature = "test-support"))]
     pub fn with_state(mut self, channel_id: &str, state: ChannelCredentialState) -> Self {
         self.set_state(channel_id, state);
         self

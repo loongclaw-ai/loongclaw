@@ -239,7 +239,6 @@ pub fn resolve_choice_by_selector_resolution(
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn resolve_choice_by_selector<'a>(
     plan: &'a ProviderSelectionPlan,
     selector: &str,

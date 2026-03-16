@@ -25,7 +25,6 @@ ed25519-dalek.workspace = true
 wasmtime.workspace = true
 
 [dev-dependencies]
-loongclaw-spec = { path = ".", features = ["test-support"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 wat = "1"

@@ -67,7 +67,6 @@ pub fn classify_current_setup(output_path: &Path) -> CurrentSetupState {
     CurrentSetupState::Repairable
 }
 
-#[cfg(any(test, feature = "test-support"))]
 #[allow(dead_code)]
 pub fn collect_import_candidates_with_paths(
     output_path: &Path,
@@ -96,7 +95,6 @@ pub fn collect_import_candidates_with_path_list(
     )
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn collect_import_candidates_with_paths_and_readiness(
     output_path: &Path,
     codex_config_path: Option<&Path>,
@@ -252,7 +250,6 @@ pub fn detect_workspace_guidance(root: &Path) -> Vec<WorkspaceGuidanceCandidate>
     guidance
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn collect_import_surfaces(config: &mvp::config::LoongClawConfig) -> Vec<ImportSurface> {
     collect_import_surfaces_with_channel_readiness(
         config,

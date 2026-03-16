@@ -1001,8 +1001,6 @@ fn provider_model_probe_failure_check(
         ),
     }
 }
-
-#[cfg(any(test, feature = "test-support"))]
 #[allow(dead_code)]
 fn collect_channel_doctor_checks(config: &mvp::config::LoongClawConfig) -> Vec<DoctorCheck> {
     crate::migration::channels::collect_channel_doctor_checks(config)

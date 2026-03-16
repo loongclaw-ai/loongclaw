@@ -1,10 +1,7 @@
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
-
 use crate::mvp;
-use crate::security_scan_profile_message;
 use crate::{Capability, OperationSpec};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -72,6 +69,8 @@ pub fn write_temp_risk_profile(path: &Path, body: &str) {
 }
 
 pub fn sign_security_scan_profile_for_test(profile: &SecurityScanProfile) -> (String, String) {
+    use crate::security_scan_profile_message;
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
     use ed25519_dalek::{Signer, SigningKey};
 
     let signing_key = SigningKey::from_bytes(&[7_u8; 32]);

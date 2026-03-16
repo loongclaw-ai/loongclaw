@@ -49,7 +49,6 @@ impl OnboardRuntimeContext {
         }
     }
 
-    #[cfg(any(test, feature = "test-support"))]
     pub fn new_for_tests(
         render_width: usize,
         workspace_root: Option<PathBuf>,
@@ -682,7 +681,6 @@ pub async fn run_onboard_cli_with_ui(
     Ok(())
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn build_channel_onboarding_follow_up_lines(
     config: &mvp::config::LoongClawConfig,
 ) -> Vec<String> {
@@ -873,7 +871,6 @@ pub fn build_provider_selection_plan_for_candidate(
     )
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn resolve_provider_config_from_selection(
     current_provider: &mvp::config::ProviderConfig,
     plan: &crate::migration::ProviderSelectionPlan,
@@ -1400,7 +1397,6 @@ pub fn collect_channel_preflight_checks(
             level: match check.level {
                 crate::migration::channels::ChannelCheckLevel::Pass => OnboardCheckLevel::Pass,
                 crate::migration::channels::ChannelCheckLevel::Warn => OnboardCheckLevel::Warn,
-                #[cfg(any(test, feature = "test-support"))]
                 crate::migration::channels::ChannelCheckLevel::Fail => OnboardCheckLevel::Fail,
             },
             detail: check.detail,
@@ -1409,7 +1405,6 @@ pub fn collect_channel_preflight_checks(
         .collect()
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn collect_import_surfaces(config: &mvp::config::LoongClawConfig) -> Vec<ImportSurface> {
     crate::migration::collect_import_surfaces(config)
         .into_iter()
@@ -1417,7 +1412,6 @@ pub fn collect_import_surfaces(config: &mvp::config::LoongClawConfig) -> Vec<Imp
         .collect()
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn collect_import_surfaces_with_channel_readiness(
     config: &mvp::config::LoongClawConfig,
     readiness: ChannelImportReadiness,
@@ -1706,7 +1700,6 @@ fn print_onboard_entry_options(
     )
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_onboard_entry_screen_lines(
     current_setup_state: crate::migration::CurrentSetupState,
     current_candidate: Option<&ImportCandidate>,
@@ -2052,7 +2045,6 @@ fn select_interactive_import_starting_config(
     Ok(default_starting_config_selection())
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn collect_import_candidates_with_paths(
     output_path: &Path,
     codex_config_path: Option<&Path>,
@@ -2159,7 +2151,6 @@ fn print_import_candidate_preview(
     )
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_single_detected_setup_preview_screen_lines(
     candidate: &ImportCandidate,
     all_candidates: &[ImportCandidate],
@@ -2255,7 +2246,6 @@ fn build_onboard_review_candidate_with_guidance(
     })
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_onboard_review_lines_with_guidance(
     config: &mvp::config::LoongClawConfig,
     import_source: Option<&str>,
@@ -2273,7 +2263,6 @@ pub fn render_onboard_review_lines_with_guidance(
     )
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_current_setup_review_lines_with_guidance(
     config: &mvp::config::LoongClawConfig,
     import_source: Option<&str>,
@@ -2291,7 +2280,6 @@ pub fn render_current_setup_review_lines_with_guidance(
     )
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_detected_setup_review_lines_with_guidance(
     config: &mvp::config::LoongClawConfig,
     import_source: Option<&str>,
@@ -2449,7 +2437,6 @@ fn render_onboard_review_lines_with_guidance_and_style(
     lines
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn build_onboarding_success_summary(
     path: &Path,
     config: &mvp::config::LoongClawConfig,
@@ -2546,7 +2533,6 @@ fn render_onboarding_success_summary(summary: &OnboardingSuccessSummary) -> Vec<
     render_onboarding_success_summary_with_width_and_style(summary, detect_render_width(), true)
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_onboarding_success_summary_with_width(
     summary: &OnboardingSuccessSummary,
     width: usize,
@@ -2895,7 +2881,6 @@ fn render_onboard_input_screen(
     lines
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_continue_current_setup_screen_lines(
     config: &mvp::config::LoongClawConfig,
     width: usize,
@@ -2909,7 +2894,6 @@ pub fn render_continue_current_setup_screen_lines(
     )
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_continue_detected_setup_screen_lines(
     config: &mvp::config::LoongClawConfig,
     import_source: &str,
@@ -2975,7 +2959,6 @@ fn render_shortcut_default_choice_footer_line(shortcut_kind: OnboardShortcutKind
     render_default_choice_footer_line("1", shortcut_kind.default_choice_description())
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_onboarding_risk_screen_lines(width: usize) -> Vec<String> {
     render_onboarding_risk_screen_lines_with_style(width, false)
 }
@@ -3018,12 +3001,10 @@ fn render_onboarding_risk_screen_lines_with_style(
     )
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_preflight_summary_screen_lines(checks: &[OnboardCheck], width: usize) -> Vec<String> {
     render_preflight_summary_screen_lines_with_style(checks, width, ReviewFlowStyle::Guided, false)
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_current_setup_preflight_summary_screen_lines(
     checks: &[OnboardCheck],
     width: usize,
@@ -3036,7 +3017,6 @@ pub fn render_current_setup_preflight_summary_screen_lines(
     )
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_detected_setup_preflight_summary_screen_lines(
     checks: &[OnboardCheck],
     width: usize,
@@ -3123,7 +3103,6 @@ fn render_preflight_summary_screen_lines_with_style(
     lines
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_write_confirmation_screen_lines(
     config_path: &str,
     warnings_kept: bool,
@@ -3138,7 +3117,6 @@ pub fn render_write_confirmation_screen_lines(
     )
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_current_setup_write_confirmation_screen_lines(
     config_path: &str,
     warnings_kept: bool,
@@ -3153,7 +3131,6 @@ pub fn render_current_setup_write_confirmation_screen_lines(
     )
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_detected_setup_write_confirmation_screen_lines(
     config_path: &str,
     warnings_kept: bool,
@@ -3510,7 +3487,6 @@ fn render_starting_point_selection_footer_lines(
     vec![first_hint]
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_starting_point_selection_screen_lines(
     candidates: &[ImportCandidate],
     width: usize,
@@ -3558,7 +3534,6 @@ fn render_starting_point_selection_screen_lines_with_style(
     )
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_provider_selection_screen_lines(
     plan: &crate::migration::ProviderSelectionPlan,
     width: usize,
@@ -3641,7 +3616,6 @@ fn render_provider_selection_default_choice_footer_line(
     ))
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_model_selection_screen_lines(
     config: &mvp::config::LoongClawConfig,
     width: usize,
@@ -3654,7 +3628,6 @@ pub fn render_model_selection_screen_lines(
     )
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_model_selection_screen_lines_with_default(
     config: &mvp::config::LoongClawConfig,
     prompt_default: &str,
@@ -3698,7 +3671,6 @@ fn render_model_selection_screen_lines_with_style(
     )
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_api_key_env_selection_screen_lines(
     config: &mvp::config::LoongClawConfig,
     default_api_key_env: &str,
@@ -3713,7 +3685,6 @@ pub fn render_api_key_env_selection_screen_lines(
     )
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_api_key_env_selection_screen_lines_with_default(
     config: &mvp::config::LoongClawConfig,
     default_api_key_env: &str,
@@ -3779,7 +3750,6 @@ fn render_api_key_env_selection_screen_lines_with_style(
     )
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_system_prompt_selection_screen_lines(
     config: &mvp::config::LoongClawConfig,
     width: usize,
@@ -3792,7 +3762,6 @@ pub fn render_system_prompt_selection_screen_lines(
     )
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_system_prompt_selection_screen_lines_with_default(
     config: &mvp::config::LoongClawConfig,
     prompt_default: &str,
@@ -3831,7 +3800,6 @@ fn render_system_prompt_selection_screen_lines_with_style(
     )
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_existing_config_write_screen_lines(config_path: &str, width: usize) -> Vec<String> {
     render_existing_config_write_screen_lines_with_style(config_path, width, false)
 }
@@ -4032,7 +4000,6 @@ fn prompt_onboard_shortcut_choice(ui: &mut impl OnboardUi) -> CliResult<OnboardS
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn detect_import_starting_config_with_channel_readiness(
     readiness: ChannelImportReadiness,
 ) -> mvp::config::LoongClawConfig {

@@ -256,7 +256,6 @@ fn candidate_matches_source_path(
         .is_some_and(|candidate_path| candidate_path == requested_source_path)
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_import_preview_lines_for_width(
     candidate: &ImportCandidate,
     width: usize,
@@ -264,7 +263,6 @@ pub fn render_import_preview_lines_for_width(
     render_import_preview_lines_for_candidates(candidate, std::slice::from_ref(candidate), width)
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_import_preview_lines_for_candidates(
     candidate: &ImportCandidate,
     all_candidates: &[ImportCandidate],
@@ -314,7 +312,6 @@ fn render_import_preview_lines_for_candidates_with_style(
     lines
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn render_import_apply_summary_lines_for_width(
     output_path: &Path,
     candidate: &ImportCandidate,
@@ -608,7 +605,6 @@ pub fn select_apply_candidate_index(candidates: &[ImportCandidate]) -> CliResult
     ))
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn resolve_import_provider_selection(
     current_provider: &mvp::config::ProviderConfig,
     all_candidates: &[ImportCandidate],

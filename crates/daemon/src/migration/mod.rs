@@ -6,13 +6,10 @@ pub mod provider_transport;
 pub mod render;
 pub mod types;
 
-#[cfg(any(test, feature = "test-support"))]
 #[allow(unused_imports)]
 pub use discovery::collect_import_candidates_with_paths;
-#[cfg(any(test, feature = "test-support"))]
 #[allow(unused_imports)]
 pub use discovery::collect_import_candidates_with_paths_and_readiness;
-#[cfg(any(test, feature = "test-support"))]
 #[allow(unused_imports)]
 pub use discovery::collect_import_surfaces;
 #[allow(unused_imports)]
@@ -23,7 +20,6 @@ pub use discovery::{
 };
 #[allow(unused_imports)]
 pub use planner::{compose_recommended_import_candidate, prepend_recommended_import_candidate};
-#[cfg(any(test, feature = "test-support"))]
 #[allow(unused_imports)]
 pub use provider_selection::resolve_choice_by_selector;
 #[allow(unused_imports)]

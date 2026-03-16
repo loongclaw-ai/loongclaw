@@ -20,7 +20,6 @@ pub struct ChannelPreview {
 pub enum ChannelCheckLevel {
     Pass,
     Warn,
-    #[cfg(any(test, feature = "test-support"))]
     Fail,
 }
 
@@ -31,7 +30,6 @@ pub struct ChannelPreflightCheck {
     pub detail: String,
 }
 
-#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelDoctorCheck {
     pub name: &'static str,
@@ -54,7 +52,6 @@ struct ChannelAdapter {
     readiness_state: fn(&mvp::config::LoongClawConfig) -> ChannelCredentialState,
     apply_import_readiness: fn(&mut mvp::config::LoongClawConfig, ChannelCredentialState),
     collect_preflight_checks: fn(&mvp::config::LoongClawConfig) -> Vec<ChannelPreflightCheck>,
-    #[cfg(any(test, feature = "test-support"))]
     collect_doctor_checks: fn(&mvp::config::LoongClawConfig) -> Vec<ChannelDoctorCheck>,
     apply_default_env_bindings: fn(&mut mvp::config::LoongClawConfig) -> Vec<String>,
 }
@@ -67,7 +64,6 @@ const REGISTRY: [ChannelAdapter; 2] = [
         readiness_state: telegram::readiness_state,
         apply_import_readiness: telegram::apply_import_readiness,
         collect_preflight_checks: telegram::collect_preflight_checks,
-        #[cfg(any(test, feature = "test-support"))]
         collect_doctor_checks: telegram::collect_doctor_checks,
         apply_default_env_bindings: telegram::apply_default_env_bindings,
     },
@@ -78,7 +74,6 @@ const REGISTRY: [ChannelAdapter; 2] = [
         readiness_state: feishu::readiness_state,
         apply_import_readiness: feishu::apply_import_readiness,
         collect_preflight_checks: feishu::collect_preflight_checks,
-        #[cfg(any(test, feature = "test-support"))]
         collect_doctor_checks: feishu::collect_doctor_checks,
         apply_default_env_bindings: feishu::apply_default_env_bindings,
     },
@@ -158,7 +153,6 @@ pub fn collect_channel_preflight_checks(
         .collect()
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn collect_channel_doctor_checks(
     config: &mvp::config::LoongClawConfig,
 ) -> Vec<ChannelDoctorCheck> {

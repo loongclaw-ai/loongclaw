@@ -17,7 +17,6 @@ thiserror.workspace = true
 test-support = []
 
 [dev-dependencies]
-loongclaw-kernel = { path = ".", features = ["test-support"] }
 proptest = "1"
 tokio.workspace = true
 

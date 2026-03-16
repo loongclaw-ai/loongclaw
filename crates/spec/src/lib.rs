@@ -9,7 +9,6 @@ pub mod programmatic;
 pub mod spec_execution;
 pub mod spec_runtime;
 
-#[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
 pub use kernel_bootstrap::{BootstrapBuilder, KernelBuilder, default_pack_manifest};

@@ -273,7 +273,6 @@ pub fn build_account_recommendations(
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn resolve_selected_grant(
     store: &mvp::feishu::FeishuTokenStore,
     account_id: &str,

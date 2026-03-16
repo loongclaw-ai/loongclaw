@@ -19,7 +19,6 @@ sha2.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-loongclaw-bench = { path = ".", features = ["test-support"] }
 
 [lints]
 workspace = true

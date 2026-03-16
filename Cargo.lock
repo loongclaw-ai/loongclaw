@@ -1948,7 +1948,6 @@ dependencies = [
  "futures-util",
  "http 1.4.0",
  "http-body 1.0.1",
- "loongclaw-app",
  "loongclaw-contracts",
  "loongclaw-kernel",
  "reqwest",
@@ -1969,7 +1968,6 @@ name = "loongclaw-bench"
 version = "0.1.2"
 dependencies = [
  "loongclaw-app",
- "loongclaw-bench",
  "loongclaw-kernel",
  "loongclaw-spec",
  "rusqlite",
@@ -2000,7 +1998,6 @@ dependencies = [
  "ed25519-dalek",
  "loongclaw-app",
  "loongclaw-bench",
- "loongclaw-daemon",
  "loongclaw-kernel",
  "loongclaw-spec",
  "rand 0.8.5",
@@ -2019,7 +2016,6 @@ version = "0.1.2"
 dependencies = [
  "async-trait",
  "loongclaw-contracts",
- "loongclaw-kernel",
  "proptest",
  "semver",
  "serde",
@@ -2033,7 +2029,6 @@ name = "loongclaw-protocol"
 version = "0.1.2"
 dependencies = [
  "async-trait",
- "loongclaw-protocol",
  "serde",
  "serde_json",
  "thiserror",
@@ -2050,7 +2045,6 @@ dependencies = [
  "futures-util",
  "loongclaw-kernel",
  "loongclaw-protocol",
- "loongclaw-spec",
  "reqwest",
  "serde",
  "serde_json",

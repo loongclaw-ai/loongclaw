@@ -16,7 +16,6 @@ thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-loongclaw-protocol = { path = ".", features = ["test-support"] }
 
 [lints]
 workspace = true
