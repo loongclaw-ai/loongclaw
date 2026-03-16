@@ -50,6 +50,7 @@ pub mod next_actions;
 pub mod onboard_cli;
 pub mod onboard_presentation;
 pub mod provider_presentation;
+pub mod runtime_experiment_cli;
 pub mod runtime_restore_cli;
 pub mod skills_cli;
 pub mod source_presentation;
@@ -403,6 +404,11 @@ pub enum Commands {
         json: bool,
         #[arg(long, default_value_t = false)]
         apply: bool,
+    },
+    /// Manage snapshot-linked experiment run records
+    RuntimeExperiment {
+        #[command(subcommand)]
+        command: runtime_experiment_cli::RuntimeExperimentCommands,
     },
     /// List available conversation context engines and selected runtime engine
     ListContextEngines {

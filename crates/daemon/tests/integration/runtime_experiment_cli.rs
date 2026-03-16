@@ -1,0 +1,602 @@
+#![allow(unsafe_code)]
+#![allow(
+    clippy::disallowed_methods,
+    clippy::multiple_unsafe_ops_per_block,
+    clippy::undocumented_unsafe_blocks
+)]
+
+use super::*;
+use serde_json::Value;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+fn unique_temp_dir(prefix: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after epoch")
+        .as_nanos();
+    std::env::temp_dir().join(format!("{prefix}-{nanos}"))
+}
+
+fn write_runtime_experiment_config(root: &Path) -> PathBuf {
+    fs::create_dir_all(root).expect("create fixture root");
+
+    let mut config = mvp::config::LoongClawConfig::default();
+    config.tools.file_root = Some(root.display().to_string());
+    config.tools.browser.enabled = true;
+    config.tools.web.enabled = true;
+    config.acp.enabled = true;
+    config.acp.dispatch.enabled = true;
+    config.acp.default_agent = Some("planner".to_owned());
+    config.acp.allowed_agents = vec!["planner".to_owned(), "codex".to_owned()];
+    config.providers.insert(
+        "openai-main".to_owned(),
+        mvp::config::ProviderProfileConfig {
+            default_for_kind: false,
+            provider: mvp::config::ProviderConfig {
+                kind: mvp::config::ProviderKind::Openai,
+                model: "gpt-4.1-mini".to_owned(),
+                ..Default::default()
+            },
+        },
+    );
+    config.set_active_provider_profile(
+        "deepseek-lab",
+        mvp::config::ProviderProfileConfig {
+            default_for_kind: true,
+            provider: mvp::config::ProviderConfig {
+                kind: mvp::config::ProviderKind::Deepseek,
+                model: "deepseek-chat".to_owned(),
+                api_key: Some("demo-token".to_owned()),
+                ..Default::default()
+            },
+        },
+    );
+
+    let config_path = root.join("loongclaw.toml");
+    mvp::config::write(Some(config_path.to_string_lossy().as_ref()), &config, true)
+        .expect("write config fixture");
+    config_path
+}
+
+fn write_snapshot_artifact(
+    root: &Path,
+    config_path: &Path,
+    relative: &str,
+    metadata: loongclaw_daemon::RuntimeSnapshotArtifactMetadata,
+) -> (PathBuf, Value) {
+    let snapshot = collect_runtime_snapshot_cli_state(Some(
+        config_path.to_str().expect("config path should be utf-8"),
+    ))
+    .expect("collect runtime snapshot");
+    let payload =
+        loongclaw_daemon::build_runtime_snapshot_artifact_json_payload(&snapshot, &metadata)
+            .expect("build runtime snapshot artifact");
+    let artifact_path = root.join(relative);
+    if let Some(parent) = artifact_path.parent() {
+        fs::create_dir_all(parent).expect("create artifact directory");
+    }
+    fs::write(
+        &artifact_path,
+        serde_json::to_string_pretty(&payload).expect("encode snapshot artifact"),
+    )
+    .expect("write snapshot artifact");
+    (artifact_path, payload)
+}
+
+fn snapshot_id_from_payload(payload: &Value) -> String {
+    payload
+        .get("lineage")
+        .and_then(|lineage| lineage.get("snapshot_id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .expect("snapshot payload should include lineage.snapshot_id")
+}
+
+fn start_runtime_experiment(
+    root: &Path,
+    snapshot_path: &Path,
+    experiment_id: Option<&str>,
+) -> (
+    PathBuf,
+    loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentArtifactDocument,
+) {
+    let run_path = root.join("artifacts/runtime-experiment.json");
+    let run = loongclaw_daemon::runtime_experiment_cli::execute_runtime_experiment_start_command(
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentStartCommandOptions {
+            snapshot: snapshot_path.display().to_string(),
+            output: run_path.display().to_string(),
+            mutation_summary: "enable browser preview skill".to_owned(),
+            experiment_id: experiment_id.map(str::to_owned),
+            label: Some("browser-preview-a".to_owned()),
+            tag: vec!["browser".to_owned(), "preview".to_owned()],
+            json: false,
+        },
+    )
+    .expect("runtime experiment start should succeed");
+    (run_path, run)
+}
+
+fn finish_runtime_experiment(
+    root: &Path,
+    config_path: &Path,
+) -> (
+    PathBuf,
+    loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentArtifactDocument,
+) {
+    let (baseline_snapshot_path, baseline_snapshot_payload) = write_snapshot_artifact(
+        root,
+        config_path,
+        "artifacts/runtime-snapshot.json",
+        loongclaw_daemon::RuntimeSnapshotArtifactMetadata {
+            created_at: "2026-03-16T12:00:00Z".to_owned(),
+            label: Some("baseline".to_owned()),
+            experiment_id: Some("exp-42".to_owned()),
+            parent_snapshot_id: Some("snapshot-parent".to_owned()),
+        },
+    );
+    let (run_path, _) = start_runtime_experiment(root, &baseline_snapshot_path, None);
+    let baseline_snapshot_id = snapshot_id_from_payload(&baseline_snapshot_payload);
+    let (result_snapshot_path, _) = write_snapshot_artifact(
+        root,
+        config_path,
+        "artifacts/runtime-snapshot-result.json",
+        loongclaw_daemon::RuntimeSnapshotArtifactMetadata {
+            created_at: "2026-03-16T12:30:00Z".to_owned(),
+            label: Some("candidate".to_owned()),
+            experiment_id: Some("exp-42".to_owned()),
+            parent_snapshot_id: Some(baseline_snapshot_id),
+        },
+    );
+
+    let finished =
+        loongclaw_daemon::runtime_experiment_cli::execute_runtime_experiment_finish_command(
+            loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishCommandOptions {
+                run: run_path.display().to_string(),
+                result_snapshot: result_snapshot_path.display().to_string(),
+                evaluation_summary: "task success improved".to_owned(),
+                metric: vec!["task_success=1".to_owned(), "token_delta=0".to_owned()],
+                warning: vec!["manual verification only".to_owned()],
+                decision: loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted,
+                status: loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishStatus::Completed,
+                json: false,
+            },
+        )
+        .expect("runtime experiment finish should succeed");
+    (run_path, finished)
+}
+
+#[test]
+fn runtime_experiment_start_creates_planned_run_and_inherits_baseline_lineage() {
+    let root = unique_temp_dir("loongclaw-runtime-experiment-start");
+    let config_path = write_runtime_experiment_config(&root);
+    let (snapshot_path, snapshot_payload) = write_snapshot_artifact(
+        &root,
+        &config_path,
+        "artifacts/runtime-snapshot.json",
+        loongclaw_daemon::RuntimeSnapshotArtifactMetadata {
+            created_at: "2026-03-16T12:00:00Z".to_owned(),
+            label: Some("baseline".to_owned()),
+            experiment_id: Some("exp-42".to_owned()),
+            parent_snapshot_id: Some("snapshot-parent".to_owned()),
+        },
+    );
+    let run_path = root.join("artifacts/runtime-experiment.json");
+
+    let run = loongclaw_daemon::runtime_experiment_cli::execute_runtime_experiment_start_command(
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentStartCommandOptions {
+            snapshot: snapshot_path.display().to_string(),
+            output: run_path.display().to_string(),
+            mutation_summary: "enable browser preview skill".to_owned(),
+            experiment_id: None,
+            label: Some("browser-preview-a".to_owned()),
+            tag: vec!["browser".to_owned(), "preview".to_owned()],
+            json: false,
+        },
+    )
+    .expect("runtime experiment start should succeed");
+
+    assert!(
+        !run.run_id.is_empty(),
+        "run_id should be populated for persisted experiment records"
+    );
+    assert_eq!(run.experiment_id, "exp-42");
+    assert_eq!(
+        run.baseline_snapshot.snapshot_id,
+        snapshot_id_from_payload(&snapshot_payload)
+    );
+    assert_eq!(run.baseline_snapshot.label.as_deref(), Some("baseline"));
+    assert_eq!(
+        run.baseline_snapshot.parent_snapshot_id.as_deref(),
+        Some("snapshot-parent")
+    );
+    assert_eq!(
+        run.status,
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentStatus::Planned
+    );
+    assert_eq!(
+        run.decision,
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Undecided
+    );
+    assert_eq!(run.mutation.summary, "enable browser preview skill");
+    assert_eq!(
+        run.mutation.tags,
+        vec!["browser".to_owned(), "preview".to_owned()]
+    );
+    assert_eq!(run.result_snapshot, None);
+    assert_eq!(run.evaluation, None);
+    assert!(
+        run_path.exists(),
+        "start should persist the experiment-run artifact"
+    );
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn runtime_experiment_start_requires_explicit_experiment_id_when_baseline_is_missing_one() {
+    let root = unique_temp_dir("loongclaw-runtime-experiment-start-missing-id");
+    let config_path = write_runtime_experiment_config(&root);
+    let (snapshot_path, _) = write_snapshot_artifact(
+        &root,
+        &config_path,
+        "artifacts/runtime-snapshot.json",
+        loongclaw_daemon::RuntimeSnapshotArtifactMetadata {
+            created_at: "2026-03-16T12:00:00Z".to_owned(),
+            label: Some("baseline".to_owned()),
+            experiment_id: None,
+            parent_snapshot_id: Some("snapshot-parent".to_owned()),
+        },
+    );
+    let run_path = root.join("artifacts/runtime-experiment.json");
+
+    let error = loongclaw_daemon::runtime_experiment_cli::execute_runtime_experiment_start_command(
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentStartCommandOptions {
+            snapshot: snapshot_path.display().to_string(),
+            output: run_path.display().to_string(),
+            mutation_summary: "enable browser preview skill".to_owned(),
+            experiment_id: None,
+            label: None,
+            tag: Vec::new(),
+            json: false,
+        },
+    )
+    .expect_err("missing experiment id should be rejected");
+
+    assert!(error.contains("experiment_id"));
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn runtime_experiment_finish_persists_result_metrics_and_warnings() {
+    let root = unique_temp_dir("loongclaw-runtime-experiment-finish");
+    let config_path = write_runtime_experiment_config(&root);
+    let (baseline_snapshot_path, baseline_snapshot_payload) = write_snapshot_artifact(
+        &root,
+        &config_path,
+        "artifacts/runtime-snapshot.json",
+        loongclaw_daemon::RuntimeSnapshotArtifactMetadata {
+            created_at: "2026-03-16T12:00:00Z".to_owned(),
+            label: Some("baseline".to_owned()),
+            experiment_id: Some("exp-42".to_owned()),
+            parent_snapshot_id: Some("snapshot-parent".to_owned()),
+        },
+    );
+    let (run_path, _) = start_runtime_experiment(&root, &baseline_snapshot_path, None);
+    let baseline_snapshot_id = snapshot_id_from_payload(&baseline_snapshot_payload);
+    let (result_snapshot_path, _) = write_snapshot_artifact(
+        &root,
+        &config_path,
+        "artifacts/runtime-snapshot-result.json",
+        loongclaw_daemon::RuntimeSnapshotArtifactMetadata {
+            created_at: "2026-03-16T12:30:00Z".to_owned(),
+            label: Some("candidate".to_owned()),
+            experiment_id: Some("exp-42".to_owned()),
+            parent_snapshot_id: Some(baseline_snapshot_id),
+        },
+    );
+
+    let finished =
+        loongclaw_daemon::runtime_experiment_cli::execute_runtime_experiment_finish_command(
+            loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishCommandOptions {
+                run: run_path.display().to_string(),
+                result_snapshot: result_snapshot_path.display().to_string(),
+                evaluation_summary: "task success improved".to_owned(),
+                metric: vec!["task_success=1".to_owned(), "token_delta=0".to_owned()],
+                warning: vec!["manual verification only".to_owned()],
+                decision: loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted,
+                status: loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishStatus::Completed,
+                json: false,
+            },
+        )
+        .expect("runtime experiment finish should succeed");
+
+    assert_eq!(
+        finished.status,
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentStatus::Completed
+    );
+    assert_eq!(
+        finished.decision,
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted
+    );
+    assert!(
+        finished.finished_at.is_some(),
+        "finish should record a completion timestamp"
+    );
+    assert_eq!(
+        finished
+            .result_snapshot
+            .as_ref()
+            .expect("finish should attach result snapshot")
+            .label
+            .as_deref(),
+        Some("candidate")
+    );
+    assert_eq!(
+        finished
+            .evaluation
+            .as_ref()
+            .expect("finish should attach evaluation")
+            .summary,
+        "task success improved"
+    );
+    assert_eq!(
+        finished
+            .evaluation
+            .as_ref()
+            .expect("finish should attach evaluation")
+            .metrics,
+        std::collections::BTreeMap::from([
+            ("task_success".to_owned(), 1.0),
+            ("token_delta".to_owned(), 0.0),
+        ])
+    );
+    assert_eq!(
+        finished
+            .evaluation
+            .as_ref()
+            .expect("finish should attach evaluation")
+            .warnings,
+        vec!["manual verification only".to_owned()]
+    );
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn runtime_experiment_finish_rejects_conflicting_result_snapshot_experiment_id() {
+    let root = unique_temp_dir("loongclaw-runtime-experiment-finish-conflict");
+    let config_path = write_runtime_experiment_config(&root);
+    let (baseline_snapshot_path, _) = write_snapshot_artifact(
+        &root,
+        &config_path,
+        "artifacts/runtime-snapshot.json",
+        loongclaw_daemon::RuntimeSnapshotArtifactMetadata {
+            created_at: "2026-03-16T12:00:00Z".to_owned(),
+            label: Some("baseline".to_owned()),
+            experiment_id: Some("exp-42".to_owned()),
+            parent_snapshot_id: Some("snapshot-parent".to_owned()),
+        },
+    );
+    let (run_path, _) = start_runtime_experiment(&root, &baseline_snapshot_path, None);
+    let (result_snapshot_path, _) = write_snapshot_artifact(
+        &root,
+        &config_path,
+        "artifacts/runtime-snapshot-result.json",
+        loongclaw_daemon::RuntimeSnapshotArtifactMetadata {
+            created_at: "2026-03-16T12:30:00Z".to_owned(),
+            label: Some("candidate".to_owned()),
+            experiment_id: Some("exp-other".to_owned()),
+            parent_snapshot_id: Some("snapshot-parent".to_owned()),
+        },
+    );
+
+    let error =
+        loongclaw_daemon::runtime_experiment_cli::execute_runtime_experiment_finish_command(
+            loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishCommandOptions {
+                run: run_path.display().to_string(),
+                result_snapshot: result_snapshot_path.display().to_string(),
+                evaluation_summary: "task success improved".to_owned(),
+                metric: vec!["task_success=1".to_owned()],
+                warning: Vec::new(),
+                decision: loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Rejected,
+                status: loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishStatus::Completed,
+                json: false,
+            },
+        )
+        .expect_err("conflicting result snapshot experiment id must fail");
+
+    assert!(error.contains("experiment_id"));
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn runtime_experiment_finish_warns_when_result_snapshot_has_no_experiment_id() {
+    let root = unique_temp_dir("loongclaw-runtime-experiment-finish-missing-id");
+    let config_path = write_runtime_experiment_config(&root);
+    let (baseline_snapshot_path, baseline_snapshot_payload) = write_snapshot_artifact(
+        &root,
+        &config_path,
+        "artifacts/runtime-snapshot.json",
+        loongclaw_daemon::RuntimeSnapshotArtifactMetadata {
+            created_at: "2026-03-16T12:00:00Z".to_owned(),
+            label: Some("baseline".to_owned()),
+            experiment_id: Some("exp-42".to_owned()),
+            parent_snapshot_id: Some("snapshot-parent".to_owned()),
+        },
+    );
+    let (run_path, _) = start_runtime_experiment(&root, &baseline_snapshot_path, None);
+    let baseline_snapshot_id = snapshot_id_from_payload(&baseline_snapshot_payload);
+    let (result_snapshot_path, _) = write_snapshot_artifact(
+        &root,
+        &config_path,
+        "artifacts/runtime-snapshot-result.json",
+        loongclaw_daemon::RuntimeSnapshotArtifactMetadata {
+            created_at: "2026-03-16T12:30:00Z".to_owned(),
+            label: Some("candidate".to_owned()),
+            experiment_id: None,
+            parent_snapshot_id: Some(baseline_snapshot_id),
+        },
+    );
+
+    let finished =
+        loongclaw_daemon::runtime_experiment_cli::execute_runtime_experiment_finish_command(
+            loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishCommandOptions {
+                run: run_path.display().to_string(),
+                result_snapshot: result_snapshot_path.display().to_string(),
+                evaluation_summary: "task success improved".to_owned(),
+                metric: vec!["task_success=1".to_owned()],
+                warning: Vec::new(),
+                decision: loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Rejected,
+                status: loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishStatus::Completed,
+                json: false,
+            },
+        )
+        .expect("missing result snapshot experiment id should downgrade to a warning");
+
+    assert!(
+        finished
+            .evaluation
+            .as_ref()
+            .expect("finish should attach evaluation")
+            .warnings
+            .iter()
+            .any(|warning: &String| warning.contains("missing experiment_id")),
+        "finish should record a warning for result snapshots missing experiment_id"
+    );
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn runtime_experiment_finish_rejects_mutating_a_finalized_run() {
+    let root = unique_temp_dir("loongclaw-runtime-experiment-finish-finalized");
+    let config_path = write_runtime_experiment_config(&root);
+    let (baseline_snapshot_path, baseline_snapshot_payload) = write_snapshot_artifact(
+        &root,
+        &config_path,
+        "artifacts/runtime-snapshot.json",
+        loongclaw_daemon::RuntimeSnapshotArtifactMetadata {
+            created_at: "2026-03-16T12:00:00Z".to_owned(),
+            label: Some("baseline".to_owned()),
+            experiment_id: Some("exp-42".to_owned()),
+            parent_snapshot_id: Some("snapshot-parent".to_owned()),
+        },
+    );
+    let (run_path, _) = start_runtime_experiment(&root, &baseline_snapshot_path, None);
+    let baseline_snapshot_id = snapshot_id_from_payload(&baseline_snapshot_payload);
+    let (result_snapshot_path, _) = write_snapshot_artifact(
+        &root,
+        &config_path,
+        "artifacts/runtime-snapshot-result.json",
+        loongclaw_daemon::RuntimeSnapshotArtifactMetadata {
+            created_at: "2026-03-16T12:30:00Z".to_owned(),
+            label: Some("candidate".to_owned()),
+            experiment_id: Some("exp-42".to_owned()),
+            parent_snapshot_id: Some(baseline_snapshot_id),
+        },
+    );
+
+    let first_finish =
+        loongclaw_daemon::runtime_experiment_cli::execute_runtime_experiment_finish_command(
+            loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishCommandOptions {
+                run: run_path.display().to_string(),
+                result_snapshot: result_snapshot_path.display().to_string(),
+                evaluation_summary: "task success improved".to_owned(),
+                metric: vec!["task_success=1".to_owned()],
+                warning: Vec::new(),
+                decision: loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted,
+                status: loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishStatus::Completed,
+                json: false,
+            },
+        )
+        .expect("first finish should succeed");
+    assert_eq!(
+        first_finish.status,
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentStatus::Completed
+    );
+
+    let error =
+        loongclaw_daemon::runtime_experiment_cli::execute_runtime_experiment_finish_command(
+            loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishCommandOptions {
+                run: run_path.display().to_string(),
+                result_snapshot: result_snapshot_path.display().to_string(),
+                evaluation_summary: "task success improved again".to_owned(),
+                metric: vec!["task_success=2".to_owned()],
+                warning: Vec::new(),
+                decision: loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted,
+                status: loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishStatus::Completed,
+                json: false,
+            },
+        )
+        .expect_err("finalized run should reject further mutation");
+
+    assert!(error.contains("completed"));
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn runtime_experiment_show_round_trips_the_persisted_artifact() {
+    let root = unique_temp_dir("loongclaw-runtime-experiment-show");
+    let config_path = write_runtime_experiment_config(&root);
+    let (run_path, finished) = finish_runtime_experiment(&root, &config_path);
+
+    let shown = loongclaw_daemon::runtime_experiment_cli::execute_runtime_experiment_show_command(
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentShowCommandOptions {
+            run: run_path.display().to_string(),
+            json: true,
+        },
+    )
+    .expect("show should load the persisted artifact");
+
+    assert_eq!(shown, finished);
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn runtime_experiment_show_text_surfaces_decision_fields_first() {
+    let root = unique_temp_dir("loongclaw-runtime-experiment-show-text");
+    let config_path = write_runtime_experiment_config(&root);
+    let (_, finished) = finish_runtime_experiment(&root, &config_path);
+
+    let rendered =
+        loongclaw_daemon::runtime_experiment_cli::render_runtime_experiment_text(&finished);
+    let lines = rendered.lines().take(8).collect::<Vec<_>>();
+
+    assert_eq!(lines[0], format!("run_id={}", finished.run_id));
+    assert_eq!(
+        lines[1],
+        format!("experiment_id={}", finished.experiment_id)
+    );
+    assert_eq!(
+        lines[2],
+        format!(
+            "baseline_snapshot_id={}",
+            finished.baseline_snapshot.snapshot_id
+        )
+    );
+    assert_eq!(
+        lines[3],
+        format!(
+            "result_snapshot_id={}",
+            finished
+                .result_snapshot
+                .as_ref()
+                .expect("finish should attach result snapshot")
+                .snapshot_id
+        )
+    );
+    assert_eq!(lines[4], "status=completed");
+    assert_eq!(lines[5], "decision=promoted");
+    assert_eq!(lines[6], "metrics=task_success:1,token_delta:0");
+    assert_eq!(lines[7], "warnings=manual verification only");
+
+    fs::remove_dir_all(&root).ok();
+}

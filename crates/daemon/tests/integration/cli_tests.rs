@@ -303,6 +303,137 @@ fn runtime_restore_cli_parses() {
 }
 
 #[test]
+fn runtime_experiment_cli_parses_start_finish_and_show() {
+    let start = Cli::try_parse_from([
+        "loongclaw",
+        "runtime-experiment",
+        "start",
+        "--snapshot",
+        "/tmp/runtime-snapshot.json",
+        "--output",
+        "/tmp/runtime-experiment.json",
+        "--mutation-summary",
+        "enable browser preview skill",
+        "--experiment-id",
+        "exp-42",
+        "--label",
+        "browser-preview-a",
+        "--tag",
+        "browser",
+        "--tag",
+        "preview",
+        "--json",
+    ])
+    .expect("`runtime-experiment start` should parse");
+
+    match start.command {
+        Some(Commands::RuntimeExperiment { command }) => match command {
+            loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Start(options) => {
+                assert_eq!(options.snapshot, "/tmp/runtime-snapshot.json");
+                assert_eq!(options.output, "/tmp/runtime-experiment.json");
+                assert_eq!(options.mutation_summary, "enable browser preview skill");
+                assert_eq!(options.experiment_id.as_deref(), Some("exp-42"));
+                assert_eq!(options.label.as_deref(), Some("browser-preview-a"));
+                assert_eq!(
+                    options.tag,
+                    vec!["browser".to_owned(), "preview".to_owned()]
+                );
+                assert!(options.json);
+            }
+            other @ (loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Finish(_)
+            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Show(_)) => {
+                panic!("unexpected runtime-experiment subcommand parsed: {other:?}")
+            }
+        },
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+
+    let finish = Cli::try_parse_from([
+        "loongclaw",
+        "runtime-experiment",
+        "finish",
+        "--run",
+        "/tmp/runtime-experiment.json",
+        "--result-snapshot",
+        "/tmp/runtime-snapshot-result.json",
+        "--evaluation-summary",
+        "task success improved",
+        "--metric",
+        "task_success=1",
+        "--metric",
+        "token_delta=0",
+        "--decision",
+        "promoted",
+        "--warning",
+        "manual verification only",
+        "--status",
+        "completed",
+        "--json",
+    ])
+    .expect("`runtime-experiment finish` should parse");
+
+    match finish.command {
+        Some(Commands::RuntimeExperiment { command }) => match command {
+            loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Finish(
+                options,
+            ) => {
+                assert_eq!(options.run, "/tmp/runtime-experiment.json");
+                assert_eq!(options.result_snapshot, "/tmp/runtime-snapshot-result.json");
+                assert_eq!(options.evaluation_summary, "task success improved");
+                assert_eq!(
+                    options.metric,
+                    vec!["task_success=1".to_owned(), "token_delta=0".to_owned()]
+                );
+                assert_eq!(options.warning, vec!["manual verification only".to_owned()]);
+                assert_eq!(
+                    options.decision,
+                    loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted
+                );
+                assert_eq!(
+                    options.status,
+                    loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentFinishStatus::Completed
+                );
+                assert!(options.json);
+            }
+            other
+            @ (loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Start(
+                _,
+            )
+            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Show(
+                _,
+            )) => {
+                panic!("unexpected runtime-experiment subcommand parsed: {other:?}")
+            }
+        },
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+
+    let show = Cli::try_parse_from([
+        "loongclaw",
+        "runtime-experiment",
+        "show",
+        "--run",
+        "/tmp/runtime-experiment.json",
+        "--json",
+    ])
+    .expect("`runtime-experiment show` should parse");
+
+    match show.command {
+        Some(Commands::RuntimeExperiment { command }) => match command {
+            loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Show(options) => {
+                assert_eq!(options.run, "/tmp/runtime-experiment.json");
+                assert!(options.json);
+            }
+            other @ (loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Start(_)
+            | loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentCommands::Finish(_)) => {
+                panic!("unexpected runtime-experiment subcommand parsed: {other:?}")
+            }
+        },
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
 fn acp_event_summary_cli_rejects_zero_limit() {
     let error = run_acp_event_summary_cli(None, Some("session-a"), 0, false)
         .expect_err("zero limit must be rejected");
