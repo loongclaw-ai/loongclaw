@@ -8475,6 +8475,48 @@ fn build_kernel_context_with_window_error(
     (ctx, invocations)
 }
 
+fn build_kernel_context_with_raw_window_payload(
+    audit: Arc<InMemoryAuditSink>,
+    payload: Value,
+) -> (KernelContext, Arc<Mutex<Vec<MemoryCoreRequest>>>) {
+    let clock = Arc::new(FixedClock::new(1_700_000_000));
+    let mut kernel = LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock, audit);
+
+    let pack = VerticalPackManifest {
+        pack_id: "test-pack".to_owned(),
+        domain: "testing".to_owned(),
+        version: "0.1.0".to_owned(),
+        default_route: ExecutionRoute {
+            harness_kind: HarnessKind::EmbeddedPi,
+            adapter: None,
+        },
+        allowed_connectors: BTreeSet::new(),
+        granted_capabilities: BTreeSet::from([Capability::MemoryWrite, Capability::MemoryRead]),
+        metadata: BTreeMap::new(),
+    };
+    kernel.register_pack(pack).expect("register pack");
+
+    let invocations = Arc::new(Mutex::new(Vec::new()));
+    kernel.register_core_memory_adapter(RawWindowPayloadMemoryAdapter {
+        invocations: invocations.clone(),
+        payload,
+    });
+    kernel
+        .set_default_core_memory_adapter("test-memory-raw-window-payload")
+        .expect("set default memory adapter");
+
+    let token = kernel
+        .issue_token("test-pack", "test-agent", 3600)
+        .expect("issue token");
+
+    let ctx = KernelContext {
+        kernel: Arc::new(kernel),
+        token,
+    };
+
+    (ctx, invocations)
+}
+
 struct SharedTestMemoryAdapter {
     invocations: Arc<Mutex<Vec<MemoryCoreRequest>>>,
     window_turns: Value,
@@ -8566,6 +8608,38 @@ impl CoreMemoryAdapter for FailingWindowMemoryAdapter {
             .push(request.clone());
         if request.operation == crate::memory::MEMORY_OP_WINDOW {
             return Err(MemoryPlaneError::Execution(self.error.clone()));
+        }
+        Ok(MemoryCoreOutcome {
+            status: "ok".to_owned(),
+            payload: json!({}),
+        })
+    }
+}
+
+struct RawWindowPayloadMemoryAdapter {
+    invocations: Arc<Mutex<Vec<MemoryCoreRequest>>>,
+    payload: Value,
+}
+
+#[async_trait]
+impl CoreMemoryAdapter for RawWindowPayloadMemoryAdapter {
+    fn name(&self) -> &str {
+        "test-memory-raw-window-payload"
+    }
+
+    async fn execute_core_memory(
+        &self,
+        request: MemoryCoreRequest,
+    ) -> Result<MemoryCoreOutcome, MemoryPlaneError> {
+        self.invocations
+            .lock()
+            .expect("invocations lock")
+            .push(request.clone());
+        if request.operation == crate::memory::MEMORY_OP_WINDOW {
+            return Ok(MemoryCoreOutcome {
+                status: "ok".to_owned(),
+                payload: self.payload.clone(),
+            });
         }
         Ok(MemoryCoreOutcome {
             status: "ok".to_owned(),
@@ -8805,6 +8879,30 @@ async fn load_turn_checkpoint_event_summary_fails_closed_when_kernel_window_erro
     assert_eq!(captured[0].operation, crate::memory::MEMORY_OP_WINDOW);
 
     let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn load_turn_checkpoint_event_summary_fails_closed_when_kernel_window_payload_is_malformed() {
+    let audit = Arc::new(InMemoryAuditSink::default());
+    let (ctx, invocations) =
+        build_kernel_context_with_raw_window_payload(audit, json!({"unexpected": "shape"}));
+    let config = test_config();
+    let mem_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+
+    let error = load_turn_checkpoint_event_summary(
+        "session-kernel-window-malformed",
+        8,
+        ConversationRuntimeBinding::kernel(&ctx),
+        &mem_config,
+    )
+    .await
+    .expect_err("kernel-bound history should fail closed on malformed payload");
+
+    assert!(error.contains("malformed"), "unexpected error: {error}");
+
+    let captured = invocations.lock().expect("invocations lock");
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].operation, crate::memory::MEMORY_OP_WINDOW);
 }
 
 #[cfg(feature = "memory-sqlite")]
