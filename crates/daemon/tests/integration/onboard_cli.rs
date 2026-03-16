@@ -5185,6 +5185,37 @@ fn onboard_interactive_flow_defaults_back_to_native_prompt_pack_even_from_inline
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn onboard_interactive_flow_defaults_back_to_native_prompt_pack_even_from_inline_override() {
+    let mut existing = mvp::config::LoongClawConfig::default();
+    existing.cli.prompt_pack_id = Some(String::new());
+    existing.cli.personality = None;
+    existing.cli.system_prompt_addendum = None;
+    existing.cli.system_prompt = "Stay terse and imperative.".to_owned();
+
+    let path = crate::onboard_cli::resolve_guided_prompt_path_label_for_test(
+        &crate::onboard_cli::OnboardCommandOptions {
+            output: None,
+            force: false,
+            non_interactive: false,
+            accept_risk: true,
+            provider: None,
+            model: None,
+            api_key_env: None,
+            personality: None,
+            memory_profile: None,
+            system_prompt: None,
+            skip_model_probe: true,
+        },
+        &existing,
+    );
+
+    assert_eq!(
+        path, "native",
+        "interactive onboarding should default back to the native prompt-pack path even when the current config currently uses an inline override"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn onboard_detected_setup_adjustments_preserve_unchanged_detected_actions_in_review() {
     let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
     let workspace_root = unique_temp_path("detected-adjusted-review-workspace");
