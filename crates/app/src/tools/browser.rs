@@ -101,7 +101,8 @@ fn execute_browser_open(
     let raw_url = parse_required_string(payload, "url", "browser.open")?;
     reject_caller_supplied_session_id(payload, "browser.open")?;
     let scope_id = browser_scope_id_from_payload(payload);
-    let session_id = format!("browser-{}", next_browser_sequence());
+    let sequence = next_browser_sequence();
+    let session_id = format!("browser-{}", sequence);
     let max_bytes = parse_max_bytes(payload, config.web_fetch.max_bytes, "browser.open")?;
     let client = build_browser_client(config)?;
     let page = fetch_browser_page(&client, raw_url.as_str(), max_bytes, config)?;
@@ -112,7 +113,7 @@ fn execute_browser_open(
         BrowserSession {
             client,
             page,
-            sequence: next_browser_sequence(),
+            sequence,
         },
         config.browser.max_sessions,
     )?;

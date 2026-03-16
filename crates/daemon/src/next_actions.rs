@@ -1,7 +1,6 @@
 use loongclaw_app as mvp;
 
-pub(crate) const DEFAULT_FIRST_ASK_MESSAGE: &str =
-    "Summarize this repository and suggest the best next step.";
+pub(crate) use mvp::chat::DEFAULT_FIRST_PROMPT as DEFAULT_FIRST_ASK_MESSAGE;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SetupNextActionKind {

@@ -34,7 +34,7 @@ use super::memory;
 #[cfg(feature = "memory-sqlite")]
 use super::memory::runtime_config::MemoryRuntimeConfig;
 
-const DEFAULT_FIRST_CHAT_PROMPT: &str = "Summarize this repository and suggest the best next step.";
+pub const DEFAULT_FIRST_PROMPT: &str = "Summarize this repository and suggest the best next step.";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CliChatOptions {
@@ -393,7 +393,7 @@ fn render_cli_chat_startup_lines(summary: &CliChatStartupSummary) -> Vec<String>
         format!("- config: {}", summary.config_path),
         format!("- memory: {}", summary.memory_label),
         "- start typing a request, or use /help for commands".to_owned(),
-        format!("- try this first: {DEFAULT_FIRST_CHAT_PROMPT}"),
+        format!("- try this first: {DEFAULT_FIRST_PROMPT}"),
         "assistant runtime".to_owned(),
     ];
 
