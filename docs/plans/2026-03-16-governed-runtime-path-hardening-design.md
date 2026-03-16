@@ -95,6 +95,12 @@ The helper should instead behave as follows:
 That preserves direct compatibility paths without allowing governed reads to
 degrade silently.
 
+For higher-level consumers that intentionally fail open, the runtime should at
+least surface that distinction explicitly. In this slice the safe-lane session
+governor keeps fail-open planning behavior, but it records history load status
+and error details in runtime diagnostics instead of silently looking identical
+to "no historical signal".
+
 ### 3. Truthful docs for the remaining architecture state
 
 `ARCHITECTURE.md` and `docs/SECURITY.md` should stop claiming that all execution

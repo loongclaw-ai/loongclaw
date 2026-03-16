@@ -105,6 +105,12 @@ history load error instead of hitting sqlite fallback.
 
 Retain the direct sqlite path only for `ConversationRuntimeBinding::Direct`.
 
+**Step 4: Preserve observability in fail-open consumers**
+
+Where higher-level orchestration still chooses to proceed without governor
+history, surface explicit history load status/error diagnostics instead of
+collapsing the failure into a silent default.
+
 ### Task 5: Refresh architecture/security docs
 
 **Files:**

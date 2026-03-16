@@ -38,6 +38,7 @@ CapabilityToken → PolicyEngine → PolicyExtensionChain → Execution → Audi
 - This removes ambiguity from conversation traits and dispatcher seams where `None` previously overloaded multiple meanings such as "direct mode", "not wired yet", or "forgot to pass kernel authority".
 - Detached async delegate spawns carry an owned kernel context forward when the parent binding is kernel-bound. Direct-mode parents keep direct-mode children.
 - Kernel-bound history helpers no longer reuse direct sqlite fallback behind the caller's back. Higher-level orchestration may still choose how to handle the surfaced error.
+- Safe-lane governor diagnostics now surface history load status and error details instead of silently collapsing kernel history failures into an undifferentiated "no history" state.
 
 **Provider runtime binding note:**
 - The provider binding makes provider governance explicit without importing conversation-layer semantics into provider code. `Kernel` means failover/audit behavior may emit kernel-backed audit events; `Direct` means provider execution is intentionally running without that authority while still recording in-process failover metrics.
