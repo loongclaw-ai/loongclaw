@@ -1,6 +1,5 @@
 language: en
 reviews:
-  enabled: true
   auto_review:
     enabled: true
     base_branches:
