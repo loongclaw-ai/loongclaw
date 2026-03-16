@@ -6566,6 +6566,89 @@ mod tests {
     }
 
     #[test]
+    fn build_turn_reply_followup_messages_reduces_shell_exec_payload_summary() {
+        let stdout = (0..80)
+            .map(|index| format!("stdout line {index}: {}", "x".repeat(40)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let payload_summary = serde_json::json!({
+            "adapter": "core-tools",
+            "tool_name": "shell.exec",
+            "command": "cargo",
+            "args": ["test", "--workspace"],
+            "cwd": "/repo",
+            "exit_code": 0,
+            "stdout": stdout,
+            "stderr": ""
+        })
+        .to_string();
+        let tool_result = format!(
+            "[ok] {}",
+            serde_json::json!({
+                "status": "ok",
+                "tool": "shell.exec",
+                "tool_call_id": "call-shell",
+                "payload_summary": payload_summary,
+                "payload_chars": 8_192,
+                "payload_truncated": false
+            })
+        );
+
+        let messages = build_turn_reply_followup_messages(
+            &[serde_json::json!({
+                "role": "system",
+                "content": "sys"
+            })],
+            "preface",
+            ToolDrivenFollowupPayload::ToolResult { text: tool_result },
+            "summarize the test run",
+        );
+
+        let assistant_tool_result = messages
+            .iter()
+            .find(|message| {
+                message.get("role") == Some(&Value::String("assistant".to_owned()))
+                    && message
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .is_some_and(|content| content.starts_with("[tool_result]\n[ok] "))
+            })
+            .and_then(|message| message.get("content"))
+            .and_then(Value::as_str)
+            .expect("assistant tool_result followup message should exist");
+        let line = assistant_tool_result
+            .lines()
+            .nth(1)
+            .expect("assistant tool_result should keep payload line");
+        let envelope: Value = serde_json::from_str(
+            line.strip_prefix("[ok] ")
+                .expect("tool result line should preserve status prefix"),
+        )
+        .expect("reduced followup envelope should stay valid json");
+        let summary: Value = serde_json::from_str(
+            envelope["payload_summary"]
+                .as_str()
+                .expect("payload summary should stay encoded json"),
+        )
+        .expect("shell payload summary should stay valid json");
+
+        assert_eq!(envelope["tool"], "shell.exec");
+        assert_eq!(envelope["payload_truncated"], true);
+        assert_eq!(summary["command"], "cargo");
+        assert_eq!(summary["exit_code"], 0);
+        assert!(summary.get("stdout_preview").is_some());
+        assert!(summary.get("stdout_chars").is_some());
+        assert_eq!(summary["stdout_truncated"], true);
+        assert!(
+            summary["stdout_preview"]
+                .as_str()
+                .expect("stdout preview should exist")
+                .contains("stdout line 0"),
+            "expected compact stdout preview, got: {summary:?}"
+        );
+    }
+
+    #[test]
     fn build_turn_reply_followup_messages_preserves_tool_search_payload_summary() {
         let payload_summary = serde_json::json!({
             "results": [

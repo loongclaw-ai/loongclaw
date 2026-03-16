@@ -17,6 +17,7 @@ pub const EXTERNAL_SKILL_FOLLOWUP_PROMPT: &str = "A managed external skill has b
 pub const TOOL_LOOP_GUARD_PROMPT: &str = "Detected tool-loop behavior across rounds. Do not repeat identical or cyclical tool calls without new evidence. Adjust strategy (different tool, arguments, or decomposition) or provide the best possible final answer and clearly state remaining gaps.";
 
 const FILE_READ_FOLLOWUP_CONTENT_PREVIEW_CHARS: usize = 384;
+const SHELL_FOLLOWUP_STDIO_PREVIEW_CHARS: usize = 384;
 
 pub fn next_conversation_turn_id() -> String {
     static NEXT_CONVERSATION_TURN_SEQ: AtomicU64 = AtomicU64::new(1);
@@ -456,16 +457,19 @@ fn reduce_tool_result_line_for_model(line: &str) -> String {
     let Ok(mut envelope) = serde_json::from_str::<Value>(payload) else {
         return line.to_owned();
     };
-    if envelope.get("tool").and_then(Value::as_str) != Some("file.read") {
-        return line.to_owned();
-    }
+    let tool_name = envelope.get("tool").and_then(Value::as_str);
     let Some(payload_summary) = envelope.get("payload_summary").and_then(Value::as_str) else {
         return line.to_owned();
     };
     let Ok(payload_json) = serde_json::from_str::<Value>(payload_summary) else {
         return line.to_owned();
     };
-    let Some(reduced_summary) = reduce_file_read_payload_summary(&payload_json) else {
+    let reduced_summary = match tool_name {
+        Some("file.read") => reduce_file_read_payload_summary(&payload_json),
+        Some("shell.exec") => reduce_shell_payload_summary(&payload_json),
+        _ => None,
+    };
+    let Some(reduced_summary) = reduced_summary else {
         return line.to_owned();
     };
     let Some(envelope_object) = envelope.as_object_mut() else {
@@ -497,6 +501,30 @@ fn reduce_file_read_payload_summary(payload: &Value) -> Option<String> {
     .ok()
 }
 
+fn reduce_shell_payload_summary(payload: &Value) -> Option<String> {
+    let payload_object = payload.as_object()?;
+    let (stdout_preview, stdout_chars, stdout_truncated) =
+        summarize_shell_output_preview(payload_object.get("stdout"));
+    let (stderr_preview, stderr_chars, stderr_truncated) =
+        summarize_shell_output_preview(payload_object.get("stderr"));
+    if !stdout_truncated && !stderr_truncated {
+        return None;
+    }
+    serde_json::to_string(&serde_json::json!({
+        "command": payload_object.get("command").cloned().unwrap_or(Value::Null),
+        "args": payload_object.get("args").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "cwd": payload_object.get("cwd").cloned().unwrap_or(Value::Null),
+        "exit_code": payload_object.get("exit_code").cloned().unwrap_or(Value::Null),
+        "stdout_preview": stdout_preview,
+        "stdout_chars": stdout_chars,
+        "stdout_truncated": stdout_truncated,
+        "stderr_preview": stderr_preview,
+        "stderr_chars": stderr_chars,
+        "stderr_truncated": stderr_truncated,
+    }))
+    .ok()
+}
+
 fn summarize_file_read_content_preview(value: Option<&Value>) -> (String, usize, bool) {
     let text = value.and_then(Value::as_str).unwrap_or_default();
     let total_chars = text.chars().count();
@@ -506,6 +534,24 @@ fn summarize_file_read_content_preview(value: Option<&Value>) -> (String, usize,
     (
         text.chars()
             .take(FILE_READ_FOLLOWUP_CONTENT_PREVIEW_CHARS)
+            .collect(),
+        total_chars,
+        true,
+    )
+}
+
+fn summarize_shell_output_preview(value: Option<&Value>) -> (String, usize, bool) {
+    let text = value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    let total_chars = text.chars().count();
+    if total_chars <= SHELL_FOLLOWUP_STDIO_PREVIEW_CHARS {
+        return (text.to_owned(), total_chars, false);
+    }
+    (
+        text.chars()
+            .take(SHELL_FOLLOWUP_STDIO_PREVIEW_CHARS)
             .collect(),
         total_chars,
         true,
