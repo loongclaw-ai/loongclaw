@@ -3279,7 +3279,7 @@ fn render_onboarding_risk_screen_lines_with_style(
 ) -> Vec<String> {
     let copy = crate::onboard_presentation::risk_screen_copy();
     render_onboard_choice_screen(
-        OnboardHeaderStyle::Brand,
+        OnboardHeaderStyle::Compact,
         width,
         copy.subtitle,
         copy.title,
@@ -4324,7 +4324,7 @@ fn render_existing_config_write_screen_lines_with_style(
     color_enabled: bool,
 ) -> Vec<String> {
     render_onboard_choice_screen(
-        OnboardHeaderStyle::Brand,
+        OnboardHeaderStyle::Compact,
         width,
         "decide how to write the config",
         "existing config found",
