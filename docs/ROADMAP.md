@@ -302,6 +302,10 @@ Remaining deliverables:
 - beginner installation hardening:
   - sustain tagged release publishing across macOS/Linux/Windows
   - expand beyond installer scripts into package-manager distribution only after release adoption is stable
+- experiment-state operator surface:
+  - keep runtime snapshot lineage and runtime restore as the checkpoint/replay substrate
+  - add a minimal experiment-run record layer that links baseline snapshot, mutation summary, result snapshot, evaluation metrics, and promotion decision
+  - use that record layer as the prerequisite for later evaluator pipelines and automated skill-optimization loops
 - managed browser automation companion:
   - keep `browser.open`, `browser.extract`, and `browser.click` as the shipped safe browser lane
   - add an optional first-party managed browser companion for richer page actions
