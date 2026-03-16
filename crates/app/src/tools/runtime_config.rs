@@ -869,6 +869,7 @@ mod tests {
 
         assert!(policy.enabled);
         assert!(!policy.ready);
+        assert!(!policy.is_runtime_ready());
         assert_eq!(
             policy.command.as_deref(),
             Some("loongclaw-browser-companion")
