@@ -78,6 +78,19 @@ This keeps the semantics simple:
 
 The child runtime no longer invents a weaker execution mode than the parent.
 
+Implementation notes for this slice:
+
+1. `KernelContext` derives `Clone` so detached spawn requests can own inherited
+   authority without borrowing parent stack state.
+2. `AsyncDelegateSpawnRequest` carries `kernel_context: Option<KernelContext>`
+   instead of inferring runtime mode from an absent borrow.
+3. The async delegate spawner reconstructs `ConversationRuntimeBinding` via
+   `ConversationRuntimeBinding::from_optional_kernel_context(...)` before
+   entering child-turn execution.
+4. If inherited kernel execution later fails, the child returns an explicit
+   error through the existing spawn/future path rather than silently
+   downgrading to direct mode.
+
 ### 2. Kernel-bound history reads fail closed
 
 `load_assistant_contents_from_session_window(...)` currently treats
@@ -98,8 +111,50 @@ degrade silently.
 For higher-level consumers that intentionally fail open, the runtime should at
 least surface that distinction explicitly. In this slice the safe-lane session
 governor keeps fail-open planning behavior, but it records history load status
-and error details in runtime diagnostics instead of silently looking identical
-to "no historical signal".
+and a normalized error code in runtime diagnostics instead of silently looking
+identical to "no historical signal".
+
+#### Backward Compatibility And Migration
+
+This is an intentional contract change for kernel-bound history readers only.
+Direct-mode callers still read sqlite directly, but governed callers now get an
+explicit error instead of a shadow sqlite fallback.
+
+Affected consumers in this slice:
+
+1. safe-lane governor history loading in
+   `load_safe_lane_history_signals_for_governor(...)`
+2. checkpoint readers reached through
+   `load_turn_checkpoint_history_snapshot(...)`,
+   `load_turn_checkpoint_event_summary(...)`, and
+   `load_latest_turn_checkpoint_entry(...)`
+3. higher-level history summaries that opt into kernel-bound execution, such as
+   safe-lane and discovery-first summary helpers
+
+Migration approach for `alpha-test`:
+
+1. leave `ConversationRuntimeBinding::Direct` behavior unchanged so direct-mode
+   compatibility remains stable
+2. let kernel-bound callers see explicit failures and update fail-open
+   orchestration one consumer at a time instead of preserving an implicit shadow
+   path
+3. keep safe-lane governor fail-open at the planning layer for now, but persist
+   `history_load_status` plus a normalized `history_load_error` code so
+   operators can distinguish "no history" from "governed history unavailable"
+
+Normalized error contract for persisted diagnostics:
+
+1. `kernel_request_failed` when the kernel memory-window request itself errors
+2. `kernel_non_ok_status` when the kernel responds with a non-`ok` status
+3. `direct_read_failed` when an intentional direct-mode sqlite read fails
+
+Observability requirements in this slice:
+
+1. persisted safe-lane governor events keep `history_load_status`
+2. persisted safe-lane governor events record only normalized
+   `history_load_error` codes
+3. full underlying error strings stay in process-local error returns rather than
+   durable session events
 
 ### 3. Truthful docs for the remaining architecture state
 
@@ -130,6 +185,7 @@ Add focused regression coverage for:
 3. kernel-bound history readers fail when the memory window kernel request
    fails
 4. direct-mode history readers still use sqlite successfully
+5. safe-lane governor diagnostics persist normalized history load error codes
 
 ## Why This Slice Matters
 

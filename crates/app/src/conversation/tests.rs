@@ -6450,12 +6450,9 @@ async fn handle_turn_with_runtime_safe_lane_session_governor_does_not_reuse_sqli
         lane_selected_payload["session_governor"]["history_load_status"],
         "unavailable"
     );
-    assert!(
-        lane_selected_payload["session_governor"]["history_load_error"]
-            .as_str()
-            .expect("history load error text")
-            .contains("non-ok status"),
-        "expected surfaced governor history load error: {lane_selected_payload:?}"
+    assert_eq!(
+        lane_selected_payload["session_governor"]["history_load_error"], "kernel_non_ok_status",
+        "expected normalized governor history load error code: {lane_selected_payload:?}"
     );
 
     let _ = std::fs::remove_file(&db_path);
