@@ -5193,6 +5193,8 @@ mod tests {
             provider: None,
             model: None,
             api_key_env: None,
+            personality: None,
+            memory_profile: None,
             system_prompt: None,
             skip_model_probe: false,
         };
