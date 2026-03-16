@@ -1,7 +1,5 @@
 # Provider Onboarding Default Model Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
-
 **Goal:** Replace hidden provider-owned runtime preferred-model fallbacks with
 explicit onboarding default models while preserving `Esc` onboarding exit UX and
 user-configured fallback behavior.
@@ -108,7 +106,7 @@ Add a provider-kind method for onboarding recommended model IDs.
 **Step 2: Use it in onboarding**
 
 When onboarding resolves the model and the current selection is still `auto`,
-switch the default/prefill to the onboarding recommended model.
+switch the default prefill to the onboarding-recommended model.
 
 **Step 3: Keep runtime semantics unchanged**
 
