@@ -470,8 +470,7 @@ pub(crate) fn runtime_tool_view_from_loongclaw_config(
     runtime_tool_view_with_runtime_config(&config.tools, &runtime_config)
 }
 
-pub(crate) fn runtime_tool_view_with_runtime_config(
-    _tool_config: &crate::config::ToolConfig,
+fn build_runtime_tool_view_for_runtime_config(
     runtime_config: &runtime_config::ToolRuntimeConfig,
 ) -> ToolView {
     let catalog = tool_catalog();
@@ -490,26 +489,20 @@ pub(crate) fn runtime_tool_view_with_runtime_config(
     ToolView::from_tool_names(names)
 }
 
+pub(crate) fn runtime_tool_view_with_runtime_config(
+    _tool_config: &crate::config::ToolConfig,
+    runtime_config: &runtime_config::ToolRuntimeConfig,
+) -> ToolView {
+    build_runtime_tool_view_for_runtime_config(runtime_config)
+}
+
 /// Build a tool view from runtime config (respecting runtime toggles) plus
 /// feishu entries when the feishu integration is configured. This avoids
 /// using `ToolConfig::default()` which ignores runtime-disabled tools.
 fn full_runtime_tool_view_for_runtime_config(
     config: &runtime_config::ToolRuntimeConfig,
 ) -> ToolView {
-    let catalog = tool_catalog();
-    let mut names = catalog::runtime_tool_view_for_runtime_config(config)
-        .iter(&catalog)
-        .map(|descriptor| descriptor.name)
-        .collect::<Vec<_>>();
-    #[cfg(feature = "feishu-integration")]
-    if config.feishu.is_some() {
-        names.extend(
-            feishu::feishu_tool_registry_entries()
-                .into_iter()
-                .map(|entry| entry.name),
-        );
-    }
-    ToolView::from_tool_names(names)
+    build_runtime_tool_view_for_runtime_config(config)
 }
 
 #[derive(Debug, Clone, Copy)]

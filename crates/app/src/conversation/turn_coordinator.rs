@@ -6720,6 +6720,39 @@ mod tests {
     }
 
     #[test]
+    fn scope_non_provider_turn_tool_intents_preserve_existing_ids() {
+        let turn = ProviderTurn {
+            assistant_text: String::new(),
+            tool_intents: vec![
+                ToolIntent {
+                    tool_name: "tool.search".to_owned(),
+                    args_json: json!({"query": "read file"}),
+                    source: "local_followup".to_owned(),
+                    session_id: "existing-session".to_owned(),
+                    turn_id: "existing-turn".to_owned(),
+                    tool_call_id: "call-1".to_owned(),
+                },
+                ToolIntent {
+                    tool_name: "tool.invoke".to_owned(),
+                    args_json: json!({"tool_id": "file.read", "lease": "stub", "arguments": {"path": "README.md"}}),
+                    source: "local_followup".to_owned(),
+                    session_id: String::new(),
+                    turn_id: String::new(),
+                    tool_call_id: "call-2".to_owned(),
+                },
+            ],
+            raw_meta: Value::Null,
+        };
+
+        let scoped = scope_provider_turn_tool_intents(turn, "session-a", "turn-a");
+
+        assert_eq!(scoped.tool_intents[0].session_id, "existing-session");
+        assert_eq!(scoped.tool_intents[0].turn_id, "existing-turn");
+        assert_eq!(scoped.tool_intents[1].session_id, "session-a");
+        assert_eq!(scoped.tool_intents[1].turn_id, "turn-a");
+    }
+
+    #[test]
     fn reload_followup_provider_config_reads_provider_switch_wrapped_by_tool_invoke() {
         use std::fs;
 
