@@ -6225,6 +6225,33 @@ async fn handle_turn_with_runtime_safe_lane_session_governor_requests_extended_h
     );
     assert_eq!(window_request.payload["limit"], 200);
     assert_eq!(window_request.payload["allow_extended_limit"], true);
+
+    let persisted = runtime.persisted.lock().expect("persisted lock");
+    let lane_selected_payload = persisted
+        .iter()
+        .filter_map(|(_, role, content)| {
+            if role != "assistant" {
+                return None;
+            }
+            let parsed = serde_json::from_str::<Value>(content).ok()?;
+            if parsed.get("type")?.as_str()? != "conversation_event" {
+                return None;
+            }
+            if parsed.get("event")?.as_str()? != "lane_selected" {
+                return None;
+            }
+            parsed.get("payload").cloned()
+        })
+        .next_back()
+        .expect("lane_selected payload");
+    assert_eq!(
+        lane_selected_payload["session_governor"]["history_load_status"],
+        "loaded"
+    );
+    assert_eq!(
+        lane_selected_payload["session_governor"]["history_load_error"],
+        Value::Null
+    );
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -6418,6 +6445,17 @@ async fn handle_turn_with_runtime_safe_lane_session_governor_does_not_reuse_sqli
     assert_eq!(
         lane_selected_payload["session_governor"]["failed_threshold_triggered"],
         false
+    );
+    assert_eq!(
+        lane_selected_payload["session_governor"]["history_load_status"],
+        "unavailable"
+    );
+    assert!(
+        lane_selected_payload["session_governor"]["history_load_error"]
+            .as_str()
+            .expect("history load error text")
+            .contains("non-ok status"),
+        "expected surfaced governor history load error: {lane_selected_payload:?}"
     );
 
     let _ = std::fs::remove_file(&db_path);

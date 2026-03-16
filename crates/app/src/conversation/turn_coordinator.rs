@@ -499,10 +499,30 @@ impl SafeLaneRuntimeHealthSignal {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum SafeLaneGovernorHistoryLoadStatus {
+    #[default]
+    Disabled,
+    Loaded,
+    Unavailable,
+}
+
+impl SafeLaneGovernorHistoryLoadStatus {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Loaded => "loaded",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
 struct SafeLaneSessionGovernorDecision {
     engaged: bool,
     history_window_turns: usize,
+    history_load_status: SafeLaneGovernorHistoryLoadStatus,
+    history_load_error: Option<String>,
     failed_final_status_events: u32,
     failed_final_status_threshold: u32,
     failed_threshold_triggered: bool,
@@ -527,10 +547,12 @@ struct SafeLaneSessionGovernorDecision {
 }
 
 impl SafeLaneSessionGovernorDecision {
-    fn as_json(self) -> Value {
+    fn as_json(&self) -> Value {
         json!({
             "engaged": self.engaged,
             "history_window_turns": self.history_window_turns,
+            "history_load_status": self.history_load_status.as_str(),
+            "history_load_error": self.history_load_error,
             "failed_final_status_events": self.failed_final_status_events,
             "failed_final_status_threshold": self.failed_final_status_threshold,
             "failed_threshold_triggered": self.failed_threshold_triggered,
@@ -558,6 +580,8 @@ impl SafeLaneSessionGovernorDecision {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct SafeLaneGovernorHistorySignals {
+    history_load_status: SafeLaneGovernorHistoryLoadStatus,
+    history_load_error: Option<String>,
     summary: SafeLaneEventSummary,
     final_status_failed_samples: Vec<bool>,
     backpressure_failure_samples: Vec<bool>,
@@ -576,6 +600,7 @@ struct SafeLanePlanLoopState {
 
 impl SafeLanePlanLoopState {
     fn new(config: &LoongClawConfig, governor: SafeLaneSessionGovernorDecision) -> Self {
+        let force_no_replan = governor.force_no_replan;
         let mut tool_node_max_attempts = config.conversation.safe_lane_node_max_attempts.max(1);
         if let Some(forced_node_max_attempts) = governor.forced_node_max_attempts {
             tool_node_max_attempts = tool_node_max_attempts.min(forced_node_max_attempts.max(1));
@@ -590,7 +615,7 @@ impl SafeLanePlanLoopState {
 
         Self {
             governor,
-            replan_budget: SafeLaneReplanBudget::new(if governor.force_no_replan {
+            replan_budget: SafeLaneReplanBudget::new(if force_no_replan {
                 0
             } else {
                 config.conversation.safe_lane_replan_max_rounds
@@ -4540,7 +4565,7 @@ async fn execute_turn_with_safe_lane_plan<R: ConversationRuntime + ?Sized>(
                     &verify_failure,
                     state.replan_budget,
                     state.metrics,
-                    state.governor,
+                    &state.governor,
                 );
                 emit_safe_lane_event(
                     config,
@@ -4652,7 +4677,7 @@ async fn execute_turn_with_safe_lane_plan<R: ConversationRuntime + ?Sized>(
                     &round_failure_meta,
                     state.replan_budget,
                     state.metrics,
-                    state.governor,
+                    &state.governor,
                 );
                 let failure_summary = summarize_plan_failure(&failure);
                 emit_safe_lane_event(
@@ -5293,6 +5318,8 @@ fn decide_safe_lane_session_governor(
     SafeLaneSessionGovernorDecision {
         engaged,
         history_window_turns,
+        history_load_status: history.history_load_status,
+        history_load_error: history.history_load_error.clone(),
         failed_final_status_events,
         failed_final_status_threshold,
         failed_threshold_triggered,
@@ -5339,7 +5366,7 @@ async fn load_safe_lane_history_signals_for_governor(
     #[cfg(feature = "memory-sqlite")]
     {
         let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
-        if let Ok(assistant_contents) = load_assistant_contents_from_session_window(
+        return match load_assistant_contents_from_session_window(
             session_id,
             window_turns,
             binding,
@@ -5347,13 +5374,21 @@ async fn load_safe_lane_history_signals_for_governor(
         )
         .await
         {
-            return summarize_governor_history_signals(
-                assistant_contents.iter().map(String::as_str),
-            );
-        }
+            Ok(assistant_contents) => {
+                summarize_governor_history_signals(assistant_contents.iter().map(String::as_str))
+            }
+            Err(error) => SafeLaneGovernorHistorySignals {
+                history_load_status: SafeLaneGovernorHistoryLoadStatus::Unavailable,
+                history_load_error: Some(error),
+                ..SafeLaneGovernorHistorySignals::default()
+            },
+        };
     }
 
-    SafeLaneGovernorHistorySignals::default()
+    #[cfg(not(feature = "memory-sqlite"))]
+    {
+        SafeLaneGovernorHistorySignals::default()
+    }
 }
 
 fn summarize_governor_history_signals<'a, I>(
@@ -5364,6 +5399,8 @@ where
 {
     let projection = summarize_safe_lane_history(assistant_contents);
     SafeLaneGovernorHistorySignals {
+        history_load_status: SafeLaneGovernorHistoryLoadStatus::Loaded,
+        history_load_error: None,
         summary: projection.summary,
         final_status_failed_samples: projection.final_status_failed_samples,
         backpressure_failure_samples: projection.backpressure_failure_samples,
@@ -5604,7 +5641,7 @@ impl SafeLaneFailureRoute {
         Self::terminal_with_source(reason, SafeLaneFailureRouteSource::BackpressureGuard)
     }
 
-    fn with_session_governor_override(self, governor: SafeLaneSessionGovernorDecision) -> Self {
+    fn with_session_governor_override(self, governor: &SafeLaneSessionGovernorDecision) -> Self {
         if governor.force_no_replan && self.is_base_round_budget_terminal() {
             return Self::terminal_with_source(
                 SafeLaneFailureRouteReason::SessionGovernorNoReplan,
@@ -5632,7 +5669,7 @@ fn decide_safe_lane_failure_route(
     failure: &TurnFailure,
     replan_budget: SafeLaneReplanBudget,
     metrics: SafeLaneExecutionMetrics,
-    governor: SafeLaneSessionGovernorDecision,
+    governor: &SafeLaneSessionGovernorDecision,
 ) -> SafeLaneFailureRoute {
     SafeLaneFailureRoute::from_failure(failure, replan_budget)
         .with_backpressure_guard(safe_lane_backpressure_budget(config), metrics)
@@ -7819,7 +7856,7 @@ mod tests {
                 total_attempts_used: 2,
                 ..SafeLaneExecutionMetrics::default()
             },
-            SafeLaneSessionGovernorDecision::default(),
+            &SafeLaneSessionGovernorDecision::default(),
         );
 
         assert_eq!(route.decision, SafeLaneFailureRouteDecision::Terminal);
@@ -7838,7 +7875,7 @@ mod tests {
             &TurnFailure::retryable("safe_lane_plan_node_retryable_error", "transient"),
             SafeLaneReplanBudget::new(1).after_replan(),
             SafeLaneExecutionMetrics::default(),
-            SafeLaneSessionGovernorDecision {
+            &SafeLaneSessionGovernorDecision {
                 force_no_replan: true,
                 ..SafeLaneSessionGovernorDecision::default()
             },
@@ -7995,6 +8032,8 @@ mod tests {
         let mut summary = SafeLaneEventSummary::default();
         summary.final_status_counts.insert("failed".to_owned(), 1);
         let history = SafeLaneGovernorHistorySignals {
+            history_load_status: SafeLaneGovernorHistoryLoadStatus::Loaded,
+            history_load_error: None,
             summary,
             final_status_failed_samples: vec![false, true, true, true],
             backpressure_failure_samples: vec![false, false, false, false],
@@ -8046,6 +8085,8 @@ mod tests {
         let mut summary = SafeLaneEventSummary::default();
         summary.final_status_counts.insert("failed".to_owned(), 1);
         let history = SafeLaneGovernorHistorySignals {
+            history_load_status: SafeLaneGovernorHistoryLoadStatus::Loaded,
+            history_load_error: None,
             summary,
             final_status_failed_samples: vec![true, false, false, false, false],
             backpressure_failure_samples: vec![true, false, false, false, false],
@@ -8070,7 +8111,7 @@ mod tests {
             force_no_replan: true,
             ..SafeLaneSessionGovernorDecision::default()
         };
-        let overridden = route.with_session_governor_override(governor);
+        let overridden = route.with_session_governor_override(&governor);
         assert_eq!(
             overridden.reason,
             SafeLaneFailureRouteReason::SessionGovernorNoReplan
