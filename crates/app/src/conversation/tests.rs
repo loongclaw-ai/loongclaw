@@ -8905,6 +8905,42 @@ async fn load_turn_checkpoint_event_summary_fails_closed_when_kernel_window_payl
     assert_eq!(captured[0].operation, crate::memory::MEMORY_OP_WINDOW);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn load_turn_checkpoint_event_summary_fails_closed_when_kernel_window_assistant_content_is_malformed()
+ {
+    let audit = Arc::new(InMemoryAuditSink::default());
+    let (ctx, invocations) = build_kernel_context_with_raw_window_payload(
+        audit,
+        json!({
+            "turns": [
+                {
+                    "role": "assistant",
+                    "content": {
+                        "unexpected": "shape"
+                    }
+                }
+            ]
+        }),
+    );
+    let config = test_config();
+    let mem_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+
+    let error = load_turn_checkpoint_event_summary(
+        "session-kernel-window-malformed-assistant-content",
+        8,
+        ConversationRuntimeBinding::kernel(&ctx),
+        &mem_config,
+    )
+    .await
+    .expect_err("kernel-bound history should fail closed on malformed assistant content");
+
+    assert!(error.contains("malformed"), "unexpected error: {error}");
+
+    let captured = invocations.lock().expect("invocations lock");
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].operation, crate::memory::MEMORY_OP_WINDOW);
+}
+
 #[cfg(feature = "memory-sqlite")]
 #[tokio::test]
 async fn load_turn_checkpoint_event_summary_direct_read_failure_uses_neutral_error_message() {

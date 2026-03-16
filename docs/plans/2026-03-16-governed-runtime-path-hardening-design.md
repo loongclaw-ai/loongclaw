@@ -147,7 +147,7 @@ Normalized error contract for persisted diagnostics:
 1. `kernel_request_failed` when the kernel memory-window request itself errors
 2. `kernel_non_ok_status` when the kernel responds with a non-`ok` status
 3. `kernel_malformed_payload` when the kernel responds with `ok` but omits a
-   usable `payload.turns` array
+   usable `payload.turns` array or includes malformed assistant turn content
 4. `direct_read_failed` when an intentional direct-mode sqlite read fails
 
 Observability requirements in this slice:
@@ -186,8 +186,10 @@ Add focused regression coverage for:
 2. local child-runtime spawn preserves kernel binding in tests
 3. kernel-bound history readers fail when the memory window kernel request
    fails
-4. direct-mode history readers still use sqlite successfully
-5. safe-lane governor diagnostics persist normalized history load error codes
+4. kernel-bound history readers fail when the memory window payload is
+   structurally malformed, including malformed assistant turn content
+5. direct-mode history readers still use sqlite successfully
+6. safe-lane governor diagnostics persist normalized history load error codes
 
 ## Why This Slice Matters
 
