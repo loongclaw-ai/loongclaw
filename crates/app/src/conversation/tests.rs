@@ -199,7 +199,9 @@ impl crate::conversation::AsyncDelegateSpawner for LocalChildRuntimeAsyncDelegat
             request.label,
             &request.task,
             request.timeout_seconds,
-            ConversationRuntimeBinding::direct(),
+            ConversationRuntimeBinding::from_optional_kernel_context(
+                request.kernel_context.as_ref(),
+            ),
         )
         .await;
         Ok(())
@@ -6227,7 +6229,7 @@ async fn handle_turn_with_runtime_safe_lane_session_governor_requests_extended_h
 
 #[cfg(feature = "memory-sqlite")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn handle_turn_with_runtime_safe_lane_session_governor_falls_back_to_configured_sqlite_history_when_kernel_window_is_non_ok()
+async fn handle_turn_with_runtime_safe_lane_session_governor_does_not_reuse_sqlite_history_when_kernel_window_is_non_ok()
  {
     use loongclaw_contracts::{ToolCoreOutcome, ToolCoreRequest, ToolPlaneError};
     use loongclaw_kernel::{CoreMemoryAdapter, CoreToolAdapter};
@@ -6386,12 +6388,12 @@ async fn handle_turn_with_runtime_safe_lane_session_governor_falls_back_to_confi
             ConversationRuntimeBinding::kernel(&ctx),
         )
         .await
-        .expect("safe lane should use sqlite governor fallback history");
+        .expect("safe lane turn should continue without governed history fallback");
 
     let calls = *call_counter.lock().expect("call counter lock");
-    assert_eq!(
-        calls, 1,
-        "governor should suppress replans when configured sqlite history shows chronic failure"
+    assert!(
+        calls > 1,
+        "governor should no longer suppress replans from configured sqlite history when kernel history is unavailable"
     );
 
     let persisted = runtime.persisted.lock().expect("persisted lock");
@@ -6412,10 +6414,10 @@ async fn handle_turn_with_runtime_safe_lane_session_governor_falls_back_to_confi
         })
         .next_back()
         .expect("lane_selected payload");
-    assert_eq!(lane_selected_payload["session_governor"]["engaged"], true);
+    assert_eq!(lane_selected_payload["session_governor"]["engaged"], false);
     assert_eq!(
         lane_selected_payload["session_governor"]["failed_threshold_triggered"],
-        true
+        false
     );
 
     let _ = std::fs::remove_file(&db_path);
@@ -8396,6 +8398,48 @@ fn build_kernel_context_with_window_turn_sequence(
     (ctx, invocations)
 }
 
+fn build_kernel_context_with_window_error(
+    audit: Arc<InMemoryAuditSink>,
+    error: &str,
+) -> (KernelContext, Arc<Mutex<Vec<MemoryCoreRequest>>>) {
+    let clock = Arc::new(FixedClock::new(1_700_000_000));
+    let mut kernel = LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock, audit);
+
+    let pack = VerticalPackManifest {
+        pack_id: "test-pack".to_owned(),
+        domain: "testing".to_owned(),
+        version: "0.1.0".to_owned(),
+        default_route: ExecutionRoute {
+            harness_kind: HarnessKind::EmbeddedPi,
+            adapter: None,
+        },
+        allowed_connectors: BTreeSet::new(),
+        granted_capabilities: BTreeSet::from([Capability::MemoryWrite, Capability::MemoryRead]),
+        metadata: BTreeMap::new(),
+    };
+    kernel.register_pack(pack).expect("register pack");
+
+    let invocations = Arc::new(Mutex::new(Vec::new()));
+    kernel.register_core_memory_adapter(FailingWindowMemoryAdapter {
+        invocations: invocations.clone(),
+        error: error.to_owned(),
+    });
+    kernel
+        .set_default_core_memory_adapter("test-memory-failing-window")
+        .expect("set default memory adapter");
+
+    let token = kernel
+        .issue_token("test-pack", "test-agent", 3600)
+        .expect("issue token");
+
+    let ctx = KernelContext {
+        kernel: Arc::new(kernel),
+        token,
+    };
+
+    (ctx, invocations)
+}
+
 struct SharedTestMemoryAdapter {
     invocations: Arc<Mutex<Vec<MemoryCoreRequest>>>,
     window_turns: Value,
@@ -8462,6 +8506,35 @@ impl CoreMemoryAdapter for SequencedTestMemoryAdapter {
         Ok(MemoryCoreOutcome {
             status: "ok".to_owned(),
             payload,
+        })
+    }
+}
+
+struct FailingWindowMemoryAdapter {
+    invocations: Arc<Mutex<Vec<MemoryCoreRequest>>>,
+    error: String,
+}
+
+#[async_trait]
+impl CoreMemoryAdapter for FailingWindowMemoryAdapter {
+    fn name(&self) -> &str {
+        "test-memory-failing-window"
+    }
+
+    async fn execute_core_memory(
+        &self,
+        request: MemoryCoreRequest,
+    ) -> Result<MemoryCoreOutcome, MemoryPlaneError> {
+        self.invocations
+            .lock()
+            .expect("invocations lock")
+            .push(request.clone());
+        if request.operation == crate::memory::MEMORY_OP_WINDOW {
+            return Err(MemoryPlaneError::Execution(self.error.clone()));
+        }
+        Ok(MemoryCoreOutcome {
+            status: "ok".to_owned(),
+            payload: json!({}),
         })
     }
 }
@@ -8651,6 +8724,52 @@ async fn load_turn_checkpoint_event_summary_prefers_kernel_memory_window_when_co
     );
     assert_eq!(captured[0].payload["limit"], json!(96));
     assert_eq!(captured[0].payload["allow_extended_limit"], json!(true));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn load_turn_checkpoint_event_summary_fails_closed_when_kernel_window_errors() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-turn-checkpoint", "kernel-window-error")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    config.memory.sliding_window = 8;
+    let mem_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+
+    crate::memory::append_turn_direct(
+        "session-kernel-window-error",
+        "assistant",
+        r#"{"type":"conversation_event","event":"turn_checkpoint","payload":{"schema_version":1,"stage":"finalized","checkpoint":{"lane":{"lane":"safe","result_kind":"tool_call"},"finalization":{"persistence_mode":"success"}},"finalization_progress":{"after_turn":"completed","compaction":"skipped"},"failure":null}}"#,
+        &mem_config,
+    )
+    .expect("seed sqlite fallback history");
+
+    let audit = Arc::new(InMemoryAuditSink::default());
+    let (ctx, invocations) =
+        build_kernel_context_with_window_error(audit, "forced kernel window failure");
+
+    let error = load_turn_checkpoint_event_summary(
+        "session-kernel-window-error",
+        8,
+        ConversationRuntimeBinding::kernel(&ctx),
+        &mem_config,
+    )
+    .await
+    .expect_err("kernel-bound history should fail closed");
+
+    assert!(
+        error.contains("load assistant history via kernel failed"),
+        "unexpected error: {error}"
+    );
+
+    let captured = invocations.lock().expect("invocations lock");
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].operation, crate::memory::MEMORY_OP_WINDOW);
+
+    let _ = std::fs::remove_file(&db_path);
 }
 
 #[cfg(not(feature = "memory-sqlite"))]
@@ -11555,6 +11674,10 @@ async fn handle_turn_with_runtime_executes_delegate_async_via_coordinator_withou
     assert_eq!(spawn_request.task, "child async task");
     assert_eq!(spawn_request.label.as_deref(), Some("async-child"));
     assert_eq!(spawn_request.timeout_seconds, 9);
+    assert!(
+        spawn_request.kernel_context.is_none(),
+        "direct parent turns should keep async delegate children in direct mode"
+    );
     assert_eq!(child.state, crate::session::repository::SessionState::Ready);
     assert_eq!(child.label.as_deref(), Some("async-child"));
 
@@ -11576,6 +11699,94 @@ async fn handle_turn_with_runtime_executes_delegate_async_via_coordinator_withou
     assert_eq!(
         requested.state,
         crate::session::repository::SessionState::Ready
+    );
+
+    release_notify.notify_waiters();
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn handle_turn_with_runtime_delegate_async_preserves_kernel_binding_in_spawn_request() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-delegate-async", "kernel-binding")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+
+    let (gated_spawner, request_rx, release_notify) = GatedFakeAsyncDelegateSpawner::new();
+    let runtime = FakeRuntime::with_turns_and_completions(
+        vec![],
+        vec![Ok(ProviderTurn {
+            assistant_text: "Delegating async.".to_owned(),
+            tool_intents: vec![provider_tool_intent(
+                "delegate_async",
+                json!({
+                    "task": "child async task",
+                    "label": "async-child",
+                    "timeout_seconds": 9
+                }),
+                "root-session",
+                "turn-delegate-async-parent",
+                "call-delegate-async-parent",
+            )],
+            raw_meta: Value::Null,
+        })],
+        vec![],
+    )
+    .with_async_delegate_spawner(Arc::new(gated_spawner))
+    .with_durable_memory_config(memory_config.clone());
+
+    let (_audit, kernel_ctx) = {
+        let audit = Arc::new(InMemoryAuditSink::default());
+        let (kernel_ctx, _invocations) = build_kernel_context(audit.clone());
+        (audit, kernel_ctx)
+    };
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let queued_call = tokio::spawn(async move {
+        coordinator
+            .handle_turn_with_runtime(
+                &config,
+                "root-session",
+                "show raw json tool output",
+                ProviderErrorMode::Propagate,
+                &runtime,
+                ConversationRuntimeBinding::kernel(&kernel_ctx),
+            )
+            .await
+    });
+
+    let spawn_request = tokio::time::timeout(std::time::Duration::from_millis(250), request_rx)
+        .await
+        .expect("delegate_async should dispatch spawn quickly")
+        .expect("gated async delegate spawn request");
+    let reply = tokio::time::timeout(std::time::Duration::from_millis(250), queued_call)
+        .await
+        .expect("delegate_async should return queued handle without waiting")
+        .expect("join queued delegate_async task")
+        .expect("delegate_async reply");
+
+    assert!(
+        reply.contains("\"tool\":\"delegate_async\""),
+        "expected raw delegate_async tool output, got: {reply}"
+    );
+    assert!(
+        spawn_request.kernel_context.is_some(),
+        "kernel-bound parent turns should preserve kernel context for async delegate children"
     );
 
     release_notify.notify_waiters();

@@ -20,6 +20,7 @@ pub(crate) const DEFAULT_TOKEN_TTL_S: u64 = 86400;
 ///
 /// `pack_id` and `agent_id` are accessed via the embedded `CapabilityToken`
 /// to avoid data divergence.
+#[derive(Clone)]
 pub struct KernelContext {
     pub kernel: Arc<LoongClawKernel<StaticPolicyEngine>>,
     pub token: CapabilityToken,

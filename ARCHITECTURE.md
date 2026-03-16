@@ -98,7 +98,7 @@ policy-aware but business-logic-light.
 These are the core principles for anyone working in this codebase. They are enforced
 mechanically where possible.
 
-1. **Kernel-first** -- all execution paths route through the kernel's capability, policy, and audit system. No shadow paths.
+1. **Kernel-first** -- kernel-governed execution routes through the kernel's capability, policy, and audit system. Remaining direct compatibility paths must be explicit and are follow-up work, not implicit shadow routing.
 2. **No breaking changes** -- new features are additive only. Existing public API signatures stay unchanged.
 3. **Capability-gated by default** -- every tool call, memory operation, and connector invocation requires a valid `CapabilityToken`.
 4. **Audit everything security-critical** -- policy denials, token lifecycle events, and module invocations all emit structured audit events.

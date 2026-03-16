@@ -188,14 +188,19 @@ pub(crate) async fn load_assistant_contents_from_session_window(
         let outcome = ctx
             .kernel
             .execute_memory_core(ctx.pack_id(), &ctx.token, &caps, None, request)
-            .await;
-        if let Ok(outcome) = outcome
-            && outcome.status == "ok"
-        {
-            return Ok(collect_assistant_contents_from_memory_window_payload(
-                outcome.payload.get("turns"),
+            .await
+            .map_err(|error| format!("load assistant history via kernel failed: {error}"))?;
+
+        if outcome.status != "ok" {
+            return Err(format!(
+                "load assistant history via kernel returned non-ok status: {}",
+                outcome.status
             ));
         }
+
+        return Ok(collect_assistant_contents_from_memory_window_payload(
+            outcome.payload.get("turns"),
+        ));
     }
 
     let turns = memory::window_direct(session_id, limit, memory_config)

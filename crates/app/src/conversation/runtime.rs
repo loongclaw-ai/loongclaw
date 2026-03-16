@@ -70,13 +70,14 @@ fn normalize_session_id(session_id: String) -> String {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct AsyncDelegateSpawnRequest {
     pub child_session_id: String,
     pub parent_session_id: String,
     pub task: String,
     pub label: Option<String>,
     pub timeout_seconds: u64,
+    pub kernel_context: Option<KernelContext>,
 }
 
 #[async_trait]
@@ -137,7 +138,9 @@ impl AsyncDelegateSpawner for DefaultAsyncDelegateSpawner {
             request.label,
             &request.task,
             request.timeout_seconds,
-            ConversationRuntimeBinding::direct(),
+            ConversationRuntimeBinding::from_optional_kernel_context(
+                request.kernel_context.as_ref(),
+            ),
         )
         .await;
         Ok(())
