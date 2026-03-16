@@ -32,7 +32,7 @@ impression still leaks operator-internal framing:
 3. `chat` still feels like entering a console before it feels like entering an
    assistant
 
-That gap is small, but it is exactly the kind of surface-level friction that
+That gap is small, but it is the kind of surface-level friction that
 causes the MVP to feel more technical than it is.
 
 ## Constraints
