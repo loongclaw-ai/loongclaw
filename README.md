@@ -466,16 +466,31 @@ as the built-in browser tools.
 
 ```bash
 loongclaw skills enable-browser-preview --config ~/.loongclaw/config.toml
-agent-browser --help
+npm install -g agent-browser && agent-browser install
 loongclaw doctor --config ~/.loongclaw/config.toml
+loongclaw ask --config ~/.loongclaw/config.toml --message 'Use the browser companion preview to open https://example.com, snapshot the page, and summarize what is visible.'
 ```
 
 It adds a first-party managed helper skill that can route richer multi-step page
 work through `agent-browser` when the runtime, shell policy, and local binary
-are all ready. It does not install or manage the `agent-browser` runtime for
-you; bring that binary yourself, then use `doctor` to confirm it is available
-on `PATH`. A healthy `doctor` run should report `agent-browser` as available and
-avoid browser preview follow-up errors.
+are all ready. `loongclaw skills enable-browser-preview` now turns on the needed
+LoongClaw config, installs the bundled helper skill, and prints concrete next
+steps plus ready-to-run recipes. LoongClaw still does not install or manage the
+`agent-browser` runtime for you, so the intended flow is:
+
+1. Enable the preview with `loongclaw skills enable-browser-preview`.
+2. Install the runtime with `npm install -g agent-browser && agent-browser install`.
+3. Verify the runtime with `agent-browser open example.com` or rerun `loongclaw doctor`.
+4. Try one of the generated recipes, such as:
+   - summarize a page
+   - extract page text
+   - follow a link and summarize the destination
+
+A healthy `doctor` run should then keep the browser preview in the suggested
+next actions instead of dropping the user into low-level runtime wording.
+If you have disabled the CLI surface with `cli.enabled=false`, LoongClaw will
+stop short of printing the ask-based browser preview recipes until you re-enable
+the CLI.
 
 ## Key Features
 
