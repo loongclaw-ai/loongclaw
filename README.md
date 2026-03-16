@@ -666,8 +666,8 @@ loongclaw validate-config --config ~/.loongclaw/config.toml --json
 ## Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow,
-including contribution workflows (routine vs. higher-risk changes) and recipes for adding
-providers, tools, and channels.
+including the active `alpha-test` contribution branch, issue intake routes, validation
+expectations, and recipes for adding providers, tools, and channels.
 
 - [Contributing Guide](CONTRIBUTING.md)
 - [Code of Conduct](CODE_OF_CONDUCT.md)
