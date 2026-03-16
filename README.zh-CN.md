@@ -135,10 +135,11 @@ cargo install --path crates/daemon
    loongclaw onboard
    ```
 
-2. 按 onboarding 选中的环境变量名设置 provider 凭据：
+2. 当 onboarding 提示填写 credential env var 时，只输入环境变量名，例如
+   `OPENAI_API_KEY`，然后再导出真实密钥：
 
    ```bash
-   export PROVIDER_API_KEY=sk-...
+   export OPENAI_API_KEY=sk-...
    ```
 
 3. 先拿到一次性回答：
@@ -168,7 +169,31 @@ cargo install --path crates/daemon
 cargo test --workspace --all-features
 ```
 
+## Prompt 与人格预设
+
+LoongClaw 内置原生 prompt pack，并提供三种默认人格预设。三者共享同一套
+安全边界，只改变语气、主动性、确认阈值与解释密度。
+
+- `calm_engineering`：冷静、严谨、偏工程执行
+- `friendly_collab`：更协作、更愿意补充上下文
+- `autonomous_executor`：更果断、更偏执行导向
+
+交互式 onboarding 现在会依次引导 provider、model、credential env var、人格预设
+和 memory profile，不再把完整提示词正文直接摊在屏幕上。需要完全覆盖 prompt
+时，仍然可以显式使用 `--system-prompt` 或直接改配置。
+
 ## 记忆配置与记忆系统
+
+LoongClaw 把记忆行为与存储后端拆开。当前仍然使用 SQLite 作为后端，但对外暴露
+三种可选的上下文注入模式：
+
+- `window_only`：只加载最近滑动窗口
+- `window_plus_summary`：更早的历史先压缩为摘要，再和最近窗口一起注入
+- `profile_plus_window`：在最近窗口前额外注入持久化的 `profile_note`
+
+`profile_note` 是第一条面向迁移的持久记忆通道，用来承载导入的人设、长期偏好
+或稳定调优信息，而不必把所有内容都塞进 system prompt。交互式 onboarding 也有
+独立的 memory-profile 步骤，并会在 review / success 摘要里回显最终选择。
 
 LoongClaw 现在把 `memory.system` 作为稳定的选择缝预留出来，但当前 alpha-test
 运行面仍然刻意保持 builtin-only：

@@ -538,14 +538,20 @@ fn import_cli_apply_summary_wraps_long_path_and_domains_for_narrow_width() {
     assert!(
         lines
             .iter()
-            .any(|line| line == "next step: loongclaw ask --config '/tmp/shared"),
-        "apply summary should keep the ask-next-step label visible before wrapping long command paths: {lines:#?}"
+            .any(|line| line == "next step: loongclaw ask --config /tmp/shared"),
+        "apply summary should keep the new primary ask handoff visible before wrapping long command paths: {lines:#?}"
     );
     assert!(
         lines
             .iter()
-            .any(|line| line == "  workspace/loongclaw config.toml' --message"),
+            .any(|line| line == "  workspace/loongclaw config.toml --message"),
         "apply summary should continue wrapped ask commands on an indented line: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "  \"say hello and verify this setup\""),
+        "apply summary should keep the one-shot verification message visible on a wrapped continuation line: {lines:#?}"
     );
 }
 

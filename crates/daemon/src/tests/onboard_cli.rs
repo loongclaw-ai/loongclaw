@@ -171,7 +171,11 @@ impl crate::onboard_cli::OnboardUi for ScriptedOnboardUi {
 
     fn prompt_with_default(&mut self, label: &str, default: &str) -> crate::CliResult<String> {
         self.outputs.push(format!("PROMPT {label} [{default}]"));
-        self.next_input(label)
+        let value = self.next_input(label)?;
+        if value.trim().is_empty() {
+            return Ok(default.to_owned());
+        }
+        Ok(value)
     }
 
     fn prompt_required(&mut self, label: &str) -> crate::CliResult<String> {
@@ -416,6 +420,43 @@ fn provider_kind_id_mapping_includes_kimi_coding() {
         crate::onboard_cli::provider_kind_id(mvp::config::ProviderKind::Custom),
         "custom"
     );
+}
+
+#[test]
+fn parse_prompt_personality_accepts_supported_ids() {
+    assert_eq!(
+        crate::onboard_cli::parse_prompt_personality("calm_engineering"),
+        Some(mvp::prompt::PromptPersonality::CalmEngineering)
+    );
+    assert_eq!(
+        crate::onboard_cli::parse_prompt_personality("friendly_collab"),
+        Some(mvp::prompt::PromptPersonality::FriendlyCollab)
+    );
+    assert_eq!(
+        crate::onboard_cli::parse_prompt_personality("autonomous_executor"),
+        Some(mvp::prompt::PromptPersonality::AutonomousExecutor)
+    );
+    assert_eq!(
+        crate::onboard_cli::parse_prompt_personality("unknown"),
+        None
+    );
+}
+
+#[test]
+fn parse_memory_profile_accepts_supported_ids() {
+    assert_eq!(
+        crate::onboard_cli::parse_memory_profile("window_only"),
+        Some(mvp::config::MemoryProfile::WindowOnly)
+    );
+    assert_eq!(
+        crate::onboard_cli::parse_memory_profile("window_plus_summary"),
+        Some(mvp::config::MemoryProfile::WindowPlusSummary)
+    );
+    assert_eq!(
+        crate::onboard_cli::parse_memory_profile("profile_plus_window"),
+        Some(mvp::config::MemoryProfile::ProfilePlusWindow)
+    );
+    assert_eq!(crate::onboard_cli::parse_memory_profile("unknown"), None);
 }
 
 #[test]
@@ -1667,7 +1708,7 @@ fn onboard_presentation_review_and_shortcut_copy_stays_canonical() {
     let guided = crate::onboard_presentation::review_flow_copy(
         crate::onboard_presentation::ReviewFlowKind::Guided,
     );
-    assert_eq!(guided.progress_line, "step 5 of 5 · review");
+    assert_eq!(guided.progress_line, "step 6 of 6 · review");
     assert_eq!(guided.header_subtitle, "review setup");
 
     let quick_current = crate::onboard_presentation::review_flow_copy(
@@ -2132,6 +2173,26 @@ fn onboard_entry_screen_includes_brand_block_and_detected_setup_digest() {
         "entry screen should keep the detected-setup path visible and recommended: {lines:#?}"
     );
     assert!(
+        lines.iter().any(|line| {
+            line.contains("good fit:")
+                && line.contains("use detected provider")
+                && line.contains("add detected channels")
+        }),
+        "entry screen should explain why the recommended setup path is the recommended one instead of only tagging it: {lines:#?}"
+    );
+    let joined = lines.join("\n");
+    assert!(
+        joined.contains("providers available: anthropic")
+            && joined.contains("ollama, openai, openrouter"),
+        "start-fresh entry copy should list the available provider ids in alphabetical order even when the catalog wraps across multiple lines: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("channels available after setup: cli, feishu, telegram")),
+        "start-fresh entry copy should list the available channel ids in alphabetical order: {lines:#?}"
+    );
+    assert!(
         lines
             .iter()
             .any(|line| line == "press Enter to use [2], the detected starting point"),
@@ -2390,7 +2451,7 @@ fn onboard_provider_selection_screen_includes_focus_title_and_choices() {
         "provider choice screen should use a focused decision title: {lines:#?}"
     );
     assert!(
-        lines.iter().any(|line| line == "step 1 of 5 · provider"),
+        lines.iter().any(|line| line == "step 1 of 6 · provider"),
         "provider choice screen should keep the guided-flow progress context inside the screen: {lines:#?}"
     );
     assert!(
@@ -2819,6 +2880,8 @@ fn onboard_current_setup_shortcut_is_limited_to_healthy_interactive_keep_flow() 
         provider: None,
         model: None,
         api_key_env: None,
+        personality: None,
+        memory_profile: None,
         system_prompt: None,
         skip_model_probe: false,
     };
@@ -2938,6 +3001,8 @@ fn onboard_detected_setup_shortcut_is_limited_to_interactive_import_flow_with_de
         provider: None,
         model: None,
         api_key_env: None,
+        personality: None,
+        memory_profile: None,
         system_prompt: None,
         skip_model_probe: false,
     };
@@ -3587,7 +3652,7 @@ fn onboard_model_selection_screen_keeps_provider_context() {
         "model screen should use a focused title: {lines:#?}"
     );
     assert!(
-        lines.iter().any(|line| line == "step 2 of 5 · model"),
+        lines.iter().any(|line| line == "step 2 of 6 · model"),
         "model screen should include guided progress context without relying on an external step header: {lines:#?}"
     );
     assert!(
@@ -3665,7 +3730,7 @@ fn onboard_model_selection_screen_wraps_compact_header_and_progress_on_narrow_wi
         "narrow model screen should split the compact header instead of forcing brand and version onto one line: {lines:#?}"
     );
     assert!(
-        lines.iter().any(|line| line == "step 2 of 5 · model"),
+        lines.iter().any(|line| line == "step 2 of 6 · model"),
         "narrow model screen should still keep the step context visible: {lines:#?}"
     );
 }
@@ -3688,13 +3753,13 @@ fn onboard_api_key_env_screen_explains_suggested_env_and_blank_behavior() {
         "credential-env screen should start with the compact LOONGCLAW step header: {lines:#?}"
     );
     assert!(
-        lines.iter().any(|line| line == "choose credential source"),
-        "credential-env screen should use a focused title: {lines:#?}"
+        lines.iter().any(|line| line == "choose credential env var"),
+        "credential-env screen should make it explicit that this field expects an env var name: {lines:#?}"
     );
     assert!(
         lines
             .iter()
-            .any(|line| line == "step 3 of 5 · credential source"),
+            .any(|line| line == "step 3 of 6 · credential env var"),
         "credential-env screen should include guided progress context inside the screen: {lines:#?}"
     );
     assert!(
@@ -3710,8 +3775,20 @@ fn onboard_api_key_env_screen_explains_suggested_env_and_blank_behavior() {
     assert!(
         lines
             .iter()
-            .any(|line| line == "- press Enter to use suggested source: ${OPENAI_API_KEY}"),
-        "credential-env screen should state that Enter uses the suggested env when no current env is set: {lines:#?}"
+            .any(|line| line == "- press Enter to use suggested env var: ${OPENAI_API_KEY}"),
+        "credential-env screen should state that Enter uses the suggested env var when no current env is set: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "- enter an env var name here, not the real secret value"),
+        "credential-env screen should warn users not to paste real API secrets into the env-name field: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "- examples: OPENAI_API_KEY, TEAM_OPENAI_KEY"),
+        "credential-env screen should show concrete env-var examples instead of making users infer the input format: {lines:#?}"
     );
     assert!(
         lines
@@ -3737,8 +3814,8 @@ fn onboard_api_key_env_screen_shows_prefilled_env_when_enter_default_is_overridd
     assert!(
         lines
             .iter()
-            .any(|line| line == "- press Enter to use prefilled source: ${TEAM_OPENAI_KEY}"),
-        "credential-env screen should surface the actual prefilled env when it differs from both the current and suggested env: {lines:#?}"
+            .any(|line| line == "- press Enter to use prefilled env var: ${TEAM_OPENAI_KEY}"),
+        "credential-env screen should surface the actual prefilled env name when it differs from both the current and suggested env: {lines:#?}"
     );
     assert!(
         lines
@@ -3788,100 +3865,131 @@ fn onboard_api_key_env_screen_wraps_progress_line_on_narrow_width() {
         "credential-env screen should keep the progress line within narrow terminal widths: {lines:#?}"
     );
     assert!(
-        lines.iter().any(|line| line == "step 3 of 5 ·"),
+        lines.iter().any(|line| line == "step 3 of 6 ·"),
         "narrow credential-env screen should keep the step label on the first wrapped line: {lines:#?}"
     );
     assert!(
-        lines.iter().any(|line| line == "credential source"),
+        lines.iter().any(|line| line == "credential env var"),
         "narrow credential-env screen should continue the wrapped progress line on a second line: {lines:#?}"
     );
 }
 
 #[test]
-fn onboard_system_prompt_screen_explains_blank_behavior() {
-    let mut config = mvp::config::LoongClawConfig::default();
-    config.cli.system_prompt = "be terse and code-focused".to_owned();
-
-    let lines = crate::onboard_cli::render_system_prompt_selection_screen_lines(&config, 80);
-
-    assert!(
-        lines[0].starts_with("LOONGCLAW  v"),
-        "system-prompt screen should start with the compact LOONGCLAW step header: {lines:#?}"
-    );
-    assert!(
-        lines.iter().any(|line| line == "adjust cli behavior"),
-        "system-prompt screen should frame this as a behavior adjustment: {lines:#?}"
-    );
-    assert!(
-        lines
-            .iter()
-            .any(|line| line == "step 4 of 5 · system prompt"),
-        "system-prompt screen should include guided progress context inside the screen: {lines:#?}"
-    );
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("- current prompt: be terse and code-focused")),
-        "system-prompt screen should show the current prompt value before editing: {lines:#?}"
-    );
-    assert!(
-        lines
-            .iter()
-            .any(|line| line == "- press Enter to keep current prompt"),
-        "system-prompt screen should explain that Enter keeps the current prompt when no other default is prefilled: {lines:#?}"
-    );
-    assert!(
-        lines
-            .iter()
-            .any(|line| line == "- type :clear to use the built-in behavior"),
-        "system-prompt screen should explain how to restore the built-in behavior when Enter keeps the current prompt: {lines:#?}"
-    );
-}
-
-#[test]
-fn onboard_system_prompt_screen_shows_prefilled_prompt_when_enter_default_differs() {
-    let mut config = mvp::config::LoongClawConfig::default();
-    config.cli.system_prompt = "be terse and code-focused".to_owned();
-
-    let lines = crate::onboard_cli::render_system_prompt_selection_screen_lines_with_default(
-        &config,
-        "speak with concise release-manager tone",
+fn onboard_personality_screen_lists_presets_without_rendering_full_prompt() {
+    let lines = crate::onboard_cli::render_personality_selection_screen_lines(
+        mvp::prompt::PromptPersonality::CalmEngineering,
         80,
     );
 
     assert!(
-        lines.iter().any(|line| {
-            line == "- press Enter to use prefilled prompt: speak with concise release-manager tone"
-        }),
-        "system-prompt screen should surface the actual prefilled prompt when Enter no longer keeps the current prompt: {lines:#?}"
+        lines[0].starts_with("LOONGCLAW  v"),
+        "personality screen should start with the compact LOONGCLAW step header: {lines:#?}"
     );
     assert!(
         lines
             .iter()
-            .all(|line| line != "- press Enter to keep current prompt"),
-        "system-prompt screen should not claim Enter keeps the current prompt when another prompt is prefilled: {lines:#?}"
+            .any(|line| line == "choose assistant personality"),
+        "personality screen should frame this as a preset choice instead of raw prompt editing: {lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|line| line == "step 4 of 6 · personality"),
+        "personality screen should include guided progress context inside the screen: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "[1] calm_engineering (recommended)"),
+        "personality screen should list calm_engineering as the default preset: {lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|line| line == "[2] friendly_collab"),
+        "personality screen should list friendly_collab as a visible preset option: {lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|line| line == "[3] autonomous_executor"),
+        "personality screen should list autonomous_executor as a visible preset option: {lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|line| {
+            line == "- advanced prompt editing comes later via --system-prompt or config"
+        }),
+        "personality screen should steer deep prompt customization away from the happy-path onboarding step: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .all(|line| !line.contains("## Personality Overlay")),
+        "personality screen should not dump the rendered prompt overlay text into onboarding: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .all(|line| !line.contains("## Safety Invariants")),
+        "personality screen should not dump the full system prompt body into onboarding: {lines:#?}"
     );
 }
 
 #[test]
-fn onboard_system_prompt_screen_wraps_long_current_prompt() {
-    let mut config = mvp::config::LoongClawConfig::default();
-    config.cli.system_prompt =
-        "keep replies short and code-focused when reviewing repo state".to_owned();
-
-    let lines = crate::onboard_cli::render_system_prompt_selection_screen_lines(&config, 48);
+fn onboard_memory_profile_screen_lists_supported_profiles() {
+    let lines = crate::onboard_cli::render_memory_profile_selection_screen_lines(
+        mvp::config::MemoryProfile::WindowPlusSummary,
+        80,
+    );
 
     assert!(
-        lines
-            .iter()
-            .any(|line| line == "- current prompt: keep replies short and"),
-        "system-prompt screen should keep the current-prompt label visible before wrapping long text: {lines:#?}"
+        lines[0].starts_with("LOONGCLAW  v"),
+        "memory-profile screen should start with the compact LOONGCLAW step header: {lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|line| line == "choose memory profile"),
+        "memory-profile screen should frame memory selection as a preset choice: {lines:#?}"
     );
     assert!(
         lines
             .iter()
-            .any(|line| line == "  code-focused when reviewing repo state"),
-        "system-prompt screen should continue wrapped prompt text on an indented line: {lines:#?}"
+            .any(|line| line == "step 5 of 6 · memory profile"),
+        "memory-profile screen should include guided progress context inside the screen: {lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|line| line == "[1] window_only"),
+        "memory-profile screen should list the lightweight preset: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "[2] window_plus_summary (recommended)"),
+        "memory-profile screen should keep the default profile explicit on screen: {lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|line| line == "[3] profile_plus_window"),
+        "memory-profile screen should list the profile_plus_window preset: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "press Enter to use [2], window_plus_summary"),
+        "memory-profile screen should make the default Enter action explicit instead of relying only on the prompt suffix: {lines:#?}"
+    );
+}
+
+#[test]
+fn onboard_memory_profile_screen_wraps_progress_line_on_narrow_width() {
+    let lines = crate::onboard_cli::render_memory_profile_selection_screen_lines(
+        mvp::config::MemoryProfile::WindowOnly,
+        24,
+    );
+
+    assert!(
+        lines.iter().all(|line| line.len() <= 24),
+        "memory-profile screen should wrap the new progress line cleanly on narrow terminals: {lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|line| line == "step 5 of 6 · memory"),
+        "narrow memory-profile screen should keep the step label visible on the first wrapped line: {lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|line| line == "profile"),
+        "narrow memory-profile screen should continue the wrapped progress line on the next row: {lines:#?}"
     );
 }
 
@@ -3969,13 +4077,13 @@ fn onboarding_success_summary_reports_import_source_and_enabled_channels() {
     );
     assert_eq!(
         summary.channels,
-        vec!["cli".to_owned(), "telegram".to_owned(), "feishu".to_owned()]
+        vec!["cli".to_owned(), "feishu".to_owned(), "telegram".to_owned()]
     );
     assert!(
         summary.next_actions.iter().any(|action| action
             .command
-            .contains("loongclaw ask --config '/tmp/loongclaw-config.toml' --message")),
-        "success summary should keep a direct ask handoff: {summary:#?}"
+            .contains("loongclaw ask --config /tmp/loongclaw-config.toml")),
+        "success summary should keep a direct ask handoff for the shortest first-success path: {summary:#?}"
     );
 }
 
@@ -4004,10 +4112,8 @@ fn onboarding_success_summary_derives_structured_actions() {
         summary.next_actions[3].kind,
         crate::onboard_cli::OnboardingActionKind::Channel
     );
-    assert_eq!(summary.next_actions[0].label, "ask example");
-    assert_eq!(summary.next_actions[1].label, "chat");
-    assert_eq!(summary.next_actions[2].label, "telegram");
-    assert_eq!(summary.next_actions[3].label, "feishu");
+    assert_eq!(summary.next_actions[2].label, "feishu");
+    assert_eq!(summary.next_actions[3].label, "telegram");
 }
 
 #[test]
@@ -4092,7 +4198,7 @@ fn onboard_preflight_screen_summarizes_status_counts_and_guidance() {
         "preflight screen should use a focused title: {lines:#?}"
     );
     assert!(
-        lines.iter().any(|line| line == "step 5 of 5 · review"),
+        lines.iter().any(|line| line == "step 6 of 6 · review"),
         "preflight screen should stay anchored to the review step: {lines:#?}"
     );
     assert!(
@@ -4208,7 +4314,7 @@ fn current_setup_preflight_screen_uses_quick_review_progress_copy() {
         "current-setup preflight should use quick-review progress copy: {lines:#?}"
     );
     assert!(
-        lines.iter().all(|line| line != "step 5 of 5 · review"),
+        lines.iter().all(|line| line != "step 6 of 6 · review"),
         "current-setup preflight should not reuse the guided step progress copy: {lines:#?}"
     );
 }
@@ -4233,7 +4339,7 @@ fn detected_setup_preflight_screen_uses_quick_review_progress_copy() {
         "detected-setup preflight should use quick-review progress copy: {lines:#?}"
     );
     assert!(
-        lines.iter().all(|line| line != "step 5 of 5 · review"),
+        lines.iter().all(|line| line != "step 6 of 6 · review"),
         "detected-setup preflight should not reuse the guided step progress copy: {lines:#?}"
     );
 }
@@ -4323,7 +4429,7 @@ fn current_setup_write_confirmation_screen_uses_quick_review_progress_copy() {
         "current-setup write-confirm should use quick-review progress copy: {lines:#?}"
     );
     assert!(
-        lines.iter().all(|line| line != "step 5 of 5 · review"),
+        lines.iter().all(|line| line != "step 6 of 6 · review"),
         "current-setup write-confirm should not reuse the guided step progress copy: {lines:#?}"
     );
 }
@@ -4343,7 +4449,7 @@ fn detected_setup_write_confirmation_screen_uses_quick_review_progress_copy() {
         "detected-setup write-confirm should use quick-review progress copy: {lines:#?}"
     );
     assert!(
-        lines.iter().all(|line| line != "step 5 of 5 · review"),
+        lines.iter().all(|line| line != "step 6 of 6 · review"),
         "detected-setup write-confirm should not reuse the guided step progress copy: {lines:#?}"
     );
 }
@@ -4372,6 +4478,8 @@ async fn onboard_current_setup_shortcut_flow_skips_detailed_edit_screens() {
             provider: None,
             model: None,
             api_key_env: None,
+            personality: None,
+            memory_profile: None,
             system_prompt: None,
             skip_model_probe: true,
         },
@@ -4416,8 +4524,12 @@ async fn onboard_current_setup_shortcut_flow_skips_detailed_edit_screens() {
         "current-setup fast lane should skip the credential env screen: {transcript:#?}"
     );
     assert!(
-        !joined.contains("adjust cli behavior"),
-        "current-setup fast lane should skip the CLI behavior screen: {transcript:#?}"
+        !joined.contains("choose assistant personality"),
+        "current-setup fast lane should skip the personality screen: {transcript:#?}"
+    );
+    assert!(
+        !joined.contains("choose memory profile"),
+        "current-setup fast lane should skip the memory profile screen: {transcript:#?}"
     );
 }
 
@@ -4452,6 +4564,8 @@ requires_openai_auth = true
             provider: None,
             model: None,
             api_key_env: None,
+            personality: None,
+            memory_profile: None,
             system_prompt: None,
             skip_model_probe: true,
         },
@@ -4500,8 +4614,12 @@ requires_openai_auth = true
         "detected-setup fast lane should skip the credential env screen: {transcript:#?}"
     );
     assert!(
-        !joined.contains("adjust cli behavior"),
-        "detected-setup fast lane should skip the CLI behavior screen: {transcript:#?}"
+        !joined.contains("choose assistant personality"),
+        "detected-setup fast lane should skip the personality screen: {transcript:#?}"
+    );
+    assert!(
+        !joined.contains("choose memory profile"),
+        "detected-setup fast lane should skip the memory profile screen: {transcript:#?}"
     );
     assert!(
         output_path.exists(),
@@ -4547,6 +4665,8 @@ requires_openai_auth = true
             provider: None,
             model: None,
             api_key_env: None,
+            personality: None,
+            memory_profile: None,
             system_prompt: None,
             skip_model_probe: true,
         },
@@ -4600,6 +4720,8 @@ requires_openai_auth = true
             provider: None,
             model: None,
             api_key_env: None,
+            personality: None,
+            memory_profile: None,
             system_prompt: None,
             skip_model_probe: true,
         },
@@ -4650,6 +4772,8 @@ async fn onboard_current_setup_adjustments_preserve_unchanged_domain_actions_in_
             provider: None,
             model: None,
             api_key_env: None,
+            personality: None,
+            memory_profile: None,
             system_prompt: None,
             skip_model_probe: true,
         },
@@ -4659,7 +4783,8 @@ async fn onboard_current_setup_adjustments_preserve_unchanged_domain_actions_in_
             "openai",
             "gpt-4.1",
             "OPENAI_API_KEY",
-            "custom review prompt",
+            "2",
+            "",
             "y",
             "y",
             "o",
@@ -4670,7 +4795,7 @@ async fn onboard_current_setup_adjustments_preserve_unchanged_domain_actions_in_
     .await
     .expect("run scripted current-setup onboarding with adjustments");
 
-    let review_lines = extract_review_section_lines(&transcript, "step 5 of 5 · review");
+    let review_lines = extract_review_section_lines(&transcript, "step 6 of 6 · review");
     let has_domain_action = |domain_label: &str, action_label: &str| {
         review_lines.iter().enumerate().any(|(index, line)| {
             line.contains(&format!("- {domain_label} ["))
@@ -4754,6 +4879,8 @@ requires_openai_auth = true
             provider: None,
             model: None,
             api_key_env: None,
+            personality: None,
+            memory_profile: None,
             system_prompt: None,
             skip_model_probe: true,
         },
@@ -4765,6 +4892,7 @@ requires_openai_auth = true
             "openai/gpt-5.1-codex-preview",
             "OPENAI_API_KEY",
             "",
+            "",
             "y",
             "y",
         ],
@@ -4774,7 +4902,7 @@ requires_openai_auth = true
     .await
     .expect("run scripted detected-setup onboarding with adjustments");
 
-    let review_lines = extract_review_section_lines(&transcript, "step 5 of 5 · review");
+    let review_lines = extract_review_section_lines(&transcript, "step 6 of 6 · review");
     let has_domain_action = |domain_label: &str, action_label: &str| {
         review_lines.iter().enumerate().any(|(index, line)| {
             line.contains(&format!("- {domain_label} ["))
@@ -4874,7 +5002,7 @@ fn onboard_review_lines_include_brand_header() {
         "review screen should retain a clear review heading under the brand block: {lines:#?}"
     );
     assert!(
-        lines.iter().any(|line| line == "step 5 of 5 · review"),
+        lines.iter().any(|line| line == "step 6 of 6 · review"),
         "review screen should include guided progress context inside the screen: {lines:#?}"
     );
 }
@@ -4979,7 +5107,7 @@ fn current_setup_review_lines_use_quick_review_progress_copy() {
         "current-setup review should use quick-review progress copy: {lines:#?}"
     );
     assert!(
-        lines.iter().all(|line| line != "step 5 of 5 · review"),
+        lines.iter().all(|line| line != "step 6 of 6 · review"),
         "current-setup review should not reuse the guided step progress copy: {lines:#?}"
     );
 }
@@ -5000,7 +5128,7 @@ fn detected_setup_review_lines_use_quick_review_progress_copy() {
         "detected-setup review should use quick-review progress copy: {lines:#?}"
     );
     assert!(
-        lines.iter().all(|line| line != "step 5 of 5 · review"),
+        lines.iter().all(|line| line != "step 6 of 6 · review"),
         "detected-setup review should not reuse the guided step progress copy: {lines:#?}"
     );
 }
@@ -5109,15 +5237,14 @@ fn render_onboarding_success_summary_compacts_for_narrow_width() {
     assert!(
         lines
             .iter()
-            .any(|line| line == "- ask example: loongclaw ask --config")
-            && lines
-                .iter()
-                .any(|line| line == "  '/tmp/loongclaw-config.toml' --message")
-            && lines
-                .iter()
-                .any(|line| line == "  \"Summarize this repository and suggest the")
-            && lines.iter().any(|line| line == "  best next step.\""),
-        "narrow renderer should keep the primary ask example readable even when the command wraps: {lines:#?}"
+            .any(|line| line == "- ask: loongclaw ask --config"),
+        "narrow renderer should keep the primary ask action readable while wrapping the long command separately: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "  /tmp/loongclaw-config.toml"),
+        "narrow renderer should wrap the long config path onto an indented continuation line: {lines:#?}"
     );
     assert!(
         lines.iter().any(|line| line == "also available"),
@@ -5181,10 +5308,11 @@ fn onboarding_success_summary_includes_brand_header() {
         "success summary should retain a clear completion heading: {lines:#?}"
     );
     assert!(
-        rendered
-            .contains("start here: loongclaw ask --config '/tmp/loongclaw-config.toml' --message")
-            && rendered.contains("Summarize this repository and suggest the best next step."),
-        "success summary should elevate ask as the primary handoff command even when wrapping is needed: {lines:#?}"
+        lines
+            .iter()
+            .any(|line| line
+                .contains("start here: loongclaw ask --config /tmp/loongclaw-config.toml")),
+        "success summary should elevate ask as the primary handoff command: {lines:#?}"
     );
 }
 
@@ -5225,13 +5353,17 @@ fn onboarding_success_summary_reports_existing_config_kept() {
             label: "credential source",
             value: "${OPENAI_API_KEY}".to_owned(),
         }),
+        prompt_mode: "native preset".to_owned(),
+        personality: Some("calm_engineering".to_owned()),
+        memory_profile: "window_plus_summary".to_owned(),
         memory_path: None,
         channels: vec!["cli".to_owned()],
         domain_outcomes: Vec::new(),
         next_actions: vec![crate::onboard_cli::OnboardingAction {
             kind: crate::onboard_cli::OnboardingActionKind::Ask,
             label: "ask".to_owned(),
-            command: "loongclaw ask --config /tmp/loongclaw-config.toml --message \"Summarize this repository and suggest the best next step.\"".to_owned(),
+            command: "loongclaw ask --config /tmp/loongclaw-config.toml --message \"say hello and verify this setup\"".to_owned(),
+            detail: "run one quick message to verify provider, personality, and memory".to_owned(),
         }],
     };
 
@@ -5295,6 +5427,9 @@ fn onboarding_success_summary_groups_domain_outcomes_by_decision() {
             label: "credential source",
             value: "${OPENAI_API_KEY}".to_owned(),
         }),
+        prompt_mode: "native preset".to_owned(),
+        personality: Some("calm_engineering".to_owned()),
+        memory_profile: "window_plus_summary".to_owned(),
         memory_path: None,
         channels: vec!["cli".to_owned()],
         domain_outcomes: vec![
@@ -5314,7 +5449,8 @@ fn onboarding_success_summary_groups_domain_outcomes_by_decision() {
         next_actions: vec![crate::onboard_cli::OnboardingAction {
             kind: crate::onboard_cli::OnboardingActionKind::Ask,
             label: "ask".to_owned(),
-            command: "loongclaw ask --config /tmp/loongclaw-config.toml --message \"Summarize this repository and suggest the best next step.\"".to_owned(),
+            command: "loongclaw ask --config /tmp/loongclaw-config.toml --message \"say hello and verify this setup\"".to_owned(),
+            detail: "run one quick message to verify provider, personality, and memory".to_owned(),
         }],
     };
 
@@ -5354,6 +5490,9 @@ fn onboarding_success_summary_wraps_domain_outcomes_for_narrow_width() {
             label: "credential source",
             value: "${OPENAI_API_KEY}".to_owned(),
         }),
+        prompt_mode: "native preset".to_owned(),
+        personality: Some("calm_engineering".to_owned()),
+        memory_profile: "window_plus_summary".to_owned(),
         memory_path: None,
         channels: vec!["cli".to_owned()],
         domain_outcomes: vec![
@@ -5373,7 +5512,8 @@ fn onboarding_success_summary_wraps_domain_outcomes_for_narrow_width() {
         next_actions: vec![crate::onboard_cli::OnboardingAction {
             kind: crate::onboard_cli::OnboardingActionKind::Ask,
             label: "ask".to_owned(),
-            command: "loongclaw ask --config /tmp/loongclaw-config.toml --message \"Summarize this repository and suggest the best next step.\"".to_owned(),
+            command: "loongclaw ask --config /tmp/loongclaw-config.toml --message \"say hello and verify this setup\"".to_owned(),
+            detail: "run one quick message to verify provider, personality, and memory".to_owned(),
         }],
     };
 
@@ -5407,30 +5547,33 @@ fn onboarding_success_summary_groups_secondary_channel_actions_after_primary_han
     let rendered = lines.join(" ");
 
     assert!(
-        rendered
-            .contains("start here: loongclaw ask --config '/tmp/loongclaw-config.toml' --message")
-            && rendered.contains("Summarize this repository and suggest the best next step."),
-        "wide success summary should call out a single primary ask action even when wrapping is needed: {lines:#?}"
+        lines
+            .iter()
+            .any(|line| line
+                .contains("start here: loongclaw ask --config /tmp/loongclaw-config.toml")),
+        "wide success summary should call out ask as the single primary next action: {lines:#?}"
     );
     assert!(
         lines.iter().any(|line| line == "also available"),
         "wide success summary should group secondary channel actions under a separate heading: {lines:#?}"
     );
     assert!(
-        rendered.contains("- chat: loongclaw chat --config '/tmp/loongclaw-config.toml'"),
-        "wide success summary should still surface interactive chat as a secondary follow-up: {lines:#?}"
-    );
-    assert!(
-        lines.iter().any(|line| line
-            == "- telegram: loongclaw telegram-serve --config '/tmp/loongclaw-config.toml'"),
-        "wide success summary should list telegram as a secondary action: {lines:#?}"
+        lines
+            .iter()
+            .any(|line| line == "- chat: loongclaw chat --config /tmp/loongclaw-config.toml"),
+        "wide success summary should keep the interactive CLI path as a secondary action: {lines:#?}"
     );
     assert!(
         lines
             .iter()
             .any(|line| line
-                == "- feishu: loongclaw feishu-serve --config '/tmp/loongclaw-config.toml'"),
-        "wide success summary should list feishu as a secondary action: {lines:#?}"
+                == "- feishu: loongclaw feishu-serve --config /tmp/loongclaw-config.toml"),
+        "wide success summary should list feishu as a secondary action in alphabetical order: {lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|line| line
+            == "- telegram: loongclaw telegram-serve --config /tmp/loongclaw-config.toml"),
+        "wide success summary should list telegram as a secondary action after feishu: {lines:#?}"
     );
 }
 
@@ -5455,9 +5598,8 @@ fn onboarding_success_summary_uses_channel_handoff_when_cli_is_disabled() {
         "success summary should guide users into the first enabled channel when cli is disabled: {lines:#?}"
     );
     assert!(
-        lines
-            .iter()
-            .all(|line| line != "start here: loongclaw chat --config '/tmp/loongclaw-config.toml'"),
+        lines.iter().all(|line| !line
+            .starts_with("start here: loongclaw ask --config /tmp/loongclaw-config.toml")),
         "success summary should not keep chat as the primary handoff once cli is disabled: {lines:#?}"
     );
 }

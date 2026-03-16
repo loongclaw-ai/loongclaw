@@ -179,6 +179,14 @@ fn cli_onboard_help_mentions_detected_reusable_settings() {
         help.contains(mvp::config::PROVIDER_SELECTOR_HUMAN_SUMMARY),
         "onboard help should reuse the shared provider selector summary: {help}"
     );
+    assert!(
+        help.contains("--personality <PERSONALITY>"),
+        "onboard help should expose the personality preset flag for non-interactive setup: {help}"
+    );
+    assert!(
+        help.contains("--memory-profile <MEMORY_PROFILE>"),
+        "onboard help should expose the memory profile flag for non-interactive setup: {help}"
+    );
 }
 
 #[test]

@@ -245,7 +245,7 @@ enum Commands {
     },
     #[command(
         about = "Guided onboarding for fast first-chat setup with preflight diagnostics",
-        long_about = "Guided onboarding for fast first-chat setup with preflight diagnostics.\n\nThis is the default path for most users. LoongClaw will detect reusable settings for provider, channels, or workspace guidance, suggest a starting point, and walk through quick review before first chat."
+        long_about = "Guided onboarding for fast first-chat setup with preflight diagnostics.\n\nThis is the default path for most users. LoongClaw will detect reusable settings for provider, channels, or workspace guidance, suggest a starting point, and walk through provider, model, credential env var, personality, memory, and quick review before first use."
     )]
     Onboard {
         /// Write the resulting config to a custom path instead of the default loongclaw config location
@@ -272,7 +272,13 @@ enum Commands {
         /// Provider credential environment variable name, for example OPENAI_API_KEY
         #[arg(long = "api-key", alias = "api-key-env")]
         api_key_env: Option<String>,
-        /// Preseed the CLI system prompt instead of editing it interactively
+        /// Select a native assistant personality preset such as calm_engineering
+        #[arg(long)]
+        personality: Option<String>,
+        /// Select a memory profile such as window_plus_summary
+        #[arg(long = "memory-profile")]
+        memory_profile: Option<String>,
+        /// Provide a full inline CLI system prompt override instead of using personality presets
         #[arg(long)]
         system_prompt: Option<String>,
         /// Skip probing the resolved provider model list during onboarding
@@ -680,6 +686,8 @@ async fn main() {
             provider,
             model,
             api_key_env,
+            personality,
+            memory_profile,
             system_prompt,
             skip_model_probe,
         } => {
@@ -691,6 +699,8 @@ async fn main() {
                 provider,
                 model,
                 api_key_env,
+                personality,
+                memory_profile,
                 system_prompt,
                 skip_model_probe,
             })

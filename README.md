@@ -245,10 +245,11 @@ cargo install --path crates/daemon
    loongclaw onboard
    ```
 
-2. Set your provider credential in the env that onboarding selected:
+2. When onboarding asks for a credential env var, enter the env-var name only
+   such as `OPENAI_API_KEY`, then export the real secret:
 
    ```bash
-   export PROVIDER_API_KEY=sk-...
+   export OPENAI_API_KEY=sk-...
    ```
 
 3. Get a first one-shot answer:
@@ -291,8 +292,10 @@ tone, initiative, confirmation style, and response density.
 - `friendly_collab`: warm, cooperative, and explanatory when helpful
 - `autonomous_executor`: decisive, high-initiative, and execution-oriented
 
-Interactive onboarding now defaults to personality selection, while advanced
-operators can still pass `--system-prompt` for a full inline override.
+Interactive onboarding now walks through provider, model, credential env var,
+personality, and memory profile without dumping the raw prompt text onto the
+screen. Advanced operators can still pass `--system-prompt` for a full inline
+override.
 
 ## Memory Profiles
 
@@ -305,7 +308,9 @@ backend is SQLite, with three operator-selectable context injection modes:
 
 `profile_note` is the first migration-friendly durable memory lane. It is meant
 to carry imported claw identity, stable preferences, or long-lived operator
-tuning without forcing everything into the system prompt.
+tuning without forcing everything into the system prompt. Interactive onboarding
+includes a dedicated memory-profile step and mirrors the selected profile in the
+review and success summaries.
 
 ## Memory Systems
 

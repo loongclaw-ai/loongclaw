@@ -22,6 +22,8 @@ pub(crate) struct OnboardCommandOptions {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub api_key_env: Option<String>,
+    pub personality: Option<String>,
+    pub memory_profile: Option<String>,
     pub system_prompt: Option<String>,
     pub skip_model_probe: bool,
 }
@@ -214,21 +216,23 @@ enum OnboardHeaderStyle {
 enum GuidedOnboardStep {
     Provider,
     Model,
-    CredentialEnv,
-    SystemPrompt,
+    CredentialEnvVar,
+    Personality,
+    MemoryProfile,
     Review,
 }
 
 impl GuidedOnboardStep {
-    const TOTAL: usize = 5;
+    const TOTAL: usize = 6;
 
     const fn index(self) -> usize {
         match self {
             GuidedOnboardStep::Provider => 1,
             GuidedOnboardStep::Model => 2,
-            GuidedOnboardStep::CredentialEnv => 3,
-            GuidedOnboardStep::SystemPrompt => 4,
-            GuidedOnboardStep::Review => 5,
+            GuidedOnboardStep::CredentialEnvVar => 3,
+            GuidedOnboardStep::Personality => 4,
+            GuidedOnboardStep::MemoryProfile => 5,
+            GuidedOnboardStep::Review => 6,
         }
     }
 
@@ -236,8 +240,9 @@ impl GuidedOnboardStep {
         match self {
             GuidedOnboardStep::Provider => "provider",
             GuidedOnboardStep::Model => "model",
-            GuidedOnboardStep::CredentialEnv => "credential source",
-            GuidedOnboardStep::SystemPrompt => "system prompt",
+            GuidedOnboardStep::CredentialEnvVar => "credential env var",
+            GuidedOnboardStep::Personality => "personality",
+            GuidedOnboardStep::MemoryProfile => "memory profile",
             GuidedOnboardStep::Review => "review",
         }
     }
@@ -396,6 +401,9 @@ pub(crate) struct OnboardingSuccessSummary {
     pub(crate) model: String,
     pub(crate) transport: String,
     pub(crate) credential: Option<OnboardingCredentialSummary>,
+    pub(crate) prompt_mode: String,
+    pub(crate) personality: Option<String>,
+    pub(crate) memory_profile: String,
     pub(crate) memory_path: Option<String>,
     pub(crate) channels: Vec<String>,
     pub(crate) domain_outcomes: Vec<OnboardingDomainOutcome>,
@@ -427,6 +435,7 @@ pub(crate) struct OnboardingAction {
     pub(crate) kind: OnboardingActionKind,
     pub(crate) label: String,
     pub(crate) command: String,
+    pub(crate) detail: String,
 }
 
 pub(crate) type ChannelImportReadiness = crate::migration::ChannelImportReadiness;
@@ -507,11 +516,36 @@ pub(crate) async fn run_onboard_cli_with_ui(
         let default_api_key_env = preferred_api_key_env_default(&config);
         let selected_api_key_env =
             resolve_api_key_env_selection(&options, &config, default_api_key_env, ui, context)?;
-        apply_selected_api_key_env(&mut config.provider, selected_api_key_env);
+        config.provider.api_key_env = if selected_api_key_env.trim().is_empty() {
+            None
+        } else {
+            Some(selected_api_key_env)
+        };
+        if config.provider.api_key_env.is_some() {
+            config.provider.api_key = None;
+            config.provider.oauth_access_token = None;
+            config.provider.oauth_access_token_env = None;
+        }
 
-        let system_prompt_selection =
-            resolve_system_prompt_selection(&options, &config, ui, context)?;
-        apply_selected_system_prompt(&mut config, system_prompt_selection);
+        if let Some(system_prompt) = options
+            .system_prompt
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            config.cli.prompt_pack_id = None;
+            config.cli.personality = None;
+            config.cli.system_prompt_addendum = None;
+            config.cli.system_prompt = system_prompt.to_owned();
+        } else {
+            let personality = resolve_personality_selection(&options, &config, ui, context)?;
+            config.cli.prompt_pack_id = Some(mvp::prompt::DEFAULT_PROMPT_PACK_ID.to_owned());
+            config.cli.personality = Some(personality);
+            config.cli.system_prompt_addendum = None;
+            config.cli.refresh_native_system_prompt();
+        }
+
+        config.memory.profile = resolve_memory_profile_selection(&options, &config, ui, context)?;
     }
 
     let workspace_guidance = context
@@ -930,16 +964,12 @@ fn resolve_api_key_env_selection(
     context: &OnboardRuntimeContext,
 ) -> CliResult<String> {
     if options.non_interactive {
-        if let Some(api_key_env) = options.api_key_env.as_deref() {
-            if is_explicit_onboard_clear_input(api_key_env) {
-                return Ok(String::new());
-            }
-            let trimmed = api_key_env.trim();
-            if !trimmed.is_empty() {
-                return Ok(trimmed.to_owned());
-            }
-        }
-        return Ok(default_api_key_env);
+        return validate_provider_credential_env_input(
+            options
+                .api_key_env
+                .as_deref()
+                .unwrap_or(default_api_key_env.as_str()),
+        );
     }
     let initial = options
         .api_key_env
@@ -957,90 +987,120 @@ fn resolve_api_key_env_selection(
             true,
         ),
     )?;
-    let value = ui.prompt_with_default("API key env var", initial)?;
-    if is_explicit_onboard_clear_input(&value) {
-        return Ok(String::new());
-    }
-    Ok(value.trim().to_owned())
-}
-
-fn apply_selected_api_key_env(
-    provider: &mut mvp::config::ProviderConfig,
-    selected_api_key_env: String,
-) {
-    let selected_api_key_env = selected_api_key_env.trim();
-    if selected_api_key_env.is_empty() {
-        provider.set_api_key_env(None);
-        return;
-    }
-
-    provider.api_key = None;
-    provider.oauth_access_token = None;
-    provider.set_oauth_access_token_env(None);
-    provider.set_api_key_env(Some(selected_api_key_env.to_owned()));
-}
-
-fn apply_selected_system_prompt(
-    config: &mut mvp::config::LoongClawConfig,
-    selection: SystemPromptSelection,
-) {
-    match selection {
-        SystemPromptSelection::KeepCurrent => {}
-        SystemPromptSelection::RestoreBuiltIn => {
-            config.cli.system_prompt = if config.cli.uses_native_prompt_pack() {
-                config.cli.rendered_native_system_prompt()
-            } else {
-                mvp::config::CliChannelConfig::default().system_prompt
-            };
-        }
-        SystemPromptSelection::Set(system_prompt) => {
-            config.cli.system_prompt = system_prompt;
+    loop {
+        let value = ui.prompt_with_default("Credential env var", initial)?;
+        match validate_provider_credential_env_input(&value) {
+            Ok(normalized) => return Ok(normalized),
+            Err(error) => print_message(ui, error)?,
         }
     }
 }
 
-fn resolve_system_prompt_selection(
+fn resolve_personality_selection(
     options: &OnboardCommandOptions,
     config: &mvp::config::LoongClawConfig,
     ui: &mut impl OnboardUi,
     context: &OnboardRuntimeContext,
-) -> CliResult<SystemPromptSelection> {
+) -> CliResult<mvp::prompt::PromptPersonality> {
     if options.non_interactive {
-        if let Some(system_prompt) = options.system_prompt.as_deref() {
-            if is_explicit_onboard_clear_input(system_prompt) {
-                return Ok(SystemPromptSelection::RestoreBuiltIn);
-            }
-            let trimmed = system_prompt.trim();
-            if !trimmed.is_empty() {
-                return Ok(SystemPromptSelection::Set(trimmed.to_owned()));
-            }
+        if let Some(personality_raw) = options.personality.as_deref() {
+            return parse_prompt_personality(personality_raw).ok_or_else(|| {
+                format!(
+                    "unsupported --personality value \"{personality_raw}\". supported: {}",
+                    supported_personality_list()
+                )
+            });
         }
-        return Ok(SystemPromptSelection::KeepCurrent);
+        return Ok(config.cli.resolved_personality());
     }
-    let initial = options
-        .system_prompt
+
+    let default_personality = options
+        .personality
         .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(config.cli.system_prompt.as_str());
+        .and_then(parse_prompt_personality)
+        .unwrap_or_else(|| config.cli.resolved_personality());
     print_lines(
         ui,
-        render_system_prompt_selection_screen_lines_with_style(
-            config,
-            initial,
+        render_personality_selection_screen_lines_with_style(
+            default_personality,
             context.render_width,
             true,
         ),
     )?;
-    let value = ui.prompt_with_default("CLI system prompt", initial)?;
-    if is_explicit_onboard_clear_input(&value) {
-        return Ok(SystemPromptSelection::RestoreBuiltIn);
+    loop {
+        let value =
+            ui.prompt_with_default("Personality", personality_choice_key(default_personality))?;
+        if let Some(personality) = parse_personality_choice(&value) {
+            return Ok(personality);
+        }
+        print_message(
+            ui,
+            format!(
+                "Invalid personality: {}. Use 1-3 or one of: {}",
+                value.trim(),
+                supported_personality_list()
+            ),
+        )?;
     }
-    let trimmed = value.trim();
-    if trimmed.is_empty() || trimmed == config.cli.system_prompt.trim() {
-        return Ok(SystemPromptSelection::KeepCurrent);
+}
+
+fn resolve_memory_profile_selection(
+    options: &OnboardCommandOptions,
+    config: &mvp::config::LoongClawConfig,
+    ui: &mut impl OnboardUi,
+    context: &OnboardRuntimeContext,
+) -> CliResult<mvp::config::MemoryProfile> {
+    if options.non_interactive {
+        if let Some(profile_raw) = options.memory_profile.as_deref() {
+            return parse_memory_profile(profile_raw).ok_or_else(|| {
+                format!(
+                    "unsupported --memory-profile value \"{profile_raw}\". supported: {}",
+                    supported_memory_profile_list()
+                )
+            });
+        }
+        return Ok(config.memory.profile);
     }
-    Ok(SystemPromptSelection::Set(trimmed.to_owned()))
+
+    let default_profile = options
+        .memory_profile
+        .as_deref()
+        .and_then(parse_memory_profile)
+        .unwrap_or(config.memory.profile);
+    print_lines(
+        ui,
+        render_memory_profile_selection_screen_lines_with_style(
+            default_profile,
+            context.render_width,
+            true,
+        ),
+    )?;
+    loop {
+        let value =
+            ui.prompt_with_default("Memory profile", memory_profile_choice_key(default_profile))?;
+        if let Some(profile) = parse_memory_profile_choice(&value) {
+            return Ok(profile);
+        }
+        print_message(
+            ui,
+            format!(
+                "Invalid memory profile: {}. Use 1-3 or one of: {}",
+                value.trim(),
+                supported_memory_profile_list()
+            ),
+        )?;
+    }
+}
+
+fn validate_provider_credential_env_input(raw: &str) -> CliResult<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+    normalize_provider_credential_env_name(trimmed).ok_or_else(|| {
+        "enter an environment variable name like OPENAI_API_KEY, not the secret value itself"
+            .to_owned()
+    })
 }
 
 async fn run_preflight_checks(
@@ -1284,11 +1344,28 @@ fn push_provider_credential_env_hint(hints: &mut Vec<String>, maybe_env_name: Op
 }
 
 fn normalize_provider_credential_env_name(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
+    let mut trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
     }
-    Some(trimmed.to_owned())
+    if let Some(inner) = trimmed
+        .strip_prefix("${")
+        .and_then(|value| value.strip_suffix('}'))
+    {
+        trimmed = inner.trim();
+    }
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut chars = trimmed.chars();
+    let first = chars.next()?;
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return None;
+    }
+    if chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric()) {
+        return Some(trimmed.to_owned());
+    }
+    None
 }
 
 fn render_provider_credential_source_value(raw: Option<&str>) -> Option<String> {
@@ -1574,6 +1651,14 @@ pub(crate) fn build_onboard_entry_options(
         }),
         candidates,
     );
+    let has_import_option = detected_source_count > 0 || recommended_plan_available;
+    let recommended_choice = recommended_onboard_entry_choice(
+        current_setup_state,
+        has_current_setup,
+        has_import_option,
+        recommended_plan_available,
+        detected_source_count,
+    );
     let mut options = Vec::new();
 
     if has_current_setup {
@@ -1581,17 +1666,11 @@ pub(crate) fn build_onboard_entry_options(
             choice: OnboardEntryChoice::ContinueCurrentSetup,
             label: crate::onboard_presentation::current_setup_option_label(),
             detail: describe_current_setup_option(current_setup_state),
-            recommended: matches!(
-                current_setup_state,
-                crate::migration::CurrentSetupState::Healthy
-            ) || matches!(
-                current_setup_state,
-                crate::migration::CurrentSetupState::Repairable
-            ) && detected_source_count == 0,
+            recommended: recommended_choice == OnboardEntryChoice::ContinueCurrentSetup,
         });
     }
 
-    if detected_source_count > 0 || recommended_plan_available {
+    if has_import_option {
         options.push(OnboardEntryOption {
             choice: OnboardEntryChoice::ImportDetectedSetup,
             label: crate::onboard_presentation::detected_setup_option_label(),
@@ -1600,12 +1679,7 @@ pub(crate) fn build_onboard_entry_options(
                 recommended_plan_available,
                 detected_source_count,
             ),
-            recommended: matches!(
-                current_setup_state,
-                crate::migration::CurrentSetupState::Absent
-                    | crate::migration::CurrentSetupState::LegacyOrIncomplete
-                    | crate::migration::CurrentSetupState::Repairable
-            ),
+            recommended: recommended_choice == OnboardEntryChoice::ImportDetectedSetup,
         });
     }
 
@@ -1613,10 +1687,49 @@ pub(crate) fn build_onboard_entry_options(
         choice: OnboardEntryChoice::StartFresh,
         label: crate::onboard_presentation::start_fresh_option_label(),
         detail: crate::onboard_presentation::start_fresh_option_detail().to_owned(),
-        recommended: !options.iter().any(|option| option.recommended),
+        recommended: recommended_choice == OnboardEntryChoice::StartFresh,
     });
 
     options
+}
+
+fn recommended_onboard_entry_choice(
+    current_setup_state: crate::migration::CurrentSetupState,
+    has_current_setup: bool,
+    has_import_option: bool,
+    _recommended_plan_available: bool,
+    _detected_source_count: usize,
+) -> OnboardEntryChoice {
+    if has_current_setup
+        && matches!(
+            current_setup_state,
+            crate::migration::CurrentSetupState::Healthy
+        )
+    {
+        return OnboardEntryChoice::ContinueCurrentSetup;
+    }
+    if has_import_option
+        && matches!(
+            current_setup_state,
+            crate::migration::CurrentSetupState::Repairable
+                | crate::migration::CurrentSetupState::LegacyOrIncomplete
+                | crate::migration::CurrentSetupState::Absent
+        )
+    {
+        return OnboardEntryChoice::ImportDetectedSetup;
+    }
+    if has_current_setup
+        && matches!(
+            current_setup_state,
+            crate::migration::CurrentSetupState::Repairable
+        )
+    {
+        return OnboardEntryChoice::ContinueCurrentSetup;
+    }
+    if has_import_option {
+        return OnboardEntryChoice::ImportDetectedSetup;
+    }
+    OnboardEntryChoice::StartFresh
 }
 
 fn describe_current_setup_option(
@@ -1768,7 +1881,12 @@ fn render_onboard_entry_screen_lines_with_style(
         .map(|(index, option)| OnboardScreenOption {
             key: (index + 1).to_string(),
             label: option.label.to_owned(),
-            detail_lines: vec![option.detail.clone()],
+            detail_lines: render_onboard_entry_option_detail_lines(
+                option,
+                current_setup_state,
+                current_candidate,
+                import_candidates,
+            ),
             recommended: option.recommended,
         })
         .collect::<Vec<_>>();
@@ -1781,6 +1899,85 @@ fn render_onboard_entry_screen_lines_with_style(
         ));
     }
     lines
+}
+
+fn render_onboard_entry_option_detail_lines(
+    option: &OnboardEntryOption,
+    current_setup_state: crate::migration::CurrentSetupState,
+    current_candidate: Option<&ImportCandidate>,
+    import_candidates: &[ImportCandidate],
+) -> Vec<String> {
+    let mut detail_lines = vec![option.detail.clone()];
+    if let Some(reason_line) = render_onboard_entry_recommendation_reason(
+        option,
+        current_setup_state,
+        current_candidate,
+        import_candidates,
+    ) {
+        detail_lines.push(reason_line);
+    }
+    if option.choice == OnboardEntryChoice::StartFresh {
+        detail_lines.push(format!(
+            "providers available: {}",
+            supported_provider_list()
+        ));
+        detail_lines.push(format!(
+            "channels available after setup: {}",
+            onboarding_channel_catalog_ids().join(", ")
+        ));
+    }
+    detail_lines
+}
+
+fn render_onboard_entry_recommendation_reason(
+    option: &OnboardEntryOption,
+    current_setup_state: crate::migration::CurrentSetupState,
+    _current_candidate: Option<&ImportCandidate>,
+    import_candidates: &[ImportCandidate],
+) -> Option<String> {
+    if !option.recommended {
+        return None;
+    }
+    match option.choice {
+        OnboardEntryChoice::ContinueCurrentSetup => Some(match current_setup_state {
+            crate::migration::CurrentSetupState::Healthy => {
+                "good fit: current config already looks healthy".to_owned()
+            }
+            crate::migration::CurrentSetupState::Repairable => {
+                "good fit: current config needs fewer edits than rebuilding from scratch".to_owned()
+            }
+            crate::migration::CurrentSetupState::LegacyOrIncomplete
+            | crate::migration::CurrentSetupState::Absent => {
+                "good fit: current config is still the clearest starting point".to_owned()
+            }
+        }),
+        OnboardEntryChoice::ImportDetectedSetup => {
+            recommended_starting_point_candidate(import_candidates)
+                .and_then(|candidate| {
+                    format_starting_point_reason(&collect_starting_point_fit_hints(candidate))
+                })
+                .or_else(|| {
+                    Some(
+                        "good fit: reuse detected settings instead of rebuilding everything"
+                            .to_owned(),
+                    )
+                })
+        }
+        OnboardEntryChoice::StartFresh => Some(
+            "good fit: clean slate with full control and no stronger carry-over signal".to_owned(),
+        ),
+    }
+}
+
+fn onboarding_channel_catalog_ids() -> Vec<String> {
+    let mut ids = vec!["cli".to_owned()];
+    ids.extend(
+        mvp::config::service_channel_descriptors()
+            .into_iter()
+            .map(|descriptor| descriptor.id.to_owned()),
+    );
+    ids.sort();
+    ids
 }
 
 fn render_onboard_entry_default_choice_footer_line(
@@ -2495,8 +2692,11 @@ fn build_onboarding_success_summary_with_memory(
             },
             label: action.label,
             command: action.command,
+            detail: action.detail,
         })
         .collect();
+    let mut channels = enabled_channel_ids(config);
+    channels.sort();
 
     OnboardingSuccessSummary {
         import_source: import_source.map(str::to_owned),
@@ -2507,8 +2707,11 @@ fn build_onboarding_success_summary_with_memory(
         model: config.provider.model.clone(),
         transport: config.provider.transport_readiness().summary,
         credential: summarize_provider_credential(&config.provider),
+        prompt_mode: summarize_prompt_mode(&config.cli),
+        personality: summarize_prompt_personality(&config.cli),
+        memory_profile: memory_profile_id(config.memory.profile).to_owned(),
         memory_path: memory_path.map(str::to_owned),
-        channels: enabled_channel_ids(config),
+        channels,
         domain_outcomes: collect_onboarding_domain_outcomes(review_candidate),
         next_actions,
     }
@@ -2608,6 +2811,23 @@ fn render_onboarding_success_summary_with_width_and_style(
             width,
         ));
     }
+    lines.extend(mvp::presentation::render_wrapped_text_line(
+        "- prompt mode: ",
+        &summary.prompt_mode,
+        width,
+    ));
+    if let Some(personality) = summary.personality.as_deref() {
+        lines.extend(mvp::presentation::render_wrapped_text_line(
+            "- personality: ",
+            personality,
+            width,
+        ));
+    }
+    lines.extend(mvp::presentation::render_wrapped_text_line(
+        "- memory profile: ",
+        &summary.memory_profile,
+        width,
+    ));
     if let Some(memory_path) = summary.memory_path.as_deref() {
         lines.extend(mvp::presentation::render_wrapped_text_line(
             "- sqlite memory: ",
@@ -2647,10 +2867,20 @@ fn render_onboarding_success_summary_with_width_and_style(
                 &primary.command,
                 width,
             ));
+            lines.extend(mvp::presentation::render_wrapped_text_line(
+                "  ",
+                &primary.detail,
+                width,
+            ));
         } else {
             lines.extend(mvp::presentation::render_wrapped_text_line(
                 "start here: ",
                 &primary.command,
+                width,
+            ));
+            lines.extend(mvp::presentation::render_wrapped_text_line(
+                "- next: ",
+                &primary.detail,
                 width,
             ));
         }
@@ -2663,11 +2893,17 @@ fn render_onboarding_success_summary_with_width_and_style(
 
     lines.push("also available".to_owned());
     lines.extend(secondary_actions.into_iter().flat_map(|action| {
-        mvp::presentation::render_wrapped_text_line(
+        let mut action_lines = mvp::presentation::render_wrapped_text_line(
             &format!("- {}: ", action.label),
             &action.command,
             width,
-        )
+        );
+        action_lines.extend(mvp::presentation::render_wrapped_text_line(
+            "  ",
+            &action.detail,
+            width,
+        ));
+        action_lines
     }));
     lines
 }
@@ -2757,11 +2993,8 @@ fn render_default_input_hint_line(description: impl AsRef<str>) -> String {
     format!("- press Enter to {}", description.as_ref())
 }
 
-fn render_clear_input_hint_line(description: impl AsRef<str>) -> String {
-    format!(
-        "- type {ONBOARD_CLEAR_INPUT_TOKEN} to {}",
-        description.as_ref()
-    )
+fn render_onboard_section_heading(title: &str) -> String {
+    format!("== {title} ==")
 }
 
 fn render_model_selection_default_hint_line(
@@ -2802,34 +3035,14 @@ fn render_api_key_env_selection_default_hint_line(
         .as_deref()
         .is_some_and(|current_env| current_env == prompt_default)
     {
-        return render_default_input_hint_line("keep current source");
+        return render_default_input_hint_line("keep current env var");
     }
 
     if !suggested_env.is_empty() && prompt_default == suggested_env {
-        return render_default_input_hint_line(format!("use suggested source: {prompt_default}"));
+        return render_default_input_hint_line(format!("use suggested env var: {prompt_default}"));
     }
 
-    render_default_input_hint_line(format!("use prefilled source: {prompt_default}"))
-}
-
-fn render_system_prompt_selection_default_hint_line(
-    config: &mvp::config::LoongClawConfig,
-    prompt_default: &str,
-) -> String {
-    let prompt_default = prompt_default.trim();
-    let current_prompt = config.cli.system_prompt.trim();
-
-    if prompt_default == current_prompt {
-        if current_prompt.is_empty() {
-            render_default_input_hint_line("keep the built-in default")
-        } else {
-            render_default_input_hint_line("keep current prompt")
-        }
-    } else if prompt_default.is_empty() {
-        render_default_input_hint_line("keep the built-in default")
-    } else {
-        render_default_input_hint_line(format!("use prefilled prompt: {prompt_default}"))
-    }
+    render_default_input_hint_line(format!("use prefilled env var: {prompt_default}"))
 }
 
 fn with_default_choice_footer(
@@ -2862,9 +3075,13 @@ fn render_onboard_choice_screen(
             width,
         ));
     }
-    lines.extend(render_onboard_wrapped_display_lines(intro_lines, width));
+    if !intro_lines.is_empty() {
+        lines.push(render_onboard_section_heading("current context"));
+        lines.extend(render_onboard_wrapped_display_lines(intro_lines, width));
+    }
     if !options.is_empty() {
         lines.push(String::new());
+        lines.push(render_onboard_section_heading("choices"));
         lines.extend(render_onboard_option_lines(&options, width));
     }
     if !footer_lines.is_empty() {
@@ -2889,9 +3106,13 @@ fn render_onboard_input_screen(
         [step.progress_line()],
         width,
     ));
-    lines.extend(render_onboard_wrapped_display_lines(context_lines, width));
+    if !context_lines.is_empty() {
+        lines.push(render_onboard_section_heading("current context"));
+        lines.extend(render_onboard_wrapped_display_lines(context_lines, width));
+    }
     if !hint_lines.is_empty() {
         lines.push(String::new());
+        lines.push(render_onboard_section_heading("what to enter"));
         lines.extend(render_onboard_wrapped_display_lines(hint_lines, width));
     }
     lines
@@ -3764,6 +3985,8 @@ fn render_api_key_env_selection_screen_lines_with_style(
         default_api_key_env,
         prompt_default,
     )];
+    hint_lines.push("- enter an env var name here, not the real secret value".to_owned());
+    hint_lines.push("- examples: OPENAI_API_KEY, TEAM_OPENAI_KEY".to_owned());
     if provider_supports_blank_api_key_env(config) {
         if prompt_default.trim().is_empty() {
             hint_lines.push("- leave this blank to keep inline or oauth credentials".to_owned());
@@ -3776,8 +3999,8 @@ fn render_api_key_env_selection_screen_lines_with_style(
 
     render_onboard_input_screen(
         width,
-        "choose credential source",
-        GuidedOnboardStep::CredentialEnv,
+        "choose credential env var",
+        GuidedOnboardStep::CredentialEnvVar,
         context_lines,
         hint_lines,
         color_enabled,
@@ -3785,53 +4008,119 @@ fn render_api_key_env_selection_screen_lines_with_style(
 }
 
 #[cfg(test)]
-pub(crate) fn render_system_prompt_selection_screen_lines(
-    config: &mvp::config::LoongClawConfig,
+pub(crate) fn render_personality_selection_screen_lines(
+    default_personality: mvp::prompt::PromptPersonality,
     width: usize,
 ) -> Vec<String> {
-    render_system_prompt_selection_screen_lines_with_style(
-        config,
-        config.cli.system_prompt.as_str(),
+    render_personality_selection_screen_lines_with_style(default_personality, width, false)
+}
+
+fn render_personality_selection_screen_lines_with_style(
+    default_personality: mvp::prompt::PromptPersonality,
+    width: usize,
+    color_enabled: bool,
+) -> Vec<String> {
+    render_onboard_choice_screen(
+        OnboardHeaderStyle::Compact,
         width,
-        false,
+        "assistant behavior preset",
+        "choose assistant personality",
+        Some(GuidedOnboardStep::Personality),
+        vec![
+            "- presets keep the native LoongClaw prompt pack active".to_owned(),
+            "- advanced prompt editing comes later via --system-prompt or config".to_owned(),
+        ],
+        vec![
+            OnboardScreenOption {
+                key: "1".to_owned(),
+                label: "calm_engineering".to_owned(),
+                detail_lines: vec![
+                    "calm, rigorous, and low-drama".to_owned(),
+                    "best default for repo work and precise answers".to_owned(),
+                ],
+                recommended: default_personality == mvp::prompt::PromptPersonality::CalmEngineering,
+            },
+            OnboardScreenOption {
+                key: "2".to_owned(),
+                label: "friendly_collab".to_owned(),
+                detail_lines: vec![
+                    "more explanatory and collaborative".to_owned(),
+                    "best when you want lighter guidance and framing".to_owned(),
+                ],
+                recommended: default_personality == mvp::prompt::PromptPersonality::FriendlyCollab,
+            },
+            OnboardScreenOption {
+                key: "3".to_owned(),
+                label: "autonomous_executor".to_owned(),
+                detail_lines: vec![
+                    "decisive and execution-oriented".to_owned(),
+                    "best when you want the agent to move with less hand-holding".to_owned(),
+                ],
+                recommended: default_personality
+                    == mvp::prompt::PromptPersonality::AutonomousExecutor,
+            },
+        ],
+        vec![render_default_choice_footer_line(
+            personality_choice_key(default_personality),
+            prompt_personality_id(default_personality),
+        )],
+        color_enabled,
     )
 }
 
 #[cfg(test)]
-pub(crate) fn render_system_prompt_selection_screen_lines_with_default(
-    config: &mvp::config::LoongClawConfig,
-    prompt_default: &str,
+pub(crate) fn render_memory_profile_selection_screen_lines(
+    default_profile: mvp::config::MemoryProfile,
     width: usize,
 ) -> Vec<String> {
-    render_system_prompt_selection_screen_lines_with_style(config, prompt_default, width, false)
+    render_memory_profile_selection_screen_lines_with_style(default_profile, width, false)
 }
 
-fn render_system_prompt_selection_screen_lines_with_style(
-    config: &mvp::config::LoongClawConfig,
-    prompt_default: &str,
+fn render_memory_profile_selection_screen_lines_with_style(
+    default_profile: mvp::config::MemoryProfile,
     width: usize,
     color_enabled: bool,
 ) -> Vec<String> {
-    let current_prompt = config.cli.system_prompt.trim();
-    let current_prompt_display = if current_prompt.is_empty() {
-        "built-in default".to_owned()
-    } else {
-        current_prompt.to_owned()
-    };
-
-    render_onboard_input_screen(
+    render_onboard_choice_screen(
+        OnboardHeaderStyle::Compact,
         width,
-        "adjust cli behavior",
-        GuidedOnboardStep::SystemPrompt,
-        vec![format!("- current prompt: {current_prompt_display}")],
+        "memory preset",
+        "choose memory profile",
+        Some(GuidedOnboardStep::MemoryProfile),
+        vec!["pick how much previous context LoongClaw keeps handy".to_owned()],
         vec![
-            render_system_prompt_selection_default_hint_line(config, prompt_default),
-            if prompt_default.trim().is_empty() {
-                "- leave this blank to use the built-in behavior".to_owned()
-            } else {
-                render_clear_input_hint_line("use the built-in behavior")
+            OnboardScreenOption {
+                key: "1".to_owned(),
+                label: "window_only".to_owned(),
+                detail_lines: vec![
+                    "keep only the recent sliding window".to_owned(),
+                    "fastest and most lightweight option".to_owned(),
+                ],
+                recommended: default_profile == mvp::config::MemoryProfile::WindowOnly,
+            },
+            OnboardScreenOption {
+                key: "2".to_owned(),
+                label: "window_plus_summary".to_owned(),
+                detail_lines: vec![
+                    "recent window plus condensed earlier summary".to_owned(),
+                    "best default for longer CLI sessions".to_owned(),
+                ],
+                recommended: default_profile == mvp::config::MemoryProfile::WindowPlusSummary,
+            },
+            OnboardScreenOption {
+                key: "3".to_owned(),
+                label: "profile_plus_window".to_owned(),
+                detail_lines: vec![
+                    "recent window plus durable profile note".to_owned(),
+                    "best when imported preferences should keep carrying forward".to_owned(),
+                ],
+                recommended: default_profile == mvp::config::MemoryProfile::ProfilePlusWindow,
             },
         ],
+        vec![render_default_choice_footer_line(
+            memory_profile_choice_key(default_profile),
+            memory_profile_id(default_profile),
+        )],
         color_enabled,
     )
 }
@@ -3911,11 +4200,30 @@ fn render_onboard_review_digest_lines(
     if let Some(credential_line) = render_onboard_review_credential_line(&config.provider) {
         lines.push(credential_line);
     }
+    lines.extend(mvp::presentation::render_wrapped_text_line(
+        "- prompt mode: ",
+        &summarize_prompt_mode(&config.cli),
+        width,
+    ));
+    if let Some(personality) = summarize_prompt_personality(&config.cli) {
+        lines.extend(mvp::presentation::render_wrapped_text_line(
+            "- personality: ",
+            &personality,
+            width,
+        ));
+    }
+    lines.extend(mvp::presentation::render_wrapped_text_line(
+        "- memory profile: ",
+        memory_profile_id(config.memory.profile),
+        width,
+    ));
 
     let enabled_channels = enabled_channel_ids(config)
         .into_iter()
         .filter(|channel| channel != "cli")
         .collect::<Vec<_>>();
+    let mut enabled_channels = enabled_channels;
+    enabled_channels.sort();
     if !enabled_channels.is_empty() {
         let channels = enabled_channels
             .iter()
@@ -3985,6 +4293,18 @@ fn summarize_provider_credential(
             label: "credential source",
             value: api_key_env,
         })
+}
+
+fn summarize_prompt_mode(cli: &mvp::config::CliChannelConfig) -> String {
+    if cli.uses_native_prompt_pack() {
+        return "native preset".to_owned();
+    }
+    "inline override".to_owned()
+}
+
+fn summarize_prompt_personality(cli: &mvp::config::CliChannelConfig) -> Option<String> {
+    cli.uses_native_prompt_pack()
+        .then(|| prompt_personality_id(cli.resolved_personality()).to_owned())
 }
 
 fn provider_supports_blank_api_key_env(config: &mvp::config::LoongClawConfig) -> bool {
@@ -4225,6 +4545,14 @@ fn onboard_has_explicit_overrides(options: &OnboardCommandOptions) -> bool {
             .as_deref()
             .is_some_and(|value| !value.trim().is_empty())
         || options
+            .personality
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || options
+            .memory_profile
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || options
             .system_prompt
             .as_deref()
             .is_some_and(|value| !value.trim().is_empty())
@@ -4262,12 +4590,98 @@ pub(crate) fn provider_kind_display_name(kind: mvp::config::ProviderKind) -> &'s
     kind.display_name()
 }
 
+pub(crate) fn parse_prompt_personality(raw: &str) -> Option<mvp::prompt::PromptPersonality> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "calm_engineering" | "calm" | "engineering" => {
+            Some(mvp::prompt::PromptPersonality::CalmEngineering)
+        }
+        "friendly_collab" | "friendly" | "collab" => {
+            Some(mvp::prompt::PromptPersonality::FriendlyCollab)
+        }
+        "autonomous_executor" | "autonomous" | "executor" => {
+            Some(mvp::prompt::PromptPersonality::AutonomousExecutor)
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn prompt_personality_id(personality: mvp::prompt::PromptPersonality) -> &'static str {
+    match personality {
+        mvp::prompt::PromptPersonality::CalmEngineering => "calm_engineering",
+        mvp::prompt::PromptPersonality::FriendlyCollab => "friendly_collab",
+        mvp::prompt::PromptPersonality::AutonomousExecutor => "autonomous_executor",
+    }
+}
+
+pub(crate) fn parse_memory_profile(raw: &str) -> Option<mvp::config::MemoryProfile> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "window_only" | "window" => Some(mvp::config::MemoryProfile::WindowOnly),
+        "window_plus_summary" | "summary" | "summary_window" => {
+            Some(mvp::config::MemoryProfile::WindowPlusSummary)
+        }
+        "profile_plus_window" | "profile" | "profile_window" => {
+            Some(mvp::config::MemoryProfile::ProfilePlusWindow)
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn memory_profile_id(profile: mvp::config::MemoryProfile) -> &'static str {
+    match profile {
+        mvp::config::MemoryProfile::WindowOnly => "window_only",
+        mvp::config::MemoryProfile::WindowPlusSummary => "window_plus_summary",
+        mvp::config::MemoryProfile::ProfilePlusWindow => "profile_plus_window",
+    }
+}
+
 pub(crate) fn supported_provider_list() -> String {
     mvp::config::ProviderKind::all_sorted()
         .iter()
         .map(|kind| kind.as_str())
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn supported_personality_list() -> &'static str {
+    "calm_engineering, friendly_collab, autonomous_executor"
+}
+
+fn supported_memory_profile_list() -> &'static str {
+    "window_only, window_plus_summary, profile_plus_window"
+}
+
+fn personality_choice_key(personality: mvp::prompt::PromptPersonality) -> &'static str {
+    match personality {
+        mvp::prompt::PromptPersonality::CalmEngineering => "1",
+        mvp::prompt::PromptPersonality::FriendlyCollab => "2",
+        mvp::prompt::PromptPersonality::AutonomousExecutor => "3",
+    }
+}
+
+fn parse_personality_choice(raw: &str) -> Option<mvp::prompt::PromptPersonality> {
+    match raw.trim() {
+        "1" => Some(mvp::prompt::PromptPersonality::CalmEngineering),
+        "2" => Some(mvp::prompt::PromptPersonality::FriendlyCollab),
+        "3" => Some(mvp::prompt::PromptPersonality::AutonomousExecutor),
+        other => parse_prompt_personality(other),
+    }
+}
+
+fn memory_profile_choice_key(profile: mvp::config::MemoryProfile) -> &'static str {
+    match profile {
+        mvp::config::MemoryProfile::WindowOnly => "1",
+        mvp::config::MemoryProfile::WindowPlusSummary => "2",
+        mvp::config::MemoryProfile::ProfilePlusWindow => "3",
+    }
+}
+
+fn parse_memory_profile_choice(raw: &str) -> Option<mvp::config::MemoryProfile> {
+    match raw.trim() {
+        "1" => Some(mvp::config::MemoryProfile::WindowOnly),
+        "2" => Some(mvp::config::MemoryProfile::WindowPlusSummary),
+        "3" => Some(mvp::config::MemoryProfile::ProfilePlusWindow),
+        other => parse_memory_profile(other),
+    }
 }
 
 fn resolve_write_plan(

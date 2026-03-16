@@ -16,7 +16,7 @@ pub(crate) struct ReviewFlowCopy {
 pub(crate) const fn review_flow_copy(kind: ReviewFlowKind) -> ReviewFlowCopy {
     match kind {
         ReviewFlowKind::Guided => ReviewFlowCopy {
-            progress_line: "step 5 of 5 · review",
+            progress_line: "step 6 of 6 · review",
             header_subtitle: "review setup",
         },
         ReviewFlowKind::QuickCurrentSetup => ReviewFlowCopy {
