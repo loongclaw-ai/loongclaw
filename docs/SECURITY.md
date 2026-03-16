@@ -39,6 +39,7 @@ CapabilityToken → PolicyEngine → PolicyExtensionChain → Execution → Audi
 - Detached async delegate spawns carry an owned kernel context forward when the parent binding is kernel-bound. Direct-mode parents keep direct-mode children.
 - Kernel-bound history helpers no longer reuse direct sqlite fallback behind the caller's back. Higher-level orchestration may still choose how to handle the surfaced error.
 - Safe-lane governor diagnostics now surface history load status and normalized error codes instead of silently collapsing kernel history failures into an undifferentiated "no history" state.
+- User-facing chat diagnostics and the discovery-first session-history summary now preserve explicit `ConversationRuntimeBinding` semantics instead of reconstructing execution mode from optional kernel context.
 
 **Provider runtime binding note:**
 - The provider binding makes provider governance explicit without importing conversation-layer semantics into provider code. `Kernel` means failover/audit behavior may emit kernel-backed audit events; `Direct` means provider execution is intentionally running without that authority while still recording in-process failover metrics.
