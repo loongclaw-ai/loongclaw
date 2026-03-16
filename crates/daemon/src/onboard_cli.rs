@@ -677,10 +677,7 @@ pub async fn run_onboard_cli_with_ui(
             ));
         }
         if has_failures {
-            return Err(
-                "onboard preflight failed. rerun with --skip-model-probe if your provider blocks model listing during setup"
-                    .to_owned(),
-            );
+            return Err(non_interactive_preflight_failure_message(&checks));
         }
         if has_blocking_non_interactive_warnings {
             return Err(
@@ -1397,39 +1394,44 @@ fn provider_model_probe_failure_check(
     config: &mvp::config::LoongClawConfig,
     error: String,
 ) -> OnboardCheck {
-    if let Some(model) = config.provider.explicit_model() {
-        return OnboardCheck {
-            name: "provider model probe",
-            level: OnboardCheckLevel::Warn,
-            detail: format!(
-                "{}: model catalog probe failed ({error}); chat may still work because model `{model}` is explicitly configured",
-                provider_check_detail_prefix(config)
+    let provider_prefix = provider_check_detail_prefix(config);
+    let (level, detail, non_interactive_warning_policy) = match config
+        .provider
+        .model_catalog_probe_recovery()
+    {
+        mvp::config::ModelCatalogProbeRecovery::ExplicitModel(model) => (
+            OnboardCheckLevel::Warn,
+            format!(
+                "{provider_prefix}: model catalog probe failed ({error}); chat may still work because model `{model}` is explicitly configured"
             ),
-            non_interactive_warning_policy:
-                OnboardNonInteractiveWarningPolicy::AcceptedByExplicitModel,
-        };
-    }
-
-    let fallback_models = config.provider.configured_auto_model_candidates();
-    if !fallback_models.is_empty() {
-        return OnboardCheck {
-            name: "provider model probe",
-            level: OnboardCheckLevel::Warn,
-            detail: format!(
-                "{}: model catalog probe failed ({error}); runtime will try configured preferred model fallback(s): {}",
-                provider_check_detail_prefix(config),
+            OnboardNonInteractiveWarningPolicy::AcceptedByExplicitModel,
+        ),
+        mvp::config::ModelCatalogProbeRecovery::ConfiguredPreferredModels(fallback_models) => (
+            OnboardCheckLevel::Warn,
+            format!(
+                "{provider_prefix}: model catalog probe failed ({error}); runtime will try configured preferred model fallback(s): {}",
                 render_onboard_model_candidate_list(&fallback_models)
             ),
-            non_interactive_warning_policy:
-                OnboardNonInteractiveWarningPolicy::AcceptedByPreferredModels,
-        };
-    }
+            OnboardNonInteractiveWarningPolicy::AcceptedByPreferredModels,
+        ),
+        mvp::config::ModelCatalogProbeRecovery::RequiresExplicitModel {
+            recommended_onboarding_model,
+        } => (
+            OnboardCheckLevel::Fail,
+            provider_model_probe_requires_explicit_model_detail(
+                provider_prefix.as_str(),
+                error.as_str(),
+                recommended_onboarding_model,
+            ),
+            OnboardNonInteractiveWarningPolicy::Block,
+        ),
+    };
 
     OnboardCheck {
         name: "provider model probe",
-        level: OnboardCheckLevel::Fail,
-        detail: format!("{}: {error}", provider_check_detail_prefix(config)),
-        non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+        level,
+        detail,
+        non_interactive_warning_policy,
     }
 }
 
@@ -1461,6 +1463,30 @@ async fn collect_browser_companion_preflight_checks(
         detail,
         non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
     }]
+}
+
+fn provider_model_probe_requires_explicit_model_detail(
+    provider_prefix: &str,
+    error: &str,
+    recommended_onboarding_model: Option<&str>,
+) -> String {
+    match recommended_onboarding_model {
+        Some(model) => format!(
+            "{provider_prefix}: model catalog probe failed ({error}); current config still uses `model = auto`; rerun onboarding and accept reviewed model `{model}`, or set `provider.model` / `preferred_models` explicitly"
+        ),
+        None => format!(
+            "{provider_prefix}: model catalog probe failed ({error}); current config still uses `model = auto`; set `provider.model` explicitly or configure `preferred_models` before retrying"
+        ),
+    }
+}
+
+fn non_interactive_preflight_failure_message(checks: &[OnboardCheck]) -> String {
+    let detail = checks
+        .iter()
+        .find(|check| check.level == OnboardCheckLevel::Fail)
+        .map(|check| check.detail.as_str())
+        .unwrap_or("preflight checks failed");
+    format!("onboard preflight failed: {detail}")
 }
 
 pub fn provider_credential_check(config: &mvp::config::LoongClawConfig) -> OnboardCheck {
@@ -5458,6 +5484,18 @@ mod tests {
             check.detail.contains("OpenAI [openai]"),
             "onboard failures should still identify the active provider context: {check:#?}"
         );
+        assert!(
+            check.detail.contains("model = auto"),
+            "auto-model probe failures should explain why onboarding cannot continue with an unresolved automatic model: {check:#?}"
+        );
+        assert!(
+            check.detail.contains("provider.model"),
+            "auto-model probe failures should point users to an explicit provider.model remediation path: {check:#?}"
+        );
+        assert!(
+            check.detail.contains("preferred_models"),
+            "auto-model probe failures should point users to preferred_models when catalog probing is unavailable: {check:#?}"
+        );
     }
 
     #[test]
@@ -5485,6 +5523,29 @@ mod tests {
         assert!(
             check.detail.contains("MiniMax-M1"),
             "onboard warning should surface the first fallback model to keep the first-run path actionable: {check:#?}"
+        );
+    }
+
+    #[test]
+    fn provider_model_probe_failure_guides_reviewed_default_for_auto_model() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.provider.kind = mvp::config::ProviderKind::Deepseek;
+        config.provider.model = "auto".to_owned();
+
+        let check = provider_model_probe_failure_check(
+            &config,
+            "provider rejected the model list".to_owned(),
+        );
+
+        assert_eq!(check.name, "provider model probe");
+        assert_eq!(check.level, OnboardCheckLevel::Fail);
+        assert!(
+            check.detail.contains("deepseek-chat"),
+            "reviewed providers should point users to the reviewed onboarding default when catalog probing is unavailable: {check:#?}"
+        );
+        assert!(
+            check.detail.contains("rerun onboarding"),
+            "reviewed providers should suggest rerunning onboarding to accept the reviewed model instead of leaving recovery implicit: {check:#?}"
         );
     }
 
@@ -5543,6 +5604,35 @@ mod tests {
         assert!(
             is_explicitly_accepted_non_interactive_warning(&check, &options),
             "configured preferred-model fallback warnings should not block non-interactive onboarding because runtime can still try the operator-configured models: {check:#?}"
+        );
+    }
+
+    #[test]
+    fn non_interactive_preflight_failure_message_uses_first_failing_check_detail() {
+        let checks = vec![
+            OnboardCheck {
+                name: "provider credentials",
+                level: OnboardCheckLevel::Pass,
+                detail: "credentials ok".to_owned(),
+                non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+            },
+            OnboardCheck {
+                name: "provider model probe",
+                level: OnboardCheckLevel::Fail,
+                detail: "DeepSeek [deepseek]: model catalog probe failed (401 Unauthorized); current config still uses `model = auto`; rerun onboarding and accept reviewed model `deepseek-chat`, or set `provider.model` / `preferred_models` explicitly".to_owned(),
+                non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+            },
+        ];
+
+        let message = non_interactive_preflight_failure_message(&checks);
+
+        assert!(
+            message.contains("onboard preflight failed: DeepSeek [deepseek]"),
+            "non-interactive onboarding should return the actionable failing-check detail instead of a generic probe hint: {message}"
+        );
+        assert!(
+            message.contains("provider.model"),
+            "non-interactive onboarding should preserve the explicit remediation from the failing check: {message}"
         );
     }
 
@@ -5795,6 +5885,76 @@ mod tests {
         assert!(
             selected == "MiniMax-M2.5",
             "non-interactive onboarding should pick the provider-recommended explicit model for MiniMax instead of preserving auto: {selected:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_model_selection_prefills_deepseek_recommended_model_interactively() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.provider.kind = mvp::config::ProviderKind::Deepseek;
+        config.provider.model = "auto".to_owned();
+        let mut ui = TestOnboardUi::with_inputs(std::iter::empty::<&str>());
+        let context = OnboardRuntimeContext::new_for_tests(80, None, std::iter::empty::<PathBuf>());
+
+        let selected = resolve_model_selection(
+            &OnboardCommandOptions {
+                output: None,
+                force: false,
+                non_interactive: false,
+                accept_risk: true,
+                provider: None,
+                model: None,
+                api_key_env: None,
+                personality: None,
+                memory_profile: None,
+                system_prompt: None,
+                skip_model_probe: false,
+            },
+            &config,
+            GuidedPromptPath::NativePromptPack,
+            &mut ui,
+            &context,
+        )
+        .expect("resolve model selection");
+
+        assert!(
+            selected == "deepseek-chat",
+            "interactive onboarding should prefill the provider-recommended explicit model for DeepSeek instead of leaving the operator on auto: {selected:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_model_selection_prefills_deepseek_recommended_model_non_interactively() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.provider.kind = mvp::config::ProviderKind::Deepseek;
+        config.provider.model = "auto".to_owned();
+        let mut ui = TestOnboardUi::with_inputs(std::iter::empty::<&str>());
+        let context = OnboardRuntimeContext::new_for_tests(80, None, std::iter::empty::<PathBuf>());
+
+        let selected = resolve_model_selection(
+            &OnboardCommandOptions {
+                output: None,
+                force: false,
+                non_interactive: true,
+                accept_risk: true,
+                provider: None,
+                model: None,
+                api_key_env: None,
+                personality: None,
+                memory_profile: None,
+                system_prompt: None,
+                skip_model_probe: false,
+            },
+            &config,
+            GuidedPromptPath::NativePromptPack,
+            &mut ui,
+            &context,
+        )
+        .expect("resolve model selection");
+
+        assert!(
+            selected == "deepseek-chat",
+            "non-interactive onboarding should pick the provider-recommended explicit model for DeepSeek instead of preserving auto: {selected:?}"
         );
     }
 

@@ -29,11 +29,12 @@ pub use memory::{
 };
 #[allow(unused_imports)]
 pub use provider::{
-    ProviderAuthScheme, ProviderConfig, ProviderFeatureFamily, ProviderKind, ProviderProfileConfig,
-    ProviderProfileHealthModeConfig, ProviderProfileStateBackendKind, ProviderProtocolFamily,
-    ProviderReasoningExtraBodyModeConfig, ProviderToolSchemaModeConfig, ProviderTransportFallback,
-    ProviderTransportPolicy, ProviderTransportReadiness, ProviderTransportReadinessLevel,
-    ProviderWireApi, ReasoningEffort, parse_provider_kind_id,
+    ModelCatalogProbeRecovery, ProviderAuthScheme, ProviderConfig, ProviderFeatureFamily,
+    ProviderKind, ProviderProfileConfig, ProviderProfileHealthModeConfig,
+    ProviderProfileStateBackendKind, ProviderProtocolFamily, ProviderReasoningExtraBodyModeConfig,
+    ProviderToolSchemaModeConfig, ProviderTransportFallback, ProviderTransportPolicy,
+    ProviderTransportReadiness, ProviderTransportReadinessLevel, ProviderWireApi, ReasoningEffort,
+    parse_provider_kind_id,
 };
 #[allow(unused_imports)]
 pub use runtime::{
