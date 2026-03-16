@@ -2110,12 +2110,14 @@ fn render_onboard_entry_screen_lines_with_style(
         })
         .collect::<Vec<_>>();
     lines.extend(render_onboard_option_lines(&screen_options, width));
-    if let Some(default_choice_line) = render_onboard_entry_default_choice_footer_line(options) {
+    let footer_lines = append_escape_cancel_hint(
+        render_onboard_entry_default_choice_footer_line(options)
+            .into_iter()
+            .collect::<Vec<_>>(),
+    );
+    if !footer_lines.is_empty() {
         lines.push(String::new());
-        lines.extend(render_onboard_wrapped_display_lines(
-            [default_choice_line],
-            width,
-        ));
+        lines.extend(render_onboard_wrapped_display_lines(footer_lines, width));
     }
     lines
 }
@@ -3222,6 +3224,16 @@ fn with_default_choice_footer(
     footer_lines
 }
 
+fn append_escape_cancel_hint(mut lines: Vec<String>) -> Vec<String> {
+    if !lines
+        .iter()
+        .any(|line| line.contains("Esc") && line.contains("cancel"))
+    {
+        lines.push(ONBOARD_ESCAPE_CANCEL_HINT.to_owned());
+    }
+    lines
+}
+
 fn render_onboard_choice_screen(
     header_style: OnboardHeaderStyle,
     width: usize,
@@ -3230,15 +3242,10 @@ fn render_onboard_choice_screen(
     step: Option<(GuidedOnboardStep, GuidedPromptPath)>,
     intro_lines: Vec<String>,
     options: Vec<OnboardScreenOption>,
-    mut footer_lines: Vec<String>,
+    footer_lines: Vec<String>,
     color_enabled: bool,
 ) -> Vec<String> {
-    if !footer_lines
-        .iter()
-        .any(|line| line.contains("Esc") && line.contains("cancel"))
-    {
-        footer_lines.push(ONBOARD_ESCAPE_CANCEL_HINT.to_owned());
-    }
+    let footer_lines = append_escape_cancel_hint(footer_lines);
     let mut lines = render_onboard_header(header_style, width, subtitle, color_enabled);
     lines.push(String::new());
     lines.extend(render_onboard_wrapped_display_lines([title], width));
@@ -3266,15 +3273,10 @@ fn render_onboard_input_screen(
     step: GuidedOnboardStep,
     guided_prompt_path: GuidedPromptPath,
     context_lines: Vec<String>,
-    mut hint_lines: Vec<String>,
+    hint_lines: Vec<String>,
     color_enabled: bool,
 ) -> Vec<String> {
-    if !hint_lines
-        .iter()
-        .any(|line| line.contains("Esc") && line.contains("cancel"))
-    {
-        hint_lines.push(ONBOARD_ESCAPE_CANCEL_HINT.to_owned());
-    }
+    let hint_lines = append_escape_cancel_hint(hint_lines);
     let mut lines = render_onboard_header(OnboardHeaderStyle::Compact, width, "", color_enabled);
     lines.push(String::new());
     lines.extend(render_onboard_wrapped_display_lines([title], width));
@@ -3506,13 +3508,11 @@ fn render_preflight_summary_screen_lines_with_style(
         lines.push(String::new());
         lines.extend(render_onboard_option_lines(&options, width));
         lines.push(String::new());
-        lines.extend(render_onboard_wrapped_display_lines(
-            [render_default_choice_footer_line(
-                "n",
-                crate::onboard_presentation::preflight_default_choice_description(),
-            )],
-            width,
-        ));
+        let footer_lines = append_escape_cancel_hint(vec![render_default_choice_footer_line(
+            "n",
+            crate::onboard_presentation::preflight_default_choice_description(),
+        )]);
+        lines.extend(render_onboard_wrapped_display_lines(footer_lines, width));
     }
     lines
 }
@@ -3600,13 +3600,11 @@ fn render_write_confirmation_screen_lines_with_style(
     lines.push(String::new());
     lines.extend(render_onboard_option_lines(&options, width));
     lines.push(String::new());
-    lines.extend(render_onboard_wrapped_display_lines(
-        [render_default_choice_footer_line(
-            "y",
-            crate::onboard_presentation::write_confirmation_default_choice_description(),
-        )],
-        width,
-    ));
+    let footer_lines = append_escape_cancel_hint(vec![render_default_choice_footer_line(
+        "y",
+        crate::onboard_presentation::write_confirmation_default_choice_description(),
+    )]);
+    lines.extend(render_onboard_wrapped_display_lines(footer_lines, width));
     lines
 }
 
@@ -4099,7 +4097,7 @@ fn render_model_selection_screen_lines_with_style(
     ];
     if !preferred_fallback_models.is_empty() && config.provider.explicit_model().is_none() {
         hint_lines.push(format!(
-            "- leave `auto` to let runtime try configured preferred fallbacks first: {}",
+            "- type `auto` to let runtime try configured preferred fallbacks first: {}",
             preferred_fallback_models.join(", ")
         ));
     }
@@ -5847,6 +5845,79 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("Esc") && line.contains("cancel")),
             "choice screens should teach the exit gesture explicitly: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn preflight_summary_screen_footer_mentions_escape_cancel() {
+        let checks = vec![OnboardCheck {
+            name: "provider model probe",
+            level: OnboardCheckLevel::Warn,
+            detail: "catalog probe failed".to_owned(),
+            non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+        }];
+
+        let lines = render_preflight_summary_screen_lines(&checks, 80);
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Esc") && line.contains("cancel")),
+            "interactive preflight review should teach the exit gesture explicitly: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn entry_screen_footer_mentions_escape_cancel() {
+        let options = build_onboard_entry_options(crate::migration::CurrentSetupState::Absent, &[]);
+        let lines = render_onboard_entry_screen_lines(
+            crate::migration::CurrentSetupState::Absent,
+            None,
+            &[],
+            &options,
+            None,
+            80,
+        );
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Esc") && line.contains("cancel")),
+            "interactive entry selection should teach the exit gesture explicitly: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn write_confirmation_screen_footer_mentions_escape_cancel() {
+        let lines = render_write_confirmation_screen_lines("/tmp/loongclaw.toml", false, 80);
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Esc") && line.contains("cancel")),
+            "write confirmation should teach the exit gesture explicitly: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn model_selection_screen_tells_users_to_type_auto_for_fallbacks() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.provider.kind = mvp::config::ProviderKind::Minimax;
+        config.provider.model = "auto".to_owned();
+        config.provider.preferred_models = vec!["MiniMax-M1".to_owned()];
+
+        let lines = render_model_selection_screen_lines_with_default(&config, "MiniMax-M2.5", 80);
+        let rendered = lines.join("\n");
+
+        assert!(
+            rendered.contains("type `auto`")
+                && rendered.contains("configured preferred fallbacks first")
+                && rendered.contains("MiniMax-M1"),
+            "explicit prefill flows should tell users to type `auto` when they want configured fallback behavior: {lines:#?}"
+        );
+        assert!(
+            !rendered.contains("leave `auto`"),
+            "explicit prefill flows should not imply Enter keeps `auto`: {lines:#?}"
         );
     }
 
