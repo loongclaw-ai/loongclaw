@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[features]
+test-support = []
+
 [dependencies]
 loongclaw-app = { path = "../app", default-features = false, features = ["memory-sqlite"] }
 loongclaw-spec = { path = "../spec" }
@@ -14,6 +17,9 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+loongclaw-bench = { path = ".", features = ["test-support"] }
 
 [lints]
 workspace = true

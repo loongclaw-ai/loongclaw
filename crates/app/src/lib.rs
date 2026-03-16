@@ -16,8 +16,8 @@ pub mod session;
 pub mod tools;
 
 mod process_env;
-#[cfg(test)]
-pub(crate) mod test_support;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 pub use context::KernelContext;
 /// Result type for MVP CLI operations.

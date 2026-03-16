@@ -13,7 +13,11 @@ serde_json.workspace = true
 semver.workspace = true
 thiserror.workspace = true
 
+[features]
+test-support = []
+
 [dev-dependencies]
+loongclaw-kernel = { path = ".", features = ["test-support"] }
 proptest = "1"
 tokio.workspace = true
 
