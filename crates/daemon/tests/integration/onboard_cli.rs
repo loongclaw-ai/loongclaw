@@ -4123,10 +4123,44 @@ fn onboarding_success_summary_derives_structured_actions() {
         summary.next_actions[3].kind,
         loongclaw_daemon::onboard_cli::OnboardingActionKind::Channel
     );
+    assert_eq!(
+        summary.next_actions[4].kind,
+        crate::onboard_cli::OnboardingActionKind::BrowserPreview
+    );
     assert_eq!(summary.next_actions[0].label, "ask example");
     assert_eq!(summary.next_actions[1].label, "chat");
     assert_eq!(summary.next_actions[2].label, "telegram");
     assert_eq!(summary.next_actions[3].label, "feishu");
+    assert_eq!(summary.next_actions[4].label, "enable browser preview");
+}
+
+#[test]
+fn onboarding_success_summary_advertises_browser_preview_enable_action() {
+    let path = PathBuf::from("/tmp/loongclaw-config.toml");
+    let summary = crate::onboard_cli::build_onboarding_success_summary(
+        &path,
+        &mvp::config::LoongClawConfig::default(),
+        None,
+    );
+    let lines = crate::onboard_cli::render_onboarding_success_summary_with_width(&summary, 80);
+
+    assert!(
+        summary.next_actions.iter().any(|action| {
+            action.kind == crate::onboard_cli::OnboardingActionKind::BrowserPreview
+                && action.label == "enable browser preview"
+                && action.command
+                    == "loongclaw skills enable-browser-preview --config '/tmp/loongclaw-config.toml'"
+        }),
+        "onboarding should surface a concrete browser preview enable step for operators: {summary:#?}"
+    );
+    assert!(
+        lines.iter().any(|line| {
+            line == "- enable browser preview: loongclaw skills enable-browser-preview --config"
+        }) && lines
+            .iter()
+            .any(|line| line == "  '/tmp/loongclaw-config.toml'"),
+        "success summary should render the browser preview enable action in the follow-up section: {lines:#?}"
+    );
 }
 
 #[test]

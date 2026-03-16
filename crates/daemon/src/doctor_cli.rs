@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::env;
+use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
 
@@ -132,6 +133,11 @@ pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
 
     checks.extend(check_feishu_integration(&config, options.fix, &mut fixes));
     checks.extend(check_channel_surfaces(&config));
+    let path_env = env::var_os("PATH");
+    checks.extend(crate::browser_preview::browser_preview_check(
+        &config,
+        path_env.as_deref(),
+    ));
 
     if options.fix && config_mutated {
         let path = config_path
@@ -1084,6 +1090,23 @@ fn build_doctor_next_steps(
     config: &mvp::config::LoongClawConfig,
     fix_requested: bool,
 ) -> Vec<String> {
+    let path_env = env::var_os("PATH");
+    build_doctor_next_steps_with_path_env(
+        checks,
+        config_path,
+        config,
+        fix_requested,
+        path_env.as_deref(),
+    )
+}
+
+fn build_doctor_next_steps_with_path_env(
+    checks: &[DoctorCheck],
+    config_path: &Path,
+    config: &mvp::config::LoongClawConfig,
+    fix_requested: bool,
+    path_env: Option<&OsStr>,
+) -> Vec<String> {
     let mut steps = Vec::new();
     let config_path_display = config_path.display().to_string();
     let rerun_command = format!(
@@ -1091,6 +1114,8 @@ fn build_doctor_next_steps(
         mvp::config::CLI_COMMAND_NAME,
         config_path_display
     );
+    let browser_preview =
+        crate::browser_preview::inspect_browser_preview_state_with_path_env(config, path_env);
 
     if !fix_requested
         && checks.iter().any(|check| {
@@ -1156,17 +1181,43 @@ fn build_doctor_next_steps(
     }
 
     if doctor_ready_for_first_turn(checks) {
-        for action in crate::next_actions::collect_setup_next_actions(config, &config_path_display)
-            .into_iter()
-            .take(2)
-        {
+        for action in select_doctor_first_turn_actions(
+            crate::next_actions::collect_setup_next_actions_with_path_env(
+                config,
+                &config_path_display,
+                path_env,
+            ),
+        ) {
             let prefix = match action.kind {
                 crate::next_actions::SetupNextActionKind::Ask => "Try a one-shot task",
                 crate::next_actions::SetupNextActionKind::Chat => "Open interactive chat",
                 crate::next_actions::SetupNextActionKind::Channel => "Open a channel",
+                crate::next_actions::SetupNextActionKind::BrowserPreview => {
+                    match action.browser_preview_phase {
+                        Some(crate::next_actions::BrowserPreviewActionPhase::Enable) => {
+                            "Optional browser preview"
+                        }
+                        Some(crate::next_actions::BrowserPreviewActionPhase::Unblock) => {
+                            "Unblock browser preview"
+                        }
+                        Some(crate::next_actions::BrowserPreviewActionPhase::InstallRuntime) => {
+                            "Verify `agent-browser` is available"
+                        }
+                        Some(crate::next_actions::BrowserPreviewActionPhase::Ready) | None => {
+                            "Try browser companion preview"
+                        }
+                    }
+                }
                 crate::next_actions::SetupNextActionKind::Doctor => "Run diagnostics",
             };
             push_unique_step(&mut steps, format!("{prefix}: {}", action.command));
+        }
+        if !browser_preview.runtime_available {
+            push_unique_step(
+                &mut steps,
+                "Install `agent-browser` and verify the CLI is available on PATH: agent-browser --help"
+                    .to_owned(),
+            );
         }
     }
 
@@ -1188,6 +1239,62 @@ fn doctor_ready_for_first_turn(checks: &[DoctorCheck]) -> bool {
         && checks.iter().any(|check| {
             check.name == "provider credentials" && check.level == DoctorCheckLevel::Pass
         })
+}
+
+fn select_doctor_first_turn_actions(
+    actions: Vec<crate::next_actions::SetupNextAction>,
+) -> Vec<crate::next_actions::SetupNextAction> {
+    let mut prioritized = Vec::new();
+
+    push_first_matching_action(&mut prioritized, &actions, |action| {
+        action.kind == crate::next_actions::SetupNextActionKind::Ask
+    });
+    push_first_matching_action(&mut prioritized, &actions, |action| {
+        action.kind == crate::next_actions::SetupNextActionKind::Chat
+    });
+    push_first_matching_action(&mut prioritized, &actions, |action| {
+        action.kind == crate::next_actions::SetupNextActionKind::BrowserPreview
+            && matches!(
+                action.browser_preview_phase,
+                Some(crate::next_actions::BrowserPreviewActionPhase::Ready)
+                    | Some(crate::next_actions::BrowserPreviewActionPhase::Unblock)
+                    | Some(crate::next_actions::BrowserPreviewActionPhase::Enable)
+            )
+    });
+
+    for action in actions {
+        push_unique_action(&mut prioritized, action);
+        if prioritized.len() == 3 {
+            break;
+        }
+    }
+
+    prioritized.truncate(3);
+    prioritized
+}
+
+fn push_first_matching_action<F>(
+    prioritized: &mut Vec<crate::next_actions::SetupNextAction>,
+    actions: &[crate::next_actions::SetupNextAction],
+    predicate: F,
+) where
+    F: Fn(&crate::next_actions::SetupNextAction) -> bool,
+{
+    if let Some(action) = actions.iter().find(|action| predicate(action)) {
+        push_unique_action(prioritized, action.clone());
+    }
+}
+
+fn push_unique_action(
+    prioritized: &mut Vec<crate::next_actions::SetupNextAction>,
+    action: crate::next_actions::SetupNextAction,
+) {
+    if prioritized
+        .iter()
+        .all(|existing| existing.command != action.command)
+    {
+        prioritized.push(action);
+    }
 }
 
 fn push_unique_step(steps: &mut Vec<String>, step: String) {
@@ -1957,6 +2064,69 @@ mod tests {
                 step == "Open interactive chat: loongclaw chat --config '/tmp/loongclaw.toml'"
             }),
             "green doctor runs should still advertise chat as the follow-up path: {next_steps:#?}"
+        );
+        assert!(
+            next_steps.iter().any(|step| {
+                step == "Optional browser preview: loongclaw skills enable-browser-preview --config '/tmp/loongclaw.toml'"
+            }),
+            "green doctor runs should surface the optional browser preview with a single concrete command: {next_steps:#?}"
+        );
+    }
+
+    #[test]
+    fn build_doctor_next_steps_guides_browser_companion_preview_setup() {
+        let checks = vec![DoctorCheck {
+            name: "provider credentials".to_owned(),
+            level: DoctorCheckLevel::Pass,
+            detail: "provider credentials are available".to_owned(),
+        }];
+        let config = mvp::config::LoongClawConfig::default();
+
+        let next_steps = build_doctor_next_steps_with_path_env(
+            &checks,
+            Path::new("/tmp/loongclaw.toml"),
+            &config,
+            false,
+            Some(std::ffi::OsStr::new("")),
+        );
+
+        assert!(
+            next_steps.iter().any(|step| {
+                step == "Optional browser preview: loongclaw skills enable-browser-preview --config '/tmp/loongclaw.toml'"
+            }),
+            "doctor should collapse preview setup into one operator-facing enable step by default: {next_steps:#?}"
+        );
+        assert!(
+            next_steps.iter().any(|step| {
+                step == "Install `agent-browser` and verify the CLI is available on PATH: agent-browser --help"
+            }),
+            "doctor should still point to the missing agent-browser runtime dependency: {next_steps:#?}"
+        );
+    }
+
+    #[test]
+    fn build_doctor_next_steps_keeps_browser_preview_visible_when_channels_are_enabled() {
+        let checks = vec![DoctorCheck {
+            name: "provider credentials".to_owned(),
+            level: DoctorCheckLevel::Pass,
+            detail: "provider credentials are available".to_owned(),
+        }];
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.telegram.enabled = true;
+
+        let next_steps = build_doctor_next_steps_with_path_env(
+            &checks,
+            Path::new("/tmp/loongclaw.toml"),
+            &config,
+            false,
+            Some(std::ffi::OsStr::new("")),
+        );
+
+        assert!(
+            next_steps.iter().any(|step| {
+                step == "Optional browser preview: loongclaw skills enable-browser-preview --config '/tmp/loongclaw.toml'"
+            }),
+            "doctor should keep a browser preview action visible even when channel actions are available: {next_steps:#?}"
         );
     }
 }

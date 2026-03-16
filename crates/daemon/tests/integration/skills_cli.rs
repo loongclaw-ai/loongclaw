@@ -139,6 +139,8 @@ fn skills_install_cli_parses_global_flags_after_subcommand() {
                 }
                 other @ loongclaw_daemon::skills_cli::SkillsCommands::List
                 | other @ loongclaw_daemon::skills_cli::SkillsCommands::Info { .. }
+                | other @ loongclaw_daemon::skills_cli::SkillsCommands::InstallBundled { .. }
+                | other @ loongclaw_daemon::skills_cli::SkillsCommands::EnableBrowserPreview { .. }
                 | other @ loongclaw_daemon::skills_cli::SkillsCommands::Remove { .. }
                 | other @ loongclaw_daemon::skills_cli::SkillsCommands::Policy { .. } => {
                     panic!("unexpected skills subcommand parsed: {other:?}")
@@ -146,6 +148,93 @@ fn skills_install_cli_parses_global_flags_after_subcommand() {
             }
         }
         other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn skills_install_bundled_cli_parses_global_flags_after_subcommand() {
+    let cli = Cli::try_parse_from([
+        "loongclaw",
+        "skills",
+        "install-bundled",
+        "browser-companion-preview",
+        "--replace",
+        "--json",
+        "--config",
+        "/tmp/loongclaw.toml",
+    ])
+    .expect("skills install-bundled CLI should parse");
+
+    match cli.command {
+        Some(Commands::Skills {
+            config,
+            json,
+            command,
+        }) => {
+            assert_eq!(config.as_deref(), Some("/tmp/loongclaw.toml"));
+            assert!(json);
+            match command {
+                loongclaw_daemon::skills_cli::SkillsCommands::InstallBundled {
+                    skill_id,
+                    replace,
+                } => {
+                    assert_eq!(skill_id, "browser-companion-preview");
+                    assert!(replace);
+                }
+                other @ loongclaw_daemon::skills_cli::SkillsCommands::List
+                | other @ loongclaw_daemon::skills_cli::SkillsCommands::Info { .. }
+                | other @ loongclaw_daemon::skills_cli::SkillsCommands::Install { .. }
+                | other @ loongclaw_daemon::skills_cli::SkillsCommands::EnableBrowserPreview { .. }
+                | other @ loongclaw_daemon::skills_cli::SkillsCommands::Remove { .. }
+                | other @ loongclaw_daemon::skills_cli::SkillsCommands::Policy { .. } => {
+                    panic!("unexpected skills subcommand parsed: {other:?}")
+                }
+            }
+        }
+        Some(other) => panic!("unexpected command parsed: {other:?}"),
+        None => panic!("expected skills command to parse"),
+    }
+}
+
+#[test]
+fn skills_enable_browser_preview_cli_parses_global_flags_after_subcommand() {
+    let cli = Cli::try_parse_from([
+        "loongclaw",
+        "skills",
+        "enable-browser-preview",
+        "--replace",
+        "--json",
+        "--config",
+        "/tmp/loongclaw.toml",
+    ])
+    .expect("skills enable-browser-preview CLI should parse");
+
+    match cli.command {
+        Some(Commands::Skills {
+            config,
+            json,
+            command,
+        }) => {
+            assert_eq!(config.as_deref(), Some("/tmp/loongclaw.toml"));
+            assert!(json);
+            match command {
+                loongclaw_daemon::skills_cli::SkillsCommands::EnableBrowserPreview {
+                    replace,
+                } => {
+                    assert!(replace);
+                }
+                other @ loongclaw_daemon::skills_cli::SkillsCommands::List
+                | other @ loongclaw_daemon::skills_cli::SkillsCommands::Info { .. }
+                | other @ loongclaw_daemon::skills_cli::SkillsCommands::Install { .. }
+                | other @ loongclaw_daemon::skills_cli::SkillsCommands::InstallBundled { .. }
+                | other @ loongclaw_daemon::skills_cli::SkillsCommands::Remove { .. }
+                | other @ loongclaw_daemon::skills_cli::SkillsCommands::Policy { .. } => {
+                    panic!("unexpected skills subcommand parsed: {other:?}")
+                }
+            }
+        }
+        Some(other) => panic!("unexpected command parsed: {other:?}"),
+        None => panic!("expected skills command to parse"),
     }
 }
 
@@ -160,6 +249,8 @@ fn skills_policy_set_cli_parses_domain_and_approval_flags() {
         "true",
         "--require-download-approval",
         "false",
+        "--auto-expose-installed",
+        "true",
         "--allow-domain",
         "skills.sh",
         "--allow-domain",
@@ -176,6 +267,7 @@ fn skills_policy_set_cli_parses_domain_and_approval_flags() {
                 loongclaw_daemon::skills_cli::SkillsPolicyCommands::Set {
                     enabled,
                     require_download_approval,
+                    auto_expose_installed,
                     allowed_domains,
                     blocked_domains,
                     approve_policy_update,
@@ -184,6 +276,7 @@ fn skills_policy_set_cli_parses_domain_and_approval_flags() {
                 } => {
                     assert_eq!(enabled, Some(true));
                     assert_eq!(require_download_approval, Some(false));
+                    assert_eq!(auto_expose_installed, Some(true));
                     assert_eq!(allowed_domains, vec!["skills.sh", "clawhub.io"]);
                     assert_eq!(blocked_domains, vec!["*.evil.example"]);
                     assert!(approve_policy_update);
@@ -198,12 +291,232 @@ fn skills_policy_set_cli_parses_domain_and_approval_flags() {
             other @ loongclaw_daemon::skills_cli::SkillsCommands::List
             | other @ loongclaw_daemon::skills_cli::SkillsCommands::Info { .. }
             | other @ loongclaw_daemon::skills_cli::SkillsCommands::Install { .. }
+            | other @ loongclaw_daemon::skills_cli::SkillsCommands::InstallBundled { .. }
+            | other @ loongclaw_daemon::skills_cli::SkillsCommands::EnableBrowserPreview { .. }
             | other @ loongclaw_daemon::skills_cli::SkillsCommands::Remove { .. } => {
                 panic!("unexpected skills subcommand parsed: {other:?}")
             }
         },
         other => panic!("unexpected command parsed: {other:?}"),
     }
+}
+
+#[test]
+fn execute_skills_command_enable_browser_preview_persists_runtime_and_installs_helper_skill() {
+    let root = unique_temp_dir("loongclaw-skills-cli-browser-preview");
+    let config_path = write_external_skills_config(&root, false);
+
+    let enable = loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
+            config: Some(config_path.display().to_string()),
+            json: false,
+            command: loongclaw_daemon::skills_cli::SkillsCommands::EnableBrowserPreview {
+                replace: false,
+            },
+        },
+    )
+    .expect("enable browser preview should succeed");
+
+    assert_eq!(
+        enable.outcome.payload["skill_id"],
+        "browser-companion-preview"
+    );
+    assert_eq!(
+        enable.outcome.payload["display_name"],
+        "Browser Companion Preview"
+    );
+
+    let reloaded = mvp::config::load(Some(config_path.to_string_lossy().as_ref()))
+        .expect("reload config")
+        .1;
+    assert!(
+        reloaded.external_skills.enabled,
+        "enable-browser-preview should persist external skills enablement"
+    );
+    assert!(
+        reloaded.external_skills.auto_expose_installed,
+        "enable-browser-preview should persist installed-skill auto exposure"
+    );
+    assert!(
+        reloaded
+            .tools
+            .shell_allow
+            .iter()
+            .any(|command| command == "agent-browser"),
+        "enable-browser-preview should allow the browser companion command through shell policy"
+    );
+
+    let list = loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
+        config: Some(config_path.display().to_string()),
+        json: false,
+        command: loongclaw_daemon::skills_cli::SkillsCommands::List,
+    },
+    )
+    .expect("skills list should succeed after browser preview enable");
+    assert!(
+        list.outcome.payload["skills"]
+            .as_array()
+            .expect("skills payload should be an array")
+            .iter()
+            .any(|skill| skill["skill_id"] == "browser-companion-preview"),
+        "browser preview helper skill should be installed into the managed skills runtime"
+    );
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn execute_skills_command_enable_browser_preview_is_idempotent_after_first_install() {
+    let root = unique_temp_dir("loongclaw-skills-cli-browser-preview-idempotent");
+    let config_path = write_external_skills_config(&root, false);
+
+    loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
+        config: Some(config_path.display().to_string()),
+        json: false,
+        command: loongclaw_daemon::skills_cli::SkillsCommands::EnableBrowserPreview {
+            replace: false,
+        },
+    },
+    )
+    .expect("initial enable browser preview should succeed");
+
+    let second = loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
+            config: Some(config_path.display().to_string()),
+            json: false,
+            command: loongclaw_daemon::skills_cli::SkillsCommands::EnableBrowserPreview {
+                replace: false,
+            },
+        },
+    )
+    .expect("second enable browser preview should stay idempotent");
+
+    assert_eq!(
+        second.outcome.payload["skill_id"],
+        "browser-companion-preview"
+    );
+    assert_eq!(second.outcome.payload["replaced"], true);
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn execute_skills_command_enable_browser_preview_rejects_explicit_shell_deny_without_mutation() {
+    let root = unique_temp_dir("loongclaw-skills-cli-browser-preview-shell-deny");
+    let config_path = write_external_skills_config(&root, false);
+    let config_string = config_path.display().to_string();
+    let (resolved_path, mut config) =
+        mvp::config::load(Some(config_string.as_str())).expect("load config");
+    config.tools.shell_deny.push("agent-browser".to_owned());
+    mvp::config::write(
+        Some(resolved_path.to_string_lossy().as_ref()),
+        &config,
+        true,
+    )
+    .expect("persist hard-deny fixture");
+
+    let error = loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
+            config: Some(config_string.clone()),
+            json: false,
+            command: loongclaw_daemon::skills_cli::SkillsCommands::EnableBrowserPreview {
+                replace: false,
+            },
+        },
+    )
+    .expect_err("enable browser preview should reject an explicit shell deny");
+
+    assert!(
+        error.contains("shell_deny"),
+        "error should identify the blocking shell deny entry: {error}"
+    );
+
+    let (_, reloaded) =
+        mvp::config::load(Some(config_string.as_str())).expect("reload unchanged config");
+    assert!(
+        !reloaded.external_skills.enabled,
+        "failed enable should not flip external skills on"
+    );
+    assert!(
+        !reloaded.external_skills.auto_expose_installed,
+        "failed enable should not turn on installed-skill auto exposure"
+    );
+    assert!(
+        !reloaded
+            .tools
+            .shell_allow
+            .iter()
+            .any(|command| command == "agent-browser"),
+        "failed enable should not add agent-browser to shell allow"
+    );
+    assert!(
+        reloaded
+            .tools
+            .shell_deny
+            .iter()
+            .any(|command| command == "agent-browser"),
+        "explicit hard deny should be preserved for the operator to remove intentionally"
+    );
+    assert!(
+        !root
+            .join("managed-skills")
+            .join("browser-companion-preview")
+            .exists(),
+        "failed enable should not install the helper skill"
+    );
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn execute_skills_command_enable_browser_preview_rolls_back_config_on_install_failure() {
+    let root = unique_temp_dir("loongclaw-skills-cli-browser-preview-install-failure");
+    let config_path = write_external_skills_config(&root, false);
+    let config_string = config_path.display().to_string();
+    fs::write(
+        root.join("managed-skills"),
+        "block install root with a file",
+    )
+    .expect("create install-root blocker");
+
+    let error = loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
+            config: Some(config_string.clone()),
+            json: false,
+            command: loongclaw_daemon::skills_cli::SkillsCommands::EnableBrowserPreview {
+                replace: false,
+            },
+        },
+    )
+    .expect_err("enable browser preview should fail when the install root cannot be prepared");
+
+    assert!(
+        error.contains("failed to create external skills install root"),
+        "error should explain that the install root setup failed: {error}"
+    );
+
+    let (_, reloaded) =
+        mvp::config::load(Some(config_string.as_str())).expect("reload unchanged config");
+    assert!(
+        !reloaded.external_skills.enabled,
+        "failed enable should not persist external skills enablement"
+    );
+    assert!(
+        !reloaded.external_skills.auto_expose_installed,
+        "failed enable should not persist installed-skill auto exposure"
+    );
+    assert!(
+        !reloaded
+            .tools
+            .shell_allow
+            .iter()
+            .any(|command| command == "agent-browser"),
+        "failed enable should not persist agent-browser on the shell allow list"
+    );
+
+    fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -340,22 +653,26 @@ fn execute_skills_command_list_reports_scopes_and_shadowed_skills() {
     );
     let _env = SkillsCliEnvironmentGuard::set(&[("HOME", Some(home.to_string_lossy().as_ref()))]);
 
-    crate::skills_cli::execute_skills_command(crate::skills_cli::SkillsCommandOptions {
+    loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
         config: Some(config_path.display().to_string()),
         json: false,
-        command: crate::skills_cli::SkillsCommands::Install {
+        command: loongclaw_daemon::skills_cli::SkillsCommands::Install {
             path: "source/demo-skill".to_owned(),
             skill_id: None,
             replace: false,
         },
-    })
+    },
+    )
     .expect("skills install should succeed");
 
-    let list = crate::skills_cli::execute_skills_command(crate::skills_cli::SkillsCommandOptions {
+    let list = loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
         config: Some(config_path.display().to_string()),
         json: false,
-        command: crate::skills_cli::SkillsCommands::List,
-    })
+        command: loongclaw_daemon::skills_cli::SkillsCommands::List,
+    },
+    )
     .expect("skills list should succeed");
     assert_eq!(list.outcome.payload["skills"][0]["skill_id"], "demo-skill");
     assert_eq!(list.outcome.payload["skills"][0]["scope"], "managed");
@@ -363,8 +680,8 @@ fn execute_skills_command_list_reports_scopes_and_shadowed_skills() {
         list.outcome.payload["shadowed_skills"][0]["scope"],
         "project"
     );
-    let rendered =
-        crate::skills_cli::render_skills_cli_text(&list).expect("text rendering should succeed");
+    let rendered = loongclaw_daemon::skills_cli::render_skills_cli_text(&list)
+        .expect("text rendering should succeed");
     assert!(
         rendered.contains("scope=managed"),
         "CLI text should show resolved scope: {rendered}"
@@ -408,11 +725,13 @@ fn execute_skills_command_list_anchors_project_scope_to_config_directory_when_fi
     let env = SkillsCliEnvironmentGuard::set(&[("HOME", Some(home.to_string_lossy().as_ref()))]);
     let _cwd = SkillsCliCurrentDirGuard::set(&env, &outside);
 
-    let list = crate::skills_cli::execute_skills_command(crate::skills_cli::SkillsCommandOptions {
+    let list = loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
         config: Some(config_path.display().to_string()),
         json: false,
-        command: crate::skills_cli::SkillsCommands::List,
-    })
+        command: loongclaw_daemon::skills_cli::SkillsCommands::List,
+    },
+    )
     .expect("skills list should succeed");
     let skills = list.outcome.payload["skills"]
         .as_array()
@@ -464,11 +783,13 @@ fn execute_skills_command_list_prefers_nearest_project_ancestor_for_duplicate_sk
     let env = SkillsCliEnvironmentGuard::set(&[("HOME", Some(home.to_string_lossy().as_ref()))]);
     let _cwd = SkillsCliCurrentDirGuard::set(&env, &root.join("workspace/subdir"));
 
-    let list = crate::skills_cli::execute_skills_command(crate::skills_cli::SkillsCommandOptions {
+    let list = loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
         config: Some(config_path.display().to_string()),
         json: false,
-        command: crate::skills_cli::SkillsCommands::List,
-    })
+        command: loongclaw_daemon::skills_cli::SkillsCommands::List,
+    },
+    )
     .expect("skills list should succeed");
     assert_eq!(list.outcome.payload["skills"][0]["skill_id"], "demo-skill");
     assert_eq!(list.outcome.payload["skills"][0]["scope"], "project");
@@ -499,6 +820,57 @@ fn execute_skills_command_list_prefers_nearest_project_ancestor_for_duplicate_sk
 
     fs::remove_dir_all(&root).ok();
     fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn execute_skills_command_installs_bundled_browser_companion_preview() {
+    let root = unique_temp_dir("loongclaw-skills-cli-bundled-install");
+    let config_path = write_external_skills_config(&root, true);
+
+    let install = loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
+            config: Some(config_path.display().to_string()),
+            json: false,
+            command: loongclaw_daemon::skills_cli::SkillsCommands::InstallBundled {
+                skill_id: "browser-companion-preview".to_owned(),
+                replace: false,
+            },
+        },
+    )
+    .expect("bundled skills install should succeed");
+    assert_eq!(
+        install.outcome.payload["skill_id"],
+        "browser-companion-preview"
+    );
+    assert_eq!(
+        install.outcome.payload["display_name"],
+        "Browser Companion Preview"
+    );
+    assert_eq!(install.outcome.payload["source_kind"], "bundled");
+    assert_eq!(
+        install.outcome.payload["source_path"],
+        "bundled://browser-companion-preview"
+    );
+
+    let info = loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
+        config: Some(config_path.display().to_string()),
+        json: false,
+        command: loongclaw_daemon::skills_cli::SkillsCommands::Info {
+            skill_id: "browser-companion-preview".to_owned(),
+        },
+    },
+    )
+    .expect("bundled skills info should succeed");
+    assert!(
+        info.outcome.payload["instructions_preview"]
+            .as_str()
+            .expect("instructions preview should be text")
+            .contains("agent-browser"),
+        "bundled browser companion preview should teach the managed agent-browser flow"
+    );
+
+    fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -545,6 +917,7 @@ fn execute_skills_command_policy_round_trips_persisted_config() {
                 command: loongclaw_daemon::skills_cli::SkillsPolicyCommands::Set {
                     enabled: Some(true),
                     require_download_approval: Some(false),
+                    auto_expose_installed: Some(true),
                     allowed_domains: vec![
                         " Skills.SH ".to_owned(),
                         "clawhub.io".to_owned(),
@@ -574,6 +947,7 @@ fn execute_skills_command_policy_round_trips_persisted_config() {
         set.outcome.payload["policy"]["blocked_domains"],
         serde_json::json!(["*.evil.example"])
     );
+    assert_eq!(set.outcome.payload["policy"]["auto_expose_installed"], true);
 
     let (_, reloaded) =
         mvp::config::load(Some(config_string.as_str())).expect("reload updated config");
@@ -591,7 +965,7 @@ fn execute_skills_command_policy_round_trips_persisted_config() {
         reloaded.external_skills.install_root.as_deref(),
         Some(install_root.as_str())
     );
-    assert!(!reloaded.external_skills.auto_expose_installed);
+    assert!(reloaded.external_skills.auto_expose_installed);
 
     let reset = loongclaw_daemon::skills_cli::execute_skills_command(
         loongclaw_daemon::skills_cli::SkillsCommandOptions {
@@ -688,6 +1062,7 @@ fn execute_skills_command_policy_set_normalizes_domain_rules_for_persistence() {
                 command: loongclaw_daemon::skills_cli::SkillsPolicyCommands::Set {
                     enabled: Some(true),
                     require_download_approval: None,
+                    auto_expose_installed: None,
                     allowed_domains: vec!["https://Skills.SH/catalog".to_owned()],
                     clear_allowed_domains: false,
                     blocked_domains: vec!["HTTPS://evil.example/download".to_owned()],
@@ -736,6 +1111,7 @@ fn execute_skills_command_policy_set_requires_explicit_approval() {
                 command: loongclaw_daemon::skills_cli::SkillsPolicyCommands::Set {
                     enabled: Some(true),
                     require_download_approval: None,
+                    auto_expose_installed: None,
                     allowed_domains: Vec::new(),
                     clear_allowed_domains: false,
                     blocked_domains: Vec::new(),
@@ -775,6 +1151,7 @@ fn execute_skills_command_policy_set_rejects_invalid_domain_rules() {
                 command: loongclaw_daemon::skills_cli::SkillsPolicyCommands::Set {
                     enabled: Some(true),
                     require_download_approval: None,
+                    auto_expose_installed: None,
                     allowed_domains: vec!["not-a-domain".to_owned()],
                     clear_allowed_domains: false,
                     blocked_domains: Vec::new(),

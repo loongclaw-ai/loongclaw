@@ -378,7 +378,6 @@ async fn main() {
         Commands::Feishu { command } => feishu_cli::run_feishu_command(command).await,
     };
     if let Err(error) = result {
-        // startup error reporting
         #[allow(clippy::print_stderr)]
         {
             eprintln!("error: {error}");

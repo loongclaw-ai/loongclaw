@@ -20,6 +20,17 @@ pub enum SkillsCommands {
         #[arg(long, default_value_t = false)]
         replace: bool,
     },
+    /// Install a first-party bundled managed external skill
+    InstallBundled {
+        skill_id: String,
+        #[arg(long, default_value_t = false)]
+        replace: bool,
+    },
+    /// Enable the managed browser preview flow and install its bundled helper skill
+    EnableBrowserPreview {
+        #[arg(long, default_value_t = false)]
+        replace: bool,
+    },
     /// Remove an installed managed external skill
     Remove { skill_id: String },
     /// Inspect or update persisted runtime policy for external skills
@@ -40,6 +51,8 @@ pub enum SkillsPolicyCommands {
         enabled: Option<bool>,
         #[arg(long)]
         require_download_approval: Option<bool>,
+        #[arg(long)]
+        auto_expose_installed: Option<bool>,
         #[arg(long = "allow-domain")]
         allowed_domains: Vec<String>,
         #[arg(long, default_value_t = false)]
@@ -91,23 +104,48 @@ pub fn execute_skills_command(options: SkillsCommandOptions) -> CliResult<Skills
         SkillsCommands::Policy { command } => {
             execute_policy_command(&resolved_path, &mut config, command)?
         }
+        SkillsCommands::EnableBrowserPreview { replace } => {
+            execute_enable_browser_preview_command(&resolved_path, &mut config, replace)?
+        }
         command @ (SkillsCommands::List
         | SkillsCommands::Info { .. }
         | SkillsCommands::Install { .. }
+        | SkillsCommands::InstallBundled { .. }
         | SkillsCommands::Remove { .. }) => {
-            let tool_runtime_config =
-                mvp::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(
-                    &config,
-                    Some(&resolved_path),
-                );
-            let request = build_skills_tool_request(command)?;
-            mvp::tools::execute_tool_core_with_config(request, &tool_runtime_config)?
+            execute_non_policy_skills_command(&resolved_path, &config, command)?
         }
     };
     Ok(SkillsCommandExecution {
         resolved_config_path: resolved_path.display().to_string(),
         outcome,
     })
+}
+
+fn execute_non_policy_skills_command(
+    resolved_path: &Path,
+    config: &mvp::config::LoongClawConfig,
+    command: SkillsCommands,
+) -> CliResult<ToolCoreOutcome> {
+    match command {
+        SkillsCommands::InstallBundled { skill_id, replace } => {
+            execute_install_bundled_skill_command(resolved_path, config, &skill_id, replace)
+        }
+        command @ (SkillsCommands::List
+        | SkillsCommands::Info { .. }
+        | SkillsCommands::Install { .. }
+        | SkillsCommands::Remove { .. }) => {
+            let tool_runtime_config =
+                mvp::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(
+                    config,
+                    Some(resolved_path),
+                );
+            let request = build_skills_tool_request(command)?;
+            mvp::tools::execute_tool_core_with_config(request, &tool_runtime_config)
+        }
+        SkillsCommands::Policy { .. } | SkillsCommands::EnableBrowserPreview { .. } => {
+            Err("unexpected skills CLI command routed through non-policy execution path".to_owned())
+        }
+    }
 }
 
 fn build_skills_tool_request(command: SkillsCommands) -> CliResult<ToolCoreRequest> {
@@ -137,6 +175,9 @@ fn build_skills_tool_request(command: SkillsCommands) -> CliResult<ToolCoreReque
                 tool_name: "external_skills.install".to_owned(),
                 payload: Value::Object(payload),
             })
+        }
+        SkillsCommands::InstallBundled { .. } | SkillsCommands::EnableBrowserPreview { .. } => {
+            Err("bundled skills install requests are handled directly by the daemon CLI".to_owned())
         }
         SkillsCommands::Remove { skill_id } => Ok(ToolCoreRequest {
             tool_name: "external_skills.remove".to_owned(),
@@ -175,6 +216,7 @@ fn execute_policy_command(
             config.external_skills.require_download_approval = defaults.require_download_approval;
             config.external_skills.allowed_domains = defaults.allowed_domains;
             config.external_skills.blocked_domains = defaults.blocked_domains;
+            config.external_skills.auto_expose_installed = defaults.auto_expose_installed;
             persist_config_update(resolved_path, config)?;
             Ok(ToolCoreOutcome {
                 status: "ok".to_owned(),
@@ -191,6 +233,7 @@ fn execute_policy_command(
         SkillsPolicyCommands::Set {
             enabled,
             require_download_approval,
+            auto_expose_installed,
             allowed_domains,
             clear_allowed_domains,
             blocked_domains,
@@ -212,6 +255,7 @@ fn execute_policy_command(
 
             let has_mutation = enabled.is_some()
                 || require_download_approval.is_some()
+                || auto_expose_installed.is_some()
                 || clear_allowed_domains
                 || !allowed_domains.is_empty()
                 || clear_blocked_domains
@@ -226,6 +270,9 @@ fn execute_policy_command(
             }
             if let Some(require_download_approval) = require_download_approval {
                 config.external_skills.require_download_approval = require_download_approval;
+            }
+            if let Some(auto_expose_installed) = auto_expose_installed {
+                config.external_skills.auto_expose_installed = auto_expose_installed;
             }
             if clear_allowed_domains {
                 config.external_skills.allowed_domains.clear();
@@ -273,6 +320,73 @@ fn persist_config_update(
 ) -> CliResult<()> {
     let path = resolved_path.to_string_lossy();
     mvp::config::write(Some(path.as_ref()), config, true).map(|_| ())
+}
+
+fn execute_install_bundled_skill_command(
+    resolved_path: &Path,
+    config: &mvp::config::LoongClawConfig,
+    skill_id: &str,
+    replace: bool,
+) -> CliResult<ToolCoreOutcome> {
+    let tool_runtime_config = mvp::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(
+        config,
+        Some(resolved_path),
+    );
+    let request = ToolCoreRequest {
+        tool_name: "external_skills.install".to_owned(),
+        payload: json!({
+            "bundled_skill_id": skill_id,
+            "replace": replace,
+        }),
+    };
+    mvp::tools::execute_tool_core_with_config(request, &tool_runtime_config)
+}
+
+fn execute_enable_browser_preview_command(
+    resolved_path: &Path,
+    config: &mut mvp::config::LoongClawConfig,
+    replace: bool,
+) -> CliResult<ToolCoreOutcome> {
+    let mut updated_config = config.clone();
+    let config_updated = crate::browser_preview::ensure_browser_preview_config(&mut updated_config);
+    if crate::browser_preview::shell_policy_explicitly_denies_command(
+        &updated_config,
+        mvp::tools::BROWSER_COMPANION_COMMAND,
+    ) {
+        return Err(
+            "browser preview cannot be enabled while [tools].shell_deny blocks `agent-browser`; remove that entry and retry"
+                .to_owned(),
+        );
+    }
+
+    let mut outcome = execute_install_bundled_skill_command(
+        resolved_path,
+        &updated_config,
+        crate::browser_preview::BROWSER_PREVIEW_SKILL_ID,
+        replace
+            || crate::browser_preview::inspect_browser_preview_state(&updated_config)
+                .skill_installed,
+    )?;
+
+    if config_updated {
+        persist_config_update(resolved_path, &updated_config)?;
+    }
+    *config = updated_config;
+
+    if let Some(payload) = outcome.payload.as_object_mut() {
+        payload.insert(
+            "tool_name".to_owned(),
+            json!("skills.enable-browser-preview"),
+        );
+        payload.insert("config_updated".to_owned(), json!(config_updated));
+        payload.insert("browser_preview_enabled".to_owned(), json!(true));
+        payload.insert(
+            "runtime_binary_available".to_owned(),
+            json!(crate::browser_preview::inspect_browser_preview_state(config).runtime_available),
+        );
+    }
+
+    Ok(outcome)
 }
 
 fn persistent_policy_payload(config: &mvp::config::LoongClawConfig) -> Value {
@@ -408,7 +522,7 @@ pub fn render_skills_cli_text(execution: &SkillsCommandExecution) -> CliResult<S
                 }
             }
         }
-        "external_skills.install" => {
+        "external_skills.install" | "skills.enable-browser-preview" => {
             lines.push(format!(
                 "installed skill_id={}",
                 payload
@@ -444,6 +558,22 @@ pub fn render_skills_cli_text(execution: &SkillsCommandExecution) -> CliResult<S
                     .and_then(Value::as_bool)
                     .unwrap_or(false)
             ));
+            if tool_name == "skills.enable-browser-preview" {
+                lines.push(format!(
+                    "config_updated={}",
+                    payload
+                        .get("config_updated")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                ));
+                lines.push(format!(
+                    "runtime_binary_available={}",
+                    payload
+                        .get("runtime_binary_available")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                ));
+            }
         }
         "external_skills.remove" => {
             lines.push(format!(

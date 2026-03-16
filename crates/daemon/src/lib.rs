@@ -35,6 +35,7 @@ pub use base64;
 pub use kernel;
 pub use sha2;
 
+pub mod browser_preview;
 pub mod doctor_cli;
 pub mod feishu_cli;
 pub mod feishu_support;

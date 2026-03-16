@@ -418,6 +418,7 @@ pub enum OnboardingActionKind {
     Ask,
     Chat,
     Channel,
+    BrowserPreview,
     Doctor,
 }
 
@@ -2476,6 +2477,9 @@ fn build_onboarding_success_summary_with_memory(
                 crate::next_actions::SetupNextActionKind::Ask => OnboardingActionKind::Ask,
                 crate::next_actions::SetupNextActionKind::Chat => OnboardingActionKind::Chat,
                 crate::next_actions::SetupNextActionKind::Channel => OnboardingActionKind::Channel,
+                crate::next_actions::SetupNextActionKind::BrowserPreview => {
+                    OnboardingActionKind::BrowserPreview
+                }
                 crate::next_actions::SetupNextActionKind::Doctor => OnboardingActionKind::Doctor,
             },
             label: action.label,

@@ -22,6 +22,7 @@ use crate::memory::runtime_config::MemoryRuntimeConfig;
 pub(crate) mod approval;
 #[cfg(feature = "tool-browser")]
 mod browser;
+mod bundled_skills;
 mod catalog;
 mod claw_import;
 pub(crate) mod delegate;
@@ -54,6 +55,9 @@ pub(crate) use feishu::{DeferredFeishuCardUpdate, drain_deferred_feishu_card_upd
 pub use kernel_adapter::MvpToolAdapter;
 
 pub(crate) const BROWSER_SESSION_SCOPE_FIELD: &str = "__loongclaw_browser_scope";
+pub const BROWSER_COMPANION_PREVIEW_SKILL_ID: &str =
+    bundled_skills::BROWSER_COMPANION_PREVIEW_SKILL_ID;
+pub const BROWSER_COMPANION_COMMAND: &str = bundled_skills::BROWSER_COMPANION_COMMAND;
 
 pub(crate) const LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY: &str = "_loongclaw";
 const LOONGCLAW_INTERNAL_TOOL_SEARCH_KEY: &str = "tool_search";
@@ -597,6 +601,7 @@ struct SearchableToolEntry {
     summary: String,
     argument_hint: String,
     required_fields: Vec<String>,
+    required_field_groups: Vec<Vec<String>>,
     tags: Vec<String>,
 }
 
@@ -730,15 +735,30 @@ fn search_argument_hint_from_provider_definition(parameters: &Value) -> String {
 }
 
 fn searchable_entry_from_catalog(entry: catalog::ToolCatalogEntry) -> SearchableToolEntry {
+    let required_fields = entry
+        .required_fields
+        .iter()
+        .map(|field| (*field).to_owned())
+        .collect::<Vec<_>>();
+    let mut required_field_groups = catalog::tool_required_field_groups(entry.canonical_name)
+        .iter()
+        .map(|group| {
+            group
+                .iter()
+                .map(|field| (*field).to_owned())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    if required_field_groups.is_empty() && !required_fields.is_empty() {
+        required_field_groups.push(required_fields.clone());
+    }
+
     SearchableToolEntry {
         canonical_name: entry.canonical_name.to_owned(),
         summary: entry.summary.to_owned(),
         argument_hint: entry.argument_hint.to_owned(),
-        required_fields: entry
-            .required_fields
-            .iter()
-            .map(|field| (*field).to_owned())
-            .collect(),
+        required_fields,
+        required_field_groups,
         tags: entry.tags.iter().map(|tag| (*tag).to_owned()).collect(),
     }
 }
@@ -754,6 +774,14 @@ fn feishu_searchable_entries() -> Vec<SearchableToolEntry> {
                 .get("parameters")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
+            let required_fields = parameters
+                .get("required")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
             Some(SearchableToolEntry {
                 canonical_name: canonical_tool_name(provider_name).to_owned(),
                 summary: function
@@ -762,14 +790,12 @@ fn feishu_searchable_entries() -> Vec<SearchableToolEntry> {
                     .unwrap_or_default()
                     .to_owned(),
                 argument_hint: search_argument_hint_from_provider_definition(&parameters),
-                required_fields: parameters
-                    .get("required")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect(),
+                required_field_groups: if required_fields.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![required_fields.clone()]
+                },
+                required_fields,
                 tags: vec!["feishu".to_owned()],
             })
         })
@@ -918,6 +944,7 @@ fn execute_tool_search_tool_with_config(
                 "summary": entry.summary,
                 "argument_hint": entry.argument_hint,
                 "required_fields": entry.required_fields,
+                "required_field_groups": entry.required_field_groups,
                 "tags": entry.tags,
                 "why": why,
                 "lease": issue_tool_lease(entry.canonical_name.as_str(), payload),
@@ -2062,6 +2089,19 @@ mod tests {
         }));
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
+    #[test]
+    fn tool_search_reports_alternative_required_fields_for_bundled_skill_install() {
+        let entry = catalog::find_tool_catalog_entry("external_skills.install")
+            .expect("external_skills.install should exist in the catalog");
+
+        assert_eq!(entry.required_fields, &["path", "bundled_skill_id"]);
+        assert_eq!(
+            catalog::tool_required_field_groups("external_skills.install"),
+            &[&["path"][..], &["bundled_skill_id"][..]]
+        );
     }
 
     #[cfg(feature = "memory-sqlite")]

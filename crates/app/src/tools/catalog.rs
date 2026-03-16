@@ -1160,13 +1160,17 @@ fn external_skills_install_definition(descriptor: &ToolDescriptor) -> Value {
         "type": "function",
         "function": {
             "name": descriptor.provider_name,
-            "description": "Install a managed external skill from a local directory or local .tgz/.tar.gz archive under the configured file root.",
+            "description": "Install a managed external skill from a local directory, local .tgz/.tar.gz archive, or a first-party bundled skill id.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
                         "description": "Path to a local directory containing SKILL.md or a local .tgz/.tar.gz archive."
+                    },
+                    "bundled_skill_id": {
+                        "type": "string",
+                        "description": "Optional first-party bundled skill identifier, for example `browser-companion-preview`."
                     },
                     "skill_id": {
                         "type": "string",
@@ -1177,7 +1181,10 @@ fn external_skills_install_definition(descriptor: &ToolDescriptor) -> Value {
                         "description": "Replace an existing installed skill with the same id. Defaults to false."
                     }
                 },
-                "required": ["path"],
+                "anyOf": [
+                    { "required": ["path"] },
+                    { "required": ["bundled_skill_id"] }
+                ],
                 "additionalProperties": false
             }
         }
@@ -1823,7 +1830,9 @@ fn tool_argument_hint(name: &str) -> &'static str {
             "url:string,approval_granted?:boolean,save_as?:string,max_bytes?:integer"
         }
         "external_skills.inspect" => "skill_id:string",
-        "external_skills.install" => "path:string",
+        "external_skills.install" => {
+            "path?:string,bundled_skill_id?:string,skill_id?:string,replace?:boolean"
+        }
         "external_skills.invoke" => "skill_id:string",
         "external_skills.list" => "active_only?:boolean",
         "external_skills.policy" => {
@@ -1865,7 +1874,12 @@ fn tool_parameter_types(name: &str) -> &'static [(&'static str, &'static str)] {
         "external_skills.inspect" | "external_skills.invoke" | "external_skills.remove" => {
             &[("skill_id", "string")]
         }
-        "external_skills.install" => &[("path", "string")],
+        "external_skills.install" => &[
+            ("path", "string"),
+            ("bundled_skill_id", "string"),
+            ("skill_id", "string"),
+            ("replace", "boolean"),
+        ],
         "external_skills.list" => &[("active_only", "boolean")],
         "external_skills.policy" => &[
             ("action", "string"),
@@ -1894,6 +1908,10 @@ fn tool_parameter_types(name: &str) -> &'static [(&'static str, &'static str)] {
     }
 }
 
+const EMPTY_REQUIRED_FIELD_GROUPS: &[&[&str]] = &[];
+const EXTERNAL_SKILLS_INSTALL_REQUIRED_FIELD_GROUPS: &[&[&str]] =
+    &[&["path"], &["bundled_skill_id"]];
+
 fn tool_required_fields(name: &str) -> &'static [&'static str] {
     match name {
         "tool.search" => &["query"],
@@ -1902,7 +1920,7 @@ fn tool_required_fields(name: &str) -> &'static [&'static str] {
         "external_skills.inspect" | "external_skills.invoke" | "external_skills.remove" => {
             &["skill_id"]
         }
-        "external_skills.install" => &["path"],
+        "external_skills.install" => &["path", "bundled_skill_id"],
         "file.read" => &["path"],
         "file.write" => &["path", "content"],
         "shell.exec" => &["command"],
@@ -1911,6 +1929,13 @@ fn tool_required_fields(name: &str) -> &'static [&'static str] {
         | "session_status" | "session_wait" | "sessions_history" => &["session_id"],
         "sessions_send" => &["session_id", "text"],
         _ => &[],
+    }
+}
+
+pub(crate) fn tool_required_field_groups(name: &str) -> &'static [&'static [&'static str]] {
+    match name {
+        "external_skills.install" => EXTERNAL_SKILLS_INSTALL_REQUIRED_FIELD_GROUPS,
+        _ => EMPTY_REQUIRED_FIELD_GROUPS,
     }
 }
 

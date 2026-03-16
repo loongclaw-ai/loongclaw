@@ -401,8 +401,8 @@ Agent-facing tools:
   - Saves artifact under `<tools.file_root>/external-skills-downloads/`.
   - Enforces allowlist/blocklist before network download.
 - `external_skills_install`
-  - Requires local `path`.
-  - Accepts a directory containing `SKILL.md` or a local `.tgz` / `.tar.gz` archive.
+  - Requires either a local `path` or a first-party `bundled_skill_id`.
+  - Accepts a directory containing `SKILL.md`, a local `.tgz` / `.tar.gz` archive, or a first-party `bundled_skill_id`.
   - Installs the skill under `<tools.file_root>/external-skills-installed/` by default.
 - `external_skills_list`
   - Lists resolved external skills across `managed`, `user`, and `project` scopes.
@@ -424,6 +424,10 @@ Operator-facing CLI:
   - Includes any lower-priority duplicates that were shadowed by the selected skill.
 - `loongclaw skills install <path> [--skill-id ID] [--replace] [--config PATH] [--json]`
   - Installs a local skill directory or `.tgz` / `.tar.gz` archive through the same managed runtime path as `external_skills.install`.
+- `loongclaw skills install-bundled <skill-id> [--replace] [--config PATH] [--json]`
+  - Installs a first-party bundled skill such as `browser-companion-preview` without requiring a local archive path.
+- `loongclaw skills enable-browser-preview [--replace] [--config PATH] [--json]`
+  - Globally enables the external-skills runtime for this config, turns on installed-skill auto exposure, allows `agent-browser` through shell policy when needed, and installs the bundled `browser-companion-preview` skill.
 - `loongclaw skills remove <skill-id> [--config PATH] [--json]`
   - Removes one managed installed skill from the local index.
 - `loongclaw skills policy get|set|reset [--config PATH] [--json]`
@@ -443,6 +447,26 @@ Recommended runtime flow:
    - User and project discovery follow directory symlinks inside those skill roots; managed installs still reject symlinked sources
 4. Inspect with `external_skills.inspect` or `loongclaw skills info`
 5. Load instructions with `external_skills.invoke`
+
+Browser preview fast path:
+
+```bash
+loongclaw skills enable-browser-preview --config ~/.loongclaw/config.toml
+agent-browser --help
+loongclaw doctor --config ~/.loongclaw/config.toml
+```
+
+This preview keeps the shipped safe browser lane (`browser.open`,
+`browser.extract`, `browser.click`) as the default. It adds a first-party
+managed helper skill that can route richer multi-step page work through
+`agent-browser` when the runtime, shell policy, and local binary are all ready.
+It does not install or manage the `agent-browser` runtime for you; bring that
+binary yourself, then use `doctor` to confirm it is available on `PATH`.
+
+Today this preview is still a managed `external_skills.invoke` lane that uses
+`shell.exec` against `agent-browser`. It does not yet provide the same bounded,
+profile-isolated browser safety model as the built-in `browser.open`,
+`browser.extract`, and `browser.click` tools.
 
 ## Key Features
 
@@ -561,7 +585,7 @@ cargo build -p loongclaw-daemon --no-default-features --features "channel-cli,pr
 | [Reliability](docs/RELIABILITY.md) | Build and kernel invariants |
 | [Examples](examples/README.md) | Spec files, plugin samples, benchmarks |
 | [Product Specs](docs/product-specs/index.md) | User-facing requirements for onboarding, ask, doctor, channels, and WebChat expectations |
-| [Skills](skills/) | Agent skills (`update-harness.skill`) |
+| [Skills](skills/) | Agent skills (`update-harness.skill`, `browser-companion-preview/`) |
 | [Changelog](CHANGELOG.md) | Release history |
 
 ## Configuration

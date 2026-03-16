@@ -391,8 +391,12 @@ pub(super) fn execute_external_skills_install_tool_with_config(
         .get("path")
         .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| "external_skills.install requires payload.path".to_owned())?;
+        .filter(|value| !value.is_empty());
+    let bundled_skill_id = payload
+        .get("bundled_skill_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     let replace = payload
         .get("replace")
         .and_then(Value::as_bool)
@@ -402,9 +406,20 @@ pub(super) fn execute_external_skills_install_tool_with_config(
         .and_then(Value::as_str)
         .map(str::trim);
 
+    if raw_path.is_some() && bundled_skill_id.is_some() {
+        return Err(
+            "external_skills.install accepts either payload.path or payload.bundled_skill_id, not both"
+                .to_owned(),
+        );
+    }
+    if raw_path.is_none() && bundled_skill_id.is_none() {
+        return Err(
+            "external_skills.install requires payload.path or payload.bundled_skill_id".to_owned(),
+        );
+    }
+
     require_enabled_runtime_policy(config)?;
 
-    let source_path = super::file::resolve_safe_file_path_with_config(raw_path, config)?;
     let install_root = resolve_install_root(config);
     fs::create_dir_all(&install_root).map_err(|error| {
         format!(
@@ -412,49 +427,141 @@ pub(super) fn execute_external_skills_install_tool_with_config(
             install_root.display()
         )
     })?;
+    let (skill_id, display_name, summary, source_kind, source_path, incoming_root, digest) =
+        if let Some(bundled_skill_id) = bundled_skill_id {
+            if explicit_skill_id
+                .and_then(|value| (!value.is_empty()).then_some(value))
+                .is_some()
+            {
+                return Err(
+                    "external_skills.install cannot override payload.skill_id when payload.bundled_skill_id is used"
+                        .to_owned(),
+                );
+            }
+            let bundled = super::bundled_skills::bundled_external_skill(bundled_skill_id)
+                .ok_or_else(|| {
+                    format!(
+                        "external_skills.install does not recognize bundled skill `{bundled_skill_id}`"
+                    )
+                })?;
+            let skill_id = normalize_skill_id(bundled.skill_id)?;
+            let display_name = derive_skill_display_name(bundled.instructions, bundled.skill_id);
+            let summary = derive_skill_summary(bundled.instructions);
+            let incoming_root = unique_managed_install_transition_path(
+                &install_root,
+                skill_id.as_str(),
+                "incoming",
+            )?;
+            let mut incoming_cleanup = ScopedDirCleanup::new(Some(incoming_root.clone()));
+            fs::create_dir_all(&incoming_root).map_err(|error| {
+                format!(
+                    "failed to create bundled external skill staging directory {}: {error}",
+                    incoming_root.display()
+                )
+            })?;
+            let installed_skill_md_path = incoming_root.join(DEFAULT_SKILL_FILENAME);
+            fs::write(&installed_skill_md_path, bundled.instructions).map_err(|error| {
+                format!(
+                    "failed to write bundled external skill source {}: {error}",
+                    installed_skill_md_path.display()
+                )
+            })?;
+            let digest = format!("{:x}", Sha256::digest(bundled.instructions.as_bytes()));
+            incoming_cleanup.disarm();
+            (
+                skill_id,
+                display_name,
+                summary,
+                "bundled".to_owned(),
+                bundled.source_path.to_owned(),
+                incoming_root,
+                digest,
+            )
+        } else {
+            let Some(raw_path) = raw_path else {
+                return Err(
+                    "external_skills.install internal error: missing path after payload validation"
+                        .to_owned(),
+                );
+            };
+            let source_path = super::file::resolve_safe_file_path_with_config(raw_path, config)?;
+            let source_metadata = fs::symlink_metadata(&source_path).map_err(|error| {
+                format!(
+                    "failed to inspect external skill source {}: {error}",
+                    source_path.display()
+                )
+            })?;
+            let source_file_type = source_metadata.file_type();
+            if source_file_type.is_symlink() {
+                return Err(format!(
+                    "external skill source {} cannot be a symlink",
+                    source_path.display()
+                ));
+            }
 
-    let source_metadata = fs::symlink_metadata(&source_path).map_err(|error| {
-        format!(
-            "failed to inspect external skill source {}: {error}",
-            source_path.display()
-        )
-    })?;
-    let source_file_type = source_metadata.file_type();
-    if source_file_type.is_symlink() {
-        return Err(format!(
-            "external skill source {} cannot be a symlink",
-            source_path.display()
-        ));
-    }
-
-    let (skill_root, source_kind, cleanup_root) = if source_file_type.is_dir() {
-        let skill_root = resolve_skill_root(&source_path)?;
-        (skill_root, "directory", None)
-    } else if source_file_type.is_file() {
-        let (staging_root, skill_root) = extract_archive_to_staging(&source_path, &install_root)?;
-        (skill_root, "archive", Some(staging_root))
-    } else {
-        return Err(format!(
-            "external skill source {} must be a directory or a regular file",
-            source_path.display()
-        ));
-    };
-    let _cleanup_root = ScopedDirCleanup::new(cleanup_root);
-
-    let skill_md_path = skill_root.join(DEFAULT_SKILL_FILENAME);
-    let skill_markdown = fs::read_to_string(&skill_md_path).map_err(|error| {
-        format!(
-            "failed to read installed skill source {}: {error}",
-            skill_md_path.display()
-        )
-    })?;
-    let skill_id = explicit_skill_id
-        .and_then(|value| (!value.is_empty()).then_some(value))
-        .map(normalize_skill_id)
-        .transpose()?
-        .unwrap_or_else(|| derive_skill_id_from_markdown(&skill_root, skill_markdown.as_str()));
-    let display_name = derive_skill_display_name(skill_markdown.as_str(), skill_id.as_str());
-    let summary = derive_skill_summary(skill_markdown.as_str());
+            let (skill_root, source_kind, cleanup_root) = if source_file_type.is_dir() {
+                let skill_root = resolve_skill_root(&source_path)?;
+                (skill_root, "directory", None)
+            } else if source_file_type.is_file() {
+                let (staging_root, skill_root) =
+                    extract_archive_to_staging(&source_path, &install_root)?;
+                (skill_root, "archive", Some(staging_root))
+            } else {
+                return Err(format!(
+                    "external skill source {} must be a directory or a regular file",
+                    source_path.display()
+                ));
+            };
+            let _cleanup_root = ScopedDirCleanup::new(cleanup_root);
+            let skill_md_path = skill_root.join(DEFAULT_SKILL_FILENAME);
+            let skill_markdown = fs::read_to_string(&skill_md_path).map_err(|error| {
+                format!(
+                    "failed to read installed skill source {}: {error}",
+                    skill_md_path.display()
+                )
+            })?;
+            let skill_id = explicit_skill_id
+                .and_then(|value| (!value.is_empty()).then_some(value))
+                .map(normalize_skill_id)
+                .transpose()?
+                .unwrap_or_else(|| derive_skill_id_from_markdown(&skill_root, skill_markdown.as_str()));
+            let display_name =
+                derive_skill_display_name(skill_markdown.as_str(), skill_id.as_str());
+            let summary = derive_skill_summary(skill_markdown.as_str());
+            let incoming_root = unique_managed_install_transition_path(
+                &install_root,
+                skill_id.as_str(),
+                "incoming",
+            )?;
+            let mut incoming_cleanup = ScopedDirCleanup::new(Some(incoming_root.clone()));
+            fs::create_dir_all(&incoming_root).map_err(|error| {
+                format!(
+                    "failed to create external skill destination {}: {error}",
+                    incoming_root.display()
+                )
+            })?;
+            copy_dir_recursive(&skill_root, &incoming_root)?;
+            let installed_skill_md_path = incoming_root.join(DEFAULT_SKILL_FILENAME);
+            let installed_skill_markdown =
+                fs::read_to_string(&installed_skill_md_path).map_err(|error| {
+                    format!(
+                        "failed to verify installed skill {}: {error}",
+                        installed_skill_md_path.display()
+                    )
+                })?;
+            let digest = format!("{:x}", Sha256::digest(installed_skill_markdown.as_bytes()));
+            incoming_cleanup.disarm();
+            (
+                skill_id,
+                display_name,
+                summary,
+                source_kind.to_owned(),
+                source_path.display().to_string(),
+                incoming_root,
+                digest,
+            )
+        };
+    let _incoming_cleanup = ScopedDirCleanup::new(Some(incoming_root.clone()));
 
     let mut index = load_installed_skill_index(&install_root)?;
     let previous_index = index.clone();
@@ -465,20 +572,6 @@ pub(super) fn execute_external_skills_install_tool_with_config(
     }
 
     let destination_root = managed_skill_install_path(&install_root, skill_id.as_str())?;
-    let incoming_root =
-        unique_managed_install_transition_path(&install_root, skill_id.as_str(), "incoming")?;
-    let _incoming_cleanup = ScopedDirCleanup::new(Some(incoming_root.clone()));
-    copy_dir_recursive(&skill_root, &incoming_root)?;
-
-    let installed_skill_md_path = incoming_root.join(DEFAULT_SKILL_FILENAME);
-    let installed_skill_markdown =
-        fs::read_to_string(&installed_skill_md_path).map_err(|error| {
-            format!(
-                "failed to verify installed skill {}: {error}",
-                installed_skill_md_path.display()
-            )
-        })?;
-    let digest = format!("{:x}", Sha256::digest(installed_skill_markdown.as_bytes()));
     let installed_at_unix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
@@ -489,8 +582,8 @@ pub(super) fn execute_external_skills_install_tool_with_config(
         skill_id: skill_id.clone(),
         display_name: display_name.clone(),
         summary: summary.clone(),
-        source_kind: source_kind.to_owned(),
-        source_path: source_path.display().to_string(),
+        source_kind: source_kind.clone(),
+        source_path: source_path.clone(),
         install_path: destination_root.display().to_string(),
         skill_md_path: destination_root
             .join(DEFAULT_SKILL_FILENAME)
@@ -583,7 +676,7 @@ pub(super) fn execute_external_skills_install_tool_with_config(
             "display_name": display_name,
             "summary": summary,
             "source_kind": source_kind,
-            "source_path": source_path.display().to_string(),
+            "source_path": source_path,
             "install_path": destination_root.display().to_string(),
             "skill_md_path": destination_root.join(DEFAULT_SKILL_FILENAME).display().to_string(),
             "sha256": digest,
@@ -805,6 +898,10 @@ impl ExternalSkillsPolicyOverride {
 impl ScopedDirCleanup {
     fn new(path: Option<PathBuf>) -> Self {
         Self(path)
+    }
+
+    fn disarm(&mut self) {
+        self.0 = None;
     }
 }
 
@@ -2360,6 +2457,80 @@ mod tests {
                     .exists(),
                 "managed external skill copy should exist"
             );
+
+            fs::remove_dir_all(&root).ok();
+        });
+    }
+
+    #[test]
+    fn install_from_bundled_skill_id_writes_managed_index_and_copy() {
+        with_managed_runtime_test(|| {
+            let root = unique_temp_dir("loongclaw-ext-skill-install-bundled");
+            fs::create_dir_all(&root).expect("create fixture root");
+            let config = managed_runtime_config(&root);
+
+            let outcome = crate::tools::execute_tool_core_with_config(
+                ToolCoreRequest {
+                    tool_name: "external_skills.install".to_owned(),
+                    payload: json!({
+                        "bundled_skill_id": "browser-companion-preview"
+                    }),
+                },
+                &config,
+            )
+            .expect("bundled install should succeed");
+
+            assert_eq!(outcome.status, "ok");
+            assert_eq!(outcome.payload["skill_id"], "browser-companion-preview");
+            assert_eq!(outcome.payload["source_kind"], "bundled");
+            assert_eq!(
+                outcome.payload["source_path"],
+                "bundled://browser-companion-preview"
+            );
+            let installed_skill = root
+                .join("external-skills-installed")
+                .join("browser-companion-preview")
+                .join("SKILL.md");
+            assert!(
+                installed_skill.exists(),
+                "bundled managed skill should exist"
+            );
+            let installed_skill_body =
+                fs::read_to_string(&installed_skill).expect("read bundled managed skill");
+            assert!(
+                installed_skill_body.contains("agent-browser"),
+                "bundled preview instructions should preserve the packaged browser companion guidance"
+            );
+
+            fs::remove_dir_all(&root).ok();
+        });
+    }
+
+    #[test]
+    fn install_rejects_path_and_bundled_skill_id_together() {
+        with_managed_runtime_test(|| {
+            let root = unique_temp_dir("loongclaw-ext-skill-install-bundled-conflict");
+            fs::create_dir_all(&root).expect("create fixture root");
+            write_file(
+                &root,
+                "source/demo-skill/SKILL.md",
+                "# Demo Skill\n\nConflicting payload should fail.\n",
+            );
+            let config = managed_runtime_config(&root);
+
+            let error = crate::tools::execute_tool_core_with_config(
+                ToolCoreRequest {
+                    tool_name: "external_skills.install".to_owned(),
+                    payload: json!({
+                        "path": "source/demo-skill",
+                        "bundled_skill_id": "browser-companion-preview"
+                    }),
+                },
+                &config,
+            )
+            .expect_err("mixed path and bundled skill id should fail");
+
+            assert!(error.contains("either payload.path or payload.bundled_skill_id"));
 
             fs::remove_dir_all(&root).ok();
         });

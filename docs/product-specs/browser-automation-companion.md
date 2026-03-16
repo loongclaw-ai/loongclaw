@@ -26,6 +26,20 @@ runtime into a heavyweight browser platform.
       documented as guidance on top of the companion runtime, not as the source
       of truth for whether the capability is installed and supported.
 
+## Current Preview Scope
+
+The currently shipped preview scope is narrower than the final managed browser
+automation companion:
+
+- a first-party bundled `browser-companion-preview` managed skill
+- `loongclaw skills enable-browser-preview` as the operator-facing fast path
+- `onboard` and `doctor` next actions that surface the preview truthfully
+- continued default shipping of only `browser.open`, `browser.extract`, and
+  `browser.click` as built-in browser tools
+
+The full governed companion runtime, richer tool catalog, isolated browser
+profile lifecycle, and stronger approval/audit semantics remain planned work.
+
 ## Out of Scope
 
 - Replacing the shipped lightweight browser tools
