@@ -60,7 +60,7 @@ pub fn classify_current_setup(output_path: &Path) -> CurrentSetupState {
         && config.tools.shell_allow == default_config.tools.shell_allow
         && config.tools.file_root == default_config.tools.file_root
         && config.memory.profile == default_config.memory.profile
-        && config.memory.sqlite_path == default_config.memory.sqlite_path
+        && memory_sqlite_path_looks_default(&config.memory.sqlite_path, &default_config.memory)
         && config.memory.sliding_window == default_config.memory.sliding_window;
 
     if has_only_provider_selection_changes && !has_provider_auth {
