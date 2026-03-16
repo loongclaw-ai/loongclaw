@@ -1938,9 +1938,10 @@ impl ProviderKind {
     }
 
     pub const fn default_preferred_models(self) -> &'static [&'static str] {
-        match self {
-            ProviderKind::Minimax => MINIMAX_DEFAULT_PREFERRED_MODELS,
-            _ => &[],
+        if matches!(self, ProviderKind::Minimax) {
+            MINIMAX_DEFAULT_PREFERRED_MODELS
+        } else {
+            &[]
         }
     }
 }
