@@ -2837,6 +2837,39 @@ fn render_onboarding_success_summary_with_width_and_style(
     let mut lines = render_onboard_brand_header(width, "setup complete", color_enabled);
     lines.push(String::new());
     lines.push("onboarding complete".to_owned());
+    if !summary.next_actions.is_empty() {
+        let mut actions = summary.next_actions.iter();
+        if let Some(primary) = actions.next() {
+            if width < 56 {
+                lines.push("start here".to_owned());
+                lines.extend(mvp::presentation::render_wrapped_text_line(
+                    &format!("- {}: ", primary.label),
+                    &primary.command,
+                    width,
+                ));
+            } else {
+                lines.extend(mvp::presentation::render_wrapped_text_line(
+                    "start here: ",
+                    &primary.command,
+                    width,
+                ));
+            }
+        }
+
+        let secondary_actions = actions.collect::<Vec<_>>();
+        if !secondary_actions.is_empty() {
+            lines.push("also available".to_owned());
+            lines.extend(secondary_actions.into_iter().flat_map(|action| {
+                mvp::presentation::render_wrapped_text_line(
+                    &format!("- {}: ", action.label),
+                    &action.command,
+                    width,
+                )
+            }));
+        }
+    }
+
+    lines.push("saved setup".to_owned());
     lines.extend(mvp::presentation::render_wrapped_text_line(
         "- config: ",
         &summary.config_path,
@@ -2931,41 +2964,6 @@ fn render_onboarding_success_summary_with_width_and_style(
             width,
         ));
     }
-    if summary.next_actions.is_empty() {
-        return lines;
-    }
-
-    let mut actions = summary.next_actions.iter();
-    if let Some(primary) = actions.next() {
-        if width < 56 {
-            lines.push("start here".to_owned());
-            lines.extend(mvp::presentation::render_wrapped_text_line(
-                &format!("- {}: ", primary.label),
-                &primary.command,
-                width,
-            ));
-        } else {
-            lines.extend(mvp::presentation::render_wrapped_text_line(
-                "start here: ",
-                &primary.command,
-                width,
-            ));
-        }
-    }
-
-    let secondary_actions = actions.collect::<Vec<_>>();
-    if secondary_actions.is_empty() {
-        return lines;
-    }
-
-    lines.push("also available".to_owned());
-    lines.extend(secondary_actions.into_iter().flat_map(|action| {
-        mvp::presentation::render_wrapped_text_line(
-            &format!("- {}: ", action.label),
-            &action.command,
-            width,
-        )
-    }));
     lines
 }
 
