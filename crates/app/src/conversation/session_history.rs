@@ -7,6 +7,7 @@ use loongclaw_contracts::{Capability, MemoryCoreRequest};
 use serde_json::{Value, json};
 
 use crate::CliResult;
+use crate::KernelContext;
 #[cfg(feature = "memory-sqlite")]
 use crate::memory;
 #[cfg(feature = "memory-sqlite")]
@@ -182,6 +183,25 @@ pub async fn load_safe_lane_event_summary(
 }
 
 pub async fn load_discovery_first_event_summary(
+    session_id: &str,
+    limit: usize,
+    kernel_ctx: Option<&KernelContext>,
+    #[cfg(feature = "memory-sqlite")] memory_config: &MemoryRuntimeConfig,
+) -> CliResult<DiscoveryFirstEventSummary> {
+    load_discovery_first_event_summary_with_binding(
+        session_id,
+        limit,
+        kernel_ctx.map_or_else(
+            ConversationRuntimeBinding::direct,
+            ConversationRuntimeBinding::kernel,
+        ),
+        #[cfg(feature = "memory-sqlite")]
+        memory_config,
+    )
+    .await
+}
+
+pub(crate) async fn load_discovery_first_event_summary_with_binding(
     session_id: &str,
     limit: usize,
     binding: ConversationRuntimeBinding<'_>,
