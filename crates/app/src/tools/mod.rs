@@ -888,13 +888,17 @@ fn runtime_discoverable_tool_entries(
     config: &runtime_config::ToolRuntimeConfig,
     visible_tool_view: Option<&ToolView>,
 ) -> Vec<SearchableToolEntry> {
-    let runtime_visible_tool_view;
+    let runtime_view = full_runtime_tool_view_for_runtime_config(config);
+    let intersected_view;
     let visible_tool_view = match visible_tool_view {
-        Some(view) => view,
-        None => {
-            runtime_visible_tool_view = full_runtime_tool_view_for_runtime_config(config);
-            &runtime_visible_tool_view
+        Some(injected) => {
+            // Intersect the injected view with the runtime-visible surface so that
+            // trusted _loongclaw.tool_search.visible_tool_ids cannot re-expose
+            // tools disabled by runtime config (browser.*, session_*, etc.).
+            intersected_view = injected.intersect(&runtime_view);
+            &intersected_view
         }
+        None => &runtime_view,
     };
     let mut entries = catalog::discoverable_tool_catalog()
         .into_iter()
@@ -2135,6 +2139,44 @@ mod tests {
         assert!(results.iter().all(|entry| entry["tool_id"] != "shell.exec"));
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(feature = "tool-shell")]
+    #[test]
+    fn shell_exec_rejects_path_qualified_commands() {
+        let config = test_tool_runtime_config(std::env::temp_dir());
+        for cmd in ["/tmp/git", "./git", "../git", "..\\git", "/usr/bin/ls"] {
+            let error = execute_tool_core_with_config(
+                ToolCoreRequest {
+                    tool_name: "shell.exec".to_owned(),
+                    payload: json!({"command": cmd}),
+                },
+                &config,
+            )
+            .expect_err(&format!("path-qualified `{cmd}` should be denied"));
+            assert!(
+                error.contains("path separators"),
+                "expected path separator rejection for `{cmd}`, got: {error}"
+            );
+        }
+    }
+
+    #[cfg(feature = "tool-shell")]
+    #[test]
+    fn shell_exec_rejects_embedded_whitespace_in_command() {
+        let config = test_tool_runtime_config(std::env::temp_dir());
+        let error = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "shell.exec".to_owned(),
+                payload: json!({"command": "ls -la"}),
+            },
+            &config,
+        )
+        .expect_err("embedded whitespace should be denied");
+        assert!(
+            error.contains("embedded whitespace"),
+            "expected whitespace rejection, got: {error}"
+        );
     }
 
     #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
