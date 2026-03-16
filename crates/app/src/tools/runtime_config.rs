@@ -718,7 +718,6 @@ mod tests {
         clear_tool_runtime_env(&mut env);
         #[cfg(feature = "feishu-integration")]
         clear_feishu_runtime_env(&mut env);
-
         env.set("LOONGCLAW_TOOL_SESSIONS_ENABLED", "false");
         env.set("LOONGCLAW_TOOL_MESSAGES_ENABLED", "true");
         env.set("LOONGCLAW_TOOL_DELEGATE_ENABLED", "false");
@@ -947,6 +946,10 @@ mod tests {
     #[cfg(feature = "feishu-integration")]
     #[test]
     fn from_loongclaw_config_ignores_disabled_feishu_accounts_when_detecting_runtime() {
+        let mut env = ScopedEnv::new();
+        env.set("FEISHU_APP_ID", "cli_env_a1b2c3");
+        env.set("FEISHU_APP_SECRET", "env-secret");
+
         let config = crate::config::LoongClawConfig {
             feishu: crate::config::FeishuChannelConfig {
                 enabled: true,
