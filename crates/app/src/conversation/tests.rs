@@ -9038,7 +9038,7 @@ async fn load_discovery_first_event_summary_accepts_explicit_runtime_binding() {
         .expect("persist discovery-first payload");
     }
 
-    let direct_summary = load_discovery_first_event_summary(
+    let direct_summary = super::session_history::load_discovery_first_event_summary_with_binding(
         "session-discovery-first-direct",
         32,
         ConversationRuntimeBinding::direct(),
@@ -9068,7 +9068,7 @@ async fn load_discovery_first_event_summary_accepts_explicit_runtime_binding() {
     let audit = Arc::new(InMemoryAuditSink::default());
     let (kernel_ctx, invocations) = build_kernel_context_with_window_turns(audit, kernel_turns);
 
-    let kernel_summary = load_discovery_first_event_summary(
+    let kernel_summary = super::session_history::load_discovery_first_event_summary_with_binding(
         "session-discovery-first-kernel",
         48,
         ConversationRuntimeBinding::kernel(&kernel_ctx),
@@ -9092,6 +9092,112 @@ async fn load_discovery_first_event_summary_accepts_explicit_runtime_binding() {
         "session-discovery-first-kernel"
     );
     assert_eq!(captured[0].payload["limit"], json!(48));
+    assert_eq!(captured[0].payload["allow_extended_limit"], json!(true));
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn load_discovery_first_event_summary_preserves_public_kernel_context_signature() {
+    let payloads = [
+        json!({
+            "type": "conversation_event",
+            "event": "discovery_first_search_round",
+            "payload": {
+                "provider_round": 0,
+                "search_tool_calls": 2,
+                "raw_tool_output_requested": false,
+                "initial_estimated_tokens": 8
+            }
+        })
+        .to_string(),
+        json!({
+            "type": "conversation_event",
+            "event": "discovery_first_followup_result",
+            "payload": {
+                "provider_round": 0,
+                "outcome": "tool.invoke",
+                "followup_tool_name": "tool.invoke",
+                "followup_target_tool_id": "file.read",
+                "resolved_to_tool_invoke": true,
+                "raw_tool_output_requested": false
+            }
+        })
+        .to_string(),
+    ];
+
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-discovery-first-compat", "binding")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    let mem_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+
+    for payload in &payloads {
+        crate::memory::append_turn_direct(
+            "session-discovery-first-compat-direct",
+            "assistant",
+            payload,
+            &mem_config,
+        )
+        .expect("persist discovery-first payload");
+    }
+
+    let direct_summary = load_discovery_first_event_summary(
+        "session-discovery-first-compat-direct",
+        16,
+        None,
+        &mem_config,
+    )
+    .await
+    .expect("load discovery-first summary via legacy direct signature");
+    assert_eq!(direct_summary.search_round_events, 1);
+    assert_eq!(direct_summary.followup_result_events, 1);
+    assert_eq!(
+        direct_summary.latest_followup_target_tool_id.as_deref(),
+        Some("file.read")
+    );
+
+    let kernel_turns = json!(
+        payloads
+            .iter()
+            .enumerate()
+            .map(|(index, payload)| json!({
+                "role": "assistant",
+                "content": payload,
+                "ts": index + 1
+            }))
+            .collect::<Vec<_>>()
+    );
+    let audit = Arc::new(InMemoryAuditSink::default());
+    let (kernel_ctx, invocations) = build_kernel_context_with_window_turns(audit, kernel_turns);
+
+    let kernel_summary = load_discovery_first_event_summary(
+        "session-discovery-first-compat-kernel",
+        24,
+        Some(&kernel_ctx),
+        &mem_config,
+    )
+    .await
+    .expect("load discovery-first summary via legacy kernel signature");
+    assert_eq!(kernel_summary.search_round_events, 1);
+    assert_eq!(kernel_summary.followup_result_events, 1);
+    assert_eq!(
+        kernel_summary.latest_followup_target_tool_id.as_deref(),
+        Some("file.read")
+    );
+
+    let captured = invocations.lock().expect("invocations lock");
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].operation, crate::memory::MEMORY_OP_WINDOW);
+    assert_eq!(
+        captured[0].payload["session_id"],
+        "session-discovery-first-compat-kernel"
+    );
+    assert_eq!(captured[0].payload["limit"], json!(24));
     assert_eq!(captured[0].payload["allow_extended_limit"], json!(true));
 
     let _ = std::fs::remove_file(&db_path);

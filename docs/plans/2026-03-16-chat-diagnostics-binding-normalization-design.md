@@ -32,8 +32,9 @@ contract around governed versus direct execution and makes future drift easier.
 ## Goals
 
 1. Keep chat diagnostics on explicit `ConversationRuntimeBinding<'_>`.
-2. Keep the session-history discovery-first summary helper on the same explicit
-   binding contract as the neighboring history helpers.
+2. Keep the session-history discovery-first summary implementation on the same
+   explicit binding contract as the neighboring history helpers without
+   breaking the existing public `Option<&KernelContext>` wrapper.
 3. Preserve current behavior:
    - kernel-bound callers still use kernel memory windows
    - direct callers still use direct/sqlite history paths
@@ -75,19 +76,22 @@ Concrete changes:
 1. `chat.rs`
    - command dispatch sites pass `ConversationRuntimeBinding::kernel(&runtime.kernel_ctx)`
    - helper signatures accept `ConversationRuntimeBinding<'_>`
-   - `print_history(...)` calls `binding.kernel_context()` only at the leaf that
-     branches between kernel-backed memory windows and direct history loading
+   - `print_*` remains a thin CLI shell around binding-aware output builders so
+     routing and rendered output can be asserted directly in tests
 2. `session_history.rs`
-   - `load_discovery_first_event_summary(...)` accepts binding directly
-   - it reuses the same `load_assistant_contents_from_session_window(...)`
-     contract as adjacent helpers without re-deriving binding from an option
+   - keep `load_discovery_first_event_summary(...)` as the compatibility wrapper
+     that still accepts `Option<&KernelContext>`
+   - move the normalized binding-first implementation into an internal helper so
+     adjacent history helpers share the same explicit runtime contract without a
+     public API break
 
 ## Expected Outcome
 
 After this slice:
 
 1. chat diagnostics no longer encode execution mode as `Some/None`
-2. the conversation history helper surface becomes more internally consistent
+2. the conversation history implementation becomes more internally consistent
+   while preserving the current public discovery-first helper signature
 3. the governed/runtime narrative becomes slightly more truthful without
    changing runtime behavior
 
@@ -95,11 +99,14 @@ After this slice:
 
 Add focused regression coverage that proves:
 
-1. chat diagnostic helpers compile and run when called with explicit
-   `ConversationRuntimeBinding::direct()`
-2. the discovery-first history helper compiles and runs with explicit direct and
+1. chat diagnostic output builders produce the expected `/history`,
+   `/safe_lane_summary`, and `/turn_checkpoint_summary` output for both direct
+   and kernel bindings
+2. the normalized internal discovery-first helper runs with explicit direct and
    kernel bindings
-3. existing summary/checkpoint behavior stays unchanged
+3. the public discovery-first wrapper still accepts `None` and `Some(&ctx)`
+   without compile-time or runtime regressions
 
 The tests do not need to prove new behavior. They need to prove that the
-binding contract has become explicit at these remaining seams.
+binding contract has become explicit at these remaining seams while the public
+compatibility boundary remains stable.
