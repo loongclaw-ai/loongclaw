@@ -24,6 +24,7 @@ pub(crate) enum AssistantHistoryLoadErrorCode {
     DirectReadFailed,
     KernelRequestFailed,
     KernelNonOkStatus,
+    KernelMalformedPayload,
 }
 
 impl AssistantHistoryLoadErrorCode {
@@ -32,6 +33,7 @@ impl AssistantHistoryLoadErrorCode {
             Self::DirectReadFailed => "direct_read_failed",
             Self::KernelRequestFailed => "kernel_request_failed",
             Self::KernelNonOkStatus => "kernel_non_ok_status",
+            Self::KernelMalformedPayload => "kernel_malformed_payload",
         }
     }
 }
@@ -66,6 +68,17 @@ impl AssistantHistoryLoadError {
             message: format!(
                 "load assistant history via kernel returned non-ok status: {}",
                 status.as_ref()
+            ),
+        }
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    fn kernel_malformed_payload(reason: impl AsRef<str>) -> Self {
+        Self {
+            code: AssistantHistoryLoadErrorCode::KernelMalformedPayload,
+            message: format!(
+                "load assistant history via kernel returned malformed payload: {}",
+                reason.as_ref()
             ),
         }
     }
@@ -271,9 +284,7 @@ pub(crate) async fn load_assistant_contents_from_session_window_detailed(
             ));
         }
 
-        return Ok(collect_assistant_contents_from_memory_window_payload(
-            outcome.payload.get("turns"),
-        ));
+        return collect_assistant_contents_from_memory_window_payload(outcome.payload.get("turns"));
     }
 
     let turns = memory::window_direct(session_id, limit, memory_config)
@@ -299,22 +310,20 @@ fn build_turn_checkpoint_history_snapshot(
 #[cfg(feature = "memory-sqlite")]
 fn collect_assistant_contents_from_memory_window_payload(
     turns_payload: Option<&Value>,
-) -> Vec<String> {
-    turns_payload
-        .and_then(Value::as_array)
-        .map(|turns| {
-            turns
-                .iter()
-                .filter_map(|turn| {
-                    (turn.get("role").and_then(Value::as_str) == Some("assistant"))
-                        .then(|| {
-                            turn.get("content")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                        })
-                        .map(ToOwned::to_owned)
+) -> Result<Vec<String>, AssistantHistoryLoadError> {
+    let turns = turns_payload.and_then(Value::as_array).ok_or_else(|| {
+        AssistantHistoryLoadError::kernel_malformed_payload("missing or non-array turns")
+    })?;
+    Ok(turns
+        .iter()
+        .filter_map(|turn| {
+            (turn.get("role").and_then(Value::as_str) == Some("assistant"))
+                .then(|| {
+                    turn.get("content")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
                 })
-                .collect()
+                .map(ToOwned::to_owned)
         })
-        .unwrap_or_default()
+        .collect())
 }

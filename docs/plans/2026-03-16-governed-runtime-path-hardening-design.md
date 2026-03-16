@@ -146,7 +146,9 @@ Normalized error contract for persisted diagnostics:
 
 1. `kernel_request_failed` when the kernel memory-window request itself errors
 2. `kernel_non_ok_status` when the kernel responds with a non-`ok` status
-3. `direct_read_failed` when an intentional direct-mode sqlite read fails
+3. `kernel_malformed_payload` when the kernel responds with `ok` but omits a
+   usable `payload.turns` array
+4. `direct_read_failed` when an intentional direct-mode sqlite read fails
 
 Observability requirements in this slice:
 
