@@ -8807,6 +8807,42 @@ async fn load_turn_checkpoint_event_summary_fails_closed_when_kernel_window_erro
     let _ = std::fs::remove_file(&db_path);
 }
 
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn load_turn_checkpoint_event_summary_direct_read_failure_uses_neutral_error_message() {
+    let sqlite_dir = std::env::temp_dir().join(unique_acp_test_id(
+        "conversation-turn-checkpoint",
+        "direct-read-error",
+    ));
+    let _ = std::fs::remove_dir_all(&sqlite_dir);
+    std::fs::create_dir_all(&sqlite_dir).expect("create sqlite placeholder directory");
+
+    let mut config = test_config();
+    config.memory.sqlite_path = sqlite_dir.display().to_string();
+    config.memory.sliding_window = 8;
+    let mem_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+
+    let error = load_turn_checkpoint_event_summary(
+        "session-direct-read-error",
+        8,
+        ConversationRuntimeBinding::direct(),
+        &mem_config,
+    )
+    .await
+    .expect_err("direct history load should fail when sqlite path is a directory");
+
+    assert!(
+        error.contains("direct read failed"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        !error.contains("load turn checkpoint summary failed"),
+        "error should use context-agnostic wording: {error}"
+    );
+
+    let _ = std::fs::remove_dir_all(&sqlite_dir);
+}
+
 #[cfg(not(feature = "memory-sqlite"))]
 #[tokio::test]
 async fn persist_turn_without_memory_sqlite_is_noop_with_kernel_context() {
@@ -11790,6 +11826,7 @@ async fn handle_turn_with_runtime_delegate_async_preserves_kernel_binding_in_spa
         let (kernel_ctx, _invocations) = build_kernel_context(audit.clone());
         (audit, kernel_ctx)
     };
+    let expected_kernel_ctx = kernel_ctx.clone();
 
     let coordinator = ConversationTurnCoordinator::new();
     let queued_call = tokio::spawn(async move {
@@ -11822,6 +11859,15 @@ async fn handle_turn_with_runtime_delegate_async_preserves_kernel_binding_in_spa
     assert!(
         spawn_request.kernel_context.is_some(),
         "kernel-bound parent turns should preserve kernel context for async delegate children"
+    );
+    let child_kernel_ctx = spawn_request
+        .kernel_context
+        .as_ref()
+        .expect("spawn request should carry kernel context");
+    assert_eq!(child_kernel_ctx.token, expected_kernel_ctx.token);
+    assert!(
+        Arc::ptr_eq(&child_kernel_ctx.kernel, &expected_kernel_ctx.kernel),
+        "spawned child should inherit the same kernel instance"
     );
 
     release_notify.notify_waiters();

@@ -47,7 +47,7 @@ impl AssistantHistoryLoadError {
     fn direct_read_failed(error: impl std::fmt::Display) -> Self {
         Self {
             code: AssistantHistoryLoadErrorCode::DirectReadFailed,
-            message: format!("load turn checkpoint summary failed: {error}"),
+            message: format!("direct read failed: {error}"),
         }
     }
 
