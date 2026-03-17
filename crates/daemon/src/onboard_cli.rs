@@ -1264,29 +1264,46 @@ fn resolve_personality_selection(
         .as_deref()
         .and_then(parse_prompt_personality)
         .unwrap_or_else(|| config.cli.resolved_personality());
+
+    let personalities = [
+        (
+            mvp::prompt::PromptPersonality::CalmEngineering,
+            "calm engineering",
+            "rigorous, direct, and technically grounded",
+        ),
+        (
+            mvp::prompt::PromptPersonality::FriendlyCollab,
+            "friendly collab",
+            "warm, cooperative, and explanatory when helpful",
+        ),
+        (
+            mvp::prompt::PromptPersonality::AutonomousExecutor,
+            "autonomous executor",
+            "decisive, high-initiative, and execution-oriented",
+        ),
+    ];
+    let select_options: Vec<SelectOption> = personalities
+        .iter()
+        .map(|(p, label, desc)| SelectOption {
+            label: label.to_string(),
+            slug: prompt_personality_id(*p).to_owned(),
+            description: desc.to_string(),
+            recommended: *p == default_personality,
+        })
+        .collect();
+    let default_idx = personalities
+        .iter()
+        .position(|(p, _, _)| *p == default_personality);
+
     print_lines(
         ui,
-        render_personality_selection_screen_lines_with_style(
-            config,
-            default_personality,
-            context.render_width,
-            true,
-        ),
+        render_personality_selection_header_lines(config, context.render_width),
     )?;
-    loop {
-        let input =
-            ui.prompt_with_default("Personality", prompt_personality_id(default_personality))?;
-        if let Some(personality) = parse_prompt_personality(&input) {
-            return Ok(personality);
-        }
-        print_message(
-            ui,
-            format!(
-                "Unsupported personality: {input}. Use one of: {}",
-                supported_personality_list()
-            ),
-        )?;
-    }
+    let idx = ui.select_one("Personality", &select_options, default_idx)?;
+    let (personality, _, _) = personalities
+        .get(idx)
+        .ok_or_else(|| format!("personality selection index {idx} out of range"))?;
+    Ok(*personality)
 }
 
 fn resolve_prompt_addendum_selection(
@@ -4345,6 +4362,29 @@ fn render_personality_selection_screen_lines_with_style(
             "the current personality",
         )],
         color_enabled,
+    )
+}
+
+fn render_personality_selection_header_lines(
+    config: &mvp::config::LoongClawConfig,
+    width: usize,
+) -> Vec<String> {
+    render_onboard_choice_screen(
+        OnboardHeaderStyle::Brand,
+        width,
+        "choose how LoongClaw should speak and take initiative",
+        "choose personality",
+        Some((
+            GuidedOnboardStep::Personality,
+            GuidedPromptPath::NativePromptPack,
+        )),
+        vec![format!(
+            "- current personality: {}",
+            prompt_personality_id(config.cli.resolved_personality())
+        )],
+        vec![],
+        vec![],
+        true,
     )
 }
 
