@@ -591,14 +591,7 @@ where
         messages: &[Value],
         binding: ConversationRuntimeBinding<'_>,
     ) -> CliResult<String> {
-        provider::request_completion(
-            config,
-            messages,
-            provider::ProviderRuntimeBinding::from_optional_kernel_context(
-                binding.kernel_context(),
-            ),
-        )
-        .await
+        provider::request_completion(config, messages, provider_runtime_binding(binding)).await
     }
 
     async fn request_turn(
@@ -616,9 +609,7 @@ where
             turn_id,
             messages,
             tool_view,
-            provider::ProviderRuntimeBinding::from_optional_kernel_context(
-                binding.kernel_context(),
-            ),
+            provider_runtime_binding(binding),
         )
         .await
     }
@@ -713,6 +704,17 @@ where
     }
 }
 
+fn provider_runtime_binding(
+    binding: ConversationRuntimeBinding<'_>,
+) -> provider::ProviderRuntimeBinding<'_> {
+    match binding {
+        ConversationRuntimeBinding::Kernel(kernel_ctx) => {
+            provider::ProviderRuntimeBinding::kernel(kernel_ctx)
+        }
+        ConversationRuntimeBinding::Direct => provider::ProviderRuntimeBinding::direct(),
+    }
+}
+
 fn apply_system_prompt_addition(messages: &mut Vec<Value>, addition: Option<&str>) {
     let Some(addition) = addition
         .map(str::trim)
@@ -788,5 +790,30 @@ fn apply_tool_view_to_system_prompt(messages: &mut [Value], tool_view: &ToolView
             object.insert("content".to_owned(), Value::String(rewritten));
         }
         return;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::TurnTestHarness;
+
+    #[test]
+    fn provider_runtime_binding_maps_direct_conversation_binding_to_direct() {
+        assert!(matches!(
+            provider_runtime_binding(ConversationRuntimeBinding::direct()),
+            provider::ProviderRuntimeBinding::Direct
+        ));
+    }
+
+    #[test]
+    fn provider_runtime_binding_maps_kernel_conversation_binding_to_kernel() {
+        let harness = TurnTestHarness::new();
+
+        assert!(matches!(
+            provider_runtime_binding(ConversationRuntimeBinding::kernel(&harness.kernel_ctx)),
+            provider::ProviderRuntimeBinding::Kernel(kernel_ctx)
+                if std::ptr::eq(kernel_ctx, &harness.kernel_ctx)
+        ));
     }
 }
