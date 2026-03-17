@@ -45,7 +45,7 @@ mod web_fetch;
 
 pub use catalog::{
     ToolApprovalMode, ToolAvailability, ToolCatalog, ToolDescriptor, ToolExecutionKind,
-    ToolGovernanceProfile, ToolGovernanceScope, ToolRiskClass, ToolView,
+    ToolGovernanceProfile, ToolGovernanceScope, ToolRiskClass, ToolSchedulingClass, ToolView,
     delegate_child_tool_view_for_config, delegate_child_tool_view_for_config_with_delegate,
     governance_profile_for_descriptor, governance_profile_for_tool_name,
     planned_delegate_child_tool_view, planned_root_tool_view, runtime_tool_view,

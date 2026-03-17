@@ -7245,6 +7245,357 @@ async fn turn_engine_routes_direct_binding_to_app_dispatcher() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn turn_engine_fails_closed_before_governed_approval_for_later_app_intent() {
+    use async_trait::async_trait;
+    use loongclaw_contracts::{ToolCoreOutcome, ToolCoreRequest};
+
+    #[derive(Default)]
+    struct ApprovalBarrierDispatcher {
+        executed: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl crate::conversation::AppToolDispatcher for ApprovalBarrierDispatcher {
+        async fn maybe_require_approval(
+            &self,
+            _session_context: &crate::conversation::SessionContext,
+            _intent: &crate::conversation::ToolIntent,
+            descriptor: &crate::tools::ToolDescriptor,
+            _kernel_ctx: Option<&crate::KernelContext>,
+        ) -> Result<Option<crate::conversation::turn_engine::ApprovalRequirement>, String> {
+            if descriptor.name == "delegate_async" {
+                return Ok(Some(
+                    crate::conversation::turn_engine::ApprovalRequirement {
+                        kind:
+                            crate::conversation::turn_engine::ApprovalRequirementKind::GovernedTool,
+                        reason: "operator approval required before running `delegate_async`"
+                            .to_owned(),
+                        rule_id: "governed_tool_requires_approval".to_owned(),
+                        tool_name: Some("delegate_async".to_owned()),
+                        approval_key: Some("tool:delegate_async".to_owned()),
+                        approval_request_id: Some("apr-test-approval-barrier".to_owned()),
+                    },
+                ));
+            }
+            Ok(None)
+        }
+
+        async fn execute_app_tool(
+            &self,
+            _session_context: &crate::conversation::SessionContext,
+            request: ToolCoreRequest,
+            _binding: crate::conversation::ConversationRuntimeBinding<'_>,
+        ) -> Result<ToolCoreOutcome, String> {
+            self.executed
+                .lock()
+                .expect("dispatcher executed lock")
+                .push(request.tool_name.clone());
+            Ok(ToolCoreOutcome {
+                status: "ok".to_owned(),
+                payload: json!({
+                    "tool_name": request.tool_name,
+                }),
+            })
+        }
+    }
+
+    let dispatcher = ApprovalBarrierDispatcher::default();
+    let engine = TurnEngine::new(2);
+    let turn = ProviderTurn {
+        assistant_text: "".to_owned(),
+        tool_intents: vec![
+            provider_tool_intent(
+                "sessions_list",
+                json!({}),
+                "root-session",
+                "turn-approval-barrier",
+                "call-approval-barrier-1",
+            ),
+            provider_tool_intent(
+                "delegate_async",
+                json!({
+                    "task": "inspect child task"
+                }),
+                "root-session",
+                "turn-approval-barrier",
+                "call-approval-barrier-2",
+            ),
+        ],
+        raw_meta: Value::Null,
+    };
+    let session_context = crate::conversation::SessionContext::root_with_tool_view(
+        "root-session",
+        crate::tools::planned_root_tool_view(),
+    );
+
+    let result = engine
+        .execute_turn_in_context(
+            &turn,
+            &session_context,
+            &dispatcher,
+            crate::conversation::ConversationRuntimeBinding::direct(),
+            None,
+        )
+        .await;
+
+    match result {
+        TurnResult::NeedsApproval(requirement) => {
+            assert_eq!(requirement.tool_name.as_deref(), Some("delegate_async"));
+            assert_eq!(
+                requirement.approval_request_id.as_deref(),
+                Some("apr-test-approval-barrier")
+            );
+        }
+        other @ TurnResult::FinalText(_)
+        | other @ TurnResult::ToolDenied(_)
+        | other @ TurnResult::ToolError(_)
+        | other @ TurnResult::ProviderError(_) => {
+            panic!("expected NeedsApproval, got: {other:?}")
+        }
+    }
+
+    assert!(
+        dispatcher
+            .executed
+            .lock()
+            .expect("dispatcher executed lock")
+            .is_empty(),
+        "batch should fail closed before any earlier app tool executes"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn turn_engine_fails_closed_before_kernel_binding_error_for_later_core_intent() {
+    use async_trait::async_trait;
+    use loongclaw_contracts::{ToolCoreOutcome, ToolCoreRequest};
+
+    #[derive(Default)]
+    struct KernelBarrierDispatcher {
+        executed: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl crate::conversation::AppToolDispatcher for KernelBarrierDispatcher {
+        async fn execute_app_tool(
+            &self,
+            _session_context: &crate::conversation::SessionContext,
+            request: ToolCoreRequest,
+            _binding: crate::conversation::ConversationRuntimeBinding<'_>,
+        ) -> Result<ToolCoreOutcome, String> {
+            self.executed
+                .lock()
+                .expect("dispatcher executed lock")
+                .push(request.tool_name.clone());
+            Ok(ToolCoreOutcome {
+                status: "ok".to_owned(),
+                payload: json!({
+                    "tool_name": request.tool_name,
+                }),
+            })
+        }
+    }
+
+    let dispatcher = KernelBarrierDispatcher::default();
+    let engine = TurnEngine::new(2);
+    let turn = ProviderTurn {
+        assistant_text: "".to_owned(),
+        tool_intents: vec![
+            provider_tool_intent(
+                "sessions_list",
+                json!({}),
+                "root-session",
+                "turn-kernel-barrier",
+                "call-kernel-barrier-1",
+            ),
+            provider_tool_intent(
+                "file.read",
+                json!({
+                    "path": "README.md"
+                }),
+                "root-session",
+                "turn-kernel-barrier",
+                "call-kernel-barrier-2",
+            ),
+        ],
+        raw_meta: Value::Null,
+    };
+    let session_context = crate::conversation::SessionContext::root_with_tool_view(
+        "root-session",
+        crate::tools::planned_root_tool_view(),
+    );
+
+    let result = engine
+        .execute_turn_in_context(
+            &turn,
+            &session_context,
+            &dispatcher,
+            crate::conversation::ConversationRuntimeBinding::direct(),
+            None,
+        )
+        .await;
+
+    match result {
+        TurnResult::ToolDenied(failure) => {
+            assert_eq!(failure.code.as_str(), "no_kernel_context");
+            assert_eq!(failure.reason.as_str(), "no_kernel_context");
+        }
+        other @ TurnResult::FinalText(_)
+        | other @ TurnResult::NeedsApproval(_)
+        | other @ TurnResult::ToolError(_)
+        | other @ TurnResult::ProviderError(_) => {
+            panic!("expected ToolDenied(no_kernel_context), got: {other:?}")
+        }
+    }
+
+    assert!(
+        dispatcher
+            .executed
+            .lock()
+            .expect("dispatcher executed lock")
+            .is_empty(),
+        "batch should fail closed before any earlier app tool executes"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn turn_engine_parallel_safe_app_batch_executes_concurrently_in_source_order() {
+    use async_trait::async_trait;
+    use loongclaw_contracts::{ToolCoreOutcome, ToolCoreRequest};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::sync::Notify;
+    use tokio::time::{Duration, timeout};
+
+    #[derive(Default)]
+    struct ParallelSafeDispatcher {
+        overlap_observed: AtomicBool,
+        second_started: Notify,
+    }
+
+    #[async_trait]
+    impl crate::conversation::AppToolDispatcher for ParallelSafeDispatcher {
+        async fn execute_app_tool(
+            &self,
+            _session_context: &crate::conversation::SessionContext,
+            request: ToolCoreRequest,
+            _binding: crate::conversation::ConversationRuntimeBinding<'_>,
+        ) -> Result<ToolCoreOutcome, String> {
+            let marker = request
+                .payload
+                .get("marker")
+                .and_then(Value::as_str)
+                .expect("marker should be present");
+
+            if marker == "second" {
+                self.second_started.notify_waiters();
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            } else if timeout(Duration::from_millis(200), self.second_started.notified())
+                .await
+                .is_ok()
+            {
+                self.overlap_observed.store(true, Ordering::SeqCst);
+            }
+
+            Ok(ToolCoreOutcome {
+                status: "ok".to_owned(),
+                payload: json!({
+                    "marker": marker,
+                    "tool_name": request.tool_name,
+                }),
+            })
+        }
+    }
+
+    let dispatcher = ParallelSafeDispatcher::default();
+    let engine = TurnEngine::with_parallel_tool_execution(2, 2_048, true, 2);
+    let turn = ProviderTurn {
+        assistant_text: String::new(),
+        tool_intents: vec![
+            provider_tool_intent(
+                "sessions_list",
+                json!({
+                    "marker": "first",
+                }),
+                "root-session",
+                "turn-parallel-safe-batch",
+                "call-parallel-safe-batch-1",
+            ),
+            provider_tool_intent(
+                "sessions_list",
+                json!({
+                    "marker": "second",
+                }),
+                "root-session",
+                "turn-parallel-safe-batch",
+                "call-parallel-safe-batch-2",
+            ),
+        ],
+        raw_meta: Value::Null,
+    };
+    let session_context = crate::conversation::SessionContext::root_with_tool_view(
+        "root-session",
+        crate::tools::planned_root_tool_view(),
+    );
+
+    let result = engine
+        .execute_turn_in_context(
+            &turn,
+            &session_context,
+            &dispatcher,
+            crate::conversation::ConversationRuntimeBinding::direct(),
+            None,
+        )
+        .await;
+
+    match result {
+        TurnResult::FinalText(text) => {
+            let lines = text.lines().collect::<Vec<_>>();
+            assert_eq!(lines.len(), 2, "expected one line per tool result");
+
+            let first_envelope = lines[0]
+                .strip_prefix("[ok] ")
+                .map(|payload| {
+                    serde_json::from_str::<Value>(payload)
+                        .expect("first tool result envelope should be json")
+                })
+                .expect("first line should keep [ok] prefix");
+            let second_envelope = lines[1]
+                .strip_prefix("[ok] ")
+                .map(|payload| {
+                    serde_json::from_str::<Value>(payload)
+                        .expect("second tool result envelope should be json")
+                })
+                .expect("second line should keep [ok] prefix");
+
+            assert!(
+                first_envelope["payload_summary"]
+                    .as_str()
+                    .expect("first payload summary should be text")
+                    .contains("\"marker\":\"first\""),
+                "expected first output to stay in source order, got: {text}"
+            );
+            assert!(
+                second_envelope["payload_summary"]
+                    .as_str()
+                    .expect("second payload summary should be text")
+                    .contains("\"marker\":\"second\""),
+                "expected second output to stay in source order, got: {text}"
+            );
+        }
+        other @ TurnResult::NeedsApproval(_)
+        | other @ TurnResult::ToolDenied(_)
+        | other @ TurnResult::ToolError(_)
+        | other @ TurnResult::ProviderError(_) => {
+            panic!("expected FinalText, got: {other:?}")
+        }
+    }
+
+    assert!(
+        dispatcher.overlap_observed.load(Ordering::SeqCst),
+        "parallel-safe batch should overlap execution before finalizing source-ordered output"
+    );
+}
+
 #[cfg(feature = "memory-sqlite")]
 #[tokio::test]
 async fn default_app_tool_dispatcher_executes_session_wait_for_visible_terminal_child_session() {

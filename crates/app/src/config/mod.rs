@@ -1671,6 +1671,35 @@ tool_result_payload_summary_limit_chars = 4096
 
     #[test]
     #[cfg(feature = "config-toml")]
+    fn conversation_fast_lane_parallel_tool_execution_can_be_overridden_from_toml() {
+        let raw = r#"
+[conversation]
+fast_lane_parallel_tool_execution_enabled = true
+fast_lane_parallel_tool_execution_max_in_flight = 7
+"#;
+        let parsed =
+            toml::from_str::<LoongClawConfig>(raw).expect("parse conversation config should pass");
+        assert!(
+            parsed
+                .conversation
+                .fast_lane_parallel_tool_execution_enabled
+        );
+        assert_eq!(
+            parsed
+                .conversation
+                .fast_lane_parallel_tool_execution_max_in_flight,
+            7
+        );
+        assert_eq!(
+            parsed
+                .conversation
+                .fast_lane_parallel_tool_execution_max_in_flight(),
+            7
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "config-toml")]
     fn conversation_health_thresholds_can_be_overridden_from_toml() {
         let raw = r#"
 [conversation]
@@ -1723,6 +1752,8 @@ safe_lane_health_replan_warn_threshold = 0.55
         assert!(config.hybrid_lane_enabled);
         assert!(!config.safe_lane_plan_execution_enabled);
         assert_eq!(config.fast_lane_max_tool_steps_per_turn, 1);
+        assert!(!config.fast_lane_parallel_tool_execution_enabled);
+        assert_eq!(config.fast_lane_parallel_tool_execution_max_in_flight, 4);
         assert_eq!(config.safe_lane_max_tool_steps_per_turn, 1);
         assert_eq!(config.safe_lane_node_max_attempts, 2);
         assert_eq!(config.safe_lane_plan_max_wall_time_ms, 30_000);

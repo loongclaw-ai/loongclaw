@@ -326,11 +326,17 @@ async fn evaluate_round_kernel(
     let current_tool_name_signature =
         had_tool_intents.then(|| tool_name_signature(&turn.tool_intents));
 
-    let engine = TurnEngine::with_tool_result_payload_summary_limit(
+    let engine = TurnEngine::with_parallel_tool_execution(
         policy.max_tool_steps_per_round,
         config
             .conversation
             .tool_result_payload_summary_limit_chars(),
+        config
+            .conversation
+            .fast_lane_parallel_tool_execution_enabled,
+        config
+            .conversation
+            .fast_lane_parallel_tool_execution_max_in_flight(),
     );
     let turn_result = match engine.validate_turn_in_context(turn, session_context) {
         Ok(TurnValidation::FinalText(text)) => TurnResult::FinalText(text),

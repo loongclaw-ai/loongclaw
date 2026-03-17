@@ -1800,6 +1800,31 @@ bot_token_env = "123456789:telegram-inline-secret-literal"
 
     #[test]
     #[cfg(feature = "config-toml")]
+    fn write_template_includes_fast_lane_parallel_tool_execution_defaults() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!(
+            "loongclaw-template-fast-lane-parallel-execution-{unique}"
+        ));
+        std::fs::create_dir_all(&temp_dir).expect("create temp directory");
+        let config_path = temp_dir.join("config.toml");
+
+        write_template(Some(config_path.to_string_lossy().as_ref()), true)
+            .expect("write template should succeed");
+
+        let raw = std::fs::read_to_string(&config_path).expect("read template");
+        assert!(raw.contains("[conversation]"));
+        assert!(raw.contains("fast_lane_parallel_tool_execution_enabled = false"));
+        assert!(raw.contains("fast_lane_parallel_tool_execution_max_in_flight = 4"));
+
+        std::fs::remove_file(&config_path).ok();
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    #[cfg(feature = "config-toml")]
     fn validate_file_returns_structured_diagnostics() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)

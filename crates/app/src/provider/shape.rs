@@ -1547,6 +1547,66 @@ mod tests {
     }
 
     #[test]
+    fn provider_shape_discovery_followup_uses_first_lease_in_multiline_source_order() {
+        let first_summary = serde_json::to_string(&json!({
+            "query": "read repo file",
+            "results": [
+                {
+                    "tool_id": "file.read",
+                    "summary": "Read a UTF-8 text file from the configured workspace root and return contents.",
+                    "argument_hint": "path:string,offset?:integer,limit?:integer",
+                    "required_fields": ["path"],
+                    "required_field_groups": [["path"]],
+                    "lease": "lease-first"
+                }
+            ]
+        }))
+        .expect("encode first search payload summary");
+        let second_summary = serde_json::to_string(&json!({
+            "query": "read repo file again",
+            "results": [
+                {
+                    "tool_id": "file.read",
+                    "summary": "Read a UTF-8 text file from the configured workspace root and return contents.",
+                    "argument_hint": "path:string,offset?:integer,limit?:integer",
+                    "required_fields": ["path"],
+                    "required_field_groups": [["path"]],
+                    "lease": "lease-second"
+                }
+            ]
+        }))
+        .expect("encode second search payload summary");
+        let first_envelope = serde_json::to_string(&json!({
+            "status": "ok",
+            "tool": "tool.search",
+            "tool_call_id": "call-search-1",
+            "payload_summary": first_summary,
+            "payload_chars": 0,
+            "payload_truncated": false,
+        }))
+        .expect("encode first search envelope");
+        let second_envelope = serde_json::to_string(&json!({
+            "status": "ok",
+            "tool": "tool.search",
+            "tool_call_id": "call-search-2",
+            "payload_summary": second_summary,
+            "payload_chars": 0,
+            "payload_truncated": false,
+        }))
+        .expect("encode second search envelope");
+        let messages = vec![json!({
+            "role": "assistant",
+            "content": format!("[tool_result]\n[ok] {first_envelope}\n[ok] {second_envelope}"),
+        })];
+
+        let context = provider_tool_bridge_context_from_messages(&messages);
+        assert_eq!(
+            context.discoverable_leases.get("file.read"),
+            Some(&"lease-first".to_owned())
+        );
+    }
+
+    #[test]
     fn extract_provider_turn_handles_text_only() {
         let body = serde_json::json!({
             "choices": [{
