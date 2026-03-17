@@ -1755,12 +1755,7 @@ async fn import_cli_applies_codex_source_and_imported_turn_falls_back_from_respo
             };
 
             let response = format!(
-                "{status_line}
-Content-Type: application/json
-Content-Length: {}
-Connection: close
-
-{}",
+                "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 body.len(),
                 body
             );

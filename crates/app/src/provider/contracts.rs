@@ -774,6 +774,7 @@ mod tests {
         ProviderConfig, ProviderKind, ProviderReasoningExtraBodyModeConfig,
         ProviderToolSchemaModeConfig,
     };
+    use serde_json::json;
 
     #[test]
     fn capability_contract_matrix_is_provider_scoped() {
@@ -998,5 +999,16 @@ mod tests {
                 "unexpected payload adaptation axis for case `{name}` with error={error:?}",
             );
         }
+    }
+
+    #[test]
+    fn parse_provider_api_error_uses_raw_body_when_structured_message_is_absent() {
+        let parsed = parse_provider_api_error(&json!({
+            "raw_body": "error code: 502"
+        }));
+
+        assert_eq!(parsed.message.as_deref(), Some("error code: 502"));
+        assert_eq!(parsed.code, None);
+        assert_eq!(parsed.param, None);
     }
 }
