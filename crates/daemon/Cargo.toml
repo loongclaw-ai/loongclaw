@@ -18,6 +18,10 @@ memory-sqlite = ["loongclaw-app/memory-sqlite"]
 tool-shell = ["loongclaw-app/tool-shell"]
 tool-file = ["loongclaw-app/tool-file"]
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+
 [dependencies]
 clap.workspace = true
 kernel = { package = "loongclaw-kernel", path = "../kernel" }
