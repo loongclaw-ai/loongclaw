@@ -111,7 +111,7 @@ Web 必须映射到现有的 conversation address 模型。
 
 建议映射方式：
 
-- `channel_id = webchat`
+- `channel_id = web`
 - `conversation_id = <browser_session_id>`
 - `thread_id = <tab_or_subthread_id>`，后续需要时再加入
 
@@ -194,7 +194,7 @@ MVP 能力：
 建议配置：
 
 ```toml
-[webchat]
+[web]
 enabled = true
 bind = "127.0.0.1:4317"
 install_mode = "local_assets"
@@ -234,10 +234,10 @@ MVP 默认策略：
 
 建议命令：
 
-- `loongclaw webchat serve`
-- `loongclaw webchat status`
-- `loongclaw webchat install`
-- `loongclaw webchat remove`
+- `loongclaw web serve`
+- `loongclaw web status`
+- `loongclaw web install`
+- `loongclaw web remove`
 
 `onboard` 可提供：
 
@@ -261,7 +261,7 @@ MVP 默认策略：
 
 ### Phase 3：本地 HTTP 控制面
 
-- 增加 `webchat serve`
+- 增加 `web serve`
 - 实现 chat 和 dashboard 核心接口
 - 实现本地 token 鉴权
 
@@ -285,7 +285,7 @@ MVP 默认策略：
 
 ## 14. 待决问题
 
-- 本地静态资源应该由 `loongclaw webchat serve` 直接提供，还是只负责下载资源，
+- 本地静态资源应该由 `loongclaw web serve` 直接提供，还是只负责下载资源，
   页面由独立前端开发/生产服务承载？
 - Chat 的回复在 MVP 中是普通请求/响应即可，还是首个 PR 就要引入 SSE？
 - Dashboard 首版应该只读，还是带有限动作能力？
