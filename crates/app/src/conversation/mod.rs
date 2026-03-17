@@ -19,13 +19,15 @@ mod turn_loop;
 mod turn_shared;
 
 pub use analytics::{
-    ConversationEventRecord, DiscoveryFirstEventSummary, SafeLaneEventSummary, SafeLaneFinalStatus,
+    ConversationEventRecord, DiscoveryFirstEventSummary, FastLaneToolBatchEventSummary,
+    FastLaneToolBatchSegmentSnapshot, SafeLaneEventSummary, SafeLaneFinalStatus,
     SafeLaneHealthSignalSnapshot, SafeLaneMetricsSnapshot, SafeLaneToolOutputSnapshot,
     TurnCheckpointEventSummary, TurnCheckpointFailureStep, TurnCheckpointProgressStatus,
     TurnCheckpointRecoveryAction, TurnCheckpointRepairManualReason, TurnCheckpointRepairPlan,
     TurnCheckpointSessionState, TurnCheckpointStage, build_turn_checkpoint_repair_plan,
     parse_conversation_event, plan_turn_checkpoint_recovery, summarize_discovery_first_events,
-    summarize_safe_lane_events, summarize_turn_checkpoint_events,
+    summarize_fast_lane_tool_batch_events, summarize_safe_lane_events,
+    summarize_turn_checkpoint_events,
 };
 pub use context_engine::{
     AssembledConversationContext, CONTEXT_ENGINE_API_VERSION, ContextEngineBootstrapResult,

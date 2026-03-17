@@ -73,8 +73,8 @@ use super::turn_budget::{
     SafeLaneFailureRouteReason, SafeLaneReplanBudget,
 };
 use super::turn_engine::{
-    AppToolDispatcher, DefaultAppToolDispatcher, ProviderTurn, ToolIntent, TurnEngine, TurnFailure,
-    TurnFailureKind, TurnResult, TurnValidation,
+    AppToolDispatcher, DefaultAppToolDispatcher, ProviderTurn, ToolBatchExecutionTrace, ToolIntent,
+    TurnEngine, TurnFailure, TurnFailureKind, TurnResult, TurnValidation,
 };
 use super::turn_shared::{
     ProviderTurnRequestAction, ReplyPersistenceMode, ReplyResolutionMode, ToolDrivenFollowupKind,
@@ -4369,9 +4369,9 @@ async fn execute_provider_turn_lane<R: ConversationRuntime + ?Sized>(
     } else {
         engine.validate_turn_in_context(turn, &session_context)
     };
-    let (turn_result, safe_lane_terminal_route) = match validation {
-        Ok(TurnValidation::FinalText(text)) => (TurnResult::FinalText(text), None),
-        Err(failure) => (TurnResult::ToolDenied(failure), None),
+    let (turn_result, safe_lane_terminal_route, fast_lane_tool_batch_trace) = match validation {
+        Ok(TurnValidation::FinalText(text)) => (TurnResult::FinalText(text), None, None),
+        Err(failure) => (TurnResult::ToolDenied(failure), None, None),
         Ok(TurnValidation::ToolExecutionRequired) if use_safe_lane_plan_path => {
             let outcome = execute_turn_with_safe_lane_plan(
                 config,
@@ -4385,15 +4385,25 @@ async fn execute_provider_turn_lane<R: ConversationRuntime + ?Sized>(
                 ingress,
             )
             .await;
-            (outcome.result, outcome.terminal_route)
+            (outcome.result, outcome.terminal_route, None)
         }
-        Ok(TurnValidation::ToolExecutionRequired) => (
-            engine
-                .execute_turn_in_context(turn, &session_context, &app_dispatcher, binding, ingress)
-                .await,
-            None,
-        ),
+        Ok(TurnValidation::ToolExecutionRequired) => {
+            let (result, trace) = engine
+                .execute_turn_in_context_with_trace(
+                    turn,
+                    &session_context,
+                    &app_dispatcher,
+                    binding,
+                    ingress,
+                )
+                .await;
+            (result, None, trace)
+        }
     };
+
+    if let Some(trace) = fast_lane_tool_batch_trace.as_ref() {
+        emit_fast_lane_tool_batch_event(runtime, session_id, trace, binding).await;
+    }
 
     ProviderTurnLaneExecution {
         lane,
@@ -4875,6 +4885,22 @@ async fn emit_safe_lane_event<R: ConversationRuntime + ?Sized>(
             },
         );
     }
+}
+
+async fn emit_fast_lane_tool_batch_event<R: ConversationRuntime + ?Sized>(
+    runtime: &R,
+    session_id: &str,
+    trace: &ToolBatchExecutionTrace,
+    binding: ConversationRuntimeBinding<'_>,
+) {
+    let _ = persist_conversation_event(
+        runtime,
+        session_id,
+        "fast_lane_tool_batch",
+        trace.as_event_payload(),
+        binding,
+    )
+    .await;
 }
 
 async fn emit_turn_ingress_event<R: ConversationRuntime + ?Sized>(

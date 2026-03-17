@@ -4776,6 +4776,135 @@ async fn handle_turn_with_runtime_honors_configured_tool_result_summary_limit_on
     );
 }
 
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn handle_turn_with_runtime_persists_fast_lane_tool_batch_event_for_mixed_segments() {
+    let mut config = test_config();
+    config.conversation.fast_lane_max_tool_steps_per_turn = 5;
+    config
+        .conversation
+        .fast_lane_parallel_tool_execution_enabled = true;
+    config
+        .conversation
+        .fast_lane_parallel_tool_execution_max_in_flight = 2;
+
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    crate::memory::append_turn_direct(
+        "session-fast-lane-batch-event",
+        "user",
+        "hello",
+        &memory_config,
+    )
+    .expect("append user turn");
+    crate::memory::append_turn_direct(
+        "session-fast-lane-batch-event",
+        "assistant",
+        "done",
+        &memory_config,
+    )
+    .expect("append assistant turn");
+
+    let runtime = FakeRuntime::with_turn_and_completion(
+        vec![],
+        Ok(ProviderTurn {
+            assistant_text: "Inspecting session state.".to_owned(),
+            tool_intents: vec![
+                provider_tool_intent(
+                    "sessions_list",
+                    json!({}),
+                    "session-fast-lane-batch-event",
+                    "turn-fast-lane-batch-event",
+                    "call-fast-lane-batch-event-1",
+                ),
+                provider_tool_intent(
+                    "sessions_list",
+                    json!({}),
+                    "session-fast-lane-batch-event",
+                    "turn-fast-lane-batch-event",
+                    "call-fast-lane-batch-event-2",
+                ),
+                provider_tool_intent(
+                    "session_status",
+                    json!({
+                        "session_id": "session-fast-lane-batch-event",
+                    }),
+                    "session-fast-lane-batch-event",
+                    "turn-fast-lane-batch-event",
+                    "call-fast-lane-batch-event-3",
+                ),
+                provider_tool_intent(
+                    "sessions_list",
+                    json!({}),
+                    "session-fast-lane-batch-event",
+                    "turn-fast-lane-batch-event",
+                    "call-fast-lane-batch-event-4",
+                ),
+                provider_tool_intent(
+                    "sessions_list",
+                    json!({}),
+                    "session-fast-lane-batch-event",
+                    "turn-fast-lane-batch-event",
+                    "call-fast-lane-batch-event-5",
+                ),
+            ],
+            raw_meta: Value::Null,
+        }),
+        Ok("unused".to_owned()),
+    );
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "session-fast-lane-batch-event",
+            "inspect the session state and show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            ConversationRuntimeBinding::direct(),
+        )
+        .await
+        .expect("mixed fast-lane batch turn should succeed");
+
+    assert!(
+        reply.contains("[ok] "),
+        "raw tool output request should preserve tool output, got: {reply}"
+    );
+
+    let persisted = runtime.persisted.lock().expect("persisted lock").clone();
+    let payloads =
+        persisted_conversation_event_payloads_by_name(&persisted, "fast_lane_tool_batch");
+    assert_eq!(payloads.len(), 1, "expected one fast-lane batch event");
+
+    let payload = &payloads[0];
+    assert_eq!(payload["schema_version"], 1);
+    assert_eq!(payload["total_intents"], 5);
+    assert_eq!(payload["parallel_execution_enabled"], true);
+    assert_eq!(payload["parallel_execution_max_in_flight"], 2);
+    assert_eq!(payload["parallel_safe_intents"], 4);
+    assert_eq!(payload["serial_only_intents"], 1);
+    assert_eq!(payload["parallel_segments"], 2);
+    assert_eq!(payload["sequential_segments"], 1);
+
+    let segments = payload["segments"].as_array().expect("segments array");
+    assert_eq!(
+        segments.len(),
+        3,
+        "expected contiguous mixed-batch segments"
+    );
+    assert_eq!(segments[0]["segment_index"], 0);
+    assert_eq!(segments[0]["scheduling_class"], "parallel_safe");
+    assert_eq!(segments[0]["execution_mode"], "parallel");
+    assert_eq!(segments[0]["intent_count"], 2);
+    assert_eq!(segments[1]["segment_index"], 1);
+    assert_eq!(segments[1]["scheduling_class"], "serial_only");
+    assert_eq!(segments[1]["execution_mode"], "sequential");
+    assert_eq!(segments[1]["intent_count"], 1);
+    assert_eq!(segments[2]["segment_index"], 2);
+    assert_eq!(segments[2]["scheduling_class"], "parallel_safe");
+    assert_eq!(segments[2]["execution_mode"], "parallel");
+    assert_eq!(segments[2]["intent_count"], 2);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn handle_turn_with_runtime_honors_configured_tool_result_summary_limit_on_safe_lane_plan() {
     use crate::test_support::TurnTestHarness;
