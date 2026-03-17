@@ -176,8 +176,15 @@ The bootstrap installer is fetched directly from the repository. It prefers the 
 Release binary, verifies its SHA256 checksum, installs `loongclaw`, and can immediately hand you
 into guided onboarding.
 
-If the repository has not published its first release yet, the installer exits with a clear message.
-Use the source install path below in that case.
+If the repository has not published a public release yet, the installer exits with an explicit
+source-install fallback instead of constructing a broken download URL. Until the first public
+release is shipped, expect the source path below to be the fast path:
+
+```bash
+git clone https://github.com/loongclaw-ai/loongclaw.git
+cd loongclaw
+bash scripts/install.sh --source --onboard
+```
 
 <details>
 <summary>Linux / macOS</summary>
