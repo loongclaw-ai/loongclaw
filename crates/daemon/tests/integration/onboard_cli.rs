@@ -5299,7 +5299,7 @@ requires_openai_auth = true
             "1",
             "1",
             "2",
-            "openai",
+            "1",
             "openai/gpt-5.1-codex-preview",
             "OPENAI_API_KEY",
             "",

@@ -997,6 +997,48 @@ fn resolve_provider_selection(
         ));
     }
 
+    if !provider_selection.imported_choices.is_empty() {
+        let select_options: Vec<SelectOption> = provider_selection
+            .imported_choices
+            .iter()
+            .map(|choice| SelectOption {
+                label: provider_kind_display_name(choice.kind).to_owned(),
+                slug: choice.profile_id.clone(),
+                description: format!("source: {}, summary: {}", choice.source, choice.summary),
+                recommended: Some(choice.profile_id.as_str())
+                    == provider_selection.default_profile_id.as_deref(),
+            })
+            .collect();
+        let default_idx = if provider_selection.requires_explicit_choice {
+            None
+        } else {
+            provider_selection
+                .default_profile_id
+                .as_deref()
+                .and_then(|default_id| {
+                    provider_selection
+                        .imported_choices
+                        .iter()
+                        .position(|choice| choice.profile_id == default_id)
+                })
+        };
+        print_lines(
+            ui,
+            render_provider_selection_header_lines(
+                provider_selection,
+                guided_prompt_path,
+                context.render_width,
+            ),
+        )?;
+        let idx = ui.select_one("Provider", &select_options, default_idx)?;
+        let choice = provider_selection
+            .imported_choices
+            .get(idx)
+            .ok_or_else(|| format!("provider selection index {idx} out of range"))?;
+        return Ok(choice.config.clone());
+    }
+
+    // No imported choices — fall back to typed provider kind prompt.
     print_lines(
         ui,
         render_provider_selection_screen_lines_with_style(
@@ -4090,6 +4132,29 @@ fn render_provider_selection_screen_lines_with_style(
             render_provider_selection_default_choice_footer_line(plan),
         ),
         color_enabled,
+    )
+}
+
+fn render_provider_selection_header_lines(
+    plan: &crate::migration::ProviderSelectionPlan,
+    guided_prompt_path: GuidedPromptPath,
+    width: usize,
+) -> Vec<String> {
+    let intro = if plan.requires_explicit_choice {
+        vec!["other detected settings stay merged".to_owned()]
+    } else {
+        vec!["review the detected provider choices for this setup".to_owned()]
+    };
+    render_onboard_choice_screen(
+        OnboardHeaderStyle::Brand,
+        width,
+        "choose the current provider",
+        "choose active provider",
+        Some((GuidedOnboardStep::Provider, guided_prompt_path)),
+        intro,
+        vec![],
+        vec![],
+        true,
     )
 }
 
