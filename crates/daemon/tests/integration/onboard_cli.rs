@@ -747,8 +747,12 @@ async fn non_interactive_onboard_allows_explicit_skip_model_probe_warning() {
 
     let raw = std::fs::read_to_string(&output).expect("read written onboarding config");
     assert!(
-        raw.contains("api_key = \"${OPENAI_API_KEY}\""),
-        "onboarding should persist the default provider credential as a canonical env reference: {raw}"
+        raw.contains("oauth_access_token = \"${OPENAI_CODEX_OAUTH_TOKEN}\""),
+        "onboarding should persist the openai oauth binding as the canonical env reference after provider-aligned credential routing: {raw}"
+    );
+    assert!(
+        !raw.contains("api_key = "),
+        "provider-aligned onboarding should not fall back to the legacy api_key field for the openai oauth route: {raw}"
     );
     assert!(
         !raw.contains("api_key_env"),
@@ -2502,7 +2506,14 @@ fn onboard_entry_screen_compacts_to_plain_wordmark_on_narrow_width() {
         40,
     );
 
-    assert_eq!(lines[0], "LOONGCLAW");
+    assert!(
+        lines[0].starts_with("LOONGCLAW"),
+        "narrow layout should keep the compact LOONGCLAW wordmark at the start of the header line: {lines:#?}"
+    );
+    assert!(
+        lines[0].contains("v"),
+        "narrow layout should keep the compact header metadata on the same line as the wordmark: {lines:#?}"
+    );
     assert!(
         lines.iter().any(|line| line == "Detected settings"),
         "narrow layout should retain the detected-settings section heading: {lines:#?}"
