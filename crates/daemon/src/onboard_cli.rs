@@ -160,7 +160,7 @@ impl OnboardUi for StdioOnboardUi {
             }
             println!();
             let prompt_text = match default {
-                Some(idx) => format!("{label} [{}]: ", idx + 1),
+                Some(idx) => format!("{label} (default {}):", idx + 1),
                 None => format!("{label}: "),
             };
             print!("{prompt_text}");
@@ -195,12 +195,18 @@ impl OnboardUi for StdioOnboardUi {
 
 /// Drain any buffered bytes from stdin so that multi-line pastes do not
 /// leak into subsequent prompts.
+///
+/// Drains both Rust's internal `BufReader` (used by `stdin().read_line()`)
+/// and the OS-level kernel buffer via non-blocking `libc::read`.
 #[cfg(unix)]
 #[allow(unsafe_code)]
 fn drain_stdin() {
+    use std::io::Read;
     use std::os::unix::io::AsRawFd;
+
     let stdin = std::io::stdin();
     let fd = stdin.as_raw_fd();
+
     // SAFETY: fcntl(F_GETFL) reads the file-descriptor flags for stdin,
     // which is a well-defined POSIX operation with no memory concerns.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
@@ -212,15 +218,20 @@ fn drain_stdin() {
     if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
         return;
     }
-    let mut buf = [0u8; 1024];
-    loop {
-        // SAFETY: libc::read into a stack buffer of known length is safe;
-        // the fd is valid and the buffer pointer/length are correct.
-        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
-        if n <= 0 {
-            break;
+
+    // Drain Rust's internal BufReader via stdin().lock().
+    // This consumes bytes already buffered in userspace that libc::read cannot reach.
+    {
+        let mut handle = stdin.lock();
+        let mut discard = [0u8; 1024];
+        loop {
+            match handle.read(&mut discard) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => continue,
+            }
         }
     }
+
     // SAFETY: restoring the original file-descriptor flags is a well-defined
     // POSIX operation with no memory concerns.
     unsafe { libc::fcntl(fd, libc::F_SETFL, flags) };
