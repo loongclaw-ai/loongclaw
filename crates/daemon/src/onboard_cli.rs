@@ -28,11 +28,25 @@ pub struct OnboardCommandOptions {
     pub skip_model_probe: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct SelectOption {
+    pub label: String,
+    pub slug: String,
+    pub description: String,
+    pub recommended: bool,
+}
+
 pub trait OnboardUi {
     fn print_line(&mut self, line: &str) -> CliResult<()>;
     fn prompt_with_default(&mut self, label: &str, default: &str) -> CliResult<String>;
     fn prompt_required(&mut self, label: &str) -> CliResult<String>;
     fn prompt_confirm(&mut self, message: &str, default: bool) -> CliResult<bool>;
+    fn select_one(
+        &mut self,
+        label: &str,
+        options: &[SelectOption],
+        default: Option<usize>,
+    ) -> CliResult<usize>;
 }
 
 #[derive(Debug, Clone)]
@@ -82,6 +96,7 @@ impl OnboardUi for StdioOnboardUi {
         io::stdin()
             .read_line(&mut line)
             .map_err(|error| format!("read stdin failed: {error}"))?;
+        drain_stdin();
         let trimmed = line.trim();
         if trimmed.is_empty() {
             return Ok(default.to_owned());
@@ -98,6 +113,7 @@ impl OnboardUi for StdioOnboardUi {
         io::stdin()
             .read_line(&mut line)
             .map_err(|error| format!("read stdin failed: {error}"))?;
+        drain_stdin();
         Ok(line.trim().to_owned())
     }
 
@@ -111,13 +127,103 @@ impl OnboardUi for StdioOnboardUi {
         io::stdin()
             .read_line(&mut line)
             .map_err(|error| format!("read stdin failed: {error}"))?;
+        drain_stdin();
         let value = line.trim().to_ascii_lowercase();
         if value.is_empty() {
             return Ok(default);
         }
         Ok(matches!(value.as_str(), "y" | "yes"))
     }
+
+    fn select_one(
+        &mut self,
+        label: &str,
+        options: &[SelectOption],
+        default: Option<usize>,
+    ) -> CliResult<usize> {
+        loop {
+            for (i, opt) in options.iter().enumerate() {
+                let num = i + 1;
+                let rec = if opt.recommended {
+                    " (recommended)"
+                } else {
+                    ""
+                };
+                println!("  {num}) {}{rec}", opt.label);
+                if !opt.description.is_empty() {
+                    println!("     {}", opt.description);
+                }
+            }
+            println!();
+            let prompt_text = match default {
+                Some(idx) => format!("{label} [{}]: ", idx + 1),
+                None => format!("{label}: "),
+            };
+            print!("{prompt_text}");
+            io::stdout()
+                .flush()
+                .map_err(|error| format!("flush stdout failed: {error}"))?;
+            let mut input = String::new();
+            io::stdin()
+                .read_line(&mut input)
+                .map_err(|error| format!("read stdin failed: {error}"))?;
+            drain_stdin();
+            let trimmed = input.trim();
+            if trimmed.is_empty() {
+                if let Some(idx) = default {
+                    return Ok(idx);
+                }
+                println!("Please select an option.");
+                continue;
+            }
+            match trimmed.parse::<usize>() {
+                Ok(n) if n >= 1 && n <= options.len() => return Ok(n - 1),
+                _ => {
+                    println!(
+                        "Invalid selection. Enter a number between 1 and {}.",
+                        options.len()
+                    );
+                }
+            }
+        }
+    }
 }
+
+/// Drain any buffered bytes from stdin so that multi-line pastes do not
+/// leak into subsequent prompts.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn drain_stdin() {
+    use std::os::unix::io::AsRawFd;
+    let stdin = std::io::stdin();
+    let fd = stdin.as_raw_fd();
+    // SAFETY: fcntl(F_GETFL) reads the file-descriptor flags for stdin,
+    // which is a well-defined POSIX operation with no memory concerns.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return;
+    }
+    // SAFETY: fcntl(F_SETFL) temporarily sets stdin to non-blocking mode
+    // so we can drain without hanging. The original flags are restored below.
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return;
+    }
+    let mut buf = [0u8; 1024];
+    loop {
+        // SAFETY: libc::read into a stack buffer of known length is safe;
+        // the fd is valid and the buffer pointer/length are correct.
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        if n <= 0 {
+            break;
+        }
+    }
+    // SAFETY: restoring the original file-descriptor flags is a well-defined
+    // POSIX operation with no memory concerns.
+    unsafe { libc::fcntl(fd, libc::F_SETFL, flags) };
+}
+
+#[cfg(not(unix))]
+fn drain_stdin() {}
 
 fn print_lines(ui: &mut impl OnboardUi, lines: impl IntoIterator<Item = String>) -> CliResult<()> {
     for line in lines {
@@ -5100,6 +5206,37 @@ mod tests {
                 .pop_front()
                 .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
                 .unwrap_or(default))
+        }
+
+        fn select_one(
+            &mut self,
+            _label: &str,
+            options: &[SelectOption],
+            default: Option<usize>,
+        ) -> CliResult<usize> {
+            match self.inputs.pop_front() {
+                Some(value) => {
+                    let trimmed = value.trim();
+                    if trimmed.is_empty() {
+                        return default
+                            .ok_or_else(|| "no default for required selection".to_owned());
+                    }
+                    let n: usize = trimmed
+                        .parse()
+                        .map_err(|_err| format!("invalid test selection input: {trimmed}"))?;
+                    if n >= 1 && n <= options.len() {
+                        Ok(n - 1)
+                    } else {
+                        Err(format!(
+                            "test selection {n} out of range 1..={}",
+                            options.len()
+                        ))
+                    }
+                }
+                None => {
+                    default.ok_or_else(|| "missing test input for required selection".to_owned())
+                }
+            }
         }
     }
 

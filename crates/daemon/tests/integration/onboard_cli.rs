@@ -221,6 +221,31 @@ impl loongclaw_daemon::onboard_cli::OnboardUi for ScriptedOnboardUi {
         }
         Ok(matches!(trimmed.as_str(), "y" | "yes"))
     }
+
+    fn select_one(
+        &mut self,
+        label: &str,
+        options: &[loongclaw_daemon::onboard_cli::SelectOption],
+        default: Option<usize>,
+    ) -> loongclaw_daemon::CliResult<usize> {
+        self.outputs.push(format!("SELECT {label}"));
+        let value = self.next_input(label)?;
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return default.ok_or_else(|| "no default for required selection".to_owned());
+        }
+        let n: usize = trimmed
+            .parse()
+            .map_err(|_err| format!("invalid scripted selection input: {trimmed}"))?;
+        if n >= 1 && n <= options.len() {
+            Ok(n - 1)
+        } else {
+            Err(format!(
+                "scripted selection {n} out of range 1..={}",
+                options.len()
+            ))
+        }
+    }
 }
 
 async fn run_scripted_onboard_flow(
