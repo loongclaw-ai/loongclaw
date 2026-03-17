@@ -19,6 +19,7 @@ const ONBOARD_ESCAPE_CANCEL_HINT: &str = "- press Esc then Enter to cancel onboa
 const ONBOARD_SINGLE_LINE_INPUT_HINT: &str =
     "- terminal input is single line; extra pasted lines are ignored";
 const ONBOARD_PASTE_DRAIN_WINDOW: Duration = Duration::from_millis(20);
+const ONBOARD_LINE_READER_BUFFER_SIZE: usize = 64;
 
 #[derive(Debug, Clone)]
 pub struct OnboardCommandOptions {
@@ -103,49 +104,105 @@ enum StdioOnboardLineMessage {
     Error(String),
 }
 
+type StdioOnboardLineSender = mpsc::SyncSender<StdioOnboardLineMessage>;
+
 #[derive(Debug)]
 enum StdioOnboardLineReader {
     Background {
         receiver: Receiver<StdioOnboardLineMessage>,
     },
-    Direct,
+    Direct {
+        degraded_notice: Option<String>,
+    },
+}
+
+fn onboard_line_channel() -> (StdioOnboardLineSender, Receiver<StdioOnboardLineMessage>) {
+    onboard_line_channel_with_capacity(ONBOARD_LINE_READER_BUFFER_SIZE)
+}
+
+fn onboard_line_channel_with_capacity(
+    buffer_size: usize,
+) -> (StdioOnboardLineSender, Receiver<StdioOnboardLineMessage>) {
+    assert!(
+        buffer_size > 0,
+        "onboard line reader buffer must be non-zero"
+    );
+    mpsc::sync_channel(buffer_size)
+}
+
+fn spawn_onboard_stdin_reader(sender: StdioOnboardLineSender) -> io::Result<()> {
+    thread::Builder::new()
+        .name("loongclaw-onboard-stdin".to_owned())
+        .spawn(move || {
+            loop {
+                let mut line = String::new();
+                match io::stdin().read_line(&mut line) {
+                    Ok(0) => {
+                        let _ = sender.send(StdioOnboardLineMessage::Eof);
+                        break;
+                    }
+                    Ok(_) => {
+                        if sender.send(StdioOnboardLineMessage::Line(line)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        let _ = sender.send(StdioOnboardLineMessage::Error(format!(
+                            "read stdin failed: {error}"
+                        )));
+                        break;
+                    }
+                }
+            }
+        })
+        .map(|_handle| ())
+}
+
+fn format_onboard_line_reader_spawn_notice(error: &io::Error) -> String {
+    format!(
+        "warning: failed to start onboarding stdin reader thread ({error}); single-line paste draining is disabled for this session"
+    )
+}
+
+impl StdioOnboardLineReader {
+    fn background_from_receiver(receiver: Receiver<StdioOnboardLineMessage>) -> Self {
+        Self::Background { receiver }
+    }
+
+    fn try_spawn_background_receiver() -> io::Result<Receiver<StdioOnboardLineMessage>> {
+        let (sender, receiver) = onboard_line_channel();
+        spawn_onboard_stdin_reader(sender)?;
+        Ok(receiver)
+    }
+
+    fn from_spawn_result(result: io::Result<Receiver<StdioOnboardLineMessage>>) -> Self {
+        match result {
+            Ok(receiver) => Self::background_from_receiver(receiver),
+            Err(error) => Self::Direct {
+                degraded_notice: Some(format_onboard_line_reader_spawn_notice(&error)),
+            },
+        }
+    }
+
+    fn take_degraded_notice(&mut self) -> Option<String> {
+        match self {
+            Self::Background { .. } => None,
+            Self::Direct { degraded_notice } => degraded_notice.take(),
+        }
+    }
 }
 
 impl Default for StdioOnboardLineReader {
     fn default() -> Self {
-        let (sender, receiver) = mpsc::channel();
-        match thread::Builder::new()
-            .name("loongclaw-onboard-stdin".to_owned())
-            .spawn(move || {
-                loop {
-                    let mut line = String::new();
-                    match io::stdin().read_line(&mut line) {
-                        Ok(0) => {
-                            let _ = sender.send(StdioOnboardLineMessage::Eof);
-                            break;
-                        }
-                        Ok(_) => {
-                            if sender.send(StdioOnboardLineMessage::Line(line)).is_err() {
-                                break;
-                            }
-                        }
-                        Err(error) => {
-                            let _ = sender.send(StdioOnboardLineMessage::Error(format!(
-                                "read stdin failed: {error}"
-                            )));
-                            break;
-                        }
-                    }
-                }
-            }) {
-            Ok(_handle) => Self::Background { receiver },
-            Err(_) => Self::Direct,
-        }
+        Self::from_spawn_result(Self::try_spawn_background_receiver())
     }
 }
 
 impl OnboardPromptLineReader for StdioOnboardLineReader {
     fn read_blocking_line(&mut self) -> CliResult<OnboardPromptRead> {
+        if let Some(notice) = self.take_degraded_notice() {
+            eprintln!("{notice}");
+        }
         match self {
             Self::Background { receiver } => match receiver.recv() {
                 Ok(StdioOnboardLineMessage::Line(line)) => Ok(OnboardPromptRead::Line(line)),
@@ -153,7 +210,7 @@ impl OnboardPromptLineReader for StdioOnboardLineReader {
                 Ok(StdioOnboardLineMessage::Error(error)) => Err(error),
                 Err(_) => Ok(OnboardPromptRead::Eof),
             },
-            Self::Direct => {
+            Self::Direct { .. } => {
                 let mut line = String::new();
                 let bytes_read = io::stdin()
                     .read_line(&mut line)
@@ -178,7 +235,7 @@ impl OnboardPromptLineReader for StdioOnboardLineReader {
                     }
                 }
             }
-            Self::Direct => Ok(None),
+            Self::Direct { .. } => Ok(None),
         }
     }
 }
@@ -5631,7 +5688,8 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::ffi::OsString;
-    use std::sync::MutexGuard;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, MutexGuard};
 
     struct TestOnboardUi {
         inputs: VecDeque<String>,
@@ -6676,6 +6734,73 @@ mod tests {
         assert_eq!(second.raw, "window-plus-summary\n");
         assert_eq!(second.dropped_line_count, 0);
         assert!(!second.reached_eof);
+    }
+
+    #[test]
+    fn onboard_line_channel_applies_backpressure_after_buffer_limit() {
+        let (sender, receiver) = onboard_line_channel_with_capacity(1);
+        let second_send_completed = Arc::new(AtomicBool::new(false));
+        let completed_flag = Arc::clone(&second_send_completed);
+        let producer = thread::spawn(move || {
+            sender
+                .send(StdioOnboardLineMessage::Line("system prompt\n".to_owned()))
+                .expect("send first line");
+            sender
+                .send(StdioOnboardLineMessage::Line(
+                    "follow-up paste\n".to_owned(),
+                ))
+                .expect("send second line after receiver drains");
+            completed_flag.store(true, Ordering::SeqCst);
+        });
+
+        for _ in 0..1_000 {
+            if second_send_completed.load(Ordering::SeqCst) {
+                break;
+            }
+            thread::yield_now();
+        }
+        assert!(
+            !second_send_completed.load(Ordering::SeqCst),
+            "bounded onboarding queue should apply backpressure once the first buffered line is occupied"
+        );
+
+        let mut reader = StdioOnboardLineReader::background_from_receiver(receiver);
+        let capture = read_single_line_prompt_capture(&mut reader)
+            .expect("capture should drain the queued follow-up line");
+        producer.join().expect("producer join");
+
+        assert_eq!(capture.raw, "system prompt\n");
+        assert_eq!(capture.dropped_line_count, 1);
+        assert!(!capture.reached_eof);
+        assert!(
+            second_send_completed.load(Ordering::SeqCst),
+            "receiver drain should unblock the producer once capacity is freed"
+        );
+    }
+
+    #[test]
+    fn stdio_onboard_line_reader_warns_once_when_background_spawn_fails() {
+        let mut reader = StdioOnboardLineReader::from_spawn_result(Err(io::Error::other(
+            "thread quota exhausted",
+        )));
+
+        assert!(
+            matches!(reader, StdioOnboardLineReader::Direct { .. }),
+            "spawn failure should fall back to direct reads instead of constructing a broken background reader"
+        );
+
+        let first_notice = reader
+            .take_degraded_notice()
+            .expect("spawn failure should surface a degraded-mode notice");
+        assert!(
+            first_notice.contains("single-line paste draining is disabled"),
+            "spawn failure notice should explain the lost hardening: {first_notice}"
+        );
+        assert_eq!(
+            reader.take_degraded_notice(),
+            None,
+            "degraded-mode notice should only be emitted once per session"
+        );
     }
 
     #[test]
