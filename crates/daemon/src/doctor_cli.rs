@@ -8,6 +8,8 @@ use loongclaw_app as mvp;
 use loongclaw_spec::CliResult;
 use serde_json::json;
 
+const MODEL_CATALOG_PROBE_FAILED_MARKER: &str = "model catalog probe failed";
+
 #[derive(Debug, Clone)]
 pub struct DoctorCommandOptions {
     pub config: Option<String>,
@@ -993,13 +995,13 @@ fn provider_model_probe_failure_check(
         mvp::config::ModelCatalogProbeRecovery::ExplicitModel(model) => (
             DoctorCheckLevel::Warn,
             format!(
-                "{provider_prefix}: model catalog probe failed ({error}); chat may still work because model `{model}` is explicitly configured"
+                "{provider_prefix}: {MODEL_CATALOG_PROBE_FAILED_MARKER} ({error}); chat may still work because model `{model}` is explicitly configured"
             ),
         ),
         mvp::config::ModelCatalogProbeRecovery::ConfiguredPreferredModels(fallback_models) => (
             DoctorCheckLevel::Warn,
             format!(
-                "{provider_prefix}: model catalog probe failed ({error}); runtime will try configured preferred model fallback(s): {}",
+                "{provider_prefix}: {MODEL_CATALOG_PROBE_FAILED_MARKER} ({error}); runtime will try configured preferred model fallback(s): {}",
                 fallback_models
                     .iter()
                     .map(|model| format!("`{model}`"))
@@ -1033,10 +1035,10 @@ fn provider_model_probe_requires_explicit_model_detail(
 ) -> String {
     match recommended_onboarding_model {
         Some(model) => format!(
-            "{provider_prefix}: model catalog probe failed ({error}); current config still uses `model = auto`; rerun onboarding and accept reviewed model `{model}`, or set `provider.model` / `preferred_models` explicitly"
+            "{provider_prefix}: {MODEL_CATALOG_PROBE_FAILED_MARKER} ({error}); current config still uses `model = auto`; rerun onboarding and accept reviewed model `{model}`, or set `provider.model` / `preferred_models` explicitly"
         ),
         None => format!(
-            "{provider_prefix}: model catalog probe failed ({error}); current config still uses `model = auto`; set `provider.model` explicitly or configure `preferred_models` before retrying"
+            "{provider_prefix}: {MODEL_CATALOG_PROBE_FAILED_MARKER} ({error}); current config still uses `model = auto`; set `provider.model` explicitly or configure `preferred_models` before retrying"
         ),
     }
 }
@@ -1182,8 +1184,6 @@ fn build_doctor_next_steps_with_path_env(
         crate::cli_handoff::format_subcommand_with_config("doctor", &config_path_display);
     let rerun_onboard_command =
         crate::cli_handoff::format_subcommand_with_config("onboard", &config_path_display);
-    let browser_preview =
-        crate::browser_preview::inspect_browser_preview_state_with_path_env(config, path_env);
 
     if !fix_requested
         && checks.iter().any(|check| {
@@ -1214,10 +1214,11 @@ fn build_doctor_next_steps_with_path_env(
         }
     }
 
-    if checks
-        .iter()
-        .any(|check| check.name == "provider model probe" && check.level == DoctorCheckLevel::Fail)
-    {
+    if checks.iter().any(|check| {
+        check.name == "provider model probe"
+            && check.level != DoctorCheckLevel::Pass
+            && check.detail.contains(MODEL_CATALOG_PROBE_FAILED_MARKER)
+    }) {
         match config.provider.model_catalog_probe_recovery() {
             mvp::config::ModelCatalogProbeRecovery::RequiresExplicitModel {
                 recommended_onboarding_model: Some(model),
@@ -2526,6 +2527,92 @@ mod tests {
                 .iter()
                 .all(|step| !step.contains("--skip-model-probe")),
             "doctor should not suggest --skip-model-probe when the real blocker is still `model = auto` without explicit recovery candidates: {next_steps:#?}"
+        );
+    }
+
+    #[test]
+    fn build_doctor_next_steps_guides_warn_level_explicit_model_probe_recovery() {
+        let checks = vec![DoctorCheck {
+            name: "provider model probe".to_owned(),
+            level: DoctorCheckLevel::Warn,
+            detail: "DeepSeek [deepseek]: model catalog probe failed (401 Unauthorized); chat may still work because model `deepseek-chat` is explicitly configured".to_owned(),
+        }];
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.provider.kind = mvp::config::ProviderKind::Deepseek;
+        config.provider.model = "deepseek-chat".to_owned();
+
+        let next_steps =
+            build_doctor_next_steps(&checks, Path::new("/tmp/loongclaw.toml"), &config, false);
+
+        assert!(
+            next_steps.iter().any(|step| {
+                step == "Retry provider probe only after credentials are ready: loongclaw doctor --config '/tmp/loongclaw.toml'"
+            }),
+            "warn-level explicit model recovery should still tell operators how to retry diagnostics: {next_steps:#?}"
+        );
+        assert!(
+            next_steps.iter().any(|step| {
+                step == "If your provider blocks model listing during setup, retry with: loongclaw doctor --config '/tmp/loongclaw.toml' --skip-model-probe"
+            }),
+            "warn-level explicit model recovery should still keep the skip-model-probe escape hatch visible: {next_steps:#?}"
+        );
+    }
+
+    #[test]
+    fn build_doctor_next_steps_guides_warn_level_preferred_model_probe_recovery() {
+        let checks = vec![DoctorCheck {
+            name: "provider model probe".to_owned(),
+            level: DoctorCheckLevel::Warn,
+            detail: "DeepSeek [deepseek]: model catalog probe failed (401 Unauthorized); runtime will try configured preferred model fallback(s): `deepseek-chat`, `deepseek-reasoner`".to_owned(),
+        }];
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.provider.kind = mvp::config::ProviderKind::Deepseek;
+        config.provider.model = "auto".to_owned();
+        config.provider.preferred_models =
+            vec!["deepseek-chat".to_owned(), "deepseek-reasoner".to_owned()];
+
+        let next_steps =
+            build_doctor_next_steps(&checks, Path::new("/tmp/loongclaw.toml"), &config, false);
+
+        assert!(
+            next_steps.iter().any(|step| {
+                step == "Retry provider probe only after credentials are ready: loongclaw doctor --config '/tmp/loongclaw.toml'"
+            }),
+            "warn-level preferred-model recovery should still tell operators how to retry diagnostics: {next_steps:#?}"
+        );
+        assert!(
+            next_steps.iter().any(|step| {
+                step == "If your provider blocks model listing during setup, retry with: loongclaw doctor --config '/tmp/loongclaw.toml' --skip-model-probe"
+            }),
+            "warn-level preferred-model recovery should still keep the skip-model-probe escape hatch visible: {next_steps:#?}"
+        );
+    }
+
+    #[test]
+    fn build_doctor_next_steps_ignores_non_failure_model_probe_warnings() {
+        let checks = vec![DoctorCheck {
+            name: "provider model probe".to_owned(),
+            level: DoctorCheckLevel::Warn,
+            detail: "skipped because credentials are missing".to_owned(),
+        }];
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.provider.kind = mvp::config::ProviderKind::Deepseek;
+        config.provider.model = "deepseek-chat".to_owned();
+
+        let next_steps =
+            build_doctor_next_steps(&checks, Path::new("/tmp/loongclaw.toml"), &config, false);
+
+        assert!(
+            next_steps
+                .iter()
+                .all(|step| !step.contains("Retry provider probe only after credentials are ready")),
+            "skipped probe warnings should not look like real model catalog failures: {next_steps:#?}"
+        );
+        assert!(
+            next_steps
+                .iter()
+                .all(|step| !step.contains("--skip-model-probe")),
+            "skipped probe warnings should not advertise the skip-model-probe recovery branch: {next_steps:#?}"
         );
     }
 

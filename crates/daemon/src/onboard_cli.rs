@@ -3251,10 +3251,10 @@ fn with_default_choice_footer(
 }
 
 fn append_escape_cancel_hint(mut lines: Vec<String>) -> Vec<String> {
-    if !lines
-        .iter()
-        .any(|line| line.contains("Esc") && line.contains("cancel"))
-    {
+    if !lines.iter().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.contains("esc") && lower.contains("cancel")
+    }) {
         lines.push(ONBOARD_ESCAPE_CANCEL_HINT.to_owned());
     }
     lines
@@ -6056,6 +6056,19 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("Esc") && line.contains("cancel")),
             "write confirmation should teach the exit gesture explicitly: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn append_escape_cancel_hint_dedupes_case_insensitively() {
+        let footer_lines = append_escape_cancel_hint(vec![
+            "- press esc then enter to cancel onboarding".to_owned(),
+        ]);
+
+        assert_eq!(
+            footer_lines,
+            vec!["- press esc then enter to cancel onboarding".to_owned()],
+            "case-only changes should not duplicate the escape cancel footer: {footer_lines:#?}"
         );
     }
 
