@@ -4455,8 +4455,12 @@ fn onboard_personality_selection_screen_shows_native_personality_choices() {
         "personality screen should surface the native prompt-pack progress step: {lines:#?}"
     );
     assert!(
-        lines.iter().any(|line| line.contains("[friendly_collab]")),
-        "personality screen should show the canonical friendly_collab selector: {lines:#?}"
+        lines.iter().any(|line| line.contains("friendly_collab)")),
+        "personality screen should keep the canonical friendly_collab selector visible without bracket syntax: {lines:#?}"
+    );
+    assert!(
+        lines.iter().all(|line| !line.contains("[friendly_collab]")),
+        "personality screen should not imply that brackets are part of the expected selector syntax: {lines:#?}"
     );
 }
 
@@ -4512,8 +4516,14 @@ fn onboard_memory_profile_screen_shows_supported_profiles() {
     assert!(
         lines
             .iter()
-            .any(|line| line.contains("[profile_plus_window]")),
-        "memory-profile screen should show the canonical profile_plus_window selector: {lines:#?}"
+            .any(|line| line.contains("profile_plus_window)")),
+        "memory-profile screen should keep the canonical profile_plus_window selector visible without bracket syntax: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .all(|line| !line.contains("[profile_plus_window]")),
+        "memory-profile screen should not imply that brackets are part of the expected selector syntax: {lines:#?}"
     );
 }
 
