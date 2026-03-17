@@ -23,6 +23,7 @@ use super::context_engine_registry::{
     list_context_engine_metadata, resolve_context_engine,
 };
 use super::runtime_binding::ConversationRuntimeBinding;
+use super::subagent::ConstrainedSubagentExecution;
 use super::turn_engine::ProviderTurn;
 
 #[cfg(feature = "memory-sqlite")]
@@ -76,6 +77,7 @@ pub struct AsyncDelegateSpawnRequest {
     pub parent_session_id: String,
     pub task: String,
     pub label: Option<String>,
+    pub execution: ConstrainedSubagentExecution,
     pub timeout_seconds: u64,
     pub kernel_context: Option<KernelContext>,
 }
@@ -115,11 +117,9 @@ impl AsyncDelegateSpawner for DefaultAsyncDelegateSpawner {
                 last_error: None,
                 event_kind: "delegate_started".to_owned(),
                 actor_session_id: Some(request.parent_session_id.clone()),
-                event_payload_json: json!({
-                    "task": request.task.clone(),
-                    "label": request.label.clone(),
-                    "timeout_seconds": request.timeout_seconds,
-                }),
+                event_payload_json: request
+                    .execution
+                    .spawn_payload(&request.task, request.label.as_deref()),
             },
         )?;
         if started.is_none() {
@@ -137,6 +137,7 @@ impl AsyncDelegateSpawner for DefaultAsyncDelegateSpawner {
             &request.parent_session_id,
             request.label,
             &request.task,
+            request.execution,
             request.timeout_seconds,
             ConversationRuntimeBinding::from_optional_kernel_context(
                 request.kernel_context.as_ref(),

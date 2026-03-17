@@ -68,6 +68,10 @@ use super::session_history::{
     AssistantHistoryLoadErrorCode, load_assistant_contents_from_session_window_detailed,
     load_latest_turn_checkpoint_entry, load_turn_checkpoint_history_snapshot,
 };
+#[cfg(feature = "memory-sqlite")]
+use super::subagent::{
+    ConstrainedSubagentExecution, ConstrainedSubagentMode, ConstrainedSubagentTerminalReason,
+};
 use super::turn_budget::{
     EscalatingAttemptBudget, SafeLaneBackpressureBudget, SafeLaneContinuationBudgetDecision,
     SafeLaneFailureRouteReason, SafeLaneReplanBudget,
@@ -3781,14 +3785,21 @@ async fn execute_delegate_tool<R: ConversationRuntime + ?Sized>(
     let child_session_id = crate::tools::delegate::next_delegate_session_id();
     let child_label = delegate_request.label.clone();
     let repo = SessionRepository::new(&MemoryRuntimeConfig::from_memory_config(&config.memory))?;
-    let current_depth = repo.session_lineage_depth(&session_context.session_id)?;
-    let next_child_depth = current_depth.saturating_add(1);
-    if next_child_depth > config.tools.delegate.max_depth {
-        return Err(format!(
-            "delegate_depth_exceeded: next child depth {next_child_depth} exceeds configured max_depth {}",
-            config.tools.delegate.max_depth
-        ));
-    }
+    let execution = constrained_subagent_execution_for_delegate(
+        config,
+        &repo,
+        session_context,
+        binding,
+        ConstrainedSubagentMode::Inline,
+        delegate_request.timeout_seconds,
+    )?;
+    prepare_subagent_spawn_if_kernel_bound(
+        runtime,
+        &session_context.session_id,
+        &child_session_id,
+        binding,
+    )
+    .await?;
 
     repo.create_session_with_event(CreateSessionWithEventRequest {
         session: NewSessionRecord {
@@ -3800,11 +3811,7 @@ async fn execute_delegate_tool<R: ConversationRuntime + ?Sized>(
         },
         event_kind: "delegate_started".to_owned(),
         actor_session_id: Some(session_context.session_id.clone()),
-        event_payload_json: json!({
-            "task": delegate_request.task.clone(),
-            "label": child_label.clone(),
-            "timeout_seconds": delegate_request.timeout_seconds,
-        }),
+        event_payload_json: execution.spawn_payload(&delegate_request.task, child_label.as_deref()),
     })?;
 
     run_started_delegate_child_turn_with_runtime(
@@ -3814,6 +3821,7 @@ async fn execute_delegate_tool<R: ConversationRuntime + ?Sized>(
         &session_context.session_id,
         child_label,
         &delegate_request.task,
+        execution,
         delegate_request.timeout_seconds,
         binding,
     )
@@ -3845,14 +3853,21 @@ async fn execute_delegate_async_tool<R: ConversationRuntime + ?Sized>(
     let child_label = delegate_request.label.clone();
     let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
     let repo = SessionRepository::new(&memory_config)?;
-    let current_depth = repo.session_lineage_depth(&session_context.session_id)?;
-    let next_child_depth = current_depth.saturating_add(1);
-    if next_child_depth > config.tools.delegate.max_depth {
-        return Err(format!(
-            "delegate_depth_exceeded: next child depth {next_child_depth} exceeds configured max_depth {}",
-            config.tools.delegate.max_depth
-        ));
-    }
+    let execution = constrained_subagent_execution_for_delegate(
+        config,
+        &repo,
+        session_context,
+        binding,
+        ConstrainedSubagentMode::Async,
+        delegate_request.timeout_seconds,
+    )?;
+    prepare_subagent_spawn_if_kernel_bound(
+        runtime,
+        &session_context.session_id,
+        &child_session_id,
+        binding,
+    )
+    .await?;
 
     repo.create_session_with_event(CreateSessionWithEventRequest {
         session: NewSessionRecord {
@@ -3864,11 +3879,7 @@ async fn execute_delegate_async_tool<R: ConversationRuntime + ?Sized>(
         },
         event_kind: "delegate_queued".to_owned(),
         actor_session_id: Some(session_context.session_id.clone()),
-        event_payload_json: json!({
-            "task": delegate_request.task,
-            "label": child_label,
-            "timeout_seconds": delegate_request.timeout_seconds,
-        }),
+        event_payload_json: execution.spawn_payload(&delegate_request.task, child_label.as_deref()),
     })?;
 
     spawn_async_delegate_detached(
@@ -3880,6 +3891,7 @@ async fn execute_delegate_async_tool<R: ConversationRuntime + ?Sized>(
             parent_session_id: session_context.session_id.clone(),
             task: delegate_request.task,
             label: child_label,
+            execution,
             timeout_seconds: delegate_request.timeout_seconds,
             kernel_context: binding.kernel_context().cloned(),
         },
@@ -3924,6 +3936,7 @@ pub(crate) async fn run_started_delegate_child_turn_with_runtime<
     parent_session_id: &str,
     child_label: Option<String>,
     user_input: &str,
+    execution: ConstrainedSubagentExecution,
     timeout_seconds: u64,
     binding: ConversationRuntimeBinding<'_>,
 ) -> Result<loongclaw_contracts::ToolCoreOutcome, String> {
@@ -3965,14 +3978,23 @@ pub(crate) async fn run_started_delegate_child_turn_with_runtime<
                     last_error: None,
                     event_kind: "delegate_completed".to_owned(),
                     actor_session_id: Some(parent_session_id.to_owned()),
-                    event_payload_json: json!({
-                        "turn_count": turn_count,
-                        "duration_ms": duration_ms,
-                    }),
+                    event_payload_json: execution.terminal_payload(
+                        ConstrainedSubagentTerminalReason::Completed,
+                        duration_ms,
+                        Some(turn_count),
+                        None,
+                    ),
                     outcome_status: outcome.status.clone(),
                     outcome_payload_json: outcome.payload.clone(),
                 },
             )?;
+            notify_subagent_ended_if_kernel_bound(
+                runtime,
+                parent_session_id,
+                child_session_id,
+                binding,
+            )
+            .await?;
             Ok(outcome)
         }
         Ok(Ok(Err(error))) => {
@@ -3990,14 +4012,23 @@ pub(crate) async fn run_started_delegate_child_turn_with_runtime<
                     last_error: Some(error.clone()),
                     event_kind: "delegate_failed".to_owned(),
                     actor_session_id: Some(parent_session_id.to_owned()),
-                    event_payload_json: json!({
-                        "error": error,
-                        "duration_ms": duration_ms,
-                    }),
+                    event_payload_json: execution.terminal_payload(
+                        ConstrainedSubagentTerminalReason::Failed,
+                        duration_ms,
+                        None,
+                        Some(error.as_str()),
+                    ),
                     outcome_status: outcome.status.clone(),
                     outcome_payload_json: outcome.payload.clone(),
                 },
             )?;
+            notify_subagent_ended_if_kernel_bound(
+                runtime,
+                parent_session_id,
+                child_session_id,
+                binding,
+            )
+            .await?;
             Ok(outcome)
         }
         Ok(Err(panic_payload)) => {
@@ -4016,14 +4047,23 @@ pub(crate) async fn run_started_delegate_child_turn_with_runtime<
                     last_error: Some(panic_error.clone()),
                     event_kind: "delegate_failed".to_owned(),
                     actor_session_id: Some(parent_session_id.to_owned()),
-                    event_payload_json: json!({
-                        "error": panic_error,
-                        "duration_ms": duration_ms,
-                    }),
+                    event_payload_json: execution.terminal_payload(
+                        ConstrainedSubagentTerminalReason::Failed,
+                        duration_ms,
+                        None,
+                        Some(panic_error.as_str()),
+                    ),
                     outcome_status: outcome.status.clone(),
                     outcome_payload_json: outcome.payload.clone(),
                 },
             )?;
+            notify_subagent_ended_if_kernel_bound(
+                runtime,
+                parent_session_id,
+                child_session_id,
+                binding,
+            )
+            .await?;
             Ok(outcome)
         }
         Err(_) => {
@@ -4041,14 +4081,23 @@ pub(crate) async fn run_started_delegate_child_turn_with_runtime<
                     last_error: Some(timeout_error.clone()),
                     event_kind: "delegate_timed_out".to_owned(),
                     actor_session_id: Some(parent_session_id.to_owned()),
-                    event_payload_json: json!({
-                        "error": timeout_error,
-                        "duration_ms": duration_ms,
-                    }),
+                    event_payload_json: execution.terminal_payload(
+                        ConstrainedSubagentTerminalReason::TimedOut,
+                        duration_ms,
+                        None,
+                        Some(timeout_error.as_str()),
+                    ),
                     outcome_status: outcome.status.clone(),
                     outcome_payload_json: outcome.payload.clone(),
                 },
             )?;
+            notify_subagent_ended_if_kernel_bound(
+                runtime,
+                parent_session_id,
+                child_session_id,
+                binding,
+            )
+            .await?;
             Ok(outcome)
         }
     }
@@ -4060,6 +4109,7 @@ fn finalize_async_delegate_spawn_failure(
     child_session_id: &str,
     parent_session_id: &str,
     label: Option<String>,
+    execution: &ConstrainedSubagentExecution,
     error: String,
 ) -> Result<(), String> {
     let repo = SessionRepository::new(memory_config)?;
@@ -4074,9 +4124,12 @@ fn finalize_async_delegate_spawn_failure(
         last_error: Some(error.clone()),
         event_kind: "delegate_spawn_failed".to_owned(),
         actor_session_id: Some(parent_session_id.to_owned()),
-        event_payload_json: json!({
-            "error": error,
-        }),
+        event_payload_json: execution.terminal_payload(
+            ConstrainedSubagentTerminalReason::SpawnFailed,
+            0,
+            None,
+            Some(error.as_str()),
+        ),
         outcome_status: outcome.status,
         outcome_payload_json: outcome.payload,
     };
@@ -4095,6 +4148,7 @@ fn finalize_async_delegate_spawn_failure_with_recovery(
     child_session_id: &str,
     parent_session_id: &str,
     label: Option<String>,
+    execution: &ConstrainedSubagentExecution,
     error: String,
 ) -> Result<(), String> {
     let recovery_label = label.clone();
@@ -4103,6 +4157,7 @@ fn finalize_async_delegate_spawn_failure_with_recovery(
         child_session_id,
         parent_session_id,
         label,
+        execution,
         error.clone(),
     ) {
         Ok(()) => Ok(()),
@@ -4183,6 +4238,7 @@ fn spawn_async_delegate_detached(
     let child_session_id = request.child_session_id.clone();
     let parent_session_id = request.parent_session_id.clone();
     let label = request.label.clone();
+    let execution = request.execution.clone();
     runtime_handle.spawn(async move {
         let spawn_failure = match AssertUnwindSafe(spawner.spawn(request))
             .catch_unwind()
@@ -4198,10 +4254,80 @@ fn spawn_async_delegate_detached(
                 &child_session_id,
                 &parent_session_id,
                 label,
+                &execution,
                 error,
             );
         }
     });
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn constrained_subagent_execution_for_delegate(
+    config: &LoongClawConfig,
+    repo: &SessionRepository,
+    session_context: &SessionContext,
+    binding: ConversationRuntimeBinding<'_>,
+    mode: ConstrainedSubagentMode,
+    timeout_seconds: u64,
+) -> Result<ConstrainedSubagentExecution, String> {
+    let current_depth = repo.session_lineage_depth(&session_context.session_id)?;
+    let next_child_depth = current_depth.saturating_add(1);
+    if next_child_depth > config.tools.delegate.max_depth {
+        return Err(format!(
+            "delegate_depth_exceeded: next child depth {next_child_depth} exceeds configured max_depth {}",
+            config.tools.delegate.max_depth
+        ));
+    }
+
+    let active_children = repo.count_active_direct_children(&session_context.session_id)?;
+    if active_children >= config.tools.delegate.max_active_children {
+        return Err(format!(
+            "delegate_active_children_exceeded: active child count {active_children} reaches configured max_active_children {}",
+            config.tools.delegate.max_active_children
+        ));
+    }
+
+    Ok(ConstrainedSubagentExecution {
+        mode,
+        depth: next_child_depth,
+        max_depth: config.tools.delegate.max_depth,
+        active_children,
+        max_active_children: config.tools.delegate.max_active_children,
+        timeout_seconds,
+        allow_shell_in_child: config.tools.delegate.allow_shell_in_child,
+        child_tool_allowlist: config.tools.delegate.child_tool_allowlist.clone(),
+        kernel_bound: binding.is_kernel_bound(),
+    })
+}
+
+#[cfg(feature = "memory-sqlite")]
+async fn prepare_subagent_spawn_if_kernel_bound<R: ConversationRuntime + ?Sized>(
+    runtime: &R,
+    parent_session_id: &str,
+    child_session_id: &str,
+    binding: ConversationRuntimeBinding<'_>,
+) -> Result<(), String> {
+    let Some(kernel_ctx) = binding.kernel_context() else {
+        return Ok(());
+    };
+    runtime
+        .prepare_subagent_spawn(parent_session_id, child_session_id, kernel_ctx)
+        .await
+}
+
+#[cfg(feature = "memory-sqlite")]
+async fn notify_subagent_ended_if_kernel_bound<R: ConversationRuntime + ?Sized>(
+    runtime: &R,
+    parent_session_id: &str,
+    child_session_id: &str,
+    binding: ConversationRuntimeBinding<'_>,
+) -> Result<(), String> {
+    let Some(kernel_ctx) = binding.kernel_context() else {
+        return Ok(());
+    };
+    runtime
+        .on_subagent_ended(parent_session_id, child_session_id, kernel_ctx)
+        .await
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -6241,6 +6367,17 @@ mod tests {
     fn finalize_async_delegate_spawn_failure_does_not_overwrite_recovered_failure() {
         let memory_config = sqlite_memory_config("recovered-ready-child");
         let repo = SessionRepository::new(&memory_config).expect("session repository");
+        let execution = ConstrainedSubagentExecution {
+            mode: ConstrainedSubagentMode::Async,
+            depth: 1,
+            max_depth: 1,
+            active_children: 0,
+            max_active_children: 1,
+            timeout_seconds: 60,
+            allow_shell_in_child: false,
+            child_tool_allowlist: vec!["file.read".to_owned(), "file.write".to_owned()],
+            kernel_bound: false,
+        };
         repo.create_session(NewSessionRecord {
             session_id: "root-session".to_owned(),
             kind: SessionKind::Root,
@@ -6267,6 +6404,7 @@ mod tests {
             "child-session",
             "root-session",
             Some("Child".to_owned()),
+            &execution,
             "spawn unavailable".to_owned(),
         )
         .expect("stale queued spawn failure finalizer should no-op");
@@ -6340,6 +6478,17 @@ mod tests {
     fn finalize_async_delegate_spawn_failure_with_recovery_errors_when_child_session_missing() {
         let memory_config = sqlite_memory_config("missing-ready-child");
         let repo = SessionRepository::new(&memory_config).expect("session repository");
+        let execution = ConstrainedSubagentExecution {
+            mode: ConstrainedSubagentMode::Async,
+            depth: 1,
+            max_depth: 1,
+            active_children: 0,
+            max_active_children: 1,
+            timeout_seconds: 60,
+            allow_shell_in_child: false,
+            child_tool_allowlist: vec!["file.read".to_owned(), "file.write".to_owned()],
+            kernel_bound: false,
+        };
         repo.create_session(NewSessionRecord {
             session_id: "root-session".to_owned(),
             kind: SessionKind::Root,
@@ -6354,6 +6503,7 @@ mod tests {
             "child-session",
             "root-session",
             Some("Child".to_owned()),
+            &execution,
             "spawn unavailable".to_owned(),
         )
         .expect_err("missing child session should not bypass spawn failure recovery");

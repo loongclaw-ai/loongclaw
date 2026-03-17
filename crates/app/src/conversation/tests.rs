@@ -60,6 +60,9 @@ struct FakeRuntime {
     turn_calls: Mutex<usize>,
     after_turn_calls: Mutex<Vec<(String, String, String, usize)>>,
     compact_calls: Mutex<Vec<(String, usize)>>,
+    prepare_subagent_spawn_result: Result<(), String>,
+    on_subagent_ended_result: Result<(), String>,
+    subagent_lifecycle_calls: Mutex<Vec<String>>,
 }
 
 enum FakeTurnResponse {
@@ -198,6 +201,7 @@ impl crate::conversation::AsyncDelegateSpawner for LocalChildRuntimeAsyncDelegat
             &request.parent_session_id,
             request.label,
             &request.task,
+            request.execution,
             request.timeout_seconds,
             ConversationRuntimeBinding::from_optional_kernel_context(
                 request.kernel_context.as_ref(),
@@ -572,6 +576,9 @@ impl FakeRuntime {
             turn_calls: Mutex::new(0),
             after_turn_calls: Mutex::new(Vec::new()),
             compact_calls: Mutex::new(Vec::new()),
+            prepare_subagent_spawn_result: Ok(()),
+            on_subagent_ended_result: Ok(()),
+            subagent_lifecycle_calls: Mutex::new(Vec::new()),
         }
     }
 
@@ -603,6 +610,11 @@ impl FakeRuntime {
 
     fn with_compact_result(mut self, result: Result<(), String>) -> Self {
         self.compact_result = result;
+        self
+    }
+
+    fn with_prepare_subagent_spawn_result(mut self, result: Result<(), String>) -> Self {
+        self.prepare_subagent_spawn_result = result;
         self
     }
 
@@ -1159,6 +1171,36 @@ impl ConversationRuntime for FakeRuntime {
             .expect("compact lock")
             .push((session_id.to_owned(), messages.len()));
         self.compact_result.clone()
+    }
+
+    async fn prepare_subagent_spawn(
+        &self,
+        parent_session_id: &str,
+        subagent_session_id: &str,
+        _kernel_ctx: &KernelContext,
+    ) -> CliResult<()> {
+        self.subagent_lifecycle_calls
+            .lock()
+            .expect("subagent lifecycle calls lock")
+            .push(format!(
+                "prepare_subagent_spawn:{parent_session_id}:{subagent_session_id}"
+            ));
+        self.prepare_subagent_spawn_result.clone()
+    }
+
+    async fn on_subagent_ended(
+        &self,
+        parent_session_id: &str,
+        subagent_session_id: &str,
+        _kernel_ctx: &KernelContext,
+    ) -> CliResult<()> {
+        self.subagent_lifecycle_calls
+            .lock()
+            .expect("subagent lifecycle calls lock")
+            .push(format!(
+                "on_subagent_ended:{parent_session_id}:{subagent_session_id}"
+            ));
+        self.on_subagent_ended_result.clone()
     }
 }
 
@@ -11457,6 +11499,179 @@ async fn handle_turn_with_runtime_executes_delegate_via_coordinator() {
 
 #[cfg(feature = "memory-sqlite")]
 #[tokio::test]
+async fn handle_turn_with_runtime_kernel_delegate_calls_subagent_lifecycle_hooks() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-delegate", "kernel-lifecycle")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+
+    let runtime = FakeRuntime::with_turns_and_completions(
+        vec![],
+        vec![
+            Ok(ProviderTurn {
+                assistant_text: "Delegating.".to_owned(),
+                tool_intents: vec![provider_tool_intent(
+                    "delegate",
+                    json!({
+                        "task": "child task",
+                        "label": "research-subtask"
+                    }),
+                    "root-session",
+                    "turn-delegate-parent",
+                    "call-delegate-parent",
+                )],
+                raw_meta: Value::Null,
+            }),
+            Ok(ProviderTurn {
+                assistant_text: "Child final output".to_owned(),
+                tool_intents: vec![],
+                raw_meta: Value::Null,
+            }),
+        ],
+        vec![],
+    )
+    .with_durable_memory_config(memory_config.clone());
+    let kernel_ctx = test_kernel_context("conversation-delegate-kernel-lifecycle");
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "root-session",
+            "show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            ConversationRuntimeBinding::kernel(&kernel_ctx),
+        )
+        .await
+        .expect("delegate handle turn success");
+
+    assert!(
+        reply.contains("\"tool\":\"delegate\""),
+        "expected raw delegate tool output, got: {reply}"
+    );
+
+    let child = repo
+        .list_visible_sessions("root-session")
+        .expect("list visible sessions")
+        .into_iter()
+        .find(|session| session.parent_session_id.as_deref() == Some("root-session"))
+        .expect("child session summary");
+    assert_eq!(
+        child.state,
+        crate::session::repository::SessionState::Completed
+    );
+
+    assert_eq!(
+        runtime
+            .subagent_lifecycle_calls
+            .lock()
+            .expect("subagent lifecycle calls lock")
+            .clone(),
+        vec![
+            format!("prepare_subagent_spawn:root-session:{}", child.session_id),
+            format!("on_subagent_ended:root-session:{}", child.session_id),
+        ]
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn handle_turn_with_runtime_delegate_rejects_spawn_when_prepare_subagent_spawn_fails() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-delegate", "prepare-failure")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+
+    let runtime = FakeRuntime::with_turns_and_completions(
+        vec![],
+        vec![Ok(ProviderTurn {
+            assistant_text: "Delegating.".to_owned(),
+            tool_intents: vec![provider_tool_intent(
+                "delegate",
+                json!({
+                    "task": "child task",
+                    "label": "research-subtask"
+                }),
+                "root-session",
+                "turn-delegate-parent",
+                "call-delegate-parent",
+            )],
+            raw_meta: Value::Null,
+        })],
+        vec![],
+    )
+    .with_prepare_subagent_spawn_result(Err("synthetic_prepare_subagent_spawn_failure".to_owned()))
+    .with_durable_memory_config(memory_config.clone());
+    let kernel_ctx = test_kernel_context("conversation-delegate-prepare-failure");
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "root-session",
+            "show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            ConversationRuntimeBinding::kernel(&kernel_ctx),
+        )
+        .await
+        .expect("delegate handle turn reply");
+
+    assert!(
+        reply.contains("synthetic_prepare_subagent_spawn_failure"),
+        "expected prepare_subagent_spawn failure in reply, got: {reply}"
+    );
+    assert_eq!(
+        repo.list_sessions().expect("list sessions").len(),
+        1,
+        "failed prepare_subagent_spawn should not create a child session"
+    );
+
+    let calls = runtime
+        .subagent_lifecycle_calls
+        .lock()
+        .expect("subagent lifecycle calls lock")
+        .clone();
+    assert_eq!(calls.len(), 1);
+    assert!(
+        calls[0].starts_with("prepare_subagent_spawn:root-session:delegate:"),
+        "unexpected lifecycle calls: {calls:?}"
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
 async fn handle_turn_with_runtime_approval_request_resolve_replays_delegate_for_approve_once() {
     let db_path = std::env::temp_dir().join(format!(
         "{}.sqlite3",
@@ -11986,6 +12201,97 @@ async fn handle_turn_with_runtime_delegate_async_queue_failure_rolls_back_child_
             .expect("async delegate requests lock")
             .len(),
         0
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn handle_turn_with_runtime_delegate_async_rejects_when_active_child_limit_is_exhausted() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-delegate-async", "active-child-limit")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    config.tools.delegate.max_active_children = 1;
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "child-session-existing".to_owned(),
+        kind: crate::session::repository::SessionKind::DelegateChild,
+        parent_session_id: Some("root-session".to_owned()),
+        label: Some("Existing".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create existing child session");
+
+    let spawner = Arc::new(FakeAsyncDelegateSpawner::default());
+    let runtime = FakeRuntime::with_turns_and_completions(
+        vec![],
+        vec![Ok(ProviderTurn {
+            assistant_text: "Delegating async.".to_owned(),
+            tool_intents: vec![provider_tool_intent(
+                "delegate_async",
+                json!({
+                    "task": "child async task",
+                    "label": "async-child"
+                }),
+                "root-session",
+                "turn-delegate-async-parent",
+                "call-delegate-async-parent",
+            )],
+            raw_meta: Value::Null,
+        })],
+        vec![],
+    )
+    .with_async_delegate_spawner(spawner.clone())
+    .with_durable_memory_config(memory_config.clone());
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "root-session",
+            "show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            ConversationRuntimeBinding::direct(),
+        )
+        .await
+        .expect("delegate_async reply");
+
+    assert!(
+        reply.contains("delegate_active_children_exceeded"),
+        "expected active-child limit rejection, got: {reply}"
+    );
+    assert_eq!(
+        repo.list_visible_sessions("root-session")
+            .expect("list visible sessions")
+            .into_iter()
+            .filter(|session| session.parent_session_id.as_deref() == Some("root-session"))
+            .count(),
+        1,
+        "active-child limit rejection should not create another child session"
+    );
+    assert_eq!(
+        spawner
+            .requests
+            .lock()
+            .expect("async delegate requests lock")
+            .len(),
+        0,
+        "active-child limit rejection should happen before dispatching the async spawner"
     );
 }
 

@@ -105,6 +105,8 @@ pub struct DelegateToolConfig {
     pub enabled: bool,
     #[serde(default = "default_delegate_max_depth")]
     pub max_depth: usize,
+    #[serde(default = "default_delegate_max_active_children")]
+    pub max_active_children: usize,
     #[serde(default = "default_delegate_timeout_seconds")]
     pub timeout_seconds: u64,
     #[serde(default = "default_delegate_child_tool_allowlist")]
@@ -254,6 +256,7 @@ impl Default for DelegateToolConfig {
         Self {
             enabled: default_enabled(),
             max_depth: default_delegate_max_depth(),
+            max_active_children: default_delegate_max_active_children(),
             timeout_seconds: default_delegate_timeout_seconds(),
             child_tool_allowlist: default_delegate_child_tool_allowlist(),
             allow_shell_in_child: false,
@@ -401,6 +404,10 @@ const fn default_delegate_max_depth() -> usize {
     1
 }
 
+const fn default_delegate_max_active_children() -> usize {
+    5
+}
+
 const fn default_delegate_timeout_seconds() -> u64 {
     60
 }
@@ -472,6 +479,7 @@ mod tests {
         assert!(!config.messages.enabled);
         assert!(config.delegate.enabled);
         assert_eq!(config.delegate.max_depth, 1);
+        assert_eq!(config.delegate.max_active_children, 5);
         assert_eq!(config.delegate.timeout_seconds, 60);
         assert_eq!(
             config.delegate.child_tool_allowlist,
@@ -518,6 +526,7 @@ enabled = true
 [tools.delegate]
 enabled = false
 max_depth = 2
+max_active_children = 4
 timeout_seconds = 90
 allow_shell_in_child = true
 child_tool_allowlist = ["file.read", "shell.exec"]
@@ -543,6 +552,7 @@ child_tool_allowlist = ["file.read", "shell.exec"]
         assert!(parsed.tools.messages.enabled);
         assert!(!parsed.tools.delegate.enabled);
         assert_eq!(parsed.tools.delegate.max_depth, 2);
+        assert_eq!(parsed.tools.delegate.max_active_children, 4);
         assert_eq!(parsed.tools.delegate.timeout_seconds, 90);
         assert!(parsed.tools.delegate.allow_shell_in_child);
         assert_eq!(
