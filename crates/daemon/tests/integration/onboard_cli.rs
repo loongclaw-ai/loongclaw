@@ -779,6 +779,41 @@ async fn non_interactive_onboard_allows_explicit_skip_model_probe_warning() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn non_interactive_onboard_preserves_reviewed_auto_when_probe_is_skipped() {
+    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
+    let root = unique_temp_path("non-interactive-reviewed-auto-skip-root");
+    std::fs::create_dir_all(&root).expect("create test root");
+    let output = root.join("loongclaw.toml");
+    unsafe {
+        std::env::set_var("DEEPSEEK_API_KEY", "test-deepseek-key");
+    }
+
+    let mut options = default_non_interactive_onboard_options(&output);
+    options.provider = Some("deepseek".to_owned());
+    options.skip_model_probe = true;
+
+    let mut ui = ScriptedOnboardUi::new(std::iter::empty::<String>());
+    let context =
+        loongclaw_daemon::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, None);
+    loongclaw_daemon::onboard_cli::run_onboard_cli_with_ui(options, &mut ui, &context)
+        .await
+        .expect("skip-model-probe should allow non-interactive onboarding to keep reviewed auto providers on auto");
+
+    let raw = std::fs::read_to_string(&output).expect("read written onboarding config");
+    let (_, config) = mvp::config::load(Some(output.to_string_lossy().as_ref()))
+        .expect("load written onboarding config");
+    assert_eq!(config.provider.kind, mvp::config::ProviderKind::Deepseek);
+    assert_eq!(
+        config.provider.model, "auto",
+        "non-interactive onboarding should preserve model = auto when the operator did not explicitly pin a reviewed provider model"
+    );
+    assert!(
+        !raw.contains("model = \"deepseek-chat\""),
+        "skip-model-probe onboarding should not silently rewrite reviewed providers to the reviewed model: {raw}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn non_interactive_onboard_allows_explicit_model_probe_warning() {
     let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
     let root = unique_temp_path("non-interactive-explicit-model-warning-root");
@@ -816,6 +851,61 @@ async fn non_interactive_onboard_allows_explicit_model_probe_warning() {
                 && normalized.contains("authorization: bearer test-openai-key")
         }),
         "explicit-model warning path should still perform the model probe with resolved auth before allowing onboarding to continue: {requests:#?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn non_interactive_onboard_reports_reviewed_auto_probe_failure_without_rewriting_config() {
+    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
+    let root = unique_temp_path("non-interactive-reviewed-auto-failure-root");
+    std::fs::create_dir_all(&root).expect("create test root");
+    let output = root.join("loongclaw.toml");
+
+    let (addr, server) = start_local_model_probe_server_with_models_response(
+        1,
+        "HTTP/1.1 401 Unauthorized",
+        r#"{"error":{"message":"No cookie auth credentials found"}}"#,
+    );
+
+    let mut config = mvp::config::LoongClawConfig::default();
+    config.provider.kind = mvp::config::ProviderKind::Deepseek;
+    config.provider.base_url = format!("http://{addr}");
+    config.provider.model = "auto".to_owned();
+    config.provider.api_key = Some("test-deepseek-key".to_owned());
+    mvp::config::write(Some(output.to_string_lossy().as_ref()), &config, true)
+        .expect("write existing config");
+    let original_body = std::fs::read_to_string(&output).expect("read original config");
+
+    let mut options = default_non_interactive_onboard_options(&output);
+    options.force = true;
+    options.system_prompt = Some("force a pending write".to_owned());
+
+    let mut ui = ScriptedOnboardUi::new(std::iter::empty::<String>());
+    let context = crate::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, None);
+    let error = crate::onboard_cli::run_onboard_cli_with_ui(options, &mut ui, &context)
+        .await
+        .expect_err("reviewed auto-model probe failures should block non-interactive onboarding until the model is pinned explicitly");
+
+    assert!(
+        error.contains("accept reviewed model `deepseek-chat`")
+            && error.contains("provider.model")
+            && error.contains("preferred_models"),
+        "reviewed auto-model probe failures should surface the actionable explicit-model remediation instead of a generic rerun hint: {error}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&output).expect("read config after blocked onboard"),
+        original_body,
+        "blocking reviewed auto-model probe failures should leave the existing auto config untouched"
+    );
+
+    let requests = server.join().expect("join local provider server");
+    assert!(
+        requests.iter().any(|request| {
+            let normalized = request.to_ascii_lowercase();
+            request.starts_with("GET /v1/models ")
+                && normalized.contains("authorization: bearer test-deepseek-key")
+        }),
+        "reviewed auto-model failures should still attempt the provider model probe before surfacing the actionable remediation: {requests:#?}"
     );
 }
 

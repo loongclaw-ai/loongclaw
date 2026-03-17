@@ -3615,16 +3615,6 @@ fn preflight_attention_hint_line(checks: &[OnboardCheck]) -> Option<&'static str
     }) {
         return Some(crate::onboard_presentation::preflight_explicit_model_rerun_hint());
     }
-
-    if checks.iter().any(|check| {
-        matches!(
-            check.non_interactive_warning_policy,
-            OnboardNonInteractiveWarningPolicy::AcceptedBySkipModelProbe
-        )
-    }) {
-        return Some(crate::onboard_presentation::preflight_probe_rerun_hint());
-    }
-
     None
 }
 
@@ -6252,12 +6242,12 @@ mod tests {
     }
 
     #[test]
-    fn preflight_summary_keeps_skip_model_probe_hint_for_skip_accepted_checks() {
+    fn preflight_summary_omits_skip_model_probe_rerun_hint_after_probe_is_already_skipped() {
         let lines = render_preflight_summary_screen_lines(
             &[OnboardCheck {
                 name: "provider model probe",
                 level: OnboardCheckLevel::Warn,
-                detail: "provider rejected the model list".to_owned(),
+                detail: "skipped by --skip-model-probe".to_owned(),
                 non_interactive_warning_policy:
                     OnboardNonInteractiveWarningPolicy::AcceptedBySkipModelProbe,
             }],
@@ -6265,8 +6255,10 @@ mod tests {
         );
 
         assert!(
-            lines.iter().any(|line| line.contains("--skip-model-probe")),
-            "skip-model-probe-accepted checks should keep the rerun hint visible in the summary: {lines:#?}"
+            lines.iter().all(|line| {
+                line.as_str() != crate::onboard_presentation::preflight_probe_rerun_hint()
+            }),
+            "preflight should not suggest rerunning with --skip-model-probe after the current run already skipped the probe: {lines:#?}"
         );
     }
 
