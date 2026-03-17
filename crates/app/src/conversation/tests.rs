@@ -1170,7 +1170,8 @@ fn test_config() -> LoongClawConfig {
 }
 
 fn test_kernel_context(agent_id: &str) -> KernelContext {
-    crate::context::bootstrap_kernel_context(agent_id, 60).expect("bootstrap test kernel context")
+    crate::context::bootstrap_test_kernel_context(agent_id, 60)
+        .expect("bootstrap test kernel context")
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -1494,7 +1495,7 @@ async fn default_runtime_delegates_bootstrap_and_ingest_to_context_engine_with_k
         DefaultConversationRuntime::with_context_engine(RecordingLifecycleContextEngine {
             calls: calls.clone(),
         });
-    let kernel_ctx = crate::context::bootstrap_kernel_context("test-runtime-lifecycle", 60)
+    let kernel_ctx = crate::context::bootstrap_test_kernel_context("test-runtime-lifecycle", 60)
         .expect("bootstrap kernel context");
 
     let bootstrap = runtime
@@ -1531,7 +1532,7 @@ async fn default_runtime_delegates_subagent_lifecycle_to_context_engine_with_ker
         DefaultConversationRuntime::with_context_engine(RecordingLifecycleContextEngine {
             calls: calls.clone(),
         });
-    let kernel_ctx = crate::context::bootstrap_kernel_context("test-runtime-subagent", 60)
+    let kernel_ctx = crate::context::bootstrap_test_kernel_context("test-runtime-subagent", 60)
         .expect("bootstrap kernel context");
 
     runtime
@@ -1859,7 +1860,7 @@ async fn handle_turn_with_runtime_success_with_kernel_runs_lifecycle_hooks() {
         Ok("assistant-reply".to_owned()),
     );
     let coordinator = ConversationTurnCoordinator::new();
-    let kernel_ctx = crate::context::bootstrap_kernel_context("test-handle-turn-success", 60)
+    let kernel_ctx = crate::context::bootstrap_test_kernel_context("test-handle-turn-success", 60)
         .expect("bootstrap kernel context");
     let reply = coordinator
         .handle_turn_with_runtime(
@@ -9197,7 +9198,7 @@ async fn load_discovery_first_event_summary_preserves_public_kernel_context_sign
 #[cfg(not(feature = "memory-sqlite"))]
 #[tokio::test]
 async fn persist_turn_without_memory_sqlite_is_noop_with_kernel_context() {
-    let ctx = crate::context::bootstrap_kernel_context("test-agent-no-memory", 60)
+    let ctx = crate::context::bootstrap_test_kernel_context("test-agent-no-memory", 60)
         .expect("bootstrap kernel context without memory-sqlite");
     let runtime = DefaultConversationRuntime::default();
     runtime

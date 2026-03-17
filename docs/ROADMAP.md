@@ -447,7 +447,7 @@ instead of preceding it.
 ## Current Priority Order
 
 1. Kernel-first runtime closure and direct-path retirement
-2. Persistent audit sink and query baseline (`#172`)
+2. Persistent audit sink and query baseline
 3. ACP control-plane hardening and recovery
 4. Shared execution security tiers across process/browser/WASM lanes
 5. First-party workflow packs on hardened runtime primitives

@@ -1,6 +1,6 @@
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 // Re-export data types from contracts
@@ -49,7 +49,7 @@ impl AuditSink for InMemoryAuditSink {
 #[derive(Debug)]
 pub struct JsonlAuditSink {
     path: PathBuf,
-    write_lock: Mutex<()>,
+    journal: Mutex<File>,
 }
 
 impl JsonlAuditSink {
@@ -65,7 +65,7 @@ impl JsonlAuditSink {
             })?;
         }
 
-        OpenOptions::new()
+        let journal = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)
@@ -78,43 +78,69 @@ impl JsonlAuditSink {
 
         Ok(Self {
             path,
-            write_lock: Mutex::new(()),
+            journal: Mutex::new(journal),
         })
     }
 }
 
+fn serialize_audit_event_line(
+    event: &AuditEvent,
+    journal_path: &Path,
+) -> Result<Vec<u8>, AuditError> {
+    let mut encoded = serde_json::to_vec(event).map_err(|error| {
+        AuditError::Sink(format!(
+            "failed to serialize audit event for `{}`: {error}",
+            journal_path.display()
+        ))
+    })?;
+    encoded.push(b'\n');
+    Ok(encoded)
+}
+
 impl AuditSink for JsonlAuditSink {
     fn record(&self, event: AuditEvent) -> Result<(), AuditError> {
-        let _guard = self
-            .write_lock
+        let mut guard = self
+            .journal
             .lock()
-            .map_err(|_error| AuditError::Sink("audit write mutex poisoned".to_owned()))?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
+            .map_err(|_error| AuditError::Sink("audit journal mutex poisoned".to_owned()))?;
+        let encoded = serialize_audit_event_line(&event, &self.path)?;
+
+        guard.lock().map_err(|error| {
+            AuditError::Sink(format!(
+                "failed to lock audit journal `{}`: {error}",
+                self.path.display()
+            ))
+        })?;
+
+        let write_result = guard
+            .write_all(&encoded)
             .map_err(|error| {
                 AuditError::Sink(format!(
-                    "failed to open audit journal `{}` for append: {error}",
+                    "failed to append audit event to `{}`: {error}",
                     self.path.display()
                 ))
-            })?;
-        let json_line = serde_json::to_string(&event).map_err(|error| {
-            AuditError::Sink(format!("failed to serialize audit event: {error}"))
-        })?;
-        file.write_all(json_line.as_bytes()).map_err(|error| {
+            })
+            .and_then(|()| {
+                guard.flush().map_err(|error| {
+                    AuditError::Sink(format!(
+                        "failed to flush audit journal `{}`: {error}",
+                        self.path.display()
+                    ))
+                })
+            });
+
+        let unlock_result = guard.unlock().map_err(|error| {
             AuditError::Sink(format!(
-                "failed to write audit journal `{}`: {error}",
+                "failed to unlock audit journal `{}`: {error}",
                 self.path.display()
             ))
-        })?;
-        file.write_all(b"\n").map_err(|error| {
-            AuditError::Sink(format!(
-                "failed to finalize audit journal `{}`: {error}",
-                self.path.display()
-            ))
-        })?;
-        Ok(())
+        });
+
+        match (write_result, unlock_result) {
+            (Err(error), _) => Err(error),
+            (Ok(()), Err(error)) => Err(error),
+            (Ok(()), Ok(())) => Ok(()),
+        }
     }
 }
 
@@ -125,6 +151,10 @@ pub struct FanoutAuditSink {
 impl FanoutAuditSink {
     #[must_use]
     pub fn new(children: Vec<Arc<dyn AuditSink>>) -> Self {
+        assert!(
+            !children.is_empty(),
+            "fanout audit sink requires at least one child"
+        );
         Self { children }
     }
 }

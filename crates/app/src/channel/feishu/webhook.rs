@@ -823,7 +823,7 @@ mod tests {
     use super::*;
     use crate::channel::ChannelPlatform;
     use crate::config::{LoongClawConfig, ProviderConfig};
-    use crate::context::{DEFAULT_TOKEN_TTL_S, KernelContext, bootstrap_kernel_context};
+    use crate::context::{DEFAULT_TOKEN_TTL_S, KernelContext, bootstrap_test_kernel_context};
     use crate::tools::runtime_config::ToolRuntimeConfig;
     use axum::{
         Json, Router,
@@ -1508,7 +1508,7 @@ mod tests {
             .refresh_tenant_token()
             .await
             .expect("refresh tenant token before webhook test");
-        let kernel_ctx = bootstrap_kernel_context("feishu-webhook-test", DEFAULT_TOKEN_TTL_S)
+        let kernel_ctx = bootstrap_test_kernel_context("feishu-webhook-test", DEFAULT_TOKEN_TTL_S)
             .expect("bootstrap kernel context");
         let runtime = Arc::new(
             ChannelOperationRuntimeTracker::start(
@@ -1631,7 +1631,7 @@ mod tests {
             .expect("resolve feishu account");
         let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
         let kernel_ctx =
-            bootstrap_kernel_context("feishu-webhook-card-callback", DEFAULT_TOKEN_TTL_S)
+            bootstrap_test_kernel_context("feishu-webhook-card-callback", DEFAULT_TOKEN_TTL_S)
                 .expect("bootstrap kernel context");
         let runtime = Arc::new(
             ChannelOperationRuntimeTracker::start(
@@ -1737,9 +1737,11 @@ mod tests {
             .resolve_account(None)
             .expect("resolve feishu account");
         let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
-        let kernel_ctx =
-            bootstrap_kernel_context("feishu-webhook-card-callback-toast", DEFAULT_TOKEN_TTL_S)
-                .expect("bootstrap kernel context");
+        let kernel_ctx = bootstrap_test_kernel_context(
+            "feishu-webhook-card-callback-toast",
+            DEFAULT_TOKEN_TTL_S,
+        )
+        .expect("bootstrap kernel context");
         let runtime = Arc::new(
             ChannelOperationRuntimeTracker::start(
                 ChannelPlatform::Feishu,
@@ -1826,7 +1828,7 @@ mod tests {
             .expect("resolve feishu account");
         let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
         let kernel_ctx =
-            bootstrap_kernel_context("feishu-webhook-card-callback-card", DEFAULT_TOKEN_TTL_S)
+            bootstrap_test_kernel_context("feishu-webhook-card-callback-card", DEFAULT_TOKEN_TTL_S)
                 .expect("bootstrap kernel context");
         let runtime = Arc::new(
             ChannelOperationRuntimeTracker::start(
@@ -1917,7 +1919,7 @@ mod tests {
             .resolve_account(None)
             .expect("resolve feishu account");
         let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
-        let kernel_ctx = bootstrap_kernel_context(
+        let kernel_ctx = bootstrap_test_kernel_context(
             "feishu-webhook-card-callback-card-markdown",
             DEFAULT_TOKEN_TTL_S,
         )
@@ -2014,7 +2016,7 @@ mod tests {
             .resolve_account(None)
             .expect("resolve feishu account");
         let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
-        let kernel_ctx = bootstrap_kernel_context(
+        let kernel_ctx = bootstrap_test_kernel_context(
             "feishu-webhook-card-callback-card-with-toast",
             DEFAULT_TOKEN_TTL_S,
         )
@@ -2113,7 +2115,7 @@ mod tests {
             .resolve_account(None)
             .expect("resolve feishu account");
         let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
-        let kernel_ctx = bootstrap_kernel_context(
+        let kernel_ctx = bootstrap_test_kernel_context(
             "feishu-webhook-card-callback-card-markdown-with-toast",
             DEFAULT_TOKEN_TTL_S,
         )
@@ -2233,7 +2235,7 @@ mod tests {
             .resolve_account(None)
             .expect("resolve feishu account");
         let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
-        let kernel_ctx = bootstrap_kernel_context(
+        let kernel_ctx = bootstrap_test_kernel_context(
             "feishu-webhook-card-callback-invalid-toast",
             DEFAULT_TOKEN_TTL_S,
         )
@@ -2311,7 +2313,7 @@ mod tests {
             .resolve_account(None)
             .expect("resolve feishu account");
         let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
-        let kernel_ctx = bootstrap_kernel_context(
+        let kernel_ctx = bootstrap_test_kernel_context(
             "feishu-webhook-card-callback-invalid-card",
             DEFAULT_TOKEN_TTL_S,
         )
@@ -2385,9 +2387,11 @@ mod tests {
             .resolve_account(None)
             .expect("resolve feishu account");
         let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
-        let kernel_ctx =
-            bootstrap_kernel_context("feishu-webhook-card-callback-dedupe", DEFAULT_TOKEN_TTL_S)
-                .expect("bootstrap kernel context");
+        let kernel_ctx = bootstrap_test_kernel_context(
+            "feishu-webhook-card-callback-dedupe",
+            DEFAULT_TOKEN_TTL_S,
+        )
+        .expect("bootstrap kernel context");
         let runtime = Arc::new(
             ChannelOperationRuntimeTracker::start(
                 ChannelPlatform::Feishu,
@@ -2686,9 +2690,11 @@ mod tests {
             .resolve_account(None)
             .expect("resolve feishu account");
         let adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
-        let kernel_ctx =
-            bootstrap_kernel_context("feishu-webhook-card-callback-failure", DEFAULT_TOKEN_TTL_S)
-                .expect("bootstrap kernel context");
+        let kernel_ctx = bootstrap_test_kernel_context(
+            "feishu-webhook-card-callback-failure",
+            DEFAULT_TOKEN_TTL_S,
+        )
+        .expect("bootstrap kernel context");
         let runtime = Arc::new(
             ChannelOperationRuntimeTracker::start(
                 ChannelPlatform::Feishu,

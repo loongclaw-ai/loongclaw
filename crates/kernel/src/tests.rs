@@ -1,8 +1,10 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use proptest::prelude::*;
 use serde_json::json;
@@ -111,6 +113,50 @@ fn jsonl_audit_sink_surfaces_io_errors() {
     assert!(matches!(error, AuditError::Sink(_)));
 
     let _ = fs::remove_dir_all(path);
+}
+
+#[test]
+fn jsonl_audit_sink_waits_for_existing_file_lock_before_appending() {
+    let path = fresh_audit_temp_path("jsonl-lock");
+    let sink = JsonlAuditSink::new(path.clone()).expect("jsonl sink should initialize");
+    let external_lock = fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("open external audit journal handle");
+    external_lock
+        .lock()
+        .expect("hold external audit journal lock");
+
+    let (tx, rx) = mpsc::channel();
+    let handle = thread::spawn(move || {
+        let result = sink.record(sample_audit_event("evt-locked", 202));
+        tx.send(result).expect("send audit result");
+    });
+
+    match rx.recv_timeout(Duration::from_millis(100)) {
+        Err(mpsc::RecvTimeoutError::Timeout) => {}
+        Ok(result) => panic!("audit write should block on external file lock, got {result:?}"),
+        Err(error) => panic!("audit write channel closed unexpectedly: {error:?}"),
+    }
+
+    external_lock
+        .unlock()
+        .expect("release external audit journal lock");
+    rx.recv_timeout(Duration::from_secs(1))
+        .expect("audit write should complete after lock release")
+        .expect("audit write should succeed after lock release");
+    handle.join().expect("join audit writer thread");
+
+    let contents = fs::read_to_string(&path).expect("audit journal should exist");
+    assert_eq!(contents.lines().count(), 1);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+#[should_panic(expected = "fanout audit sink requires at least one child")]
+fn fanout_audit_sink_rejects_empty_children() {
+    let _ = FanoutAuditSink::new(Vec::new());
 }
 
 #[test]

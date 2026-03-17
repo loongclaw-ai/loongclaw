@@ -1,7 +1,5 @@
 # Alpha-Test Internal Runtime Hardening Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
-
 **Goal:** Turn the `alpha-test` internal runtime hardening direction into a clean execution package:
 one design doc, one implementation plan, one GitHub backlog document, one roadmap update, and a
 submission order for the next code streams.
@@ -16,7 +14,7 @@ research.
 
 ---
 
-### Task 1: Lock the planning package in repo docs
+## Task 1: Lock the planning package in repo docs
 
 **Files:**
 - Create: `docs/plans/2026-03-17-alpha-test-internal-runtime-hardening-design.md`
@@ -48,7 +46,7 @@ ls \
 
 Expected: all three planning files exist.
 
-### Task 2: Align the repository roadmap with the same priority order
+## Task 2: Align the repository roadmap with the same priority order
 
 **Files:**
 - Modify: `docs/ROADMAP.md`
@@ -85,7 +83,7 @@ git diff -- docs/ROADMAP.md
 
 Expected: only the intended priority and discussion updates are present.
 
-### Task 3: Prepare GitHub delivery for the planning package
+## Task 3: Prepare GitHub delivery for the planning package
 
 **Files:**
 - Create: `docs/plans/2026-03-17-alpha-test-internal-runtime-hardening-github-backlog.md`
@@ -116,7 +114,7 @@ Include:
 4. one deferred issue for workflow packs
 5. one PR body that closes the docs issue and references the umbrella/runtime issues
 
-### Task 4: Define Stream 1 as the next code track
+## Task 4: Define Stream 1 as the next code track
 
 **Files:**
 - Reference: `docs/plans/2026-03-15-conversation-runtime-binding-design.md`
@@ -150,7 +148,7 @@ The first Stream 1 implementation should be a narrow bounded slice such as:
 
 Do not open Stream 1 as a repo-wide mega-refactor.
 
-### Task 5: Treat Stream 2 as an immediate follow-on using the existing open issue
+## Task 5: Treat Stream 2 as an immediate follow-on using the existing open issue
 
 **Files:**
 - Reference: `docs/plans/2026-03-15-persistent-audit-sink-design.md`
@@ -170,7 +168,7 @@ The backlog document must say Stream 2 reuses issue `#172` and does not open a d
 Land the durable sink first. Query ergonomics may stay minimal in the first slice as long as
 operators can inspect and filter the retained evidence.
 
-### Task 6: Scope Stream 3 as decomposition and recovery, not capability expansion
+## Task 6: Scope Stream 3 as decomposition and recovery, not capability expansion
 
 **Files:**
 - Reference: `docs/design-docs/acp-acpx-preembed.md`
@@ -200,7 +198,7 @@ The issue must emphasize:
 3. better observability
 4. no new ACP surface-area inflation in the first slice
 
-### Task 7: Scope Stream 4 as one shared execution-tier model
+## Task 7: Scope Stream 4 as one shared execution-tier model
 
 **Files:**
 - Modify next: `docs/SECURITY.md`
@@ -225,7 +223,7 @@ Expected: the current lane vocabulary and drift points are visible.
 Do not start with a giant sandbox rewrite. Start with one shared tier model and one lane at a
 time.
 
-### Task 8: Defer Stream 5 until Streams 1-4 are underway
+## Task 8: Defer Stream 5 until Streams 1-4 are underway
 
 **Files:**
 - Create later: pack-specific docs, manifests, and product specs
@@ -239,7 +237,7 @@ The backlog should explicitly label workflow packs as dependent on the hardened 
 If a later PR adds a workflow pack before Streams 1-4 move, the reviewer should treat that as a
 priority-order violation unless it is purely exploratory.
 
-### Task 9: Run verification and prepare local delivery
+## Task 9: Run verification and prepare local delivery
 
 **Files:**
 - Modify: `docs/ROADMAP.md`

@@ -38,13 +38,16 @@ impl KernelContext {
     }
 }
 
-/// Bootstrap a minimal kernel suitable for MVP entry points.
+/// Bootstrap a minimal in-memory kernel suitable for tests.
 ///
 /// Registers a default pack manifest with `InvokeTool`, `MemoryRead`, and
 /// `MemoryWrite` capabilities, then issues a long-lived token for the given
 /// `agent_id`.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn bootstrap_kernel_context(
+///
+/// Production-facing runtime entrypoints should prefer
+/// `bootstrap_kernel_context_with_config` so audit retention follows config.
+#[cfg(test)]
+pub(crate) fn bootstrap_test_kernel_context(
     agent_id: &str,
     ttl_s: u64,
 ) -> Result<KernelContext, String> {
@@ -74,8 +77,8 @@ fn build_audit_sink(config: &LoongClawConfig) -> Result<Arc<dyn AuditSink>, Stri
             }
 
             Ok(Arc::new(FanoutAuditSink::new(vec![
-                Arc::new(InMemoryAuditSink::default()) as Arc<dyn AuditSink>,
                 durable,
+                Arc::new(InMemoryAuditSink::default()) as Arc<dyn AuditSink>,
             ])) as Arc<dyn AuditSink>)
         }
     }
@@ -193,6 +196,32 @@ mod tests {
         assert!(
             journal.contains("\"TokenIssued\"") || journal.contains("\"token_id\""),
             "bootstrap journal should capture token issuance"
+        );
+    }
+
+    #[test]
+    fn bootstrap_kernel_context_with_config_writes_fanout_audit_events() {
+        let tempdir = tempdir().expect("tempdir");
+        let audit_path = tempdir.path().join("audit").join("events.jsonl");
+        let mut config = LoongClawConfig::default();
+        config.audit.mode = AuditMode::Fanout;
+        config.audit.path = audit_path.display().to_string();
+        config.audit.retain_in_memory = true;
+
+        let context = bootstrap_kernel_context_with_config("test-agent", 60, &config)
+            .expect("bootstrap with fanout audit should succeed");
+
+        assert_eq!(context.agent_id(), "test-agent");
+
+        let journal = fs::read_to_string(&audit_path).expect("audit journal should exist");
+        assert_eq!(
+            journal.lines().count(),
+            1,
+            "token bootstrap should emit one audit event"
+        );
+        assert!(
+            journal.contains("\"TokenIssued\"") || journal.contains("\"token_id\""),
+            "fanout journal should capture token issuance"
         );
     }
 }

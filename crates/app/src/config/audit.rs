@@ -26,7 +26,11 @@ impl Default for AuditConfig {
 
 impl AuditConfig {
     pub fn resolved_path(&self) -> PathBuf {
-        expand_path(&self.path)
+        let trimmed = self.path.trim();
+        if trimmed.is_empty() {
+            return expand_path(&default_audit_path());
+        }
+        expand_path(trimmed)
     }
 }
 
@@ -79,5 +83,18 @@ mod tests {
         assert_eq!(AuditMode::InMemory.as_str(), "in_memory");
         assert_eq!(AuditMode::Jsonl.as_str(), "jsonl");
         assert_eq!(AuditMode::Fanout.as_str(), "fanout");
+    }
+
+    #[test]
+    fn audit_config_empty_path_falls_back_to_default_location() {
+        let config = AuditConfig {
+            path: "   ".to_owned(),
+            ..AuditConfig::default()
+        };
+
+        assert_eq!(
+            config.resolved_path(),
+            default_loongclaw_home().join("audit").join("events.jsonl")
+        );
     }
 }
