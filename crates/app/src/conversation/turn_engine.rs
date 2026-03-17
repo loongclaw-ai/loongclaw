@@ -904,6 +904,94 @@ pub struct TurnEngine {
     parallel_tool_execution_max_in_flight: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolBatchExecutionMode {
+    Sequential,
+    Parallel,
+}
+
+impl ToolBatchExecutionMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Sequential => "sequential",
+            Self::Parallel => "parallel",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PreparedBatchSegment {
+    len: usize,
+    scheduling_class: ToolSchedulingClass,
+    execution_mode: ToolBatchExecutionMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ToolBatchExecutionSegmentTrace {
+    pub segment_index: usize,
+    pub scheduling_class: ToolSchedulingClass,
+    pub execution_mode: ToolBatchExecutionMode,
+    pub intent_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ToolBatchExecutionTrace {
+    pub total_intents: usize,
+    pub parallel_execution_enabled: bool,
+    pub parallel_execution_max_in_flight: usize,
+    pub segments: Vec<ToolBatchExecutionSegmentTrace>,
+}
+
+impl ToolBatchExecutionTrace {
+    pub(crate) fn as_event_payload(&self) -> serde_json::Value {
+        let parallel_safe_intents = self
+            .segments
+            .iter()
+            .filter(|segment| segment.scheduling_class == ToolSchedulingClass::ParallelSafe)
+            .map(|segment| segment.intent_count)
+            .sum::<usize>();
+        let serial_only_intents = self
+            .segments
+            .iter()
+            .filter(|segment| segment.scheduling_class == ToolSchedulingClass::SerialOnly)
+            .map(|segment| segment.intent_count)
+            .sum::<usize>();
+        let parallel_segments = self
+            .segments
+            .iter()
+            .filter(|segment| segment.execution_mode == ToolBatchExecutionMode::Parallel)
+            .count();
+        let sequential_segments = self
+            .segments
+            .iter()
+            .filter(|segment| segment.execution_mode == ToolBatchExecutionMode::Sequential)
+            .count();
+
+        json!({
+            "schema_version": 1,
+            "total_intents": self.total_intents,
+            "parallel_execution_enabled": self.parallel_execution_enabled,
+            "parallel_execution_max_in_flight": self.parallel_execution_max_in_flight,
+            "parallel_safe_intents": parallel_safe_intents,
+            "serial_only_intents": serial_only_intents,
+            "parallel_segments": parallel_segments,
+            "sequential_segments": sequential_segments,
+            "segments": self
+                .segments
+                .iter()
+                .map(|segment| {
+                    json!({
+                        "segment_index": segment.segment_index,
+                        "scheduling_class": segment.scheduling_class.as_str(),
+                        "execution_mode": segment.execution_mode.as_str(),
+                        "intent_count": segment.intent_count,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 struct PreparedToolIntent {
     intent: ToolIntent,
@@ -1124,9 +1212,28 @@ impl TurnEngine {
         binding: ConversationRuntimeBinding<'_>,
         ingress: Option<&ConversationIngressContext>,
     ) -> TurnResult {
+        self.execute_turn_in_context_with_trace(
+            turn,
+            session_context,
+            app_dispatcher,
+            binding,
+            ingress,
+        )
+        .await
+        .0
+    }
+
+    pub(crate) async fn execute_turn_in_context_with_trace<D: AppToolDispatcher + ?Sized>(
+        &self,
+        turn: &ProviderTurn,
+        session_context: &SessionContext,
+        app_dispatcher: &D,
+        binding: ConversationRuntimeBinding<'_>,
+        ingress: Option<&ConversationIngressContext>,
+    ) -> (TurnResult, Option<ToolBatchExecutionTrace>) {
         match self.validate_turn_in_context(turn, session_context) {
-            Ok(TurnValidation::FinalText(text)) => return TurnResult::FinalText(text),
-            Err(failure) => return TurnResult::ToolDenied(failure),
+            Ok(TurnValidation::FinalText(text)) => return (TurnResult::FinalText(text), None),
+            Err(failure) => return (TurnResult::ToolDenied(failure), None),
             Ok(TurnValidation::ToolExecutionRequired) => {}
         }
 
@@ -1137,19 +1244,20 @@ impl TurnEngine {
                 .await
             {
                 Ok(prepared_intent) => prepared.push(prepared_intent),
-                Err(result) => return result,
+                Err(result) => return (result, None),
             }
         }
+        let trace = self.trace_prepared_batch(&prepared);
 
         let outputs = match self
             .execute_prepared_batch(&prepared, session_context, app_dispatcher, binding)
             .await
         {
             Ok(outputs) => outputs,
-            Err(result) => return result,
+            Err(result) => return (result, trace),
         };
 
-        TurnResult::FinalText(outputs.join("\n"))
+        (TurnResult::FinalText(outputs.join("\n")), trace)
     }
 
     async fn execute_prepared_batch<D: AppToolDispatcher + ?Sized>(
@@ -1159,39 +1267,23 @@ impl TurnEngine {
         app_dispatcher: &D,
         binding: ConversationRuntimeBinding<'_>,
     ) -> Result<Vec<String>, TurnResult> {
-        if !self.parallel_tool_execution_enabled || prepared.len() <= 1 {
-            return self
-                .execute_prepared_batch_sequential(
-                    prepared,
-                    session_context,
-                    app_dispatcher,
-                    binding,
-                )
-                .await;
-        }
-
         let mut outputs = Vec::with_capacity(prepared.len());
         let mut remaining = prepared;
-        while let Some((first, _)) = remaining.split_first() {
-            let scheduling_class = first.scheduling_class;
-            let segment_len = remaining
-                .iter()
-                .take_while(|prepared_intent| prepared_intent.scheduling_class == scheduling_class)
-                .count();
-            let (segment, rest) = remaining.split_at(segment_len);
-            let mut segment_outputs = match scheduling_class {
-                ToolSchedulingClass::ParallelSafe if segment.len() > 1 => {
+        for segment in self.prepared_batch_segments(prepared) {
+            let (prepared_segment, rest) = remaining.split_at(segment.len);
+            let mut segment_outputs = match segment.execution_mode {
+                ToolBatchExecutionMode::Parallel => {
                     self.execute_prepared_batch_in_parallel(
-                        segment,
+                        prepared_segment,
                         session_context,
                         app_dispatcher,
                         binding,
                     )
                     .await?
                 }
-                ToolSchedulingClass::ParallelSafe | ToolSchedulingClass::SerialOnly => {
+                ToolBatchExecutionMode::Sequential => {
                     self.execute_prepared_batch_sequential(
-                        segment,
+                        prepared_segment,
                         session_context,
                         app_dispatcher,
                         binding,
@@ -1204,6 +1296,70 @@ impl TurnEngine {
         }
 
         Ok(outputs)
+    }
+
+    fn trace_prepared_batch(
+        &self,
+        prepared: &[PreparedToolIntent],
+    ) -> Option<ToolBatchExecutionTrace> {
+        if prepared.is_empty() {
+            return None;
+        }
+
+        Some(ToolBatchExecutionTrace {
+            total_intents: prepared.len(),
+            parallel_execution_enabled: self.parallel_tool_execution_enabled,
+            parallel_execution_max_in_flight: self.parallel_tool_execution_max_in_flight,
+            segments: self
+                .prepared_batch_segments(prepared)
+                .into_iter()
+                .enumerate()
+                .map(|(segment_index, segment)| ToolBatchExecutionSegmentTrace {
+                    segment_index,
+                    scheduling_class: segment.scheduling_class,
+                    execution_mode: segment.execution_mode,
+                    intent_count: segment.len,
+                })
+                .collect(),
+        })
+    }
+
+    fn prepared_batch_segments(
+        &self,
+        prepared: &[PreparedToolIntent],
+    ) -> Vec<PreparedBatchSegment> {
+        let mut segments = Vec::new();
+        let mut remaining = prepared;
+        while let Some((first, _)) = remaining.split_first() {
+            let scheduling_class = first.scheduling_class;
+            let len = remaining
+                .iter()
+                .take_while(|prepared_intent| prepared_intent.scheduling_class == scheduling_class)
+                .count();
+            segments.push(PreparedBatchSegment {
+                len,
+                scheduling_class,
+                execution_mode: self.segment_execution_mode(scheduling_class, len),
+            });
+            let (_, rest) = remaining.split_at(len);
+            remaining = rest;
+        }
+        segments
+    }
+
+    fn segment_execution_mode(
+        &self,
+        scheduling_class: ToolSchedulingClass,
+        segment_len: usize,
+    ) -> ToolBatchExecutionMode {
+        if self.parallel_tool_execution_enabled
+            && scheduling_class == ToolSchedulingClass::ParallelSafe
+            && segment_len > 1
+        {
+            ToolBatchExecutionMode::Parallel
+        } else {
+            ToolBatchExecutionMode::Sequential
+        }
     }
 
     async fn execute_prepared_batch_sequential<D: AppToolDispatcher + ?Sized>(

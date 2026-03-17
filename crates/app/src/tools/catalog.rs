@@ -24,6 +24,15 @@ pub enum ToolSchedulingClass {
     ParallelSafe,
 }
 
+impl ToolSchedulingClass {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SerialOnly => "serial_only",
+            Self::ParallelSafe => "parallel_safe",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum ToolGovernanceScope {
     Routine,
