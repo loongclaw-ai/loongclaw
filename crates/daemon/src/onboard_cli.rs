@@ -172,6 +172,7 @@ impl OnboardUi for StdioOnboardUi {
                 .read_line(&mut input)
                 .map_err(|error| format!("read stdin failed: {error}"))?;
             drain_stdin();
+            let input = ensure_onboard_input_not_cancelled(input)?;
             let trimmed = input.trim();
             if trimmed.is_empty() {
                 if let Some(idx) = default {
