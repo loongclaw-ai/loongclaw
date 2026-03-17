@@ -40,8 +40,10 @@ them in the existing operator surfaces:
 
 1. review and onboarding success summaries:
    - show the current region endpoint choice clearly
-2. onboard and doctor model-probe failure messaging:
-   - append a targeted hint when the provider is region-sensitive
+2. onboard and doctor auth-style model-probe failure messaging:
+   - append a targeted hint only when the provider is region-sensitive and the
+     probe result is classified as an authentication or authorization rejection
+     (for example `401`/`403`-like failures)
 3. doctor next steps:
    - add a concrete `provider.base_url` adjustment step for those providers
 4. runtime auth rejection message path:
