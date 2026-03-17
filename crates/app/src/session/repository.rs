@@ -804,6 +804,23 @@ impl SessionRepository {
         Ok(depth)
     }
 
+    pub fn count_active_direct_children(&self, parent_session_id: &str) -> Result<usize, String> {
+        let parent_session_id = normalize_required_text(parent_session_id, "parent_session_id")?;
+        let conn = self.open_connection()?;
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM sessions
+                 WHERE parent_session_id = ?1
+                   AND state IN ('ready', 'running')",
+                params![parent_session_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("count active direct child sessions failed: {error}"))?;
+        usize::try_from(count)
+            .map_err(|error| format!("active direct child count overflowed usize: {error}"))
+    }
+
     pub fn lineage_root_session_id(&self, session_id: &str) -> Result<Option<String>, String> {
         let session_id = normalize_required_text(session_id, "session_id")?;
         let mut seen = BTreeSet::new();

@@ -10,6 +10,8 @@ use loongclaw_contracts::{ToolCoreOutcome, ToolCoreRequest};
 use serde_json::{Value, json};
 
 use crate::config::{SessionVisibility, ToolConfig};
+#[cfg(feature = "memory-sqlite")]
+use crate::conversation::ConstrainedSubagentExecution;
 use crate::memory;
 use crate::memory::runtime_config::MemoryRuntimeConfig;
 #[cfg(feature = "memory-sqlite")]
@@ -73,6 +75,7 @@ struct SessionDelegateLifecycleRecord {
     queued_at: Option<i64>,
     started_at: Option<i64>,
     timeout_seconds: Option<u64>,
+    execution: Option<ConstrainedSubagentExecution>,
     staleness: Option<SessionDelegateStalenessRecord>,
     cancellation: Option<SessionDelegateCancellationRecord>,
 }
@@ -1951,22 +1954,39 @@ fn session_delegate_lifecycle_at(
     let mut started_at = None;
     let mut queued_timeout_seconds = None;
     let mut started_timeout_seconds = None;
+    let mut execution = None;
     let mut cancellation = None;
     for event in recent_events {
         match event.event_kind.as_str() {
             "delegate_queued" => {
                 queued_at = Some(event.ts);
+                execution = execution.or_else(|| {
+                    ConstrainedSubagentExecution::from_event_payload(&event.payload_json)
+                });
                 queued_timeout_seconds = event
                     .payload_json
                     .get("timeout_seconds")
-                    .and_then(Value::as_u64);
+                    .and_then(Value::as_u64)
+                    .or_else(|| {
+                        execution
+                            .as_ref()
+                            .map(|execution| execution.timeout_seconds)
+                    });
             }
             "delegate_started" => {
                 started_at = Some(event.ts);
+                execution = execution.or_else(|| {
+                    ConstrainedSubagentExecution::from_event_payload(&event.payload_json)
+                });
                 started_timeout_seconds = event
                     .payload_json
                     .get("timeout_seconds")
-                    .and_then(Value::as_u64);
+                    .and_then(Value::as_u64)
+                    .or_else(|| {
+                        execution
+                            .as_ref()
+                            .map(|execution| execution.timeout_seconds)
+                    });
             }
             DELEGATE_CANCEL_REQUESTED_EVENT_KIND => {
                 let reason = event
@@ -2034,6 +2054,7 @@ fn session_delegate_lifecycle_at(
         queued_at,
         started_at,
         timeout_seconds,
+        execution,
         staleness,
         cancellation: if session.state == SessionState::Running {
             cancellation
@@ -2077,6 +2098,7 @@ fn session_delegate_lifecycle_json(lifecycle: SessionDelegateLifecycleRecord) ->
         "queued_at": lifecycle.queued_at,
         "started_at": lifecycle.started_at,
         "timeout_seconds": lifecycle.timeout_seconds,
+        "execution": lifecycle.execution,
         "staleness": lifecycle.staleness.map(session_delegate_staleness_json),
         "cancellation": lifecycle
             .cancellation
@@ -4524,7 +4546,18 @@ mod tests {
             payload_json: json!({
                 "task": "research",
                 "label": "Child",
-                "timeout_seconds": 60
+                "timeout_seconds": 60,
+                "execution": {
+                    "mode": "async",
+                    "depth": 1,
+                    "max_depth": 2,
+                    "active_children": 0,
+                    "max_active_children": 3,
+                    "timeout_seconds": 60,
+                    "allow_shell_in_child": false,
+                    "child_tool_allowlist": ["file.read", "file.write"],
+                    "kernel_bound": false
+                }
             }),
         })
         .expect("append queued event");
@@ -4554,6 +4587,38 @@ mod tests {
         );
         assert!(outcome.payload["delegate_lifecycle"]["queued_at"].is_number());
         assert!(outcome.payload["delegate_lifecycle"]["started_at"].is_null());
+        assert_eq!(
+            outcome.payload["delegate_lifecycle"]["execution"]["mode"],
+            "async"
+        );
+        assert_eq!(
+            outcome.payload["delegate_lifecycle"]["execution"]["depth"],
+            1
+        );
+        assert_eq!(
+            outcome.payload["delegate_lifecycle"]["execution"]["max_depth"],
+            2
+        );
+        assert_eq!(
+            outcome.payload["delegate_lifecycle"]["execution"]["active_children"],
+            0
+        );
+        assert_eq!(
+            outcome.payload["delegate_lifecycle"]["execution"]["max_active_children"],
+            3
+        );
+        assert_eq!(
+            outcome.payload["delegate_lifecycle"]["execution"]["allow_shell_in_child"],
+            false
+        );
+        assert_eq!(
+            outcome.payload["delegate_lifecycle"]["execution"]["child_tool_allowlist"],
+            json!(["file.read", "file.write"])
+        );
+        assert_eq!(
+            outcome.payload["delegate_lifecycle"]["execution"]["kernel_bound"],
+            false
+        );
     }
 
     #[test]

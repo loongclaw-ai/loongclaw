@@ -12,6 +12,7 @@ mod runtime_binding;
 mod safe_lane_failure;
 mod session_address;
 mod session_history;
+mod subagent;
 mod turn_budget;
 mod turn_coordinator;
 pub mod turn_engine;
@@ -62,6 +63,9 @@ pub use safe_lane_failure::{
 pub use session_address::ConversationSessionAddress;
 pub use session_history::load_discovery_first_event_summary;
 pub use session_history::{load_safe_lane_event_summary, load_turn_checkpoint_event_summary};
+pub use subagent::{
+    ConstrainedSubagentExecution, ConstrainedSubagentMode, ConstrainedSubagentTerminalReason,
+};
 pub use turn_budget::SafeLaneFailureRouteReason;
 pub use turn_coordinator::ConversationTurnCoordinator;
 pub(crate) use turn_coordinator::{TurnCheckpointDiagnostics, TurnCheckpointRecoveryAssessment};
