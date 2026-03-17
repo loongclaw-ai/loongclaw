@@ -67,6 +67,26 @@ impl OnboardRuntimeContext {
 #[derive(Debug, Default)]
 struct StdioOnboardUi;
 
+/// Discard any remaining lines in the terminal's tty input queue.
+///
+/// When a user pastes multi-line text at a single-line prompt, `read_line()`
+/// consumes only the first line. Remaining lines stay in the kernel's tty input
+/// queue and would be silently consumed by subsequent `read_line()` calls,
+/// corrupting downstream prompts. This function discards those leftover lines
+/// between prompts.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn drain_stdin_line_buffer() {
+    // SAFETY: tcflush is a POSIX function that discards unread terminal input.
+    // STDIN_FILENO is a well-defined constant. No memory or resource concerns.
+    unsafe {
+        libc::tcflush(libc::STDIN_FILENO, libc::TCIFLUSH);
+    }
+}
+
+#[cfg(not(unix))]
+fn drain_stdin_line_buffer() {}
+
 impl OnboardUi for StdioOnboardUi {
     fn print_line(&mut self, line: &str) -> CliResult<()> {
         println!("{line}");
@@ -82,6 +102,7 @@ impl OnboardUi for StdioOnboardUi {
         io::stdin()
             .read_line(&mut line)
             .map_err(|error| format!("read stdin failed: {error}"))?;
+        drain_stdin_line_buffer();
         let trimmed = line.trim();
         if trimmed.is_empty() {
             return Ok(default.to_owned());
@@ -98,6 +119,7 @@ impl OnboardUi for StdioOnboardUi {
         io::stdin()
             .read_line(&mut line)
             .map_err(|error| format!("read stdin failed: {error}"))?;
+        drain_stdin_line_buffer();
         Ok(line.trim().to_owned())
     }
 
@@ -111,6 +133,7 @@ impl OnboardUi for StdioOnboardUi {
         io::stdin()
             .read_line(&mut line)
             .map_err(|error| format!("read stdin failed: {error}"))?;
+        drain_stdin_line_buffer();
         let value = line.trim().to_ascii_lowercase();
         if value.is_empty() {
             return Ok(default);
