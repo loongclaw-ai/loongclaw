@@ -2,6 +2,9 @@ use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::thread;
+use std::time::Duration;
 
 use loongclaw_app as mvp;
 use loongclaw_spec::CliResult;
@@ -13,6 +16,9 @@ const BACKUP_TIMESTAMP_FORMAT: &[FormatItem<'static>] =
     format_description!("[year][month][day]-[hour][minute][second]");
 const ONBOARD_CLEAR_INPUT_TOKEN: &str = ":clear";
 const ONBOARD_ESCAPE_CANCEL_HINT: &str = "- press Esc then Enter to cancel onboarding";
+const ONBOARD_SINGLE_LINE_INPUT_HINT: &str =
+    "- terminal input is single line; extra pasted lines are ignored";
+const ONBOARD_PASTE_DRAIN_WINDOW: Duration = Duration::from_millis(20);
 
 #[derive(Debug, Clone)]
 pub struct OnboardCommandOptions {
@@ -93,8 +99,150 @@ impl OnboardRuntimeContext {
     }
 }
 
+trait OnboardPromptLineReader {
+    fn read_blocking_line(&mut self) -> CliResult<OnboardPromptRead>;
+    fn read_pending_line(&mut self) -> CliResult<Option<String>>;
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum OnboardPromptRead {
+    Line(String),
+    Eof,
+}
+
+#[derive(Debug)]
+enum StdioOnboardLineMessage {
+    Line(String),
+    Eof,
+    Error(String),
+}
+
+#[derive(Debug)]
+enum StdioOnboardLineReader {
+    Background {
+        receiver: Receiver<StdioOnboardLineMessage>,
+    },
+    Direct,
+}
+
+impl Default for StdioOnboardLineReader {
+    fn default() -> Self {
+        let (sender, receiver) = mpsc::channel();
+        match thread::Builder::new()
+            .name("loongclaw-onboard-stdin".to_owned())
+            .spawn(move || {
+                loop {
+                    let mut line = String::new();
+                    match io::stdin().read_line(&mut line) {
+                        Ok(0) => {
+                            let _ = sender.send(StdioOnboardLineMessage::Eof);
+                            break;
+                        }
+                        Ok(_) => {
+                            if sender.send(StdioOnboardLineMessage::Line(line)).is_err() {
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            let _ = sender.send(StdioOnboardLineMessage::Error(format!(
+                                "read stdin failed: {error}"
+                            )));
+                            break;
+                        }
+                    }
+                }
+            }) {
+            Ok(_handle) => Self::Background { receiver },
+            Err(_) => Self::Direct,
+        }
+    }
+}
+
+impl OnboardPromptLineReader for StdioOnboardLineReader {
+    fn read_blocking_line(&mut self) -> CliResult<OnboardPromptRead> {
+        match self {
+            Self::Background { receiver } => match receiver.recv() {
+                Ok(StdioOnboardLineMessage::Line(line)) => Ok(OnboardPromptRead::Line(line)),
+                Ok(StdioOnboardLineMessage::Eof) => Ok(OnboardPromptRead::Eof),
+                Ok(StdioOnboardLineMessage::Error(error)) => Err(error),
+                Err(_) => Ok(OnboardPromptRead::Eof),
+            },
+            Self::Direct => {
+                let mut line = String::new();
+                let bytes_read = io::stdin()
+                    .read_line(&mut line)
+                    .map_err(|error| format!("read stdin failed: {error}"))?;
+                if bytes_read == 0 {
+                    return Ok(OnboardPromptRead::Eof);
+                }
+                Ok(OnboardPromptRead::Line(line))
+            }
+        }
+    }
+
+    fn read_pending_line(&mut self) -> CliResult<Option<String>> {
+        match self {
+            Self::Background { receiver } => {
+                match receiver.recv_timeout(ONBOARD_PASTE_DRAIN_WINDOW) {
+                    Ok(StdioOnboardLineMessage::Line(line)) => Ok(Some(line)),
+                    Ok(StdioOnboardLineMessage::Eof) => Ok(None),
+                    Ok(StdioOnboardLineMessage::Error(error)) => Err(error),
+                    Err(RecvTimeoutError::Timeout) | Err(RecvTimeoutError::Disconnected) => {
+                        Ok(None)
+                    }
+                }
+            }
+            Self::Direct => Ok(None),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
-struct StdioOnboardUi;
+struct StdioOnboardUi {
+    line_reader: StdioOnboardLineReader,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct OnboardPromptCapture {
+    raw: String,
+    dropped_line_count: usize,
+    reached_eof: bool,
+}
+
+fn read_single_line_prompt_capture(
+    reader: &mut impl OnboardPromptLineReader,
+) -> CliResult<OnboardPromptCapture> {
+    let read = reader.read_blocking_line()?;
+    let mut dropped_line_count = 0;
+    let (raw, reached_eof) = match read {
+        OnboardPromptRead::Line(raw) => {
+            while reader.read_pending_line()?.is_some() {
+                dropped_line_count += 1;
+            }
+            (raw, false)
+        }
+        OnboardPromptRead::Eof => (String::new(), true),
+    };
+    Ok(OnboardPromptCapture {
+        raw,
+        dropped_line_count,
+        reached_eof,
+    })
+}
+
+fn print_dropped_paste_notice(label: &str, dropped_line_count: usize) {
+    if dropped_line_count == 0 {
+        return;
+    }
+    let noun = if dropped_line_count == 1 {
+        "line"
+    } else {
+        "lines"
+    };
+    println!(
+        "note: {label} accepts a single line; ignored {dropped_line_count} extra pasted {noun}"
+    );
+}
 
 impl OnboardUi for StdioOnboardUi {
     fn print_line(&mut self, line: &str) -> CliResult<()> {
@@ -107,12 +255,9 @@ impl OnboardUi for StdioOnboardUi {
         io::stdout()
             .flush()
             .map_err(|error| format!("flush stdout failed: {error}"))?;
-        let mut line = String::new();
-        io::stdin()
-            .read_line(&mut line)
-            .map_err(|error| format!("read stdin failed: {error}"))?;
-        drain_stdin();
-        let line = ensure_onboard_input_not_cancelled(line)?;
+        let capture = read_single_line_prompt_capture(&mut self.line_reader)?;
+        let line = ensure_onboard_input_not_cancelled(capture.raw)?;
+        print_dropped_paste_notice(label, capture.dropped_line_count);
         let trimmed = line.trim();
         if trimmed.is_empty() {
             return Ok(default.to_owned());
@@ -125,12 +270,9 @@ impl OnboardUi for StdioOnboardUi {
         io::stdout()
             .flush()
             .map_err(|error| format!("flush stdout failed: {error}"))?;
-        let mut line = String::new();
-        io::stdin()
-            .read_line(&mut line)
-            .map_err(|error| format!("read stdin failed: {error}"))?;
-        drain_stdin();
-        let line = ensure_onboard_input_not_cancelled(line)?;
+        let capture = read_single_line_prompt_capture(&mut self.line_reader)?;
+        let line = ensure_onboard_input_not_cancelled(capture.raw)?;
+        print_dropped_paste_notice(label, capture.dropped_line_count);
         Ok(line.trim().to_owned())
     }
 
@@ -140,12 +282,9 @@ impl OnboardUi for StdioOnboardUi {
         io::stdout()
             .flush()
             .map_err(|error| format!("flush stdout failed: {error}"))?;
-        let mut line = String::new();
-        io::stdin()
-            .read_line(&mut line)
-            .map_err(|error| format!("read stdin failed: {error}"))?;
-        drain_stdin();
-        let line = ensure_onboard_input_not_cancelled(line)?;
+        let capture = read_single_line_prompt_capture(&mut self.line_reader)?;
+        let line = ensure_onboard_input_not_cancelled(capture.raw)?;
+        print_dropped_paste_notice(message, capture.dropped_line_count);
         let value = line.trim().to_ascii_lowercase();
         if value.is_empty() {
             return Ok(default);
@@ -182,15 +321,12 @@ impl OnboardUi for StdioOnboardUi {
             io::stdout()
                 .flush()
                 .map_err(|error| format!("flush stdout failed: {error}"))?;
-            let mut input = String::new();
-            let bytes_read = io::stdin()
-                .read_line(&mut input)
-                .map_err(|error| format!("read stdin failed: {error}"))?;
-            drain_stdin();
-            if bytes_read == 0 {
+            let capture = read_single_line_prompt_capture(&mut self.line_reader)?;
+            print_dropped_paste_notice(label, capture.dropped_line_count);
+            if capture.reached_eof {
                 return resolve_select_one_eof(default);
             }
-            let input = ensure_onboard_input_not_cancelled(input)?;
+            let input = ensure_onboard_input_not_cancelled(capture.raw)?;
             let trimmed = input.trim();
             if trimmed.is_empty() {
                 if let Some(idx) = default {
@@ -253,53 +389,6 @@ fn resolve_select_one_eof(default: Option<usize>) -> CliResult<usize> {
         "onboarding cancelled: stdin closed while waiting for required selection".to_owned()
     })
 }
-
-/// Drain any buffered bytes from stdin so that multi-line pastes do not
-/// leak into subsequent prompts.
-///
-/// Drains both Rust's internal `BufReader` (used by `stdin().read_line()`)
-/// and the OS-level kernel buffer via non-blocking `libc::read`.
-#[cfg(unix)]
-#[allow(unsafe_code)]
-fn drain_stdin() {
-    use std::io::Read;
-    use std::os::unix::io::AsRawFd;
-
-    let stdin = std::io::stdin();
-    let fd = stdin.as_raw_fd();
-
-    // SAFETY: fcntl(F_GETFL) reads the file-descriptor flags for stdin,
-    // which is a well-defined POSIX operation with no memory concerns.
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-    if flags < 0 {
-        return;
-    }
-    // SAFETY: fcntl(F_SETFL) temporarily sets stdin to non-blocking mode
-    // so we can drain without hanging. The original flags are restored below.
-    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-        return;
-    }
-
-    // Drain Rust's internal BufReader via stdin().lock().
-    // This consumes bytes already buffered in userspace that libc::read cannot reach.
-    {
-        let mut handle = stdin.lock();
-        let mut discard = [0u8; 1024];
-        loop {
-            match handle.read(&mut discard) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => continue,
-            }
-        }
-    }
-
-    // SAFETY: restoring the original file-descriptor flags is a well-defined
-    // POSIX operation with no memory concerns.
-    unsafe { libc::fcntl(fd, libc::F_SETFL, flags) };
-}
-
-#[cfg(not(unix))]
-fn drain_stdin() {}
 
 fn print_lines(ui: &mut impl OnboardUi, lines: impl IntoIterator<Item = String>) -> CliResult<()> {
     for line in lines {
@@ -683,7 +772,7 @@ pub type ChannelImportReadiness = crate::migration::ChannelImportReadiness;
 
 pub async fn run_onboard_cli(options: OnboardCommandOptions) -> CliResult<()> {
     let context = OnboardRuntimeContext::capture();
-    let mut ui = StdioOnboardUi;
+    let mut ui = StdioOnboardUi::default();
     run_onboard_cli_with_ui(options, &mut ui, &context).await
 }
 
@@ -4686,6 +4775,7 @@ fn render_system_prompt_selection_screen_lines_with_style(
             } else {
                 render_clear_input_hint_line("use the built-in behavior")
             },
+            ONBOARD_SINGLE_LINE_INPUT_HINT.to_owned(),
         ],
         color_enabled,
     )
@@ -4815,6 +4905,7 @@ fn render_prompt_addendum_selection_screen_lines_with_style(
         vec![
             "- blank keeps the current addendum".to_owned(),
             "- type '-' to clear it".to_owned(),
+            ONBOARD_SINGLE_LINE_INPUT_HINT.to_owned(),
         ],
         color_enabled,
     )
@@ -5653,6 +5744,36 @@ mod tests {
                 return Ok(default);
             }
             Ok(matches!(value.as_str(), "y" | "yes"))
+        }
+    }
+
+    struct TestPromptLineReader {
+        blocking_reads: VecDeque<OnboardPromptRead>,
+        pending_lines: VecDeque<String>,
+    }
+
+    impl TestPromptLineReader {
+        fn new(
+            blocking_reads: impl IntoIterator<Item = OnboardPromptRead>,
+            pending_lines: impl IntoIterator<Item = impl Into<String>>,
+        ) -> Self {
+            Self {
+                blocking_reads: blocking_reads.into_iter().collect(),
+                pending_lines: pending_lines.into_iter().map(Into::into).collect(),
+            }
+        }
+    }
+
+    impl OnboardPromptLineReader for TestPromptLineReader {
+        fn read_blocking_line(&mut self) -> CliResult<OnboardPromptRead> {
+            Ok(self
+                .blocking_reads
+                .pop_front()
+                .unwrap_or(OnboardPromptRead::Eof))
+        }
+
+        fn read_pending_line(&mut self) -> CliResult<Option<String>> {
+            Ok(self.pending_lines.pop_front())
         }
     }
 
@@ -6603,6 +6724,59 @@ mod tests {
             .expect("required prompt should preserve stdio trimming semantics");
 
         assert_eq!(value, "minimax");
+    }
+
+    #[test]
+    fn single_line_prompt_capture_drains_follow_up_paste_before_next_prompt() {
+        let mut reader = TestPromptLineReader::new(
+            [
+                OnboardPromptRead::Line("You are helpful.\n".to_owned()),
+                OnboardPromptRead::Line("window-plus-summary\n".to_owned()),
+            ],
+            ["Always be concise.\n"],
+        );
+
+        let first = read_single_line_prompt_capture(&mut reader)
+            .expect("first prompt capture should succeed");
+        let second = read_single_line_prompt_capture(&mut reader)
+            .expect("second prompt capture should consume the next real prompt line");
+
+        assert_eq!(first.raw, "You are helpful.\n");
+        assert_eq!(first.dropped_line_count, 1);
+        assert!(!first.reached_eof);
+        assert_eq!(second.raw, "window-plus-summary\n");
+        assert_eq!(second.dropped_line_count, 0);
+        assert!(!second.reached_eof);
+    }
+
+    #[test]
+    fn prompt_addendum_screen_mentions_single_line_terminal_input() {
+        let lines = render_prompt_addendum_selection_screen_lines(
+            &mvp::config::LoongClawConfig::default(),
+            80,
+        );
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("single line") && line.contains("ignored")),
+            "prompt addendum screen should explain how terminal onboarding handles pasted multiline text: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn system_prompt_screen_mentions_single_line_terminal_input() {
+        let lines = render_system_prompt_selection_screen_lines(
+            &mvp::config::LoongClawConfig::default(),
+            80,
+        );
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("single line") && line.contains("ignored")),
+            "system prompt screen should explain how terminal onboarding handles pasted multiline text: {lines:#?}"
+        );
     }
 
     #[test]
