@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use loongclaw_contracts::Capability;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::CliResult;
 use crate::KernelContext;
@@ -27,7 +27,8 @@ use super::runtime_binding::ConversationRuntimeBinding;
 use super::subagent::ConstrainedSubagentExecution;
 use super::turn_engine::ProviderTurn;
 use super::turn_middleware::{
-    ConversationTurnMiddleware, SystemPromptAdditionTurnMiddleware, TurnMiddlewareMetadata,
+    ConversationTurnMiddleware, SystemPromptAdditionTurnMiddleware,
+    SystemPromptToolViewTurnMiddleware, TurnMiddlewareMetadata,
 };
 use super::turn_middleware_registry::{
     default_turn_middleware_ids, describe_turn_middlewares, list_turn_middleware_metadata,
@@ -384,7 +385,10 @@ impl<E> DefaultConversationRuntime<E> {
     pub fn with_context_engine(context_engine: E) -> Self {
         Self {
             context_engine,
-            turn_middlewares: vec![Box::new(SystemPromptAdditionTurnMiddleware)],
+            turn_middlewares: vec![
+                Box::new(SystemPromptAdditionTurnMiddleware),
+                Box::new(SystemPromptToolViewTurnMiddleware),
+            ],
         }
     }
 
@@ -403,6 +407,43 @@ impl<E> DefaultConversationRuntime<E>
 where
     E: ConversationContextEngine,
 {
+    async fn build_context_for_tool_view(
+        &self,
+        config: &LoongClawConfig,
+        session_context: &SessionContext,
+        include_system_prompt: bool,
+        requested_tool_view: &ToolView,
+        binding: ConversationRuntimeBinding<'_>,
+    ) -> CliResult<AssembledConversationContext> {
+        let runtime_tool_view = crate::tools::runtime_tool_view_from_loongclaw_config(config);
+        let mut assembled = self
+            .context_engine
+            .assemble_context(
+                config,
+                session_context.session_id.as_str(),
+                include_system_prompt,
+                binding,
+            )
+            .await?;
+        let delegate_runtime_contract = include_system_prompt
+            .then(|| delegate_child_runtime_contract_prompt_summary(config, session_context))
+            .flatten();
+        assembled.system_prompt_addition = merge_system_prompt_additions(
+            assembled.system_prompt_addition.as_deref(),
+            delegate_runtime_contract.as_deref(),
+        );
+        self.apply_turn_middlewares_to_context(
+            config,
+            session_context.session_id.as_str(),
+            include_system_prompt,
+            assembled,
+            &runtime_tool_view,
+            requested_tool_view,
+            binding,
+        )
+        .await
+    }
+
     pub fn context_engine_metadata(&self) -> ContextEngineMetadata {
         self.context_engine.metadata()
     }
@@ -444,6 +485,8 @@ where
         session_id: &str,
         include_system_prompt: bool,
         mut assembled: AssembledConversationContext,
+        runtime_tool_view: &ToolView,
+        requested_tool_view: &ToolView,
         binding: ConversationRuntimeBinding<'_>,
     ) -> CliResult<AssembledConversationContext> {
         for middleware in &self.turn_middlewares {
@@ -453,6 +496,8 @@ where
                     session_id,
                     include_system_prompt,
                     assembled,
+                    runtime_tool_view,
+                    requested_tool_view,
                     binding,
                 )
                 .await?;
@@ -830,34 +875,14 @@ where
         binding: ConversationRuntimeBinding<'_>,
     ) -> CliResult<AssembledConversationContext> {
         let session_context = self.session_context(config, session_id, binding)?;
-        let mut assembled = self
-            .context_engine
-            .assemble_context(config, session_id, include_system_prompt, binding)
-            .await?;
-        let delegate_runtime_contract = include_system_prompt
-            .then(|| delegate_child_runtime_contract_prompt_summary(config, &session_context))
-            .flatten();
-        assembled.system_prompt_addition = merge_system_prompt_additions(
-            assembled.system_prompt_addition.as_deref(),
-            delegate_runtime_contract.as_deref(),
-        );
-        assembled = self
-            .apply_turn_middlewares_to_context(
-                config,
-                session_id,
-                include_system_prompt,
-                assembled,
-                binding,
-            )
-            .await?;
-        if include_system_prompt {
-            apply_tool_view_to_system_prompt_if_needed(
-                &mut assembled.messages,
-                &crate::tools::runtime_tool_view_from_loongclaw_config(config),
-                &session_context.tool_view,
-            );
-        }
-        Ok(assembled)
+        self.build_context_for_tool_view(
+            config,
+            &session_context,
+            include_system_prompt,
+            &session_context.tool_view,
+            binding,
+        )
+        .await
     }
 
     async fn build_messages(
@@ -868,16 +893,16 @@ where
         tool_view: &ToolView,
         binding: ConversationRuntimeBinding<'_>,
     ) -> CliResult<Vec<Value>> {
-        self.build_context(config, session_id, include_system_prompt, binding)
-            .await
-            .map(|mut assembled| {
-                apply_tool_view_to_system_prompt_if_needed(
-                    &mut assembled.messages,
-                    &crate::tools::runtime_tool_view_from_loongclaw_config(config),
-                    tool_view,
-                );
-                assembled.messages
-            })
+        let session_context = self.session_context(config, session_id, binding)?;
+        self.build_context_for_tool_view(
+            config,
+            &session_context,
+            include_system_prompt,
+            tool_view,
+            binding,
+        )
+        .await
+        .map(|assembled| assembled.messages)
     }
 
     async fn request_completion(
@@ -1053,49 +1078,6 @@ fn merge_system_prompt_additions(existing: Option<&str>, extra: Option<&str>) ->
         (None, None) => None,
     }
 }
-fn apply_tool_view_to_system_prompt_if_needed(
-    messages: &mut [Value],
-    runtime_tool_view: &ToolView,
-    requested_tool_view: &ToolView,
-) {
-    if requested_tool_view != runtime_tool_view {
-        apply_tool_view_to_system_prompt(messages, requested_tool_view);
-    }
-}
-
-fn apply_tool_view_to_system_prompt(messages: &mut [Value], tool_view: &ToolView) {
-    for message in messages.iter_mut() {
-        let is_system = message.get("role").and_then(Value::as_str) == Some("system");
-        if !is_system {
-            continue;
-        }
-
-        let Some(content) = message
-            .get("content")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-        else {
-            continue;
-        };
-        let Some(snapshot_start) = content.find("[available_tools]") else {
-            continue;
-        };
-        let snapshot = crate::tools::capability_snapshot_for_view(tool_view);
-
-        let prefix = content[..snapshot_start].trim_end();
-        let rewritten = if prefix.is_empty() {
-            snapshot
-        } else {
-            format!("{prefix}\n\n{snapshot}")
-        };
-
-        if let Some(object) = message.as_object_mut() {
-            object.insert("content".to_owned(), Value::String(rewritten));
-        }
-        return;
-    }
-}
-
 fn normalize_turn_middleware_ids(ids: Vec<String>) -> Vec<String> {
     let mut seen = BTreeSet::new();
     let mut normalized = Vec::new();

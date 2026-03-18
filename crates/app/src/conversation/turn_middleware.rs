@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use crate::config::LoongClawConfig;
+use crate::tools::ToolView;
 use crate::{CliResult, KernelContext};
 
 use super::context_engine::AssembledConversationContext;
@@ -11,6 +12,7 @@ use super::runtime_binding::ConversationRuntimeBinding;
 
 pub const TURN_MIDDLEWARE_API_VERSION: u16 = 1;
 pub const SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID: &str = "system-prompt-addition";
+pub const SYSTEM_PROMPT_TOOL_VIEW_TURN_MIDDLEWARE_ID: &str = "system-prompt-tool-view";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TurnMiddlewareCapability {
@@ -66,6 +68,9 @@ impl TurnMiddlewareMetadata {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SystemPromptAdditionTurnMiddleware;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SystemPromptToolViewTurnMiddleware;
+
 #[async_trait]
 pub trait ConversationTurnMiddleware: Send + Sync {
     fn id(&self) -> &'static str;
@@ -98,6 +103,8 @@ pub trait ConversationTurnMiddleware: Send + Sync {
         _session_id: &str,
         _include_system_prompt: bool,
         assembled: AssembledConversationContext,
+        _runtime_tool_view: &ToolView,
+        _requested_tool_view: &ToolView,
         _binding: ConversationRuntimeBinding<'_>,
     ) -> CliResult<AssembledConversationContext> {
         Ok(assembled)
@@ -159,12 +166,41 @@ impl ConversationTurnMiddleware for SystemPromptAdditionTurnMiddleware {
         _session_id: &str,
         _include_system_prompt: bool,
         mut assembled: AssembledConversationContext,
+        _runtime_tool_view: &ToolView,
+        _requested_tool_view: &ToolView,
         _binding: ConversationRuntimeBinding<'_>,
     ) -> CliResult<AssembledConversationContext> {
         apply_system_prompt_addition(
             &mut assembled.messages,
             assembled.system_prompt_addition.as_deref(),
         );
+        Ok(assembled)
+    }
+}
+
+#[async_trait]
+impl ConversationTurnMiddleware for SystemPromptToolViewTurnMiddleware {
+    fn id(&self) -> &'static str {
+        SYSTEM_PROMPT_TOOL_VIEW_TURN_MIDDLEWARE_ID
+    }
+
+    fn metadata(&self) -> TurnMiddlewareMetadata {
+        TurnMiddlewareMetadata::new(self.id(), [TurnMiddlewareCapability::ContextTransform])
+    }
+
+    async fn transform_context(
+        &self,
+        _config: &LoongClawConfig,
+        _session_id: &str,
+        include_system_prompt: bool,
+        mut assembled: AssembledConversationContext,
+        runtime_tool_view: &ToolView,
+        requested_tool_view: &ToolView,
+        _binding: ConversationRuntimeBinding<'_>,
+    ) -> CliResult<AssembledConversationContext> {
+        if include_system_prompt && requested_tool_view != runtime_tool_view {
+            apply_tool_view_to_system_prompt(&mut assembled.messages, requested_tool_view);
+        }
         Ok(assembled)
     }
 }
@@ -202,6 +238,39 @@ pub(crate) fn apply_system_prompt_addition(messages: &mut Vec<Value>, addition: 
             "content": addition,
         }),
     );
+}
+
+fn apply_tool_view_to_system_prompt(messages: &mut [Value], tool_view: &ToolView) {
+    for message in messages.iter_mut() {
+        let is_system = message.get("role").and_then(Value::as_str) == Some("system");
+        if !is_system {
+            continue;
+        }
+
+        let Some(content) = message
+            .get("content")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        let Some(snapshot_start) = content.find("[available_tools]") else {
+            continue;
+        };
+        let snapshot = crate::tools::capability_snapshot_for_view(tool_view);
+
+        let prefix = content[..snapshot_start].trim_end();
+        let rewritten = if prefix.is_empty() {
+            snapshot
+        } else {
+            format!("{prefix}\n\n{snapshot}")
+        };
+
+        if let Some(object) = message.as_object_mut() {
+            object.insert("content".to_owned(), Value::String(rewritten));
+        }
+        return;
+    }
 }
 
 #[async_trait]
@@ -243,6 +312,8 @@ where
         session_id: &str,
         include_system_prompt: bool,
         assembled: AssembledConversationContext,
+        runtime_tool_view: &ToolView,
+        requested_tool_view: &ToolView,
         binding: ConversationRuntimeBinding<'_>,
     ) -> CliResult<AssembledConversationContext> {
         self.as_ref()
@@ -251,6 +322,8 @@ where
                 session_id,
                 include_system_prompt,
                 assembled,
+                runtime_tool_view,
+                requested_tool_view,
                 binding,
             )
             .await
