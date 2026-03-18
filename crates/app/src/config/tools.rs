@@ -1,0 +1,946 @@
+use std::{collections::BTreeSet, path::PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use super::shared::{ConfigValidationIssue, expand_path, validate_numeric_range};
+
+pub const DEFAULT_WEB_FETCH_MAX_BYTES: usize = 1024 * 1024;
+pub const DEFAULT_WEB_FETCH_TIMEOUT_SECONDS: u64 = 15;
+pub const DEFAULT_WEB_FETCH_MAX_REDIRECTS: usize = 3;
+pub const DEFAULT_BROWSER_MAX_SESSIONS: usize = 8;
+pub const DEFAULT_BROWSER_MAX_LINKS: usize = 40;
+pub const DEFAULT_BROWSER_MAX_TEXT_CHARS: usize = 6000;
+pub const DEFAULT_BROWSER_COMPANION_TIMEOUT_SECONDS: u64 = 30;
+pub(crate) const MIN_WEB_FETCH_MAX_BYTES: usize = 1024;
+pub const MAX_WEB_FETCH_MAX_BYTES: usize = 5 * 1024 * 1024;
+pub(crate) const MIN_WEB_FETCH_TIMEOUT_SECONDS: usize = 1;
+pub(crate) const MAX_WEB_FETCH_TIMEOUT_SECONDS: usize = 120;
+pub(crate) const MAX_WEB_FETCH_MAX_REDIRECTS: usize = 10;
+pub(crate) const MIN_BROWSER_MAX_SESSIONS: usize = 1;
+pub const MAX_BROWSER_MAX_SESSIONS: usize = 32;
+pub(crate) const MIN_BROWSER_MAX_LINKS: usize = 1;
+pub const MAX_BROWSER_MAX_LINKS: usize = 200;
+pub(crate) const MIN_BROWSER_MAX_TEXT_CHARS: usize = 256;
+pub const MAX_BROWSER_MAX_TEXT_CHARS: usize = 20_000;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolConfig {
+    #[serde(default)]
+    pub file_root: Option<String>,
+    /// Commands to allow. Defaults to empty — no commands are allowed unless
+    /// explicitly configured.
+    #[serde(default = "default_shell_allow")]
+    pub shell_allow: Vec<String>,
+    /// Commands to hard-deny.
+    #[serde(default)]
+    pub shell_deny: Vec<String>,
+    /// Default policy for unknown commands: "deny" (default) or "allow".
+    #[serde(default = "default_shell_default_mode")]
+    pub shell_default_mode: String,
+    #[serde(default)]
+    pub approval: GovernedToolApprovalConfig,
+    #[serde(default)]
+    pub sessions: SessionToolConfig,
+    #[serde(default)]
+    pub messages: MessageToolConfig,
+    #[serde(default)]
+    pub delegate: DelegateToolConfig,
+    #[serde(default)]
+    pub browser: BrowserToolConfig,
+    #[serde(default)]
+    pub browser_companion: BrowserCompanionToolConfig,
+    #[serde(default)]
+    pub web: WebToolConfig,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GovernedToolApprovalMode {
+    #[default]
+    Disabled,
+    MediumBalanced,
+    Strict,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GovernedToolApprovalConfig {
+    #[serde(default)]
+    pub mode: GovernedToolApprovalMode,
+    #[serde(default)]
+    pub approved_calls: Vec<String>,
+    #[serde(default)]
+    pub denied_calls: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum SessionVisibility {
+    #[serde(rename = "self")]
+    SelfOnly,
+    #[default]
+    #[serde(rename = "children")]
+    Children,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionToolConfig {
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub visibility: SessionVisibility,
+    #[serde(default = "default_session_list_limit")]
+    pub list_limit: usize,
+    #[serde(default = "default_session_history_limit")]
+    pub history_limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct MessageToolConfig {
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DelegateToolConfig {
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_delegate_max_depth")]
+    pub max_depth: usize,
+    #[serde(default = "default_delegate_max_active_children")]
+    pub max_active_children: usize,
+    #[serde(default = "default_delegate_timeout_seconds")]
+    pub timeout_seconds: u64,
+    #[serde(default = "default_delegate_child_tool_allowlist")]
+    pub child_tool_allowlist: Vec<String>,
+    #[serde(default)]
+    pub allow_shell_in_child: bool,
+    #[serde(default)]
+    pub child_runtime: DelegateChildRuntimeConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct DelegateChildRuntimeConfig {
+    #[serde(default)]
+    pub web: DelegateChildWebRuntimeConfig,
+    #[serde(default)]
+    pub browser: DelegateChildBrowserRuntimeConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct DelegateChildWebRuntimeConfig {
+    #[serde(default)]
+    pub allow_private_hosts: Option<bool>,
+    #[serde(default)]
+    pub allowed_domains: Vec<String>,
+    #[serde(default)]
+    pub blocked_domains: Vec<String>,
+    #[serde(default)]
+    pub timeout_seconds: Option<u64>,
+    #[serde(default)]
+    pub max_bytes: Option<usize>,
+    #[serde(default)]
+    pub max_redirects: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct DelegateChildBrowserRuntimeConfig {
+    #[serde(default)]
+    pub max_sessions: Option<usize>,
+    #[serde(default)]
+    pub max_links: Option<usize>,
+    #[serde(default)]
+    pub max_text_chars: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserToolConfig {
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_browser_max_sessions")]
+    pub max_sessions: usize,
+    #[serde(default = "default_browser_max_links")]
+    pub max_links: usize,
+    #[serde(default = "default_browser_max_text_chars")]
+    pub max_text_chars: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserCompanionToolConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub expected_version: Option<String>,
+    #[serde(default = "default_browser_companion_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WebToolConfig {
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub allow_private_hosts: bool,
+    #[serde(default)]
+    pub allowed_domains: Vec<String>,
+    #[serde(default)]
+    pub blocked_domains: Vec<String>,
+    #[serde(default = "default_web_fetch_max_bytes")]
+    pub max_bytes: usize,
+    #[serde(default = "default_web_fetch_timeout_seconds")]
+    pub timeout_seconds: u64,
+    #[serde(default = "default_web_fetch_max_redirects")]
+    pub max_redirects: usize,
+}
+
+fn default_shell_default_mode() -> String {
+    "deny".to_owned()
+}
+
+const fn default_browser_companion_timeout_seconds() -> u64 {
+    DEFAULT_BROWSER_COMPANION_TIMEOUT_SECONDS
+}
+
+/// Default allow list used when the config file omits `shell_allow`.
+///
+/// Empty by design: no commands are allowed unless the user explicitly
+/// configures `shell_allow` in their config file. This upholds the
+/// default-deny principle — silent implicit permissions are not injected.
+///
+/// Also used by `ToolRuntimeConfig::default()` so the runtime fallback
+/// and a freshly-parsed config file agree on the initial allow set.
+pub const DEFAULT_SHELL_ALLOW: &[&str] = &[];
+
+/// Serde default for `ToolConfig::shell_allow`.
+///
+/// Returns an empty list — no commands are implicitly allowed.
+fn default_shell_allow() -> Vec<String> {
+    DEFAULT_SHELL_ALLOW
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExternalSkillsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_require_download_approval")]
+    pub require_download_approval: bool,
+    #[serde(default)]
+    pub allowed_domains: Vec<String>,
+    #[serde(default)]
+    pub blocked_domains: Vec<String>,
+    #[serde(default)]
+    pub install_root: Option<String>,
+    #[serde(default = "default_auto_expose_installed")]
+    pub auto_expose_installed: bool,
+}
+
+impl Default for ToolConfig {
+    fn default() -> Self {
+        Self {
+            file_root: None,
+            shell_allow: default_shell_allow(),
+            shell_deny: Vec::new(),
+            shell_default_mode: default_shell_default_mode(),
+            approval: GovernedToolApprovalConfig::default(),
+            sessions: SessionToolConfig::default(),
+            messages: MessageToolConfig::default(),
+            delegate: DelegateToolConfig::default(),
+            browser: BrowserToolConfig::default(),
+            browser_companion: BrowserCompanionToolConfig::default(),
+            web: WebToolConfig::default(),
+        }
+    }
+}
+
+impl Default for BrowserCompanionToolConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            command: None,
+            expected_version: None,
+            timeout_seconds: default_browser_companion_timeout_seconds(),
+        }
+    }
+}
+
+impl Default for GovernedToolApprovalConfig {
+    fn default() -> Self {
+        Self {
+            mode: GovernedToolApprovalMode::Disabled,
+            approved_calls: Vec::new(),
+            denied_calls: Vec::new(),
+        }
+    }
+}
+
+impl Default for SessionToolConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_enabled(),
+            visibility: SessionVisibility::default(),
+            list_limit: default_session_list_limit(),
+            history_limit: default_session_history_limit(),
+        }
+    }
+}
+
+impl Default for DelegateToolConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_enabled(),
+            max_depth: default_delegate_max_depth(),
+            max_active_children: default_delegate_max_active_children(),
+            timeout_seconds: default_delegate_timeout_seconds(),
+            child_tool_allowlist: default_delegate_child_tool_allowlist(),
+            allow_shell_in_child: false,
+            child_runtime: DelegateChildRuntimeConfig::default(),
+        }
+    }
+}
+
+impl Default for WebToolConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_enabled(),
+            allow_private_hosts: false,
+            allowed_domains: Vec::new(),
+            blocked_domains: Vec::new(),
+            max_bytes: default_web_fetch_max_bytes(),
+            timeout_seconds: default_web_fetch_timeout_seconds(),
+            max_redirects: default_web_fetch_max_redirects(),
+        }
+    }
+}
+
+impl Default for BrowserToolConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_enabled(),
+            max_sessions: default_browser_max_sessions(),
+            max_links: default_browser_max_links(),
+            max_text_chars: default_browser_max_text_chars(),
+        }
+    }
+}
+
+impl Default for ExternalSkillsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            require_download_approval: default_require_download_approval(),
+            allowed_domains: Vec::new(),
+            blocked_domains: Vec::new(),
+            install_root: None,
+            auto_expose_installed: default_auto_expose_installed(),
+        }
+    }
+}
+
+impl ToolConfig {
+    pub fn resolved_file_root(&self) -> PathBuf {
+        if let Some(path) = self.file_root.as_deref() {
+            return expand_path(path);
+        }
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    }
+
+    pub(super) fn validate(&self) -> Vec<ConfigValidationIssue> {
+        let mut issues = Vec::new();
+        if let Err(issue) = validate_numeric_range(
+            "tools.browser.max_sessions",
+            self.browser.max_sessions,
+            MIN_BROWSER_MAX_SESSIONS,
+            MAX_BROWSER_MAX_SESSIONS,
+        ) {
+            issues.push(*issue);
+        }
+        if let Err(issue) = validate_numeric_range(
+            "tools.browser.max_links",
+            self.browser.max_links,
+            MIN_BROWSER_MAX_LINKS,
+            MAX_BROWSER_MAX_LINKS,
+        ) {
+            issues.push(*issue);
+        }
+        if let Err(issue) = validate_numeric_range(
+            "tools.browser.max_text_chars",
+            self.browser.max_text_chars,
+            MIN_BROWSER_MAX_TEXT_CHARS,
+            MAX_BROWSER_MAX_TEXT_CHARS,
+        ) {
+            issues.push(*issue);
+        }
+        if let Err(issue) = validate_numeric_range(
+            "tools.web.max_bytes",
+            self.web.max_bytes,
+            MIN_WEB_FETCH_MAX_BYTES,
+            MAX_WEB_FETCH_MAX_BYTES,
+        ) {
+            issues.push(*issue);
+        }
+        if let Err(issue) = validate_numeric_range(
+            "tools.web.timeout_seconds",
+            self.web.timeout_seconds as usize,
+            MIN_WEB_FETCH_TIMEOUT_SECONDS,
+            MAX_WEB_FETCH_TIMEOUT_SECONDS,
+        ) {
+            issues.push(*issue);
+        }
+        if let Err(issue) = validate_numeric_range(
+            "tools.web.max_redirects",
+            self.web.max_redirects,
+            0,
+            MAX_WEB_FETCH_MAX_REDIRECTS,
+        ) {
+            issues.push(*issue);
+        }
+        if let Some(max_sessions) = self.delegate.child_runtime.browser.max_sessions
+            && let Err(issue) = validate_numeric_range(
+                "tools.delegate.child_runtime.browser.max_sessions",
+                max_sessions,
+                MIN_BROWSER_MAX_SESSIONS,
+                MAX_BROWSER_MAX_SESSIONS,
+            )
+        {
+            issues.push(*issue);
+        }
+        if let Some(max_links) = self.delegate.child_runtime.browser.max_links
+            && let Err(issue) = validate_numeric_range(
+                "tools.delegate.child_runtime.browser.max_links",
+                max_links,
+                MIN_BROWSER_MAX_LINKS,
+                MAX_BROWSER_MAX_LINKS,
+            )
+        {
+            issues.push(*issue);
+        }
+        if let Some(max_text_chars) = self.delegate.child_runtime.browser.max_text_chars
+            && let Err(issue) = validate_numeric_range(
+                "tools.delegate.child_runtime.browser.max_text_chars",
+                max_text_chars,
+                MIN_BROWSER_MAX_TEXT_CHARS,
+                MAX_BROWSER_MAX_TEXT_CHARS,
+            )
+        {
+            issues.push(*issue);
+        }
+        if let Some(max_bytes) = self.delegate.child_runtime.web.max_bytes
+            && let Err(issue) = validate_numeric_range(
+                "tools.delegate.child_runtime.web.max_bytes",
+                max_bytes,
+                MIN_WEB_FETCH_MAX_BYTES,
+                MAX_WEB_FETCH_MAX_BYTES,
+            )
+        {
+            issues.push(*issue);
+        }
+        if let Some(timeout_seconds) = self.delegate.child_runtime.web.timeout_seconds
+            && let Err(issue) = validate_numeric_range(
+                "tools.delegate.child_runtime.web.timeout_seconds",
+                timeout_seconds as usize,
+                MIN_WEB_FETCH_TIMEOUT_SECONDS,
+                MAX_WEB_FETCH_TIMEOUT_SECONDS,
+            )
+        {
+            issues.push(*issue);
+        }
+        if let Some(max_redirects) = self.delegate.child_runtime.web.max_redirects
+            && let Err(issue) = validate_numeric_range(
+                "tools.delegate.child_runtime.web.max_redirects",
+                max_redirects,
+                0,
+                MAX_WEB_FETCH_MAX_REDIRECTS,
+            )
+        {
+            issues.push(*issue);
+        }
+        issues
+    }
+}
+
+impl ExternalSkillsConfig {
+    pub fn normalized_allowed_domains(&self) -> Vec<String> {
+        normalize_domain_entries(&self.allowed_domains)
+    }
+
+    pub fn normalized_blocked_domains(&self) -> Vec<String> {
+        normalize_domain_entries(&self.blocked_domains)
+    }
+
+    pub fn resolved_install_root(&self) -> Option<PathBuf> {
+        self.install_root.as_deref().map(expand_path)
+    }
+}
+
+impl WebToolConfig {
+    pub fn normalized_allowed_domains(&self) -> Vec<String> {
+        normalize_domain_entries(&self.allowed_domains)
+    }
+
+    pub fn normalized_blocked_domains(&self) -> Vec<String> {
+        normalize_domain_entries(&self.blocked_domains)
+    }
+}
+
+impl DelegateChildWebRuntimeConfig {
+    pub fn normalized_allowed_domains(&self) -> Vec<String> {
+        normalize_domain_entries(&self.allowed_domains)
+    }
+
+    pub fn normalized_blocked_domains(&self) -> Vec<String> {
+        normalize_domain_entries(&self.blocked_domains)
+    }
+}
+
+impl DelegateChildRuntimeConfig {
+    pub fn runtime_narrowing(&self) -> crate::tools::runtime_config::ToolRuntimeNarrowing {
+        crate::tools::runtime_config::ToolRuntimeNarrowing {
+            web_fetch: crate::tools::runtime_config::WebFetchRuntimeNarrowing {
+                allow_private_hosts: self.web.allow_private_hosts,
+                allowed_domains: self.web.normalized_allowed_domains().into_iter().collect(),
+                blocked_domains: self.web.normalized_blocked_domains().into_iter().collect(),
+                timeout_seconds: self.web.timeout_seconds,
+                max_bytes: self.web.max_bytes,
+                max_redirects: self.web.max_redirects,
+            },
+            browser: crate::tools::runtime_config::BrowserRuntimeNarrowing {
+                max_sessions: self.browser.max_sessions,
+                max_links: self.browser.max_links,
+                max_text_chars: self.browser.max_text_chars,
+            },
+        }
+    }
+}
+
+const fn default_enabled() -> bool {
+    true
+}
+
+const fn default_session_list_limit() -> usize {
+    100
+}
+
+const fn default_session_history_limit() -> usize {
+    200
+}
+
+const fn default_delegate_max_depth() -> usize {
+    1
+}
+
+const fn default_delegate_max_active_children() -> usize {
+    5
+}
+
+const fn default_delegate_timeout_seconds() -> u64 {
+    60
+}
+
+const fn default_browser_max_sessions() -> usize {
+    DEFAULT_BROWSER_MAX_SESSIONS
+}
+
+const fn default_browser_max_links() -> usize {
+    DEFAULT_BROWSER_MAX_LINKS
+}
+
+const fn default_browser_max_text_chars() -> usize {
+    DEFAULT_BROWSER_MAX_TEXT_CHARS
+}
+
+fn default_delegate_child_tool_allowlist() -> Vec<String> {
+    vec!["file.read".to_owned(), "file.write".to_owned()]
+}
+
+const fn default_web_fetch_max_bytes() -> usize {
+    DEFAULT_WEB_FETCH_MAX_BYTES
+}
+
+const fn default_web_fetch_timeout_seconds() -> u64 {
+    DEFAULT_WEB_FETCH_TIMEOUT_SECONDS
+}
+
+const fn default_web_fetch_max_redirects() -> usize {
+    DEFAULT_WEB_FETCH_MAX_REDIRECTS
+}
+
+const fn default_require_download_approval() -> bool {
+    true
+}
+
+const fn default_auto_expose_installed() -> bool {
+    false
+}
+
+fn normalize_domain_entries(entries: &[String]) -> Vec<String> {
+    let mut normalized = BTreeSet::new();
+    for entry in entries {
+        let value = entry.trim().to_ascii_lowercase();
+        if !value.is_empty() {
+            normalized.insert(value);
+        }
+    }
+    normalized.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_config_defaults_expose_session_runtime_policy() {
+        let config = ToolConfig::default();
+        assert!(config.shell_allow.is_empty());
+        assert!(config.shell_deny.is_empty());
+        assert_eq!(config.shell_default_mode, "deny");
+        assert_eq!(config.approval.mode, GovernedToolApprovalMode::Disabled);
+        assert!(config.approval.approved_calls.is_empty());
+        assert!(config.approval.denied_calls.is_empty());
+        assert!(config.sessions.enabled);
+        assert_eq!(config.sessions.visibility, SessionVisibility::Children);
+        assert_eq!(config.sessions.list_limit, 100);
+        assert_eq!(config.sessions.history_limit, 200);
+        assert!(!config.messages.enabled);
+        assert!(config.delegate.enabled);
+        assert_eq!(config.delegate.max_depth, 1);
+        assert_eq!(config.delegate.max_active_children, 5);
+        assert_eq!(config.delegate.timeout_seconds, 60);
+        assert_eq!(
+            config.delegate.child_tool_allowlist,
+            vec!["file.read".to_owned(), "file.write".to_owned()]
+        );
+        assert!(!config.delegate.allow_shell_in_child);
+        assert!(config.browser.enabled);
+        assert_eq!(config.browser.max_sessions, 8);
+        assert_eq!(config.browser.max_links, 40);
+        assert_eq!(config.browser.max_text_chars, 6000);
+        assert!(!config.browser_companion.enabled);
+        assert!(config.browser_companion.command.is_none());
+        assert!(config.browser_companion.expected_version.is_none());
+        assert_eq!(
+            config.browser_companion.timeout_seconds,
+            DEFAULT_BROWSER_COMPANION_TIMEOUT_SECONDS
+        );
+        assert!(config.web.enabled);
+        assert!(!config.web.allow_private_hosts);
+        assert!(config.web.allowed_domains.is_empty());
+        assert!(config.web.blocked_domains.is_empty());
+        assert_eq!(config.web.timeout_seconds, 15);
+        assert_eq!(config.web.max_bytes, 1_048_576);
+        assert_eq!(config.web.max_redirects, 3);
+    }
+
+    #[cfg(feature = "config-toml")]
+    #[test]
+    fn tool_config_parses_session_runtime_controls_from_toml() {
+        let raw = r#"
+[tools.approval]
+mode = "strict"
+approved_calls = ["tool:delegate_async"]
+denied_calls = ["tool:session_cancel"]
+
+[tools.sessions]
+visibility = "self"
+list_limit = 12
+history_limit = 34
+
+[tools.messages]
+enabled = true
+
+[tools.delegate]
+enabled = false
+max_depth = 2
+max_active_children = 4
+timeout_seconds = 90
+allow_shell_in_child = true
+child_tool_allowlist = ["file.read", "shell.exec"]
+
+[tools.delegate.child_runtime.web]
+allow_private_hosts = false
+allowed_domains = ["Docs.Example.com", "docs.example.com"]
+blocked_domains = ["internal.example", " INTERNAL.EXAMPLE "]
+timeout_seconds = 9
+max_bytes = 262144
+max_redirects = 1
+
+[tools.delegate.child_runtime.browser]
+max_sessions = 2
+max_links = 10
+max_text_chars = 1024
+"#;
+        let parsed =
+            toml::from_str::<crate::config::LoongClawConfig>(raw).expect("parse tool config");
+
+        assert_eq!(parsed.tools.approval.mode, GovernedToolApprovalMode::Strict);
+        assert_eq!(
+            parsed.tools.approval.approved_calls,
+            vec!["tool:delegate_async".to_owned()]
+        );
+        assert_eq!(
+            parsed.tools.approval.denied_calls,
+            vec!["tool:session_cancel".to_owned()]
+        );
+        assert_eq!(
+            parsed.tools.sessions.visibility,
+            SessionVisibility::SelfOnly
+        );
+        assert_eq!(parsed.tools.sessions.list_limit, 12);
+        assert_eq!(parsed.tools.sessions.history_limit, 34);
+        assert!(parsed.tools.messages.enabled);
+        assert!(!parsed.tools.delegate.enabled);
+        assert_eq!(parsed.tools.delegate.max_depth, 2);
+        assert_eq!(parsed.tools.delegate.max_active_children, 4);
+        assert_eq!(parsed.tools.delegate.timeout_seconds, 90);
+        assert!(parsed.tools.delegate.allow_shell_in_child);
+        assert_eq!(
+            parsed.tools.delegate.child_tool_allowlist,
+            vec!["file.read".to_owned(), "shell.exec".to_owned()]
+        );
+        assert_eq!(
+            parsed
+                .tools
+                .delegate
+                .child_runtime
+                .web
+                .normalized_allowed_domains(),
+            vec!["docs.example.com".to_owned()]
+        );
+        assert_eq!(
+            parsed
+                .tools
+                .delegate
+                .child_runtime
+                .web
+                .normalized_blocked_domains(),
+            vec!["internal.example".to_owned()]
+        );
+        assert_eq!(
+            parsed.tools.delegate.child_runtime.web.allow_private_hosts,
+            Some(false)
+        );
+        assert_eq!(
+            parsed.tools.delegate.child_runtime.web.timeout_seconds,
+            Some(9)
+        );
+        assert_eq!(
+            parsed.tools.delegate.child_runtime.web.max_bytes,
+            Some(262144)
+        );
+        assert_eq!(
+            parsed.tools.delegate.child_runtime.web.max_redirects,
+            Some(1)
+        );
+        assert_eq!(
+            parsed.tools.delegate.child_runtime.browser.max_sessions,
+            Some(2)
+        );
+        assert_eq!(
+            parsed.tools.delegate.child_runtime.browser.max_links,
+            Some(10)
+        );
+        assert_eq!(
+            parsed.tools.delegate.child_runtime.browser.max_text_chars,
+            Some(1024)
+        );
+    }
+
+    #[cfg(feature = "config-toml")]
+    #[test]
+    fn tool_config_parses_web_fetch_controls_from_toml() {
+        let raw = r#"
+[tools.web]
+enabled = false
+allow_private_hosts = true
+allowed_domains = ["Docs.Example.com", "docs.example.com"]
+blocked_domains = ["internal.example", " INTERNAL.EXAMPLE "]
+timeout_seconds = 9
+max_bytes = 262144
+max_redirects = 1
+"#;
+        let parsed =
+            toml::from_str::<crate::config::LoongClawConfig>(raw).expect("parse tool config");
+
+        assert!(!parsed.tools.web.enabled);
+        assert!(parsed.tools.web.allow_private_hosts);
+        assert_eq!(
+            parsed.tools.web.normalized_allowed_domains(),
+            vec!["docs.example.com".to_owned()]
+        );
+        assert_eq!(
+            parsed.tools.web.normalized_blocked_domains(),
+            vec!["internal.example".to_owned()]
+        );
+        assert_eq!(parsed.tools.web.timeout_seconds, 9);
+        assert_eq!(parsed.tools.web.max_bytes, 262144);
+        assert_eq!(parsed.tools.web.max_redirects, 1);
+    }
+
+    #[cfg(feature = "config-toml")]
+    #[test]
+    fn tool_config_parses_browser_controls_from_toml() {
+        let raw = r#"
+[tools.browser]
+enabled = false
+max_sessions = 4
+max_links = 12
+max_text_chars = 2048
+"#;
+        let parsed =
+            toml::from_str::<crate::config::LoongClawConfig>(raw).expect("parse tool config");
+
+        assert!(!parsed.tools.browser.enabled);
+        assert_eq!(parsed.tools.browser.max_sessions, 4);
+        assert_eq!(parsed.tools.browser.max_links, 12);
+        assert_eq!(parsed.tools.browser.max_text_chars, 2048);
+    }
+
+    #[cfg(feature = "config-toml")]
+    #[test]
+    fn tool_config_parses_browser_companion_controls_from_toml() {
+        let raw = r#"
+[tools.browser_companion]
+enabled = true
+command = "loongclaw-browser-companion"
+expected_version = "1.2.3"
+timeout_seconds = 7
+"#;
+        let parsed =
+            toml::from_str::<crate::config::LoongClawConfig>(raw).expect("parse tool config");
+
+        assert!(parsed.tools.browser_companion.enabled);
+        assert_eq!(
+            parsed.tools.browser_companion.command.as_deref(),
+            Some("loongclaw-browser-companion")
+        );
+        assert_eq!(
+            parsed.tools.browser_companion.expected_version.as_deref(),
+            Some("1.2.3")
+        );
+        assert_eq!(parsed.tools.browser_companion.timeout_seconds, 7);
+    }
+
+    /// When `shell_deny` is absent, it must default to empty — users start
+    /// with no blocked commands beyond the default-deny fallback.
+    #[test]
+    #[cfg(feature = "config-toml")]
+    fn tool_config_deny_defaults_to_empty() {
+        let config: ToolConfig = toml::from_str("").expect("empty toml");
+        assert!(config.shell_deny.is_empty());
+    }
+
+    /// An explicit `shell_allow = []` in the config file must produce an empty
+    /// list, even though the serde default is non-empty.
+    #[test]
+    #[cfg(feature = "config-toml")]
+    fn tool_config_explicit_empty_shell_allow_is_respected() {
+        let config: ToolConfig = toml::from_str("shell_allow = []").expect("toml with empty allow");
+        assert!(config.shell_allow.is_empty());
+    }
+
+    /// An explicit `shell_allow` with custom values replaces the defaults
+    /// entirely; none of the 4 initial commands are injected.
+    #[test]
+    #[cfg(feature = "config-toml")]
+    fn tool_config_explicit_shell_allow_replaces_defaults() {
+        let config: ToolConfig = toml::from_str(r#"shell_allow = ["myapp"]"#).expect("toml");
+        assert_eq!(config.shell_allow, vec!["myapp"]);
+    }
+
+    #[test]
+    fn external_skills_defaults_to_safe_off_mode() {
+        let config = ExternalSkillsConfig::default();
+        assert!(!config.enabled);
+        assert!(config.require_download_approval);
+        assert!(config.allowed_domains.is_empty());
+        assert!(config.blocked_domains.is_empty());
+        assert!(config.install_root.is_none());
+        assert!(!config.auto_expose_installed);
+    }
+
+    #[test]
+    fn external_skills_normalized_domains_are_lowercase_and_deduped() {
+        let config = ExternalSkillsConfig {
+            enabled: true,
+            require_download_approval: true,
+            allowed_domains: vec![
+                "Skills.SH".to_owned(),
+                "skills.sh".to_owned(),
+                "  CLAWHUB.IO ".to_owned(),
+            ],
+            blocked_domains: vec![
+                "Bad.Example".to_owned(),
+                "bad.example".to_owned(),
+                " ".to_owned(),
+            ],
+            install_root: Some("~/skills".to_owned()),
+            auto_expose_installed: true,
+        };
+        assert_eq!(
+            config.normalized_allowed_domains(),
+            vec!["clawhub.io".to_owned(), "skills.sh".to_owned()]
+        );
+        assert_eq!(
+            config.normalized_blocked_domains(),
+            vec!["bad.example".to_owned()]
+        );
+    }
+
+    #[test]
+    fn external_skills_resolved_install_root_expands_user_home() {
+        let config = ExternalSkillsConfig {
+            install_root: Some("~/demo-skills".to_owned()),
+            ..ExternalSkillsConfig::default()
+        };
+
+        assert!(
+            config
+                .resolved_install_root()
+                .expect("install root should resolve")
+                .ends_with("demo-skills")
+        );
+    }
+
+    #[test]
+    fn web_tool_defaults_to_safe_public_fetch_mode() {
+        let config = WebToolConfig::default();
+        assert!(config.enabled);
+        assert!(!config.allow_private_hosts);
+        assert!(config.allowed_domains.is_empty());
+        assert!(config.blocked_domains.is_empty());
+        assert_eq!(config.timeout_seconds, 15);
+        assert_eq!(config.max_bytes, 1_048_576);
+        assert_eq!(config.max_redirects, 3);
+    }
+
+    #[test]
+    fn web_tool_normalized_domains_are_lowercase_and_deduped() {
+        let config = WebToolConfig {
+            enabled: true,
+            allow_private_hosts: false,
+            allowed_domains: vec![
+                "Docs.Example.com".to_owned(),
+                "docs.example.com".to_owned(),
+                "  api.example.com ".to_owned(),
+            ],
+            blocked_domains: vec![
+                "internal.example".to_owned(),
+                " INTERNAL.EXAMPLE ".to_owned(),
+            ],
+            timeout_seconds: 15,
+            max_bytes: 1_048_576,
+            max_redirects: 3,
+        };
+
+        assert_eq!(
+            config.normalized_allowed_domains(),
+            vec!["api.example.com".to_owned(), "docs.example.com".to_owned()]
+        );
+        assert_eq!(
+            config.normalized_blocked_domains(),
+            vec!["internal.example".to_owned()]
+        );
+    }
+}
