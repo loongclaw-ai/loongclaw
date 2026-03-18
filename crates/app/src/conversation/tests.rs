@@ -60,6 +60,7 @@ struct FakeRuntime {
     turn_calls: Mutex<usize>,
     after_turn_calls: Mutex<Vec<(String, String, String, usize)>>,
     compact_calls: Mutex<Vec<(String, usize)>>,
+    persist_failure: Option<(String, String)>,
 }
 
 enum FakeTurnResponse {
@@ -572,6 +573,7 @@ impl FakeRuntime {
             turn_calls: Mutex::new(0),
             after_turn_calls: Mutex::new(Vec::new()),
             compact_calls: Mutex::new(Vec::new()),
+            persist_failure: None,
         }
     }
 
@@ -603,6 +605,11 @@ impl FakeRuntime {
 
     fn with_compact_result(mut self, result: Result<(), String>) -> Self {
         self.compact_result = result;
+        self
+    }
+
+    fn with_persist_failure_on_substring(mut self, needle: &str, error: &str) -> Self {
+        self.persist_failure = Some((needle.to_owned(), error.to_owned()));
         self
     }
 
@@ -1114,6 +1121,11 @@ impl ConversationRuntime for FakeRuntime {
         content: &str,
         _binding: ConversationRuntimeBinding<'_>,
     ) -> CliResult<()> {
+        if let Some((needle, error)) = self.persist_failure.as_ref()
+            && content.contains(needle)
+        {
+            return Err(error.clone());
+        }
         #[cfg(feature = "memory-sqlite")]
         if let Some(config) = self.durable_memory_config.as_ref() {
             crate::memory::append_turn_direct(session_id, role, content, config)
@@ -4903,6 +4915,118 @@ async fn handle_turn_with_runtime_persists_fast_lane_tool_batch_event_for_mixed_
     assert_eq!(segments[2]["scheduling_class"], "parallel_safe");
     assert_eq!(segments[2]["execution_mode"], "parallel");
     assert_eq!(segments[2]["intent_count"], 2);
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn handle_turn_with_runtime_fast_lane_batch_persist_failure_surfaces_runtime_audit() {
+    let mut config = test_config();
+    config.conversation.fast_lane_max_tool_steps_per_turn = 5;
+    config
+        .conversation
+        .fast_lane_parallel_tool_execution_enabled = true;
+    config
+        .conversation
+        .fast_lane_parallel_tool_execution_max_in_flight = 2;
+
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    crate::memory::append_turn_direct(
+        "session-fast-lane-batch-persist-failure",
+        "user",
+        "hello",
+        &memory_config,
+    )
+    .expect("append user turn");
+    crate::memory::append_turn_direct(
+        "session-fast-lane-batch-persist-failure",
+        "assistant",
+        "done",
+        &memory_config,
+    )
+    .expect("append assistant turn");
+
+    let runtime = FakeRuntime::with_turn_and_completion(
+        vec![],
+        Ok(ProviderTurn {
+            assistant_text: "Inspecting session state.".to_owned(),
+            tool_intents: vec![
+                provider_tool_intent(
+                    "sessions_list",
+                    json!({}),
+                    "session-fast-lane-batch-persist-failure",
+                    "turn-fast-lane-batch-persist-failure",
+                    "call-fast-lane-batch-persist-failure-1",
+                ),
+                provider_tool_intent(
+                    "session_status",
+                    json!({
+                        "session_id": "session-fast-lane-batch-persist-failure",
+                    }),
+                    "session-fast-lane-batch-persist-failure",
+                    "turn-fast-lane-batch-persist-failure",
+                    "call-fast-lane-batch-persist-failure-2",
+                ),
+            ],
+            raw_meta: Value::Null,
+        }),
+        Ok("unused".to_owned()),
+    )
+    .with_persist_failure_on_substring(
+        "\"event\":\"fast_lane_tool_batch\"",
+        "fast-lane batch persist failed",
+    );
+
+    let audit = Arc::new(InMemoryAuditSink::default());
+    let (kernel_ctx, _invocations) = build_kernel_context(audit.clone());
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "session-fast-lane-batch-persist-failure",
+            "inspect the session state and show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            ConversationRuntimeBinding::kernel(&kernel_ctx),
+        )
+        .await
+        .expect("fast-lane turn should still succeed when batch event persistence fails");
+
+    assert!(
+        reply.contains("[ok] "),
+        "raw tool output request should preserve tool output, got: {reply}"
+    );
+
+    let persisted = runtime.persisted.lock().expect("persisted lock").clone();
+    let payloads =
+        persisted_conversation_event_payloads_by_name(&persisted, "fast_lane_tool_batch");
+    assert!(
+        payloads.is_empty(),
+        "failed fast-lane batch persistence should not leave a partial event"
+    );
+
+    let runtime_ops = audit
+        .snapshot()
+        .iter()
+        .filter_map(|event| match &event.kind {
+            loongclaw_kernel::AuditEventKind::PlaneInvoked {
+                plane,
+                primary_adapter,
+                operation,
+                ..
+            } if *plane == loongclaw_contracts::ExecutionPlane::Runtime => {
+                Some((primary_adapter.to_owned(), operation.to_owned()))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        runtime_ops.iter().any(|(adapter, operation)| {
+            adapter == "conversation.fast_lane"
+                && operation == "conversation.fast_lane.fast_lane_tool_batch_persist_failed"
+        }),
+        "expected fast-lane batch persistence failure audit event, got: {runtime_ops:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
