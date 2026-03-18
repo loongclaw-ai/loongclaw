@@ -262,27 +262,27 @@ export default function ChatPage() {
                 void handleSubmit();
               }}
             >
-              <textarea
-                className="composer-input"
-                rows={3}
-                placeholder={t("chat.inputPlaceholder")}
-                value={composerText}
-                onChange={(event) => {
-                  setComposerText(event.target.value);
-                }}
-                disabled={isSubmitting}
-              />
-              <div className="composer-actions">
+              <div className="composer-shell">
+                <textarea
+                  className="composer-input"
+                  rows={3}
+                  placeholder={t("chat.inputPlaceholder")}
+                  value={composerText}
+                  onChange={(event) => {
+                    setComposerText(event.target.value);
+                  }}
+                  disabled={isSubmitting}
+                />
                 {deletingSessionId ? (
                   <div className="composer-hint">{t("chat.deleting")}</div>
                 ) : null}
                 <button
                   type="submit"
-                  className="hero-btn hero-btn-primary"
+                  className="composer-submit"
                   disabled={isSubmitting || !composerText.trim()}
                 >
                   <SendHorizontal size={16} />
-                  <span>{isSubmitting ? "Sending..." : t("chat.send")}</span>
+                  <span className="sr-only">{isSubmitting ? "Sending..." : t("chat.send")}</span>
                 </button>
               </div>
             </form>

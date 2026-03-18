@@ -1,18 +1,83 @@
 {
   "eyebrow": "Web Dashboard",
-  "title": "运行态总览",
-  "subtitle": "在一个页面里查看 provider、tool、memory 和 Web 安装状态。",
+  "title": "运行控制台",
+  "subtitle": "在一个页面里查看当前 provider、runtime 健康状态、memory 情况以及 web 交付模式。",
   "cards": {
     "runtime": "Runtime",
-    "providers": "Providers",
+    "provider": "Provider",
     "tools": "Tools",
     "memory": "Memory",
     "install": "Web 安装"
   },
+  "summary": {
+    "runtimeNote": "已连接本地 daemon。",
+    "providerNote": "当前模型与已配置的 provider 数量。",
+    "memoryNote": "会话存储后端与已记忆的会话数量。",
+    "installNote": "当前 web 界面的交付方式。",
+    "toolsNote": "当前 API 切片暴露出来的操作面。"
+  },
+  "sections": {
+    "providerEyebrow": "Provider 快照",
+    "providerTitle": "当前 Provider",
+    "runtimeEyebrow": "Runtime 详情",
+    "runtimeTitle": "运行健康状态",
+    "diagnosticsEyebrow": "诊断信息",
+    "diagnosticsTitle": "连接与记忆",
+    "actionsEyebrow": "动作",
+    "actionsTitle": "快捷操作"
+  },
+  "fields": {
+    "source": "来源",
+    "mode": "模式",
+    "model": "模型",
+    "profiles": "配置数",
+    "sessions": "会话数",
+    "context": "上下文",
+    "surface": "界面",
+    "hosting": "托管",
+    "shell": "Shell",
+    "web": "Web",
+    "endpoint": "地址",
+    "apiKey": "API Key",
+    "providerId": "Provider ID",
+    "defaultRole": "角色",
+    "memory": "记忆",
+    "runtime": "运行状态",
+    "provider": "Provider",
+    "install": "安装方式"
+  },
+  "values": {
+    "live": "在线",
+    "localDaemon": "本地 daemon",
+    "readOnly": "只读",
+    "localStore": "本地存储",
+    "webConsole": "Web 控制台",
+    "localOnly": "仅本地",
+    "stored": "已存储",
+    "optional": "可选",
+    "phase1": "第一阶段",
+    "connected": "已连接",
+    "pending": "待补充",
+    "configured": "已配置",
+    "missing": "未配置",
+    "active": "启用中",
+    "inactive": "未启用",
+    "standby": "待命",
+    "none": "无",
+    "noModel": "未设置模型",
+    "notSet": "未设置",
+    "default": "默认",
+    "secondary": "备用",
+    "noProviders": "还没有加载任何 provider 配置。"
+  },
+  "actions": {
+    "reload": "重新加载 Runtime",
+    "helper": "这些动作目前仍然是界面壳子。受控写入链路会在后续阶段接入。"
+  },
   "settings": {
     "eyebrow": "Provider Settings",
     "title": "Provider 配置",
-    "subtitle": "先在这里编辑 provider 相关配置，后续再通过本地 runtime 完成校验和应用。",
+    "subtitle": "先在这里编辑 provider 配置，后续再通过本地 runtime 完成校验和应用。",
     "activeProvider": "当前 Provider",
     "model": "模型",
     "endpoint": "API 地址",
@@ -20,6 +85,6 @@
     "apiKeyMasked": "已配置并已掩码",
     "validate": "校验配置",
     "apply": "应用更改",
-    "helper": "这个面板目前只是受控写入能力的界面壳子，还不会真正改动 runtime 配置。"
+    "helper": "这个面板目前只是未来受控写入能力的界面壳子，还不会真正写入 runtime 配置。"
   }
 }

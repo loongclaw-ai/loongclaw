@@ -15,9 +15,11 @@ export default function NavBar() {
     <header className="navbar">
       <div className="brand-block">
         <img src={brandIcon} alt="LoongClaw" className="brand-logo" />
-        <div>
-          <div className="brand-eyebrow">{t("chrome.eyebrow")}</div>
-          <div className="brand-title">{t("appName")}</div>
+        <div className="brand-lockup" aria-label={t("appName")}>
+          <div className="brand-wordmark-row">
+            <span className="brand-wordmark">LOONGCLAW</span>
+            <span className="brand-suffix">web</span>
+          </div>
         </div>
       </div>
       <nav className="nav-links" aria-label="Primary">
