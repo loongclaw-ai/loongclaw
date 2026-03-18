@@ -606,59 +606,51 @@ async fn load_history_lines(
 }
 
 fn parse_safe_lane_summary_limit(input: &str, default_window: usize) -> CliResult<Option<usize>> {
-    let mut tokens = input.split_whitespace();
-    let Some(command) = tokens.next() else {
-        return Ok(None);
-    };
-    if command != "/safe_lane_summary" && command != "/safe-lane-summary" {
-        return Ok(None);
-    }
-
-    let default_limit = default_window.saturating_mul(4).max(64);
-    let limit = match tokens.next() {
-        Some(raw) => raw.parse::<usize>().map_err(|error| {
-            format!(
-                "invalid /safe_lane_summary limit `{raw}`: {error}; usage: /safe_lane_summary [limit]"
-            )
-        })?,
-        None => default_limit,
-    };
-    if limit == 0 {
-        return Err(
-            "invalid /safe_lane_summary limit `0`; usage: /safe_lane_summary [limit]".to_owned(),
-        );
-    }
-    if tokens.next().is_some() {
-        return Err("usage: /safe_lane_summary [limit]".to_owned());
-    }
-    Ok(Some(limit))
+    parse_summary_limit(
+        input,
+        default_window,
+        &["/safe_lane_summary", "/safe-lane-summary"],
+    )
 }
 
 fn parse_fast_lane_summary_limit(input: &str, default_window: usize) -> CliResult<Option<usize>> {
+    parse_summary_limit(
+        input,
+        default_window,
+        &["/fast_lane_summary", "/fast-lane-summary"],
+    )
+}
+
+fn parse_summary_limit(
+    input: &str,
+    default_window: usize,
+    aliases: &[&str],
+) -> CliResult<Option<usize>> {
+    let Some(primary_alias) = aliases.first().copied() else {
+        return Ok(None);
+    };
+
     let mut tokens = input.split_whitespace();
     let Some(command) = tokens.next() else {
         return Ok(None);
     };
-    if command != "/fast_lane_summary" && command != "/fast-lane-summary" {
+    if !aliases.contains(&command) {
         return Ok(None);
     }
 
+    let usage = format!("usage: {primary_alias} [limit]");
     let default_limit = default_window.saturating_mul(4).max(64);
     let limit = match tokens.next() {
-        Some(raw) => raw.parse::<usize>().map_err(|error| {
-            format!(
-                "invalid /fast_lane_summary limit `{raw}`: {error}; usage: /fast_lane_summary [limit]"
-            )
-        })?,
+        Some(raw) => raw
+            .parse::<usize>()
+            .map_err(|error| format!("invalid {primary_alias} limit `{raw}`: {error}; {usage}"))?,
         None => default_limit,
     };
     if limit == 0 {
-        return Err(
-            "invalid /fast_lane_summary limit `0`; usage: /fast_lane_summary [limit]".to_owned(),
-        );
+        return Err(format!("invalid {primary_alias} limit `0`; {usage}"));
     }
     if tokens.next().is_some() {
-        return Err("usage: /fast_lane_summary [limit]".to_owned());
+        return Err(usage);
     }
     Ok(Some(limit))
 }
@@ -667,33 +659,11 @@ fn parse_turn_checkpoint_summary_limit(
     input: &str,
     default_window: usize,
 ) -> CliResult<Option<usize>> {
-    let mut tokens = input.split_whitespace();
-    let Some(command) = tokens.next() else {
-        return Ok(None);
-    };
-    if command != "/turn_checkpoint_summary" && command != "/turn-checkpoint-summary" {
-        return Ok(None);
-    }
-
-    let default_limit = default_window.saturating_mul(4).max(64);
-    let limit = match tokens.next() {
-        Some(raw) => raw.parse::<usize>().map_err(|error| {
-            format!(
-                "invalid /turn_checkpoint_summary limit `{raw}`: {error}; usage: /turn_checkpoint_summary [limit]"
-            )
-        })?,
-        None => default_limit,
-    };
-    if limit == 0 {
-        return Err(
-            "invalid /turn_checkpoint_summary limit `0`; usage: /turn_checkpoint_summary [limit]"
-                .to_owned(),
-        );
-    }
-    if tokens.next().is_some() {
-        return Err("usage: /turn_checkpoint_summary [limit]".to_owned());
-    }
-    Ok(Some(limit))
+    parse_summary_limit(
+        input,
+        default_window,
+        &["/turn_checkpoint_summary", "/turn-checkpoint-summary"],
+    )
 }
 
 fn is_turn_checkpoint_repair_command(input: &str) -> CliResult<bool> {
@@ -2265,6 +2235,65 @@ mod tests {
         assert_eq!(reloaded.cli.exit_commands, vec!["/bye".to_owned()]);
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn parse_summary_limit_accepts_aliases_and_preserves_usage_text() {
+        assert_eq!(
+            parse_summary_limit(
+                "/fast_lane_summary",
+                20,
+                &["/fast_lane_summary", "/fast-lane-summary"],
+            )
+            .expect("parse"),
+            Some(80)
+        );
+        assert_eq!(
+            parse_summary_limit(
+                "/fast-lane-summary 144",
+                20,
+                &["/fast_lane_summary", "/fast-lane-summary"],
+            )
+            .expect("parse"),
+            Some(144)
+        );
+        assert_eq!(
+            parse_summary_limit(
+                "/other_summary",
+                20,
+                &["/fast_lane_summary", "/fast-lane-summary"],
+            )
+            .expect("parse"),
+            None
+        );
+
+        let error = parse_summary_limit(
+            "/fast_lane_summary 0",
+            20,
+            &["/fast_lane_summary", "/fast-lane-summary"],
+        )
+        .expect_err("zero limit should be rejected");
+        assert_eq!(
+            error,
+            "invalid /fast_lane_summary limit `0`; usage: /fast_lane_summary [limit]"
+        );
+
+        let error = parse_summary_limit(
+            "/fast_lane_summary nope",
+            20,
+            &["/fast_lane_summary", "/fast-lane-summary"],
+        )
+        .expect_err("non-number limit should be rejected");
+        assert!(error.contains("invalid /fast_lane_summary limit `nope`"));
+        assert!(error.contains("usage: /fast_lane_summary [limit]"));
+
+        let error = parse_summary_limit(
+            "/fast-lane-summary 12 extra",
+            20,
+            &["/fast_lane_summary", "/fast-lane-summary"],
+        )
+        .expect_err("extra args should be rejected");
+        assert_eq!(error, "usage: /fast_lane_summary [limit]");
     }
 
     #[test]
