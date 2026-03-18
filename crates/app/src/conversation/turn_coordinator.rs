@@ -4406,32 +4406,24 @@ async fn execute_provider_turn_lane<R: ConversationRuntime + ?Sized>(
         }
     };
 
-    if let Some(trace) = fast_lane_tool_batch_trace.as_ref() {
-        if let Err(error) =
-            emit_fast_lane_tool_batch_event(runtime, session_id, trace, binding).await
-        {
-            eprintln!(
-                "warning: failed to persist fast-lane tool batch event for session {session_id} (total_intents={}, segments={}, max_in_flight={}): {error}",
-                trace.total_intents,
-                trace.segments.len(),
-                trace.parallel_execution_max_in_flight,
-            );
-            if let Some(ctx) = binding.kernel_context() {
-                let _ = ctx.kernel.record_audit_event(
-                    Some(ctx.agent_id()),
-                    AuditEventKind::PlaneInvoked {
-                        pack_id: ctx.pack_id().to_owned(),
-                        plane: ExecutionPlane::Runtime,
-                        tier: PlaneTier::Core,
-                        primary_adapter: "conversation.fast_lane".to_owned(),
-                        delegated_core_adapter: None,
-                        operation: "conversation.fast_lane.fast_lane_tool_batch_persist_failed"
-                            .to_owned(),
-                        required_capabilities: Vec::new(),
-                    },
-                );
-            }
-        }
+    if let Some(trace) = fast_lane_tool_batch_trace.as_ref()
+        && emit_fast_lane_tool_batch_event(runtime, session_id, trace, binding)
+            .await
+            .is_err()
+        && let Some(ctx) = binding.kernel_context()
+    {
+        let _ = ctx.kernel.record_audit_event(
+            Some(ctx.agent_id()),
+            AuditEventKind::PlaneInvoked {
+                pack_id: ctx.pack_id().to_owned(),
+                plane: ExecutionPlane::Runtime,
+                tier: PlaneTier::Core,
+                primary_adapter: "conversation.fast_lane".to_owned(),
+                delegated_core_adapter: None,
+                operation: "conversation.fast_lane.fast_lane_tool_batch_persist_failed".to_owned(),
+                required_capabilities: Vec::new(),
+            },
+        );
     }
 
     ProviderTurnLaneExecution {

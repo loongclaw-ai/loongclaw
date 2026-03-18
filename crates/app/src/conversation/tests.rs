@@ -5008,16 +5008,19 @@ async fn handle_turn_with_runtime_fast_lane_batch_persist_failure_surfaces_runti
     let runtime_ops = audit
         .snapshot()
         .iter()
-        .filter_map(|event| match &event.kind {
-            loongclaw_kernel::AuditEventKind::PlaneInvoked {
+        .filter_map(|event| {
+            if let loongclaw_kernel::AuditEventKind::PlaneInvoked {
                 plane,
                 primary_adapter,
                 operation,
                 ..
-            } if *plane == loongclaw_contracts::ExecutionPlane::Runtime => {
+            } = &event.kind
+                && *plane == loongclaw_contracts::ExecutionPlane::Runtime
+            {
                 Some((primary_adapter.to_owned(), operation.to_owned()))
+            } else {
+                None
             }
-            _ => None,
         })
         .collect::<Vec<_>>();
     assert!(
