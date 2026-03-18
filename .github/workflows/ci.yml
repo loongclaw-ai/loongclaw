@@ -1,0 +1,152 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  governance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26
+
+      - name: Cache Cargo Artifacts
+        uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
+
+      - name: Shell syntax checks
+        run: |
+          bash -n scripts/install.sh
+          bash -n scripts/architecture_budget_lib.sh
+          bash -n scripts/check_architecture_boundaries.sh
+          bash -n scripts/check_architecture_drift_freshness.sh
+          bash -n scripts/generate_architecture_drift_report.sh
+          bash -n scripts/test_architecture_budget_scripts.sh
+          bash -n scripts/test_check_architecture_drift_freshness.sh
+          bash -n scripts/test_generate_architecture_drift_report.sh
+          bash -n scripts/test_install_sh.sh
+          bash -n scripts/release_artifact_lib.sh
+          bash -n scripts/bootstrap_release_local_artifacts.sh
+          bash -n scripts/test_release_artifact_lib.sh
+          bash -n scripts/test_bootstrap_release_local_artifacts.sh
+          bash -n scripts/check-docs.sh
+          bash -n scripts/check_dep_graph.sh
+          bash -n scripts/stress_daemon_tests.sh
+          bash -n scripts/test_stress_daemon_tests.sh
+
+      - name: Governance regression tests
+        run: |
+          bash scripts/test_architecture_budget_scripts.sh
+          bash scripts/test_check_architecture_drift_freshness.sh
+          bash scripts/test_generate_architecture_drift_report.sh
+          bash scripts/test_install_sh.sh
+          bash scripts/test_release_artifact_lib.sh
+          bash scripts/test_bootstrap_release_local_artifacts.sh
+          bash scripts/test_stress_daemon_tests.sh
+
+      - name: Fresh architecture drift report
+        run: bash scripts/check_architecture_drift_freshness.sh docs/releases/architecture-drift-$(date -u +%Y-%m).md
+
+      - name: Bootstrap local release artifacts
+        run: scripts/bootstrap_release_local_artifacts.sh
+
+      - name: Strict docs governance
+        run: LOONGCLAW_RELEASE_DOCS_STRICT=1 scripts/check-docs.sh
+
+      - name: Dependency graph contract
+        run: ./scripts/check_dep_graph.sh
+
+      - name: Strict architecture contract
+        run: LOONGCLAW_ARCH_STRICT=true ./scripts/check_architecture_boundaries.sh
+
+      - name: Diff hygiene
+        run: git diff --check
+
+  rust-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo Artifacts
+        uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy check
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  rust-test-default:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26
+
+      - name: Cache Cargo Artifacts
+        uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+  rust-test-all-features:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26
+
+      - name: Cache Cargo Artifacts
+        uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
+
+      - name: Test (all features)
+        run: cargo test --workspace --all-features --locked
+
+  docs-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26
+
+      - name: Cache Cargo Artifacts
+        uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
+
+      - name: Docs build
+        run: cargo doc --workspace --no-deps

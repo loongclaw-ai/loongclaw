@@ -1,0 +1,10 @@
+/target/
+.DS_Store
+/.docs
+/.loongclaw.local.toml
+/.env.local
+.worktrees/
+.idea
+.vscode
+.zed
+.claude

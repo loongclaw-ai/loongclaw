@@ -1,0 +1,81 @@
+use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
+
+use crate::mvp;
+use crate::{Capability, OperationSpec};
+use serde_json::Value;
+use std::collections::BTreeSet;
+use std::fs;
+
+pub use crate::SecurityScanProfile;
+
+static DAEMON_TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+pub fn lock_daemon_test_environment() -> MutexGuard<'static, ()> {
+    DAEMON_TEST_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
+pub fn catalog_entry(raw: &str) -> mvp::channel::ChannelCatalogEntry {
+    mvp::channel::resolve_channel_catalog_entry(raw).expect("channel catalog entry")
+}
+
+pub fn catalog_command_family(raw: &str) -> mvp::channel::ChannelCatalogCommandFamilyDescriptor {
+    mvp::channel::resolve_channel_catalog_command_family_descriptor(raw)
+        .expect("channel catalog command family")
+}
+
+pub fn channel_send_command(raw: &str) -> &'static str {
+    catalog_command_family(raw).send.command
+}
+
+pub fn channel_serve_command(raw: &str) -> &'static str {
+    catalog_command_family(raw).serve.command
+}
+
+pub fn channel_capability_ids(raw: &str) -> Vec<&'static str> {
+    catalog_entry(raw)
+        .capabilities
+        .into_iter()
+        .map(|capability| capability.as_str())
+        .collect()
+}
+
+pub fn channel_supported_target_kinds(raw: &str) -> Vec<&'static str> {
+    catalog_entry(raw)
+        .supported_target_kinds
+        .into_iter()
+        .map(|kind| kind.as_str())
+        .collect()
+}
+
+pub fn approval_test_operation(tool_name: &str, payload: Value) -> OperationSpec {
+    OperationSpec::ToolCore {
+        tool_name: tool_name.to_owned(),
+        required_capabilities: BTreeSet::from([Capability::InvokeTool]),
+        payload,
+        core: None,
+    }
+}
+
+pub fn write_temp_risk_profile(path: &Path, body: &str) {
+    fs::create_dir_all(
+        path.parent()
+            .expect("temp risk profile path should have parent directory"),
+    )
+    .expect("create temp risk profile directory");
+    fs::write(path, body).expect("write temp risk profile");
+}
+
+pub fn sign_security_scan_profile_for_test(profile: &SecurityScanProfile) -> (String, String) {
+    use crate::security_scan_profile_message;
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+    use ed25519_dalek::{Signer, SigningKey};
+
+    let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+    let signature = signing_key.sign(&security_scan_profile_message(profile));
+    let public_key_base64 = BASE64_STANDARD.encode(signing_key.verifying_key().to_bytes());
+    let signature_base64 = BASE64_STANDARD.encode(signature.to_bytes());
+    (public_key_base64, signature_base64)
+}
