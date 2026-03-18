@@ -266,7 +266,14 @@ impl OnboardPromptLineReader for StdioOnboardLineReader {
 
 #[derive(Debug, Default)]
 struct StdioOnboardUi {
-    line_reader: StdioOnboardLineReader,
+    line_reader: Option<StdioOnboardLineReader>,
+}
+
+impl StdioOnboardUi {
+    fn stdio_line_reader(&mut self) -> &mut StdioOnboardLineReader {
+        self.line_reader
+            .get_or_insert_with(StdioOnboardLineReader::default)
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -321,21 +328,21 @@ impl OnboardUi for StdioOnboardUi {
         if rich_prompt_ui_available() {
             return prompt_with_default_rich(label, default);
         }
-        prompt_with_default_stdio(&mut self.line_reader, label, default)
+        prompt_with_default_stdio(self.stdio_line_reader(), label, default)
     }
 
     fn prompt_required(&mut self, label: &str) -> CliResult<String> {
         if rich_prompt_ui_available() {
             return prompt_required_rich(label);
         }
-        prompt_required_stdio(&mut self.line_reader, label)
+        prompt_required_stdio(self.stdio_line_reader(), label)
     }
 
     fn prompt_confirm(&mut self, message: &str, default: bool) -> CliResult<bool> {
         if rich_prompt_ui_available() {
             return prompt_confirm_rich(message, default);
         }
-        prompt_confirm_stdio(&mut self.line_reader, message, default)
+        prompt_confirm_stdio(self.stdio_line_reader(), message, default)
     }
 
     fn select_one(
@@ -348,7 +355,7 @@ impl OnboardUi for StdioOnboardUi {
         if rich_prompt_ui_available() {
             return select_one_rich(label, options, default, interaction_mode);
         }
-        select_one_stdio(&mut self.line_reader, label, options, default)
+        select_one_stdio(self.stdio_line_reader(), label, options, default)
     }
 }
 
@@ -714,15 +721,24 @@ fn validate_select_one_state(
     Ok(default)
 }
 
+fn select_option_input_slug(option: &SelectOption) -> &str {
+    if option.slug == ONBOARD_CUSTOM_MODEL_OPTION_SLUG {
+        "custom"
+    } else {
+        option.slug.as_str()
+    }
+}
+
 fn parse_select_one_input(trimmed: &str, options: &[SelectOption]) -> Option<usize> {
     if let Ok(selected) = trimmed.parse::<usize>()
         && (1..=options.len()).contains(&selected)
     {
         return Some(selected - 1);
     }
-    options
-        .iter()
-        .position(|option| option.slug.eq_ignore_ascii_case(trimmed))
+    options.iter().position(|option| {
+        option.slug.eq_ignore_ascii_case(trimmed)
+            || select_option_input_slug(option).eq_ignore_ascii_case(trimmed)
+    })
 }
 
 fn render_select_one_invalid_input_message(options: &[SelectOption]) -> String {
@@ -731,7 +747,7 @@ fn render_select_one_invalid_input_message(options: &[SelectOption]) -> String {
         options.len(),
         options
             .iter()
-            .map(|option| option.slug.as_str())
+            .map(select_option_input_slug)
             .collect::<Vec<_>>()
             .join(", ")
     )
@@ -7718,6 +7734,69 @@ mod tests {
                 )
             ),
             "wrapped option labels should continue under the label text instead of snapping back to a fixed indent: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn stdio_onboard_ui_starts_without_initializing_line_reader() {
+        let ui = StdioOnboardUi::default();
+
+        assert!(
+            ui.line_reader.is_none(),
+            "stdio ui should not create a stdin reader until the stdio fallback path is actually used"
+        );
+    }
+
+    #[test]
+    fn parse_select_one_input_accepts_custom_alias_for_custom_model_option() {
+        let options = vec![
+            SelectOption {
+                label: "gpt-5.2".to_owned(),
+                slug: "openai/gpt-5.2".to_owned(),
+                description: String::new(),
+                recommended: true,
+            },
+            SelectOption {
+                label: "enter custom model id".to_owned(),
+                slug: ONBOARD_CUSTOM_MODEL_OPTION_SLUG.to_owned(),
+                description: String::new(),
+                recommended: false,
+            },
+        ];
+
+        assert_eq!(parse_select_one_input("custom", &options), Some(1));
+        assert_eq!(
+            parse_select_one_input(ONBOARD_CUSTOM_MODEL_OPTION_SLUG, &options),
+            Some(1),
+            "the internal sentinel may still appear in older scripted flows and should stay backward compatible"
+        );
+    }
+
+    #[test]
+    fn render_select_one_invalid_input_message_hides_internal_custom_model_slug() {
+        let options = vec![
+            SelectOption {
+                label: "gpt-5.2".to_owned(),
+                slug: "openai/gpt-5.2".to_owned(),
+                description: String::new(),
+                recommended: true,
+            },
+            SelectOption {
+                label: "enter custom model id".to_owned(),
+                slug: ONBOARD_CUSTOM_MODEL_OPTION_SLUG.to_owned(),
+                description: String::new(),
+                recommended: false,
+            },
+        ];
+
+        let message = render_select_one_invalid_input_message(&options);
+        assert!(
+            message.contains("custom"),
+            "invalid-input help should surface a friendly custom alias: {message}"
+        );
+        assert!(
+            !message.contains(ONBOARD_CUSTOM_MODEL_OPTION_SLUG),
+            "invalid-input help must not leak the internal custom sentinel: {message}"
         );
     }
 
