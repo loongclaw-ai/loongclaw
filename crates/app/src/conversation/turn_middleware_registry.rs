@@ -131,12 +131,18 @@ pub fn list_turn_middleware_ids() -> CliResult<Vec<String>> {
 }
 
 pub fn list_turn_middleware_metadata() -> CliResult<Vec<TurnMiddlewareMetadata>> {
-    let guard = registry()
-        .read()
-        .map_err(|_error| "turn middleware registry lock poisoned".to_owned())?;
-    let mut metadata = guard
-        .values()
-        .map(|registration| (registration.factory)().metadata())
+    let factories = {
+        let guard = registry()
+            .read()
+            .map_err(|_error| "turn middleware registry lock poisoned".to_owned())?;
+        guard
+            .values()
+            .map(|registration| registration.factory.clone())
+            .collect::<Vec<_>>()
+    };
+    let mut metadata = factories
+        .into_iter()
+        .map(|factory| factory().metadata())
         .collect::<Vec<_>>();
     metadata.sort_by_key(|entry| entry.id);
     Ok(metadata)
@@ -158,14 +164,17 @@ pub fn resolve_turn_middleware(id: &str) -> CliResult<Box<dyn ConversationTurnMi
         return Err("turn middleware id must not be empty".to_owned());
     }
 
-    let guard = registry()
-        .read()
-        .map_err(|_error| "turn middleware registry lock poisoned".to_owned())?;
-    let Some(registration) = guard.get(&normalized).cloned() else {
-        let available = guard.keys().cloned().collect::<Vec<_>>().join(", ");
-        return Err(format!(
-            "turn middleware `{normalized}` is not registered (available: {available})"
-        ));
+    let registration = {
+        let guard = registry()
+            .read()
+            .map_err(|_error| "turn middleware registry lock poisoned".to_owned())?;
+        let Some(registration) = guard.get(&normalized).cloned() else {
+            let available = guard.keys().cloned().collect::<Vec<_>>().join(", ");
+            return Err(format!(
+                "turn middleware `{normalized}` is not registered (available: {available})"
+            ));
+        };
+        registration
     };
     Ok((registration.factory)())
 }
@@ -216,7 +225,35 @@ pub(crate) fn clear_turn_middleware_env_override() {
 }
 
 #[cfg(test)]
+struct ScopedTurnMiddlewareEnvOverride {
+    previous: Option<Option<String>>,
+}
+
+#[cfg(test)]
+impl ScopedTurnMiddlewareEnvOverride {
+    fn set(value: Option<&str>) -> Self {
+        let mut guard = env_override()
+            .lock()
+            .expect("turn middleware env override lock");
+        let previous = guard.clone();
+        *guard = Some(value.map(str::to_owned));
+        Self { previous }
+    }
+}
+
+#[cfg(test)]
+impl Drop for ScopedTurnMiddlewareEnvOverride {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = env_override().lock() {
+            *guard = self.previous.clone();
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use async_trait::async_trait;
 
     use super::super::turn_middleware::{
@@ -315,10 +352,60 @@ mod tests {
     }
 
     #[test]
+    fn list_turn_middleware_metadata_runs_factories_outside_registry_lock() {
+        let factory_ran_outside_registry_lock = Arc::new(AtomicBool::new(false));
+        let observed = factory_ran_outside_registry_lock.clone();
+        register_turn_middleware("registry-turn-middleware-metadata-lock-scope", move || {
+            observed.store(registry().try_write().is_ok(), Ordering::SeqCst);
+            Box::new(StaticIdTurnMiddleware {
+                id: "registry-turn-middleware-metadata-lock-scope",
+            })
+        })
+        .expect("register turn middleware");
+
+        let metadata = list_turn_middleware_metadata().expect("list turn middleware metadata");
+        assert!(
+            metadata
+                .iter()
+                .any(|entry| entry.id == "registry-turn-middleware-metadata-lock-scope")
+        );
+        assert!(
+            factory_ran_outside_registry_lock.load(Ordering::SeqCst),
+            "metadata factory should not run while the registry read lock is held"
+        );
+    }
+
+    #[test]
+    fn resolve_turn_middleware_runs_factory_outside_registry_lock() {
+        let factory_ran_outside_registry_lock = Arc::new(AtomicBool::new(false));
+        let observed = factory_ran_outside_registry_lock.clone();
+        register_turn_middleware("registry-turn-middleware-resolve-lock-scope", move || {
+            observed.store(registry().try_write().is_ok(), Ordering::SeqCst);
+            Box::new(StaticIdTurnMiddleware {
+                id: "registry-turn-middleware-resolve-lock-scope",
+            })
+        })
+        .expect("register turn middleware");
+
+        let middleware = resolve_turn_middleware("registry-turn-middleware-resolve-lock-scope")
+            .expect("resolve turn middleware");
+        assert_eq!(
+            middleware.id(),
+            "registry-turn-middleware-resolve-lock-scope"
+        );
+        assert!(
+            factory_ran_outside_registry_lock.load(Ordering::SeqCst),
+            "middleware factory should not run while the registry read lock is held"
+        );
+    }
+
+    #[test]
     fn turn_middleware_ids_from_env_normalizes_and_deduplicates() {
-        set_turn_middleware_env_override(Some(" Alpha , beta ,, alpha "));
+        let _env_lock = super::super::context_engine_registry::conversation_selector_env_lock()
+            .lock()
+            .expect("env lock");
+        let _scoped_env = ScopedTurnMiddlewareEnvOverride::set(Some(" Alpha , beta ,, alpha "));
         let ids = turn_middleware_ids_from_env().expect("turn middleware ids from env");
         assert_eq!(ids, vec!["alpha".to_owned(), "beta".to_owned()]);
-        clear_turn_middleware_env_override();
     }
 }

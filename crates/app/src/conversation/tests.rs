@@ -579,13 +579,19 @@ impl ConversationContextEngine for RecordingLifecycleContextEngine {
 }
 
 fn context_engine_env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    super::context_engine_registry::conversation_selector_env_lock()
 }
 
 fn turn_middleware_env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    super::context_engine_registry::conversation_selector_env_lock()
+}
+
+#[test]
+fn turn_middleware_env_lock_reuses_context_engine_env_lock() {
+    assert!(std::ptr::eq(
+        context_engine_env_lock(),
+        turn_middleware_env_lock()
+    ));
 }
 
 enum ScopedEnvPrevious {
@@ -1667,7 +1673,7 @@ async fn default_runtime_applies_turn_middlewares_in_declared_order() {
 #[test]
 fn resolve_turn_middleware_selection_includes_builtin_defaults_when_unset() {
     let _env_lock = turn_middleware_env_lock().lock().expect("env lock");
-    super::turn_middleware_registry::clear_turn_middleware_env_override();
+    let _scoped_env = ScopedEnvVar::set(TURN_MIDDLEWARE_ENV, "");
 
     let selection = resolve_turn_middleware_selection(&test_config())
         .expect("resolve turn middleware selection");
