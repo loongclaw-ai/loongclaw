@@ -1706,7 +1706,7 @@ fn web_search_definition(descriptor: &ToolDescriptor) -> Value {
                     },
                     "provider": {
                         "type": "string",
-                        "enum": ["duckduckgo", "brave", "tavily"],
+                        "enum": ["duckduckgo", "ddg", "brave", "tavily"],
                         "description": "Search provider. Defaults to 'duckduckgo'. Brave requires BRAVE_API_KEY env var. Tavily requires TAVILY_API_KEY env var."
                     },
                     "max_results": {

@@ -509,6 +509,37 @@ mod tests {
     }
 
     #[test]
+    fn parse_brave_response_extracts_results() {
+        let json = json!({
+            "web": {
+                "results": [{
+                    "title": "Example Title",
+                    "url": "https://example.com",
+                    "description": "Example description"
+                }]
+            }
+        });
+        let result = parse_brave_response(&json, "test", 5).unwrap();
+        assert_eq!(result["provider"], "brave");
+        assert!(!result["results"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_brave_response_handles_empty() {
+        let json = json!({"web": {"results": []}});
+        let result = parse_brave_response(&json, "test", 5).unwrap();
+        assert!(result["results"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_brave_response_rejects_invalid_format() {
+        let json = json!({"invalid": "structure"});
+        let error =
+            parse_brave_response(&json, "test", 5).expect_err("should reject invalid format");
+        assert!(error.contains("Invalid Brave API response format"));
+    }
+
+    #[test]
     fn urlencoding_decode_handles_utf8_sequences() {
         let decoded = urlencoding_decode("caf%C3%A9").expect("valid encoded utf8 should decode");
         assert_eq!(decoded, "café");
