@@ -1379,19 +1379,19 @@ fn parse_fast_lane_tool_batch_segments(
         .map(|segments| {
             segments
                 .iter()
-                .map(|segment| FastLaneToolBatchSegmentSnapshot {
-                    segment_index: read_u32_opt(segment, "segment_index").unwrap_or_default(),
-                    scheduling_class: segment
-                        .get("scheduling_class")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned(),
-                    execution_mode: segment
-                        .get("execution_mode")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned(),
-                    intent_count: read_u32_opt(segment, "intent_count").unwrap_or_default(),
+                .filter_map(|segment| {
+                    Some(FastLaneToolBatchSegmentSnapshot {
+                        segment_index: read_u32_opt(segment, "segment_index")?,
+                        scheduling_class: segment
+                            .get("scheduling_class")
+                            .and_then(Value::as_str)?
+                            .to_owned(),
+                        execution_mode: segment
+                            .get("execution_mode")
+                            .and_then(Value::as_str)?
+                            .to_owned(),
+                        intent_count: read_u32_opt(segment, "intent_count")?,
+                    })
                 })
                 .collect()
         })
@@ -1512,6 +1512,50 @@ mod tests {
                     intent_count: 1,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn summarize_fast_lane_tool_batch_events_ignores_malformed_segments() {
+        let payloads = [json!({
+            "type": "conversation_event",
+            "event": "fast_lane_tool_batch",
+            "payload": {
+                "schema_version": 1,
+                "total_intents": 2,
+                "parallel_execution_enabled": true,
+                "parallel_execution_max_in_flight": 2,
+                "parallel_safe_intents": 2,
+                "serial_only_intents": 0,
+                "parallel_segments": 1,
+                "sequential_segments": 0,
+                "segments": [
+                    null,
+                    [],
+                    {
+                        "segment_index": 99
+                    },
+                    {
+                        "segment_index": 1,
+                        "scheduling_class": "parallel_safe",
+                        "execution_mode": "parallel",
+                        "intent_count": 2
+                    }
+                ]
+            }
+        })
+        .to_string()];
+
+        let summary = summarize_fast_lane_tool_batch_events(payloads.iter().map(String::as_str));
+
+        assert_eq!(
+            summary.latest_segments,
+            vec![FastLaneToolBatchSegmentSnapshot {
+                segment_index: 1,
+                scheduling_class: "parallel_safe".to_owned(),
+                execution_mode: "parallel".to_owned(),
+                intent_count: 2,
+            }]
         );
     }
 
