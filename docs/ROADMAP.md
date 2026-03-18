@@ -317,6 +317,12 @@ Remaining deliverables:
   - keep richer browser automation exposed only through truthful runtime-visible tool advertising and governed tool contracts
 - browser-facing assistant surface:
   - WebChat implementation as a thin shell over existing ask/chat and browser semantics, not a separate assistant runtime
+- reference-guided runtime convergence:
+  - add an app-layer turn middleware foundation before further surface growth so memory, skills,
+    prompt shaping, and future automation do not sprawl into ad hoc turn-branch logic
+  - add a session-aware automation control plane before broad channel or UI expansion
+  - evolve builtin memory from registry-only selection into real derivation/retrieval adapters
+    while keeping LoongClaw-owned canonical history and policy authority
 
 Acceptance criteria:
 
