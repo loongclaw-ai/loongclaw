@@ -1,6 +1,6 @@
 # LoongClaw Roadmap
 
-Last updated: 2026-03-18
+Last updated: 2026-03-19
 
 This roadmap is execution-focused. Every stage has:
 
@@ -290,6 +290,7 @@ Delivered in current baseline:
   - `runtime-restore` replays a persisted checkpoint as a dry-run or apply plan
   - `runtime-experiment start|finish|show|compare` records baseline snapshot, mutation summary, result snapshot, evaluation metrics, warnings, final decision, and optional snapshot-backed runtime deltas for operator review
   - `runtime-capability propose|review|show` records one run-derived capability candidate, bounded scope, required capabilities, and explicit operator review without mutating live runtime state
+  - capability artifacts can now retain snapshot-backed runtime delta evidence from recorded baseline/result snapshots so later promotion layers consume structured change evidence instead of recomputing compare output
   - `runtime-capability index` groups matching candidate records into deterministic capability families, emits compact evidence digests, and evaluates readiness as `ready`, `not_ready`, or `blocked`
   - `runtime-capability plan` resolves one indexed capability family into a deterministic dry-run promotion plan with artifact identity, blockers, approval checklist, rollback hints, and provenance
 - modular channel/provider architecture for extension-safe evolution:
@@ -310,7 +311,7 @@ Remaining deliverables:
   - sustain tagged release publishing across macOS/Linux/Windows
   - expand beyond installer scripts into package-manager distribution only after release adoption is stable
 - experiment-state operator surface follow-through:
-  - use the shipped snapshot/restore/experiment/capability record layer as the prerequisite for later evaluator pipelines and automated skill-optimization loops
+  - use the shipped snapshot/restore/experiment/capability record layer, including structured runtime delta evidence, as the prerequisite for later evaluator pipelines and automated skill-optimization loops
   - keep the new dry-run promotion planner read-only and use it as the contract for any future promotion executor instead of jumping directly to automatic mutation
 - managed browser automation companion:
   - keep `browser.open`, `browser.extract`, and `browser.click` as the shipped safe browser lane

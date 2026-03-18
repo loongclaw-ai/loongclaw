@@ -12,6 +12,9 @@ experiment should be crystallized into a reusable lower-layer capability.
       `review`, `show`, `index`, and `plan` subcommands.
 - [ ] `runtime-capability propose` creates a persisted capability-candidate
       artifact from one finished `runtime-experiment` run.
+- [ ] When the source run has recorded baseline/result snapshots,
+      `runtime-capability propose` preserves the source run's snapshot-backed
+      runtime delta evidence inside the candidate artifact.
 - [ ] The candidate artifact records one explicit target type:
       `managed_skill`, `programmatic_flow`, or `profile_note_addendum`.
 - [ ] The candidate artifact records one bounded scope, normalized tags, and
@@ -23,12 +26,18 @@ experiment should be crystallized into a reusable lower-layer capability.
 - [ ] `runtime-capability index` scans persisted candidate artifacts, groups
       matching promotion intent into deterministic capability families, and
       emits a compact evidence digest for each family.
+- [ ] Capability-family evidence includes a compact digest of recorded snapshot
+      delta coverage and changed runtime surfaces when candidate artifacts carry
+      structured delta evidence.
 - [ ] Each capability family reports readiness as `ready`, `not_ready`, or
       `blocked` from explicit evidence checks rather than opaque heuristics.
 - [ ] `runtime-capability plan` resolves one indexed family into a dry-run
       promotion plan that describes the target lower-layer artifact, stable
       artifact id, blockers, approval checklist, rollback hints, and
       provenance references without mutating runtime state.
+- [ ] The review/planning ladder preserves structured runtime delta evidence as
+      a prerequisite for any future promotion materializer or executor, rather
+      than forcing later layers to infer change intent from prose alone.
 - [ ] Product docs describe `runtime-capability` as the governed review layer
       above `runtime-experiment`, with `index`/readiness and `plan` forming the
       dry-run planning ladder below any future promotion executor or automated
