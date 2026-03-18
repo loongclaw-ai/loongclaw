@@ -215,9 +215,9 @@ export default function ChatPage() {
         </Panel>
 
         <Panel
-          eyebrow={t("status.local")}
           title={t("chat.title")}
-          aside={<div className="chat-main-status">{t("status.connected")}</div>}
+          className="panel-chat-main"
+          hideHeader
         >
           <div className="chat-main">
             <div className="chat-topline">
@@ -228,7 +228,8 @@ export default function ChatPage() {
                 </div>
               </div>
               <div className="chat-topline-meta">
-                {selectedSession?.updatedAt ?? "No history"}
+                <span>{selectedSession?.updatedAt ?? "No history"}</span>
+                <span className="chat-status-dot" title={t("status.connected")} aria-label={t("status.connected")} />
               </div>
             </div>
 

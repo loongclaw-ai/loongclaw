@@ -324,8 +324,8 @@ web/
 
 开发态约定如下：
 
-- 前端预览日志写入 `C:\Users\<user>\.loongclaw\logs\web-preview.log`
-- 前端预览错误日志写入 `C:\Users\<user>\.loongclaw\logs\web-preview.err.log`
+- 前端开发服务器日志写入 `C:\Users\<user>\.loongclaw\logs\web-dev.log`
+- 前端开发服务器错误日志写入 `C:\Users\<user>\.loongclaw\logs\web-dev.err.log`
 - 本地 Web API 日志写入 `C:\Users\<user>\.loongclaw\logs\web-api.log`
 - 本地 Web API 错误日志写入 `C:\Users\<user>\.loongclaw\logs\web-api.err.log`
 
@@ -343,7 +343,7 @@ web/
 `start-dev.ps1` 会：
 
 - 以隐藏后台进程方式启动 `loongclaw web serve --bind 127.0.0.1:4317`
-- 以隐藏后台进程方式启动前端 `vite preview`，默认端口 `4173`
+- 以隐藏后台进程方式启动前端 `vite dev`，默认端口 `4173`
 - 把日志统一写入 `%USERPROFILE%\.loongclaw\logs\`
 
 运行时目录和源码目录的边界应当保持清晰：

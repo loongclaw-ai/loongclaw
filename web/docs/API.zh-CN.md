@@ -1,8 +1,8 @@
 # LoongClaw Web Phase 1 API 草案
 
-状态：Phase 1 草案  
+状态：Phase 3 已部分落地，Phase 4A/4B 继续扩展  
 范围：本地优先的 Web Chat + Web Dashboard 控制面 API  
-最后更新：2026-03-17
+最后更新：2026-03-18
 
 ## 1. 目标
 
@@ -222,7 +222,33 @@ Phase 1 推荐：
 - tool trace
 - richer message blocks
 
-## 7. Dashboard API
+## 7. 当前实现状态
+
+截至当前版本，下面这些接口已在本地 Web API 中落地：
+
+- `GET /healthz`
+- `GET /api/meta`
+- `GET /api/dashboard/summary`
+- `GET /api/dashboard/providers`
+- `GET /api/chat/sessions`
+- `POST /api/chat/sessions`
+- `DELETE /api/chat/sessions/:id`
+- `GET /api/chat/sessions/:id/history`
+- `POST /api/chat/sessions/:id/turn`
+
+当前仍未落地但应优先补充的接口方向：
+
+- `GET /api/dashboard/tools`
+- `GET /api/dashboard/runtime`
+- `GET /api/dashboard/config`
+- `POST /api/chat/sessions/:id/turn/stream` 或等价 SSE 路径
+
+因此，这份文档应理解为：
+
+- 其中一部分已经成为当前实现
+- 另一部分是下一阶段 API 演进目标
+
+## 8. Dashboard API
 
 ### `GET /api/dashboard/summary`
 
@@ -256,7 +282,7 @@ Phase 1 推荐：
 
 这些接口的字段命名统一使用英文；任何用户可见标题都由前端翻译资源控制。
 
-## 8. Phase 2 Provider Settings API
+## 9. Phase 2 Provider Settings API
 
 下面这组接口不属于当前 Phase 1 必做范围，但建议在 Phase 2 作为 Dashboard 的受控配置能力引入。
 
@@ -353,7 +379,7 @@ Phase 1 推荐：
 - 建议支持失败回滚或保留旧值
 - 默认仍然只允许本地受信访问
 
-## 9. 错误码建议
+## 10. 错误码建议
 
 建议首批统一以下英文错误码：
 
@@ -370,14 +396,33 @@ Phase 1 推荐：
 
 前端应基于这些 code 做中英双语提示，而不是直接展示服务端 message。
 
-## 10. 兼容性约定
+## 11. 兼容性约定
 
 - API path 采用 `/api/...`
 - 字段名采用英文 camelCase
 - 错误码采用英文 snake_case 或 kebab-case 二选一，首版需固定一种
 - `supportedLocales` 至少包含 `en` 和 `zh-CN`
 
-## 11. Phase 1 边界
+## 12. 当前建议的下一步 API 优先级
+
+从实际开发顺序看，后续建议优先补：
+
+1. Chat 流式输出
+- SSE 事件流
+- assistant 增量文本
+- tool / runtime 事件摘要
+
+2. Dashboard 只读控制面补全
+- `tools`
+- `runtime`
+- `config`
+- provider health / diagnostics
+
+3. 再进入受控写入
+- provider validate / apply / reload
+- 更细的 auth 与安全控制
+
+## 13. Phase 1 边界
 
 Phase 1 不要求：
 

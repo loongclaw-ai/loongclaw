@@ -1,8 +1,8 @@
 # LoongClaw Web 设计文档
 
-状态：Phase 1 提议  
+状态：Phase 4 进行中（基于实际实现进度重排）  
 范围：`alpha-test` 分支，大型交付型 PR  
-最后更新：2026-03-17
+最后更新：2026-03-18
 
 ## 1. 目标
 
@@ -287,7 +287,28 @@ Phase 1 默认策略：
 
 并显示大致资源体积。
 
-## 15. 实施分期
+## 15. 当前实际进度
+
+按当前代码落地情况判断，项目已经不再停留在“文档和壳子”阶段。
+
+当前更准确的进度是：
+
+- Phase 1：已完成  
+  设计边界、API 草案、技术选型、目录方案都已固化在 `web/docs/`。
+- Phase 2：部分完成  
+  Web Chat 已经复用真实 LoongClaw runtime 语义，不是子进程壳；但 `crates/app` 级别的干净复用服务仍未抽出来，当前仍有一部分 runtime 初始化逻辑留在 `crates/daemon/src/web_cli.rs`。
+- Phase 3：大部分完成  
+  已有 `loongclaw web serve`，并已实现最小 chat/dashboard 本地 API；但 token 鉴权、dashboard 补全接口、流式事件仍未完成。
+- Phase 4：进行中  
+  前端 `chat + dashboard` 已可用，并且已联通真实后端；但 Chat 还没有流式 turn、tool trace、取消等 agent 表达能力，Dashboard 也还缺少 runtime/tools/config 的完整只读控制面。
+- Phase 5 及之后：未开始或仅做设计预留。
+
+换句话说，当前阶段应视为：
+
+- 已完成“Web MVP 跑通”
+- 正在进入“让 Web 真正表达 agent/runtime 能力”的阶段
+
+## 16. 重排后的实施分期
 
 ### Phase 1：协议与设计固化
 
@@ -295,33 +316,82 @@ Phase 1 默认策略：
 - 固化中英双语和参考站点继承策略
 - 固化本地安装模式
 
-### Phase 2：后端复用层
+状态：已完成
 
-- 从 CLI 现有代码中抽可复用的 session/turn 初始化逻辑
-- 在 `crates/app` 暴露对 Web 友好的 conversation service
+### Phase 2：runtime 语义复用
+
+- 让 Web Chat 复用真实 LoongClaw conversation runtime
+- 通过统一 session address / memory / provider 路径执行 turn
+- 避免把 Web 做成调用 CLI 子进程的壳
+
+状态：已完成语义复用，未完成抽象收口
 
 ### Phase 3：本地 API 控制面
 
-- 实现 `web serve`
-- 实现 chat 和 dashboard 最小接口
-- 接入本地 token 鉴权
+- 实现 `loongclaw web serve`
+- 实现最小 chat 与 dashboard API
+- 提供本地 loopback 开发链路
+
+当前已实现：
+
+- `GET /healthz`
+- `GET /api/meta`
+- `GET /api/dashboard/summary`
+- `GET /api/dashboard/providers`
+- `GET /api/chat/sessions`
+- `POST /api/chat/sessions`
+- `DELETE /api/chat/sessions/:id`
+- `GET /api/chat/sessions/:id/history`
+- `POST /api/chat/sessions/:id/turn`
+
+当前仍缺：
+
+- 本地 token 鉴权
+- `dashboard/tools` / `dashboard/runtime` / `dashboard/config`
+- SSE / 流式事件
+
+状态：大部分完成
 
 ### Phase 4：前端 MVP
 
 - 基于参考站点结构搭建前端
 - 实现双语、主题、布局骨架
 - 完成 chat 和 dashboard 两个页面
+- 接入真实后端 API
+
+状态：已跑通，仍在持续打磨
+
+### Phase 4A：Chat 的 agent 化表达
+
+- 为 `turn` 增加 SSE 或等价流式机制
+- 前端展示生成中状态
+- 展示 tool / runtime 事件摘要
+- 增加取消、重试、细粒度错误提示
+
+这是当前最优先的下一阶段。
+
+### Phase 4B：Dashboard 的控制面补全
+
+- 增加 `runtime` / `tools` / `config` 只读接口
+- 增加 provider health、最近错误、diagnostics
+- 把 Dashboard 从“摘要页”补成“runtime 控制台”
+
+### Phase 4C：`app` 层复用服务抽取
+
+- 将 `crates/daemon/src/web_cli.rs` 中的 runtime 初始化与 turn 拼装逻辑下沉到 `crates/app`
+- 让 CLI / Web 共享更稳定的 session/turn service
+- 为流式 turn、事件流和后续 ACP 可视化做准备
 
 ### Phase 5：可选安装流程
 
 - 分离 Web 构建产物
-- 增加 install/remove/status 命令
+- 增加 `web install/remove/status`
 - 接入 `onboard`
 
 ### Phase 6：Dashboard 受控写入能力
 
 - 增加 provider 配置读取和编辑界面
-- 增加验证、应用、重载与失败反馈
+- 增加 `validate -> apply -> reload`
 - 保持 key 掩码显示和安全边界
 
 ### Phase 7：托管模式预留
@@ -330,7 +400,24 @@ Phase 1 默认策略：
 - 增加 endpoint / origin 扩展点
 - 不在本地模式成熟前提前推进托管交付
 
-## 16. 验收标准
+## 17. 当前推荐优先级
+
+基于当前真实进度，接下来不建议优先投入：
+
+- 可选安装产品化
+- 托管模式
+- Dashboard 写配置
+
+当前更合理的优先级是：
+
+1. 先把 Chat 补成真正有 agent 感的交互面  
+   重点是流式 turn、tool/routing 事件、取消与错误表达。
+2. 再把 Dashboard 补成完整只读控制面  
+   重点是 runtime、tools、config、diagnostics。
+3. 然后把 Web runtime 复用逻辑从 `daemon` 抽回 `app`  
+   避免后续 Web 深化后继续粘在命令层实现细节上。
+
+## 18. 验收标准
 
 首个大型 PR 的验收标准：
 
@@ -341,7 +428,7 @@ Phase 1 默认策略：
 - 本地部署模式可用
 - 前端支持 `en` 和 `zh-CN`
 
-## 17. 开发态运行时文件约定
+## 19. 开发态运行时文件约定
 
 Web 模块的开发态运行日志不应写回仓库目录。
 
@@ -349,6 +436,7 @@ Web 模块的开发态运行日志不应写回仓库目录。
 
 - 仓库目录 `web/` 只保存源码、文档、静态资源和构建配置
 - 开发态后台服务日志统一落到 `%USERPROFILE%\.loongclaw\logs\`
+- 前端开发态默认运行 `vite dev`，而不是 `vite preview`
 
 这样可以避免：
 

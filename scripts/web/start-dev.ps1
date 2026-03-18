@@ -1,7 +1,7 @@
 param(
   [string]$ApiBind = "127.0.0.1:4317",
-  [string]$PreviewHost = "127.0.0.1",
-  [int]$PreviewPort = 4173
+  [string]$DevHost = "127.0.0.1",
+  [int]$DevPort = 4173
 )
 
 $ErrorActionPreference = "Stop"
@@ -41,8 +41,8 @@ New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
 
 $apiLog = Join-Path $logRoot "web-api.log"
 $apiErr = Join-Path $logRoot "web-api.err.log"
-$previewLog = Join-Path $logRoot "web-preview.log"
-$previewErr = Join-Path $logRoot "web-preview.err.log"
+$devLog = Join-Path $logRoot "web-dev.log"
+$devErr = Join-Path $logRoot "web-dev.err.log"
 
 $userApiKey = [Environment]::GetEnvironmentVariable("ARK_API_KEY", "User")
 if ($userApiKey) {
@@ -50,7 +50,7 @@ if ($userApiKey) {
 }
 
 Stop-PortProcesses -Port 4317
-Stop-PortProcesses -Port $PreviewPort
+Stop-PortProcesses -Port $DevPort
 
 $daemonExe = Join-Path $repoRoot "target\debug\loongclaw.exe"
 if (-not (Test-Path $daemonExe)) {
@@ -71,22 +71,12 @@ if (-not (Test-Path $viteCmd)) {
   throw "Missing Vite binary: $viteCmd"
 }
 
-$distDir = Join-Path $webRoot "dist"
-if (-not (Test-Path $distDir)) {
-  Push-Location $webRoot
-  try {
-    npm.cmd run build | Out-Null
-  } finally {
-    Pop-Location
-  }
-}
-
-$previewProc = Start-Process `
+$devProc = Start-Process `
   -FilePath $viteCmd `
-  -ArgumentList "preview", "--host", $PreviewHost, "--port", "$PreviewPort" `
+  -ArgumentList "--host", $DevHost, "--port", "$DevPort" `
   -WorkingDirectory $webRoot `
-  -RedirectStandardOutput $previewLog `
-  -RedirectStandardError $previewErr `
+  -RedirectStandardOutput $devLog `
+  -RedirectStandardError $devErr `
   -WindowStyle Hidden `
   -PassThru
 
@@ -103,13 +93,13 @@ for ($i = 0; $i -lt 20; $i++) {
   }
 }
 
-$previewReady = $false
+$devReady = $false
 for ($i = 0; $i -lt 20; $i++) {
   Start-Sleep -Milliseconds 500
   try {
-    $status = (Invoke-WebRequest -UseBasicParsing "http://$PreviewHost`:$PreviewPort/" -TimeoutSec 3).StatusCode
+    $status = (Invoke-WebRequest -UseBasicParsing "http://$DevHost`:$DevPort/" -TimeoutSec 3).StatusCode
     if ($status -ge 200 -and $status -lt 500) {
-      $previewReady = $true
+      $devReady = $true
       break
     }
   } catch {
@@ -120,12 +110,12 @@ if (-not $apiReady) {
   throw "Web API did not become ready. Check $apiErr"
 }
 
-if (-not $previewReady) {
-  throw "Web preview did not become ready. Check $previewErr"
+if (-not $devReady) {
+  throw "Web dev server did not become ready. Check $devErr"
 }
 
 Write-Output "Web API: http://$ApiBind"
-Write-Output "Web Preview: http://$PreviewHost`:$PreviewPort"
+Write-Output "Web Dev: http://$DevHost`:$DevPort"
 Write-Output "Logs: $logRoot"
 Write-Output "API PID: $($apiProc.Id)"
-Write-Output "Preview PID: $($previewProc.Id)"
+Write-Output "Dev PID: $($devProc.Id)"
