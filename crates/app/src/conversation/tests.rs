@@ -74,6 +74,14 @@ enum FakeTurnResponse {
 }
 
 struct TraitDefaultToolViewRuntime;
+struct NoopTurnMiddleware {
+    id: &'static str,
+}
+struct RecordingTransformTurnMiddleware {
+    id: &'static str,
+    injected_content: &'static str,
+    calls: Arc<Mutex<Vec<String>>>,
+}
 
 #[async_trait]
 impl ConversationRuntime for TraitDefaultToolViewRuntime {
@@ -431,6 +439,64 @@ impl ConversationContextEngine for StubSystemPromptAdditionEngine {
     }
 }
 
+impl NoopTurnMiddleware {
+    fn new(id: &'static str) -> Self {
+        Self { id }
+    }
+}
+
+#[async_trait]
+impl ConversationTurnMiddleware for NoopTurnMiddleware {
+    fn id(&self) -> &'static str {
+        self.id
+    }
+}
+
+impl RecordingTransformTurnMiddleware {
+    fn new(
+        id: &'static str,
+        injected_content: &'static str,
+        calls: Arc<Mutex<Vec<String>>>,
+    ) -> Self {
+        Self {
+            id,
+            injected_content,
+            calls,
+        }
+    }
+}
+
+#[async_trait]
+impl ConversationTurnMiddleware for RecordingTransformTurnMiddleware {
+    fn id(&self) -> &'static str {
+        self.id
+    }
+
+    fn metadata(&self) -> TurnMiddlewareMetadata {
+        TurnMiddlewareMetadata::new(self.id(), [TurnMiddlewareCapability::ContextTransform])
+    }
+
+    async fn transform_context(
+        &self,
+        _config: &LoongClawConfig,
+        session_id: &str,
+        _include_system_prompt: bool,
+        mut assembled: AssembledConversationContext,
+        _runtime_tool_view: &crate::tools::ToolView,
+        _requested_tool_view: &crate::tools::ToolView,
+        _binding: ConversationRuntimeBinding<'_>,
+    ) -> CliResult<AssembledConversationContext> {
+        self.calls
+            .lock()
+            .expect("transform middleware calls lock")
+            .push(format!("transform:{}:{session_id}", self.id));
+        assembled.messages.push(json!({
+            "role": "assistant",
+            "content": self.injected_content,
+        }));
+        Ok(assembled)
+    }
+}
 #[async_trait]
 impl ConversationContextEngine for RecordingLifecycleContextEngine {
     fn id(&self) -> &'static str {
@@ -1575,7 +1641,10 @@ fn resolve_turn_middleware_selection_includes_builtin_defaults_when_unset() {
         .expect("resolve turn middleware selection");
     assert_eq!(
         selection.ids,
-        vec![SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID.to_owned()]
+        vec![
+            SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID.to_owned(),
+            SYSTEM_PROMPT_TOOL_VIEW_TURN_MIDDLEWARE_ID.to_owned(),
+        ]
     );
     assert_eq!(selection.source, TurnMiddlewareSelectionSource::Default);
 }
@@ -1589,7 +1658,10 @@ fn default_runtime_with_context_engine_exposes_builtin_turn_middleware_metadata(
             .into_iter()
             .map(|metadata| metadata.id)
             .collect::<Vec<_>>(),
-        vec![SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID]
+        vec![
+            SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID,
+            SYSTEM_PROMPT_TOOL_VIEW_TURN_MIDDLEWARE_ID,
+        ]
     );
 }
 
@@ -1610,6 +1682,7 @@ fn collect_context_engine_runtime_snapshot_reports_turn_middleware_selection() {
         snapshot.turn_middlewares.selected.ids,
         vec![
             SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID.to_owned(),
+            SYSTEM_PROMPT_TOOL_VIEW_TURN_MIDDLEWARE_ID.to_owned(),
             "snapshot-turn-a".to_owned()
         ]
     );
@@ -1624,7 +1697,11 @@ fn collect_context_engine_runtime_snapshot_reports_turn_middleware_selection() {
             .iter()
             .map(|metadata| metadata.id)
             .collect::<Vec<_>>(),
-        vec![SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID, "snapshot-turn-a"]
+        vec![
+            SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID,
+            SYSTEM_PROMPT_TOOL_VIEW_TURN_MIDDLEWARE_ID,
+            "snapshot-turn-a",
+        ]
     );
     assert!(
         snapshot
@@ -1632,6 +1709,13 @@ fn collect_context_engine_runtime_snapshot_reports_turn_middleware_selection() {
             .available
             .iter()
             .any(|metadata| metadata.id == SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID)
+    );
+    assert!(
+        snapshot
+            .turn_middlewares
+            .available
+            .iter()
+            .any(|metadata| metadata.id == SYSTEM_PROMPT_TOOL_VIEW_TURN_MIDDLEWARE_ID)
     );
     assert!(
         snapshot

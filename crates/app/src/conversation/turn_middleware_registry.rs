@@ -7,7 +7,8 @@ use crate::CliResult;
 
 use super::turn_middleware::{
     ConversationTurnMiddleware, SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID,
-    SystemPromptAdditionTurnMiddleware, TurnMiddlewareMetadata,
+    SYSTEM_PROMPT_TOOL_VIEW_TURN_MIDDLEWARE_ID, SystemPromptAdditionTurnMiddleware,
+    SystemPromptToolViewTurnMiddleware, TurnMiddlewareMetadata,
 };
 
 pub const TURN_MIDDLEWARE_ENV: &str = "LOONGCLAW_TURN_MIDDLEWARES";
@@ -48,6 +49,12 @@ fn registry() -> &'static RwLock<BTreeMap<String, TurnMiddlewareRegistration>> {
             SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID.to_owned(),
             TurnMiddlewareRegistration::builtin(Arc::new(|| {
                 Box::new(SystemPromptAdditionTurnMiddleware)
+            })),
+        );
+        map.insert(
+            SYSTEM_PROMPT_TOOL_VIEW_TURN_MIDDLEWARE_ID.to_owned(),
+            TurnMiddlewareRegistration::builtin(Arc::new(|| {
+                Box::new(SystemPromptToolViewTurnMiddleware)
             })),
         );
         RwLock::new(map)
@@ -212,7 +219,9 @@ pub(crate) fn clear_turn_middleware_env_override() {
 mod tests {
     use async_trait::async_trait;
 
-    use super::super::turn_middleware::SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID;
+    use super::super::turn_middleware::{
+        SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID, SYSTEM_PROMPT_TOOL_VIEW_TURN_MIDDLEWARE_ID,
+    };
     use super::*;
 
     struct StaticIdTurnMiddleware {
@@ -233,6 +242,11 @@ mod tests {
             ids.iter()
                 .any(|id| id == SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID),
             "system prompt addition middleware should be registered by default"
+        );
+        assert!(
+            ids.iter()
+                .any(|id| id == SYSTEM_PROMPT_TOOL_VIEW_TURN_MIDDLEWARE_ID),
+            "system prompt tool-view middleware should be registered by default"
         );
     }
 
