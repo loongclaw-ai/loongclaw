@@ -8,7 +8,7 @@ use crate::config::{
     AcpConversationRoutingMode, AcpDispatchThreadRoutingMode, LoongClawConfig,
     normalize_dispatch_account_id, normalize_dispatch_channel_id,
 };
-use crate::conversation::ConversationSessionAddress;
+use crate::conversation::{ConversationSessionAddress, parse_route_session_id};
 
 use super::AcpSessionManager;
 use super::analytics::PersistedAcpRuntimeEventContext;
@@ -298,14 +298,10 @@ pub fn describe_acp_conversation_dispatch_target_for_address(
                 explicit_thread_id,
                 explicit_channel_path,
             )
-        } else if let Some((channel_id, remainder)) = parsed_route_session_id.split_once(':') {
-            if let Some(channel_id) = normalize_dispatch_channel_id(channel_id) {
-                let channel_path = remainder
-                    .split(':')
-                    .map(str::trim)
-                    .filter(|segment| !segment.is_empty())
-                    .map(ToOwned::to_owned)
-                    .collect::<Vec<_>>();
+        } else if let Some((parsed_channel_id, channel_path)) =
+            parse_route_session_id(parsed_route_session_id.as_str())?
+        {
+            if let Some(channel_id) = normalize_dispatch_channel_id(parsed_channel_id.as_str()) {
                 (
                     parsed_route_session_id,
                     Some(channel_id),

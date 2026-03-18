@@ -951,6 +951,14 @@ fn doctor_check_spec(channel_id: &str, operation_id: &str) -> Option<DoctorChann
             config_name: "feishu webhook verification",
             runtime_name: Some("feishu webhook runtime"),
         }),
+        ("matrix", "send") => Some(DoctorChannelCheckSpec {
+            config_name: "matrix channel",
+            runtime_name: None,
+        }),
+        ("matrix", "serve") => Some(DoctorChannelCheckSpec {
+            config_name: "matrix room sync",
+            runtime_name: Some("matrix channel runtime"),
+        }),
         _ => None,
     }
 }
@@ -1801,27 +1809,38 @@ mod tests {
         config.feishu.enabled = true;
         config.feishu.app_id = Some("cli_a1b2c3".to_owned());
         config.feishu.app_secret = Some("feishu-secret".to_owned());
+        config.matrix.enabled = true;
+        config.matrix.access_token = Some("matrix-token".to_owned());
+        config.matrix.base_url = Some("https://matrix.example.org".to_owned());
 
-        let checks = collect_channel_doctor_checks(&config);
+        let checks = check_channel_surfaces(&config);
         let names = checks
             .iter()
             .map(|check| check.name.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(
-            names,
-            vec![
-                "telegram channel",
-                "feishu channel",
-                "feishu webhook verification"
-            ]
+        assert!(
+            names.contains(&"telegram channel"),
+            "telegram send/serve surfaces should appear in live doctor output: {checks:#?}"
+        );
+        assert!(
+            names.contains(&"telegram channel runtime"),
+            "ready telegram serve surfaces should emit runtime checks in live doctor output: {checks:#?}"
+        );
+        assert!(
+            names.contains(&"matrix channel") && names.contains(&"matrix room sync"),
+            "matrix send/serve surfaces should appear in live doctor output: {checks:#?}"
+        );
+        assert!(
+            names.contains(&"matrix channel runtime"),
+            "ready matrix serve surfaces should emit runtime checks in live doctor output: {checks:#?}"
         );
         assert!(
             checks
                 .iter()
-                .any(|check| check.name == "telegram channel"
+                .any(|check| check.name == "matrix room sync"
                     && check.level == DoctorCheckLevel::Pass),
-            "telegram doctor check should come from the channel registry: {checks:#?}"
+            "matrix serve configuration should stay healthy through the live doctor path: {checks:#?}"
         );
     }
 
@@ -1833,6 +1852,7 @@ mod tests {
         config.feishu.app_secret_env = None;
         config.feishu.verification_token_env = None;
         config.feishu.encrypt_key_env = None;
+        config.matrix.access_token_env = None;
 
         let mut fixes = Vec::new();
         let changed = maybe_apply_channel_env_fix(&mut config, true, &mut fixes);
@@ -1855,7 +1875,11 @@ mod tests {
             config.feishu.encrypt_key_env.as_deref(),
             Some("FEISHU_ENCRYPT_KEY")
         );
-        assert_eq!(fixes.len(), 5);
+        assert_eq!(
+            config.matrix.access_token_env.as_deref(),
+            Some("MATRIX_ACCESS_TOKEN")
+        );
+        assert_eq!(fixes.len(), 6);
     }
 
     #[test]

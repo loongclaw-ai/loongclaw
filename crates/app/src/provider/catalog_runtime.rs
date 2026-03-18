@@ -261,8 +261,8 @@ pub(super) fn clear_model_catalog_singleflight_slot(cache_key: &str) {
 }
 
 #[cfg(test)]
-pub(super) fn model_catalog_singleflight_slot_count() -> usize {
-    with_model_catalog_fetches(|fetches| fetches.len())
+pub(super) fn has_model_catalog_singleflight_slot(cache_key: &str) -> bool {
+    with_model_catalog_fetches(|fetches| fetches.contains_key(cache_key))
 }
 
 static MODEL_CATALOG_CACHE: OnceLock<Mutex<ModelCatalogCache>> = OnceLock::new();

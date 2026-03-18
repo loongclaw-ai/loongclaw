@@ -9,7 +9,7 @@ needs.
 ## Acceptance Criteria
 
 - [ ] Product docs clearly distinguish the shipped MVP surfaces:
-      CLI as the default surface, plus Telegram and Feishu as optional channels.
+      CLI as the default surface, plus Telegram, Feishu / Lark, and Matrix as optional channels.
 - [ ] Channel setup guidance describes required credentials, config toggles, and
       the command used to run each shipped channel.
 - [ ] Channel setup never implies a channel is ready until its required
@@ -22,6 +22,6 @@ needs.
 
 ## Out of Scope
 
-- Shipping new channels in this spec
+- Shipping additional channels beyond CLI, Telegram, Feishu / Lark, and Matrix
 - Broad cross-channel inbox or routing UX
 - Full remote pairing flows for unshipped surfaces

@@ -141,7 +141,7 @@ pitch.
 |------|-----------|-------------|
 | Add a provider | `crates/app/src/provider/` | `provider-openai` |
 | Add a tool | `crates/app/src/tools/` | `tools-shell`, `tools-file` |
-| Add a channel | `crates/app/src/channel/` | `channel-telegram`, `channel-feishu` |
+| Add a channel | `crates/app/src/channel/` | `channel-telegram`, `channel-feishu`, `channel-matrix` |
 | Add a memory backend | `crates/app/src/memory/` | `memory-sqlite` |
 | Kernel policy | `crates/kernel/src/policy.rs` | — |
 | Shared types | `crates/contracts/src/` | — |
@@ -181,13 +181,15 @@ cargo test --workspace --all-features
 ### Recipe: Add a Channel
 
 1. Create `crates/app/src/channel/your_channel/mod.rs`
-2. Implement the `ChannelAdapter` trait (`name`, `receive_batch`, `send_text`)
+2. Implement the `ChannelAdapter` trait (`name`, `receive_batch`, `send_message`)
 3. Add a `run_your_channel()` function in `crates/app/src/channel/mod.rs` that:
    - Loads config
    - Calls `bootstrap_kernel_context_with_config("channel-your-channel", DEFAULT_TOKEN_TTL_S, &config)`
    - Loops: receive messages → `process_inbound_with_provider(config, msg, Some(&ctx))` → send reply
 4. Wire the subcommand in `crates/daemon/src/main.rs`
 5. Add a feature flag in `crates/app/Cargo.toml`
+
+The shipped channel reference implementations are `telegram`, `feishu`, and `matrix`.
 
 ## Standard Workflow
 

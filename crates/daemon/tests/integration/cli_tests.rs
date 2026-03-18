@@ -1080,6 +1080,68 @@ fn telegram_send_cli_rejects_non_conversation_target_kind() {
     );
 }
 
+#[test]
+fn matrix_send_cli_accepts_generic_target_and_defaults_to_conversation() {
+    let cli = Cli::try_parse_from([
+        "loongclaw",
+        "matrix-send",
+        "--target",
+        "!ops:example.org",
+        "--text",
+        "hello matrix",
+    ])
+    .expect("matrix send CLI should parse");
+
+    match cli.command {
+        Some(Commands::MatrixSend {
+            target,
+            target_kind,
+            text,
+            ..
+        }) => {
+            assert_eq!(target, "!ops:example.org");
+            assert_eq!(target_kind, channel_default_send_target_kind("matrix"));
+            assert_eq!(text, "hello matrix");
+        }
+        other => panic!("unexpected command parse result: {other:?}"),
+    }
+}
+
+#[test]
+fn matrix_send_cli_rejects_non_conversation_target_kind() {
+    let error = Cli::try_parse_from([
+        "loongclaw",
+        "matrix-send",
+        "--target",
+        "!ops:example.org",
+        "--target-kind",
+        "message_reply",
+        "--text",
+        "hello matrix",
+    ])
+    .expect_err("matrix send should reject non-conversation kinds");
+
+    assert!(
+        error
+            .to_string()
+            .contains("matrix --target-kind does not support `message_reply`; use `conversation`")
+    );
+}
+
+#[test]
+fn matrix_serve_cli_accepts_once_and_account_flags() {
+    let cli = Cli::try_parse_from(["loongclaw", "matrix-serve", "--once", "--account", "ops"])
+        .expect("matrix serve CLI should parse");
+
+    match cli.command {
+        Some(Commands::MatrixServe { once, account, .. }) => {
+            assert!(once);
+            assert_eq!(account.as_deref(), Some("ops"));
+        }
+        other => panic!("unexpected command parse result: {other:?}"),
+    }
+}
+
 fn fake_send_cli_runner(args: ChannelSendCliArgs<'_>) -> ChannelCliCommandFuture<'_> {
     Box::pin(async move {
         Err(format!(
@@ -1176,6 +1238,13 @@ fn default_channel_send_target_kind_uses_command_family_send_metadata() {
     assert_eq!(
         default_channel_send_target_kind(ChannelSendCliSpec {
             family: mvp::channel::TELEGRAM_COMMAND_FAMILY_DESCRIPTOR,
+            run: fake_send_cli_runner,
+        }),
+        mvp::channel::ChannelOutboundTargetKind::Conversation
+    );
+    assert_eq!(
+        default_channel_send_target_kind(ChannelSendCliSpec {
+            family: mvp::channel::MATRIX_COMMAND_FAMILY_DESCRIPTOR,
             run: fake_send_cli_runner,
         }),
         mvp::channel::ChannelOutboundTargetKind::Conversation

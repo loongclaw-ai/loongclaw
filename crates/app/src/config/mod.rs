@@ -14,14 +14,16 @@ pub use audit::{AuditConfig, AuditMode};
 pub use channels::{
     ChannelAcpConfig, ChannelDefaultAccountSelection, ChannelDefaultAccountSelectionSource,
     ChannelDescriptor, ChannelResolvedAccountRoute, ChannelRuntimeKind, CliChannelConfig,
-    FeishuAccountConfig, FeishuChannelConfig, FeishuDomain, ResolvedFeishuChannelConfig,
+    FeishuAccountConfig, FeishuChannelConfig, FeishuDomain, MatrixAccountConfig,
+    MatrixChannelConfig, ResolvedFeishuChannelConfig, ResolvedMatrixChannelConfig,
     ResolvedTelegramChannelConfig, TelegramAccountConfig, TelegramChannelConfig,
     channel_descriptor, service_channel_descriptors,
 };
 #[allow(unused_imports)]
 pub(crate) use channels::{
     FEISHU_APP_ID_ENV, FEISHU_APP_SECRET_ENV, FEISHU_ENCRYPT_KEY_ENV,
-    FEISHU_VERIFICATION_TOKEN_ENV, TELEGRAM_BOT_TOKEN_ENV,
+    FEISHU_VERIFICATION_TOKEN_ENV, MATRIX_ACCESS_TOKEN_ENV, TELEGRAM_BOT_TOKEN_ENV,
+    normalize_channel_account_id,
 };
 #[allow(unused_imports)]
 pub use conversation::{ConversationConfig, ConversationTurnLoopConfig};
@@ -116,21 +118,40 @@ mod tests {
 
         config.telegram.enabled = true;
         config.feishu.enabled = true;
+        config.matrix.enabled = true;
 
         assert_eq!(
             config.enabled_channel_ids(),
-            vec!["cli", "telegram", "feishu"]
+            vec!["cli", "telegram", "feishu", "matrix"]
         );
         assert_eq!(
             config.enabled_service_channel_ids(),
-            vec!["telegram", "feishu"]
+            vec!["telegram", "feishu", "matrix"]
         );
 
         let service_ids = service_channel_descriptors()
             .into_iter()
             .map(|descriptor| descriptor.id)
             .collect::<Vec<_>>();
-        assert_eq!(service_ids, vec!["telegram", "feishu"]);
+        assert_eq!(service_ids, vec!["telegram", "feishu", "matrix"]);
+    }
+
+    #[test]
+    fn channel_descriptor_lookup_reports_matrix_metadata() {
+        let matrix = channel_descriptor("matrix").expect("matrix descriptor");
+        assert_eq!(matrix.id, "matrix");
+        assert_eq!(matrix.surface_label, "matrix channel");
+        assert_eq!(matrix.runtime_kind, ChannelRuntimeKind::Service);
+        assert_eq!(matrix.serve_subcommand, Some("matrix-serve"));
+    }
+
+    #[test]
+    fn service_channel_descriptors_include_matrix_surface() {
+        let service_ids = service_channel_descriptors()
+            .into_iter()
+            .map(|descriptor| descriptor.id)
+            .collect::<Vec<_>>();
+        assert_eq!(service_ids, vec!["telegram", "feishu", "matrix"]);
     }
 
     #[test]

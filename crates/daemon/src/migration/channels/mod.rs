@@ -8,6 +8,7 @@ use super::types::{
 };
 
 mod feishu;
+mod matrix;
 mod telegram;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,7 +57,7 @@ struct ChannelAdapter {
     apply_default_env_bindings: fn(&mut mvp::config::LoongClawConfig) -> Vec<String>,
 }
 
-const REGISTRY: [ChannelAdapter; 2] = [
+const REGISTRY: [ChannelAdapter; 3] = [
     ChannelAdapter {
         id: telegram::ID,
         collect_preview: telegram::collect_preview,
@@ -76,6 +77,16 @@ const REGISTRY: [ChannelAdapter; 2] = [
         collect_preflight_checks: feishu::collect_preflight_checks,
         collect_doctor_checks: feishu::collect_doctor_checks,
         apply_default_env_bindings: feishu::apply_default_env_bindings,
+    },
+    ChannelAdapter {
+        id: matrix::ID,
+        collect_preview: matrix::collect_preview,
+        apply: matrix::apply,
+        readiness_state: matrix::readiness_state,
+        apply_import_readiness: matrix::apply_import_readiness,
+        collect_preflight_checks: matrix::collect_preflight_checks,
+        collect_doctor_checks: matrix::collect_doctor_checks,
+        apply_default_env_bindings: matrix::apply_default_env_bindings,
     },
 ];
 

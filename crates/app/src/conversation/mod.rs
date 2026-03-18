@@ -64,7 +64,10 @@ pub use safe_lane_failure::{
     is_safe_lane_backpressure_failure_code, is_safe_lane_backpressure_route_reason,
     is_safe_lane_terminal_instability_failure_code,
 };
-pub use session_address::ConversationSessionAddress;
+pub use session_address::{
+    ConversationSessionAddress, decode_route_session_segment, encode_route_session_segment,
+    parse_route_session_id,
+};
 pub use session_history::load_discovery_first_event_summary;
 pub use session_history::{
     load_fast_lane_tool_batch_event_summary, load_safe_lane_event_summary,
@@ -100,7 +103,11 @@ pub use turn_middleware_registry::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderErrorMode {
     #[cfg_attr(
-        not(any(feature = "channel-telegram", feature = "channel-feishu")),
+        not(any(
+            feature = "channel-telegram",
+            feature = "channel-feishu",
+            feature = "channel-matrix"
+        )),
         allow(dead_code)
     )]
     Propagate,

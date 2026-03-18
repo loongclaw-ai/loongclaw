@@ -629,6 +629,32 @@ pub enum Commands {
         #[arg(long)]
         path: Option<String>,
     },
+    /// Send one Matrix room message
+    MatrixSend {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long = "target")]
+        target: String,
+        #[arg(
+            long,
+            default_value_t = default_matrix_send_target_kind(),
+            value_parser = parse_matrix_send_target_kind
+        )]
+        target_kind: mvp::channel::ChannelOutboundTargetKind,
+        #[arg(long)]
+        text: String,
+    },
+    /// Run Matrix sync reply loop
+    MatrixServe {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long, default_value_t = false)]
+        once: bool,
+        #[arg(long)]
+        account: Option<String>,
+    },
     /// Run the Feishu integration namespace
     Feishu {
         #[command(subcommand)]
@@ -3110,6 +3136,11 @@ pub const FEISHU_SEND_CLI_SPEC: ChannelSendCliSpec = ChannelSendCliSpec {
     run: run_feishu_send_cli_impl,
 };
 
+pub const MATRIX_SEND_CLI_SPEC: ChannelSendCliSpec = ChannelSendCliSpec {
+    family: mvp::channel::MATRIX_COMMAND_FAMILY_DESCRIPTOR,
+    run: run_matrix_send_cli_impl,
+};
+
 pub const TELEGRAM_SERVE_CLI_SPEC: ChannelServeCliSpec = ChannelServeCliSpec {
     family: mvp::channel::TELEGRAM_COMMAND_FAMILY_DESCRIPTOR,
     run: run_telegram_serve_cli_impl,
@@ -3118,6 +3149,11 @@ pub const TELEGRAM_SERVE_CLI_SPEC: ChannelServeCliSpec = ChannelServeCliSpec {
 pub const FEISHU_SERVE_CLI_SPEC: ChannelServeCliSpec = ChannelServeCliSpec {
     family: mvp::channel::FEISHU_COMMAND_FAMILY_DESCRIPTOR,
     run: run_feishu_serve_cli_impl,
+};
+
+pub const MATRIX_SERVE_CLI_SPEC: ChannelServeCliSpec = ChannelServeCliSpec {
+    family: mvp::channel::MATRIX_COMMAND_FAMILY_DESCRIPTOR,
+    run: run_matrix_serve_cli_impl,
 };
 
 pub async fn run_channel_send_cli(
@@ -3168,6 +3204,20 @@ pub fn run_feishu_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliComma
                 card: args.as_card,
                 uuid: None,
             },
+        )
+        .await
+    })
+}
+
+pub fn run_matrix_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliCommandFuture<'_> {
+    Box::pin(async move {
+        let _ = args.as_card;
+        mvp::channel::run_matrix_send(
+            args.config_path,
+            args.account,
+            args.target,
+            args.target_kind,
+            args.text,
         )
         .await
     })
@@ -3224,6 +3274,16 @@ pub fn parse_telegram_send_target_kind(
     parse_channel_send_target_kind(TELEGRAM_SEND_CLI_SPEC, raw)
 }
 
+pub fn default_matrix_send_target_kind() -> mvp::channel::ChannelOutboundTargetKind {
+    default_channel_send_target_kind(MATRIX_SEND_CLI_SPEC)
+}
+
+pub fn parse_matrix_send_target_kind(
+    raw: &str,
+) -> Result<mvp::channel::ChannelOutboundTargetKind, String> {
+    parse_channel_send_target_kind(MATRIX_SEND_CLI_SPEC, raw)
+}
+
 pub fn default_feishu_send_target_kind() -> mvp::channel::ChannelOutboundTargetKind {
     default_channel_send_target_kind(FEISHU_SEND_CLI_SPEC)
 }
@@ -3241,6 +3301,18 @@ pub fn run_feishu_serve_cli_impl(args: ChannelServeCliArgs<'_>) -> ChannelCliCom
             args.account,
             args.bind_override,
             args.path_override,
+        ))
+        .await
+    })
+}
+
+pub fn run_matrix_serve_cli_impl(args: ChannelServeCliArgs<'_>) -> ChannelCliCommandFuture<'_> {
+    Box::pin(async move {
+        let _ = (args.bind_override, args.path_override);
+        with_graceful_shutdown(mvp::channel::run_matrix_channel(
+            args.config_path,
+            args.once,
+            args.account,
         ))
         .await
     })

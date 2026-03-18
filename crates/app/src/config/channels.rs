@@ -19,6 +19,7 @@ pub(crate) const FEISHU_APP_ID_ENV: &str = "FEISHU_APP_ID";
 pub(crate) const FEISHU_APP_SECRET_ENV: &str = "FEISHU_APP_SECRET";
 pub(crate) const FEISHU_VERIFICATION_TOKEN_ENV: &str = "FEISHU_VERIFICATION_TOKEN";
 pub(crate) const FEISHU_ENCRYPT_KEY_ENV: &str = "FEISHU_ENCRYPT_KEY";
+pub(crate) const MATRIX_ACCESS_TOKEN_ENV: &str = "MATRIX_ACCESS_TOKEN";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChannelRuntimeKind {
@@ -66,7 +67,15 @@ const FEISHU_CHANNEL_DESCRIPTOR: ChannelDescriptor = ChannelDescriptor {
     serve_subcommand: Some("feishu-serve"),
 };
 
-const CHANNEL_CATALOG: [ChannelCatalogEntry; 3] = [
+const MATRIX_CHANNEL_DESCRIPTOR: ChannelDescriptor = ChannelDescriptor {
+    id: "matrix",
+    label: "matrix",
+    surface_label: "matrix channel",
+    runtime_kind: ChannelRuntimeKind::Service,
+    serve_subcommand: Some("matrix-serve"),
+};
+
+const CHANNEL_CATALOG: [ChannelCatalogEntry; 4] = [
     ChannelCatalogEntry {
         descriptor: &CLI_CHANNEL_DESCRIPTOR,
         is_enabled: cli_is_enabled,
@@ -81,6 +90,11 @@ const CHANNEL_CATALOG: [ChannelCatalogEntry; 3] = [
         descriptor: &FEISHU_CHANNEL_DESCRIPTOR,
         is_enabled: feishu_is_enabled,
         collect_validation_issues: collect_feishu_validation_issues,
+    },
+    ChannelCatalogEntry {
+        descriptor: &MATRIX_CHANNEL_DESCRIPTOR,
+        is_enabled: matrix_is_enabled,
+        collect_validation_issues: collect_matrix_validation_issues,
     },
 ];
 
@@ -142,6 +156,10 @@ fn feishu_is_enabled(config: &LoongClawConfig) -> bool {
     config.feishu.enabled
 }
 
+fn matrix_is_enabled(config: &LoongClawConfig) -> bool {
+    config.matrix.enabled
+}
+
 fn collect_cli_validation_issues(_config: &LoongClawConfig) -> Vec<ConfigValidationIssue> {
     Vec::new()
 }
@@ -152,6 +170,10 @@ fn collect_telegram_validation_issues(config: &LoongClawConfig) -> Vec<ConfigVal
 
 fn collect_feishu_validation_issues(config: &LoongClawConfig) -> Vec<ConfigValidationIssue> {
     config.feishu.validate()
+}
+
+fn collect_matrix_validation_issues(config: &LoongClawConfig) -> Vec<ConfigValidationIssue> {
+    config.matrix.validate()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -431,6 +453,63 @@ impl ResolvedFeishuChannelConfig {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MatrixAccountConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub user_id: Option<String>,
+    #[serde(default)]
+    pub access_token: Option<String>,
+    #[serde(default)]
+    pub access_token_env: Option<String>,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub sync_timeout_s: Option<u64>,
+    #[serde(default)]
+    pub allowed_room_ids: Option<Vec<String>>,
+    #[serde(default)]
+    pub ignore_self_messages: Option<bool>,
+    #[serde(default)]
+    pub acp: Option<ChannelAcpConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedMatrixChannelConfig {
+    pub configured_account_id: String,
+    pub configured_account_label: String,
+    pub account: ChannelAccountIdentity,
+    pub enabled: bool,
+    pub user_id: Option<String>,
+    pub access_token: Option<String>,
+    pub access_token_env: Option<String>,
+    pub base_url: Option<String>,
+    pub sync_timeout_s: u64,
+    pub allowed_room_ids: Vec<String>,
+    pub ignore_self_messages: bool,
+    pub acp: ChannelAcpConfig,
+}
+
+impl ResolvedMatrixChannelConfig {
+    pub fn access_token(&self) -> Option<String> {
+        read_secret_prefer_inline(
+            self.access_token.as_deref(),
+            self.access_token_env.as_deref(),
+        )
+    }
+
+    pub fn resolved_base_url(&self) -> Option<String> {
+        self.base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FeishuChannelConfig {
     #[serde(default)]
@@ -473,6 +552,34 @@ pub struct FeishuChannelConfig {
     pub acp: ChannelAcpConfig,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub accounts: BTreeMap<String, FeishuAccountConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MatrixChannelConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub default_account: Option<String>,
+    #[serde(default)]
+    pub user_id: Option<String>,
+    #[serde(default)]
+    pub access_token: Option<String>,
+    #[serde(default)]
+    pub access_token_env: Option<String>,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default = "default_matrix_sync_timeout_seconds")]
+    pub sync_timeout_s: u64,
+    #[serde(default)]
+    pub allowed_room_ids: Vec<String>,
+    #[serde(default = "default_true")]
+    pub ignore_self_messages: bool,
+    #[serde(default)]
+    pub acp: ChannelAcpConfig,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub accounts: BTreeMap<String, MatrixAccountConfig>,
 }
 
 impl Default for CliChannelConfig {
@@ -564,7 +671,7 @@ impl TelegramChannelConfig {
             "telegram.bot_token",
         );
         for (raw_account_id, account) in &self.accounts {
-            let account_id = normalize_account_id(raw_account_id);
+            let account_id = normalize_channel_account_id(raw_account_id);
             let field_path = format!("telegram.accounts.{account_id}.bot_token_env");
             let inline_field_path = format!("telegram.accounts.{account_id}.bot_token");
             validate_telegram_env_pointer(
@@ -748,6 +855,25 @@ impl Default for FeishuChannelConfig {
     }
 }
 
+impl Default for MatrixChannelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            account_id: None,
+            default_account: None,
+            user_id: None,
+            access_token: None,
+            access_token_env: Some(MATRIX_ACCESS_TOKEN_ENV.to_owned()),
+            base_url: None,
+            sync_timeout_s: default_matrix_sync_timeout_seconds(),
+            allowed_room_ids: Vec::new(),
+            ignore_self_messages: true,
+            acp: ChannelAcpConfig::default(),
+            accounts: BTreeMap::new(),
+        }
+    }
+}
+
 impl FeishuChannelConfig {
     pub(super) fn validate(&self) -> Vec<ConfigValidationIssue> {
         let mut issues = Vec::new();
@@ -782,7 +908,7 @@ impl FeishuChannelConfig {
             "feishu.encrypt_key",
         );
         for (raw_account_id, account) in &self.accounts {
-            let account_id = normalize_account_id(raw_account_id);
+            let account_id = normalize_channel_account_id(raw_account_id);
             validate_feishu_env_pointer(
                 &mut issues,
                 format!("feishu.accounts.{account_id}.app_id_env").as_str(),
@@ -989,7 +1115,11 @@ impl FeishuChannelConfig {
             .filter(|value| !value.is_empty())
         {
             return ChannelAccountIdentity {
-                id: format!("{}_{}", self.domain.as_str(), normalize_account_id(app_id)),
+                id: format!(
+                    "{}_{}",
+                    self.domain.as_str(),
+                    normalize_channel_account_id(app_id)
+                ),
                 label: format!("{}:{app_id}", self.domain.as_str()),
                 source: ChannelAccountIdentitySource::DerivedCredential,
             };
@@ -1005,6 +1135,184 @@ impl FeishuChannelConfig {
             .filter(|value| !value.is_empty())
             .map(str::to_owned)
             .unwrap_or_else(|| self.domain.default_base_url().to_owned())
+    }
+
+    fn resolve_configured_account_selection(
+        &self,
+        requested_account_id: Option<&str>,
+    ) -> CliResult<ResolvedConfiguredAccount> {
+        resolve_configured_account_selection(
+            self.accounts.keys(),
+            requested_account_id,
+            self.default_account.as_deref(),
+            self.resolved_account_identity().id.as_str(),
+        )
+    }
+}
+
+impl MatrixChannelConfig {
+    pub(super) fn validate(&self) -> Vec<ConfigValidationIssue> {
+        let mut issues = Vec::new();
+        validate_channel_account_integrity(
+            &mut issues,
+            "matrix",
+            self.default_account.as_deref(),
+            self.accounts.keys(),
+        );
+        validate_matrix_env_pointer(
+            &mut issues,
+            "matrix.access_token_env",
+            self.access_token_env.as_deref(),
+            "matrix.access_token",
+        );
+        for (raw_account_id, account) in &self.accounts {
+            let account_id = normalize_channel_account_id(raw_account_id);
+            validate_matrix_env_pointer(
+                &mut issues,
+                format!("matrix.accounts.{account_id}.access_token_env").as_str(),
+                account.access_token_env.as_deref(),
+                format!("matrix.accounts.{account_id}.access_token").as_str(),
+            );
+        }
+        issues
+    }
+
+    pub fn access_token(&self) -> Option<String> {
+        read_secret_prefer_inline(
+            self.access_token.as_deref(),
+            self.access_token_env.as_deref(),
+        )
+    }
+
+    pub fn configured_account_ids(&self) -> Vec<String> {
+        let ids = configured_account_ids(self.accounts.keys());
+        if ids.is_empty() {
+            return vec![self.default_configured_account_id()];
+        }
+        ids
+    }
+
+    pub fn default_configured_account_selection(&self) -> ChannelDefaultAccountSelection {
+        resolve_default_configured_account_selection(
+            self.accounts.keys(),
+            self.default_account.as_deref(),
+            self.resolved_account_identity().id.as_str(),
+        )
+    }
+
+    pub fn default_configured_account_id(&self) -> String {
+        self.default_configured_account_selection().id
+    }
+
+    pub fn resolved_account_route(
+        &self,
+        requested_account_id: Option<&str>,
+        selected_configured_account_id: &str,
+    ) -> ChannelResolvedAccountRoute {
+        resolve_channel_account_route(
+            self.accounts.keys(),
+            self.default_account.as_deref(),
+            self.resolved_account_identity().id.as_str(),
+            requested_account_id,
+            selected_configured_account_id,
+        )
+    }
+
+    pub fn resolve_account(
+        &self,
+        requested_account_id: Option<&str>,
+    ) -> CliResult<ResolvedMatrixChannelConfig> {
+        let configured = self.resolve_configured_account_selection(requested_account_id)?;
+        let account_override = configured
+            .account_key
+            .as_deref()
+            .and_then(|key| self.accounts.get(key));
+
+        let merged = MatrixChannelConfig {
+            enabled: self.enabled
+                && account_override
+                    .and_then(|account| account.enabled)
+                    .unwrap_or(true),
+            account_id: account_override
+                .and_then(|account| account.account_id.clone())
+                .or_else(|| self.account_id.clone()),
+            default_account: None,
+            user_id: account_override
+                .and_then(|account| account.user_id.clone())
+                .or_else(|| self.user_id.clone()),
+            access_token: account_override
+                .and_then(|account| account.access_token.clone())
+                .or_else(|| self.access_token.clone()),
+            access_token_env: account_override
+                .and_then(|account| account.access_token_env.clone())
+                .or_else(|| self.access_token_env.clone()),
+            base_url: account_override
+                .and_then(|account| account.base_url.clone())
+                .or_else(|| self.base_url.clone()),
+            sync_timeout_s: account_override
+                .and_then(|account| account.sync_timeout_s)
+                .unwrap_or(self.sync_timeout_s),
+            allowed_room_ids: account_override
+                .and_then(|account| account.allowed_room_ids.clone())
+                .unwrap_or_else(|| self.allowed_room_ids.clone()),
+            ignore_self_messages: account_override
+                .and_then(|account| account.ignore_self_messages)
+                .unwrap_or(self.ignore_self_messages),
+            acp: resolve_channel_acp_config(
+                &self.acp,
+                account_override.and_then(|account| account.acp.as_ref()),
+            ),
+            accounts: BTreeMap::new(),
+        };
+        let account = merged.resolved_account_identity();
+
+        Ok(ResolvedMatrixChannelConfig {
+            configured_account_id: configured.id,
+            configured_account_label: configured.label,
+            account,
+            enabled: merged.enabled,
+            user_id: merged.user_id,
+            access_token: merged.access_token,
+            access_token_env: merged.access_token_env,
+            base_url: merged.base_url,
+            sync_timeout_s: merged.sync_timeout_s,
+            allowed_room_ids: merged.allowed_room_ids,
+            ignore_self_messages: merged.ignore_self_messages,
+            acp: merged.acp,
+        })
+    }
+
+    pub fn resolve_account_for_session_account_id(
+        &self,
+        session_account_id: Option<&str>,
+    ) -> CliResult<ResolvedMatrixChannelConfig> {
+        resolve_account_for_session_account_id(
+            session_account_id,
+            || self.resolve_account(session_account_id),
+            || self.configured_account_ids(),
+            |configured_id| self.resolve_account(Some(configured_id)),
+            |resolved| resolved.account.id.as_str(),
+        )
+    }
+
+    pub fn resolved_account_identity(&self) -> ChannelAccountIdentity {
+        if let Some((id, label)) = resolve_configured_account_identity(self.account_id.as_deref()) {
+            return ChannelAccountIdentity {
+                id,
+                label,
+                source: ChannelAccountIdentitySource::Configured,
+            };
+        }
+
+        if let Some((id, label)) = resolve_configured_account_identity(self.user_id.as_deref()) {
+            return ChannelAccountIdentity {
+                id,
+                label,
+                source: ChannelAccountIdentitySource::Configured,
+            };
+        }
+
+        default_channel_account_identity()
     }
 
     fn resolve_configured_account_selection(
@@ -1038,6 +1346,10 @@ fn default_feishu_webhook_bind() -> String {
 
 fn default_feishu_webhook_path() -> String {
     "/feishu/events".to_owned()
+}
+
+const fn default_matrix_sync_timeout_seconds() -> u64 {
+    30
 }
 
 fn default_system_prompt() -> String {
@@ -1077,7 +1389,7 @@ fn default_channel_account_identity() -> ChannelAccountIdentity {
 
 fn resolve_configured_account_identity(raw: Option<&str>) -> Option<(String, String)> {
     let label = raw.map(str::trim).filter(|value| !value.is_empty())?;
-    Some((normalize_account_id(label), label.to_owned()))
+    Some((normalize_channel_account_id(label), label.to_owned()))
 }
 
 fn resolve_telegram_bot_id_from_token(token: &str) -> Option<&str> {
@@ -1088,7 +1400,7 @@ fn resolve_telegram_bot_id_from_token(token: &str) -> Option<&str> {
     Some(bot_id)
 }
 
-fn normalize_account_id(raw: &str) -> String {
+pub(crate) fn normalize_channel_account_id(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return "default".to_owned();
@@ -1173,6 +1485,25 @@ fn validate_feishu_env_pointer(
     }
 }
 
+fn validate_matrix_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    env_key: Option<&str>,
+    inline_field_path: &str,
+) {
+    if let Err(issue) = validate_env_pointer_field(
+        field_path,
+        env_key,
+        EnvPointerValidationHint {
+            inline_field_path,
+            example_env_name: MATRIX_ACCESS_TOKEN_ENV,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
 fn validate_channel_account_integrity<'a, I>(
     issues: &mut Vec<ConfigValidationIssue>,
     channel_key: &str,
@@ -1188,7 +1519,7 @@ fn validate_channel_account_integrity<'a, I>(
             continue;
         }
         normalized_to_labels
-            .entry(normalize_account_id(label))
+            .entry(normalize_channel_account_id(label))
             .or_default()
             .push(label.to_owned());
     }
@@ -1224,7 +1555,7 @@ fn validate_channel_account_integrity<'a, I>(
     else {
         return;
     };
-    let normalized_default_account = normalize_account_id(requested_default_account);
+    let normalized_default_account = normalize_channel_account_id(requested_default_account);
     if normalized_to_labels.contains_key(&normalized_default_account) {
         return;
     }
@@ -1259,7 +1590,7 @@ where
 {
     let mut ids = keys
         .into_iter()
-        .map(|value| normalize_account_id(value))
+        .map(|value| normalize_channel_account_id(value))
         .collect::<Vec<_>>();
     ids.sort();
     ids.dedup();
@@ -1269,7 +1600,7 @@ where
 fn normalize_optional_account_id(raw: Option<&str>) -> Option<String> {
     raw.map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(normalize_account_id)
+        .map(normalize_channel_account_id)
 }
 
 fn resolve_default_configured_account_selection_from_ids(
@@ -1288,7 +1619,7 @@ fn resolve_default_configured_account_selection_from_ids(
     }
     if ids.is_empty() {
         return ChannelDefaultAccountSelection {
-            id: normalize_account_id(fallback),
+            id: normalize_channel_account_id(fallback),
             source: ChannelDefaultAccountSelectionSource::RuntimeIdentity,
         };
     }
@@ -1302,7 +1633,7 @@ fn resolve_default_configured_account_selection_from_ids(
         id: ids
             .first()
             .cloned()
-            .unwrap_or_else(|| normalize_account_id(fallback)),
+            .unwrap_or_else(|| normalize_channel_account_id(fallback)),
         source: ChannelDefaultAccountSelectionSource::Fallback,
     }
 }
@@ -1335,7 +1666,9 @@ where
     ChannelResolvedAccountRoute {
         requested_account_id: normalize_optional_account_id(requested_account_id),
         configured_account_count: ids.len(),
-        selected_configured_account_id: normalize_account_id(selected_configured_account_id),
+        selected_configured_account_id: normalize_channel_account_id(
+            selected_configured_account_id,
+        ),
         default_account_source: default_selection.source,
     }
 }
@@ -1363,7 +1696,7 @@ fn resolve_account_for_session_account_id<R>(
         Err(original_error) => {
             for configured_id in configured_ids() {
                 let resolved = resolve_configured(configured_id.as_str())?;
-                if normalize_account_id(runtime_account_id(&resolved)) == requested {
+                if normalize_channel_account_id(runtime_account_id(&resolved)) == requested {
                     return Ok(resolved);
                 }
             }
@@ -1389,7 +1722,11 @@ where
             if label.is_empty() {
                 return None;
             }
-            Some((normalize_account_id(label), label.to_owned(), raw_key))
+            Some((
+                normalize_channel_account_id(label),
+                label.to_owned(),
+                raw_key,
+            ))
         })
         .collect::<Vec<_>>();
     let configured_ids = entries
@@ -1400,7 +1737,7 @@ where
     if let Some(requested) = requested_account_id
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(normalize_account_id)
+        .map(normalize_channel_account_id)
     {
         if entries.is_empty() {
             return Ok(ResolvedConfiguredAccount {

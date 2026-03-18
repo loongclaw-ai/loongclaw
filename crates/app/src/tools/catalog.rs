@@ -288,7 +288,11 @@ const fn runtime_session_tool_availability() -> ToolAvailability {
 
 #[cfg(all(
     feature = "memory-sqlite",
-    any(feature = "channel-telegram", feature = "channel-feishu")
+    any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    )
 ))]
 const fn runtime_messaging_tool_availability() -> ToolAvailability {
     ToolAvailability::Runtime
@@ -296,7 +300,11 @@ const fn runtime_messaging_tool_availability() -> ToolAvailability {
 
 #[cfg(not(all(
     feature = "memory-sqlite",
-    any(feature = "channel-telegram", feature = "channel-feishu")
+    any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    )
 )))]
 const fn runtime_messaging_tool_availability() -> ToolAvailability {
     ToolAvailability::Planned
@@ -2131,7 +2139,7 @@ fn sessions_send_definition(descriptor: &ToolDescriptor) -> Value {
                 "properties": {
                     "session_id": {
                         "type": "string",
-                        "description": "Known Telegram or Feishu root session identifier to receive the outbound text message."
+                        "description": "Known channel-backed root session identifier to receive the outbound text message (for example Telegram, Feishu, or Matrix)."
                     },
                     "text": {
                         "type": "string",
@@ -2543,5 +2551,21 @@ mod tests {
                 .scheduling_class(),
             ToolSchedulingClass::SerialOnly
         );
+    }
+
+    #[test]
+    fn sessions_send_definition_mentions_generic_channel_sessions() {
+        let catalog = tool_catalog();
+        let descriptor = catalog
+            .descriptor("sessions_send")
+            .expect("sessions_send descriptor");
+        let definition = descriptor.provider_definition();
+        let description = definition["function"]["parameters"]["properties"]["session_id"]
+            ["description"]
+            .as_str()
+            .expect("session_id description");
+
+        assert!(description.contains("channel-backed"));
+        assert!(description.contains("Matrix"));
     }
 }

@@ -2868,7 +2868,10 @@ async fn model_catalog_singleflight_recovers_when_leader_panics() {
         .expect("join follower")
         .expect("follower should retry and recover");
     assert_eq!(recovered, vec!["model-recovered"]);
-    assert_eq!(model_catalog_singleflight_slot_count(), 0);
+    assert!(
+        !has_model_catalog_singleflight_slot(CACHE_KEY),
+        "panic recovery should clear the singleflight slot for the recovered cache key"
+    );
     clear_model_catalog_singleflight_slot(CACHE_KEY);
 }
 

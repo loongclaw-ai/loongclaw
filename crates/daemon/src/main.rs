@@ -455,6 +455,43 @@ async fn main() {
             )
             .await
         }
+        Commands::MatrixSend {
+            config,
+            account,
+            target,
+            target_kind,
+            text,
+        } => {
+            run_channel_send_cli(
+                MATRIX_SEND_CLI_SPEC,
+                ChannelSendCliArgs {
+                    config_path: config.as_deref(),
+                    account: account.as_deref(),
+                    target: &target,
+                    target_kind,
+                    text: &text,
+                    as_card: false,
+                },
+            )
+            .await
+        }
+        Commands::MatrixServe {
+            config,
+            once,
+            account,
+        } => {
+            run_channel_serve_cli(
+                MATRIX_SERVE_CLI_SPEC,
+                ChannelServeCliArgs {
+                    config_path: config.as_deref(),
+                    account: account.as_deref(),
+                    once,
+                    bind_override: None,
+                    path_override: None,
+                },
+            )
+            .await
+        }
         Commands::Feishu { command } => feishu_cli::run_feishu_command(command).await,
     };
     if let Err(error) = result {
