@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use clap::ValueEnum;
-use rand::RngCore;
+use rand::Rng;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -302,7 +302,7 @@ pub fn resolve_selected_grant(
 
 fn random_urlsafe_token(bytes_len: usize) -> String {
     let mut bytes = vec![0_u8; bytes_len.max(16)];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    rand::rng().fill(bytes.as_mut_slice());
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
@@ -604,5 +604,21 @@ mod tests {
                 "loongclaw feishu auth start --account feishu_main --capability doc-write --capability message-write"
             )
         );
+    }
+
+    #[test]
+    fn oauth_helpers_emit_urlsafe_unpadded_tokens() {
+        let state = generate_oauth_state();
+        let (verifier, challenge) = build_pkce_pair();
+
+        for value in [&state, &verifier, &challenge] {
+            assert!(!value.is_empty());
+            assert!(!value.contains('='));
+            assert!(
+                value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            );
+        }
     }
 }
