@@ -72,53 +72,6 @@ where
     }
 }
 
-/// Custom DNS resolver that rejects private/special-use IP addresses at
-/// connection time, eliminating the TOCTOU window between validation and
-/// the HTTP client's own DNS resolution.
-#[cfg(feature = "tool-webfetch")]
-struct SsrfSafeResolver {
-    allow_private_hosts: bool,
-}
-
-#[cfg(feature = "tool-webfetch")]
-impl reqwest::dns::Resolve for SsrfSafeResolver {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        let allow_private = self.allow_private_hosts;
-        Box::pin(async move {
-            let host = name.as_str();
-            let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, 0))
-                .await
-                .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { Box::new(error) })?
-                .collect();
-
-            if addrs.is_empty() {
-                return Err(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("web.fetch resolved no addresses for host `{host}`"),
-                ))
-                    as Box<dyn std::error::Error + Send + Sync>);
-            }
-
-            if !allow_private {
-                for addr in &addrs {
-                    if is_private_or_special_ip(addr.ip()) {
-                        return Err(Box::new(std::io::Error::new(
-                            std::io::ErrorKind::PermissionDenied,
-                            format!(
-                                "web.fetch blocked private or special-use address `{}` for host `{host}`",
-                                addr.ip()
-                            ),
-                        ))
-                            as Box<dyn std::error::Error + Send + Sync>);
-                    }
-                }
-            }
-
-            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
-        })
-    }
-}
-
 #[cfg(feature = "tool-webfetch")]
 fn execute_web_fetch_tool_enabled(
     request: ToolCoreRequest,
@@ -144,7 +97,7 @@ fn execute_web_fetch_tool_enabled(
     let mode = parse_render_mode(payload)?;
     let max_bytes = parse_max_bytes(payload, config.web_fetch.max_bytes)?;
 
-    let resolver = SsrfSafeResolver {
+    let resolver = super::web_http::SsrfSafeResolver {
         allow_private_hosts: config.web_fetch.allow_private_hosts,
     };
 
@@ -341,7 +294,11 @@ fn parse_max_bytes(payload: &Map<String, Value>, configured_max: usize) -> Resul
     Ok(parsed)
 }
 
-#[cfg(any(feature = "tool-webfetch", feature = "tool-browser"))]
+#[cfg(any(
+    feature = "tool-webfetch",
+    feature = "tool-browser",
+    feature = "tool-websearch"
+))]
 pub(crate) fn validate_web_target(
     url: &reqwest::Url,
     policy: &super::runtime_config::WebFetchRuntimePolicy,
@@ -422,7 +379,11 @@ pub(crate) fn validate_web_target(
     Ok(host)
 }
 
-#[cfg(any(feature = "tool-webfetch", feature = "tool-browser"))]
+#[cfg(any(
+    feature = "tool-webfetch",
+    feature = "tool-browser",
+    feature = "tool-websearch"
+))]
 fn first_matching_domain_rule<'a>(host: &str, rules: &'a BTreeSet<String>) -> Option<&'a str> {
     rules
         .iter()
@@ -430,7 +391,11 @@ fn first_matching_domain_rule<'a>(host: &str, rules: &'a BTreeSet<String>) -> Op
         .map(String::as_str)
 }
 
-#[cfg(any(feature = "tool-webfetch", feature = "tool-browser"))]
+#[cfg(any(
+    feature = "tool-webfetch",
+    feature = "tool-browser",
+    feature = "tool-websearch"
+))]
 fn domain_rule_matches(host: &str, rule: &str) -> bool {
     if let Some(suffix) = rule.strip_prefix("*.") {
         return host == suffix || host.ends_with(&format!(".{suffix}"));
@@ -438,7 +403,11 @@ fn domain_rule_matches(host: &str, rule: &str) -> bool {
     host == rule
 }
 
-#[cfg(any(feature = "tool-webfetch", feature = "tool-browser"))]
+#[cfg(any(
+    feature = "tool-webfetch",
+    feature = "tool-browser",
+    feature = "tool-websearch"
+))]
 fn is_private_or_special_ip(ip: std::net::IpAddr) -> bool {
     use std::net::IpAddr;
 
@@ -448,7 +417,11 @@ fn is_private_or_special_ip(ip: std::net::IpAddr) -> bool {
     }
 }
 
-#[cfg(any(feature = "tool-webfetch", feature = "tool-browser"))]
+#[cfg(any(
+    feature = "tool-webfetch",
+    feature = "tool-browser",
+    feature = "tool-websearch"
+))]
 fn is_private_or_special_ipv4(ip: std::net::Ipv4Addr) -> bool {
     let octets = ip.octets();
     let first = octets[0];
@@ -471,7 +444,11 @@ fn is_private_or_special_ipv4(ip: std::net::Ipv4Addr) -> bool {
         || first >= 240
 }
 
-#[cfg(any(feature = "tool-webfetch", feature = "tool-browser"))]
+#[cfg(any(
+    feature = "tool-webfetch",
+    feature = "tool-browser",
+    feature = "tool-websearch"
+))]
 fn is_private_or_special_ipv6(ip: std::net::Ipv6Addr) -> bool {
     if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
         return true;
@@ -490,7 +467,11 @@ fn is_private_or_special_ipv6(ip: std::net::Ipv6Addr) -> bool {
         || (segments[0] == 0x2001 && segments[1] == 0x0db8)
 }
 
-#[cfg(any(feature = "tool-webfetch", feature = "tool-browser"))]
+#[cfg(any(
+    feature = "tool-webfetch",
+    feature = "tool-browser",
+    feature = "tool-websearch"
+))]
 pub(crate) fn looks_like_html(content_type: Option<&str>, body: &str) -> bool {
     if let Some(content_type) = content_type {
         let lowered = content_type.to_ascii_lowercase();
@@ -503,7 +484,11 @@ pub(crate) fn looks_like_html(content_type: Option<&str>, body: &str) -> bool {
     lowered.contains("<html") || lowered.contains("<body") || lowered.contains("<!doctype html")
 }
 
-#[cfg(any(feature = "tool-webfetch", feature = "tool-browser"))]
+#[cfg(any(
+    feature = "tool-webfetch",
+    feature = "tool-browser",
+    feature = "tool-websearch"
+))]
 pub(crate) fn response_is_probably_binary(content_type: Option<&str>, body: &[u8]) -> bool {
     if body.is_empty() {
         return false;
@@ -547,7 +532,11 @@ pub(crate) fn response_is_probably_binary(content_type: Option<&str>, body: &[u8
     control_count.saturating_mul(8) > sample.len()
 }
 
-#[cfg(any(feature = "tool-webfetch", feature = "tool-browser"))]
+#[cfg(any(
+    feature = "tool-webfetch",
+    feature = "tool-browser",
+    feature = "tool-websearch"
+))]
 pub(crate) fn extract_html_title(html: &str) -> Option<String> {
     extract_tag_inner_text(html, "title").and_then(|value| {
         let collapsed = collapse_whitespace(&decode_basic_entities(value.trim()));
@@ -555,7 +544,11 @@ pub(crate) fn extract_html_title(html: &str) -> Option<String> {
     })
 }
 
-#[cfg(any(feature = "tool-webfetch", feature = "tool-browser"))]
+#[cfg(any(
+    feature = "tool-webfetch",
+    feature = "tool-browser",
+    feature = "tool-websearch"
+))]
 pub(crate) fn extract_readable_text_from_html(html: &str) -> String {
     let mut sanitized = strip_tag_block(html, "script");
     sanitized = strip_tag_block(&sanitized, "style");
@@ -565,7 +558,11 @@ pub(crate) fn extract_readable_text_from_html(html: &str) -> String {
     collapse_whitespace(&decode_basic_entities(&text))
 }
 
-#[cfg(any(feature = "tool-webfetch", feature = "tool-browser"))]
+#[cfg(any(
+    feature = "tool-webfetch",
+    feature = "tool-browser",
+    feature = "tool-websearch"
+))]
 fn strip_tag_block(input: &str, tag: &str) -> String {
     let open = format!("<{tag}");
     let close = format!("</{tag}>");
@@ -590,7 +587,11 @@ fn strip_tag_block(input: &str, tag: &str) -> String {
     output
 }
 
-#[cfg(any(feature = "tool-webfetch", feature = "tool-browser"))]
+#[cfg(any(
+    feature = "tool-webfetch",
+    feature = "tool-browser",
+    feature = "tool-websearch"
+))]
 fn extract_tag_inner_text<'a>(input: &'a str, tag: &str) -> Option<&'a str> {
     let lowered = input.to_ascii_lowercase();
     let open = format!("<{tag}");
@@ -601,7 +602,11 @@ fn extract_tag_inner_text<'a>(input: &'a str, tag: &str) -> Option<&'a str> {
     Some(&input[open_end..end])
 }
 
-#[cfg(any(feature = "tool-webfetch", feature = "tool-browser"))]
+#[cfg(any(
+    feature = "tool-webfetch",
+    feature = "tool-browser",
+    feature = "tool-websearch"
+))]
 fn strip_tags(input: &str) -> String {
     let mut output = String::with_capacity(input.len());
     let mut in_tag = false;
@@ -628,7 +633,11 @@ fn strip_tags(input: &str) -> String {
     output
 }
 
-#[cfg(any(feature = "tool-webfetch", feature = "tool-browser"))]
+#[cfg(any(
+    feature = "tool-webfetch",
+    feature = "tool-browser",
+    feature = "tool-websearch"
+))]
 fn decode_basic_entities(input: &str) -> String {
     input
         .replace("&nbsp;", " ")
@@ -639,7 +648,11 @@ fn decode_basic_entities(input: &str) -> String {
         .replace("&#39;", "'")
 }
 
-#[cfg(any(feature = "tool-webfetch", feature = "tool-browser"))]
+#[cfg(any(
+    feature = "tool-webfetch",
+    feature = "tool-browser",
+    feature = "tool-websearch"
+))]
 fn collapse_whitespace(input: &str) -> String {
     input.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -944,15 +957,15 @@ mod tests {
 
     #[test]
     fn ssrf_safe_resolver_blocks_private_ips() {
-        let resolver = SsrfSafeResolver {
+        let resolver = crate::tools::web_http::SsrfSafeResolver {
             allow_private_hosts: false,
         };
-        let result = run_async(async {
+        let result: Result<_, String> = run_async(async {
             use reqwest::dns::Resolve;
             let name = "localhost".parse().expect("valid name");
             resolver.resolve(name).await
-        })
-        .expect("runtime should build");
+        });
+        let result = result.expect("runtime should build");
         assert!(
             result.is_err(),
             "resolver should block localhost when allow_private_hosts is false"
@@ -961,15 +974,15 @@ mod tests {
 
     #[test]
     fn ssrf_safe_resolver_allows_private_ips_when_configured() {
-        let resolver = SsrfSafeResolver {
+        let resolver = crate::tools::web_http::SsrfSafeResolver {
             allow_private_hosts: true,
         };
-        let result = run_async(async {
+        let result: Result<_, String> = run_async(async {
             use reqwest::dns::Resolve;
             let name = "localhost".parse().expect("valid name");
             resolver.resolve(name).await
-        })
-        .expect("runtime should build");
+        });
+        let result = result.expect("runtime should build");
         assert!(
             result.is_ok(),
             "resolver should allow localhost when allow_private_hosts is true"

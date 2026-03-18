@@ -51,6 +51,8 @@ pub struct ToolConfig {
     pub browser_companion: BrowserCompanionToolConfig,
     #[serde(default)]
     pub web: WebToolConfig,
+    #[serde(default)]
+    pub web_search: WebSearchToolConfig,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -193,6 +195,29 @@ pub struct WebToolConfig {
     pub max_redirects: usize,
 }
 
+pub const DEFAULT_WEB_SEARCH_TIMEOUT_SECONDS: u64 = 10;
+pub const DEFAULT_WEB_SEARCH_MAX_RESULTS: usize = 5;
+pub(crate) const MIN_WEB_SEARCH_TIMEOUT_SECONDS: usize = 1;
+pub(crate) const MAX_WEB_SEARCH_TIMEOUT_SECONDS: usize = 60;
+pub(crate) const MIN_WEB_SEARCH_MAX_RESULTS: usize = 1;
+pub(crate) const MAX_WEB_SEARCH_MAX_RESULTS: usize = 10;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WebSearchToolConfig {
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_web_search_provider")]
+    pub default_provider: String,
+    #[serde(default = "default_web_search_timeout_seconds")]
+    pub timeout_seconds: u64,
+    #[serde(default = "default_web_search_max_results")]
+    pub max_results: usize,
+    #[serde(default)]
+    pub brave_api_key: Option<String>,
+    #[serde(default)]
+    pub tavily_api_key: Option<String>,
+}
+
 fn default_shell_default_mode() -> String {
     "deny".to_owned()
 }
@@ -251,6 +276,7 @@ impl Default for ToolConfig {
             browser: BrowserToolConfig::default(),
             browser_companion: BrowserCompanionToolConfig::default(),
             web: WebToolConfig::default(),
+            web_search: WebSearchToolConfig::default(),
         }
     }
 }
@@ -335,6 +361,19 @@ impl Default for ExternalSkillsConfig {
             blocked_domains: Vec::new(),
             install_root: None,
             auto_expose_installed: default_auto_expose_installed(),
+        }
+    }
+}
+
+impl Default for WebSearchToolConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_enabled(),
+            default_provider: default_web_search_provider(),
+            timeout_seconds: default_web_search_timeout_seconds(),
+            max_results: default_web_search_max_results(),
+            brave_api_key: None,
+            tavily_api_key: None,
         }
     }
 }
@@ -457,6 +496,45 @@ impl ToolConfig {
         {
             issues.push(*issue);
         }
+        if let Err(issue) = validate_numeric_range(
+            "tools.web_search.timeout_seconds",
+            self.web_search.timeout_seconds as usize,
+            MIN_WEB_SEARCH_TIMEOUT_SECONDS,
+            MAX_WEB_SEARCH_TIMEOUT_SECONDS,
+        ) {
+            issues.push(*issue);
+        }
+        if let Err(issue) = validate_numeric_range(
+            "tools.web_search.max_results",
+            self.web_search.max_results,
+            MIN_WEB_SEARCH_MAX_RESULTS,
+            MAX_WEB_SEARCH_MAX_RESULTS,
+        ) {
+            issues.push(*issue);
+        }
+        if !matches!(
+            self.web_search.default_provider.as_str(),
+            "duckduckgo" | "ddg" | "brave" | "tavily"
+        ) {
+            let mut extra_message_variables = std::collections::BTreeMap::new();
+            extra_message_variables.insert(
+                "invalid_value".to_owned(),
+                self.web_search.default_provider.clone(),
+            );
+            extra_message_variables.insert(
+                "valid_options".to_owned(),
+                "duckduckgo, ddg, brave, tavily".to_owned(),
+            );
+            issues.push(ConfigValidationIssue {
+                severity: super::shared::ConfigValidationSeverity::Error,
+                code: super::shared::ConfigValidationCode::UnknownActiveProvider,
+                field_path: "tools.web_search.default_provider".to_owned(),
+                inline_field_path: "tools.web_search.default_provider".to_owned(),
+                example_env_name: "LOONGCLAW_WEB_SEARCH_PROVIDER".to_owned(),
+                suggested_env_name: Some("LOONGCLAW_WEB_SEARCH_PROVIDER".to_owned()),
+                extra_message_variables,
+            });
+        }
         issues
     }
 }
@@ -565,6 +643,18 @@ const fn default_web_fetch_timeout_seconds() -> u64 {
 
 const fn default_web_fetch_max_redirects() -> usize {
     DEFAULT_WEB_FETCH_MAX_REDIRECTS
+}
+
+fn default_web_search_provider() -> String {
+    "duckduckgo".to_owned()
+}
+
+const fn default_web_search_timeout_seconds() -> u64 {
+    DEFAULT_WEB_SEARCH_TIMEOUT_SECONDS
+}
+
+const fn default_web_search_max_results() -> usize {
+    DEFAULT_WEB_SEARCH_MAX_RESULTS
 }
 
 const fn default_require_download_approval() -> bool {

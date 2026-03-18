@@ -42,6 +42,10 @@ mod shell;
 pub mod shell_policy_ext;
 #[cfg(feature = "tool-webfetch")]
 mod web_fetch;
+#[cfg(any(feature = "tool-webfetch", feature = "tool-websearch"))]
+mod web_http;
+#[cfg(feature = "tool-websearch")]
+mod web_search;
 
 pub use catalog::{
     ToolApprovalMode, ToolAvailability, ToolCatalog, ToolDescriptor, ToolExecutionKind,
@@ -703,6 +707,8 @@ fn execute_discoverable_tool_core_with_config(
         }
         #[cfg(feature = "tool-webfetch")]
         "web.fetch" => web_fetch::execute_web_fetch_tool_with_config(request, config),
+        #[cfg(feature = "tool-websearch")]
+        "web.search" => web_search::execute_web_search_tool_with_config(request, config),
         _ => Err(format!(
             "tool_not_found: unknown tool `{}`",
             request.tool_name
@@ -1543,6 +1549,7 @@ mod tests {
             browser: Default::default(),
             browser_companion: Default::default(),
             web_fetch: Default::default(),
+            web_search: Default::default(),
             external_skills: runtime_config::ExternalSkillsRuntimePolicy {
                 enabled: true,
                 require_download_approval: true,
@@ -1747,7 +1754,7 @@ mod tests {
     #[test]
     fn tool_registry_returns_runtime_discoverable_tools_for_default_config() {
         let entries = tool_registry();
-        assert_eq!(entries.len(), 22);
+        assert_eq!(entries.len(), 23);
         let names: Vec<&str> = entries.iter().map(|e| e.name).collect();
         assert!(names.contains(&"approval_request_resolve"));
         assert!(names.contains(&"approval_request_status"));
@@ -1769,6 +1776,7 @@ mod tests {
         assert!(names.contains(&"session_wait"));
         assert!(names.contains(&"sessions_history"));
         assert!(names.contains(&"sessions_list"));
+        assert!(names.contains(&"web.search"));
         assert!(!names.contains(&"external_skills.fetch"));
         assert!(!names.contains(&"external_skills.install"));
         assert!(!names.contains(&"external_skills.inspect"));
@@ -2309,6 +2317,7 @@ mod tests {
             browser: Default::default(),
             browser_companion: Default::default(),
             web_fetch: Default::default(),
+            web_search: Default::default(),
             external_skills: runtime_config::ExternalSkillsRuntimePolicy::default(),
             #[cfg(feature = "feishu-integration")]
             feishu: None,
