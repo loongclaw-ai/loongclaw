@@ -24,7 +24,7 @@ jobs:
         uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26
 
       - name: Cache Cargo Artifacts
-        uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
 
       - name: Shell syntax checks
         run: |
@@ -89,7 +89,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache Cargo Artifacts
-        uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
 
       - name: Format check
         run: cargo fmt --all -- --check
@@ -110,7 +110,7 @@ jobs:
         uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26
 
       - name: Cache Cargo Artifacts
-        uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
 
       - name: Test
         run: cargo test --workspace --locked
@@ -128,7 +128,7 @@ jobs:
         uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26
 
       - name: Cache Cargo Artifacts
-        uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
 
       - name: Test (all features)
         run: cargo test --workspace --all-features --locked
@@ -146,7 +146,7 @@ jobs:
         uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26
 
       - name: Cache Cargo Artifacts
-        uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
 
       - name: Docs build
         run: cargo doc --workspace --no-deps

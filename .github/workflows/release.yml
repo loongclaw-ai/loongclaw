@@ -32,7 +32,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache Cargo Artifacts
-        uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
 
       - name: Format check
         run: cargo fmt --all -- --check
@@ -96,7 +96,7 @@ jobs:
         run: rustup target add ${{ matrix.target }}
 
       - name: Cache Cargo Artifacts
-        uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
 
       - name: Build release binary
         env:
