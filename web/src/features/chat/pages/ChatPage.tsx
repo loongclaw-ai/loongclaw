@@ -20,6 +20,74 @@ interface ActiveToolStatus {
 }
 
 type StreamPhase = "idle" | "connecting" | "thinking" | "streaming";
+type ToolAssistIntent = "filesystem" | "repo_search" | "shell" | "web";
+
+// Temporary Web-only workaround: keep this small and easy to remove while we
+// verify whether tool discovery reliability should be fixed deeper in runtime.
+const TOOL_ASSIST_STORAGE_KEY = "loongclaw.web.toolAssist";
+
+function detectToolAssistIntent(input: string): ToolAssistIntent | null {
+  const normalized = input.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+
+  if (
+    /(https?:\/\/|网页|网站|链接|打开网页|打开网站|browse|browser|web fetch|webfetch|url|summarize this page)/i.test(
+      normalized,
+    )
+  ) {
+    return "web";
+  }
+
+  if (
+    /(ls|pwd|终端|命令行|shell|执行命令|run command|current directory|列出当前目录)/i.test(
+      normalized,
+    )
+  ) {
+    return "shell";
+  }
+
+  if (
+    /(搜索|查找|grep|rg|ripgrep|仓库|代码里|repository|repo|source code|find in code)/i.test(
+      normalized,
+    )
+  ) {
+    return "repo_search";
+  }
+
+  if (
+    /(文件|目录|读取|查看|打开文件|readme|cargo\.toml|package\.json|file|directory|folder|read the file)/i.test(
+      normalized,
+    )
+  ) {
+    return "filesystem";
+  }
+
+  return null;
+}
+
+function buildToolAssistHint(intent: ToolAssistIntent | null): string | null {
+  if (!intent) {
+    return null;
+  }
+
+  const generic =
+    "If tools are needed, first use tool.search to discover the right runtime tool, then use tool.invoke instead of claiming the tool is unavailable.";
+
+  switch (intent) {
+    case "filesystem":
+      return `${generic} This request looks file- or directory-related, so prefer discovering a file or shell-oriented tool before answering from memory.`;
+    case "repo_search":
+      return `${generic} This request looks like repository/code search, so prefer discovering a search, file, or shell-oriented tool before answering from memory.`;
+    case "shell":
+      return `${generic} This request explicitly asks for a shell-style action, so prefer discovering a shell-oriented tool and executing it if policy allows.`;
+    case "web":
+      return `${generic} This request looks web-related, so prefer discovering a browser or web-fetch tool before answering from memory.`;
+    default:
+      return generic;
+  }
+}
 
 function renderInlineBreaks(text: string): ReactNode[] {
   return text.split("\n").flatMap((line, index, lines) => {
@@ -153,6 +221,13 @@ export default function ChatPage() {
   const [pendingAssistantId, setPendingAssistantId] = useState<string | null>(null);
   const [streamPhase, setStreamPhase] = useState<StreamPhase>("idle");
   const [loadingLabelIndex, setLoadingLabelIndex] = useState(0);
+  const [toolAssistEnabled, setToolAssistEnabled] = useState<boolean>(() => {
+    if (typeof window === "undefined") {
+      return false;
+    }
+    const stored = window.localStorage.getItem(TOOL_ASSIST_STORAGE_KEY);
+    return stored === "true";
+  });
 
   const loadingPhraseKeys = useMemo(() => {
     switch (streamPhase) {
@@ -201,6 +276,16 @@ export default function ChatPage() {
       window.clearInterval(intervalId);
     };
   }, [loadingPhrases.length, streamPhase]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(
+      TOOL_ASSIST_STORAGE_KEY,
+      toolAssistEnabled ? "true" : "false",
+    );
+  }, [toolAssistEnabled]);
 
   useEffect(() => {
     let cancelled = false;
@@ -449,9 +534,18 @@ export default function ChatPage() {
     setComposerText("");
 
     try {
+      // Keep the visible user message unchanged. This injects only a
+      // one-shot Web hint when the temporary assist toggle is enabled.
+      const toolAssistHint = toolAssistEnabled
+        ? buildToolAssistHint(detectToolAssistIntent(input))
+        : null;
       const targetSessionId =
         selectedSessionId ?? (await chatApi.createSession(input.slice(0, 48)));
-      const acceptedTurn = await chatApi.createTurn(targetSessionId, input);
+      const acceptedTurn = await chatApi.createTurn(
+        targetSessionId,
+        input,
+        toolAssistHint ?? undefined,
+      );
 
       await chatApi.streamTurn(targetSessionId, acceptedTurn.turnId, {
         onEvent: (event) => {
@@ -645,6 +739,17 @@ export default function ChatPage() {
               }}
             >
               <div className="composer-shell">
+                <label className="composer-tool-assist">
+                  <input
+                    type="checkbox"
+                    checked={toolAssistEnabled}
+                    onChange={(event) => {
+                      setToolAssistEnabled(event.target.checked);
+                    }}
+                    disabled={isSubmitting || !canAccessProtectedApi}
+                  />
+                  <span>{t("chat.toolAssist.label")}</span>
+                </label>
                 <textarea
                   className="composer-input"
                   rows={3}
