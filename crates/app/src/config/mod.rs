@@ -205,6 +205,7 @@ mod tests {
                 "perplexity",
                 "qianfan",
                 "qwen",
+                "bailian_coding",
                 "sambanova",
                 "sglang",
                 "siliconflow",
