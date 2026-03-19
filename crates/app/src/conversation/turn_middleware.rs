@@ -14,6 +14,14 @@ pub const TURN_MIDDLEWARE_API_VERSION: u16 = 1;
 pub const SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID: &str = "system-prompt-addition";
 pub const SYSTEM_PROMPT_TOOL_VIEW_TURN_MIDDLEWARE_ID: &str = "system-prompt-tool-view";
 
+pub(crate) type BuiltInTurnMiddlewareFactory = fn() -> Box<dyn ConversationTurnMiddleware>;
+
+#[derive(Clone, Copy)]
+pub(crate) struct BuiltInTurnMiddlewareSpec {
+    pub id: &'static str,
+    pub factory: BuiltInTurnMiddlewareFactory,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TurnMiddlewareCapability {
     ContextTransform,
@@ -70,6 +78,32 @@ pub struct SystemPromptAdditionTurnMiddleware;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SystemPromptToolViewTurnMiddleware;
+
+fn build_system_prompt_addition_turn_middleware() -> Box<dyn ConversationTurnMiddleware> {
+    Box::new(SystemPromptAdditionTurnMiddleware)
+}
+
+fn build_system_prompt_tool_view_turn_middleware() -> Box<dyn ConversationTurnMiddleware> {
+    Box::new(SystemPromptToolViewTurnMiddleware)
+}
+
+pub(crate) const BUILTIN_TURN_MIDDLEWARES: &[BuiltInTurnMiddlewareSpec] = &[
+    BuiltInTurnMiddlewareSpec {
+        id: SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID,
+        factory: build_system_prompt_addition_turn_middleware,
+    },
+    BuiltInTurnMiddlewareSpec {
+        id: SYSTEM_PROMPT_TOOL_VIEW_TURN_MIDDLEWARE_ID,
+        factory: build_system_prompt_tool_view_turn_middleware,
+    },
+];
+
+pub(crate) fn builtin_turn_middlewares() -> Vec<Box<dyn ConversationTurnMiddleware>> {
+    BUILTIN_TURN_MIDDLEWARES
+        .iter()
+        .map(|spec| (spec.factory)())
+        .collect()
+}
 
 #[async_trait]
 pub trait ConversationTurnMiddleware: Send + Sync {

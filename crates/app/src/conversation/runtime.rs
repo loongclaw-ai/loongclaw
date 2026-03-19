@@ -27,8 +27,7 @@ use super::runtime_binding::ConversationRuntimeBinding;
 use super::subagent::ConstrainedSubagentExecution;
 use super::turn_engine::ProviderTurn;
 use super::turn_middleware::{
-    ConversationTurnMiddleware, SystemPromptAdditionTurnMiddleware,
-    SystemPromptToolViewTurnMiddleware, TurnMiddlewareMetadata,
+    ConversationTurnMiddleware, TurnMiddlewareMetadata, builtin_turn_middlewares,
 };
 use super::turn_middleware_registry::{
     default_turn_middleware_ids, describe_turn_middlewares, list_turn_middleware_metadata,
@@ -374,10 +373,7 @@ impl DefaultConversationRuntime<DefaultContextEngine> {
     pub fn with_turn_middlewares(
         turn_middlewares: Vec<Box<dyn ConversationTurnMiddleware>>,
     ) -> Self {
-        Self {
-            context_engine: DefaultContextEngine,
-            turn_middlewares,
-        }
+        Self::with_context_engine_and_turn_middlewares(DefaultContextEngine, turn_middlewares)
     }
 }
 
@@ -385,10 +381,7 @@ impl<E> DefaultConversationRuntime<E> {
     pub fn with_context_engine(context_engine: E) -> Self {
         Self {
             context_engine,
-            turn_middlewares: vec![
-                Box::new(SystemPromptAdditionTurnMiddleware),
-                Box::new(SystemPromptToolViewTurnMiddleware),
-            ],
+            turn_middlewares: builtin_turn_middlewares(),
         }
     }
 
@@ -396,9 +389,11 @@ impl<E> DefaultConversationRuntime<E> {
         context_engine: E,
         turn_middlewares: Vec<Box<dyn ConversationTurnMiddleware>>,
     ) -> Self {
+        let mut combined_turn_middlewares = builtin_turn_middlewares();
+        combined_turn_middlewares.extend(turn_middlewares);
         Self {
             context_engine,
-            turn_middlewares,
+            turn_middlewares: combined_turn_middlewares,
         }
     }
 }
