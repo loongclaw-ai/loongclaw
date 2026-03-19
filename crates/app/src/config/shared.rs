@@ -73,7 +73,6 @@ pub(super) enum ConfigValidationCode {
     ImplicitActiveProvider,
     UnknownActiveProvider,
     UnknownSearchProvider,
-    MissingRequiredField,
 }
 
 impl ConfigValidationCode {
@@ -100,7 +99,6 @@ impl ConfigValidationCode {
             ConfigValidationCode::UnknownSearchProvider => {
                 "config.web_search.unknown_provider"
             }
-            ConfigValidationCode::MissingRequiredField => "config.missing_required_field",
         }
     }
 
@@ -136,9 +134,6 @@ impl ConfigValidationCode {
             }
             ConfigValidationCode::UnknownSearchProvider => {
                 "urn:loongclaw:problem:config.web_search.unknown_provider"
-            }
-            ConfigValidationCode::MissingRequiredField => {
-                "urn:loongclaw:problem:config.missing_required_field"
             }
         }
     }

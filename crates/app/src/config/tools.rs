@@ -537,30 +537,30 @@ impl ToolConfig {
         }
         // Only validate provider settings when web_search is enabled
         // Note: API key validation is deferred to runtime since keys can be set via env vars
-        if self.web_search.enabled {
-            if !matches!(
+        if self.web_search.enabled
+            && !matches!(
                 self.web_search.default_provider.as_str(),
                 "duckduckgo" | "ddg" | "brave" | "tavily"
-            ) {
-                let mut extra_message_variables = std::collections::BTreeMap::new();
-                extra_message_variables.insert(
-                    "provider_value".to_owned(),
-                    self.web_search.default_provider.clone(),
-                );
-                extra_message_variables.insert(
-                    "valid_providers".to_owned(),
-                    "duckduckgo (or ddg), brave, tavily".to_owned(),
-                );
-                issues.push(ConfigValidationIssue {
-                    severity: super::shared::ConfigValidationSeverity::Error,
-                    code: super::shared::ConfigValidationCode::UnknownSearchProvider,
-                    field_path: "tools.web_search.default_provider".to_owned(),
-                    inline_field_path: "tools.web_search.default_provider".to_owned(),
-                    example_env_name: "LOONGCLAW_WEB_SEARCH_PROVIDER".to_owned(),
-                    suggested_env_name: Some("LOONGCLAW_WEB_SEARCH_PROVIDER".to_owned()),
-                    extra_message_variables,
-                });
-            }
+            )
+        {
+            let mut extra_message_variables = std::collections::BTreeMap::new();
+            extra_message_variables.insert(
+                "provider_value".to_owned(),
+                self.web_search.default_provider.clone(),
+            );
+            extra_message_variables.insert(
+                "valid_providers".to_owned(),
+                "duckduckgo (or ddg), brave, tavily".to_owned(),
+            );
+            issues.push(ConfigValidationIssue {
+                severity: super::shared::ConfigValidationSeverity::Error,
+                code: super::shared::ConfigValidationCode::UnknownSearchProvider,
+                field_path: "tools.web_search.default_provider".to_owned(),
+                inline_field_path: "tools.web_search.default_provider".to_owned(),
+                example_env_name: "LOONGCLAW_WEB_SEARCH_PROVIDER".to_owned(),
+                suggested_env_name: Some("LOONGCLAW_WEB_SEARCH_PROVIDER".to_owned()),
+                extra_message_variables,
+            });
         }
         issues
     }
