@@ -795,9 +795,35 @@ kind = "kimi_coding"
 
     #[test]
     #[cfg(feature = "config-toml")]
+    fn bailian_coding_partial_config_uses_internal_defaults() {
+        let raw = r#"
+[provider]
+kind = "bailian_coding"
+"#;
+        let parsed =
+            toml::from_str::<LoongClawConfig>(raw).expect("parse minimal bailian coding config");
+        assert_eq!(parsed.provider.kind, ProviderKind::BailianCoding);
+        assert_eq!(
+            parsed.provider.endpoint(),
+            "https://coding.dashscope.aliyuncs.com/v1/chat/completions"
+        );
+        assert_eq!(
+            parsed.provider.models_endpoint(),
+            "https://coding.dashscope.aliyuncs.com/v1/models"
+        );
+        assert_eq!(
+            parsed.provider.default_api_key_env().as_deref(),
+            Some("BAILIAN_API_KEY")
+        );
+        assert_eq!(parsed.provider.kind.default_user_agent(), Some("openclaw"));
+    }
+
+    #[test]
+    #[cfg(feature = "config-toml")]
     fn provider_kind_keeps_new_provider_aliases() {
         let cases = vec![
             ("aws-bedrock", ProviderKind::Bedrock),
+            ("bailian_coding_compatible", ProviderKind::BailianCoding),
             ("byteplus_compatible", ProviderKind::Byteplus),
             ("byteplus_coding_compatible", ProviderKind::ByteplusCoding),
             ("openai_custom", ProviderKind::Custom),
