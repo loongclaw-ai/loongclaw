@@ -1172,6 +1172,21 @@ fn kimi_coding_request_headers_include_default_user_agent() {
 }
 
 #[test]
+fn bailian_coding_request_headers_include_default_user_agent() {
+    let provider = ProviderConfig {
+        kind: ProviderKind::BailianCoding,
+        ..ProviderConfig::default()
+    };
+    let headers = transport::build_request_headers(&provider).expect("headers");
+    let user_agent = headers
+        .get(reqwest::header::USER_AGENT)
+        .expect("default user-agent")
+        .to_str()
+        .expect("user-agent value");
+    assert_eq!(user_agent, "openclaw");
+}
+
+#[test]
 fn kimi_coding_keeps_explicit_compatible_user_agent() {
     let provider = ProviderConfig {
         kind: ProviderKind::KimiCoding,
