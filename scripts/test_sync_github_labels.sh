@@ -101,6 +101,9 @@ assert_not_contains_regex "$REPO_ROOT/.github/labeler.yml" '(^|[[:space:]])"?rus
 assert_not_contains "$REPO_ROOT/docs/references/github-collaboration.md" "area:"
 assert_not_contains "$REPO_ROOT/docs/references/github-collaboration.md" "domain:"
 assert_not_contains "$REPO_ROOT/docs/plans/2026-03-19-github-label-taxonomy-implementation-plan.md" "For Claude:"
+assert_contains "$REPO_ROOT/docs/references/github-collaboration.md" "## CI and Promotion Gates"
+assert_contains "$REPO_ROOT/docs/references/github-collaboration.md" 'release` and `release/*` branches are optional release-hardening lanes'
+assert_contains "$REPO_ROOT/docs/references/github-collaboration.md" "enforce-dev-to-main"
 assert_contains "$REPO_ROOT/.github/ISSUE_TEMPLATE/bug_report.yml" "label: Surface"
 assert_contains "$REPO_ROOT/.github/ISSUE_TEMPLATE/feature_request.yml" "label: Surface"
 assert_contains "$REPO_ROOT/.github/ISSUE_TEMPLATE/docs_improvement.yml" "label: Surface"
