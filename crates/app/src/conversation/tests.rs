@@ -5130,6 +5130,51 @@ async fn handle_turn_with_runtime_provider_shape_tool_search_followup_inline_raw
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_turn_with_runtime_provider_shape_tool_search_followup_json_raw_output() {
+    let (reply, runtime) = run_provider_shape_tool_search_followup(
+        "session-provider-shape-json",
+        "search for the right tool, then read note.md and show raw json tool output",
+        "hello from json provider-shape discovery followup raw test",
+        json!({
+            "choices": [{
+                "message": {
+                    "content": "Let me search for the right tool first.\n{\n  \"name\": \"tool_search\",\n  \"arguments\": {\n    \"query\": \"read note.md\",\n    \"limit\": 3\n  }\n}"
+                }
+            }]
+        }),
+        json!({
+            "choices": [{
+                "message": {
+                    "content": "Now I'll read the file.\n{\n  \"name\": \"file_read\",\n  \"arguments\": {\n    \"path\": \"note.md\"\n  }\n}"
+                }
+            }]
+        }),
+        Ok("unused completion".to_owned()),
+    )
+    .await;
+
+    assert!(
+        reply.contains("[ok]"),
+        "raw-request mode should return the invoked tool output, got: {reply}"
+    );
+    assert!(
+        reply.contains("hello from json provider-shape discovery followup raw test"),
+        "expected second-round invoked tool output, got: {reply}"
+    );
+    assert_eq!(*runtime.turn_calls.lock().expect("turn calls lock"), 2);
+    assert_eq!(
+        *runtime
+            .completion_calls
+            .lock()
+            .expect("completion calls lock"),
+        0
+    );
+
+    let persisted = runtime.persisted.lock().expect("persisted lock").clone();
+    assert_discovery_first_followup_summary(&persisted, true, "file.read");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn handle_turn_with_runtime_tool_turn_raw_request_skips_second_pass_completion() {
     use crate::test_support::TurnTestHarness;
 

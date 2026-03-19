@@ -6,6 +6,10 @@ The format follows Keep a Changelog and semantic versioning intent.
 
 ## [Unreleased]
 
+### Fixed
+
+- Restored provider-side tool execution when OpenAI-compatible responses emit standalone JSON tool blocks or Ollama-style `<tool_call>...</tool_call>` fallbacks instead of native `tool_calls`.
+
 ## [0.1.0-alpha.2] - 2026-03-19
 
 ### Added
