@@ -666,6 +666,14 @@ const MATRIX_ALLOWED_ROOM_IDS_REQUIREMENT: ChannelCatalogOperationRequirement =
         env_pointer_paths: &[],
         default_env_var: None,
     };
+const MATRIX_USER_ID_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "user_id",
+        label: "user id when ignore_self_messages is enabled",
+        config_paths: &["matrix.user_id", "matrix.accounts.<account>.user_id"],
+        env_pointer_paths: &[],
+        default_env_var: None,
+    };
 const MATRIX_SEND_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
     MATRIX_ENABLED_REQUIREMENT,
     MATRIX_ACCESS_TOKEN_REQUIREMENT,
@@ -676,6 +684,7 @@ const MATRIX_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
     MATRIX_ACCESS_TOKEN_REQUIREMENT,
     MATRIX_BASE_URL_REQUIREMENT,
     MATRIX_ALLOWED_ROOM_IDS_REQUIREMENT,
+    MATRIX_USER_ID_REQUIREMENT,
 ];
 
 const MATRIX_SEND_DOCTOR_CHECKS: &[ChannelDoctorCheckSpec] = &[ChannelDoctorCheckSpec {
@@ -1505,6 +1514,14 @@ fn build_matrix_snapshot_for_account(
         .any(|value| !value.trim().is_empty())
     {
         serve_issues.push("allowed_room_ids is empty".to_owned());
+    }
+    let has_user_id = resolved
+        .user_id
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty());
+    if resolved.ignore_self_messages && !has_user_id {
+        serve_issues.push("user_id is missing while ignore_self_messages is enabled".to_owned());
     }
 
     let send_operation = if !compiled {
@@ -2825,6 +2842,31 @@ mod tests {
         assert_eq!(
             serve.runtime.as_ref().expect("serve runtime").active_runs,
             0
+        );
+    }
+
+    #[test]
+    fn matrix_status_requires_user_id_when_ignoring_self_messages() {
+        let mut config = LoongClawConfig::default();
+        config.matrix.enabled = true;
+        config.matrix.access_token = Some("matrix-token".to_owned());
+        config.matrix.base_url = Some("https://matrix.example.org".to_owned());
+        config.matrix.allowed_room_ids = vec!["!ops:example.org".to_owned()];
+        config.matrix.ignore_self_messages = true;
+
+        let snapshots = channel_status_snapshots(&config);
+        let matrix = snapshots
+            .iter()
+            .find(|snapshot| snapshot.id == "matrix")
+            .expect("matrix snapshot");
+        let send = matrix.operation("send").expect("matrix send operation");
+        let serve = matrix.operation("serve").expect("matrix serve operation");
+
+        assert_eq!(send.health, ChannelOperationHealth::Ready);
+        assert_eq!(serve.health, ChannelOperationHealth::Misconfigured);
+        assert!(
+            serve.issues.iter().any(|issue| issue.contains("user_id")),
+            "serve issues should require user_id when ignore_self_messages is enabled"
         );
     }
 

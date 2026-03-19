@@ -113,10 +113,11 @@ pub fn parse_route_session_id(value: &str) -> CliResult<Option<(String, Vec<Stri
 
     let mut path = Vec::new();
     for segment in remainder.split(':').map(str::trim) {
-        if segment.is_empty() {
+        let decoded = decode_route_session_segment(segment)?;
+        if decoded.is_empty() {
             continue;
         }
-        path.push(decode_route_session_segment(segment)?);
+        path.push(decoded);
     }
 
     Ok(Some((channel_id, path)))
@@ -204,5 +205,19 @@ mod tests {
                 "raw matrix id should not be treated as a routed session: {raw}"
             );
         }
+    }
+
+    #[test]
+    fn parse_route_session_id_skips_segments_that_decode_to_empty_strings() {
+        let route = format!(
+            "matrix:~b64~:{}",
+            encode_route_session_segment("!ops:example.org")
+        );
+        let parsed = parse_route_session_id(route.as_str())
+            .expect("parse route session id")
+            .expect("decoded route session id");
+
+        assert_eq!(parsed.0, "matrix");
+        assert_eq!(parsed.1, vec!["!ops:example.org".to_owned()]);
     }
 }

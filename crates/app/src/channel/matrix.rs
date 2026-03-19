@@ -275,7 +275,10 @@ pub(super) fn parse_matrix_sync_response(
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(str::to_owned);
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            "matrix sync response is missing a non-empty next_batch cursor".to_owned()
+        })?;
     let joined_rooms = payload
         .get("rooms")
         .and_then(|rooms| rooms.get("join"))
@@ -330,29 +333,34 @@ pub(super) fn parse_matrix_sync_response(
             {
                 continue;
             }
+            let event_id = event
+                .get("event_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned);
 
             let mut session =
                 ChannelSession::with_account(ChannelPlatform::Matrix, account_id, room_id);
             if let Some(sender) = sender.as_deref() {
                 session = session.with_participant_id(sender.to_owned());
             }
+            let mut reply_target = ChannelOutboundTarget::new(
+                ChannelPlatform::Matrix,
+                ChannelOutboundTargetKind::Conversation,
+                room_id.to_owned(),
+            );
+            if let Some(event_id) = event_id.as_deref() {
+                reply_target = reply_target.with_idempotency_key(event_id.to_owned());
+            }
 
             inbox.push(ChannelInboundMessage {
                 session,
-                reply_target: ChannelOutboundTarget::new(
-                    ChannelPlatform::Matrix,
-                    ChannelOutboundTargetKind::Conversation,
-                    room_id.to_owned(),
-                ),
+                reply_target,
                 text,
                 delivery: ChannelDelivery {
                     ack_cursor: None,
-                    source_message_id: event
-                        .get("event_id")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(str::to_owned),
+                    source_message_id: event_id,
                     sender_principal_key: sender.map(|sender| format!("matrix:user:{sender}")),
                     thread_root_id: None,
                     parent_message_id: None,
@@ -363,7 +371,7 @@ pub(super) fn parse_matrix_sync_response(
         }
     }
 
-    Ok((inbox, next_cursor))
+    Ok((inbox, Some(next_cursor)))
 }
 
 pub(super) fn build_matrix_client_url(base_url: &str) -> CliResult<Url> {
@@ -596,6 +604,38 @@ mod tests {
     }
 
     #[test]
+    fn matrix_parser_requires_non_empty_next_batch_cursor() {
+        let allowlist = BTreeSet::from(["!ops:example.org".to_owned()]);
+
+        for payload in [
+            json!({
+                "rooms": {
+                    "join": {}
+                }
+            }),
+            json!({
+                "next_batch": "   ",
+                "rooms": {
+                    "join": {}
+                }
+            }),
+        ] {
+            let error = parse_matrix_sync_response(
+                &payload,
+                &allowlist,
+                "ops-bot",
+                Some("@ops-bot:example.org"),
+                true,
+            )
+            .expect_err("missing or empty next_batch should be rejected");
+            assert!(
+                error.contains("next_batch"),
+                "parser error should mention next_batch, got: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn matrix_parser_ignores_self_authored_events_when_enabled() {
         let payload = json!({
             "next_batch": "next",
@@ -632,6 +672,52 @@ mod tests {
 
         assert!(inbox.is_empty());
         assert_eq!(next_cursor.as_deref(), Some("next"));
+    }
+
+    #[test]
+    fn matrix_parser_reuses_event_id_for_reply_idempotency() {
+        let payload = json!({
+            "next_batch": "next",
+            "rooms": {
+                "join": {
+                    "!ops:example.org": {
+                        "timeline": {
+                            "events": [
+                                {
+                                    "event_id": "  $reply:example.org  ",
+                                    "type": "m.room.message",
+                                    "sender": "@alice:example.org",
+                                    "content": {
+                                        "msgtype": "m.text",
+                                        "body": "hello matrix"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        });
+
+        let allowlist = BTreeSet::from(["!ops:example.org".to_owned()]);
+        let (inbox, _) = parse_matrix_sync_response(
+            &payload,
+            &allowlist,
+            "ops-bot",
+            Some("@ops-bot:example.org"),
+            true,
+        )
+        .expect("parse matrix sync response");
+
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(
+            inbox[0].delivery.source_message_id.as_deref(),
+            Some("$reply:example.org")
+        );
+        assert_eq!(
+            inbox[0].reply_target.idempotency_key(),
+            Some("$reply:example.org")
+        );
     }
 
     #[test]

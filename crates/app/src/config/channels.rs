@@ -1389,6 +1389,9 @@ fn default_channel_account_identity() -> ChannelAccountIdentity {
 
 fn resolve_configured_account_identity(raw: Option<&str>) -> Option<(String, String)> {
     let label = raw.map(str::trim).filter(|value| !value.is_empty())?;
+    if !label.chars().any(|value| value.is_ascii_alphanumeric()) {
+        return None;
+    }
     Some((normalize_channel_account_id(label), label.to_owned()))
 }
 
@@ -1837,6 +1840,11 @@ mod tests {
         let identity = config.resolved_account_identity();
         assert_eq!(identity.id, "lark_cli_a1b2c3");
         assert_eq!(identity.label, "lark:cli_a1b2c3");
+    }
+
+    #[test]
+    fn configured_account_identity_rejects_non_alphanumeric_labels() {
+        assert_eq!(resolve_configured_account_identity(Some(" !!! ")), None);
     }
 
     #[test]
