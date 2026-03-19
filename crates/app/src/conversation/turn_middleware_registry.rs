@@ -6,9 +6,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 use crate::CliResult;
 
 use super::turn_middleware::{
-    ConversationTurnMiddleware, SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID,
-    SYSTEM_PROMPT_TOOL_VIEW_TURN_MIDDLEWARE_ID, SystemPromptAdditionTurnMiddleware,
-    SystemPromptToolViewTurnMiddleware, TurnMiddlewareMetadata,
+    BUILTIN_TURN_MIDDLEWARES, ConversationTurnMiddleware, TurnMiddlewareMetadata,
 };
 
 pub const TURN_MIDDLEWARE_ENV: &str = "LOONGCLAW_TURN_MIDDLEWARES";
@@ -45,18 +43,13 @@ static TURN_MIDDLEWARE_ENV_OVERRIDE: OnceLock<Mutex<Option<Option<String>>>> = O
 fn registry() -> &'static RwLock<BTreeMap<String, TurnMiddlewareRegistration>> {
     TURN_MIDDLEWARE_REGISTRY.get_or_init(|| {
         let mut map: BTreeMap<String, TurnMiddlewareRegistration> = BTreeMap::new();
-        map.insert(
-            SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID.to_owned(),
-            TurnMiddlewareRegistration::builtin(Arc::new(|| {
-                Box::new(SystemPromptAdditionTurnMiddleware)
-            })),
-        );
-        map.insert(
-            SYSTEM_PROMPT_TOOL_VIEW_TURN_MIDDLEWARE_ID.to_owned(),
-            TurnMiddlewareRegistration::builtin(Arc::new(|| {
-                Box::new(SystemPromptToolViewTurnMiddleware)
-            })),
-        );
+        for spec in BUILTIN_TURN_MIDDLEWARES {
+            let factory: TurnMiddlewareFactory = Arc::new(spec.factory);
+            map.insert(
+                spec.id.to_owned(),
+                TurnMiddlewareRegistration::builtin(factory),
+            );
+        }
         RwLock::new(map)
     })
 }
@@ -95,6 +88,17 @@ where
     let normalized = normalize_middleware_id(id);
     if normalized.is_empty() {
         return Err("turn middleware id must not be empty".to_owned());
+    }
+
+    {
+        let guard = registry()
+            .read()
+            .map_err(|_error| "turn middleware registry lock poisoned".to_owned())?;
+        if guard.contains_key(&normalized) {
+            return Err(format!(
+                "turn middleware `{normalized}` is already registered"
+            ));
+        }
     }
 
     let middleware = factory();
@@ -252,7 +256,7 @@ impl Drop for ScopedTurnMiddlewareEnvOverride {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use async_trait::async_trait;
 
@@ -348,6 +352,36 @@ mod tests {
         assert!(
             error.contains("already registered"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn register_turn_middleware_duplicate_id_does_not_invoke_factory() {
+        register_turn_middleware("registry-turn-middleware-duplicate-fast-fail", || {
+            Box::new(StaticIdTurnMiddleware {
+                id: "registry-turn-middleware-duplicate-fast-fail",
+            })
+        })
+        .expect("register duplicate fast-fail test middleware");
+
+        let duplicate_factory_calls = Arc::new(AtomicUsize::new(0));
+        let observed = duplicate_factory_calls.clone();
+        let error =
+            register_turn_middleware("registry-turn-middleware-duplicate-fast-fail", move || {
+                observed.fetch_add(1, Ordering::SeqCst);
+                Box::new(StaticIdTurnMiddleware {
+                    id: "registry-turn-middleware-duplicate-fast-fail",
+                })
+            })
+            .expect_err("duplicate registration should fast-fail before invoking the factory");
+        assert!(
+            error.contains("already registered"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            duplicate_factory_calls.load(Ordering::SeqCst),
+            0,
+            "duplicate registration should not invoke the replacement factory"
         );
     }
 

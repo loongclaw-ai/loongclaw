@@ -1671,6 +1671,26 @@ async fn default_runtime_applies_turn_middlewares_in_declared_order() {
 }
 
 #[test]
+fn with_context_engine_and_turn_middlewares_retains_builtin_defaults_before_custom_chain() {
+    let runtime = DefaultConversationRuntime::with_context_engine_and_turn_middlewares(
+        StubContextEngine,
+        vec![Box::new(NoopTurnMiddleware::new("custom-turn-middleware"))],
+    );
+    assert_eq!(
+        runtime
+            .turn_middleware_metadata()
+            .into_iter()
+            .map(|metadata| metadata.id)
+            .collect::<Vec<_>>(),
+        vec![
+            SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID,
+            SYSTEM_PROMPT_TOOL_VIEW_TURN_MIDDLEWARE_ID,
+            "custom-turn-middleware",
+        ]
+    );
+}
+
+#[test]
 fn resolve_turn_middleware_selection_includes_builtin_defaults_when_unset() {
     let _env_lock = turn_middleware_env_lock().lock().expect("env lock");
     let _scoped_env = ScopedEnvVar::set(TURN_MIDDLEWARE_ENV, "");
