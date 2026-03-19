@@ -5576,10 +5576,22 @@ async fn handle_turn_with_runtime_persists_fast_lane_tool_batch_event_for_mixed_
     assert_eq!(payloads.len(), 1, "expected one fast-lane batch event");
 
     let payload = &payloads[0];
-    assert_eq!(payload["schema_version"], 1);
+    assert_eq!(payload["schema_version"], 2);
     assert_eq!(payload["total_intents"], 5);
     assert_eq!(payload["parallel_execution_enabled"], true);
     assert_eq!(payload["parallel_execution_max_in_flight"], 2);
+    assert!(
+        payload["observed_peak_in_flight"]
+            .as_u64()
+            .expect("observed peak should exist")
+            >= 1
+    );
+    assert!(
+        payload["observed_wall_time_ms"]
+            .as_u64()
+            .expect("observed wall time should exist")
+            >= 1
+    );
     assert_eq!(payload["parallel_safe_intents"], 4);
     assert_eq!(payload["serial_only_intents"], 1);
     assert_eq!(payload["parallel_segments"], 2);
@@ -5595,14 +5607,45 @@ async fn handle_turn_with_runtime_persists_fast_lane_tool_batch_event_for_mixed_
     assert_eq!(segments[0]["scheduling_class"], "parallel_safe");
     assert_eq!(segments[0]["execution_mode"], "parallel");
     assert_eq!(segments[0]["intent_count"], 2);
+    assert!(
+        segments[0]["observed_peak_in_flight"]
+            .as_u64()
+            .expect("parallel segment observed peak should exist")
+            >= 1
+    );
+    assert!(
+        segments[0]["observed_wall_time_ms"]
+            .as_u64()
+            .expect("parallel segment wall time should exist")
+            >= 1
+    );
     assert_eq!(segments[1]["segment_index"], 1);
     assert_eq!(segments[1]["scheduling_class"], "serial_only");
     assert_eq!(segments[1]["execution_mode"], "sequential");
     assert_eq!(segments[1]["intent_count"], 1);
+    assert_eq!(segments[1]["observed_peak_in_flight"], 1);
+    assert!(
+        segments[1]["observed_wall_time_ms"]
+            .as_u64()
+            .expect("sequential segment wall time should exist")
+            >= 1
+    );
     assert_eq!(segments[2]["segment_index"], 2);
     assert_eq!(segments[2]["scheduling_class"], "parallel_safe");
     assert_eq!(segments[2]["execution_mode"], "parallel");
     assert_eq!(segments[2]["intent_count"], 2);
+    assert!(
+        segments[2]["observed_peak_in_flight"]
+            .as_u64()
+            .expect("parallel segment observed peak should exist")
+            >= 1
+    );
+    assert!(
+        segments[2]["observed_wall_time_ms"]
+            .as_u64()
+            .expect("parallel segment wall time should exist")
+            >= 1
+    );
 
     let _ = std::fs::remove_file(sqlite_path);
 }
@@ -10978,10 +11021,12 @@ async fn load_fast_lane_tool_batch_event_summary_accepts_explicit_runtime_bindin
         "type": "conversation_event",
         "event": "fast_lane_tool_batch",
         "payload": {
-            "schema_version": 1,
+            "schema_version": 2,
             "total_intents": 5,
             "parallel_execution_enabled": true,
             "parallel_execution_max_in_flight": 2,
+            "observed_peak_in_flight": 2,
+            "observed_wall_time_ms": 31,
             "parallel_safe_intents": 4,
             "serial_only_intents": 1,
             "parallel_segments": 2,
@@ -10991,19 +11036,25 @@ async fn load_fast_lane_tool_batch_event_summary_accepts_explicit_runtime_bindin
                     "segment_index": 0,
                     "scheduling_class": "parallel_safe",
                     "execution_mode": "parallel",
-                    "intent_count": 2
+                    "intent_count": 2,
+                    "observed_peak_in_flight": 2,
+                    "observed_wall_time_ms": 12
                 },
                 {
                     "segment_index": 1,
                     "scheduling_class": "serial_only",
                     "execution_mode": "sequential",
-                    "intent_count": 1
+                    "intent_count": 1,
+                    "observed_peak_in_flight": 1,
+                    "observed_wall_time_ms": 7
                 },
                 {
                     "segment_index": 2,
                     "scheduling_class": "parallel_safe",
                     "execution_mode": "parallel",
-                    "intent_count": 2
+                    "intent_count": 2,
+                    "observed_peak_in_flight": 2,
+                    "observed_wall_time_ms": 12
                 }
             ]
         }
@@ -11025,13 +11076,15 @@ async fn load_fast_lane_tool_batch_event_summary_accepts_explicit_runtime_bindin
     .await
     .expect("load fast-lane batch summary via direct binding");
     assert_eq!(direct_summary.batch_events, 1);
-    assert_eq!(direct_summary.latest_schema_version, Some(1));
+    assert_eq!(direct_summary.latest_schema_version, Some(2));
     assert_eq!(direct_summary.latest_total_intents, Some(5));
     assert_eq!(direct_summary.latest_parallel_execution_enabled, Some(true));
     assert_eq!(
         direct_summary.latest_parallel_execution_max_in_flight,
         Some(2)
     );
+    assert_eq!(direct_summary.latest_observed_peak_in_flight, Some(2));
+    assert_eq!(direct_summary.latest_observed_wall_time_ms, Some(31));
     assert_eq!(direct_summary.latest_parallel_safe_intents, Some(4));
     assert_eq!(direct_summary.latest_serial_only_intents, Some(1));
     assert_eq!(direct_summary.latest_parallel_segments, Some(2));
@@ -11051,13 +11104,15 @@ async fn load_fast_lane_tool_batch_event_summary_accepts_explicit_runtime_bindin
     .await
     .expect("load fast-lane batch summary via kernel binding");
     assert_eq!(kernel_summary.batch_events, 1);
-    assert_eq!(kernel_summary.latest_schema_version, Some(1));
+    assert_eq!(kernel_summary.latest_schema_version, Some(2));
     assert_eq!(kernel_summary.latest_total_intents, Some(5));
     assert_eq!(kernel_summary.latest_parallel_execution_enabled, Some(true));
     assert_eq!(
         kernel_summary.latest_parallel_execution_max_in_flight,
         Some(2)
     );
+    assert_eq!(kernel_summary.latest_observed_peak_in_flight, Some(2));
+    assert_eq!(kernel_summary.latest_observed_wall_time_ms, Some(31));
     assert_eq!(kernel_summary.latest_parallel_safe_intents, Some(4));
     assert_eq!(kernel_summary.latest_serial_only_intents, Some(1));
     assert_eq!(kernel_summary.latest_parallel_segments, Some(2));
