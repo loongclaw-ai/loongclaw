@@ -107,7 +107,7 @@ fn execute_web_search_tool_enabled(
                 .await
             }
             _ => Err(format!(
-                "Unknown search provider: '{}'. Use 'duckduckgo', 'brave', or 'tavily'.",
+                "Unknown search provider: '{}'. Use 'duckduckgo' (or 'ddg'), 'brave', or 'tavily'.",
                 provider
             )),
         }
@@ -637,5 +637,87 @@ mod tests {
         let error =
             parse_brave_response(&json, "test", 5).expect_err("should reject invalid format");
         assert!(error.contains("Invalid Brave API response format"));
+    }
+
+    #[test]
+    fn web_search_disabled_returns_error() {
+        let mut config = test_config();
+        config.web_search.enabled = false;
+        let error = execute_web_search_tool_with_config(
+            request(json!({"query": "test"})),
+            &config,
+        )
+        .expect_err("should reject when disabled");
+        assert!(
+            error.contains("disabled by config"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn decode_ddg_url_extracts_redirect() {
+        // Standard DDG redirect URL
+        let url = "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fpage";
+        assert_eq!(decode_ddg_url(url), "https://example.com/page");
+    }
+
+    #[test]
+    fn decode_ddg_url_returns_original_for_non_ddg_url() {
+        // Non-DDG URL should be returned as-is
+        let url = "https://example.com/page?uddg=https%3A%2F%2Fother.com";
+        assert_eq!(decode_ddg_url(url), url);
+
+        // DDG URL but not a redirect path
+        let url = "https://duckduckgo.com/?q=test&uddg=https%3A%2F%2Fother.com";
+        assert_eq!(decode_ddg_url(url), url);
+    }
+
+    #[test]
+    fn decode_ddg_url_handles_malformed_url() {
+        // Malformed URL should be returned as-is
+        let url = "not a valid url";
+        assert_eq!(decode_ddg_url(url), url);
+    }
+
+    #[test]
+    fn web_search_provider_override_uses_specified_provider() {
+        // Test that provider parameter overrides default
+        // Use unknown provider to short-circuit after provider selection
+        let error = execute_web_search_tool_with_config(
+            request(json!({"query": "test", "provider": "unknown"})),
+            &test_config(),
+        )
+        .expect_err("should fail with unknown provider");
+        assert!(error.contains("Unknown search provider"));
+    }
+
+    #[test]
+    fn web_search_brave_requires_api_key() {
+        // Test that brave provider requires API key at runtime
+        let config = test_config(); // No brave_api_key set by default
+        let error = execute_web_search_tool_with_config(
+            request(json!({"query": "test", "provider": "brave"})),
+            &config,
+        )
+        .expect_err("should require brave API key");
+        assert!(
+            error.contains("Brave API key not configured"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn web_search_tavily_requires_api_key() {
+        // Test that tavily provider requires API key at runtime
+        let config = test_config(); // No tavily_api_key set by default
+        let error = execute_web_search_tool_with_config(
+            request(json!({"query": "test", "provider": "tavily"})),
+            &config,
+        )
+        .expect_err("should require tavily API key");
+        assert!(
+            error.contains("Tavily API key not configured"),
+            "unexpected error: {error}"
+        );
     }
 }
