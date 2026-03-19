@@ -94,6 +94,19 @@ pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
         &mut fixes,
         "create memory directory",
     ));
+    checks.push(audit_retention_doctor_check(&config.audit));
+    if matches!(
+        config.audit.mode,
+        mvp::config::AuditMode::Jsonl | mvp::config::AuditMode::Fanout
+    ) {
+        let audit_path = config.audit.resolved_path();
+        let audit_parent = audit_path.parent().unwrap_or(Path::new("."));
+        checks.push(check_audit_journal_directory(
+            audit_parent,
+            options.fix,
+            &mut fixes,
+        ));
+    }
 
     if config
         .tools
@@ -258,6 +271,141 @@ fn check_directory_ready(
 fn check_channel_surfaces(config: &mvp::config::LoongClawConfig) -> Vec<DoctorCheck> {
     let snapshots = mvp::channel::channel_status_snapshots(config);
     build_channel_surface_checks(&snapshots)
+}
+
+fn audit_retention_doctor_check(audit: &mvp::config::AuditConfig) -> DoctorCheck {
+    let path = audit.resolved_path();
+    match audit.mode {
+        mvp::config::AuditMode::InMemory => DoctorCheck {
+            name: "audit retention".to_owned(),
+            level: DoctorCheckLevel::Warn,
+            detail: "audit.mode=in_memory; security-critical audit evidence is lost on restart"
+                .to_owned(),
+        },
+        mvp::config::AuditMode::Jsonl => durable_audit_retention_doctor_check(&path, "jsonl", None),
+        mvp::config::AuditMode::Fanout => durable_audit_retention_doctor_check(
+            &path,
+            "fanout",
+            if audit.retain_in_memory {
+                Some("durable journal + live in-memory snapshot")
+            } else {
+                Some("durable journal only")
+            },
+        ),
+    }
+}
+
+fn durable_audit_retention_doctor_check(
+    path: &Path,
+    mode: &'static str,
+    suffix: Option<&'static str>,
+) -> DoctorCheck {
+    if let Some(issue) = durable_audit_target_issue(path) {
+        return DoctorCheck {
+            name: "audit retention".to_owned(),
+            level: DoctorCheckLevel::Fail,
+            detail: format!("audit.mode={mode} -> {issue}"),
+        };
+    }
+
+    let mut detail = format!("audit.mode={mode} -> {}", path.display());
+    if let Some(suffix) = suffix {
+        detail.push_str(" (");
+        detail.push_str(suffix);
+        detail.push(')');
+    }
+
+    DoctorCheck {
+        name: "audit retention".to_owned(),
+        level: DoctorCheckLevel::Pass,
+        detail,
+    }
+}
+
+fn durable_audit_target_issue(path: &Path) -> Option<String> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            return Some(format!(
+                "failed to inspect audit journal {}: {error}",
+                path.display()
+            ));
+        }
+    };
+
+    if !metadata.is_file() {
+        return Some(format!(
+            "{} exists but is not a regular file",
+            path.display()
+        ));
+    }
+
+    if metadata.permissions().readonly() {
+        return Some(format!("{} exists but is not writable", path.display()));
+    }
+
+    None
+}
+
+fn check_audit_journal_directory(
+    directory: &Path,
+    fix: bool,
+    fixes: &mut Vec<String>,
+) -> DoctorCheck {
+    if directory.as_os_str().is_empty() {
+        return DoctorCheck {
+            name: "audit journal directory".to_owned(),
+            level: DoctorCheckLevel::Pass,
+            detail: "current working directory (journal file is created on first audit write)"
+                .to_owned(),
+        };
+    }
+
+    if directory.exists() {
+        if directory.is_dir() {
+            return DoctorCheck {
+                name: "audit journal directory".to_owned(),
+                level: DoctorCheckLevel::Pass,
+                detail: directory.display().to_string(),
+            };
+        }
+        return DoctorCheck {
+            name: "audit journal directory".to_owned(),
+            level: DoctorCheckLevel::Fail,
+            detail: format!("{} exists but is not a directory", directory.display()),
+        };
+    }
+
+    if !fix {
+        return DoctorCheck {
+            name: "audit journal directory".to_owned(),
+            level: DoctorCheckLevel::Warn,
+            detail: format!(
+                "{} is missing (rerun with --fix to create it, or let runtime create it on first audit write)",
+                directory.display()
+            ),
+        };
+    }
+
+    match fs::create_dir_all(directory) {
+        Ok(()) => {
+            fixes.push(format!(
+                "create audit journal directory: {}",
+                directory.display()
+            ));
+            DoctorCheck {
+                name: "audit journal directory".to_owned(),
+                level: DoctorCheckLevel::Pass,
+                detail: format!("created {}", directory.display()),
+            }
+        }
+        Err(error) => DoctorCheck {
+            name: "audit journal directory".to_owned(),
+            level: DoctorCheckLevel::Fail,
+            detail: format!("failed to create {}: {error}", directory.display()),
+        },
+    }
 }
 
 pub fn check_feishu_integration(
@@ -1284,6 +1432,28 @@ fn build_doctor_next_steps_with_path_env(
         }
     }
 
+    if checks
+        .iter()
+        .any(|check| check.name == "audit retention" && check.level == DoctorCheckLevel::Warn)
+    {
+        push_unique_step(
+            &mut steps,
+            "Switch to durable audit retention: set [audit].mode = \"fanout\"".to_owned(),
+        );
+    }
+
+    if checks
+        .iter()
+        .any(|check| check.name == "audit retention" && check.level == DoctorCheckLevel::Fail)
+    {
+        push_unique_step(
+            &mut steps,
+            format!(
+                "Point [audit].path at a writable journal file path, then re-run diagnostics: {rerun_command}"
+            ),
+        );
+    }
+
     if checks.iter().any(|check| {
         check.name == crate::browser_companion_diagnostics::BROWSER_COMPANION_INSTALL_CHECK_NAME
             && check.level != DoctorCheckLevel::Pass
@@ -1471,11 +1641,11 @@ fn push_unique_step(steps: &mut Vec<String>, step: String) {
 mod tests {
     #[cfg(unix)]
     use std::ffi::OsString;
+    use std::fs::Permissions;
     #[cfg(unix)]
     use std::io::Write;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
-    #[cfg(unix)]
     use std::path::{Path, PathBuf};
     #[cfg(unix)]
     use std::sync::MutexGuard;
@@ -1515,6 +1685,23 @@ mod tests {
     struct BrowserCompanionEnvGuard {
         _lock: MutexGuard<'static, ()>,
         saved_ready: Option<OsString>,
+    }
+
+    struct PermissionRestore {
+        path: PathBuf,
+        permissions: Permissions,
+    }
+
+    impl PermissionRestore {
+        fn new(path: PathBuf, permissions: Permissions) -> Self {
+            Self { path, permissions }
+        }
+    }
+
+    impl Drop for PermissionRestore {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.path, self.permissions.clone());
+        }
     }
 
     #[cfg(unix)]
@@ -1928,6 +2115,121 @@ mod tests {
                 .any(|step| step.contains("provider.base_url")),
             "doctor next steps should not include a region endpoint adjustment for non-auth probe failures: {next_steps:#?}"
         );
+    }
+
+    #[test]
+    fn audit_retention_doctor_check_warns_for_in_memory_mode() {
+        let check = audit_retention_doctor_check(&mvp::config::AuditConfig {
+            mode: mvp::config::AuditMode::InMemory,
+            ..mvp::config::AuditConfig::default()
+        });
+
+        assert_eq!(check.name, "audit retention");
+        assert_eq!(check.level, DoctorCheckLevel::Warn);
+        assert!(check.detail.contains("lost on restart"));
+    }
+
+    #[test]
+    fn build_doctor_next_steps_guides_durable_audit_when_in_memory() {
+        let checks = vec![DoctorCheck {
+            name: "audit retention".to_owned(),
+            level: DoctorCheckLevel::Warn,
+            detail: "audit.mode=in_memory; security-critical audit evidence is lost on restart"
+                .to_owned(),
+        }];
+        let config_path = PathBuf::from("/tmp/loongclaw.toml");
+        let next_steps = build_doctor_next_steps_with_path_env(
+            &checks,
+            &config_path,
+            &mvp::config::LoongClawConfig::default(),
+            false,
+            None,
+        );
+
+        assert!(
+            next_steps
+                .iter()
+                .any(|step| step
+                    == "Switch to durable audit retention: set [audit].mode = \"fanout\""),
+            "doctor should recommend durable audit retention when audit remains in-memory: {next_steps:#?}"
+        );
+    }
+
+    #[test]
+    fn build_doctor_next_steps_guides_fix_when_audit_path_is_invalid() {
+        let checks = vec![DoctorCheck {
+            name: "audit retention".to_owned(),
+            level: DoctorCheckLevel::Fail,
+            detail: "audit.mode=fanout -> /tmp/audit exists but is not a regular file".to_owned(),
+        }];
+        let config_path = PathBuf::from("/tmp/loongclaw.toml");
+        let next_steps = build_doctor_next_steps_with_path_env(
+            &checks,
+            &config_path,
+            &mvp::config::LoongClawConfig::default(),
+            false,
+            None,
+        );
+
+        assert!(
+            next_steps
+                .iter()
+                .any(|step| step.contains("Point [audit].path at a writable journal file path")),
+            "doctor should guide operators toward a writable audit journal target when durable audit retention is misconfigured: {next_steps:#?}"
+        );
+    }
+
+    #[test]
+    fn audit_journal_directory_check_accepts_bare_relative_filename() {
+        let mut fixes = Vec::new();
+        let audit_path = PathBuf::from("events.jsonl");
+        let directory = audit_path.parent().unwrap_or(Path::new("."));
+        let check = check_audit_journal_directory(directory, false, &mut fixes);
+
+        assert_eq!(check.name, "audit journal directory");
+        assert_eq!(check.level, DoctorCheckLevel::Pass);
+        assert!(check.detail.contains("current working directory"));
+        assert!(fixes.is_empty());
+    }
+
+    #[test]
+    fn audit_retention_doctor_check_fails_when_durable_path_is_directory() {
+        let temp_dir = browser_companion_temp_dir("audit-target-directory");
+        let check = audit_retention_doctor_check(&mvp::config::AuditConfig {
+            mode: mvp::config::AuditMode::Fanout,
+            path: temp_dir.display().to_string(),
+            retain_in_memory: true,
+        });
+
+        assert_eq!(check.name, "audit retention");
+        assert_eq!(check.level, DoctorCheckLevel::Fail);
+        assert!(check.detail.contains("not a regular file"));
+    }
+
+    #[test]
+    fn audit_retention_doctor_check_fails_when_durable_path_is_readonly_file() {
+        let temp_dir = browser_companion_temp_dir("audit-target-readonly");
+        let journal_path = temp_dir.join("events.jsonl");
+        std::fs::write(&journal_path, b"{}\n").expect("write audit journal fixture");
+        let original_permissions = std::fs::metadata(&journal_path)
+            .expect("audit journal metadata")
+            .permissions();
+        let mut permissions = original_permissions.clone();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&journal_path, permissions)
+            .expect("mark audit journal fixture readonly");
+        let _permission_restore =
+            PermissionRestore::new(journal_path.clone(), original_permissions);
+
+        let check = audit_retention_doctor_check(&mvp::config::AuditConfig {
+            mode: mvp::config::AuditMode::Jsonl,
+            path: journal_path.display().to_string(),
+            retain_in_memory: false,
+        });
+
+        assert_eq!(check.name, "audit retention");
+        assert_eq!(check.level, DoctorCheckLevel::Fail);
+        assert!(check.detail.contains("not writable"));
     }
 
     fn unique_temp_feishu_db(label: &str) -> String {

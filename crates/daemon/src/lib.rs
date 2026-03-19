@@ -37,6 +37,7 @@ pub use base64;
 pub use kernel;
 pub use sha2;
 
+pub mod audit_cli;
 mod browser_companion_diagnostics;
 pub mod browser_preview;
 mod cli_handoff;
@@ -353,6 +354,15 @@ pub enum Commands {
         /// Skip provider model probing during diagnostics
         #[arg(long, default_value_t = false)]
         skip_model_probe: bool,
+    },
+    /// Inspect the retained audit journal through a bounded CLI surface
+    Audit {
+        #[arg(long, global = true)]
+        config: Option<String>,
+        #[arg(long, global = true, default_value_t = false)]
+        json: bool,
+        #[command(subcommand)]
+        command: audit_cli::AuditCommands,
     },
     /// Manage installed external skills through an operator-facing CLI surface
     Skills {

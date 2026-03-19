@@ -214,6 +214,63 @@ fn ask_cli_requires_message_flag() {
 }
 
 #[test]
+fn audit_cli_recent_parses_global_flags_after_subcommand() {
+    let cli = Cli::try_parse_from([
+        "loongclaw",
+        "audit",
+        "recent",
+        "--config",
+        "/tmp/loongclaw.toml",
+        "--limit",
+        "25",
+        "--json",
+    ])
+    .expect("audit recent CLI should parse");
+
+    match cli.command {
+        Some(Commands::Audit {
+            config,
+            json,
+            command,
+        }) => {
+            assert_eq!(config.as_deref(), Some("/tmp/loongclaw.toml"));
+            assert!(json);
+            match command {
+                loongclaw_daemon::audit_cli::AuditCommands::Recent { limit } => {
+                    assert_eq!(limit, 25);
+                }
+                other => panic!("unexpected audit subcommand parsed: {other:?}"),
+            }
+        }
+        other => panic!("unexpected command parse result: {other:?}"),
+    }
+}
+
+#[test]
+fn audit_cli_summary_parses_limit_without_json() {
+    let cli = Cli::try_parse_from(["loongclaw", "audit", "summary", "--limit", "10"])
+        .expect("audit summary CLI should parse");
+
+    match cli.command {
+        Some(Commands::Audit {
+            config,
+            json,
+            command,
+        }) => {
+            assert_eq!(config, None);
+            assert!(!json);
+            match command {
+                loongclaw_daemon::audit_cli::AuditCommands::Summary { limit } => {
+                    assert_eq!(limit, 10);
+                }
+                other => panic!("unexpected audit subcommand parsed: {other:?}"),
+            }
+        }
+        other => panic!("unexpected command parse result: {other:?}"),
+    }
+}
+
+#[test]
 fn resolve_validate_output_defaults_to_text() {
     let resolved = resolve_validate_output(false, None).expect("resolve default output");
     assert_eq!(resolved, ValidateConfigOutput::Text);
