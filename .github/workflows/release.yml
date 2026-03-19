@@ -157,6 +157,18 @@ jobs:
           cp scripts/install.sh dist/install.sh
           cp scripts/install.ps1 dist/install.ps1
 
+      - name: Generate shell completions
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          tar -xzf "dist/loongclaw-${RELEASE_TAG}-x86_64-unknown-linux-gnu.tar.gz" -C /tmp loongclaw
+          /tmp/loongclaw completions bash        > dist/loongclaw.bash
+          /tmp/loongclaw completions zsh         > dist/_loongclaw
+          /tmp/loongclaw completions fish        > dist/loongclaw.fish
+          /tmp/loongclaw completions powershell  > dist/loongclaw.ps1
+          /tmp/loongclaw completions elvish      > dist/loongclaw.elv
+
       - name: Resolve release channel
         id: release_meta
         shell: bash

@@ -40,6 +40,7 @@ pub use sha2;
 mod browser_companion_diagnostics;
 pub mod browser_preview;
 mod cli_handoff;
+pub mod completions_cli;
 pub mod doctor_cli;
 pub mod feishu_cli;
 pub mod feishu_support;
@@ -623,6 +624,11 @@ pub enum Commands {
     Feishu {
         #[command(subcommand)]
         command: feishu_cli::FeishuCommand,
+    },
+    /// Print a shell completion script to stdout
+    Completions {
+        /// Target shell (bash, zsh, fish, powershell, elvish)
+        shell: clap_complete::Shell,
     },
 }
 

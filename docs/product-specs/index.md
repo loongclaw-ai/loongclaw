@@ -21,6 +21,7 @@ Product specs describe **what** the product does from the user's perspective, no
 - [WebChat](webchat.md)
 - [Prompt And Personality](prompt-and-personality.md)
 - [Memory Profiles](memory-profiles.md)
+- [Shell Completion](shell-completion.md)
 
 ## Notes
 

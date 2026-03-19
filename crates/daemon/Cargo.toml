@@ -33,6 +33,7 @@ libc = "0.2"
 
 [dependencies]
 clap.workspace = true
+clap_complete = "4.5"
 dialoguer.workspace = true
 kernel = { package = "loongclaw-kernel", path = "../kernel" }
 loongclaw-bench = { path = "../bench" }

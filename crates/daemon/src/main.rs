@@ -447,6 +447,11 @@ async fn main() {
             .await
         }
         Commands::Feishu { command } => feishu_cli::run_feishu_command(command).await,
+        Commands::Completions { shell } => {
+            completions_cli::run_completions_cli(completions_cli::CompletionsCommandOptions {
+                shell,
+            })
+        }
     };
     if let Err(error) = result {
         #[allow(clippy::print_stderr)]
