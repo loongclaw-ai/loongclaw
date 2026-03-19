@@ -646,7 +646,16 @@ fn collect_runtime_capability_artifacts(
 
     for entry in entries {
         let path = entry.path();
-        if path.is_dir() {
+        let entry_type = entry.file_type().map_err(|error| {
+            format!(
+                "inspect runtime capability index entry {} failed: {error}",
+                path.display()
+            )
+        })?;
+        if entry_type.is_symlink() {
+            continue;
+        }
+        if entry_type.is_dir() {
             collect_runtime_capability_artifacts(&path, artifacts)?;
             continue;
         }
@@ -737,12 +746,14 @@ fn build_runtime_capability_family_summary(
 }
 
 fn compute_family_id(proposal: &RuntimeCapabilityProposal) -> CliResult<String> {
+    let tags = normalize_repeated_values(&proposal.tags);
+    let required_capabilities = parse_required_capabilities(&proposal.required_capabilities)?;
     let encoded = serde_json::to_vec(&json!({
         "target": render_target(proposal.target),
-        "summary": proposal.summary,
-        "bounded_scope": proposal.bounded_scope,
-        "tags": proposal.tags,
-        "required_capabilities": proposal.required_capabilities,
+        "summary": proposal.summary.trim(),
+        "bounded_scope": proposal.bounded_scope.trim(),
+        "tags": tags,
+        "required_capabilities": required_capabilities,
     }))
     .map_err(|error| format!("serialize runtime capability family_id input failed: {error}"))?;
     Ok(format!("{:x}", sha2::Sha256::digest(encoded)))

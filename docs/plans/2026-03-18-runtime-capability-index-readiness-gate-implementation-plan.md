@@ -157,17 +157,18 @@ Run:
 
 Expected: PASS
 
-**Step 2: Run repo-level verification as capacity allows**
+**Step 2: Run repo-level verification**
 
-Run the strongest available checks that are not blocked by unrelated global
-cargo lock contention:
+Run the full CI-parity checks:
 
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - `cargo test --workspace`
+- `cargo test --workspace --all-features`
 
-If cargo lock contention persists, record the blocker and supplement with direct
-integration-binary verification for the touched daemon surface.
+If a wrapper-level cargo queue blocks these commands, rerun the same checks with
+a direct toolchain `cargo` binary and an isolated `CARGO_TARGET_DIR`; do not
+drop any CI-parity verification steps.
 
 **Step 3: Inspect the final diff**
 

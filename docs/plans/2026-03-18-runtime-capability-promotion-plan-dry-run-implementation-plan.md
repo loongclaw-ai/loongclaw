@@ -10,7 +10,7 @@
 
 ---
 
-### Task 1: Write the design and planning artifacts
+## Task 1: Write the design and planning artifacts
 
 **Files:**
 - Create: `docs/plans/2026-03-18-runtime-capability-promotion-plan-dry-run-design.md`
@@ -36,7 +36,7 @@ Capture the exact file changes, tests, docs, and verification steps below.
 Run: `test -f docs/plans/2026-03-18-runtime-capability-promotion-plan-dry-run-implementation-plan.md`
 Expected: exit 0
 
-### Task 2: Add failing CLI parsing coverage
+## Task 2: Add failing CLI parsing coverage
 
 **Files:**
 - Modify: `crates/daemon/tests/integration/cli_tests.rs`
@@ -54,7 +54,7 @@ Extend runtime-capability CLI parsing coverage so `plan` parses:
 Run: `cargo test -p loongclaw-daemon runtime_capability_cli_parses_propose_review_show_index_and_plan --test integration -- --exact integration::cli_tests::runtime_capability_cli_parses_propose_review_show_index_and_plan --nocapture`
 Expected: FAIL because the `plan` subcommand does not exist yet
 
-### Task 3: Add failing runtime-capability planner integration coverage
+## Task 3: Add failing runtime-capability planner integration coverage
 
 **Files:**
 - Modify: `crates/daemon/tests/integration/runtime_capability_cli.rs`
@@ -75,7 +75,7 @@ Add integration tests covering:
 Run: `cargo test -p loongclaw-daemon runtime_capability_plan --test integration -- --nocapture`
 Expected: FAIL because the planner surface does not exist yet
 
-### Task 4: Implement the read-only planner surface
+## Task 4: Implement the read-only planner surface
 
 **Files:**
 - Modify: `crates/daemon/src/runtime_capability_cli.rs`
@@ -131,7 +131,7 @@ Run:
 
 Expected: PASS
 
-### Task 5: Update product docs and roadmap references
+## Task 5: Update product docs and roadmap references
 
 **Files:**
 - Modify: `docs/product-specs/runtime-capability.md`
@@ -152,7 +152,7 @@ family index/readiness layer.
 Run: `rg -n "runtime-capability|promotion planner|dry-run" docs/product-specs/runtime-capability.md docs/ROADMAP.md`
 Expected: the new planner references appear in the updated docs
 
-### Task 6: Verify and prepare clean delivery
+## Task 6: Verify and prepare clean delivery
 
 **Files:**
 - Review all touched files
