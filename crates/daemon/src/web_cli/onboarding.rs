@@ -15,6 +15,9 @@ pub(super) struct OnboardStatusPayload {
     provider_base_url: String,
     provider_endpoint: String,
     api_key_configured: bool,
+    personality: String,
+    memory_profile: String,
+    prompt_addendum: String,
     config_path: String,
     blocking_stage: &'static str,
     next_action: &'static str,
@@ -29,6 +32,14 @@ pub(super) struct OnboardProviderWriteRequest {
     api_key: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct OnboardPreferencesWriteRequest {
+    personality: String,
+    memory_profile: String,
+    prompt_addendum: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct OnboardValidationPayload {
@@ -37,6 +48,14 @@ pub(super) struct OnboardValidationPayload {
     endpoint_status_code: Option<u16>,
     credential_status: &'static str,
     credential_status_code: Option<u16>,
+    status: OnboardStatusPayload,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct OnboardPairingPayload {
+    paired: bool,
+    mode: &'static str,
     status: OnboardStatusPayload,
 }
 
@@ -150,6 +169,96 @@ pub(super) async fn onboard_provider(
     }))
 }
 
+pub(super) async fn onboard_preferences(
+    State(state): State<Arc<WebApiState>>,
+    Json(request): Json<OnboardPreferencesWriteRequest>,
+) -> Result<Json<ApiEnvelope<OnboardStatusPayload>>, WebApiError> {
+    let personality = crate::onboard_cli::parse_prompt_personality(request.personality.as_str())
+        .ok_or_else(|| {
+            WebApiError::bad_request(format!(
+                "unknown personality `{}`",
+                request.personality.trim()
+            ))
+        })?;
+    let memory_profile =
+        crate::onboard_cli::parse_memory_profile(request.memory_profile.as_str()).ok_or_else(
+            || {
+                WebApiError::bad_request(format!(
+                    "unknown memory profile `{}`",
+                    request.memory_profile.trim()
+                ))
+            },
+        )?;
+
+    let config_path = resolve_web_config_path(state.as_ref());
+    let config_exists = config_path.is_file();
+    let mut config = if config_exists {
+        let (_, loaded) = mvp::config::load(state.config_path.as_deref()).map_err(|error| {
+            WebApiError::bad_request(format!("local config could not be loaded: {error}"))
+        })?;
+        loaded
+    } else {
+        mvp::config::LoongClawConfig::default()
+    };
+
+    config.cli.personality = Some(personality);
+    config.memory.profile = memory_profile;
+    config.cli.system_prompt_addendum = request
+        .prompt_addendum
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+
+    let path_string = config_path.display().to_string();
+    mvp::config::write(Some(path_string.as_str()), &config, true)
+        .map_err(WebApiError::internal)?;
+
+    let payload = build_onboard_status_payload(state.as_ref(), true).await;
+    Ok(Json(ApiEnvelope {
+        ok: true,
+        data: payload,
+    }))
+}
+
+pub(super) async fn onboard_pairing_auto(
+    State(state): State<Arc<WebApiState>>,
+    headers: HeaderMap,
+) -> Result<Response, WebApiError> {
+    if extract_allowed_local_origin(&headers).is_none() {
+        return Err(WebApiError::forbidden(
+            "automatic pairing is limited to trusted local loopback origins",
+        ));
+    }
+
+    let payload = OnboardPairingPayload {
+        paired: true,
+        mode: "cookie",
+        status: build_onboard_status_payload(state.as_ref(), true).await,
+    };
+    let mut response = Json(ApiEnvelope {
+        ok: true,
+        data: payload,
+    })
+    .into_response();
+    response
+        .headers_mut()
+        .append(SET_COOKIE, build_pairing_cookie(state.local_token.as_str())?);
+    Ok(response)
+}
+
+pub(super) async fn onboard_pairing_clear() -> Result<Response, WebApiError> {
+    let mut response = Json(ApiEnvelope {
+        ok: true,
+        data: Value::Object(Default::default()),
+    })
+    .into_response();
+    response
+        .headers_mut()
+        .append(SET_COOKIE, build_clear_pairing_cookie()?);
+    Ok(response)
+}
+
 pub(super) async fn onboard_validate(
     State(state): State<Arc<WebApiState>>,
 ) -> Result<Json<ApiEnvelope<OnboardValidationPayload>>, WebApiError> {
@@ -213,6 +322,9 @@ async fn build_onboard_status_payload(
         provider_base_url: String::new(),
         provider_endpoint: String::new(),
         api_key_configured: false,
+        personality: "calm_engineering".to_owned(),
+        memory_profile: "window_only".to_owned(),
+        prompt_addendum: String::new(),
         config_path: config_path_display,
         blocking_stage: "token_pairing",
         next_action: "enter_local_token",
@@ -226,6 +338,18 @@ async fn build_onboard_status_payload(
             payload.provider_base_url = snapshot.config.provider.resolved_base_url();
             payload.provider_endpoint = snapshot.config.provider.endpoint();
             payload.provider_configured = provider_is_configured(&snapshot.config);
+            payload.personality =
+                crate::onboard_cli::prompt_personality_id(snapshot.config.cli.resolved_personality())
+                    .to_owned();
+            payload.memory_profile =
+                crate::onboard_cli::memory_profile_id(snapshot.config.memory.resolved_profile())
+                    .to_owned();
+            payload.prompt_addendum = snapshot
+                .config
+                .cli
+                .system_prompt_addendum
+                .clone()
+                .unwrap_or_default();
             payload.api_key_configured = provider_item_from_parts(
                 "active".to_owned(),
                 &snapshot.config.provider,

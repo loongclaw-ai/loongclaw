@@ -69,6 +69,7 @@ export function OnboardingStatusPanel() {
     markOnboardingValidated,
     clearOnboardingValidation,
     refreshOnboardingStatus,
+    autoPairingInProgress,
   } = useWebConnection();
   const [kind, setKind] = useState("");
   const [model, setModel] = useState("");
@@ -80,6 +81,13 @@ export function OnboardingStatusPanel() {
   const [validationError, setValidationError] = useState<string | null>(null);
   const [isValidating, setIsValidating] = useState(false);
   const [tokenInput, setTokenInput] = useState("");
+  const [showOptionalSettings, setShowOptionalSettings] = useState(false);
+  const [personality, setPersonality] = useState("calm_engineering");
+  const [memoryProfile, setMemoryProfile] = useState("window_only");
+  const [promptAddendum, setPromptAddendum] = useState("");
+  const [preferencesError, setPreferencesError] = useState<string | null>(null);
+  const [preferencesNotice, setPreferencesNotice] = useState<string | null>(null);
+  const [isSavingPreferences, setIsSavingPreferences] = useState(false);
 
   const stageCopy = readStageCopy(
     onboardingStatus?.blockingStage ?? "loading",
@@ -114,11 +122,19 @@ export function OnboardingStatusPanel() {
     setSaveError(null);
     setValidationMessage(null);
     setValidationError(null);
+    setPersonality(onboardingStatus?.personality || "calm_engineering");
+    setMemoryProfile(onboardingStatus?.memoryProfile || "window_only");
+    setPromptAddendum(onboardingStatus?.promptAddendum || "");
+    setPreferencesError(null);
+    setPreferencesNotice(null);
   }, [
     onboardingStatus?.activeModel,
     onboardingStatus?.activeProvider,
     onboardingStatus?.providerBaseUrl,
     onboardingStatus?.providerEndpoint,
+    onboardingStatus?.personality,
+    onboardingStatus?.memoryProfile,
+    onboardingStatus?.promptAddendum,
     onboardingStatus?.blockingStage,
   ]);
 
@@ -186,6 +202,32 @@ export function OnboardingStatusPanel() {
       }
     } finally {
       setIsValidating(false);
+    }
+  }
+
+  async function handleSavePreferences(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setPreferencesError(null);
+    setPreferencesNotice(null);
+    setIsSavingPreferences(true);
+    try {
+      await onboardingApi.savePreferences({
+        personality,
+        memoryProfile,
+        ...(promptAddendum.trim()
+          ? { promptAddendum: promptAddendum.trim() }
+          : {}),
+      });
+      refreshOnboardingStatus();
+      setPreferencesNotice(t("onboarding.preferences.saved"));
+    } catch (error) {
+      if (error instanceof ApiRequestError) {
+        setPreferencesError(error.message);
+      } else {
+        setPreferencesError(t("onboarding.preferences.saveFailed"));
+      }
+    } finally {
+      setIsSavingPreferences(false);
     }
   }
 
@@ -269,7 +311,13 @@ export function OnboardingStatusPanel() {
           ) : null}
         </div>
 
-        {needsTokenPairing ? (
+        {needsTokenPairing && autoPairingInProgress ? (
+          <p className="settings-note onboarding-validation-note">
+            {t("onboarding.loadingBody")}
+          </p>
+        ) : null}
+
+        {needsTokenPairing && !autoPairingInProgress ? (
           <form className="settings-form onboarding-form" onSubmit={handleSubmitToken}>
             <div className="settings-field">
               <label className="settings-label" htmlFor="onboarding-local-token">
@@ -312,6 +360,106 @@ export function OnboardingStatusPanel() {
               </button>
             </div>
           </form>
+        ) : null}
+
+        {onboardingStatus?.tokenPaired ? (
+          <div className="onboarding-optional-block">
+            <button
+              type="button"
+              className="onboarding-optional-toggle"
+              onClick={() => setShowOptionalSettings((current) => !current)}
+            >
+              <span>{t("onboarding.preferences.toggle")}</span>
+              <strong>
+                {showOptionalSettings
+                  ? t("onboarding.preferences.hide")
+                  : t("onboarding.preferences.show")}
+              </strong>
+            </button>
+
+            {showOptionalSettings ? (
+              <form
+                className="settings-form onboarding-form onboarding-optional-form"
+                onSubmit={handleSavePreferences}
+              >
+                <label className="settings-field">
+                  <span className="settings-label">
+                    {t("onboarding.preferences.personality")}
+                  </span>
+                  <select
+                    className="settings-input"
+                    value={personality}
+                    onChange={(event) => setPersonality(event.target.value)}
+                  >
+                    <option value="calm_engineering">
+                      {t("onboarding.preferences.personalityCalmEngineering")}
+                    </option>
+                    <option value="friendly_collab">
+                      {t("onboarding.preferences.personalityFriendlyCollab")}
+                    </option>
+                    <option value="autonomous_executor">
+                      {t("onboarding.preferences.personalityAutonomousExecutor")}
+                    </option>
+                  </select>
+                </label>
+
+                <label className="settings-field">
+                  <span className="settings-label">
+                    {t("onboarding.preferences.memoryProfile")}
+                  </span>
+                  <select
+                    className="settings-input"
+                    value={memoryProfile}
+                    onChange={(event) => setMemoryProfile(event.target.value)}
+                  >
+                    <option value="window_only">
+                      {t("onboarding.preferences.memoryProfileWindowOnly")}
+                    </option>
+                    <option value="window_plus_summary">
+                      {t("onboarding.preferences.memoryProfileWindowPlusSummary")}
+                    </option>
+                    <option value="profile_plus_window">
+                      {t("onboarding.preferences.memoryProfileProfilePlusWindow")}
+                    </option>
+                  </select>
+                </label>
+
+                <label className="settings-field">
+                  <span className="settings-label">
+                    {t("onboarding.preferences.promptAddendum")}
+                  </span>
+                  <textarea
+                    className="settings-input settings-textarea"
+                    value={promptAddendum}
+                    onChange={(event) => setPromptAddendum(event.target.value)}
+                    placeholder={t("onboarding.preferences.promptAddendumPlaceholder")}
+                  />
+                  <span className="settings-helper">
+                    {t("onboarding.preferences.helper")}
+                  </span>
+                </label>
+
+                {preferencesError ? (
+                  <p className="settings-note dashboard-error">{preferencesError}</p>
+                ) : null}
+                {preferencesNotice ? (
+                  <p className="settings-note">{preferencesNotice}</p>
+                ) : null}
+
+                <div className="settings-actions onboarding-actions">
+                  <button
+                    type="submit"
+                    className="hero-btn hero-btn-secondary"
+                    disabled={isSavingPreferences}
+                  >
+                    {isSavingPreferences
+                      ? t("onboarding.preferences.savePending")
+                      : t("onboarding.preferences.save")}
+                  </button>
+                </div>
+              </form>
+            ) : null}
+          </div>
         ) : null}
 
         {canValidateProvider ? (

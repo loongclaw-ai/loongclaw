@@ -17,8 +17,9 @@ use axum::{
     http::{
         HeaderMap, HeaderValue, Method, StatusCode,
         header::{
-            ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN,
-            AUTHORIZATION, CONTENT_TYPE,
+            ACCESS_CONTROL_ALLOW_CREDENTIALS, ACCESS_CONTROL_ALLOW_HEADERS,
+            ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN, AUTHORIZATION, CONTENT_TYPE,
+            COOKIE, ORIGIN, SET_COOKIE, VARY,
         },
     },
     middleware::{self, Next},
@@ -53,6 +54,7 @@ pub enum WebCommand {
 
 const WEB_API_TOKEN_ENV: &str = "LOONGCLAW_WEB_TOKEN";
 const WEB_API_TOKEN_FILE: &str = "web-api-token";
+const WEB_API_PAIRING_COOKIE: &str = "loongclaw-web-pair";
 
 #[derive(Debug)]
 struct WebApiState {
@@ -331,6 +333,14 @@ impl WebApiError {
         }
     }
 
+    fn forbidden(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code: "forbidden",
+            message: message.into(),
+        }
+    }
+
     fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
@@ -375,9 +385,12 @@ async fn run_web_serve(config_path: Option<&str>, bind: &str) -> CliResult<()> {
     let public_api = Router::new()
         .route("/meta", get(meta))
         .route("/onboard/status", get(onboarding::onboard_status))
+        .route("/onboard/pairing/auto", post(onboarding::onboard_pairing_auto))
+        .route("/onboard/pairing/clear", post(onboarding::onboard_pairing_clear))
         .with_state(state.clone());
     let protected_api = Router::new()
         .route("/onboard/provider", post(onboarding::onboard_provider))
+        .route("/onboard/preferences", post(onboarding::onboard_preferences))
         .route("/onboard/validate", post(onboarding::onboard_validate))
         .route("/dashboard/summary", get(dashboard_summary))
         .route("/dashboard/providers", get(dashboard_providers))
@@ -426,19 +439,30 @@ async fn healthz() -> Json<ApiEnvelope<HealthPayload>> {
 }
 
 async fn local_web_cors(request: Request, next: Next) -> Response {
+    let allowed_origin = extract_allowed_local_origin(request.headers());
     if request.method() == Method::OPTIONS {
-        return with_cors_headers(StatusCode::NO_CONTENT.into_response());
+        return with_cors_headers(StatusCode::NO_CONTENT.into_response(), allowed_origin.as_deref());
     }
 
     let response = next.run(request).await;
-    with_cors_headers(response)
+    with_cors_headers(response, allowed_origin.as_deref())
 }
 
-fn with_cors_headers(mut response: Response) -> Response {
-    response.headers_mut().insert(
-        ACCESS_CONTROL_ALLOW_ORIGIN,
-        HeaderValue::from_static("*"),
-    );
+fn with_cors_headers(mut response: Response, allowed_origin: Option<&str>) -> Response {
+    if let Some(origin) = allowed_origin {
+        if let Ok(value) = HeaderValue::from_str(origin) {
+            response
+                .headers_mut()
+                .insert(ACCESS_CONTROL_ALLOW_ORIGIN, value);
+            response.headers_mut().insert(
+                ACCESS_CONTROL_ALLOW_CREDENTIALS,
+                HeaderValue::from_static("true"),
+            );
+            response
+                .headers_mut()
+                .insert(VARY, HeaderValue::from_static("Origin"));
+        }
+    }
     response.headers_mut().insert(
         ACCESS_CONTROL_ALLOW_METHODS,
         HeaderValue::from_static("GET, POST, DELETE, OPTIONS"),
@@ -1178,6 +1202,57 @@ fn extract_request_token(headers: &HeaderMap) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+        .or_else(|| {
+            headers
+                .get(COOKIE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(extract_pairing_cookie_token)
+        })
+}
+
+fn extract_pairing_cookie_token(raw_cookie: &str) -> Option<String> {
+    raw_cookie
+        .split(';')
+        .map(str::trim)
+        .filter_map(|segment| segment.split_once('='))
+        .find_map(|(name, value)| {
+            (name.trim() == WEB_API_PAIRING_COOKIE)
+                .then(|| value.trim())
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+        })
+}
+
+fn extract_allowed_local_origin(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| is_allowed_local_origin(value))
+        .map(ToOwned::to_owned)
+}
+
+fn is_allowed_local_origin(origin: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(origin) else {
+        return false;
+    };
+
+    matches!(url.scheme(), "http" | "https")
+        && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1"))
+}
+
+fn build_pairing_cookie(token: &str) -> Result<HeaderValue, WebApiError> {
+    HeaderValue::from_str(&format!(
+        "{WEB_API_PAIRING_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000"
+    ))
+    .map_err(|error| WebApiError::internal(format!("build pairing cookie failed: {error}")))
+}
+
+fn build_clear_pairing_cookie() -> Result<HeaderValue, WebApiError> {
+    HeaderValue::from_str(&format!(
+        "{WEB_API_PAIRING_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+    ))
+    .map_err(|error| WebApiError::internal(format!("build pairing cookie clear failed: {error}")))
 }
 
 fn format_timestamp(unix_seconds: i64) -> String {

@@ -8,6 +8,12 @@ interface SaveOnboardingProviderRequest {
   apiKey?: string;
 }
 
+interface SaveOnboardingPreferencesRequest {
+  personality: string;
+  memoryProfile: string;
+  promptAddendum?: string;
+}
+
 interface OnboardingStatusPayload {
   runtimeOnline: boolean;
   tokenRequired: boolean;
@@ -21,6 +27,9 @@ interface OnboardingStatusPayload {
   providerBaseUrl: string;
   providerEndpoint: string;
   apiKeyConfigured: boolean;
+  personality: string;
+  memoryProfile: string;
+  promptAddendum: string;
   configPath: string;
   blockingStage: string;
   nextAction: string;
@@ -32,6 +41,12 @@ export interface OnboardingValidationResult {
   endpointStatusCode: number | null;
   credentialStatus: string;
   credentialStatusCode: number | null;
+  status: OnboardingStatusPayload;
+}
+
+interface OnboardingPairingResult {
+  paired: boolean;
+  mode: string;
   status: OnboardingStatusPayload;
 }
 
@@ -48,5 +63,24 @@ export const onboardingApi = {
       Record<string, never>
     >("/api/onboard/validate", {});
     return response.data;
+  },
+  async autoPair(): Promise<OnboardingPairingResult> {
+    const response = await apiPost<
+      ApiEnvelope<OnboardingPairingResult>,
+      Record<string, never>
+    >("/api/onboard/pairing/auto", {});
+    return response.data;
+  },
+  async clearPairing(): Promise<void> {
+    await apiPost<ApiEnvelope<Record<string, never>>, Record<string, never>>(
+      "/api/onboard/pairing/clear",
+      {},
+    );
+  },
+  async savePreferences(input: SaveOnboardingPreferencesRequest): Promise<void> {
+    await apiPost<
+      ApiEnvelope<Record<string, never>>,
+      SaveOnboardingPreferencesRequest
+    >("/api/onboard/preferences", input);
   },
 };

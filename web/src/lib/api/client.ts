@@ -58,6 +58,7 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
 
   const response = await fetch(`${getApiBaseUrl()}${path}`, {
     ...init,
+    credentials: "include",
     headers,
   });
   if (!response.ok) {

@@ -1,16 +1,16 @@
 # LoongClaw Web 技术栈与目录结构
 
 状态：已进入可用 MVP，持续迭代中  
-最后更新：2026-03-19
+最后更新：2026-03-20
 
 ## 1. 目标
 
-`web/` 目录承载 LoongClaw 的本地优先 Web Console。当前目标不是做一个独立云端产品，而是基于现有 runtime 补出：
+`web/` 目录承载 LoongClaw 的本地优先 Web Console。
+
+当前目标不是独立云端产品，而是基于现有 runtime 提供：
 - Web Chat
 - Web Dashboard
-- 本地开发与联调脚手架
-
-技术与目录组织尽量贴近参考站点 `E:\GitDesktop\loongclaw-website`，同时保持 chat 与 dashboard 的边界清晰。
+- 首次进入 / onboarding
 
 ## 2. 当前技术栈
 
@@ -19,12 +19,12 @@
 - TypeScript
 - Vite
 - React Router
-- i18next
-- react-i18next
+- i18next / react-i18next
 - CSS Variables + 自定义主题样式
-- Lucide React
 
-当前没有引入更重的数据层或 UI kit。请求状态和页面状态目前仍以内建 hooks、context 和 API client 为主。
+后端承接：
+- `crates/daemon/src/web_cli.rs`
+- Axum 本地 API
 
 ## 3. 当前目录
 
@@ -38,7 +38,6 @@ web/
   src/
     app/
     assets/
-      brand/
       locales/
         en/
         zh-CN/
@@ -50,6 +49,7 @@ web/
     features/
       chat/
       dashboard/
+      onboarding/
     hooks/
     lib/
       api/
@@ -59,89 +59,56 @@ web/
     styles/
       variables.css
       themes.css
+      dashboard.css
       index.css
     main.tsx
-  index.html
-  package.json
-  tsconfig.json
-  vite.config.ts
 ```
 
 ## 4. 目录职责
 
-### `web/docs/`
-
-放 Web 相关设计、API 与工程文档。
-
-### `web/public/`
-
-放不参与打包的静态资源。
-
-### `web/src/app/`
-
-应用装配层。负责：
-- router
-- i18n 初始化
-- provider 装配
-- 根布局
-
-### `web/src/assets/locales/`
-
-双语文案资源。当前维护：
-- `en`
-- `zh-CN`
-
-### `web/src/components/`
-
-跨页面共用 UI 组件，例如：
-- 顶部导航
-- 连接状态
-- 面板容器
-- 本地 token 提示
-
-### `web/src/contexts/`
-
-全局上下文，目前主要是：
-- 主题
-- Web 会话连接与鉴权状态
-
 ### `web/src/features/chat/`
 
-Chat 的垂直切片，当前包含：
+承载：
 - session 列表
-- history 读取
+- history
 - turn 创建
 - turn 流式读取
-- 生成中状态展示
+- 生成中状态
 
 ### `web/src/features/dashboard/`
 
-Dashboard 的垂直切片，当前包含：
+承载：
 - runtime 摘要
 - tools 摘要
 - config 摘要
-- provider route / connectivity 诊断
+- connectivity 诊断
+- provider 最小写入入口
 
-### `web/src/lib/`
+### `web/src/features/onboarding/`
 
-前端底层能力，不直接承载页面语义。当前主要是：
-- API client
-- token 存储
-- 运行环境配置
-- 基础工具函数
+承载：
+- onboarding 状态读取
+- provider 最小写入
+- validate 放行
+
+### `web/src/contexts/`
+
+当前主要管理：
+- Web 会话连接状态
+- token 状态
+- onboarding 状态与放行
 
 ### `web/src/styles/`
 
-主题 token 与全局样式系统。
+当前已开始温和拆分：
 - `variables.css`：设计 token
-- `themes.css`：深浅主题映射
-- `index.css`：页面与组件样式
+- `themes.css`：主题映射
+- `dashboard.css`：dashboard 与 onboarding 表单样式
+- `index.css`：全局、chat、共享布局样式
 
 ## 5. 运行约定
 
-### 开发模式
-
-当前开发模式是：
+开发模式：
 - 前端：`vite dev`
 - 后端：`loongclaw web serve --bind 127.0.0.1:4317`
 
@@ -149,139 +116,87 @@ Dashboard 的垂直切片，当前包含：
 - 前端：`http://127.0.0.1:4173/`
 - 后端：`http://127.0.0.1:4317/`
 
-### 启停脚本
-
-推荐使用：
+推荐脚本：
 - `scripts/web/start-dev.ps1`
 - `scripts/web/stop-dev.ps1`
 
-### 日志位置
+## 6. 日志位置
 
-运行时日志不再写回仓库，而是统一落到用户目录：
-- `%USERPROFILE%\.loongclaw\logs\web-dev.log`
-- `%USERPROFILE%\.loongclaw\logs\web-dev.err.log`
-- `%USERPROFILE%\.loongclaw\logs\web-api.log`
-- `%USERPROFILE%\.loongclaw\logs\web-api.err.log`
+运行日志统一落在用户目录，不再写回仓库：
+- `%USERPROFILE%\\.loongclaw\\logs\\web-dev.log`
+- `%USERPROFILE%\\.loongclaw\\logs\\web-dev.err.log`
+- `%USERPROFILE%\\.loongclaw\\logs\\web-api.log`
+- `%USERPROFILE%\\.loongclaw\\logs\\web-api.err.log`
 
-这样可以避免仓库工作区被日志污染，也避免切分支时出现无关未跟踪文件。
-
-## 6. 当前落地情况
-
-前端部分已经不再是静态壳子，当前已具备：
-- Chat 与 Dashboard 两个主界面
-- 真实后端联调
-- 本地 token 鉴权
-- Dashboard 读取 `summary / providers / tools / runtime / config / connectivity`
-- Chat 流式 turn 消费
-- Assistant 下方生成中状态
-- 对简单 Markdown 标题、段落和列表的前端渲染
-
-## 7. 近期工程更新
-
-### 流式 turn
-
-前端已切到“两段式 turn”：
-- 先创建 turn
-- 再读取 NDJSON 流
-
-对于当前 OpenAI-compatible provider 路径，后端会优先尝试真实 provider streaming；不支持时再退回缓冲路径。
-
-### 连接诊断
-
-Dashboard 已新增 provider route / connectivity 诊断能力，用于判断：
-- DNS 是否异常
-- 是否命中 fake-ip
-- provider host 是否可达
-- 当前更像是本地路由问题还是上游问题
-
-### 生成中状态
-
-Chat 当前在 assistant 消息下方显示一行生成状态：
-- 会根据阶段切换文案
-- turn 完成或失败后自动消失
-- 不再额外占一个独立气泡
-
-## 8. 当前 Web Onboarding 缺口
-
-从工程角度看，当前 Web 还缺一条完整的首次进入链路。
-
-现在的真实状态是：
-- 用户可以先打开前端页面
-- 但如果本地实例未准备好，页面仍然只是一个壳子
-- 当前仍依赖本地 token 配对
-- provider / key / endpoint 等关键配置虽然已开始进入 Web，但 onboarding 仍未形成完整闭环
-
-所以当前 Web 更像“本地实例已准备好后的控制台”，还不是“用户安装后直接开始配置使用的入口”。
-
-## 9. 已落地的 Onboarding 技术落点
+## 7. 当前已落地链路
 
 ### O1：首次进入状态检测
 
-当前已经落地：
+已落地：
 - `GET /api/onboard/status`
-- `WebSessionContext` 内的 onboarding 状态聚合
-- `OnboardingStatusPanel` 首屏状态面板
-- onboarding ready 状态下的确认进入
-
-这一层负责在进入主界面前先说明：
-- runtime 是否在线
-- token 是否已配对
-- config 是否存在
-- provider 是否已准备好
+- 首屏状态面板
+- ready 状态确认进入
 
 ### O2：最小 provider 可写配置
 
-当前第一版已经落地：
+已落地：
 - `POST /api/onboard/provider`
-- Web 端最小 provider 配置表单
-- Dashboard Provider Settings 接入同一条受控写入链路
-- `POST /api/onboard/validate`
-- 保存后待验证、验证通过后放行进入 Web
+- onboarding 表单
+- dashboard `Provider Settings` 写入
 
-第一版只覆盖：
+当前支持字段：
 - provider kind
 - model
 - base_url / endpoint
 - api key
 
-这一层的目标是先补“最小可跑”闭环，不一开始就把 CLI onboard 的全部选项搬进 Web。
+### O3：验证与放行
 
-## 10. 为后续 Onboarding 预留的技术落点
+已落地：
+- `POST /api/onboard/validate`
+- 先验证，再放行进入 Web
 
-后续如果要把 Web 做成真正的首次进入入口，建议主要落在这些位置：
+### O4：token / pairing 收口
 
-### 前端
+已部分落地：
+- token 输入已进入 onboarding 面板
+- 顶部零散 token banner 已移除
+- Web 会优先尝试一次轻自动配对
+- 自动配对成功后，通过本地受信 cookie 建立当前浏览器会话的配对状态
+- 自动配对失败时，再回退到手动输入 token
 
-- `web/src/features/onboarding/`
-  - 新增 onboarding 垂直切片
-- `web/src/contexts/`
-  - 继续复用当前 Web 会话 / 鉴权状态
-- `web/src/lib/api/`
-  - 新增 onboarding 状态与写入接口
+未完成部分：
+- 安装态 / 同源态下更顺滑的自动配对
+- 更长期的无感鉴权验证
 
-### 后端
+## 8. 可选安装现状
 
-- `crates/daemon/src/web_cli.rs`
-  - 承接最小 onboarding 接口
-  - 保持在 daemon / Web API 层，不急着先做大抽象
+当前还没有完整的安装形态。
 
-### 设计原则
+现阶段只有：
+- `loongclaw web serve`
+- 开发态 / 本地 API 驱动的 Web Console
 
-- 首轮只覆盖“能跑起来”的最小配置
-- 先解决首次进入路径，再做复杂设置页
-- 不把任意 config 写入完全开放给前端
+尚未落地：
+- `web install`
+- `web remove`
+- `web status`
+- 静态资源安装与托管闭环
 
-## 10. 当前不优先做的事
+长期方向上，如果同时考虑“可选安装”和“官方 host”，Web 产品态更适合向同源设计收敛；开发态则继续允许 `vite dev + 本地 API` 的分离结构。
 
-当前仍不优先投入：
-- 托管模式
-- 大型 UI kit 重构
-- 复杂 SSR / 多用户服务端模式
-- dashboard 全量受控写入的产品化
+## 9. Debug / Runtime Console 方向
 
-## 11. 下一步建议
+后续 Web 可能会补一个面向观测与调试的控制台，但当前更推荐：
 
-当前更合适的下一步是：
-1. 继续打磨 Chat 的流式与错误表达
-2. 补上最小 onboarding 状态与配置链路
-3. 保持 Dashboard 的诊断与只读配置能力继续完善
+- 先做 Runtime / Debug Console
+- 展示事件流、tool 调用、provider 诊断、session 元信息
+- 暂不直接做完整浏览器终端
+
+## 10. 接下来最适合的工作
+
+推荐顺序：
+1. 继续补齐 O4，把 token 流程做完整
+2. 做 O2.5，把轻配置项补进 Web
+3. 继续拆分大文件，降低维护成本
+4. 之后再进入可选安装能力实现

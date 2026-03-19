@@ -309,6 +309,13 @@
   border-color: var(--color-border-medium);
 }
 
+.settings-textarea {
+  min-height: 7.2rem;
+  resize: vertical;
+  font: inherit;
+  line-height: 1.6;
+}
+
 .settings-helper,
 .settings-note {
   color: var(--color-text-secondary);
@@ -336,6 +343,34 @@
 .onboarding-validation-note,
 .onboarding-validation-success {
   margin-top: 1.25rem;
+}
+
+.onboarding-optional-block {
+  margin-top: 1.5rem;
+}
+
+.onboarding-optional-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.72rem;
+  background: var(--color-bg-surface-soft);
+  color: var(--color-text-primary);
+  text-align: left;
+}
+
+.onboarding-optional-toggle span {
+  color: var(--color-text-secondary);
+  font-size: 0.86rem;
+  letter-spacing: 0.02em;
+}
+
+.onboarding-optional-form {
+  margin-top: 1rem;
 }
 
 .dashboard-error {

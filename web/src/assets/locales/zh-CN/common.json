@@ -76,11 +76,31 @@
         "saveFailed": "provider 配置保存失败。"
       }
     },
+    "preferences": {
+      "toggle": "可选个性化设置",
+      "show": "展开",
+      "hide": "收起",
+      "personality": "性格",
+      "personalityCalmEngineering": "冷静工程",
+      "personalityFriendlyCollab": "友好协作",
+      "personalityAutonomousExecutor": "自主执行",
+      "memoryProfile": "记忆档位",
+      "memoryProfileWindowOnly": "仅窗口",
+      "memoryProfileWindowPlusSummary": "窗口 + 摘要",
+      "memoryProfileProfilePlusWindow": "画像 + 窗口",
+      "promptAddendum": "Prompt 附加说明",
+      "promptAddendumPlaceholder": "给后续对话补充一条可选说明",
+      "helper": "这些设置是可选项，会影响后续对话风格，但不会阻塞进入 Web。",
+      "save": "保存可选设置",
+      "savePending": "保存中...",
+      "saved": "可选设置已保存。",
+      "saveFailed": "可选设置保存失败。"
+    },
     "validation": {
       "required": "进入 Web 前，先做一次 provider 验证。",
       "ready": "当前这套 provider 配置已经通过验证。",
       "action": "验证并继续",
-      "pending": "验证中…",
+      "pending": "验证中...",
       "success": "Provider 验证通过，现在可以进入 Web 了。",
       "failed": "Provider 验证还没有通过。",
       "statuses": {
@@ -98,7 +118,7 @@
       },
       "tokenPairing": {
         "title": "还没有完成 token 配对",
-        "body": "当前浏览器还没有和本地 API 完成配对。先输入本地 token，Web 才能继续检查受保护状态。"
+        "body": "当前浏览器还没有和本地 API 完成配对。Web 会先尝试一次轻量自动配对，如果失败，再回退到手动输入 token。"
       },
       "missingConfig": {
         "title": "本地配置文件还不存在",

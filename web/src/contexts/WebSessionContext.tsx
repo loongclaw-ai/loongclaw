@@ -11,6 +11,7 @@ import {
   getStoredToken,
   setStoredToken,
 } from "../lib/auth/tokenStore";
+import { onboardingApi } from "../features/onboarding/api";
 
 const ONBOARDING_VALIDATION_STORAGE_KEY = "loongclaw.onboarding.validation-key";
 
@@ -35,6 +36,9 @@ export interface OnboardingStatus {
   providerBaseUrl: string;
   providerEndpoint: string;
   apiKeyConfigured: boolean;
+  personality: string;
+  memoryProfile: string;
+  promptAddendum: string;
   configPath: string;
   blockingStage:
     | "runtime_offline"
@@ -61,6 +65,7 @@ export interface WebSessionContextValue {
   markOnboardingValidated: () => void;
   clearOnboardingValidation: () => void;
   refreshOnboardingStatus: () => void;
+  autoPairingInProgress: boolean;
   tokenPath: string | null;
   tokenEnv: string | null;
   authRevision: number;
@@ -94,6 +99,8 @@ export function WebSessionProvider({ children }: PropsWithChildren) {
   const [onboardingLoading, setOnboardingLoading] = useState(true);
   const [onboardingAcknowledged, setOnboardingAcknowledged] = useState(false);
   const [onboardingRevision, setOnboardingRevision] = useState(0);
+  const [autoPairingInProgress, setAutoPairingInProgress] = useState(false);
+  const [autoPairingAttempted, setAutoPairingAttempted] = useState(false);
   const [validatedOnboardingKey, setValidatedOnboardingKey] = useState<string | null>(() => {
     if (typeof window === "undefined") {
       return null;
@@ -106,7 +113,9 @@ export function WebSessionProvider({ children }: PropsWithChildren) {
 
     async function loadMeta() {
       try {
-        const response = await fetch(`${getApiBaseUrl()}/api/meta`);
+        const response = await fetch(`${getApiBaseUrl()}/api/meta`, {
+          credentials: "include",
+        });
         const payload = await response.json().catch(() => null);
         if (cancelled || !payload?.data?.auth) {
           return;
@@ -137,6 +146,7 @@ export function WebSessionProvider({ children }: PropsWithChildren) {
         }
 
         const response = await fetch(`${getApiBaseUrl()}/api/onboard/status`, {
+          credentials: "include",
           headers,
         });
         const payload = await response.json().catch(() => null);
@@ -165,6 +175,9 @@ export function WebSessionProvider({ children }: PropsWithChildren) {
             providerBaseUrl: "",
             providerEndpoint: "",
             apiKeyConfigured: false,
+            personality: "calm_engineering",
+            memoryProfile: "window_only",
+            promptAddendum: "",
             configPath: "",
             blockingStage: "runtime_offline",
             nextAction: "start_local_runtime",
@@ -186,6 +199,53 @@ export function WebSessionProvider({ children }: PropsWithChildren) {
   useEffect(() => {
     setOnboardingAcknowledged(false);
   }, [authRevision]);
+
+  useEffect(() => {
+    if (
+      onboardingLoading ||
+      autoPairingAttempted ||
+      autoPairingInProgress ||
+      !!storedToken?.trim() ||
+      onboardingStatus?.blockingStage !== "token_pairing"
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function tryAutoPair() {
+      setAutoPairingInProgress(true);
+      try {
+        const result = await onboardingApi.autoPair();
+        if (cancelled) {
+          return;
+        }
+        if (result.paired) {
+          setIsUnauthorized(false);
+          setAuthRevision((current) => current + 1);
+          setOnboardingRevision((current) => current + 1);
+        }
+      } catch {
+        // Fall back to manual token entry when lightweight pairing is unavailable.
+      } finally {
+        if (!cancelled) {
+          setAutoPairingInProgress(false);
+          setAutoPairingAttempted(true);
+        }
+      }
+    }
+
+    void tryAutoPair();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    autoPairingAttempted,
+    autoPairingInProgress,
+    onboardingLoading,
+    onboardingStatus?.blockingStage,
+    storedToken,
+  ]);
 
   const authRequired = authInfo?.required ?? true;
   const hasToken = !!storedToken?.trim();
@@ -240,6 +300,7 @@ export function WebSessionProvider({ children }: PropsWithChildren) {
       refreshOnboardingStatus: () => {
         setOnboardingRevision((current) => current + 1);
       },
+      autoPairingInProgress,
       tokenPath: authInfo?.tokenPath ?? null,
       tokenEnv: authInfo?.tokenEnv ?? null,
       authRevision,
@@ -248,12 +309,15 @@ export function WebSessionProvider({ children }: PropsWithChildren) {
         setStoredToken(normalized);
         setTokenState(normalized);
         setIsUnauthorized(false);
+        setAutoPairingAttempted(true);
         setAuthRevision((current) => current + 1);
       },
       clearToken: () => {
+        void onboardingApi.clearPairing().catch(() => {});
         clearStoredToken();
         setTokenState(null);
         setIsUnauthorized(false);
+        setAutoPairingAttempted(true);
         setAuthRevision((current) => current + 1);
       },
       markUnauthorized: () => {
@@ -265,6 +329,7 @@ export function WebSessionProvider({ children }: PropsWithChildren) {
       authInfo?.tokenPath,
       authRequired,
       authRevision,
+      autoPairingInProgress,
       isUnauthorized,
       onboardingLoading,
       onboardingStatus,

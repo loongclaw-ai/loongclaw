@@ -27,7 +27,7 @@
   "onboarding": {
     "eyebrow": "First run",
     "loadingTitle": "Checking local setup",
-    "loadingBody": "Looking at runtime, token pairing, config, and provider readiness.",
+    "loadingBody": "Trying local runtime, token pairing, config, and provider readiness.",
     "panelEyebrow": "Entry check",
     "panelTitle": "Ready-to-enter status",
     "summary": {
@@ -71,16 +71,36 @@
       "apiKeyHelper": "For this first pass, the key is persisted with the local provider config.",
       "apiKeyHelperConfigured": "Leave this blank to keep the current key, or paste a new one to replace it.",
       "save": "Save provider setup",
-      "savePending": "Saving…",
+      "savePending": "Saving...",
       "errors": {
         "saveFailed": "Provider setup could not be saved."
       }
+    },
+    "preferences": {
+      "toggle": "Optional personalization",
+      "show": "Expand",
+      "hide": "Collapse",
+      "personality": "Personality",
+      "personalityCalmEngineering": "Calm engineering",
+      "personalityFriendlyCollab": "Friendly collaboration",
+      "personalityAutonomousExecutor": "Autonomous executor",
+      "memoryProfile": "Memory profile",
+      "memoryProfileWindowOnly": "Window only",
+      "memoryProfileWindowPlusSummary": "Window plus summary",
+      "memoryProfileProfilePlusWindow": "Profile plus window",
+      "promptAddendum": "Prompt addendum",
+      "promptAddendumPlaceholder": "Optional extra instruction for future conversations",
+      "helper": "These settings are optional. They shape later conversations, but they do not block entry.",
+      "save": "Save optional settings",
+      "savePending": "Saving...",
+      "saved": "Optional settings saved.",
+      "saveFailed": "Optional settings could not be saved."
     },
     "validation": {
       "required": "Run one quick provider validation before entering Web.",
       "ready": "Provider validation passed for this setup.",
       "action": "Validate and continue",
-      "pending": "Validating…",
+      "pending": "Validating...",
       "success": "Provider validation passed. You can enter Web now.",
       "failed": "Provider validation did not pass yet.",
       "statuses": {
@@ -98,7 +118,7 @@
       },
       "tokenPairing": {
         "title": "Token pairing is still required",
-        "body": "This browser is not paired with the local API yet. Enter the local token first, then Web can continue checking protected state."
+        "body": "This browser is not paired with the local API yet. Web will try one lightweight local pairing attempt first, then fall back to manual token entry if needed."
       },
       "missingConfig": {
         "title": "Local config is still missing",
