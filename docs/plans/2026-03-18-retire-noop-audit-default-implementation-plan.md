@@ -13,7 +13,7 @@ Tech stack: Rust, kernel/app tests, cargo fmt, cargo clippy, workspace tests, re
 
 ---
 
-### Task 1: Lock the constructor design
+## Task 1: Lock the constructor design
 
 **Files:**
 - Create: `docs/plans/2026-03-18-retire-noop-audit-default-design.md`
@@ -29,7 +29,7 @@ Expected: the default constructor seam and current callsites are enumerated.
 Run: `ls docs/plans/2026-03-18-retire-noop-audit-default-design.md docs/plans/2026-03-18-retire-noop-audit-default-implementation-plan.md`
 Expected: both files exist.
 
-### Task 2: Add regression coverage before the implementation
+## Task 2: Add regression coverage before the implementation
 
 **Files:**
 - Modify: `crates/kernel/src/tests.rs`
@@ -50,7 +50,7 @@ fixtures when callers opt into it explicitly.
 Run: `cargo test -p loongclaw-kernel default_constructor_audit explicit_no_audit -- --test-threads=1`
 Expected: FAIL before the constructor helpers exist.
 
-### Task 3: Implement the additive constructor changes
+## Task 3: Implement the additive constructor changes
 
 **Files:**
 - Modify: `crates/kernel/src/kernel.rs`
@@ -81,7 +81,7 @@ audit intent without large churn.
 Only expose new items from `crates/kernel/src/lib.rs` if the implementation introduces reusable
 surface beyond existing exports.
 
-### Task 4: Reconcile docs
+## Task 4: Reconcile docs
 
 **Files:**
 - Modify: `docs/RELIABILITY.md`
@@ -97,7 +97,7 @@ must be explicit.
 Run: `git diff -- docs/RELIABILITY.md docs/design-docs/core-beliefs.md`
 Expected: only constructor-semantics wording changes are present.
 
-### Task 5: Run full verification and prepare delivery
+## Task 5: Run full verification and prepare delivery
 
 **Files:**
 - Modify: `crates/kernel/src/kernel.rs`
