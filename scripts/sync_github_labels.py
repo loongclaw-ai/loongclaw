@@ -46,6 +46,8 @@ def render_labeler(taxonomy: dict) -> str:
 
 
 def render_workflow(taxonomy: dict) -> str:
+    # This renderer nests Python f-strings, GitHub expressions, and JS template
+    # literals, so brace-heavy sections intentionally use doubled braces.
     managed_labels = [
         {
             "name": entry["name"],
@@ -871,7 +873,12 @@ def write_targets(targets: dict[Path, str]) -> None:
 def check_targets(targets: dict[Path, str]) -> int:
     mismatches: list[str] = []
     for path, expected in targets.items():
-        actual = path.read_text()
+        try:
+            actual = path.read_text()
+        except FileNotFoundError:
+            mismatches.append(f"{path} (missing)")
+            continue
+
         if actual != expected:
             mismatches.append(str(path))
 
@@ -899,7 +906,7 @@ def main() -> int:
     targets = target_contents(repo_root, taxonomy)
 
     if args.check:
-      return check_targets(targets)
+        return check_targets(targets)
 
     write_targets(targets)
     return 0

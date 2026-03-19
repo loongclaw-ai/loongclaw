@@ -15,6 +15,16 @@ assert_not_contains() {
   fi
 }
 
+assert_not_contains_regex() {
+  local file="$1"
+  local pattern="$2"
+  if grep -Eq "$pattern" "$file"; then
+    echo "did not expect to match /$pattern/ in $file" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
 assert_contains() {
   local file="$1"
   local needle="$2"
@@ -56,9 +66,41 @@ if bad_names:
     sys.exit(1)
 PY
 
-assert_not_contains "$REPO_ROOT/.github/labeler.yml" "\"rust\":"
+python3 - "$SYNC_SCRIPT" <<'PY'
+import contextlib
+import importlib.util
+import io
+import sys
+import tempfile
+from pathlib import Path
+
+script_path = Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("sync_github_labels", script_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+tmpdir = Path(tempfile.mkdtemp(prefix="sync-github-labels-"))
+missing_target = tmpdir / "missing-target.yml"
+stderr = io.StringIO()
+with contextlib.redirect_stderr(stderr):
+    result = module.check_targets({missing_target: "expected\n"})
+
+output = stderr.getvalue()
+if result != 1:
+    print(f"expected missing target check to return 1, got {result}", file=sys.stderr)
+    sys.exit(1)
+if str(missing_target) not in output:
+    print(f"expected missing target path in stderr, got: {output!r}", file=sys.stderr)
+    sys.exit(1)
+if "out of date" not in output:
+    print(f"expected mismatch summary in stderr, got: {output!r}", file=sys.stderr)
+    sys.exit(1)
+PY
+
+assert_not_contains_regex "$REPO_ROOT/.github/labeler.yml" '(^|[[:space:]])"?rust"?[[:space:]]*:'
 assert_not_contains "$REPO_ROOT/docs/references/github-collaboration.md" "area:"
 assert_not_contains "$REPO_ROOT/docs/references/github-collaboration.md" "domain:"
+assert_not_contains "$REPO_ROOT/docs/plans/2026-03-19-github-label-taxonomy-implementation-plan.md" "For Claude:"
 assert_contains "$REPO_ROOT/.github/ISSUE_TEMPLATE/bug_report.yml" "label: Surface"
 assert_contains "$REPO_ROOT/.github/ISSUE_TEMPLATE/feature_request.yml" "label: Surface"
 assert_contains "$REPO_ROOT/.github/ISSUE_TEMPLATE/docs_improvement.yml" "label: Surface"

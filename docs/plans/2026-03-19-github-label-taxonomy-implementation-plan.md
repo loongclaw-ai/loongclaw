@@ -1,6 +1,6 @@
 # GitHub Label Taxonomy Refresh Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+> REQUIRED EXECUTION MODE: use the plan-execution capability (`executing-plans`) to implement this plan task-by-task.
 
 **Goal:** Replace prefixed `area:*` / `domain:*` labels with clearer unprefixed labels, remove
 automatic `rust` labeling, and make one taxonomy manifest drive GitHub label automation, issue
