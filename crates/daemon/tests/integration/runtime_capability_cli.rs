@@ -339,7 +339,11 @@ fn make_runtime_capability_review_state_inconsistent(candidate_path: &Path) {
         &fs::read_to_string(candidate_path).expect("read runtime capability artifact"),
     )
     .expect("decode runtime capability artifact");
-    payload["status"] = Value::String("reviewed".to_owned());
+    let status = payload
+        .as_object_mut()
+        .and_then(|artifact| artifact.get_mut("status"))
+        .expect("runtime capability artifact should include status");
+    *status = Value::String("reviewed".to_owned());
     fs::write(
         candidate_path,
         serde_json::to_string_pretty(&payload).expect("encode malformed capability candidate"),
