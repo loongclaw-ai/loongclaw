@@ -75,7 +75,7 @@ pub struct FeishuUserInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct FeishuWsEndpointClientConfig {
     #[serde(rename = "ReconnectCount", default)]
-    pub reconnect_count: Option<u64>,
+    pub reconnect_count: Option<i64>,
     #[serde(rename = "ReconnectInterval", default)]
     pub reconnect_interval_s: Option<u64>,
     #[serde(rename = "ReconnectNonce", default)]
@@ -1143,6 +1143,47 @@ mod tests {
                 .reconnect_interval_s,
             Some(7)
         );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn get_websocket_endpoint_accepts_negative_reconnect_count() {
+        let router = Router::new().route(
+            "/callback/ws/endpoint",
+            post(|| async {
+                Json(serde_json::json!({
+                    "code": 0,
+                    "msg": "ok",
+                    "data": {
+                        "URL": "wss://example.feishu.cn/ws?service_id=42",
+                        "ClientConfig": {
+                            "ReconnectCount": -1,
+                            "ReconnectInterval": 7,
+                            "PingInterval": 15
+                        }
+                    }
+                }))
+            }),
+        );
+        let (base_url, server) = spawn_mock_feishu_server(router).await;
+        let client = FeishuClient::new(base_url, "cli_xxx", "secret_xxx", 20).expect("client");
+
+        let endpoint = client
+            .get_websocket_endpoint()
+            .await
+            .expect("negative reconnect counts from Feishu should not break endpoint discovery");
+        let config_json = serde_json::to_value(
+            endpoint
+                .client_config
+                .expect("client config from websocket endpoint response"),
+        )
+        .expect("serialize websocket client config");
+
+        assert_eq!(endpoint.url, "wss://example.feishu.cn/ws?service_id=42");
+        assert_eq!(config_json["ReconnectCount"], serde_json::json!(-1));
+        assert_eq!(config_json["ReconnectInterval"], serde_json::json!(7));
+        assert_eq!(config_json["PingInterval"], serde_json::json!(15));
 
         server.abort();
     }
