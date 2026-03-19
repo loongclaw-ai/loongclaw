@@ -2,6 +2,8 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::ops::Deref;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 
 use async_trait::async_trait;
 use futures_util::stream::{self, StreamExt};
@@ -964,6 +966,8 @@ pub(crate) struct ToolBatchExecutionSegmentTrace {
     pub scheduling_class: ToolSchedulingClass,
     pub execution_mode: ToolBatchExecutionMode,
     pub intent_count: usize,
+    pub observed_peak_in_flight: Option<usize>,
+    pub observed_wall_time_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -971,10 +975,29 @@ pub(crate) struct ToolBatchExecutionTrace {
     pub total_intents: usize,
     pub parallel_execution_enabled: bool,
     pub parallel_execution_max_in_flight: usize,
+    pub observed_peak_in_flight: usize,
+    pub observed_wall_time_ms: u64,
     pub segments: Vec<ToolBatchExecutionSegmentTrace>,
 }
 
+impl ToolBatchExecutionSegmentTrace {
+    fn record_observation(&mut self, observed_peak_in_flight: usize, observed_wall_time_ms: u64) {
+        self.observed_peak_in_flight = Some(observed_peak_in_flight);
+        self.observed_wall_time_ms = Some(observed_wall_time_ms);
+    }
+}
+
 impl ToolBatchExecutionTrace {
+    fn finish_observation(&mut self, observed_wall_time_ms: u64) {
+        self.observed_wall_time_ms = observed_wall_time_ms;
+        self.observed_peak_in_flight = self
+            .segments
+            .iter()
+            .filter_map(|segment| segment.observed_peak_in_flight)
+            .max()
+            .unwrap_or_default();
+    }
+
     pub(crate) fn as_event_payload(&self) -> serde_json::Value {
         let parallel_safe_intents = self
             .segments
@@ -1000,10 +1023,12 @@ impl ToolBatchExecutionTrace {
             .count();
 
         json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "total_intents": self.total_intents,
             "parallel_execution_enabled": self.parallel_execution_enabled,
             "parallel_execution_max_in_flight": self.parallel_execution_max_in_flight,
+            "observed_peak_in_flight": self.observed_peak_in_flight,
+            "observed_wall_time_ms": self.observed_wall_time_ms,
             "parallel_safe_intents": parallel_safe_intents,
             "serial_only_intents": serial_only_intents,
             "parallel_segments": parallel_segments,
@@ -1017,10 +1042,26 @@ impl ToolBatchExecutionTrace {
                         "scheduling_class": segment.scheduling_class.as_str(),
                         "execution_mode": segment.execution_mode.as_str(),
                         "intent_count": segment.intent_count,
+                        "observed_peak_in_flight": segment.observed_peak_in_flight,
+                        "observed_wall_time_ms": segment.observed_wall_time_ms,
                     })
                 })
                 .collect::<Vec<_>>(),
         })
+    }
+}
+
+fn elapsed_ms_u64(started_at: Instant) -> u64 {
+    started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn observe_peak_in_flight(peak: &AtomicUsize, current: usize) {
+    let mut observed = peak.load(Ordering::Relaxed);
+    while current > observed {
+        match peak.compare_exchange_weak(observed, current, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return,
+            Err(next) => observed = next,
+        }
     }
 }
 
@@ -1279,81 +1320,103 @@ impl TurnEngine {
                 Err(result) => return (result, None),
             }
         }
-        let trace = self.trace_prepared_batch(&prepared);
+        let batch_segments = self.prepared_batch_segments(&prepared);
+        let mut trace = self.trace_prepared_batch(&prepared, &batch_segments);
 
         let outputs = match self
-            .execute_prepared_batch(&prepared, session_context, app_dispatcher, binding)
+            .execute_prepared_batch(
+                &prepared,
+                &batch_segments,
+                session_context,
+                app_dispatcher,
+                binding,
+                &mut trace,
+            )
             .await
         {
             Ok(outputs) => outputs,
-            Err(result) => return (result, trace),
+            Err(result) => return (result, Some(trace)),
         };
 
-        (TurnResult::FinalText(outputs.join("\n")), trace)
+        (TurnResult::FinalText(outputs.join("\n")), Some(trace))
     }
 
     async fn execute_prepared_batch<D: AppToolDispatcher + ?Sized>(
         &self,
         prepared: &[PreparedToolIntent],
+        batch_segments: &[PreparedBatchSegment],
         session_context: &SessionContext,
         app_dispatcher: &D,
         binding: ConversationRuntimeBinding<'_>,
+        trace: &mut ToolBatchExecutionTrace,
     ) -> Result<Vec<String>, TurnResult> {
-        let mut outputs = Vec::with_capacity(prepared.len());
-        let mut remaining = prepared;
-        for segment in self.prepared_batch_segments(prepared) {
-            let (prepared_segment, rest) = remaining.split_at(segment.len);
-            let mut segment_outputs = match segment.execution_mode {
-                ToolBatchExecutionMode::Parallel => {
-                    self.execute_prepared_batch_in_parallel(
-                        prepared_segment,
-                        session_context,
-                        app_dispatcher,
-                        binding,
-                    )
-                    .await?
-                }
-                ToolBatchExecutionMode::Sequential => {
-                    self.execute_prepared_batch_sequential(
-                        prepared_segment,
-                        session_context,
-                        app_dispatcher,
-                        binding,
-                    )
-                    .await?
-                }
-            };
-            outputs.append(&mut segment_outputs);
-            remaining = rest;
-        }
+        let started_at = Instant::now();
+        let result = async {
+            let mut outputs = Vec::with_capacity(prepared.len());
+            let mut remaining = prepared;
+            for (segment_index, segment) in batch_segments.iter().copied().enumerate() {
+                let (prepared_segment, rest) = remaining.split_at(segment.len);
+                let trace_segment = trace
+                    .segments
+                    .get_mut(segment_index)
+                    .expect("trace should include every prepared batch segment");
+                let mut segment_outputs = match segment.execution_mode {
+                    ToolBatchExecutionMode::Parallel => {
+                        self.execute_prepared_batch_in_parallel(
+                            prepared_segment,
+                            session_context,
+                            app_dispatcher,
+                            binding,
+                            trace_segment,
+                        )
+                        .await?
+                    }
+                    ToolBatchExecutionMode::Sequential => {
+                        self.execute_prepared_batch_sequential(
+                            prepared_segment,
+                            session_context,
+                            app_dispatcher,
+                            binding,
+                            trace_segment,
+                        )
+                        .await?
+                    }
+                };
+                outputs.append(&mut segment_outputs);
+                remaining = rest;
+            }
 
-        Ok(outputs)
+            Ok(outputs)
+        }
+        .await;
+        trace.finish_observation(elapsed_ms_u64(started_at));
+        result
     }
 
     fn trace_prepared_batch(
         &self,
         prepared: &[PreparedToolIntent],
-    ) -> Option<ToolBatchExecutionTrace> {
-        if prepared.is_empty() {
-            return None;
-        }
-
-        Some(ToolBatchExecutionTrace {
+        batch_segments: &[PreparedBatchSegment],
+    ) -> ToolBatchExecutionTrace {
+        ToolBatchExecutionTrace {
             total_intents: prepared.len(),
             parallel_execution_enabled: self.parallel_tool_execution_enabled,
             parallel_execution_max_in_flight: self.parallel_tool_execution_max_in_flight,
-            segments: self
-                .prepared_batch_segments(prepared)
-                .into_iter()
+            observed_peak_in_flight: 0,
+            observed_wall_time_ms: 0,
+            segments: batch_segments
+                .iter()
                 .enumerate()
                 .map(|(segment_index, segment)| ToolBatchExecutionSegmentTrace {
                     segment_index,
                     scheduling_class: segment.scheduling_class,
                     execution_mode: segment.execution_mode,
                     intent_count: segment.len,
+                    observed_peak_in_flight: None,
+                    observed_wall_time_ms: None,
                 })
                 .collect(),
-        })
+        }
     }
 
     fn prepared_batch_segments(
@@ -1385,6 +1448,7 @@ impl TurnEngine {
         segment_len: usize,
     ) -> ToolBatchExecutionMode {
         if self.parallel_tool_execution_enabled
+            && self.parallel_tool_execution_max_in_flight > 1
             && scheduling_class == ToolSchedulingClass::ParallelSafe
             && segment_len > 1
         {
@@ -1400,24 +1464,34 @@ impl TurnEngine {
         session_context: &SessionContext,
         app_dispatcher: &D,
         binding: ConversationRuntimeBinding<'_>,
+        trace_segment: &mut ToolBatchExecutionSegmentTrace,
     ) -> Result<Vec<String>, TurnResult> {
-        let mut outputs = Vec::with_capacity(prepared.len());
-        for prepared_intent in prepared {
-            let outcome = self
-                .execute_prepared_tool_intent(
-                    prepared_intent,
-                    session_context,
-                    app_dispatcher,
-                    binding,
-                )
-                .await?;
-            outputs.push(format_tool_result_line_with_limit(
-                &prepared_intent.intent,
-                &outcome,
-                self.tool_result_payload_summary_limit_chars,
-            ));
+        let started_at = Instant::now();
+        let result = async {
+            let mut outputs = Vec::with_capacity(prepared.len());
+            for prepared_intent in prepared {
+                let outcome = self
+                    .execute_prepared_tool_intent(
+                        prepared_intent,
+                        session_context,
+                        app_dispatcher,
+                        binding,
+                    )
+                    .await?;
+                outputs.push(format_tool_result_line_with_limit(
+                    &prepared_intent.intent,
+                    &outcome,
+                    self.tool_result_payload_summary_limit_chars,
+                ));
+            }
+            Ok(outputs)
         }
-        Ok(outputs)
+        .await;
+        trace_segment.record_observation(
+            if prepared.is_empty() { 0 } else { 1 },
+            elapsed_ms_u64(started_at),
+        );
+        result
     }
 
     async fn execute_prepared_batch_in_parallel<D: AppToolDispatcher + ?Sized>(
@@ -1426,37 +1500,57 @@ impl TurnEngine {
         session_context: &SessionContext,
         app_dispatcher: &D,
         binding: ConversationRuntimeBinding<'_>,
+        trace_segment: &mut ToolBatchExecutionSegmentTrace,
     ) -> Result<Vec<String>, TurnResult> {
+        let started_at = Instant::now();
         let payload_summary_limit_chars = self.tool_result_payload_summary_limit_chars;
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let observed_peak = Arc::new(AtomicUsize::new(0));
         let mut results = Vec::with_capacity(prepared.len());
         let mut executions = stream::iter(prepared.iter().cloned().enumerate().map(
-            |(index, prepared_intent)| async move {
-                let result = self
-                    .execute_prepared_tool_intent(
-                        &prepared_intent,
-                        session_context,
-                        app_dispatcher,
-                        binding,
-                    )
-                    .await
-                    .map(|outcome| {
-                        format_tool_result_line_with_limit(
-                            &prepared_intent.intent,
-                            &outcome,
-                            payload_summary_limit_chars,
+            |(index, prepared_intent)| {
+                let in_flight = Arc::clone(&in_flight);
+                let observed_peak = Arc::clone(&observed_peak);
+                async move {
+                    let current_in_flight = in_flight.fetch_add(1, Ordering::Relaxed) + 1;
+                    observe_peak_in_flight(observed_peak.as_ref(), current_in_flight);
+                    let result = self
+                        .execute_prepared_tool_intent(
+                            &prepared_intent,
+                            session_context,
+                            app_dispatcher,
+                            binding,
                         )
-                    });
-                (index, result)
+                        .await
+                        .map(|outcome| {
+                            format_tool_result_line_with_limit(
+                                &prepared_intent.intent,
+                                &outcome,
+                                payload_summary_limit_chars,
+                            )
+                        });
+                    in_flight.fetch_sub(1, Ordering::Relaxed);
+                    (index, result)
+                }
             },
         ))
         .buffer_unordered(self.parallel_tool_execution_max_in_flight);
 
-        while let Some((index, result)) = executions.next().await {
-            match result {
-                Ok(output) => results.push((index, output)),
-                Err(turn_result) => return Err(turn_result),
+        let result = async {
+            while let Some((index, result)) = executions.next().await {
+                match result {
+                    Ok(output) => results.push((index, output)),
+                    Err(turn_result) => return Err(turn_result),
+                }
             }
+            Ok(())
         }
+        .await;
+        trace_segment.record_observation(
+            observed_peak.load(Ordering::Relaxed),
+            elapsed_ms_u64(started_at),
+        );
+        result?;
         results.sort_by_key(|(index, _)| *index);
 
         Ok(results.into_iter().map(|(_, output)| output).collect())
@@ -1629,6 +1723,7 @@ mod tests {
     use crate::test_support::unique_temp_dir;
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::time::Duration;
 
     use serde_json::json;
 
@@ -1709,6 +1804,103 @@ mod tests {
                 tool_call_id: tool_call_id.to_owned(),
             }],
             raw_meta: json!({}),
+        }
+    }
+
+    fn provider_app_tool_intent(
+        tool_name: &str,
+        args_json: serde_json::Value,
+        session_id: &str,
+        turn_id: &str,
+        tool_call_id: &str,
+    ) -> ToolIntent {
+        let (tool_name, args_json) = crate::tools::synthesize_test_provider_tool_call_with_scope(
+            tool_name,
+            args_json,
+            Some(session_id),
+            Some(turn_id),
+        );
+        ToolIntent {
+            tool_name,
+            args_json,
+            source: "assistant".to_owned(),
+            session_id: session_id.to_owned(),
+            turn_id: turn_id.to_owned(),
+            tool_call_id: tool_call_id.to_owned(),
+        }
+    }
+
+    fn fast_lane_observed_execution_turn(
+        session_id: &str,
+        turn_id: &str,
+        call_prefix: &str,
+    ) -> ProviderTurn {
+        ProviderTurn {
+            assistant_text: "observing mixed fast-lane execution".to_owned(),
+            tool_intents: vec![
+                provider_app_tool_intent(
+                    "sessions_list",
+                    json!({}),
+                    session_id,
+                    turn_id,
+                    &format!("{call_prefix}-1"),
+                ),
+                provider_app_tool_intent(
+                    "sessions_list",
+                    json!({}),
+                    session_id,
+                    turn_id,
+                    &format!("{call_prefix}-2"),
+                ),
+                provider_app_tool_intent(
+                    "session_status",
+                    json!({"session_id": session_id}),
+                    session_id,
+                    turn_id,
+                    &format!("{call_prefix}-3"),
+                ),
+                provider_app_tool_intent(
+                    "sessions_list",
+                    json!({}),
+                    session_id,
+                    turn_id,
+                    &format!("{call_prefix}-4"),
+                ),
+                provider_app_tool_intent(
+                    "sessions_list",
+                    json!({}),
+                    session_id,
+                    turn_id,
+                    &format!("{call_prefix}-5"),
+                ),
+            ],
+            raw_meta: json!({}),
+        }
+    }
+
+    struct DelayedObservedExecutionDispatcher;
+
+    #[async_trait::async_trait]
+    impl AppToolDispatcher for DelayedObservedExecutionDispatcher {
+        async fn execute_app_tool(
+            &self,
+            session_context: &SessionContext,
+            request: ToolCoreRequest,
+            _binding: ConversationRuntimeBinding<'_>,
+        ) -> Result<ToolCoreOutcome, String> {
+            let delay_ms = match request.tool_name.as_str() {
+                "sessions_list" => 25,
+                "session_status" => 10,
+                other => return Err(format!("app_tool_not_found: {other}")),
+            };
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            Ok(ToolCoreOutcome {
+                status: "ok".to_owned(),
+                payload: json!({
+                    "tool": request.tool_name,
+                    "session_id": session_context.session_id,
+                }),
+            })
         }
     }
 
@@ -2324,6 +2516,109 @@ mod tests {
         assert_eq!(request["operation"], "click");
 
         fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn observed_fast_lane_execution_trace_records_batch_and_segment_metrics() {
+        let turn = fast_lane_observed_execution_turn(
+            "session-observed-fast-lane",
+            "turn-observed-fast-lane",
+            "call-observed-fast-lane",
+        );
+        let session_context =
+            SessionContext::root_with_tool_view("session-observed-fast-lane", runtime_tool_view());
+        let dispatcher = DelayedObservedExecutionDispatcher;
+        let engine = TurnEngine::with_parallel_tool_execution(8, 512, true, 2);
+
+        let (result, trace) = engine
+            .execute_turn_in_context_with_trace(
+                &turn,
+                &session_context,
+                &dispatcher,
+                ConversationRuntimeBinding::direct(),
+                None,
+            )
+            .await;
+
+        match result {
+            TurnResult::FinalText(_) => {}
+            other => panic!("expected FinalText, got {other:?}"),
+        }
+
+        let trace = trace.expect("trace should exist");
+        assert_eq!(trace.total_intents, 5);
+        assert_eq!(trace.parallel_execution_enabled, true);
+        assert_eq!(trace.parallel_execution_max_in_flight, 2);
+        assert_eq!(trace.observed_peak_in_flight, 2);
+        assert!(
+            trace.observed_wall_time_ms >= 40,
+            "expected batch wall time to reflect execution, got {}",
+            trace.observed_wall_time_ms
+        );
+        assert_eq!(trace.segments.len(), 3);
+        assert_eq!(
+            trace.segments[0].execution_mode,
+            ToolBatchExecutionMode::Parallel
+        );
+        assert_eq!(trace.segments[0].observed_peak_in_flight, Some(2));
+        assert!(
+            trace.segments[0]
+                .observed_wall_time_ms
+                .expect("parallel segment wall time")
+                >= 20
+        );
+        assert_eq!(
+            trace.segments[1].execution_mode,
+            ToolBatchExecutionMode::Sequential
+        );
+        assert_eq!(trace.segments[1].observed_peak_in_flight, Some(1));
+        assert_eq!(
+            trace.segments[2].execution_mode,
+            ToolBatchExecutionMode::Parallel
+        );
+        assert_eq!(trace.segments[2].observed_peak_in_flight, Some(2));
+    }
+
+    #[tokio::test]
+    async fn observed_fast_lane_execution_treats_single_in_flight_batches_as_sequential() {
+        let turn = fast_lane_observed_execution_turn(
+            "session-observed-fast-lane-single",
+            "turn-observed-fast-lane-single",
+            "call-observed-fast-lane-single",
+        );
+        let session_context = SessionContext::root_with_tool_view(
+            "session-observed-fast-lane-single",
+            runtime_tool_view(),
+        );
+        let dispatcher = DelayedObservedExecutionDispatcher;
+        let engine = TurnEngine::with_parallel_tool_execution(8, 512, true, 1);
+
+        let (_result, trace) = engine
+            .execute_turn_in_context_with_trace(
+                &turn,
+                &session_context,
+                &dispatcher,
+                ConversationRuntimeBinding::direct(),
+                None,
+            )
+            .await;
+
+        let trace = trace.expect("trace should exist");
+        assert_eq!(trace.parallel_execution_max_in_flight, 1);
+        assert_eq!(
+            trace
+                .segments
+                .iter()
+                .filter(|segment| segment.execution_mode == ToolBatchExecutionMode::Parallel)
+                .count(),
+            0
+        );
+        assert!(
+            trace
+                .segments
+                .iter()
+                .all(|segment| segment.execution_mode == ToolBatchExecutionMode::Sequential)
+        );
     }
 
     #[test]

@@ -417,6 +417,8 @@ pub struct FastLaneToolBatchSegmentSnapshot {
     pub scheduling_class: String,
     pub execution_mode: String,
     pub intent_count: u32,
+    pub observed_peak_in_flight: Option<u32>,
+    pub observed_wall_time_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -435,12 +437,21 @@ pub struct FastLaneToolBatchEventSummary {
     pub parallel_execution_max_in_flight_samples: u32,
     pub parallel_execution_max_in_flight_sum: u64,
     pub parallel_execution_max_in_flight_max: Option<u32>,
+    pub observed_peak_in_flight_samples: u32,
+    pub observed_peak_in_flight_sum: u64,
+    pub observed_peak_in_flight_max: Option<u32>,
+    pub observed_wall_time_ms_samples: u32,
+    pub observed_wall_time_ms_sum: u64,
+    pub observed_wall_time_ms_max: Option<u64>,
+    pub degraded_parallel_segments: u64,
     pub scheduling_class_counts: BTreeMap<String, u32>,
     pub execution_mode_counts: BTreeMap<String, u32>,
     pub latest_schema_version: Option<u32>,
     pub latest_total_intents: Option<u32>,
     pub latest_parallel_execution_enabled: Option<bool>,
     pub latest_parallel_execution_max_in_flight: Option<u32>,
+    pub latest_observed_peak_in_flight: Option<u32>,
+    pub latest_observed_wall_time_ms: Option<u64>,
     pub latest_parallel_safe_intents: Option<u32>,
     pub latest_serial_only_intents: Option<u32>,
     pub latest_parallel_segments: Option<u32>,
@@ -851,6 +862,34 @@ fn fold_fast_lane_tool_batch_event_record(
         );
     }
 
+    let observed_peak_in_flight = read_u32_opt(&record.payload, "observed_peak_in_flight");
+    summary.latest_observed_peak_in_flight = observed_peak_in_flight;
+    if let Some(value) = observed_peak_in_flight {
+        summary.observed_peak_in_flight_samples =
+            summary.observed_peak_in_flight_samples.saturating_add(1);
+        summary.observed_peak_in_flight_sum = summary
+            .observed_peak_in_flight_sum
+            .saturating_add(u64::from(value));
+        summary.observed_peak_in_flight_max = Some(
+            summary
+                .observed_peak_in_flight_max
+                .map_or(value, |current| current.max(value)),
+        );
+    }
+
+    let observed_wall_time_ms = read_u64_opt(&record.payload, "observed_wall_time_ms");
+    summary.latest_observed_wall_time_ms = observed_wall_time_ms;
+    if let Some(value) = observed_wall_time_ms {
+        summary.observed_wall_time_ms_samples =
+            summary.observed_wall_time_ms_samples.saturating_add(1);
+        summary.observed_wall_time_ms_sum = summary.observed_wall_time_ms_sum.saturating_add(value);
+        summary.observed_wall_time_ms_max = Some(
+            summary
+                .observed_wall_time_ms_max
+                .map_or(value, |current| current.max(value)),
+        );
+    }
+
     let parallel_safe_intents = read_u32_opt(&record.payload, "parallel_safe_intents");
     summary.latest_parallel_safe_intents = parallel_safe_intents;
     summary.total_parallel_safe_intents_seen = summary
@@ -902,6 +941,10 @@ fn fold_fast_lane_tool_batch_event_record(
         let execution_mode = segment.execution_mode.trim();
         if !execution_mode.is_empty() {
             bump_count(&mut summary.execution_mode_counts, execution_mode);
+        }
+        if execution_mode == "parallel" && segment.observed_peak_in_flight == Some(1) {
+            summary.degraded_parallel_segments =
+                summary.degraded_parallel_segments.saturating_add(1);
         }
     }
     summary.latest_segments = segments;
@@ -1482,6 +1525,8 @@ fn parse_fast_lane_tool_batch_segments(
                             .and_then(Value::as_str)?
                             .to_owned(),
                         intent_count: read_u32_opt(segment, "intent_count")?,
+                        observed_peak_in_flight: read_u32_opt(segment, "observed_peak_in_flight"),
+                        observed_wall_time_ms: read_u64_opt(segment, "observed_wall_time_ms"),
                     })
                 })
                 .collect()
@@ -1494,6 +1539,10 @@ fn read_u32_opt(value: &Value, key: &str) -> Option<u32> {
         .get(key)
         .and_then(Value::as_u64)
         .map(|num| num.min(u32::MAX as u64) as u32)
+}
+
+fn read_u64_opt(value: &Value, key: &str) -> Option<u64> {
+    value.get(key).and_then(Value::as_u64)
 }
 
 fn read_f64_milli_opt(value: &Value, key: &str) -> Option<u32> {
@@ -1526,10 +1575,12 @@ mod tests {
                 "type": "conversation_event",
                 "event": "fast_lane_tool_batch",
                 "payload": {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "total_intents": 2,
                     "parallel_execution_enabled": true,
                     "parallel_execution_max_in_flight": 2,
+                    "observed_peak_in_flight": 2,
+                    "observed_wall_time_ms": 24,
                     "parallel_safe_intents": 2,
                     "serial_only_intents": 0,
                     "parallel_segments": 1,
@@ -1539,7 +1590,9 @@ mod tests {
                             "segment_index": 0,
                             "scheduling_class": "parallel_safe",
                             "execution_mode": "parallel",
-                            "intent_count": 2
+                            "intent_count": 2,
+                            "observed_peak_in_flight": 2,
+                            "observed_wall_time_ms": 24
                         }
                     ]
                 }
@@ -1549,10 +1602,12 @@ mod tests {
                 "type": "conversation_event",
                 "event": "fast_lane_tool_batch",
                 "payload": {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "total_intents": 3,
                     "parallel_execution_enabled": true,
                     "parallel_execution_max_in_flight": 3,
+                    "observed_peak_in_flight": 2,
+                    "observed_wall_time_ms": 41,
                     "parallel_safe_intents": 2,
                     "serial_only_intents": 1,
                     "parallel_segments": 1,
@@ -1562,13 +1617,17 @@ mod tests {
                             "segment_index": 0,
                             "scheduling_class": "parallel_safe",
                             "execution_mode": "parallel",
-                            "intent_count": 2
+                            "intent_count": 2,
+                            "observed_peak_in_flight": 2,
+                            "observed_wall_time_ms": 29
                         },
                         {
                             "segment_index": 1,
                             "scheduling_class": "serial_only",
                             "execution_mode": "sequential",
-                            "intent_count": 1
+                            "intent_count": 1,
+                            "observed_peak_in_flight": 1,
+                            "observed_wall_time_ms": 12
                         }
                     ]
                 }
@@ -1579,10 +1638,12 @@ mod tests {
         let summary = summarize_fast_lane_tool_batch_events(payloads.iter().map(String::as_str));
 
         assert_eq!(summary.batch_events, 2);
-        assert_eq!(summary.latest_schema_version, Some(1));
+        assert_eq!(summary.latest_schema_version, Some(2));
         assert_eq!(summary.latest_total_intents, Some(3));
         assert_eq!(summary.latest_parallel_execution_enabled, Some(true));
         assert_eq!(summary.latest_parallel_execution_max_in_flight, Some(3));
+        assert_eq!(summary.latest_observed_peak_in_flight, Some(2));
+        assert_eq!(summary.latest_observed_wall_time_ms, Some(41));
         assert_eq!(summary.latest_parallel_safe_intents, Some(2));
         assert_eq!(summary.latest_serial_only_intents, Some(1));
         assert_eq!(summary.latest_parallel_segments, Some(1));
@@ -1595,12 +1656,16 @@ mod tests {
                     scheduling_class: "parallel_safe".to_owned(),
                     execution_mode: "parallel".to_owned(),
                     intent_count: 2,
+                    observed_peak_in_flight: Some(2),
+                    observed_wall_time_ms: Some(29),
                 },
                 FastLaneToolBatchSegmentSnapshot {
                     segment_index: 1,
                     scheduling_class: "serial_only".to_owned(),
                     execution_mode: "sequential".to_owned(),
                     intent_count: 1,
+                    observed_peak_in_flight: Some(1),
+                    observed_wall_time_ms: Some(12),
                 },
             ]
         );
@@ -1613,10 +1678,12 @@ mod tests {
                 "type": "conversation_event",
                 "event": "fast_lane_tool_batch",
                 "payload": {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "total_intents": 3,
                     "parallel_execution_enabled": true,
                     "parallel_execution_max_in_flight": 3,
+                    "observed_peak_in_flight": 3,
+                    "observed_wall_time_ms": 33,
                     "parallel_safe_intents": 3,
                     "serial_only_intents": 0,
                     "parallel_segments": 2,
@@ -1626,13 +1693,17 @@ mod tests {
                             "segment_index": 0,
                             "scheduling_class": "parallel_safe",
                             "execution_mode": "parallel",
-                            "intent_count": 2
+                            "intent_count": 2,
+                            "observed_peak_in_flight": 2,
+                            "observed_wall_time_ms": 18
                         },
                         {
                             "segment_index": 1,
                             "scheduling_class": "parallel_safe",
                             "execution_mode": "parallel",
-                            "intent_count": 1
+                            "intent_count": 1,
+                            "observed_peak_in_flight": 1,
+                            "observed_wall_time_ms": 15
                         }
                     ]
                 }
@@ -1642,10 +1713,12 @@ mod tests {
                 "type": "conversation_event",
                 "event": "fast_lane_tool_batch",
                 "payload": {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "total_intents": 3,
                     "parallel_execution_enabled": true,
                     "parallel_execution_max_in_flight": 2,
+                    "observed_peak_in_flight": 2,
+                    "observed_wall_time_ms": 27,
                     "parallel_safe_intents": 2,
                     "serial_only_intents": 1,
                     "parallel_segments": 1,
@@ -1655,13 +1728,17 @@ mod tests {
                             "segment_index": 0,
                             "scheduling_class": "parallel_safe",
                             "execution_mode": "parallel",
-                            "intent_count": 2
+                            "intent_count": 2,
+                            "observed_peak_in_flight": 1,
+                            "observed_wall_time_ms": 16
                         },
                         {
                             "segment_index": 1,
                             "scheduling_class": "serial_only",
                             "execution_mode": "sequential",
-                            "intent_count": 1
+                            "intent_count": 1,
+                            "observed_peak_in_flight": 1,
+                            "observed_wall_time_ms": 11
                         }
                     ]
                 }
@@ -1729,6 +1806,13 @@ mod tests {
         assert_eq!(summary.parallel_execution_max_in_flight_samples, 3);
         assert_eq!(summary.parallel_execution_max_in_flight_sum, 6);
         assert_eq!(summary.parallel_execution_max_in_flight_max, Some(3));
+        assert_eq!(summary.observed_peak_in_flight_samples, 2);
+        assert_eq!(summary.observed_peak_in_flight_sum, 5);
+        assert_eq!(summary.observed_peak_in_flight_max, Some(3));
+        assert_eq!(summary.observed_wall_time_ms_samples, 2);
+        assert_eq!(summary.observed_wall_time_ms_sum, 60);
+        assert_eq!(summary.observed_wall_time_ms_max, Some(33));
+        assert_eq!(summary.degraded_parallel_segments, 2);
         assert_eq!(
             summary.scheduling_class_counts,
             BTreeMap::from([
@@ -1790,6 +1874,8 @@ mod tests {
                 scheduling_class: "parallel_safe".to_owned(),
                 execution_mode: "parallel".to_owned(),
                 intent_count: 2,
+                observed_peak_in_flight: None,
+                observed_wall_time_ms: None,
             }]
         );
     }
