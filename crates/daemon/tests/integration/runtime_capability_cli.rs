@@ -351,6 +351,67 @@ fn make_runtime_capability_review_state_inconsistent(candidate_path: &Path) {
     .expect("persist malformed capability candidate");
 }
 
+fn rewrite_runtime_capability_proposal(
+    candidate_path: &Path,
+    summary: &str,
+    bounded_scope: &str,
+    required_capabilities: &[&str],
+    tags: &[&str],
+) {
+    let mut payload = serde_json::from_str::<Value>(
+        &fs::read_to_string(candidate_path).expect("read runtime capability artifact"),
+    )
+    .expect("decode runtime capability artifact");
+    let proposal = payload
+        .as_object_mut()
+        .and_then(|artifact| artifact.get_mut("proposal"))
+        .and_then(Value::as_object_mut)
+        .expect("runtime capability artifact should include proposal");
+    proposal.insert("summary".to_owned(), Value::String(summary.to_owned()));
+    proposal.insert(
+        "bounded_scope".to_owned(),
+        Value::String(bounded_scope.to_owned()),
+    );
+    proposal.insert(
+        "required_capabilities".to_owned(),
+        Value::Array(
+            required_capabilities
+                .iter()
+                .map(|value| Value::String((*value).to_owned()))
+                .collect(),
+        ),
+    );
+    proposal.insert(
+        "tags".to_owned(),
+        Value::Array(
+            tags.iter()
+                .map(|value| Value::String((*value).to_owned()))
+                .collect(),
+        ),
+    );
+    fs::write(
+        candidate_path,
+        serde_json::to_string_pretty(&payload).expect("encode runtime capability artifact"),
+    )
+    .expect("persist runtime capability artifact");
+}
+
+fn try_symlink_dir(original: &Path, link: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(original, link).is_ok()
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_dir(original, link).is_ok()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (original, link);
+        false
+    }
+}
+
 #[test]
 fn runtime_capability_propose_persists_candidate_from_finished_run() {
     let root = unique_temp_dir("loongclaw-runtime-capability-propose");
@@ -702,6 +763,150 @@ fn runtime_capability_index_groups_related_candidates_and_reports_ready_family()
             .expect("cost delta range should exist")
             .max,
         -0.2
+    );
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn runtime_capability_index_ignores_symlinked_directories_during_scan() {
+    let root = unique_temp_dir("loongclaw-runtime-capability-index-symlink");
+    let config_path = write_runtime_capability_config(&root);
+
+    let (run_a_path, _) = finish_runtime_experiment_variant(
+        &root,
+        &config_path,
+        "a",
+        -0.2,
+        &[],
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted,
+    );
+    let (run_b_path, _) = finish_runtime_experiment_variant(
+        &root,
+        &config_path,
+        "b",
+        -0.4,
+        &[],
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted,
+    );
+
+    let (candidate_a_path, _) = propose_runtime_capability_variant(&root, &run_a_path, "a");
+    let (candidate_b_path, _) = propose_runtime_capability_variant(&root, &run_b_path, "b");
+    review_runtime_capability_variant(
+        &candidate_a_path,
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityReviewDecision::Accepted,
+        "a",
+    );
+    review_runtime_capability_variant(
+        &candidate_b_path,
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityReviewDecision::Accepted,
+        "b",
+    );
+
+    let external_root = unique_temp_dir("loongclaw-runtime-capability-index-symlink-external");
+    fs::create_dir_all(&external_root).expect("create external fixture root");
+    fs::write(
+        external_root.join("runtime-capability-bad.json"),
+        r#"{
+  "schema": {
+    "version": 1,
+    "surface": "runtime_capability",
+    "purpose": "promotion_candidate_record"
+  }
+}"#,
+    )
+    .expect("write malformed supported artifact");
+
+    let symlink_path = root.join("artifacts/external-scan");
+    if !try_symlink_dir(&external_root, &symlink_path) {
+        fs::remove_dir_all(&external_root).ok();
+        fs::remove_dir_all(&root).ok();
+        return;
+    }
+
+    let report =
+        loongclaw_daemon::runtime_capability_cli::execute_runtime_capability_index_command(
+            loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityIndexCommandOptions {
+                root: root.join("artifacts").display().to_string(),
+                json: false,
+            },
+        )
+        .expect("runtime capability index should skip symlinked directories");
+
+    assert_eq!(report.total_candidate_count, 2);
+    assert_eq!(report.family_count, 1);
+
+    fs::remove_dir_all(&external_root).ok();
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn runtime_capability_index_normalizes_family_ids_for_equivalent_persisted_proposals() {
+    let root = unique_temp_dir("loongclaw-runtime-capability-index-family-id-normalization");
+    let config_path = write_runtime_capability_config(&root);
+
+    let (run_a_path, _) = finish_runtime_experiment_variant(
+        &root,
+        &config_path,
+        "canonical-a",
+        -0.2,
+        &[],
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted,
+    );
+    let (run_b_path, _) = finish_runtime_experiment_variant(
+        &root,
+        &config_path,
+        "canonical-b",
+        -0.4,
+        &[],
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted,
+    );
+
+    let (candidate_a_path, _) =
+        propose_runtime_capability_variant(&root, &run_a_path, "canonical-a");
+    let (candidate_b_path, _) =
+        propose_runtime_capability_variant(&root, &run_b_path, "canonical-b");
+    review_runtime_capability_variant(
+        &candidate_a_path,
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityReviewDecision::Accepted,
+        "canonical-a",
+    );
+    review_runtime_capability_variant(
+        &candidate_b_path,
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityReviewDecision::Accepted,
+        "canonical-b",
+    );
+
+    rewrite_runtime_capability_proposal(
+        &candidate_b_path,
+        "  Codify browser preview onboarding as a reusable managed skill  ",
+        "  Browser preview onboarding and companion readiness checks only  ",
+        &[" memory_read ", "invoke_tool"],
+        &[" onboarding ", "browser"],
+    );
+
+    let report =
+        loongclaw_daemon::runtime_capability_cli::execute_runtime_capability_index_command(
+            loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityIndexCommandOptions {
+                root: root.join("artifacts").display().to_string(),
+                json: false,
+            },
+        )
+        .expect("runtime capability index should normalize equivalent persisted proposals");
+
+    assert_eq!(report.total_candidate_count, 2);
+    assert_eq!(
+        report.family_count, 1,
+        "equivalent persisted proposals should stay in one family"
+    );
+    assert_eq!(
+        report
+            .families
+            .first()
+            .expect("one capability family should be reported")
+            .candidate_ids
+            .len(),
+        2
     );
 
     fs::remove_dir_all(&root).ok();
