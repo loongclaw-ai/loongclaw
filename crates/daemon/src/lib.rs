@@ -37,6 +37,7 @@ pub use base64;
 pub use kernel;
 pub use sha2;
 
+pub mod audit_cli;
 mod browser_companion_diagnostics;
 pub mod browser_preview;
 mod cli_handoff;
@@ -355,6 +356,15 @@ pub enum Commands {
         #[arg(long, default_value_t = false)]
         skip_model_probe: bool,
     },
+    /// Inspect the retained audit journal through a bounded CLI surface
+    Audit {
+        #[arg(long, global = true)]
+        config: Option<String>,
+        #[arg(long, global = true, default_value_t = false)]
+        json: bool,
+        #[command(subcommand)]
+        command: audit_cli::AuditCommands,
+    },
     /// Manage installed external skills through an operator-facing CLI surface
     Skills {
         #[arg(long, global = true)]
@@ -412,7 +422,7 @@ pub enum Commands {
         #[command(subcommand)]
         command: runtime_experiment_cli::RuntimeExperimentCommands,
     },
-    /// Manage run-derived capability candidate records
+    /// Manage run-derived capability candidates, family readiness, and dry-run promotion plans
     RuntimeCapability {
         #[command(subcommand)]
         command: runtime_capability_cli::RuntimeCapabilityCommands,

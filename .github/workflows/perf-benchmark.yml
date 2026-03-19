@@ -25,7 +25,7 @@ jobs:
         uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26
 
       - name: Cache Cargo Artifacts
-        uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
 
       - name: Run programmatic pressure benchmark
         run: ./scripts/benchmark_programmatic_pressure.sh

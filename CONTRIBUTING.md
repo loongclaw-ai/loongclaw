@@ -214,6 +214,31 @@ cargo test --workspace --all-features
 See [docs/references/github-collaboration.md](docs/references/github-collaboration.md) for the
 current label baseline, issue routing, community paths, and review flow.
 
+## Developer Observability
+
+When you want an agent to help debug a repository issue or prepare review
+findings, start from the built-in observability surfaces instead of external
+skill setup:
+
+```bash
+loongclaw doctor --config ~/.loongclaw/config.toml
+loongclaw doctor --config ~/.loongclaw/config.toml --json
+loongclaw audit recent --config ~/.loongclaw/config.toml
+loongclaw audit summary --config ~/.loongclaw/config.toml
+loongclaw audit recent --config ~/.loongclaw/config.toml --json
+if [ -f ~/.loongclaw/audit/events.jsonl ]; then tail -n 20 ~/.loongclaw/audit/events.jsonl; else echo "audit journal is created on first audit write"; fi
+```
+
+The app runtime defaults to durable audit retention with
+`[audit].mode = "fanout"`, so security-critical audit events persist across
+restarts under `~/.loongclaw/audit/events.jsonl`. Use `doctor --fix` if you
+want LoongClaw to pre-create the audit journal directory before a debugging
+session. Reach for `audit recent` when you need the latest bounded event window
+and `audit summary` when you need a quick rollup before diving into raw JSONL.
+
+For Rust workspaces, keep one agent per worktree or target directory so cargo
+lock contention does not invalidate the debugging signal.
+
 ## PRs We Are Unlikely to Merge
 
 The following pull requests are unlikely to be accepted unless maintainers have explicitly aligned

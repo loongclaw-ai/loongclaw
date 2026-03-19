@@ -9,7 +9,7 @@ experiment should be crystallized into a reusable lower-layer capability.
 ## Acceptance Criteria
 
 - [ ] LoongClaw exposes a `runtime-capability` command family with `propose`,
-      `review`, and `show` subcommands.
+      `review`, `show`, `index`, and `plan` subcommands.
 - [ ] `runtime-capability propose` creates a persisted capability-candidate
       artifact from one finished `runtime-experiment` run.
 - [ ] The candidate artifact records one explicit target type:
@@ -20,8 +20,19 @@ experiment should be crystallized into a reusable lower-layer capability.
       (`accepted` or `rejected`) plus one review summary and optional warnings.
 - [ ] `runtime-capability show` round-trips the persisted artifact as JSON and
       renders the review-critical fields first in text output.
+- [ ] `runtime-capability index` scans persisted candidate artifacts, groups
+      matching promotion intent into deterministic capability families, and
+      emits a compact evidence digest for each family.
+- [ ] Each capability family reports readiness as `ready`, `not_ready`, or
+      `blocked` from explicit evidence checks rather than opaque heuristics.
+- [ ] `runtime-capability plan` resolves one indexed family into a dry-run
+      promotion plan that describes the target lower-layer artifact, stable
+      artifact id, blockers, approval checklist, rollback hints, and
+      provenance references without mutating runtime state.
 - [ ] Product docs describe `runtime-capability` as the governed review layer
-      above `runtime-experiment` and below any future automated promotion loop.
+      above `runtime-experiment`, with `index`/readiness and `plan` forming the
+      dry-run planning ladder below any future promotion executor or automated
+      promotion loop.
 
 ## Out of Scope
 
@@ -29,4 +40,6 @@ experiment should be crystallized into a reusable lower-layer capability.
 - Automatically generating or applying programmatic flows
 - Automatically mutating `profile_note` or runtime config
 - Automatic promotion, rollback, or optimizer orchestration
+- Persisted capability-family state or background indexing daemons
+- Persisted promotion-plan artifacts or plan caches
 - Candidate queues, dashboards, or autonomous ranking systems

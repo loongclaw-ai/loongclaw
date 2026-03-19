@@ -2379,6 +2379,27 @@ model = "gpt-5"
 
     #[test]
     #[cfg(feature = "config-toml")]
+    fn write_default_config_includes_durable_audit_defaults() {
+        let path = unique_config_path("loongclaw-config-runtime-audit");
+        let path_string = path.display().to_string();
+
+        write(Some(&path_string), &LoongClawConfig::default(), true)
+            .expect("default config write should pass");
+
+        let raw = fs::read_to_string(&path).expect("read written config");
+        assert!(raw.contains("[audit]"));
+        assert!(raw.contains("mode = \"fanout\""));
+        assert!(raw.contains("path = "));
+
+        let (_, loaded) = load(Some(&path_string)).expect("config load should pass");
+        assert_eq!(loaded.audit.mode, crate::config::AuditMode::Fanout);
+        assert!(loaded.audit.resolved_path().ends_with("audit/events.jsonl"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    #[cfg(feature = "config-toml")]
     fn write_canonicalizes_provider_env_pointers_to_inline_env_references() {
         let path = unique_config_path("loongclaw-config-runtime-canonical-provider-env");
         let path_string = path.display().to_string();

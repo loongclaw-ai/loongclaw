@@ -60,10 +60,11 @@ pub use tools::{
     BrowserCompanionToolConfig, BrowserToolConfig, DEFAULT_BROWSER_COMPANION_TIMEOUT_SECONDS,
     DEFAULT_BROWSER_MAX_LINKS, DEFAULT_BROWSER_MAX_SESSIONS, DEFAULT_BROWSER_MAX_TEXT_CHARS,
     DEFAULT_SHELL_ALLOW, DEFAULT_WEB_FETCH_MAX_BYTES, DEFAULT_WEB_FETCH_MAX_REDIRECTS,
-    DEFAULT_WEB_FETCH_TIMEOUT_SECONDS, ExternalSkillsConfig, GovernedToolApprovalConfig,
+    DEFAULT_WEB_FETCH_TIMEOUT_SECONDS, DEFAULT_WEB_SEARCH_MAX_RESULTS,
+    DEFAULT_WEB_SEARCH_TIMEOUT_SECONDS, ExternalSkillsConfig, GovernedToolApprovalConfig,
     GovernedToolApprovalMode, MAX_BROWSER_MAX_LINKS, MAX_BROWSER_MAX_SESSIONS,
     MAX_BROWSER_MAX_TEXT_CHARS, MAX_WEB_FETCH_MAX_BYTES, SessionVisibility, ToolConfig,
-    WebToolConfig,
+    WebSearchToolConfig, WebToolConfig,
 };
 
 #[cfg(test)]
@@ -2008,6 +2009,21 @@ context_engine = " Legacy "
 
     #[test]
     #[cfg(feature = "config-toml")]
+    fn conversation_turn_middlewares_field_parses_and_normalizes() {
+        let raw = r#"
+[conversation]
+turn_middlewares = [" Alpha ", "beta", "", "alpha"]
+"#;
+        let parsed =
+            toml::from_str::<LoongClawConfig>(raw).expect("parse conversation turn_middlewares");
+        assert_eq!(
+            parsed.conversation.turn_middleware_ids(),
+            vec!["alpha".to_owned(), "beta".to_owned()]
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "config-toml")]
     fn memory_system_field_parses_and_normalizes() {
         let raw = r#"
 [memory]
@@ -2068,6 +2084,7 @@ compact_fail_open = false
     #[test]
     fn conversation_compaction_defaults_are_backward_compatible() {
         let config = ConversationConfig::default();
+        assert!(config.turn_middleware_ids().is_empty());
         assert!(config.compact_enabled);
         assert!(config.compaction_fail_open());
         assert_eq!(config.compact_trigger_estimated_tokens(), None);

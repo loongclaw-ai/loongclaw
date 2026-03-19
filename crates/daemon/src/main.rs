@@ -202,6 +202,15 @@ async fn main() {
             })
             .await
         }
+        Commands::Audit {
+            config,
+            json,
+            command,
+        } => audit_cli::run_audit_cli(audit_cli::AuditCommandOptions {
+            config,
+            json,
+            command,
+        }),
         Commands::Skills {
             config,
             json,

@@ -74,6 +74,14 @@ enum FakeTurnResponse {
 }
 
 struct TraitDefaultToolViewRuntime;
+struct NoopTurnMiddleware {
+    id: &'static str,
+}
+struct RecordingTransformTurnMiddleware {
+    id: &'static str,
+    injected_content: &'static str,
+    calls: Arc<Mutex<Vec<String>>>,
+}
 
 #[async_trait]
 impl ConversationRuntime for TraitDefaultToolViewRuntime {
@@ -432,6 +440,64 @@ impl ConversationContextEngine for StubSystemPromptAdditionEngine {
     }
 }
 
+impl NoopTurnMiddleware {
+    fn new(id: &'static str) -> Self {
+        Self { id }
+    }
+}
+
+#[async_trait]
+impl ConversationTurnMiddleware for NoopTurnMiddleware {
+    fn id(&self) -> &'static str {
+        self.id
+    }
+}
+
+impl RecordingTransformTurnMiddleware {
+    fn new(
+        id: &'static str,
+        injected_content: &'static str,
+        calls: Arc<Mutex<Vec<String>>>,
+    ) -> Self {
+        Self {
+            id,
+            injected_content,
+            calls,
+        }
+    }
+}
+
+#[async_trait]
+impl ConversationTurnMiddleware for RecordingTransformTurnMiddleware {
+    fn id(&self) -> &'static str {
+        self.id
+    }
+
+    fn metadata(&self) -> TurnMiddlewareMetadata {
+        TurnMiddlewareMetadata::new(self.id(), [TurnMiddlewareCapability::ContextTransform])
+    }
+
+    async fn transform_context(
+        &self,
+        _config: &LoongClawConfig,
+        session_id: &str,
+        _include_system_prompt: bool,
+        mut assembled: AssembledConversationContext,
+        _runtime_tool_view: &crate::tools::ToolView,
+        _requested_tool_view: &crate::tools::ToolView,
+        _binding: ConversationRuntimeBinding<'_>,
+    ) -> CliResult<AssembledConversationContext> {
+        self.calls
+            .lock()
+            .expect("transform middleware calls lock")
+            .push(format!("transform:{}:{session_id}", self.id));
+        assembled.messages.push(json!({
+            "role": "assistant",
+            "content": self.injected_content,
+        }));
+        Ok(assembled)
+    }
+}
 #[async_trait]
 impl ConversationContextEngine for RecordingLifecycleContextEngine {
     fn id(&self) -> &'static str {
@@ -514,29 +580,67 @@ impl ConversationContextEngine for RecordingLifecycleContextEngine {
 }
 
 fn context_engine_env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    super::context_engine_registry::conversation_selector_env_lock()
+}
+
+fn turn_middleware_env_lock() -> &'static Mutex<()> {
+    super::context_engine_registry::conversation_selector_env_lock()
+}
+
+#[test]
+fn turn_middleware_env_lock_reuses_context_engine_env_lock() {
+    assert!(std::ptr::eq(
+        context_engine_env_lock(),
+        turn_middleware_env_lock()
+    ));
+}
+
+enum ScopedEnvPrevious {
+    ContextEngine(Option<String>),
+    TurnMiddleware(Option<String>),
 }
 
 struct ScopedEnvVar {
-    previous: Option<Option<String>>,
+    previous: ScopedEnvPrevious,
 }
 
 impl ScopedEnvVar {
     fn set(key: &'static str, value: &str) -> Self {
-        assert_eq!(key, CONTEXT_ENGINE_ENV, "unexpected scoped env key");
-        let previous = Some(super::context_engine_registry::context_engine_id_from_env());
-        super::context_engine_registry::set_context_engine_env_override(Some(value));
+        let previous = match key {
+            CONTEXT_ENGINE_ENV => {
+                let previous = super::context_engine_registry::context_engine_id_from_env();
+                super::context_engine_registry::set_context_engine_env_override(Some(value));
+                ScopedEnvPrevious::ContextEngine(previous)
+            }
+            TURN_MIDDLEWARE_ENV => {
+                let previous = super::turn_middleware_registry::turn_middleware_ids_from_env()
+                    .map(|ids| ids.join(","));
+                super::turn_middleware_registry::set_turn_middleware_env_override(Some(value));
+                ScopedEnvPrevious::TurnMiddleware(previous)
+            }
+            _ => panic!("unexpected scoped env key: {key}"),
+        };
         Self { previous }
     }
 }
 
 impl Drop for ScopedEnvVar {
     fn drop(&mut self) {
-        if let Some(previous) = self.previous.as_ref() {
-            super::context_engine_registry::set_context_engine_env_override(previous.as_deref());
-        } else {
-            super::context_engine_registry::clear_context_engine_env_override();
+        match &self.previous {
+            ScopedEnvPrevious::ContextEngine(previous) => match previous {
+                Some(previous) => super::context_engine_registry::set_context_engine_env_override(
+                    Some(previous.as_str()),
+                ),
+                None => super::context_engine_registry::clear_context_engine_env_override(),
+            },
+            ScopedEnvPrevious::TurnMiddleware(previous) => match previous {
+                Some(previous) => {
+                    super::turn_middleware_registry::set_turn_middleware_env_override(Some(
+                        previous.as_str(),
+                    ))
+                }
+                None => super::turn_middleware_registry::clear_turn_middleware_env_override(),
+            },
         }
     }
 }
@@ -1510,6 +1614,176 @@ fn default_runtime_exposes_context_engine_metadata() {
     let metadata = runtime.context_engine_metadata();
     assert_eq!(metadata.id, DEFAULT_CONTEXT_ENGINE_ID);
     assert_eq!(metadata.api_version, CONTEXT_ENGINE_API_VERSION);
+}
+
+#[tokio::test]
+async fn default_runtime_applies_turn_middlewares_in_declared_order() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let runtime = DefaultConversationRuntime::with_context_engine_and_turn_middlewares(
+        StubContextEngine,
+        vec![
+            Box::new(RecordingTransformTurnMiddleware::new(
+                "append-middle-b",
+                "middleware-b",
+                calls.clone(),
+            )),
+            Box::new(RecordingTransformTurnMiddleware::new(
+                "append-middle-a",
+                "middleware-a",
+                calls.clone(),
+            )),
+        ],
+    );
+    let binding = ConversationRuntimeBinding::direct();
+    let assembled = runtime
+        .build_context(
+            &test_config(),
+            "session-turn-middleware-order",
+            true,
+            binding,
+        )
+        .await
+        .expect("build context through turn middleware chain");
+
+    let contents = assembled
+        .messages
+        .iter()
+        .map(|message| {
+            message["content"]
+                .as_str()
+                .expect("message content should remain a string")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        contents,
+        vec![
+            "stub-context-engine".to_owned(),
+            "middleware-b".to_owned(),
+            "middleware-a".to_owned(),
+        ]
+    );
+    assert_eq!(
+        calls.lock().expect("turn middleware calls lock").clone(),
+        vec![
+            "transform:append-middle-b:session-turn-middleware-order".to_owned(),
+            "transform:append-middle-a:session-turn-middleware-order".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn with_context_engine_and_turn_middlewares_retains_builtin_defaults_before_custom_chain() {
+    let runtime = DefaultConversationRuntime::with_context_engine_and_turn_middlewares(
+        StubContextEngine,
+        vec![Box::new(NoopTurnMiddleware::new("custom-turn-middleware"))],
+    );
+    assert_eq!(
+        runtime
+            .turn_middleware_metadata()
+            .into_iter()
+            .map(|metadata| metadata.id)
+            .collect::<Vec<_>>(),
+        vec![
+            SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID,
+            SYSTEM_PROMPT_TOOL_VIEW_TURN_MIDDLEWARE_ID,
+            "custom-turn-middleware",
+        ]
+    );
+}
+
+#[test]
+fn resolve_turn_middleware_selection_includes_builtin_defaults_when_unset() {
+    let _env_lock = turn_middleware_env_lock().lock().expect("env lock");
+    let _scoped_env = ScopedEnvVar::set(TURN_MIDDLEWARE_ENV, "");
+
+    let selection = resolve_turn_middleware_selection(&test_config())
+        .expect("resolve turn middleware selection");
+    assert_eq!(
+        selection.ids,
+        vec![
+            SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID.to_owned(),
+            SYSTEM_PROMPT_TOOL_VIEW_TURN_MIDDLEWARE_ID.to_owned(),
+        ]
+    );
+    assert_eq!(selection.source, TurnMiddlewareSelectionSource::Default);
+}
+
+#[test]
+fn default_runtime_with_context_engine_exposes_builtin_turn_middleware_metadata() {
+    let runtime = DefaultConversationRuntime::with_context_engine(StubSystemPromptAdditionEngine);
+    assert_eq!(
+        runtime
+            .turn_middleware_metadata()
+            .into_iter()
+            .map(|metadata| metadata.id)
+            .collect::<Vec<_>>(),
+        vec![
+            SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID,
+            SYSTEM_PROMPT_TOOL_VIEW_TURN_MIDDLEWARE_ID,
+        ]
+    );
+}
+
+#[test]
+fn collect_context_engine_runtime_snapshot_reports_turn_middleware_selection() {
+    let _env_lock = turn_middleware_env_lock().lock().expect("env lock");
+    register_turn_middleware("snapshot-turn-a", || {
+        Box::new(NoopTurnMiddleware::new("snapshot-turn-a"))
+    })
+    .expect("register turn middleware");
+    let _scoped_env = ScopedEnvVar::set(TURN_MIDDLEWARE_ENV, "");
+    let mut config = test_config();
+    config.conversation.turn_middlewares = vec!["snapshot-turn-a".to_owned()];
+
+    let snapshot = collect_context_engine_runtime_snapshot(&config)
+        .expect("collect context engine runtime snapshot");
+    assert_eq!(
+        snapshot.turn_middlewares.selected.ids,
+        vec![
+            SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID.to_owned(),
+            SYSTEM_PROMPT_TOOL_VIEW_TURN_MIDDLEWARE_ID.to_owned(),
+            "snapshot-turn-a".to_owned()
+        ]
+    );
+    assert_eq!(
+        snapshot.turn_middlewares.selected.source,
+        TurnMiddlewareSelectionSource::Config
+    );
+    assert_eq!(
+        snapshot
+            .turn_middlewares
+            .selected_metadata
+            .iter()
+            .map(|metadata| metadata.id)
+            .collect::<Vec<_>>(),
+        vec![
+            SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID,
+            SYSTEM_PROMPT_TOOL_VIEW_TURN_MIDDLEWARE_ID,
+            "snapshot-turn-a",
+        ]
+    );
+    assert!(
+        snapshot
+            .turn_middlewares
+            .available
+            .iter()
+            .any(|metadata| metadata.id == SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID)
+    );
+    assert!(
+        snapshot
+            .turn_middlewares
+            .available
+            .iter()
+            .any(|metadata| metadata.id == SYSTEM_PROMPT_TOOL_VIEW_TURN_MIDDLEWARE_ID)
+    );
+    assert!(
+        snapshot
+            .turn_middlewares
+            .available
+            .iter()
+            .any(|metadata| metadata.id == "snapshot-turn-a")
+    );
 }
 
 #[tokio::test]

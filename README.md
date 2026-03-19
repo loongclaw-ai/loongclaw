@@ -226,7 +226,39 @@ cargo install --path crates/daemon
    loongclaw doctor --fix
    ```
 
+6. Inspect the retained audit window when you need debugging evidence:
+
+   ```bash
+   loongclaw audit recent --limit 20
+   loongclaw audit summary --limit 200 --json
+   ```
+
 Channel setup comes after the base CLI path is healthy.
+
+### Repository Observability
+
+LoongClaw ships a built-in developer observability lane for kernel-backed
+debugging and review. The app runtime writes audit events to
+`~/.loongclaw/audit/events.jsonl` by default with `[audit].mode = "fanout"`, so
+policy denials, token lifecycle events, and other security-critical evidence
+survive process restarts.
+
+```bash
+loongclaw doctor --config ~/.loongclaw/config.toml
+loongclaw doctor --config ~/.loongclaw/config.toml --json
+loongclaw audit recent --config ~/.loongclaw/config.toml
+loongclaw audit summary --config ~/.loongclaw/config.toml
+loongclaw audit recent --config ~/.loongclaw/config.toml --json
+if [ -f ~/.loongclaw/audit/events.jsonl ]; then tail -n 20 ~/.loongclaw/audit/events.jsonl; else echo "audit journal is created on first audit write"; fi
+```
+
+`doctor` now surfaces audit retention mode and journal directory readiness in
+addition to the existing runtime checks. For durable modes (`fanout` or
+`jsonl`), LoongClaw will create the journal directory on first write, and
+`doctor --fix` can pre-create it when you want a clean preflight. Use
+`audit recent` when you want the bounded last-N event window and
+`audit summary` when you want a compact kind/count rollup plus last-seen
+fields. Raw `tail` remains a fallback when you need the original JSONL lines.
 
 ## Configuration
 

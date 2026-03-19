@@ -15,10 +15,17 @@ use crate::spec_runtime::{
     WebhookConnector,
 };
 
+/// The spec/bootstrap layer is a harness-facing surface, so its default audit
+/// sink stays explicitly in-memory unless a caller wires a different sink.
+pub(crate) fn default_in_memory_audit_sink() -> Arc<InMemoryAuditSink> {
+    Arc::new(InMemoryAuditSink::default())
+}
+
 /// Builder for constructing a fully configured `LoongClawKernel`.
 ///
-/// By default the builder uses `SystemClock` and `InMemoryAuditSink`.
-/// Override either with the corresponding setter before calling `build()`.
+/// By default the builder uses `SystemClock` and the spec layer's named
+/// in-memory audit helper. Override either with the corresponding setter before
+/// calling `build()`.
 #[derive(Default)]
 pub struct KernelBuilder {
     clock: Option<Arc<dyn Clock>>,
@@ -99,31 +106,58 @@ fn configured_builder(
     audit: Option<Arc<dyn AuditSink>>,
     native_tool_executor: Option<crate::NativeToolExecutor>,
 ) -> RuntimeKernelBuilder<StaticPolicyEngine> {
-    let mut kernel = match (clock, audit) {
-        (Some(clock), Some(audit)) => {
-            RuntimeKernelBuilder::with_runtime(StaticPolicyEngine::default(), clock, audit)
+    configured_builder_with_default_audit(clock, audit, native_tool_executor).0
+}
+
+fn configured_builder_with_default_audit(
+    clock: Option<Arc<dyn Clock>>,
+    audit: Option<Arc<dyn AuditSink>>,
+    native_tool_executor: Option<crate::NativeToolExecutor>,
+) -> (
+    RuntimeKernelBuilder<StaticPolicyEngine>,
+    Option<Arc<InMemoryAuditSink>>,
+) {
+    let (mut kernel, fallback_audit) = match (clock, audit) {
+        (Some(clock), Some(audit)) => (
+            RuntimeKernelBuilder::with_runtime(StaticPolicyEngine::default(), clock, audit),
+            None,
+        ),
+        (Some(clock), None) => {
+            let audit = default_in_memory_audit_sink();
+            (
+                RuntimeKernelBuilder::with_runtime(
+                    StaticPolicyEngine::default(),
+                    clock,
+                    audit.clone() as Arc<dyn AuditSink>,
+                ),
+                Some(audit),
+            )
         }
-        (Some(clock), None) => RuntimeKernelBuilder::with_runtime(
-            StaticPolicyEngine::default(),
-            clock,
-            Arc::new(InMemoryAuditSink::default()) as Arc<dyn AuditSink>,
+        (None, Some(audit)) => (
+            RuntimeKernelBuilder::with_runtime(
+                StaticPolicyEngine::default(),
+                Arc::new(SystemClock) as Arc<dyn Clock>,
+                audit,
+            ),
+            None,
         ),
-        (None, Some(audit)) => RuntimeKernelBuilder::with_runtime(
-            StaticPolicyEngine::default(),
-            Arc::new(SystemClock) as Arc<dyn Clock>,
-            audit,
-        ),
-        (None, None) => RuntimeKernelBuilder::with_runtime(
-            StaticPolicyEngine::default(),
-            Arc::new(SystemClock) as Arc<dyn Clock>,
-            Arc::new(InMemoryAuditSink::default()) as Arc<dyn AuditSink>,
-        ),
+        (None, None) => {
+            let audit = default_in_memory_audit_sink();
+            (
+                RuntimeKernelBuilder::with_runtime(
+                    StaticPolicyEngine::default(),
+                    Arc::new(SystemClock) as Arc<dyn Clock>,
+                    audit.clone() as Arc<dyn AuditSink>,
+                ),
+                Some(audit),
+            )
+        }
     };
     register_builtin_adapters(&mut kernel, native_tool_executor);
     // The default pack manifest is hardcoded and always valid; ignore the
     // impossible error branch to avoid panicking in production.
     let _ = kernel.register_pack(default_pack_manifest());
-    kernel
+    (kernel, fallback_audit)
 }
 
 fn register_builtin_adapters(
@@ -185,7 +219,7 @@ pub fn default_pack_manifest() -> VerticalPackManifest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kernel::{FixedClock, LoongClawKernel};
+    use kernel::{AuditEventKind, FixedClock, LoongClawKernel};
 
     #[test]
     fn builder_default_creates_kernel() {
@@ -207,6 +241,45 @@ mod tests {
             .issue_token(DEFAULT_PACK_ID, "test-agent", 60)
             .expect("token issue should succeed with custom clock/audit");
         assert!(!token.token_id.is_empty());
+    }
+
+    #[test]
+    fn builder_default_fallback_records_token_audit_events() {
+        let (kernel, audit) = configured_builder_with_default_audit(None, None, None);
+        let audit =
+            audit.expect("default builder should surface the fallback in-memory audit sink");
+
+        kernel
+            .issue_token(DEFAULT_PACK_ID, "spec-audit-builder", 60)
+            .expect("token issue should succeed with the default in-memory audit fallback");
+
+        let events = audit.snapshot();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event.kind, AuditEventKind::TokenIssued { .. })),
+            "expected token issuance to be recorded by the fallback in-memory audit sink"
+        );
+    }
+
+    #[test]
+    fn builder_clock_only_fallback_records_token_audit_events() {
+        let clock = Arc::new(FixedClock::new(1_700_000_000));
+        let (kernel, audit) = configured_builder_with_default_audit(Some(clock), None, None);
+        let audit =
+            audit.expect("clock-only builder should surface the fallback in-memory audit sink");
+
+        kernel
+            .issue_token(DEFAULT_PACK_ID, "spec-audit-builder-clock-only", 60)
+            .expect("token issue should succeed with the clock-only in-memory audit fallback");
+
+        let events = audit.snapshot();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event.kind, AuditEventKind::TokenIssued { .. })),
+            "expected token issuance to be recorded by the clock-only fallback in-memory audit sink"
+        );
     }
 
     #[test]

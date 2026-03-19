@@ -44,6 +44,12 @@ fn env_override() -> &'static Mutex<Option<Option<String>>> {
     CONTEXT_ENGINE_ENV_OVERRIDE.get_or_init(|| Mutex::new(None))
 }
 
+#[cfg(test)]
+pub(crate) fn conversation_selector_env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 pub fn register_context_engine<F>(id: &str, factory: F) -> CliResult<()>
 where
     F: Fn() -> Box<dyn ConversationContextEngine> + Send + Sync + 'static,
