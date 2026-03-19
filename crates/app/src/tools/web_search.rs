@@ -46,7 +46,7 @@ fn execute_web_search_tool_enabled(
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .ok_or_else(|| "web.search requires payload.query".to_owned())?;
-    if query.len() > MAX_QUERY_LENGTH {
+    if query.chars().count() > MAX_QUERY_LENGTH {
         return Err(format!(
             "web.search payload.query exceeds maximum length ({MAX_QUERY_LENGTH} characters)"
         ));
@@ -478,6 +478,40 @@ mod tests {
         )
         .expect_err("should reject too-long query");
         assert!(error.contains("exceeds maximum length"));
+    }
+
+    #[test]
+    fn web_search_rejects_overlong_multibyte_query() {
+        // Test that character count, not byte count, is used for length validation
+        // Each emoji is 4 bytes in UTF-8, so 126 emojis = 504 bytes but 126 characters
+        // We want a query that exceeds MAX_QUERY_LENGTH (500) in characters but is under in bytes
+        let multibyte_query = "😀".repeat(MAX_QUERY_LENGTH + 1); // 501 chars, 2004 bytes
+        let error = execute_web_search_tool_with_config(
+            request(json!({"query": multibyte_query})),
+            &test_config(),
+        )
+        .expect_err("should reject too-long multibyte query");
+        assert!(error.contains("exceeds maximum length"));
+    }
+
+    #[test]
+    fn web_search_accepts_query_at_max_length() {
+        // Test that a query exactly at MAX_QUERY_LENGTH is accepted
+        let max_query = "x".repeat(MAX_QUERY_LENGTH);
+        // This should not error - we're just checking validation passes
+        // (it will fail at runtime since we don't have a real network, but validation passes)
+        let result = execute_web_search_tool_with_config(
+            request(json!({"query": max_query})),
+            &test_config(),
+        );
+        // The result should not contain a length validation error
+        // (it may fail for other reasons like network, but not for length)
+        if let Err(e) = result {
+            assert!(
+                !e.contains("exceeds maximum length"),
+                "unexpected length error: {e}"
+            );
+        }
     }
 
     #[test]

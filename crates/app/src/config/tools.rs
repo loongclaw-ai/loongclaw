@@ -496,13 +496,36 @@ impl ToolConfig {
         {
             issues.push(*issue);
         }
-        if let Err(issue) = validate_numeric_range(
-            "tools.web_search.timeout_seconds",
-            self.web_search.timeout_seconds as usize,
-            MIN_WEB_SEARCH_TIMEOUT_SECONDS,
-            MAX_WEB_SEARCH_TIMEOUT_SECONDS,
-        ) {
-            issues.push(*issue);
+        let timeout_as_usize = usize::try_from(self.web_search.timeout_seconds).map_err(|_e| {
+            let mut vars = std::collections::BTreeMap::new();
+            vars.insert(
+                "actual_value".to_owned(),
+                self.web_search.timeout_seconds.to_string(),
+            );
+            vars.insert("min".to_owned(), MIN_WEB_SEARCH_TIMEOUT_SECONDS.to_string());
+            vars.insert("max".to_owned(), MAX_WEB_SEARCH_TIMEOUT_SECONDS.to_string());
+            Box::new(super::shared::ConfigValidationIssue {
+                severity: super::shared::ConfigValidationSeverity::Error,
+                code: super::shared::ConfigValidationCode::NumericRange,
+                field_path: "tools.web_search.timeout_seconds".to_owned(),
+                inline_field_path: "tools.web_search.timeout_seconds".to_owned(),
+                example_env_name: "LOONGCLAW_WEB_SEARCH_TIMEOUT_SECONDS".to_owned(),
+                suggested_env_name: Some("LOONGCLAW_WEB_SEARCH_TIMEOUT_SECONDS".to_owned()),
+                extra_message_variables: vars,
+            })
+        });
+        match timeout_as_usize {
+            Ok(v) => {
+                if let Err(issue) = validate_numeric_range(
+                    "tools.web_search.timeout_seconds",
+                    v,
+                    MIN_WEB_SEARCH_TIMEOUT_SECONDS,
+                    MAX_WEB_SEARCH_TIMEOUT_SECONDS,
+                ) {
+                    issues.push(*issue);
+                }
+            }
+            Err(issue) => issues.push(*issue),
         }
         if let Err(issue) = validate_numeric_range(
             "tools.web_search.max_results",
