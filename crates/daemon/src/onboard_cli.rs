@@ -1311,6 +1311,7 @@ pub async fn run_onboard_cli_with_ui(
     }
 
     let checks = run_preflight_checks(&config, options.skip_model_probe).await;
+    let config_validation_failure = config_validation_failure_message(&checks);
 
     let credential_ok = checks
         .iter()
@@ -1331,6 +1332,9 @@ pub async fn run_onboard_cli_with_ui(
         });
 
     if options.non_interactive {
+        if let Some(message) = config_validation_failure {
+            return Err(message);
+        }
         if !credential_ok {
             let credential_hint = provider_credential_env_hint(&config.provider)
                 .unwrap_or_else(|| "PROVIDER_API_KEY".to_owned());
@@ -1358,6 +1362,9 @@ pub async fn run_onboard_cli_with_ui(
                 true,
             ),
         )?;
+        if let Some(message) = config_validation_failure {
+            return Err(message);
+        }
         if (has_failures || has_warnings)
             && !ui.prompt_confirm(
                 crate::onboard_presentation::preflight_confirm_prompt(),
@@ -2392,6 +2399,13 @@ fn non_interactive_preflight_failure_message(checks: &[OnboardCheck]) -> String 
     format!("onboard preflight failed: {detail}")
 }
 
+fn config_validation_failure_message(checks: &[OnboardCheck]) -> Option<String> {
+    checks
+        .iter()
+        .find(|check| check.name == "config validation" && check.level == OnboardCheckLevel::Fail)
+        .map(|check| format!("onboard preflight failed: {}", check.detail))
+}
+
 pub fn provider_credential_check(config: &mvp::config::LoongClawConfig) -> OnboardCheck {
     let provider = &config.provider;
     let provider_prefix = provider_check_detail_prefix(config);
@@ -2675,6 +2689,34 @@ fn render_provider_credential_source_value(raw: Option<&str>) -> Option<String> 
     normalize_provider_credential_env_name(trimmed)
         .map(|env_name| format!("${{{env_name}}}"))
         .or_else(|| Some("environment variable".to_owned()))
+}
+
+fn render_configured_provider_credential_source_value(
+    provider: &mvp::config::ProviderConfig,
+) -> Option<String> {
+    provider
+        .oauth_access_token_env
+        .as_deref()
+        .and_then(|value| render_provider_credential_source_value(Some(value)))
+        .or_else(|| {
+            provider
+                .api_key_env
+                .as_deref()
+                .and_then(|value| render_provider_credential_source_value(Some(value)))
+        })
+}
+
+fn provider_has_configured_credential_env(provider: &mvp::config::ProviderConfig) -> bool {
+    provider
+        .oauth_access_token_env
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+        || provider
+            .api_key_env
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
 }
 
 pub fn preferred_api_key_env_default(config: &mvp::config::LoongClawConfig) -> String {
@@ -5319,10 +5361,7 @@ fn render_api_key_env_selection_screen_lines_with_style(
         "- provider: {}",
         crate::provider_presentation::guided_provider_label(config.provider.kind)
     )];
-    if let Some(current_env) = configured_provider_credential_env_binding(&config.provider)
-        .and_then(|binding| {
-            render_provider_credential_source_value(Some(binding.env_name.as_str()))
-        })
+    if let Some(current_env) = render_configured_provider_credential_source_value(&config.provider)
     {
         context_lines.push(format!("- current source: {current_env}"));
     }
@@ -5764,14 +5803,10 @@ fn summarize_provider_credential(
             value: "inline oauth token".to_owned(),
         });
     }
-    if let Some(oauth_env) = provider
-        .oauth_access_token_env
-        .as_deref()
-        .and_then(|value| render_provider_credential_source_value(Some(value)))
-    {
+    if let Some(configured_env) = render_configured_provider_credential_source_value(provider) {
         return Some(OnboardingCredentialSummary {
             label: "credential source",
-            value: oauth_env,
+            value: configured_env,
         });
     }
     if provider
@@ -5797,7 +5832,7 @@ fn summarize_provider_credential(
 
 fn provider_supports_blank_api_key_env(config: &mvp::config::LoongClawConfig) -> bool {
     provider_has_inline_credential(&config.provider)
-        || configured_provider_credential_env_binding(&config.provider).is_some()
+        || provider_has_configured_credential_env(&config.provider)
 }
 
 fn prompt_import_candidate_choice(
@@ -7019,6 +7054,30 @@ mod tests {
     }
 
     #[test]
+    fn config_validation_failure_message_only_matches_config_validation_failures() {
+        let checks = vec![
+            OnboardCheck {
+                name: "provider credentials",
+                level: OnboardCheckLevel::Fail,
+                detail: "credentials missing".to_owned(),
+                non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+            },
+            OnboardCheck {
+                name: "config validation",
+                level: OnboardCheckLevel::Fail,
+                detail: "provider.api_key_env must be an environment variable name".to_owned(),
+                non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+            },
+        ];
+
+        assert_eq!(
+            config_validation_failure_message(&checks),
+            Some("onboard preflight failed: provider.api_key_env must be an environment variable name".to_owned()),
+            "config validation failures should be surfaced as terminal preflight errors"
+        );
+    }
+
+    #[test]
     fn provider_credential_check_adds_volcengine_auth_guidance_when_missing() {
         let mut config = mvp::config::LoongClawConfig::default();
         config.provider.kind = mvp::config::ProviderKind::VolcengineCoding;
@@ -7067,6 +7126,10 @@ mod tests {
             .credential
             .expect("summary should still describe the configured credential lane");
 
+        assert_eq!(
+            credential.value, "environment variable",
+            "success summary should redact invalid configured env pointers instead of inventing a provider default binding"
+        );
         assert!(
             !credential.value.contains(secret),
             "success summary must never echo invalid secret-like env input: {credential:#?}"

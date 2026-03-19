@@ -4387,6 +4387,37 @@ fn onboard_api_key_env_screen_wraps_progress_line_on_narrow_width() {
 }
 
 #[test]
+fn onboard_api_key_env_screen_redacts_invalid_current_source_and_keeps_clear_hint() {
+    let secret = "sk-live-direct-secret-value";
+    let mut config = mvp::config::LoongClawConfig::default();
+    config.provider.kind = mvp::config::ProviderKind::Openai;
+    config.provider.api_key_env = Some(secret.to_owned());
+
+    let lines = loongclaw_daemon::onboard_cli::render_api_key_env_selection_screen_lines(
+        &config,
+        "OPENAI_API_KEY",
+        80,
+    );
+
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "- current source: environment variable"),
+        "credential-env screen should redact invalid configured env pointers instead of hiding them or inventing defaults: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "- type :clear to clear the configured credential env"),
+        "credential-env screen should still offer the clear token when the configured env pointer is present but redacted: {lines:#?}"
+    );
+    assert!(
+        lines.iter().all(|line| !line.contains(secret)),
+        "credential-env screen must never echo the invalid secret-like configured env pointer: {lines:#?}"
+    );
+}
+
+#[test]
 fn onboard_system_prompt_screen_explains_blank_behavior() {
     let mut config = mvp::config::LoongClawConfig::default();
     config.cli.system_prompt = "be terse and code-focused".to_owned();
@@ -6573,6 +6604,38 @@ fn onboard_review_lines_surface_region_endpoint_note_for_minimax() {
         lines.iter().any(|line| line.contains("api.minimaxi.com"))
             && lines.iter().any(|line| line.contains("api.minimax.io")),
         "review screen should show the current and alternate MiniMax regional endpoints: {lines:#?}"
+    );
+}
+
+#[test]
+fn onboard_review_lines_redact_invalid_configured_credential_env_value() {
+    let secret = "sk-live-direct-secret-value";
+    let mut config = mvp::config::LoongClawConfig::default();
+    config.provider.kind = mvp::config::ProviderKind::Openai;
+    config.provider.api_key_env = Some(secret.to_owned());
+
+    let lines = loongclaw_daemon::onboard_cli::render_onboard_review_lines_with_guidance(
+        &config,
+        None,
+        &[],
+        80,
+    );
+
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "- credential source: environment variable"),
+        "review screen should redact invalid configured env pointers instead of inventing a provider default binding: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .all(|line| line != "- credential source: ${OPENAI_CODEX_OAUTH_TOKEN}"),
+        "review screen should not replace an invalid configured env pointer with the provider default binding: {lines:#?}"
+    );
+    assert!(
+        lines.iter().all(|line| !line.contains(secret)),
+        "review screen must never echo the invalid secret-like configured env pointer: {lines:#?}"
     );
 }
 
