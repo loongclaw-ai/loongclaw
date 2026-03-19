@@ -10,7 +10,7 @@
 
 ---
 
-### Task 1: Add the failing spec execution audit tests
+## Task 1: Add the failing spec execution audit tests
 
 **Files:**
 - Modify: `crates/spec/tests/spec_execution.rs`
@@ -43,7 +43,7 @@ Expected: FAIL on the assertion, not due to unrelated compile errors.
 
 Do not commit yet. This slice will be committed after code + docs are green.
 
-### Task 2: Centralize the spec in-memory audit default
+## Task 2: Centralize the spec in-memory audit default
 
 **Files:**
 - Modify: `crates/spec/src/kernel_bootstrap.rs`
@@ -81,7 +81,7 @@ Run: `cargo test -p loongclaw-spec --test spec_execution execute_spec_suppresses
 
 Expected: PASS
 
-### Task 3: Add a focused bootstrap regression test
+## Task 3: Add a focused bootstrap regression test
 
 **Files:**
 - Modify: `crates/spec/src/kernel_bootstrap.rs`
@@ -110,7 +110,7 @@ Run: `cargo test -p loongclaw-spec builder_explicit_in_memory_audit_records_even
 
 Expected: PASS
 
-### Task 4: Update the documentation contract
+## Task 4: Update the documentation contract
 
 **Files:**
 - Modify: `docs/SECURITY.md`
@@ -136,7 +136,7 @@ Run: `rg -n "No persistent audit sink|In-memory only|spec.*in-memory|fanout|new_
 
 Expected: wording reflects the current contract with no stale contradiction.
 
-### Task 5: Run verification and prepare the final change set
+## Task 5: Run verification and prepare the final change set
 
 **Files:**
 - Modify: `crates/spec/src/kernel_bootstrap.rs`
