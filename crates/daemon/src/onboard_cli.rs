@@ -2313,7 +2313,7 @@ fn provider_model_probe_failure_check(
             name: "provider model probe",
             level: OnboardCheckLevel::Fail,
             detail: format!(
-                "{provider_prefix}: {} ({error}); runtime could not verify the provider route. inspect the provider route probe below and retry once dns / proxy / TUN routing is stable",
+                "{provider_prefix}: {} ({error}); runtime could not verify the provider route. inspect provider route diagnostics and retry once dns / proxy / TUN routing is stable",
                 crate::provider_route_diagnostics::MODEL_CATALOG_TRANSPORT_FAILED_MARKER
             ),
             non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
@@ -2420,8 +2420,23 @@ fn non_interactive_preflight_failure_message(checks: &[OnboardCheck]) -> String 
     let detail = checks
         .iter()
         .find(|check| check.level == OnboardCheckLevel::Fail)
-        .map(|check| check.detail.as_str())
-        .unwrap_or("preflight checks failed");
+        .map(|check| {
+            let mut detail = check.detail.clone();
+            if check.name == "provider model probe"
+                && check.detail.contains(
+                    crate::provider_route_diagnostics::MODEL_CATALOG_TRANSPORT_FAILED_MARKER,
+                )
+                && let Some(route_probe) = checks.iter().find(|candidate| {
+                    candidate.name
+                        == crate::provider_route_diagnostics::PROVIDER_ROUTE_PROBE_CHECK_NAME
+                })
+            {
+                detail.push_str(" provider route probe: ");
+                detail.push_str(route_probe.detail.as_str());
+            }
+            detail
+        })
+        .unwrap_or_else(|| "preflight checks failed".to_owned());
     format!("onboard preflight failed: {detail}")
 }
 
@@ -6912,6 +6927,10 @@ mod tests {
             !check.detail.contains("provider.model"),
             "transport probe failures should not suggest model-selection repair when the route is the real blocker: {check:#?}"
         );
+        assert!(
+            !check.detail.contains("below"),
+            "transport probe failures should not promise a later probe section that may not exist in non-interactive output: {check:#?}"
+        );
     }
 
     #[test]
@@ -7121,6 +7140,40 @@ mod tests {
         assert!(
             message.contains("provider.model"),
             "non-interactive onboarding should preserve the explicit remediation from the failing check: {message}"
+        );
+    }
+
+    #[test]
+    fn non_interactive_preflight_failure_message_appends_provider_route_probe_detail_for_transport_failures()
+     {
+        let checks = vec![
+            OnboardCheck {
+                name: "provider model probe",
+                level: OnboardCheckLevel::Fail,
+                detail:
+                    "OpenAI [openai]: model catalog transport failed (provider model-list request failed on attempt 3/3: operation timed out); runtime could not verify the provider route. inspect provider route diagnostics and retry once dns / proxy / TUN routing is stable"
+                        .to_owned(),
+                non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+            },
+            OnboardCheck {
+                name: "provider route probe",
+                level: OnboardCheckLevel::Warn,
+                detail:
+                    "request/models host api.openai.com:443: dns resolved to 198.18.0.2 (fake-ip-style); tcp connect ok via 198.18.0.2. the route currently depends on local fake-ip/TUN interception, so intermittent long-request failures usually point to proxy health or direct/bypass rules."
+                        .to_owned(),
+                non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+            },
+        ];
+
+        let message = non_interactive_preflight_failure_message(&checks);
+
+        assert!(
+            message.contains("provider route probe"),
+            "non-interactive onboarding should mention the collected provider route probe when transport diagnostics are available: {message}"
+        );
+        assert!(
+            message.contains("fake-ip-style"),
+            "non-interactive onboarding should include the route-probe detail instead of dropping it behind the first failing check: {message}"
         );
     }
 
