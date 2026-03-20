@@ -750,10 +750,14 @@ impl ToolLoopSupervisor {
                 ),
             };
             return if self.warned_reason_key.as_deref() == Some(reason.key.as_str()) {
-                ToolLoopSupervisorVerdict::HardStop { reason: reason.text }
+                ToolLoopSupervisorVerdict::HardStop {
+                    reason: reason.text,
+                }
             } else {
                 self.warned_reason_key = Some(reason.key);
-                ToolLoopSupervisorVerdict::InjectWarning { reason: reason.text }
+                ToolLoopSupervisorVerdict::InjectWarning {
+                    reason: reason.text,
+                }
             };
         }
 
@@ -1670,7 +1674,11 @@ mod tests {
         }
     }
 
-    fn observe(supervisor: &mut ToolLoopSupervisor, policy: &TurnLoopPolicy, tool_name: &str) -> ToolLoopSupervisorVerdict {
+    fn observe(
+        supervisor: &mut ToolLoopSupervisor,
+        policy: &TurnLoopPolicy,
+        tool_name: &str,
+    ) -> ToolLoopSupervisorVerdict {
         supervisor.observe_round(policy, tool_name, tool_name, "ok", false)
     }
 
@@ -1680,10 +1688,19 @@ mod tests {
         let mut supervisor = ToolLoopSupervisor::default();
 
         // First two calls: below threshold
-        assert!(matches!(observe(&mut supervisor, &policy, "shell.exec"), ToolLoopSupervisorVerdict::Continue));
-        assert!(matches!(observe(&mut supervisor, &policy, "shell.exec"), ToolLoopSupervisorVerdict::Continue));
+        assert!(matches!(
+            observe(&mut supervisor, &policy, "shell.exec"),
+            ToolLoopSupervisorVerdict::Continue
+        ));
+        assert!(matches!(
+            observe(&mut supervisor, &policy, "shell.exec"),
+            ToolLoopSupervisorVerdict::Continue
+        ));
         // Third call: hits threshold (>= 3) → InjectWarning
-        assert!(matches!(observe(&mut supervisor, &policy, "shell.exec"), ToolLoopSupervisorVerdict::InjectWarning { .. }));
+        assert!(matches!(
+            observe(&mut supervisor, &policy, "shell.exec"),
+            ToolLoopSupervisorVerdict::InjectWarning { .. }
+        ));
     }
 
     #[test]
@@ -1696,7 +1713,10 @@ mod tests {
         observe(&mut supervisor, &policy, "shell.exec");
         observe(&mut supervisor, &policy, "shell.exec"); // InjectWarning
         // Same pattern again → HardStop
-        assert!(matches!(observe(&mut supervisor, &policy, "shell.exec"), ToolLoopSupervisorVerdict::HardStop { .. }));
+        assert!(matches!(
+            observe(&mut supervisor, &policy, "shell.exec"),
+            ToolLoopSupervisorVerdict::HardStop { .. }
+        ));
     }
 
     #[test]
@@ -1707,8 +1727,14 @@ mod tests {
         observe(&mut supervisor, &policy, "shell.exec");
         observe(&mut supervisor, &policy, "shell.exec");
         // Switch tool — resets consecutive counter
-        assert!(matches!(observe(&mut supervisor, &policy, "file.read"), ToolLoopSupervisorVerdict::Continue));
+        assert!(matches!(
+            observe(&mut supervisor, &policy, "file.read"),
+            ToolLoopSupervisorVerdict::Continue
+        ));
         // Back to shell.exec — should start fresh, not trigger warning
-        assert!(matches!(observe(&mut supervisor, &policy, "shell.exec"), ToolLoopSupervisorVerdict::Continue));
+        assert!(matches!(
+            observe(&mut supervisor, &policy, "shell.exec"),
+            ToolLoopSupervisorVerdict::Continue
+        ));
     }
 }
