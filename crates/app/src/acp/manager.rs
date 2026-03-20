@@ -279,16 +279,13 @@ impl AcpSessionManager {
                 if status.last_error.is_none() {
                     status.last_error = metadata.last_error.clone();
                 }
-                if pending_turns > 0 {
-                    status.pending_turns = status.pending_turns.max(pending_turns);
-                    if !matches!(
-                        status.state,
-                        AcpSessionState::Cancelling
-                            | AcpSessionState::Error
-                            | AcpSessionState::Closed
-                    ) {
-                        status.state = AcpSessionState::Busy;
-                    }
+                if active_turn || pending_turns > 0 {
+                    status.pending_turns = status
+                        .pending_turns
+                        .max(pending_turns)
+                        .max(usize::from(active_turn));
+                    status.state =
+                        projected_status_state(status.state, active_turn, status.pending_turns);
                 }
                 if active_turn && status.active_turn_id.is_none() {
                     status.active_turn_id = Some(metadata.runtime_session_name.clone());
@@ -394,25 +391,9 @@ impl AcpSessionManager {
         let actor_key = actor_key_for_metadata(&registered);
 
         if let Some(active_turn) = self.active_turn(actor_key.as_str())? {
-            active_turn.abort_controller.abort();
-
-            let mut metadata = registered;
-            metadata.state = AcpSessionState::Cancelling;
-            metadata.clear_error();
-            metadata.touch();
-            self.store.upsert(metadata.clone())?;
-
-            let backend = resolve_acp_backend(Some(active_turn.handle.backend_id.as_str()))?;
-            return match backend.cancel(config, &active_turn.handle).await {
-                Ok(()) => Ok(()),
-                Err(error) => {
-                    self.record_error(error.as_str())?;
-                    metadata.state = AcpSessionState::Error;
-                    metadata.set_error(error.clone());
-                    self.store.upsert(metadata)?;
-                    Err(error)
-                }
-            };
+            return self
+                .request_active_turn_cancellation(config, registered, active_turn)
+                .await;
         }
 
         let _actor_guard = self.acquire_session_actor_guard(actor_key).await?;
@@ -446,6 +427,12 @@ impl AcpSessionManager {
             .get(session_key)?
             .ok_or_else(|| format!("ACP session `{session_key}` is not registered"))?;
         let actor_key = actor_key_for_metadata(&registered);
+
+        if let Some(active_turn) = self.active_turn(actor_key.as_str())? {
+            self.request_active_turn_cancellation(config, registered, active_turn)
+                .await?;
+        }
+
         let _actor_guard = self.acquire_session_actor_guard(actor_key).await?;
         self.cleanup_idle_sessions(config).await?;
 
@@ -741,16 +728,38 @@ impl AcpSessionManager {
             conversation_id: metadata.conversation_id.clone(),
             binding: metadata.binding.clone(),
             activation_origin: metadata.activation_origin,
-            state: if active_turn || pending_turns > 0 {
-                AcpSessionState::Busy
-            } else {
-                metadata.state
-            },
+            state: projected_status_state(metadata.state, active_turn, pending_turns),
             mode: metadata.mode,
             pending_turns: pending_turns.max(usize::from(active_turn)),
             active_turn_id: active_turn.then(|| metadata.runtime_session_name.clone()),
             last_activity_ms: metadata.last_activity_ms,
             last_error: metadata.last_error.clone(),
+        }
+    }
+
+    async fn request_active_turn_cancellation(
+        &self,
+        config: &LoongClawConfig,
+        mut metadata: AcpSessionMetadata,
+        active_turn: Arc<ActiveTurnState>,
+    ) -> CliResult<()> {
+        active_turn.abort_controller.abort();
+
+        metadata.state = AcpSessionState::Cancelling;
+        metadata.clear_error();
+        metadata.touch();
+        self.store.upsert(metadata.clone())?;
+
+        let backend = resolve_acp_backend(Some(active_turn.handle.backend_id.as_str()))?;
+        match backend.cancel(config, &active_turn.handle).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.record_error(error.as_str())?;
+                metadata.state = AcpSessionState::Error;
+                metadata.set_error(error.clone());
+                self.store.upsert(metadata)?;
+                Err(error)
+            }
         }
     }
 
@@ -1063,6 +1072,25 @@ fn normalize_error_key(error: &str) -> String {
     truncated
 }
 
+fn projected_status_state(
+    state: AcpSessionState,
+    active_turn: bool,
+    pending_turns: usize,
+) -> AcpSessionState {
+    if !active_turn && pending_turns == 0 {
+        return state;
+    }
+
+    if matches!(
+        state,
+        AcpSessionState::Cancelling | AcpSessionState::Error | AcpSessionState::Closed
+    ) {
+        state
+    } else {
+        AcpSessionState::Busy
+    }
+}
+
 fn bump_usize_count(counts: &mut BTreeMap<String, usize>, key: &str) {
     let entry = counts.entry(key.to_owned()).or_insert(0);
     *entry = entry.saturating_add(1);
@@ -1078,7 +1106,7 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -1184,7 +1212,11 @@ mod tests {
 
     struct AbortableTurnState {
         turn_entered: Notify,
+        abort_entered: Notify,
+        release_abort_completion: Notify,
+        hold_after_abort: AtomicBool,
         cancel_calls: AtomicUsize,
+        close_calls: AtomicUsize,
         abort_observed: AtomicUsize,
     }
 
@@ -1231,7 +1263,11 @@ mod tests {
         fn default() -> Self {
             Self {
                 turn_entered: Notify::new(),
+                abort_entered: Notify::new(),
+                release_abort_completion: Notify::new(),
+                hold_after_abort: AtomicBool::new(false),
                 cancel_calls: AtomicUsize::new(0),
+                close_calls: AtomicUsize::new(0),
                 abort_observed: AtomicUsize::new(0),
             }
         }
@@ -1778,6 +1814,10 @@ mod tests {
             };
             abort.cancelled().await;
             self.state.abort_observed.fetch_add(1, Ordering::SeqCst);
+            self.state.abort_entered.notify_waiters();
+            if self.state.hold_after_abort.load(Ordering::SeqCst) {
+                self.state.release_abort_completion.notified().await;
+            }
             Ok(AcpTurnResult {
                 output_text: String::new(),
                 state: AcpSessionState::Ready,
@@ -1804,6 +1844,7 @@ mod tests {
             _config: &LoongClawConfig,
             _session: &AcpSessionHandle,
         ) -> CliResult<()> {
+            self.state.close_calls.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
     }
@@ -2483,6 +2524,229 @@ mod tests {
         );
         assert_eq!(session.state, AcpSessionState::Ready);
         assert!(session.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn cancel_reports_cancelling_state_while_active_turn_is_draining() {
+        let shared = Arc::new(AbortableTurnState::default());
+        shared.hold_after_abort.store(true, Ordering::SeqCst);
+        register_acp_backend("manager-abortable-turn-status", {
+            let shared = shared.clone();
+            move || {
+                Box::new(AbortableTurnBackend {
+                    id: "manager-abortable-turn-status",
+                    state: shared.clone(),
+                })
+            }
+        })
+        .expect("register abortable status backend");
+
+        let manager = Arc::new(AcpSessionManager::default());
+        let config = Arc::new(LoongClawConfig {
+            acp: AcpConfig {
+                backend: Some("manager-abortable-turn-status".to_owned()),
+                ..AcpConfig::default()
+            },
+            ..LoongClawConfig::default()
+        });
+        let bootstrap = AcpSessionBootstrap {
+            session_key: "session-abortable-status".to_owned(),
+            conversation_id: Some("conv-abortable-status".to_owned()),
+            binding: None,
+            working_directory: None,
+            initial_prompt: None,
+            mode: Some(AcpSessionMode::Interactive),
+            mcp_servers: Vec::new(),
+            metadata: BTreeMap::new(),
+        };
+        let request = AcpTurnRequest {
+            session_key: "session-abortable-status".to_owned(),
+            input: "long-running".to_owned(),
+            working_directory: None,
+            metadata: BTreeMap::new(),
+        };
+
+        let run_task = {
+            let manager = manager.clone();
+            let config = config.clone();
+            let bootstrap = bootstrap.clone();
+            tokio::spawn(async move {
+                manager
+                    .run_turn(config.as_ref(), &bootstrap, &request)
+                    .await
+            })
+        };
+
+        tokio::time::timeout(Duration::from_secs(1), shared.turn_entered.notified())
+            .await
+            .expect("abortable status turn should enter backend");
+
+        manager
+            .cancel(config.as_ref(), bootstrap.session_key.as_str())
+            .await
+            .expect("cancel should start while turn is active");
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if shared.abort_observed.load(Ordering::SeqCst) > 0 {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancel should trigger active turn abort");
+
+        let status = manager
+            .get_status(config.as_ref(), bootstrap.session_key.as_str())
+            .await
+            .expect("status should project cancelling repair state");
+
+        assert_eq!(status.state, AcpSessionState::Cancelling);
+        assert_eq!(status.pending_turns, 1);
+        assert_eq!(
+            status.active_turn_id.as_deref(),
+            Some("abortable-session-abortable-status")
+        );
+
+        shared.release_abort_completion.notify_waiters();
+
+        let result = tokio::time::timeout(Duration::from_secs(1), async {
+            run_task
+                .await
+                .expect("abortable status join should succeed")
+                .expect("abortable status turn should resolve as cancelled success")
+        })
+        .await
+        .expect("cancelled status turn should finish promptly");
+        let session = manager
+            .list_sessions()
+            .expect("list sessions")
+            .into_iter()
+            .find(|entry| entry.session_key == "session-abortable-status")
+            .expect("persisted abortable status session");
+
+        assert_eq!(result.state, AcpSessionState::Ready);
+        assert_eq!(result.stop_reason, Some(AcpTurnStopReason::Cancelled));
+        assert_eq!(session.state, AcpSessionState::Ready);
+        assert!(session.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn close_preempts_active_turn_reports_cancelling_and_removes_session() {
+        let shared = Arc::new(AbortableTurnState::default());
+        shared.hold_after_abort.store(true, Ordering::SeqCst);
+        register_acp_backend("manager-abortable-turn-close", {
+            let shared = shared.clone();
+            move || {
+                Box::new(AbortableTurnBackend {
+                    id: "manager-abortable-turn-close",
+                    state: shared.clone(),
+                })
+            }
+        })
+        .expect("register abortable close backend");
+
+        let manager = Arc::new(AcpSessionManager::default());
+        let config = Arc::new(LoongClawConfig {
+            acp: AcpConfig {
+                backend: Some("manager-abortable-turn-close".to_owned()),
+                ..AcpConfig::default()
+            },
+            ..LoongClawConfig::default()
+        });
+        let bootstrap = AcpSessionBootstrap {
+            session_key: "session-abortable-close".to_owned(),
+            conversation_id: Some("conv-abortable-close".to_owned()),
+            binding: None,
+            working_directory: None,
+            initial_prompt: None,
+            mode: Some(AcpSessionMode::Interactive),
+            mcp_servers: Vec::new(),
+            metadata: BTreeMap::new(),
+        };
+        let request = AcpTurnRequest {
+            session_key: "session-abortable-close".to_owned(),
+            input: "long-running".to_owned(),
+            working_directory: None,
+            metadata: BTreeMap::new(),
+        };
+
+        let run_task = {
+            let manager = manager.clone();
+            let config = config.clone();
+            let bootstrap = bootstrap.clone();
+            tokio::spawn(async move {
+                manager
+                    .run_turn(config.as_ref(), &bootstrap, &request)
+                    .await
+            })
+        };
+
+        tokio::time::timeout(Duration::from_secs(1), shared.turn_entered.notified())
+            .await
+            .expect("abortable close turn should enter backend");
+
+        let close_task = {
+            let manager = manager.clone();
+            let config = config.clone();
+            let session_key = bootstrap.session_key.clone();
+            tokio::spawn(async move { manager.close(config.as_ref(), session_key.as_str()).await })
+        };
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if shared.abort_observed.load(Ordering::SeqCst) > 0 {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("close should trigger active turn repair immediately");
+
+        let status = manager
+            .get_status(config.as_ref(), bootstrap.session_key.as_str())
+            .await
+            .expect("status should expose close repair state");
+
+        assert_eq!(status.state, AcpSessionState::Cancelling);
+        assert_eq!(status.pending_turns, 1);
+        assert_eq!(
+            status.active_turn_id.as_deref(),
+            Some("abortable-session-abortable-close")
+        );
+
+        shared.release_abort_completion.notify_waiters();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            close_task
+                .await
+                .expect("close join should succeed")
+                .expect("close should finish after active turn repair")
+        })
+        .await
+        .expect("close repair should complete promptly");
+        let result = tokio::time::timeout(Duration::from_secs(1), async {
+            run_task
+                .await
+                .expect("abortable close join should succeed")
+                .expect("abortable close turn should resolve as cancelled success")
+        })
+        .await
+        .expect("closed turn should finish promptly");
+
+        assert_eq!(result.stop_reason, Some(AcpTurnStopReason::Cancelled));
+        assert_eq!(shared.cancel_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.close_calls.load(Ordering::SeqCst), 1);
+        assert!(
+            manager
+                .list_sessions()
+                .expect("list sessions")
+                .into_iter()
+                .all(|entry| entry.session_key != "session-abortable-close"),
+            "close repair should remove the persisted session"
+        );
     }
 
     #[tokio::test]
