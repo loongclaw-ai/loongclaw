@@ -91,6 +91,37 @@ struct DiscoveredSkillEntry {
     eligibility: SkillEligibility,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct DiscoveredSkillModelView {
+    skill_id: String,
+    display_name: String,
+    summary: String,
+    scope: DiscoveredSkillScope,
+    source_kind: String,
+    source_path: String,
+    skill_md_path: String,
+    sha256: String,
+    active: bool,
+    install_path: Option<String>,
+}
+
+impl From<DiscoveredSkillEntry> for DiscoveredSkillModelView {
+    fn from(entry: DiscoveredSkillEntry) -> Self {
+        Self {
+            skill_id: entry.skill_id,
+            display_name: entry.display_name,
+            summary: entry.summary,
+            scope: entry.scope,
+            source_kind: entry.source_kind,
+            source_path: entry.source_path,
+            skill_md_path: entry.skill_md_path,
+            sha256: entry.sha256,
+            active: entry.active,
+            install_path: entry.install_path,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 enum SkillModelVisibility {
@@ -129,9 +160,16 @@ struct DiscoveredSkillCandidate {
 }
 
 #[derive(Debug, Clone, Default)]
+struct ManagedSkillDiscovery {
+    candidates: Vec<DiscoveredSkillCandidate>,
+    blocked_skill_errors: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Default)]
 struct SkillDiscoveryInventory {
     skills: Vec<DiscoveredSkillEntry>,
     shadowed_skills: Vec<DiscoveredSkillEntry>,
+    blocked_skill_errors: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -882,8 +920,8 @@ fn execute_external_skills_list_for_audience(
         payload: json!({
             "adapter": "core-tools",
             "tool_name": tool_name,
-            "skills": filtered.skills,
-            "shadowed_skills": filtered.shadowed_skills,
+            "skills": serialize_skill_entries_for_audience(filtered.skills, audience),
+            "shadowed_skills": serialize_skill_entries_for_audience(filtered.shadowed_skills, audience),
         }),
     })
 }
@@ -903,14 +941,17 @@ fn execute_external_skills_inspect_for_audience(
         payload: json!({
             "adapter": "core-tools",
             "tool_name": tool_name,
-            "skill": skill,
+            "skill": serialize_skill_entry_for_audience(skill, audience),
             "instructions_preview": build_preview(instructions.as_str(), 240),
-            "shadowed_skills": inventory
-                .shadowed_skills
-                .into_iter()
-                .filter(|entry| entry.skill_id == skill_id)
-                .filter(|entry| skill_is_visible_to_audience(entry, audience))
-                .collect::<Vec<_>>(),
+            "shadowed_skills": serialize_skill_entries_for_audience(
+                inventory
+                    .shadowed_skills
+                    .into_iter()
+                    .filter(|entry| entry.skill_id == skill_id)
+                    .filter(|entry| skill_is_visible_to_audience(entry, audience))
+                    .collect::<Vec<_>>(),
+                audience,
+            ),
         }),
     })
 }
@@ -1713,6 +1754,31 @@ fn env_var_is_present(name: &str) -> bool {
     std::env::var_os(name).is_some_and(|value| !value.is_empty())
 }
 
+fn serialize_skill_entry_for_audience(
+    entry: DiscoveredSkillEntry,
+    audience: SkillAudience,
+) -> Value {
+    match audience {
+        SkillAudience::Operator => json!(entry),
+        SkillAudience::Model => json!(DiscoveredSkillModelView::from(entry)),
+    }
+}
+
+fn serialize_skill_entries_for_audience(
+    entries: Vec<DiscoveredSkillEntry>,
+    audience: SkillAudience,
+) -> Value {
+    match audience {
+        SkillAudience::Operator => json!(entries),
+        SkillAudience::Model => json!(
+            entries
+                .into_iter()
+                .map(DiscoveredSkillModelView::from)
+                .collect::<Vec<_>>()
+        ),
+    }
+}
+
 fn command_on_path(command: &str) -> bool {
     let Some(path_env) = std::env::var_os("PATH") else {
         return false;
@@ -1721,8 +1787,27 @@ fn command_on_path(command: &str) -> bool {
         command_candidates(command)
             .into_iter()
             .map(|candidate| dir.join(candidate))
-            .any(|candidate| candidate.is_file())
+            .any(|candidate| command_candidate_is_executable(&candidate))
     })
+}
+
+fn command_candidate_is_executable(candidate: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(candidate) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 fn command_candidates(command: &str) -> Vec<String> {
@@ -1776,6 +1861,7 @@ fn filter_inventory_for_audience(
                 .into_iter()
                 .filter(|entry| skill_is_visible_to_audience(entry, audience))
                 .collect(),
+            blocked_skill_errors: inventory.blocked_skill_errors,
         },
     }
 }
@@ -1988,8 +2074,10 @@ fn installed_skill_by_id(
 fn discover_skill_inventory(
     config: &super::runtime_config::ToolRuntimeConfig,
 ) -> Result<SkillDiscoveryInventory, String> {
+    let managed = discover_managed_skill_candidates(config)?;
     let mut grouped = BTreeMap::<String, Vec<DiscoveredSkillCandidate>>::new();
-    for candidate in discover_managed_skill_candidates(config)?
+    for candidate in managed
+        .candidates
         .into_iter()
         .chain(discover_user_skill_candidates(config)?)
         .chain(discover_project_skill_candidates(config)?)
@@ -2000,8 +2088,14 @@ fn discover_skill_inventory(
             .push(candidate);
     }
 
-    let mut inventory = SkillDiscoveryInventory::default();
-    for mut candidates in grouped.into_values() {
+    let mut inventory = SkillDiscoveryInventory {
+        blocked_skill_errors: managed.blocked_skill_errors,
+        ..SkillDiscoveryInventory::default()
+    };
+    for (skill_id, mut candidates) in grouped {
+        if inventory.blocked_skill_errors.contains_key(&skill_id) {
+            continue;
+        }
         candidates.sort_by(|left, right| {
             left.entry
                 .scope
@@ -2065,21 +2159,40 @@ pub(super) fn installed_skill_snapshot_lines_with_config(
 
 fn discover_managed_skill_candidates(
     config: &super::runtime_config::ToolRuntimeConfig,
-) -> Result<Vec<DiscoveredSkillCandidate>, String> {
+) -> Result<ManagedSkillDiscovery, String> {
     let install_root = resolve_install_root(config);
     let index = load_installed_skill_index(&install_root)?;
-    index
-        .skills
-        .into_iter()
-        .map(|entry| {
-            let entry = rehydrate_installed_skill_entry(&install_root, entry)?;
-            Ok(DiscoveredSkillCandidate {
-                probe_rank: 0,
-                root_rank: 0,
-                entry: build_managed_discovered_skill_entry(config, entry)?,
-            })
-        })
-        .collect()
+    let mut discovery = ManagedSkillDiscovery::default();
+    for entry in index.skills {
+        let skill_id = entry.skill_id.clone();
+        let entry = match rehydrate_installed_skill_entry(&install_root, entry) {
+            Ok(entry) => entry,
+            Err(error) => {
+                discovery
+                    .blocked_skill_errors
+                    .entry(skill_id)
+                    .or_insert(error);
+                continue;
+            }
+        };
+        let entry = match build_managed_discovered_skill_entry(config, entry) {
+            Ok(entry) => entry,
+            Err(error) => {
+                discovery
+                    .blocked_skill_errors
+                    .entry(skill_id)
+                    .or_insert(error);
+                continue;
+            }
+        };
+        discovery.blocked_skill_errors.remove(&skill_id);
+        discovery.candidates.push(DiscoveredSkillCandidate {
+            probe_rank: 0,
+            root_rank: 0,
+            entry,
+        });
+    }
+    Ok(discovery)
 }
 
 fn discover_user_skill_candidates(
@@ -2211,12 +2324,18 @@ fn resolve_discovered_skill(
     inventory: &SkillDiscoveryInventory,
     skill_id: &str,
 ) -> Result<DiscoveredSkillEntry, String> {
-    inventory
+    if let Some(skill) = inventory
         .skills
         .iter()
         .find(|entry| entry.skill_id == skill_id)
         .cloned()
-        .ok_or_else(|| format!("external skill `{skill_id}` is not available"))
+    {
+        return Ok(skill);
+    }
+    if let Some(error) = inventory.blocked_skill_errors.get(skill_id) {
+        return Err(error.clone());
+    }
+    Err(format!("external skill `{skill_id}` is not available"))
 }
 
 fn load_discovered_skill_markdown(
@@ -3688,6 +3807,290 @@ mod tests {
             );
 
             fs::remove_dir_all(&root).ok();
+        });
+    }
+
+    #[test]
+    fn model_surface_redacts_operator_only_skill_metadata() {
+        with_managed_runtime_test(|| {
+            let root = unique_temp_dir("loongclaw-ext-skill-model-redaction");
+            fs::create_dir_all(&root).expect("create fixture root");
+            write_file(
+                &root,
+                ".agents/skills/demo-skill/SKILL.md",
+                "---\nname: demo-skill\ndescription: eligible project skill.\nrequires_env:\n  - DEMO_SKILL_TOKEN\nrequires_bin:\n  - sh\nrequires_paths:\n  - fixtures/present.txt\n---\n\n# Demo Skill\n\nOnly expose model-safe metadata on the provider surface.\n",
+            );
+            write_file(&root, "fixtures/present.txt", "present");
+            let config = managed_runtime_config(&root);
+            let mut env = crate::test_support::ScopedEnv::new();
+            env.set("DEMO_SKILL_TOKEN", "present");
+
+            let list_outcome = crate::tools::execute_tool_core_with_config(
+                ToolCoreRequest {
+                    tool_name: "external_skills.list".to_owned(),
+                    payload: json!({}),
+                },
+                &config,
+            )
+            .expect("model list should succeed");
+            let model_skill = list_outcome.payload["skills"]
+                .as_array()
+                .expect("skills should be an array")
+                .iter()
+                .find(|skill| skill["skill_id"] == "demo-skill")
+                .expect("model list should include demo-skill");
+            assert!(
+                model_skill.get("model_visibility").is_none(),
+                "model list should not expose visibility internals: {model_skill:?}"
+            );
+            assert!(
+                model_skill.get("required_env").is_none(),
+                "model list should not expose required_env: {model_skill:?}"
+            );
+            assert!(
+                model_skill.get("required_bin").is_none(),
+                "model list should not expose required_bin: {model_skill:?}"
+            );
+            assert!(
+                model_skill.get("required_paths").is_none(),
+                "model list should not expose required_paths: {model_skill:?}"
+            );
+            assert!(
+                model_skill.get("eligibility").is_none(),
+                "model list should not expose eligibility diagnostics: {model_skill:?}"
+            );
+
+            let operator_list = execute_external_skills_operator_list_tool_with_config(&config)
+                .expect("operator list should succeed");
+            let operator_skill = operator_list.payload["skills"]
+                .as_array()
+                .expect("skills should be an array")
+                .iter()
+                .find(|skill| skill["skill_id"] == "demo-skill")
+                .expect("operator list should include demo-skill");
+            assert_eq!(operator_skill["model_visibility"], "visible");
+            assert_eq!(operator_skill["required_env"], json!(["DEMO_SKILL_TOKEN"]));
+            assert_eq!(operator_skill["required_bin"], json!(["sh"]));
+            assert_eq!(
+                operator_skill["required_paths"],
+                json!(["fixtures/present.txt"])
+            );
+            assert_eq!(operator_skill["eligibility"]["available"], true);
+
+            let inspect_outcome = crate::tools::execute_tool_core_with_config(
+                ToolCoreRequest {
+                    tool_name: "external_skills.inspect".to_owned(),
+                    payload: json!({
+                        "skill_id": "demo-skill"
+                    }),
+                },
+                &config,
+            )
+            .expect("model inspect should succeed");
+            let model_inspect_skill = inspect_outcome.payload["skill"]
+                .as_object()
+                .expect("inspect skill should be an object");
+            assert!(
+                !model_inspect_skill.contains_key("model_visibility"),
+                "model inspect should not expose visibility internals: {model_inspect_skill:?}"
+            );
+            assert!(
+                !model_inspect_skill.contains_key("required_env"),
+                "model inspect should not expose required_env: {model_inspect_skill:?}"
+            );
+            assert!(
+                !model_inspect_skill.contains_key("required_bin"),
+                "model inspect should not expose required_bin: {model_inspect_skill:?}"
+            );
+            assert!(
+                !model_inspect_skill.contains_key("required_paths"),
+                "model inspect should not expose required_paths: {model_inspect_skill:?}"
+            );
+            assert!(
+                !model_inspect_skill.contains_key("eligibility"),
+                "model inspect should not expose eligibility diagnostics: {model_inspect_skill:?}"
+            );
+
+            let operator_inspect =
+                execute_external_skills_operator_inspect_tool_with_config("demo-skill", &config)
+                    .expect("operator inspect should succeed");
+            assert_eq!(
+                operator_inspect.payload["skill"]["required_env"],
+                json!(["DEMO_SKILL_TOKEN"])
+            );
+            assert_eq!(
+                operator_inspect.payload["skill"]["required_bin"],
+                json!(["sh"])
+            );
+            assert_eq!(
+                operator_inspect.payload["skill"]["required_paths"],
+                json!(["fixtures/present.txt"])
+            );
+            assert_eq!(
+                operator_inspect.payload["skill"]["eligibility"]["available"],
+                true
+            );
+
+            fs::remove_dir_all(&root).ok();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_surface_hides_skills_with_non_executable_required_commands() {
+        with_managed_runtime_test(|| {
+            use std::os::unix::fs::PermissionsExt;
+
+            let root = unique_temp_dir("loongclaw-ext-skill-required-bin-exec");
+            fs::create_dir_all(root.join("bin")).expect("create bin dir");
+            write_file(
+                &root,
+                ".agents/skills/bin-guarded/SKILL.md",
+                "---\nname: bin-guarded\ndescription: requires an executable command.\nrequires_bin:\n  - demo-bin\n---\n\n# Bin Guarded\n\nOnly run when the command is executable.\n",
+            );
+            write_file(&root, "bin/demo-bin", "#!/bin/sh\necho guarded\n");
+            let command_path = root.join("bin/demo-bin");
+            let mut perms = fs::metadata(&command_path)
+                .expect("read command metadata")
+                .permissions();
+            perms.set_mode(0o644);
+            fs::set_permissions(&command_path, perms).expect("set non-executable permissions");
+
+            let config = managed_runtime_config(&root);
+            let mut env = crate::test_support::ScopedEnv::new();
+            env.set("PATH", root.join("bin").as_os_str());
+
+            let list_outcome = crate::tools::execute_tool_core_with_config(
+                ToolCoreRequest {
+                    tool_name: "external_skills.list".to_owned(),
+                    payload: json!({}),
+                },
+                &config,
+            )
+            .expect("list should succeed");
+            assert!(
+                !list_outcome.payload["skills"]
+                    .as_array()
+                    .expect("skills should be an array")
+                    .iter()
+                    .any(|skill| skill["skill_id"] == "bin-guarded"),
+                "skills with non-executable required commands should stay hidden: {}",
+                list_outcome.payload
+            );
+
+            let error = crate::tools::execute_tool_core_with_config(
+                ToolCoreRequest {
+                    tool_name: "external_skills.invoke".to_owned(),
+                    payload: json!({
+                        "skill_id": "bin-guarded"
+                    }),
+                },
+                &config,
+            )
+            .expect_err("invoke should reject non-executable required commands");
+            assert!(
+                error.contains("demo-bin"),
+                "expected missing command in error, got: {error}"
+            );
+
+            fs::remove_dir_all(&root).ok();
+        });
+    }
+
+    #[test]
+    fn provider_surface_skips_broken_managed_installs_without_failing_discovery() {
+        with_managed_runtime_test(|| {
+            let root = unique_temp_dir("loongclaw-ext-skill-broken-managed-discovery");
+            let home = unique_temp_dir("loongclaw-ext-skill-broken-managed-discovery-home");
+            fs::create_dir_all(&root).expect("create fixture root");
+            fs::create_dir_all(&home).expect("create home root");
+            write_file(
+                &root,
+                "source/healthy-skill/SKILL.md",
+                "---\nname: healthy-skill\ndescription: healthy managed skill.\n---\n\nHealthy managed skill instructions.\n",
+            );
+            write_file(
+                &home,
+                ".agents/skills/broken-skill/SKILL.md",
+                "---\nname: broken-skill\ndescription: lower-precedence fallback should stay shadowed.\n---\n\nDo not silently fall back.\n",
+            );
+            let config = managed_runtime_config(&root);
+            let mut env = crate::test_support::ScopedEnv::new();
+            env.set("HOME", &home);
+
+            crate::tools::execute_tool_core_with_config(
+                ToolCoreRequest {
+                    tool_name: "external_skills.install".to_owned(),
+                    payload: json!({
+                        "path": "source/healthy-skill"
+                    }),
+                },
+                &config,
+            )
+            .expect("healthy managed install should succeed");
+
+            let install_root = root.join("external-skills-installed");
+            let mut index =
+                load_installed_skill_index(&install_root).expect("load managed skill index");
+            index.skills.push(InstalledSkillEntry {
+                skill_id: "broken-skill".to_owned(),
+                display_name: "Broken Skill".to_owned(),
+                summary: "broken managed skill".to_owned(),
+                source_kind: "directory".to_owned(),
+                source_path: root.join("source/broken-skill").display().to_string(),
+                install_path: install_root.join("broken-skill").display().to_string(),
+                skill_md_path: install_root
+                    .join("broken-skill/SKILL.md")
+                    .display()
+                    .to_string(),
+                sha256: "deadbeef".to_owned(),
+                installed_at_unix: 0,
+                active: true,
+            });
+            persist_installed_skill_index(&install_root, &mut index)
+                .expect("persist index with broken managed entry");
+
+            let list_outcome = crate::tools::execute_tool_core_with_config(
+                ToolCoreRequest {
+                    tool_name: "external_skills.list".to_owned(),
+                    payload: json!({}),
+                },
+                &config,
+            )
+            .expect("list should succeed when one managed install is broken");
+            let skills = list_outcome.payload["skills"]
+                .as_array()
+                .expect("skills should be an array");
+            assert!(
+                skills
+                    .iter()
+                    .any(|skill| skill["skill_id"] == "healthy-skill"),
+                "healthy managed skill should remain discoverable: {skills:?}"
+            );
+            assert!(
+                skills
+                    .iter()
+                    .all(|skill| skill["skill_id"] != "broken-skill"),
+                "broken managed skill should fail closed instead of falling back: {skills:?}"
+            );
+
+            let error = crate::tools::execute_tool_core_with_config(
+                ToolCoreRequest {
+                    tool_name: "external_skills.invoke".to_owned(),
+                    payload: json!({
+                        "skill_id": "broken-skill"
+                    }),
+                },
+                &config,
+            )
+            .expect_err("broken managed install should not fall back to user scope");
+            assert!(
+                error.contains("failed to inspect managed external skill install"),
+                "expected managed install error, got: {error}"
+            );
+
+            fs::remove_dir_all(&root).ok();
+            fs::remove_dir_all(&home).ok();
         });
     }
 
