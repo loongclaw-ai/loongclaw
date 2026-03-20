@@ -69,7 +69,8 @@ struct ProviderValidationResult {
 
 impl ProviderValidationResult {
     fn passed(self) -> bool {
-        self.endpoint_status == "reachable" && self.credential_status == "validated"
+        self.endpoint_status == "reachable"
+            && matches!(self.credential_status, "validated" | "request_rejected")
     }
 }
 
@@ -455,8 +456,10 @@ fn provider_probe_model(provider: &mvp::config::ProviderConfig) -> String {
     }
 }
 
-// Keep onboarding validation lightweight: probe the configured endpoint first, then try
-// a minimal authenticated request for providers that speak OpenAI-compatible chat.
+// Keep onboarding validation lightweight: prove the route is reachable and the
+// provider accepts an authenticated probe. For first-run onboarding, a provider-
+// specific request-shape rejection is still good enough to let users proceed,
+// because it proves the endpoint and credentials are basically wired up.
 async fn validate_provider_config(
     provider: &mvp::config::ProviderConfig,
 ) -> ProviderValidationResult {
