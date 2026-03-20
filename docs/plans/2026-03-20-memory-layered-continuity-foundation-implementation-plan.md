@@ -281,7 +281,9 @@ Expected: PASS.
 **Step 5: Commit**
 
 ```bash
-git add docs/ROADMAP.md docs/design-docs/index.md crates/daemon/src/main.rs crates/daemon/src/lib.rs
+git add docs/ROADMAP.md docs/design-docs/index.md
+# If this slice adds new diagnostics, also stage:
+# git add crates/daemon/src/main.rs crates/daemon/src/lib.rs
 git commit -m "docs(memory): document layered continuity foundation"
 ```
 
