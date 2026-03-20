@@ -26,9 +26,7 @@ Catalog of design documents and architectural decisions.
 
 ## Tracked Deviations
 
-| ID | Description | Status | Tracking |
-|----|-------------|--------|----------|
-| D1 | `spec -> app` dependency (transitional runtime coupling) | Open | Must be retired by architecture refactor |
+None currently.
 
 ## Decision Log
 

@@ -9,7 +9,6 @@ authors.workspace = true
 test-support = []
 
 [dependencies]
-loongclaw-app = { path = "../app", default-features = false, features = ["memory-sqlite"] }
 loongclaw-spec = { path = "../spec" }
 kernel = { package = "loongclaw-kernel", path = "../kernel" }
 rusqlite.workspace = true

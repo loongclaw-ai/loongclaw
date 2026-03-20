@@ -31,7 +31,7 @@ impl FilePolicyExtension {
     fn required_capability(tool_name: &str) -> Option<Capability> {
         match tool_name {
             "file.read" | "claw.migrate" => Some(Capability::FilesystemRead),
-            "file.write" => Some(Capability::FilesystemWrite),
+            "file.write" | "file.edit" => Some(Capability::FilesystemWrite),
             _ => None,
         }
     }
@@ -228,6 +228,24 @@ mod tests {
         let caps = BTreeSet::from([Capability::InvokeTool]);
         let params =
             json!({"tool_name": "file.write", "payload": {"path": "foo.txt", "content": "x"}});
+        let ctx = make_context(&pack, &token, &caps, Some(&params));
+        let result = ext.authorize_extension(&ctx);
+        assert!(matches!(
+            result.unwrap_err(),
+            PolicyError::ExtensionDenied { .. }
+        ));
+    }
+
+    #[test]
+    fn denies_file_edit_without_capability() {
+        let ext = FilePolicyExtension::new(None);
+        let pack = test_pack();
+        let token = token_with_caps(BTreeSet::from([Capability::InvokeTool]));
+        let caps = BTreeSet::from([Capability::InvokeTool]);
+        let params = json!({
+            "tool_name": "file.edit",
+            "payload": {"path": "foo.txt", "old_string": "a", "new_string": "b"}
+        });
         let ctx = make_context(&pack, &token, &caps, Some(&params));
         let result = ext.authorize_extension(&ctx);
         assert!(matches!(

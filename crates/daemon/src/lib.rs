@@ -29,9 +29,42 @@ pub use loongclaw_spec::spec_runtime::*;
 pub use loongclaw_spec::{CliResult, DEFAULT_AGENT_ID, DEFAULT_PACK_ID, kernel_bootstrap};
 
 pub use loongclaw_bench::{
-    run_memory_context_benchmark_cli, run_programmatic_pressure_baseline_lint_cli,
-    run_programmatic_pressure_benchmark_cli, run_wasm_cache_benchmark_cli,
+    run_programmatic_pressure_baseline_lint_cli, run_programmatic_pressure_benchmark_cli,
+    run_wasm_cache_benchmark_cli,
 };
+#[cfg(any(feature = "memory-sqlite", feature = "mvp"))]
+pub use memory_context_benchmark::run_memory_context_benchmark_cli;
+#[cfg(not(any(feature = "memory-sqlite", feature = "mvp")))]
+pub fn run_memory_context_benchmark_cli(
+    output_path: &str,
+    temp_root: Option<&str>,
+    history_turns: usize,
+    sliding_window: usize,
+    summary_max_chars: usize,
+    words_per_turn: usize,
+    rebuild_iterations: usize,
+    hot_iterations: usize,
+    warmup_iterations: usize,
+    suite_repetitions: usize,
+    enforce_gate: bool,
+    min_steady_state_speedup_ratio: f64,
+) -> CliResult<()> {
+    let _ = (
+        output_path,
+        temp_root,
+        history_turns,
+        sliding_window,
+        summary_max_chars,
+        words_per_turn,
+        rebuild_iterations,
+        hot_iterations,
+        warmup_iterations,
+        suite_repetitions,
+        enforce_gate,
+        min_steady_state_speedup_ratio,
+    );
+    Err("benchmark-memory-context requires the daemon `memory-sqlite` feature".to_owned())
+}
 
 pub use base64;
 pub use kernel;
@@ -41,16 +74,20 @@ pub mod audit_cli;
 mod browser_companion_diagnostics;
 pub mod browser_preview;
 mod cli_handoff;
+pub mod completions_cli;
 pub mod doctor_cli;
 pub mod feishu_cli;
 pub mod feishu_support;
 pub mod import_cli;
+#[cfg(any(feature = "memory-sqlite", feature = "mvp"))]
+mod memory_context_benchmark;
 pub mod migrate_cli;
 pub mod migration;
 pub mod next_actions;
 pub mod onboard_cli;
 pub mod onboard_presentation;
 pub mod provider_presentation;
+mod provider_route_diagnostics;
 pub mod runtime_capability_cli;
 pub mod runtime_experiment_cli;
 pub mod runtime_restore_cli;
@@ -630,6 +667,32 @@ pub enum Commands {
         #[arg(long)]
         path: Option<String>,
     },
+    /// Send one Matrix room message
+    MatrixSend {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long = "target")]
+        target: String,
+        #[arg(
+            long,
+            default_value_t = default_matrix_send_target_kind(),
+            value_parser = parse_matrix_send_target_kind
+        )]
+        target_kind: mvp::channel::ChannelOutboundTargetKind,
+        #[arg(long)]
+        text: String,
+    },
+    /// Run Matrix sync reply loop
+    MatrixServe {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long, default_value_t = false)]
+        once: bool,
+        #[arg(long)]
+        account: Option<String>,
+    },
     /// Run the Feishu integration namespace
     Feishu {
         #[command(subcommand)]
@@ -639,6 +702,11 @@ pub enum Commands {
     Web {
         #[command(subcommand)]
         command: web_cli::WebCommand,
+    },
+    /// Print a shell completion script to stdout
+    Completions {
+        /// Target shell (bash, zsh, fish, powershell, elvish)
+        shell: clap_complete::Shell,
     },
 }
 
@@ -1846,6 +1914,22 @@ mod runtime_snapshot_restore_spec_tests {
             "x-secret-version",
             "literal-secret",
         ));
+    }
+
+    #[test]
+    fn runtime_snapshot_tool_runtime_json_reports_browser_execution_tiers() {
+        let mut runtime = mvp::tools::runtime_config::ToolRuntimeConfig::default();
+        runtime.browser_companion.enabled = true;
+        runtime.browser_companion.ready = true;
+        runtime.browser_companion.command = Some("browser-companion".to_owned());
+
+        let json = runtime_snapshot_tool_runtime_json(&runtime);
+
+        assert_eq!(json["browser"]["execution_tier"], json!("restricted"));
+        assert_eq!(
+            json["browser_companion"]["execution_tier"],
+            json!("balanced")
+        );
     }
 }
 
@@ -3116,6 +3200,11 @@ pub const FEISHU_SEND_CLI_SPEC: ChannelSendCliSpec = ChannelSendCliSpec {
     run: run_feishu_send_cli_impl,
 };
 
+pub const MATRIX_SEND_CLI_SPEC: ChannelSendCliSpec = ChannelSendCliSpec {
+    family: mvp::channel::MATRIX_COMMAND_FAMILY_DESCRIPTOR,
+    run: run_matrix_send_cli_impl,
+};
+
 pub const TELEGRAM_SERVE_CLI_SPEC: ChannelServeCliSpec = ChannelServeCliSpec {
     family: mvp::channel::TELEGRAM_COMMAND_FAMILY_DESCRIPTOR,
     run: run_telegram_serve_cli_impl,
@@ -3124,6 +3213,11 @@ pub const TELEGRAM_SERVE_CLI_SPEC: ChannelServeCliSpec = ChannelServeCliSpec {
 pub const FEISHU_SERVE_CLI_SPEC: ChannelServeCliSpec = ChannelServeCliSpec {
     family: mvp::channel::FEISHU_COMMAND_FAMILY_DESCRIPTOR,
     run: run_feishu_serve_cli_impl,
+};
+
+pub const MATRIX_SERVE_CLI_SPEC: ChannelServeCliSpec = ChannelServeCliSpec {
+    family: mvp::channel::MATRIX_COMMAND_FAMILY_DESCRIPTOR,
+    run: run_matrix_serve_cli_impl,
 };
 
 pub async fn run_channel_send_cli(
@@ -3174,6 +3268,20 @@ pub fn run_feishu_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliComma
                 card: args.as_card,
                 uuid: None,
             },
+        )
+        .await
+    })
+}
+
+pub fn run_matrix_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliCommandFuture<'_> {
+    Box::pin(async move {
+        let _ = args.as_card;
+        mvp::channel::run_matrix_send(
+            args.config_path,
+            args.account,
+            args.target,
+            args.target_kind,
+            args.text,
         )
         .await
     })
@@ -3230,6 +3338,16 @@ pub fn parse_telegram_send_target_kind(
     parse_channel_send_target_kind(TELEGRAM_SEND_CLI_SPEC, raw)
 }
 
+pub fn default_matrix_send_target_kind() -> mvp::channel::ChannelOutboundTargetKind {
+    default_channel_send_target_kind(MATRIX_SEND_CLI_SPEC)
+}
+
+pub fn parse_matrix_send_target_kind(
+    raw: &str,
+) -> Result<mvp::channel::ChannelOutboundTargetKind, String> {
+    parse_channel_send_target_kind(MATRIX_SEND_CLI_SPEC, raw)
+}
+
 pub fn default_feishu_send_target_kind() -> mvp::channel::ChannelOutboundTargetKind {
     default_channel_send_target_kind(FEISHU_SEND_CLI_SPEC)
 }
@@ -3247,6 +3365,18 @@ pub fn run_feishu_serve_cli_impl(args: ChannelServeCliArgs<'_>) -> ChannelCliCom
             args.account,
             args.bind_override,
             args.path_override,
+        ))
+        .await
+    })
+}
+
+pub fn run_matrix_serve_cli_impl(args: ChannelServeCliArgs<'_>) -> ChannelCliCommandFuture<'_> {
+    Box::pin(async move {
+        let _ = (args.bind_override, args.path_override);
+        with_graceful_shutdown(mvp::channel::run_matrix_channel(
+            args.config_path,
+            args.once,
+            args.account,
         ))
         .await
     })
@@ -3444,16 +3574,20 @@ pub fn render_runtime_snapshot_text(snapshot: &RuntimeSnapshotCliState) -> Strin
         snapshot.tool_runtime.delegate_enabled
     ));
     lines.push(format!(
-        "tool_runtime browser enabled={} max_sessions={} max_links={} max_text_chars={}",
+        "tool_runtime browser enabled={} tier={} max_sessions={} max_links={} max_text_chars={}",
         snapshot.tool_runtime.browser.enabled,
+        snapshot.tool_runtime.browser_execution_security_tier(),
         snapshot.tool_runtime.browser.max_sessions,
         snapshot.tool_runtime.browser.max_links,
         snapshot.tool_runtime.browser.max_text_chars
     ));
     lines.push(format!(
-        "tool_runtime browser_companion enabled={} ready={} command={} expected_version={}",
+        "tool_runtime browser_companion enabled={} ready={} tier={} command={} expected_version={}",
         snapshot.tool_runtime.browser_companion.enabled,
         snapshot.tool_runtime.browser_companion.ready,
+        snapshot
+            .tool_runtime
+            .browser_companion_execution_security_tier(),
         snapshot
             .tool_runtime
             .browser_companion
@@ -3647,6 +3781,7 @@ fn runtime_snapshot_tool_runtime_json(
         "delegate_enabled": runtime.delegate_enabled,
         "browser": {
             "enabled": runtime.browser.enabled,
+            "execution_tier": runtime.browser_execution_security_tier().as_str(),
             "max_sessions": runtime.browser.max_sessions,
             "max_links": runtime.browser.max_links,
             "max_text_chars": runtime.browser.max_text_chars,
@@ -3654,6 +3789,7 @@ fn runtime_snapshot_tool_runtime_json(
         "browser_companion": {
             "enabled": runtime.browser_companion.enabled,
             "ready": runtime.browser_companion.ready,
+            "execution_tier": runtime.browser_companion_execution_security_tier().as_str(),
             "command": runtime.browser_companion.command,
             "expected_version": runtime.browser_companion.expected_version,
         },

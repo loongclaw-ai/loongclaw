@@ -4,8 +4,9 @@ use serde::Serialize;
 
 use crate::config::{
     ChannelDefaultAccountSelectionSource, FEISHU_APP_ID_ENV, FEISHU_APP_SECRET_ENV,
-    FEISHU_ENCRYPT_KEY_ENV, FEISHU_VERIFICATION_TOKEN_ENV, LoongClawConfig,
-    ResolvedFeishuChannelConfig, ResolvedTelegramChannelConfig, TELEGRAM_BOT_TOKEN_ENV,
+    FEISHU_ENCRYPT_KEY_ENV, FEISHU_VERIFICATION_TOKEN_ENV, FeishuChannelServeMode, LoongClawConfig,
+    MATRIX_ACCESS_TOKEN_ENV, ResolvedFeishuChannelConfig, ResolvedMatrixChannelConfig,
+    ResolvedTelegramChannelConfig, TELEGRAM_BOT_TOKEN_ENV,
 };
 
 use super::{ChannelCatalogTargetKind, ChannelOperationRuntime, ChannelPlatform, runtime_state};
@@ -32,6 +33,13 @@ pub const FEISHU_RUNTIME_COMMAND_DESCRIPTOR: ChannelRuntimeCommandDescriptor =
         channel_id: "feishu",
         platform: ChannelPlatform::Feishu,
         serve_bootstrap_agent_id: "channel-feishu",
+    };
+
+pub const MATRIX_RUNTIME_COMMAND_DESCRIPTOR: ChannelRuntimeCommandDescriptor =
+    ChannelRuntimeCommandDescriptor {
+        channel_id: "matrix",
+        platform: ChannelPlatform::Matrix,
+        serve_bootstrap_agent_id: "channel-matrix",
     };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -443,7 +451,7 @@ const FEISHU_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
 
 const FEISHU_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SERVE_ID,
-    label: "webhook reply server",
+    label: "inbound reply service",
     command: "feishu-serve",
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: true,
@@ -503,10 +511,18 @@ const FEISHU_ALLOWED_CHAT_IDS_REQUIREMENT: ChannelCatalogOperationRequirement =
         env_pointer_paths: &[],
         default_env_var: None,
     };
+const FEISHU_MODE_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "mode",
+        label: "serve mode",
+        config_paths: &["feishu.mode", "feishu.accounts.<account>.mode"],
+        env_pointer_paths: &[],
+        default_env_var: None,
+    };
 const FEISHU_VERIFICATION_TOKEN_REQUIREMENT: ChannelCatalogOperationRequirement =
     ChannelCatalogOperationRequirement {
         id: "verification_token",
-        label: "verification token",
+        label: "verification token (webhook mode only)",
         config_paths: &[
             "feishu.verification_token",
             "feishu.accounts.<account>.verification_token",
@@ -520,7 +536,7 @@ const FEISHU_VERIFICATION_TOKEN_REQUIREMENT: ChannelCatalogOperationRequirement 
 const FEISHU_ENCRYPT_KEY_REQUIREMENT: ChannelCatalogOperationRequirement =
     ChannelCatalogOperationRequirement {
         id: "encrypt_key",
-        label: "encrypt key",
+        label: "encrypt key (webhook mode only)",
         config_paths: &[
             "feishu.encrypt_key",
             "feishu.accounts.<account>.encrypt_key",
@@ -540,6 +556,7 @@ const FEISHU_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
     FEISHU_ENABLED_REQUIREMENT,
     FEISHU_APP_ID_REQUIREMENT,
     FEISHU_APP_SECRET_REQUIREMENT,
+    FEISHU_MODE_REQUIREMENT,
     FEISHU_ALLOWED_CHAT_IDS_REQUIREMENT,
     FEISHU_VERIFICATION_TOKEN_REQUIREMENT,
     FEISHU_ENCRYPT_KEY_REQUIREMENT,
@@ -551,11 +568,11 @@ const FEISHU_SEND_DOCTOR_CHECKS: &[ChannelDoctorCheckSpec] = &[ChannelDoctorChec
 }];
 const FEISHU_SERVE_DOCTOR_CHECKS: &[ChannelDoctorCheckSpec] = &[
     ChannelDoctorCheckSpec {
-        name: "feishu webhook verification",
+        name: "feishu inbound transport",
         trigger: ChannelDoctorCheckTrigger::OperationHealth,
     },
     ChannelDoctorCheckSpec {
-        name: "feishu webhook runtime",
+        name: "feishu serve runtime",
         trigger: ChannelDoctorCheckTrigger::ReadyRuntime,
     },
 ];
@@ -578,7 +595,141 @@ const FEISHU_CAPABILITIES: &[ChannelCapability] = &[
 ];
 const FEISHU_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
     strategy: ChannelOnboardingStrategy::ManualConfig,
-    setup_hint: "configure feishu or lark app credentials and webhook secrets in loongclaw.toml under feishu or feishu.accounts.<account>",
+    setup_hint: "configure feishu or lark app credentials, allowed chat ids, and either webhook secrets or mode = \"websocket\" in loongclaw.toml under feishu or feishu.accounts.<account>",
+    status_command: "loongclaw doctor",
+    repair_command: Some("loongclaw doctor --fix"),
+};
+
+const MATRIX_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
+    id: CHANNEL_OPERATION_SEND_ID,
+    label: "direct send",
+    command: "matrix-send",
+    availability: ChannelCatalogOperationAvailability::Implemented,
+    tracks_runtime: false,
+    requirements: MATRIX_SEND_REQUIREMENTS,
+    supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
+};
+
+const MATRIX_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
+    id: CHANNEL_OPERATION_SERVE_ID,
+    label: "sync reply loop",
+    command: "matrix-serve",
+    availability: ChannelCatalogOperationAvailability::Implemented,
+    tracks_runtime: true,
+    requirements: MATRIX_SERVE_REQUIREMENTS,
+    supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
+};
+
+pub const MATRIX_CATALOG_COMMAND_FAMILY_DESCRIPTOR: ChannelCatalogCommandFamilyDescriptor =
+    ChannelCatalogCommandFamilyDescriptor {
+        channel_id: "matrix",
+        default_send_target_kind: ChannelCatalogTargetKind::Conversation,
+        send: MATRIX_SEND_OPERATION,
+        serve: MATRIX_SERVE_OPERATION,
+    };
+
+pub const MATRIX_COMMAND_FAMILY_DESCRIPTOR: ChannelCommandFamilyDescriptor =
+    ChannelCommandFamilyDescriptor {
+        runtime: MATRIX_RUNTIME_COMMAND_DESCRIPTOR,
+        catalog: MATRIX_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    };
+
+const MATRIX_ENABLED_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "enabled",
+        label: "channel enabled",
+        config_paths: &["matrix.enabled", "matrix.accounts.<account>.enabled"],
+        env_pointer_paths: &[],
+        default_env_var: None,
+    };
+const MATRIX_ACCESS_TOKEN_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "access_token",
+        label: "access token",
+        config_paths: &[
+            "matrix.access_token",
+            "matrix.accounts.<account>.access_token",
+        ],
+        env_pointer_paths: &[
+            "matrix.access_token_env",
+            "matrix.accounts.<account>.access_token_env",
+        ],
+        default_env_var: Some(MATRIX_ACCESS_TOKEN_ENV),
+    };
+const MATRIX_BASE_URL_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "base_url",
+        label: "homeserver base url",
+        config_paths: &["matrix.base_url", "matrix.accounts.<account>.base_url"],
+        env_pointer_paths: &[],
+        default_env_var: None,
+    };
+const MATRIX_ALLOWED_ROOM_IDS_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "allowed_room_ids",
+        label: "allowed room ids",
+        config_paths: &[
+            "matrix.allowed_room_ids",
+            "matrix.accounts.<account>.allowed_room_ids",
+        ],
+        env_pointer_paths: &[],
+        default_env_var: None,
+    };
+const MATRIX_USER_ID_REQUIREMENT: ChannelCatalogOperationRequirement =
+    ChannelCatalogOperationRequirement {
+        id: "user_id",
+        label: "user id when ignore_self_messages is enabled",
+        config_paths: &["matrix.user_id", "matrix.accounts.<account>.user_id"],
+        env_pointer_paths: &[],
+        default_env_var: None,
+    };
+const MATRIX_SEND_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
+    MATRIX_ENABLED_REQUIREMENT,
+    MATRIX_ACCESS_TOKEN_REQUIREMENT,
+    MATRIX_BASE_URL_REQUIREMENT,
+];
+const MATRIX_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
+    MATRIX_ENABLED_REQUIREMENT,
+    MATRIX_ACCESS_TOKEN_REQUIREMENT,
+    MATRIX_BASE_URL_REQUIREMENT,
+    MATRIX_ALLOWED_ROOM_IDS_REQUIREMENT,
+    MATRIX_USER_ID_REQUIREMENT,
+];
+
+const MATRIX_SEND_DOCTOR_CHECKS: &[ChannelDoctorCheckSpec] = &[ChannelDoctorCheckSpec {
+    name: "matrix channel",
+    trigger: ChannelDoctorCheckTrigger::OperationHealth,
+}];
+const MATRIX_SERVE_DOCTOR_CHECKS: &[ChannelDoctorCheckSpec] = &[
+    ChannelDoctorCheckSpec {
+        name: "matrix room sync",
+        trigger: ChannelDoctorCheckTrigger::OperationHealth,
+    },
+    ChannelDoctorCheckSpec {
+        name: "matrix channel runtime",
+        trigger: ChannelDoctorCheckTrigger::ReadyRuntime,
+    },
+];
+const MATRIX_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
+    ChannelRegistryOperationDescriptor {
+        operation: MATRIX_CATALOG_COMMAND_FAMILY_DESCRIPTOR.send,
+        doctor_checks: MATRIX_SEND_DOCTOR_CHECKS,
+    },
+    ChannelRegistryOperationDescriptor {
+        operation: MATRIX_CATALOG_COMMAND_FAMILY_DESCRIPTOR.serve,
+        doctor_checks: MATRIX_SERVE_DOCTOR_CHECKS,
+    },
+];
+const MATRIX_CAPABILITIES: &[ChannelCapability] = &[
+    ChannelCapability::RuntimeBacked,
+    ChannelCapability::MultiAccount,
+    ChannelCapability::Send,
+    ChannelCapability::Serve,
+    ChannelCapability::RuntimeTracking,
+];
+const MATRIX_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
+    strategy: ChannelOnboardingStrategy::ManualConfig,
+    setup_hint: "configure matrix access tokens, homeserver base url, and allowed room ids in loongclaw.toml under matrix or matrix.accounts.<account>",
     status_command: "loongclaw doctor",
     repair_command: Some("loongclaw doctor --fix"),
 };
@@ -692,9 +843,23 @@ const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
         capabilities: FEISHU_CAPABILITIES,
         label: "Feishu/Lark",
         aliases: &["lark"],
-        transport: "feishu_openapi_webhook",
+        transport: "feishu_openapi_webhook_or_websocket",
         onboarding: FEISHU_ONBOARDING_DESCRIPTOR,
         operations: FEISHU_OPERATIONS,
+    },
+    ChannelRegistryDescriptor {
+        id: "matrix",
+        runtime: Some(ChannelRuntimeDescriptor {
+            family: MATRIX_COMMAND_FAMILY_DESCRIPTOR,
+            snapshot_builder: build_matrix_snapshots,
+        }),
+        implementation_status: ChannelCatalogImplementationStatus::RuntimeBacked,
+        capabilities: MATRIX_CAPABILITIES,
+        label: "Matrix",
+        aliases: &[],
+        transport: "matrix_client_server_sync",
+        onboarding: MATRIX_ONBOARDING_DESCRIPTOR,
+        operations: MATRIX_OPERATIONS,
     },
     ChannelRegistryDescriptor {
         id: "discord",
@@ -1164,6 +1329,48 @@ fn build_feishu_snapshots(
         .collect()
 }
 
+fn build_matrix_snapshots(
+    descriptor: &ChannelRegistryDescriptor,
+    config: &LoongClawConfig,
+    runtime_dir: &Path,
+    now_ms: u64,
+) -> Vec<ChannelStatusSnapshot> {
+    let compiled = cfg!(feature = "channel-matrix");
+    let default_selection = config.matrix.default_configured_account_selection();
+    let default_configured_account_id = default_selection.id.clone();
+    let default_account_source = default_selection.source;
+    config
+        .matrix
+        .configured_account_ids()
+        .into_iter()
+        .map(|configured_account_id| {
+            let is_default_account = configured_account_id == default_configured_account_id;
+            match config
+                .matrix
+                .resolve_account(Some(configured_account_id.as_str()))
+            {
+                Ok(resolved) => build_matrix_snapshot_for_account(
+                    descriptor,
+                    compiled,
+                    resolved,
+                    is_default_account,
+                    default_account_source,
+                    runtime_dir,
+                    now_ms,
+                ),
+                Err(error) => build_invalid_matrix_snapshot(
+                    descriptor,
+                    compiled,
+                    configured_account_id.as_str(),
+                    is_default_account,
+                    default_account_source,
+                    error,
+                ),
+            }
+        })
+        .collect()
+}
+
 fn build_feishu_snapshot_for_account(
     descriptor: &ChannelRegistryDescriptor,
     compiled: bool,
@@ -1189,11 +1396,13 @@ fn build_feishu_snapshot_for_account(
     {
         serve_issues.push("allowed_chat_ids is empty".to_owned());
     }
-    if resolved.verification_token().is_none() {
-        serve_issues.push("verification_token is missing".to_owned());
-    }
-    if resolved.encrypt_key().is_none() {
-        serve_issues.push("encrypt_key is missing".to_owned());
+    if resolved.mode == FeishuChannelServeMode::Webhook {
+        if resolved.verification_token().is_none() {
+            serve_issues.push("verification_token is missing".to_owned());
+        }
+        if resolved.encrypt_key().is_none() {
+            serve_issues.push("encrypt_key is missing".to_owned());
+        }
     }
 
     let send_operation = if !compiled {
@@ -1251,10 +1460,13 @@ fn build_feishu_snapshot_for_account(
         format!("configured_account={}", resolved.configured_account_label),
         format!("account_id={}", resolved.account.id),
         format!("account={}", resolved.account.label),
+        format!("mode={}", resolved.mode.as_str()),
         format!("receive_id_type={}", resolved.receive_id_type),
-        format!("webhook_bind={}", resolved.webhook_bind),
-        format!("webhook_path={}", resolved.webhook_path),
     ];
+    if resolved.mode == FeishuChannelServeMode::Webhook {
+        notes.push(format!("webhook_bind={}", resolved.webhook_bind));
+        notes.push(format!("webhook_path={}", resolved.webhook_path));
+    }
     if !resolved.acp.bootstrap_mcp_servers.is_empty() {
         notes.push(format!(
             "acp_bootstrap_mcp_servers={}",
@@ -1287,6 +1499,138 @@ fn build_feishu_snapshot_for_account(
         compiled,
         enabled: resolved.enabled,
         api_base_url: Some(resolved.resolved_base_url()),
+        notes,
+        operations: vec![send_operation, serve_operation],
+    }
+}
+
+fn build_matrix_snapshot_for_account(
+    descriptor: &ChannelRegistryDescriptor,
+    compiled: bool,
+    resolved: ResolvedMatrixChannelConfig,
+    is_default_account: bool,
+    default_account_source: ChannelDefaultAccountSelectionSource,
+    runtime_dir: &Path,
+    now_ms: u64,
+) -> ChannelStatusSnapshot {
+    let mut send_issues = Vec::new();
+    if resolved.access_token().is_none() {
+        send_issues.push("access_token is missing".to_owned());
+    }
+    if resolved.resolved_base_url().is_none() {
+        send_issues.push("base_url is missing".to_owned());
+    }
+
+    let mut serve_issues = send_issues.clone();
+    if !resolved
+        .allowed_room_ids
+        .iter()
+        .any(|value| !value.trim().is_empty())
+    {
+        serve_issues.push("allowed_room_ids is empty".to_owned());
+    }
+    let has_user_id = resolved
+        .user_id
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty());
+    if resolved.ignore_self_messages && !has_user_id {
+        serve_issues.push("user_id is missing while ignore_self_messages is enabled".to_owned());
+    }
+
+    let send_operation = if !compiled {
+        unsupported_operation(
+            MATRIX_SEND_OPERATION,
+            "binary built without feature `channel-matrix`".to_owned(),
+        )
+    } else if !resolved.enabled {
+        disabled_operation(
+            MATRIX_SEND_OPERATION,
+            "disabled by matrix account configuration".to_owned(),
+        )
+    } else if !send_issues.is_empty() {
+        misconfigured_operation(MATRIX_SEND_OPERATION, send_issues)
+    } else {
+        ready_operation(MATRIX_SEND_OPERATION)
+    };
+
+    let serve_operation = if !compiled {
+        unsupported_operation(
+            MATRIX_SERVE_OPERATION,
+            "binary built without feature `channel-matrix`".to_owned(),
+        )
+    } else if !resolved.enabled {
+        disabled_operation(
+            MATRIX_SERVE_OPERATION,
+            "disabled by matrix account configuration".to_owned(),
+        )
+    } else if !serve_issues.is_empty() {
+        misconfigured_operation(MATRIX_SERVE_OPERATION, serve_issues)
+    } else {
+        ready_operation(MATRIX_SERVE_OPERATION)
+    };
+    let send_operation = attach_runtime(
+        ChannelPlatform::Matrix,
+        MATRIX_SEND_OPERATION,
+        send_operation,
+        resolved.account.id.as_str(),
+        resolved.account.label.as_str(),
+        runtime_dir,
+        now_ms,
+    );
+    let serve_operation = attach_runtime(
+        ChannelPlatform::Matrix,
+        MATRIX_SERVE_OPERATION,
+        serve_operation,
+        resolved.account.id.as_str(),
+        resolved.account.label.as_str(),
+        runtime_dir,
+        now_ms,
+    );
+
+    let mut notes = vec![
+        format!("configured_account_id={}", resolved.configured_account_id),
+        format!("configured_account={}", resolved.configured_account_label),
+        format!("account_id={}", resolved.account.id),
+        format!("account={}", resolved.account.label),
+        format!("sync_timeout_s={}", resolved.sync_timeout_s),
+        format!("ignore_self_messages={}", resolved.ignore_self_messages),
+    ];
+    if let Some(user_id) = resolved.user_id.as_deref() {
+        notes.push(format!("user_id={user_id}"));
+    }
+    if !resolved.acp.bootstrap_mcp_servers.is_empty() {
+        notes.push(format!(
+            "acp_bootstrap_mcp_servers={}",
+            resolved.acp.bootstrap_mcp_servers.join(",")
+        ));
+    }
+    if let Some(working_directory) = resolved.acp.resolved_working_directory() {
+        notes.push(format!(
+            "acp_working_directory={}",
+            working_directory.display()
+        ));
+    }
+    if is_default_account {
+        notes.push("default_account=true".to_owned());
+    }
+    notes.push(format!(
+        "default_account_source={}",
+        default_account_source.as_str()
+    ));
+
+    ChannelStatusSnapshot {
+        id: descriptor.id,
+        configured_account_id: resolved.configured_account_id.clone(),
+        configured_account_label: resolved.configured_account_label.clone(),
+        is_default_account,
+        default_account_source,
+        label: descriptor.label,
+        aliases: descriptor.aliases.to_vec(),
+        transport: descriptor.transport,
+        compiled,
+        enabled: resolved.enabled,
+        api_base_url: resolved.resolved_base_url(),
         notes,
         operations: vec![send_operation, serve_operation],
     }
@@ -1369,6 +1713,60 @@ fn build_invalid_feishu_snapshot(
         )
     } else {
         misconfigured_operation(FEISHU_SERVE_OPERATION, vec![error.clone()])
+    };
+
+    let mut notes = vec![
+        format!("configured_account_id={configured_account_id}"),
+        format!("selection_error={error}"),
+    ];
+    if is_default_account {
+        notes.push("default_account=true".to_owned());
+    }
+    notes.push(format!(
+        "default_account_source={}",
+        default_account_source.as_str()
+    ));
+
+    ChannelStatusSnapshot {
+        id: descriptor.id,
+        configured_account_id: configured_account_id.to_owned(),
+        configured_account_label: configured_account_id.to_owned(),
+        is_default_account,
+        default_account_source,
+        label: descriptor.label,
+        aliases: descriptor.aliases.to_vec(),
+        transport: descriptor.transport,
+        compiled,
+        enabled: false,
+        api_base_url: None,
+        notes,
+        operations: vec![send_operation, serve_operation],
+    }
+}
+
+fn build_invalid_matrix_snapshot(
+    descriptor: &ChannelRegistryDescriptor,
+    compiled: bool,
+    configured_account_id: &str,
+    is_default_account: bool,
+    default_account_source: ChannelDefaultAccountSelectionSource,
+    error: String,
+) -> ChannelStatusSnapshot {
+    let send_operation = if !compiled {
+        unsupported_operation(
+            MATRIX_SEND_OPERATION,
+            "binary built without feature `channel-matrix`".to_owned(),
+        )
+    } else {
+        misconfigured_operation(MATRIX_SEND_OPERATION, vec![error.clone()])
+    };
+    let serve_operation = if !compiled {
+        unsupported_operation(
+            MATRIX_SERVE_OPERATION,
+            "binary built without feature `channel-matrix`".to_owned(),
+        )
+    } else {
+        misconfigured_operation(MATRIX_SERVE_OPERATION, vec![error.clone()])
     };
 
     let mut notes = vec![
@@ -1543,7 +1941,7 @@ mod tests {
                 .iter()
                 .map(|descriptor| descriptor.id)
                 .collect::<Vec<_>>(),
-            vec!["telegram", "feishu"]
+            vec!["telegram", "feishu", "matrix"]
         );
         assert!(
             runtime_backed
@@ -1614,6 +2012,22 @@ mod tests {
     }
 
     #[test]
+    fn resolve_channel_catalog_command_family_descriptor_includes_matrix_runtime_channel() {
+        let matrix = resolve_channel_catalog_command_family_descriptor("matrix")
+            .expect("matrix catalog command family");
+
+        assert_eq!(matrix.channel_id, "matrix");
+        assert_eq!(matrix.send.id, CHANNEL_OPERATION_SEND_ID);
+        assert_eq!(matrix.send.command, "matrix-send");
+        assert_eq!(matrix.serve.id, CHANNEL_OPERATION_SERVE_ID);
+        assert_eq!(matrix.serve.command, "matrix-serve");
+        assert_eq!(
+            matrix.default_send_target_kind,
+            ChannelCatalogTargetKind::Conversation
+        );
+    }
+
+    #[test]
     fn resolve_channel_catalog_command_family_descriptor_rejects_unknown_channels() {
         assert_eq!(
             resolve_channel_catalog_command_family_descriptor("unknown-channel"),
@@ -1674,7 +2088,7 @@ mod tests {
                 .iter()
                 .map(|check| check.name)
                 .collect::<Vec<_>>(),
-            vec!["feishu webhook verification", "feishu webhook runtime"]
+            vec!["feishu inbound transport", "feishu serve runtime"]
         );
 
         let discord_send =
@@ -1798,11 +2212,11 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 (
-                    "feishu webhook verification",
+                    "feishu inbound transport",
                     ChannelDoctorCheckTrigger::OperationHealth,
                 ),
                 (
-                    "feishu webhook runtime",
+                    "feishu serve runtime",
                     ChannelDoctorCheckTrigger::ReadyRuntime,
                 ),
             ]
@@ -1857,6 +2271,10 @@ mod tests {
             .iter()
             .find(|entry| entry.id == "telegram")
             .expect("telegram catalog entry");
+        let matrix = catalog
+            .iter()
+            .find(|entry| entry.id == "matrix")
+            .expect("matrix catalog entry");
         let discord = catalog
             .iter()
             .find(|entry| entry.id == "discord")
@@ -1872,6 +2290,15 @@ mod tests {
         assert_eq!(telegram.operations.len(), 2);
         assert_eq!(telegram.operations[0].command, "telegram-send");
         assert_eq!(telegram.operations[1].command, "telegram-serve");
+        assert_eq!(
+            matrix.implementation_status,
+            ChannelCatalogImplementationStatus::RuntimeBacked
+        );
+        assert_eq!(matrix.transport, "matrix_client_server_sync");
+        assert!(matrix.aliases.is_empty());
+        assert_eq!(matrix.operations.len(), 2);
+        assert_eq!(matrix.operations[0].command, "matrix-send");
+        assert_eq!(matrix.operations[1].command, "matrix-serve");
         assert_eq!(
             discord.implementation_status,
             ChannelCatalogImplementationStatus::Stub
@@ -1893,6 +2320,25 @@ mod tests {
         assert_eq!(slack.operations[1].command, "slack-serve");
         assert_eq!(
             telegram_json
+                .get("capabilities")
+                .and_then(serde_json::Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .collect::<Vec<_>>()
+                }),
+            Some(vec![
+                "runtime_backed",
+                "multi_account",
+                "send",
+                "serve",
+                "runtime_tracking",
+            ])
+        );
+        assert_eq!(
+            serde_json::to_value(matrix)
+                .expect("serialize matrix entry")
                 .get("capabilities")
                 .and_then(serde_json::Value::as_array)
                 .map(|items| {
@@ -1997,17 +2443,18 @@ mod tests {
                 "enabled",
                 "app_id",
                 "app_secret",
+                "mode",
                 "allowed_chat_ids",
                 "verification_token",
                 "encrypt_key",
             ]
         );
         assert_eq!(
-            feishu.operations[1].requirements[4].default_env_var,
+            feishu.operations[1].requirements[5].default_env_var,
             Some("FEISHU_VERIFICATION_TOKEN")
         );
         assert_eq!(
-            feishu.operations[1].requirements[5].default_env_var,
+            feishu.operations[1].requirements[6].default_env_var,
             Some("FEISHU_ENCRYPT_KEY")
         );
 
@@ -2148,7 +2595,7 @@ mod tests {
                 .iter()
                 .map(|snapshot| snapshot.id)
                 .collect::<Vec<_>>(),
-            vec!["telegram", "feishu"]
+            vec!["telegram", "feishu", "matrix"]
         );
         assert_eq!(
             inventory
@@ -2164,7 +2611,7 @@ mod tests {
                 .iter()
                 .map(|entry| entry.id)
                 .collect::<Vec<_>>(),
-            vec!["telegram", "feishu", "discord", "slack"]
+            vec!["telegram", "feishu", "matrix", "discord", "slack"]
         );
     }
 
@@ -2182,7 +2629,7 @@ mod tests {
                 .iter()
                 .map(|surface| surface.catalog.id)
                 .collect::<Vec<_>>(),
-            vec!["telegram", "feishu", "discord", "slack"]
+            vec!["telegram", "feishu", "matrix", "discord", "slack"]
         );
 
         let telegram = inventory
@@ -2410,6 +2857,82 @@ mod tests {
         assert_eq!(
             serve.runtime.as_ref().expect("serve runtime").active_runs,
             0
+        );
+    }
+
+    #[test]
+    fn matrix_status_requires_user_id_when_ignoring_self_messages() {
+        let mut config = LoongClawConfig::default();
+        config.matrix.enabled = true;
+        config.matrix.access_token = Some("matrix-token".to_owned());
+        config.matrix.base_url = Some("https://matrix.example.org".to_owned());
+        config.matrix.allowed_room_ids = vec!["!ops:example.org".to_owned()];
+        config.matrix.ignore_self_messages = true;
+
+        let snapshots = channel_status_snapshots(&config);
+        let matrix = snapshots
+            .iter()
+            .find(|snapshot| snapshot.id == "matrix")
+            .expect("matrix snapshot");
+        let send = matrix.operation("send").expect("matrix send operation");
+        let serve = matrix.operation("serve").expect("matrix serve operation");
+
+        assert_eq!(send.health, ChannelOperationHealth::Ready);
+        assert_eq!(serve.health, ChannelOperationHealth::Misconfigured);
+        assert!(
+            serve.issues.iter().any(|issue| issue.contains("user_id")),
+            "serve issues should require user_id when ignore_self_messages is enabled"
+        );
+    }
+
+    #[test]
+    fn feishu_websocket_status_uses_websocket_requirements() {
+        let mut config = LoongClawConfig::default();
+        config.feishu.enabled = true;
+        config.feishu.app_id = Some("app-id".to_owned());
+        config.feishu.app_secret = Some("app-secret".to_owned());
+        config.feishu.mode = Some(crate::config::FeishuChannelServeMode::Websocket);
+        config.feishu.allowed_chat_ids = vec!["oc_123".to_owned()];
+
+        let snapshots = channel_status_snapshots(&config);
+        let feishu = snapshots
+            .iter()
+            .find(|snapshot| snapshot.id == "feishu")
+            .expect("feishu snapshot");
+        let serve = feishu.operation("serve").expect("feishu serve operation");
+
+        assert_eq!(serve.health, ChannelOperationHealth::Ready);
+        assert!(
+            serve
+                .issues
+                .iter()
+                .all(|issue| !issue.contains("verification_token")),
+            "websocket mode must not require a webhook verification token"
+        );
+        assert!(
+            serve
+                .issues
+                .iter()
+                .all(|issue| !issue.contains("encrypt_key")),
+            "websocket mode must not require a webhook encrypt key"
+        );
+        assert!(
+            feishu.notes.iter().any(|note| note == "mode=websocket"),
+            "status notes should surface the configured feishu serve mode"
+        );
+        assert!(
+            feishu
+                .notes
+                .iter()
+                .all(|note| !note.starts_with("webhook_bind=")),
+            "websocket mode notes should not imply a webhook bind address is active"
+        );
+        assert!(
+            feishu
+                .notes
+                .iter()
+                .all(|note| !note.starts_with("webhook_path=")),
+            "websocket mode notes should not imply a webhook callback path is active"
         );
     }
 

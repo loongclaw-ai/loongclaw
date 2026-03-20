@@ -39,6 +39,7 @@
   <a href="#why-loong">Why Loong</a> •
   <a href="#product-positioning">Positioning</a> •
   <a href="#why-teams-build-on-loongclaw">Advantages</a> •
+  <a href="#contributing">Contributing</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#migrate-existing-setup">Migration</a> •
   <a href="#core-capabilities">Capabilities</a> •
@@ -106,7 +107,7 @@ contains several layers that matter to teams.
 | Shapeable context | the context engine already has `bootstrap`, `ingest`, `after_turn`, `compact_context`, and subagent hooks | context and memory are not hardcoded into a single prompt builder |
 | Runtime-truthful tool surface | the tool catalog carries risk classes, approval modes, and `Runtime / Planned` visibility | what users see is closer to what the system can actually do right now |
 | Migration-aware setup | `onboard` can detect current setup, Codex config, environment, and workspace guidance; the public migration CLI is now `loongclaw migrate` | teams do not have to rebuild configuration and long-lived context from scratch |
-| Multi-surface delivery | beyond CLI, Telegram and Feishu / Lark already exist as runtime-backed surfaces with typed config, routing, and security validation | the product already reaches beyond a local terminal-only experiment |
+| Multi-surface delivery | beyond CLI, Telegram, Feishu / Lark, and Matrix already exist as runtime-backed surfaces with typed config, routing, and security validation | the product already reaches beyond a local terminal-only experiment |
 
 That is why we increasingly describe LoongClaw as an early foundation for vertical agents. The
 governance boundary, extension boundary, and delivery boundary are already visible today.
@@ -139,7 +140,7 @@ solving team problems earlier instead of postponing them.
 | Starting point | optimize single-user chat experience first | offer a flexible but relatively empty builder layer first | ship a runnable baseline while bringing in team-facing boundaries early |
 | Governance | often added through perimeter systems later | possible, but usually requires extra integration work | policy, approval, and audit are modeled inside critical execution paths |
 | Extension model | often grows through plugins and scripts later | highly flexible, but each team may rebuild its own stack | extend through planes, adapters, packs, and channels with clearer boundaries |
-| Delivery surfaces | often stop at CLI or a single chat UI | often thin on built-in delivery surfaces | CLI, Telegram, and Feishu / Lark are already real delivery surfaces |
+| Delivery surfaces | often stop at CLI or a single chat UI | often thin on built-in delivery surfaces | CLI, Telegram, Feishu / Lark, and Matrix are already real delivery surfaces |
 | Vertical evolution | can stall at being "a better assistant" | can stall at "you can build it yourself" | aims to keep shaping vertical agents on top of a stable Rust base |
 | Long-term edge | usually software-assistant-centric | usually orchestration-centric | leaves room for hardware, robotics, and embodied intelligence over time |
 
@@ -188,6 +189,37 @@ pwsh ./scripts/install.ps1 -Source -Onboard
 
 ```bash
 cargo install --path crates/daemon
+```
+</details>
+
+### Shell Completion
+
+`loongclaw completions <shell>` prints a completion script to stdout. GitHub
+releases also publish pre-generated completion files if you prefer to download
+them instead of generating them locally.
+
+<details>
+<summary>Install shell completion</summary>
+
+```bash
+loongclaw completions bash >> ~/.bash_completion
+source ~/.bash_completion
+```
+
+```zsh
+loongclaw completions zsh > "${fpath[1]}/_loongclaw"
+```
+
+```fish
+loongclaw completions fish > ~/.config/fish/completions/loongclaw.fish
+```
+
+```powershell
+loongclaw completions powershell >> $PROFILE
+```
+
+```elvish
+loongclaw completions elvish >> ~/.config/elvish/rc.elv
 ```
 </details>
 
@@ -260,6 +292,12 @@ addition to the existing runtime checks. For durable modes (`fanout` or
 `audit summary` when you want a compact kind/count rollup plus last-seen
 fields. Raw `tail` remains a fallback when you need the original JSONL lines.
 
+When provider model probing fails before any HTTP status is returned, `doctor`
+now adds a provider route probe for the active request/models host. That probe
+surfaces the host and port, DNS resolution results, fake-ip-style addresses,
+and a short TCP reachability check so you can separate local proxy/TUN/fake-ip
+instability from true upstream unavailability.
+
 ## Configuration
 
 `loongclaw onboard` uses `provider.api_key` to reference provider credentials, so secrets stay
@@ -271,7 +309,7 @@ kind = "openai"
 api_key = "${PROVIDER_API_KEY}"
 ```
 
-Volcengine Coding Plan / ARK example:
+Volcengine / ARK example:
 
 ```bash
 export ARK_API_KEY=your-ark-api-key
@@ -286,7 +324,9 @@ base_url = "https://ark.cn-beijing.volces.com"
 chat_completions_path = "/api/v3/chat/completions"
 ```
 
-Feishu channel example:
+Both `volcengine` and `volcengine_coding` use `api_key = "${ARK_API_KEY}"`. LoongClaw sends that value as `Authorization: Bearer <ARK_API_KEY>` on the OpenAI-compatible Volcengine path; AK/SK request signing is not used there.
+
+Feishu channel example (webhook mode):
 
 ```bash
 export FEISHU_APP_ID=cli_your_app_id
@@ -308,7 +348,48 @@ allowed_chat_ids = ["oc_your_chat_id"]
 loongclaw feishu-serve --config ~/.loongclaw/config.toml
 ```
 
-By default, LoongClaw reads `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_VERIFICATION_TOKEN`, and `FEISHU_ENCRYPT_KEY`. If you are targeting Lark instead of Feishu, add `domain = "lark"`.
+LoongClaw defaults to `mode = "webhook"` and reads `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_VERIFICATION_TOKEN`, and `FEISHU_ENCRYPT_KEY`.
+
+Feishu channel example (websocket mode):
+
+```bash
+export FEISHU_APP_ID=cli_your_app_id
+export FEISHU_APP_SECRET=your_app_secret
+```
+
+```toml
+[feishu]
+enabled = true
+mode = "websocket"
+receive_id_type = "chat_id"
+allowed_chat_ids = ["oc_your_chat_id"]
+```
+
+```bash
+loongclaw feishu-serve --config ~/.loongclaw/config.toml
+```
+
+Webhook secrets are not required in websocket mode. If you are targeting Lark instead of Feishu, add `domain = "lark"`.
+
+Matrix channel example:
+
+```bash
+export MATRIX_ACCESS_TOKEN=your_matrix_access_token
+```
+
+```toml
+[matrix]
+enabled = true
+user_id = "@ops-bot:example.org"
+base_url = "https://matrix.example.org"
+allowed_room_ids = ["!ops:example.org"]
+```
+
+```bash
+loongclaw matrix-serve --config ~/.loongclaw/config.toml --once
+```
+
+By default, LoongClaw reads `MATRIX_ACCESS_TOKEN`. Matrix room and user IDs often contain `:`, so the runtime preserves structured Matrix route/session IDs without relying on Matrix-specific path hacks.
 
 Tool policy stays explicit:
 
@@ -325,11 +406,21 @@ max_sessions = 8
 enabled = true
 allowed_domains = ["docs.example.com"]
 blocked_domains = ["*.internal.example"]
+
+[tools.web_search]
+enabled = true
+default_provider = "duckduckgo" # or "ddg", "brave", "tavily"
+timeout_seconds = 30
+max_results = 5
+# brave_api_key = "${BRAVE_API_KEY}"
+# tavily_api_key = "${TAVILY_API_KEY}"
 ```
 
 Further references:
 
-- [Tool Policy Configuration](docs/configuration/tool-policy.md)
+- `default_provider` accepts `duckduckgo` (or `ddg`), `brave`, and `tavily`
+- `BRAVE_API_KEY` and `TAVILY_API_KEY` stay supported as environment fallbacks
+- [Tool Surface Spec](docs/product-specs/tool-surface.md)
 - [Product Specs](docs/product-specs/index.md)
 - `loongclaw validate-config --config ~/.loongclaw/config.toml --json`
 
@@ -392,7 +483,7 @@ Deeper migration modes also exist, including `merge_profiles` for multi-source p
 ### Delivery Surfaces
 
 - CLI is first-class today, but it is no longer the only surface
-- Telegram and Feishu / Lark already exist as real channel surfaces with runtime state and security validation
+- Telegram, Feishu / Lark, and Matrix already exist as real channel surfaces with runtime state and security validation
 - browser, file, shell, and web tools are exposed through runtime policy rather than left in
   scattered helper scripts
 
@@ -433,7 +524,7 @@ Three design rules matter most:
 - **Core / Extension approach**: runtime, tool, memory, and connector surfaces are organized around trusted cores with richer extension layers, so specialization goes through adapters instead of kernel forks.
 - **Control planes stay distinct**: provider turns, context assembly, channel routing, and ACP control behavior are modeled as separate concerns, which keeps future collaboration and routing upgrades from forcing a rewrite of the conversation core.
 - **Governance is not an afterthought**: capability checks, policy gates, approvals, and audit trails are part of the main execution path rather than a perimeter feature added later.
-- **The product layer is already concrete**: a CLI-first entry path, Telegram / Feishu channels, browser / file / shell / web tools, and configurable provider / memory / tool-policy baselines already form a real path through the current system.
+- **The product layer is already concrete**: a CLI-first entry path, Telegram / Feishu / Matrix channels, browser / file / shell / web tools, and configurable provider / memory / tool-policy baselines already form a real path through the current system.
 
 Some ecosystem pieces are still better described as architecture direction than as finished product surfaces, and we prefer to say that plainly in the README.
 
@@ -454,6 +545,7 @@ For the full layered execution model, see [ARCHITECTURE.md](ARCHITECTURE.md) and
 | [Security](SECURITY.md) | Security policy and disclosure path |
 | [Changelog](CHANGELOG.md) | Release history |
 
+<a id="contributing"></a>
 ## Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow.

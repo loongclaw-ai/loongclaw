@@ -5132,6 +5132,51 @@ async fn handle_turn_with_runtime_provider_shape_tool_search_followup_inline_raw
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_turn_with_runtime_provider_shape_tool_search_followup_json_raw_output() {
+    let (reply, runtime) = run_provider_shape_tool_search_followup(
+        "session-provider-shape-json",
+        "search for the right tool, then read note.md and show raw json tool output",
+        "hello from json provider-shape discovery followup raw test",
+        json!({
+            "choices": [{
+                "message": {
+                    "content": "Let me search for the right tool first.\n{\n  \"name\": \"tool_search\",\n  \"arguments\": {\n    \"query\": \"read note.md\",\n    \"limit\": 3\n  }\n}"
+                }
+            }]
+        }),
+        json!({
+            "choices": [{
+                "message": {
+                    "content": "Now I'll read the file.\n{\n  \"name\": \"file_read\",\n  \"arguments\": {\n    \"path\": \"note.md\"\n  }\n}"
+                }
+            }]
+        }),
+        Ok("unused completion".to_owned()),
+    )
+    .await;
+
+    assert!(
+        reply.contains("[ok]"),
+        "raw-request mode should return the invoked tool output, got: {reply}"
+    );
+    assert!(
+        reply.contains("hello from json provider-shape discovery followup raw test"),
+        "expected second-round invoked tool output, got: {reply}"
+    );
+    assert_eq!(*runtime.turn_calls.lock().expect("turn calls lock"), 2);
+    assert_eq!(
+        *runtime
+            .completion_calls
+            .lock()
+            .expect("completion calls lock"),
+        0
+    );
+
+    let persisted = runtime.persisted.lock().expect("persisted lock").clone();
+    assert_discovery_first_followup_summary(&persisted, true, "file.read");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn handle_turn_with_runtime_tool_turn_raw_request_skips_second_pass_completion() {
     use crate::test_support::TurnTestHarness;
 
@@ -5442,6 +5487,8 @@ async fn handle_turn_with_runtime_persists_fast_lane_tool_batch_event_for_mixed_
     config
         .conversation
         .fast_lane_parallel_tool_execution_max_in_flight = 2;
+    let sqlite_path = unique_memory_sqlite_path("fast-lane-batch-event");
+    config.memory.sqlite_path = sqlite_path.clone();
 
     let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
     crate::memory::append_turn_direct(
@@ -5531,10 +5578,22 @@ async fn handle_turn_with_runtime_persists_fast_lane_tool_batch_event_for_mixed_
     assert_eq!(payloads.len(), 1, "expected one fast-lane batch event");
 
     let payload = &payloads[0];
-    assert_eq!(payload["schema_version"], 1);
+    assert_eq!(payload["schema_version"], 2);
     assert_eq!(payload["total_intents"], 5);
     assert_eq!(payload["parallel_execution_enabled"], true);
     assert_eq!(payload["parallel_execution_max_in_flight"], 2);
+    assert!(
+        payload["observed_peak_in_flight"]
+            .as_u64()
+            .expect("observed peak should exist")
+            >= 1
+    );
+    assert!(
+        payload["observed_wall_time_ms"]
+            .as_u64()
+            .expect("observed wall time should exist")
+            >= 1
+    );
     assert_eq!(payload["parallel_safe_intents"], 4);
     assert_eq!(payload["serial_only_intents"], 1);
     assert_eq!(payload["parallel_segments"], 2);
@@ -5550,14 +5609,47 @@ async fn handle_turn_with_runtime_persists_fast_lane_tool_batch_event_for_mixed_
     assert_eq!(segments[0]["scheduling_class"], "parallel_safe");
     assert_eq!(segments[0]["execution_mode"], "parallel");
     assert_eq!(segments[0]["intent_count"], 2);
+    assert!(
+        segments[0]["observed_peak_in_flight"]
+            .as_u64()
+            .expect("parallel segment observed peak should exist")
+            >= 1
+    );
+    assert!(
+        segments[0]["observed_wall_time_ms"]
+            .as_u64()
+            .expect("parallel segment wall time should exist")
+            >= 1
+    );
     assert_eq!(segments[1]["segment_index"], 1);
     assert_eq!(segments[1]["scheduling_class"], "serial_only");
     assert_eq!(segments[1]["execution_mode"], "sequential");
     assert_eq!(segments[1]["intent_count"], 1);
+    assert_eq!(segments[1]["observed_peak_in_flight"], 1);
+    assert!(
+        segments[1]["observed_wall_time_ms"]
+            .as_u64()
+            .expect("sequential segment wall time should exist")
+            >= 1
+    );
     assert_eq!(segments[2]["segment_index"], 2);
     assert_eq!(segments[2]["scheduling_class"], "parallel_safe");
     assert_eq!(segments[2]["execution_mode"], "parallel");
     assert_eq!(segments[2]["intent_count"], 2);
+    assert!(
+        segments[2]["observed_peak_in_flight"]
+            .as_u64()
+            .expect("parallel segment observed peak should exist")
+            >= 1
+    );
+    assert!(
+        segments[2]["observed_wall_time_ms"]
+            .as_u64()
+            .expect("parallel segment wall time should exist")
+            >= 1
+    );
+
+    let _ = std::fs::remove_file(sqlite_path);
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -5571,6 +5663,8 @@ async fn handle_turn_with_runtime_fast_lane_batch_persist_failure_surfaces_runti
     config
         .conversation
         .fast_lane_parallel_tool_execution_max_in_flight = 2;
+    let sqlite_path = unique_memory_sqlite_path("fast-lane-batch-persist-failure");
+    config.memory.sqlite_path = sqlite_path.clone();
 
     let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
     crate::memory::append_turn_direct(
@@ -5673,6 +5767,8 @@ async fn handle_turn_with_runtime_fast_lane_batch_persist_failure_surfaces_runti
         }),
         "expected fast-lane batch persistence failure audit event, got: {runtime_ops:?}"
     );
+
+    let _ = std::fs::remove_file(sqlite_path);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -10927,10 +11023,12 @@ async fn load_fast_lane_tool_batch_event_summary_accepts_explicit_runtime_bindin
         "type": "conversation_event",
         "event": "fast_lane_tool_batch",
         "payload": {
-            "schema_version": 1,
+            "schema_version": 2,
             "total_intents": 5,
             "parallel_execution_enabled": true,
             "parallel_execution_max_in_flight": 2,
+            "observed_peak_in_flight": 2,
+            "observed_wall_time_ms": 31,
             "parallel_safe_intents": 4,
             "serial_only_intents": 1,
             "parallel_segments": 2,
@@ -10940,19 +11038,25 @@ async fn load_fast_lane_tool_batch_event_summary_accepts_explicit_runtime_bindin
                     "segment_index": 0,
                     "scheduling_class": "parallel_safe",
                     "execution_mode": "parallel",
-                    "intent_count": 2
+                    "intent_count": 2,
+                    "observed_peak_in_flight": 2,
+                    "observed_wall_time_ms": 12
                 },
                 {
                     "segment_index": 1,
                     "scheduling_class": "serial_only",
                     "execution_mode": "sequential",
-                    "intent_count": 1
+                    "intent_count": 1,
+                    "observed_peak_in_flight": 1,
+                    "observed_wall_time_ms": 7
                 },
                 {
                     "segment_index": 2,
                     "scheduling_class": "parallel_safe",
                     "execution_mode": "parallel",
-                    "intent_count": 2
+                    "intent_count": 2,
+                    "observed_peak_in_flight": 2,
+                    "observed_wall_time_ms": 12
                 }
             ]
         }
@@ -10974,18 +11078,44 @@ async fn load_fast_lane_tool_batch_event_summary_accepts_explicit_runtime_bindin
     .await
     .expect("load fast-lane batch summary via direct binding");
     assert_eq!(direct_summary.batch_events, 1);
-    assert_eq!(direct_summary.latest_schema_version, Some(1));
+    assert_eq!(direct_summary.latest_schema_version, Some(2));
     assert_eq!(direct_summary.latest_total_intents, Some(5));
     assert_eq!(direct_summary.latest_parallel_execution_enabled, Some(true));
     assert_eq!(
         direct_summary.latest_parallel_execution_max_in_flight,
         Some(2)
     );
+    assert_eq!(direct_summary.latest_observed_peak_in_flight, Some(2));
+    assert_eq!(direct_summary.latest_observed_wall_time_ms, Some(31));
     assert_eq!(direct_summary.latest_parallel_safe_intents, Some(4));
     assert_eq!(direct_summary.latest_serial_only_intents, Some(1));
     assert_eq!(direct_summary.latest_parallel_segments, Some(2));
     assert_eq!(direct_summary.latest_sequential_segments, Some(1));
     assert_eq!(direct_summary.latest_segments.len(), 3);
+    assert_eq!(
+        direct_summary.latest_segments[0].observed_peak_in_flight,
+        Some(2)
+    );
+    assert_eq!(
+        direct_summary.latest_segments[0].observed_wall_time_ms,
+        Some(12)
+    );
+    assert_eq!(
+        direct_summary.latest_segments[1].observed_peak_in_flight,
+        Some(1)
+    );
+    assert_eq!(
+        direct_summary.latest_segments[1].observed_wall_time_ms,
+        Some(7)
+    );
+    assert_eq!(
+        direct_summary.latest_segments[2].observed_peak_in_flight,
+        Some(2)
+    );
+    assert_eq!(
+        direct_summary.latest_segments[2].observed_wall_time_ms,
+        Some(12)
+    );
 
     let audit = Arc::new(InMemoryAuditSink::default());
     let (kernel_ctx, invocations) =
@@ -11000,18 +11130,44 @@ async fn load_fast_lane_tool_batch_event_summary_accepts_explicit_runtime_bindin
     .await
     .expect("load fast-lane batch summary via kernel binding");
     assert_eq!(kernel_summary.batch_events, 1);
-    assert_eq!(kernel_summary.latest_schema_version, Some(1));
+    assert_eq!(kernel_summary.latest_schema_version, Some(2));
     assert_eq!(kernel_summary.latest_total_intents, Some(5));
     assert_eq!(kernel_summary.latest_parallel_execution_enabled, Some(true));
     assert_eq!(
         kernel_summary.latest_parallel_execution_max_in_flight,
         Some(2)
     );
+    assert_eq!(kernel_summary.latest_observed_peak_in_flight, Some(2));
+    assert_eq!(kernel_summary.latest_observed_wall_time_ms, Some(31));
     assert_eq!(kernel_summary.latest_parallel_safe_intents, Some(4));
     assert_eq!(kernel_summary.latest_serial_only_intents, Some(1));
     assert_eq!(kernel_summary.latest_parallel_segments, Some(2));
     assert_eq!(kernel_summary.latest_sequential_segments, Some(1));
     assert_eq!(kernel_summary.latest_segments.len(), 3);
+    assert_eq!(
+        kernel_summary.latest_segments[0].observed_peak_in_flight,
+        Some(2)
+    );
+    assert_eq!(
+        kernel_summary.latest_segments[0].observed_wall_time_ms,
+        Some(12)
+    );
+    assert_eq!(
+        kernel_summary.latest_segments[1].observed_peak_in_flight,
+        Some(1)
+    );
+    assert_eq!(
+        kernel_summary.latest_segments[1].observed_wall_time_ms,
+        Some(7)
+    );
+    assert_eq!(
+        kernel_summary.latest_segments[2].observed_peak_in_flight,
+        Some(2)
+    );
+    assert_eq!(
+        kernel_summary.latest_segments[2].observed_wall_time_ms,
+        Some(12)
+    );
 
     let captured = invocations.lock().expect("invocations lock");
     assert_eq!(captured.len(), 1);

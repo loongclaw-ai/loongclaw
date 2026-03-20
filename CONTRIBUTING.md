@@ -141,7 +141,7 @@ pitch.
 |------|-----------|-------------|
 | Add a provider | `crates/app/src/provider/` | `provider-openai` |
 | Add a tool | `crates/app/src/tools/` | `tools-shell`, `tools-file` |
-| Add a channel | `crates/app/src/channel/` | `channel-telegram`, `channel-feishu` |
+| Add a channel | `crates/app/src/channel/` | `channel-telegram`, `channel-feishu`, `channel-matrix` |
 | Add a memory backend | `crates/app/src/memory/` | `memory-sqlite` |
 | Kernel policy | `crates/kernel/src/policy.rs` | — |
 | Shared types | `crates/contracts/src/` | — |
@@ -181,13 +181,15 @@ cargo test --workspace --all-features
 ### Recipe: Add a Channel
 
 1. Create `crates/app/src/channel/your_channel/mod.rs`
-2. Implement the `ChannelAdapter` trait (`name`, `receive_batch`, `send_text`)
+2. Implement the `ChannelAdapter` trait (`name`, `receive_batch`, `send_message`)
 3. Add a `run_your_channel()` function in `crates/app/src/channel/mod.rs` that:
    - Loads config
    - Calls `bootstrap_kernel_context_with_config("channel-your-channel", DEFAULT_TOKEN_TTL_S, &config)`
    - Loops: receive messages → `process_inbound_with_provider(config, msg, Some(&ctx))` → send reply
 4. Wire the subcommand in `crates/daemon/src/main.rs`
 5. Add a feature flag in `crates/app/Cargo.toml`
+
+The shipped channel reference implementations are `telegram`, `feishu`, and `matrix`.
 
 ## Standard Workflow
 
@@ -213,6 +215,40 @@ cargo test --workspace --all-features
 
 See [docs/references/github-collaboration.md](docs/references/github-collaboration.md) for the
 current label baseline, issue routing, community paths, and review flow.
+
+## Responsible Agent-Assisted Contribution
+
+LoongClaw is built with the expectation that human engineers and agents will increasingly work
+together. We think that trend is real, durable, and worth embracing. Used well, agent-assisted
+coding can significantly improve iteration speed, reduce routine friction, and help contributors
+cover more ground across design, implementation, testing, docs, and review.
+
+That does **not** reduce the contributor's responsibility. We expect every author to understand the
+changes they submit, to be able to explain why they made them, and to own the resulting behavior,
+risks, and tradeoffs. "The agent wrote it" is never a sufficient reason for surprising behavior,
+unclear code, missing validation, or low-confidence changes.
+
+Our stance is therefore not "no AI" and not "anything goes." We support **responsible use of
+agents**:
+
+- use agents to accelerate research, editing, implementation, tests, and review preparation
+- keep a human in the loop for architectural judgment, validation, and final submission decisions
+- verify generated changes before opening a PR, especially when touching runtime behavior, policy,
+  security, or contributor-facing docs
+- prefer smaller, reviewable diffs over large opaque drops that nobody on the PR can confidently
+  defend
+- call out important agent assistance in the PR when it materially affected scope, verification, or
+  risk
+
+We are also actively investing in **harness engineering** inside this repository. That means we
+want better contributor workflows, stronger observability, more reliable validation paths, and
+clearer scaffolding for people who use agents to contribute. Expect the repository's agent-facing
+recipes, diagnostics, and guardrails to keep improving over time, and feel free to contribute to
+that work directly.
+
+If you like "vibe coding," use it as a way to explore and iterate faster, not as a substitute for
+engineering accountability. The bar here is still that a human contributor understands what is
+being merged and can stand behind it during review, release, and follow-up maintenance.
 
 ## Developer Observability
 

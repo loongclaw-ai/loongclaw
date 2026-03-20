@@ -288,7 +288,11 @@ const fn runtime_session_tool_availability() -> ToolAvailability {
 
 #[cfg(all(
     feature = "memory-sqlite",
-    any(feature = "channel-telegram", feature = "channel-feishu")
+    any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    )
 ))]
 const fn runtime_messaging_tool_availability() -> ToolAvailability {
     ToolAvailability::Runtime
@@ -296,7 +300,11 @@ const fn runtime_messaging_tool_availability() -> ToolAvailability {
 
 #[cfg(not(all(
     feature = "memory-sqlite",
-    any(feature = "channel-telegram", feature = "channel-feishu")
+    any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    )
 )))]
 const fn runtime_messaging_tool_availability() -> ToolAvailability {
     ToolAvailability::Planned
@@ -623,6 +631,17 @@ pub fn tool_catalog() -> ToolCatalog {
             visibility_gate: ToolVisibilityGate::Always,
             provider_definition_builder: file_write_definition,
         });
+        descriptors.push(ToolDescriptor {
+            name: "file.edit",
+            provider_name: "file_edit",
+            aliases: &[],
+            description: "Replace text in a file",
+            execution_kind: ToolExecutionKind::Core,
+            availability: ToolAvailability::Runtime,
+            exposure: ToolExposureClass::Discoverable,
+            visibility_gate: ToolVisibilityGate::Always,
+            provider_definition_builder: file_edit_definition,
+        });
     }
 
     #[cfg(feature = "tool-shell")]
@@ -776,7 +795,8 @@ pub fn tool_catalog() -> ToolCatalog {
             name: "web.search",
             provider_name: "web_search",
             aliases: &[],
-            description: "Search the web for APIs, documentation, and error messages using DuckDuckGo, Brave Search, or Tavily",
+            description:
+                "Search the web for APIs, documentation, and error messages using configured web search providers",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
             exposure: ToolExposureClass::Discoverable,
@@ -1658,6 +1678,43 @@ fn file_write_definition(descriptor: &ToolDescriptor) -> Value {
     })
 }
 
+fn file_edit_definition(descriptor: &ToolDescriptor) -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": descriptor.provider_name,
+            "description": descriptor.description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the file (absolute or relative to configured file root)."
+                    },
+                    "old_string": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Literal substring to find. Must be non-empty. \
+                                        Must match exactly once unless replace_all is true."
+                    },
+                    "new_string": {
+                        "type": "string",
+                        "description": "Replacement text."
+                    },
+                    "replace_all": {
+                        "type": "boolean",
+                        "description": "Replace all occurrences instead of requiring a unique match. \
+                                        Zero-match still fails regardless of this flag. Defaults to false."
+                    }
+                },
+                "required": ["path", "old_string", "new_string"],
+                "additionalProperties": false
+            }
+        }
+    })
+}
+
+#[cfg(feature = "tool-webfetch")]
 fn web_fetch_definition(descriptor: &ToolDescriptor) -> Value {
     json!({
         "type": "function",
@@ -1706,8 +1763,8 @@ fn web_search_definition(descriptor: &ToolDescriptor) -> Value {
                     },
                     "provider": {
                         "type": "string",
-                        "enum": ["duckduckgo", "ddg", "brave", "tavily"],
-                        "description": "Search provider. Defaults to 'duckduckgo'. Brave requires BRAVE_API_KEY env var. Tavily requires TAVILY_API_KEY env var."
+                        "enum": crate::config::WEB_SEARCH_PROVIDER_SCHEMA_VALUES,
+                        "description": crate::config::web_search_provider_parameter_description()
                     },
                     "max_results": {
                         "type": "integer",
@@ -2131,7 +2188,7 @@ fn sessions_send_definition(descriptor: &ToolDescriptor) -> Value {
                 "properties": {
                     "session_id": {
                         "type": "string",
-                        "description": "Known Telegram or Feishu root session identifier to receive the outbound text message."
+                        "description": "Known channel-backed root session identifier to receive the outbound text message (for example Telegram, Feishu, or Matrix)."
                     },
                     "text": {
                         "type": "string",
@@ -2234,6 +2291,7 @@ fn tool_argument_hint(name: &str) -> &'static str {
         "browser.companion.type" => "session_id:string,selector:string,text:string",
         "file.read" => "path:string,max_bytes?:integer",
         "file.write" => "path:string,content:string,create_dirs?:boolean",
+        "file.edit" => "path:string,old_string:string,new_string:string,replace_all?:boolean",
         "shell.exec" => "command:string,args?:string[]",
         "provider.switch" => "selector?:string",
         "delegate" | "delegate_async" => "task:string,label?:string,timeout_seconds?:integer",
@@ -2302,6 +2360,12 @@ fn tool_parameter_types(name: &str) -> &'static [(&'static str, &'static str)] {
             ("content", "string"),
             ("create_dirs", "boolean"),
         ],
+        "file.edit" => &[
+            ("path", "string"),
+            ("old_string", "string"),
+            ("new_string", "string"),
+            ("replace_all", "boolean"),
+        ],
         "shell.exec" => &[("command", "string"), ("args", "array")],
         "provider.switch" => &[("selector", "string")],
         "delegate" | "delegate_async" => &[
@@ -2345,6 +2409,7 @@ fn tool_required_fields(name: &str) -> &'static [&'static str] {
         "browser.companion.type" => &["session_id", "selector", "text"],
         "file.read" => &["path"],
         "file.write" => &["path", "content"],
+        "file.edit" => &["path", "old_string", "new_string"],
         "shell.exec" => &["command"],
         "delegate" | "delegate_async" => &["task"],
         "session_archive" | "session_cancel" | "session_events" | "session_recover"
@@ -2384,6 +2449,7 @@ fn tool_tags(name: &str) -> &'static [&'static str] {
         }
         "file.read" => &["file", "read", "filesystem", "repo"],
         "file.write" => &["file", "write", "filesystem"],
+        "file.edit" => &["file", "edit", "filesystem"],
         "shell.exec" => &["shell", "command", "process", "exec"],
         "provider.switch" => &["provider", "switch", "model", "runtime"],
         "delegate" | "delegate_async" => &["session", "delegate", "child"],
@@ -2543,5 +2609,21 @@ mod tests {
                 .scheduling_class(),
             ToolSchedulingClass::SerialOnly
         );
+    }
+
+    #[test]
+    fn sessions_send_definition_mentions_generic_channel_sessions() {
+        let catalog = tool_catalog();
+        let descriptor = catalog
+            .descriptor("sessions_send")
+            .expect("sessions_send descriptor");
+        let definition = descriptor.provider_definition();
+        let description =
+            definition["function"]["parameters"]["properties"]["session_id"]["description"]
+                .as_str()
+                .expect("session_id description");
+
+        assert!(description.contains("channel-backed"));
+        assert!(description.contains("Matrix"));
     }
 }

@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use kernel::probe_jsonl_audit_journal_runtime_ready;
 use loongclaw_app as mvp;
 use loongclaw_spec::CliResult;
 use serde_json::json;
@@ -81,7 +82,22 @@ pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
                 level: DoctorCheckLevel::Pass,
                 detail: format!("{} model(s) available", models.len()),
             }),
-            Err(error) => checks.push(provider_model_probe_failure_check(&config, error)),
+            Err(error) => {
+                let transport_style_failure =
+                    crate::provider_route_diagnostics::is_transport_style_model_probe_failure(
+                        error.as_str(),
+                    );
+                checks.push(provider_model_probe_failure_check(&config, error));
+                if transport_style_failure
+                    && let Some(route_probe) =
+                        crate::provider_route_diagnostics::collect_provider_route_probe(
+                            &config.provider,
+                        )
+                        .await
+                {
+                    checks.push(provider_route_probe_doctor_check(&route_probe));
+                }
+            }
         }
     }
 
@@ -323,6 +339,21 @@ fn durable_audit_retention_doctor_check(
 }
 
 fn durable_audit_target_issue(path: &Path) -> Option<String> {
+    durable_audit_target_issue_with_probe(path, durable_audit_runtime_probe)
+}
+
+fn durable_audit_target_issue_with_probe<F>(path: &Path, runtime_probe: F) -> Option<String>
+where
+    F: Fn(&Path) -> Result<(), String>,
+{
+    if let Some(issue) = durable_audit_metadata_issue(path) {
+        return Some(issue);
+    }
+
+    runtime_probe(path).err()
+}
+
+fn durable_audit_metadata_issue(path: &Path) -> Option<String> {
     let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
@@ -346,6 +377,87 @@ fn durable_audit_target_issue(path: &Path) -> Option<String> {
     }
 
     None
+}
+
+fn durable_audit_runtime_probe(path: &Path) -> Result<(), String> {
+    let path_entry_existed = fs::symlink_metadata(path).is_ok();
+    let created_directories = durable_audit_missing_parent_dirs(path);
+    let probe_result = probe_jsonl_audit_journal_runtime_ready(path).map_err(|error| {
+        format!(
+            "runtime open + lock probe failed for {}: {error}",
+            path.display()
+        )
+    });
+    let cleanup_result =
+        durable_audit_runtime_probe_cleanup(path, path_entry_existed, &created_directories);
+
+    match (probe_result, cleanup_result) {
+        (Err(error), _) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
+    }
+}
+
+fn durable_audit_missing_parent_dirs(path: &Path) -> Vec<PathBuf> {
+    let mut missing = Vec::new();
+    let Some(mut current) = path.parent() else {
+        return missing;
+    };
+
+    while !current.as_os_str().is_empty() && !current.exists() {
+        missing.push(current.to_path_buf());
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        current = parent;
+    }
+
+    missing.reverse();
+    missing
+}
+
+fn durable_audit_runtime_probe_cleanup(
+    path: &Path,
+    path_entry_existed: bool,
+    created_directories: &[PathBuf],
+) -> Result<(), String> {
+    if !path_entry_existed {
+        match fs::metadata(path) {
+            Ok(metadata) if metadata.len() == 0 => {
+                fs::remove_file(path).map_err(|error| {
+                    format!(
+                        "runtime open + lock probe cleanup failed for {}: {error}",
+                        path.display()
+                    )
+                })?;
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "runtime open + lock probe cleanup failed for {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+
+    for directory in created_directories.iter().rev() {
+        match fs::remove_dir(directory) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => {}
+            Err(error) => {
+                return Err(format!(
+                    "runtime open + lock probe cleanup failed for {}: failed to remove {}: {error}",
+                    path.display(),
+                    directory.display()
+                ));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn check_audit_journal_directory(
@@ -948,8 +1060,16 @@ fn doctor_check_spec(channel_id: &str, operation_id: &str) -> Option<DoctorChann
             runtime_name: None,
         }),
         ("feishu", "serve") => Some(DoctorChannelCheckSpec {
-            config_name: "feishu webhook verification",
-            runtime_name: Some("feishu webhook runtime"),
+            config_name: "feishu inbound transport",
+            runtime_name: Some("feishu serve runtime"),
+        }),
+        ("matrix", "send") => Some(DoctorChannelCheckSpec {
+            config_name: "matrix channel",
+            runtime_name: None,
+        }),
+        ("matrix", "serve") => Some(DoctorChannelCheckSpec {
+            config_name: "matrix room sync",
+            runtime_name: Some("matrix channel runtime"),
         }),
         _ => None,
     }
@@ -1105,6 +1225,26 @@ fn provider_transport_doctor_check(provider: &mvp::config::ProviderConfig) -> Do
     }
 }
 
+fn provider_route_probe_doctor_check(
+    probe: &crate::provider_route_diagnostics::ProviderRouteProbe,
+) -> DoctorCheck {
+    DoctorCheck {
+        name: crate::provider_route_diagnostics::PROVIDER_ROUTE_PROBE_CHECK_NAME.to_owned(),
+        level: match probe.level {
+            crate::provider_route_diagnostics::ProviderRouteProbeLevel::Pass => {
+                DoctorCheckLevel::Pass
+            }
+            crate::provider_route_diagnostics::ProviderRouteProbeLevel::Warn => {
+                DoctorCheckLevel::Warn
+            }
+            crate::provider_route_diagnostics::ProviderRouteProbeLevel::Fail => {
+                DoctorCheckLevel::Fail
+            }
+        },
+        detail: probe.detail.clone(),
+    }
+}
+
 fn provider_credentials_doctor_check(
     config: &mvp::config::LoongClawConfig,
     has_provider_credentials: bool,
@@ -1119,7 +1259,7 @@ fn provider_credentials_doctor_check(
     }
 
     let hints = crate::onboard_cli::provider_credential_env_hints(&config.provider);
-    let detail = if hints.is_empty() {
+    let mut detail = if hints.is_empty() {
         "provider credentials are missing".to_owned()
     } else {
         format!(
@@ -1127,6 +1267,10 @@ fn provider_credentials_doctor_check(
             hints.join(", ")
         )
     };
+    if let Some(hint) = config.provider.auth_guidance_hint() {
+        detail.push(' ');
+        detail.push_str(hint.as_str());
+    }
     DoctorCheck {
         name: "provider credentials".to_owned(),
         level: DoctorCheckLevel::Warn,
@@ -1139,6 +1283,16 @@ fn provider_model_probe_failure_check(
     error: String,
 ) -> DoctorCheck {
     let provider_prefix = crate::provider_presentation::active_provider_detail_label(config);
+    if crate::provider_route_diagnostics::is_transport_style_model_probe_failure(error.as_str()) {
+        return DoctorCheck {
+            name: "provider model probe".to_owned(),
+            level: DoctorCheckLevel::Fail,
+            detail: format!(
+                "{provider_prefix}: {} ({error}); runtime could not verify the provider route. inspect provider route diagnostics and retry once dns / proxy / TUN routing is stable",
+                crate::provider_route_diagnostics::MODEL_CATALOG_TRANSPORT_FAILED_MARKER
+            ),
+        };
+    }
     let auth_style_failure = mvp::provider::is_auth_style_failure_message(error.as_str());
     let append_region_hint = |mut detail: String| {
         if auth_style_failure && let Some(hint) = config.provider.region_endpoint_failure_hint() {
@@ -1374,61 +1528,101 @@ fn build_doctor_next_steps_with_path_env(
     if checks.iter().any(|check| {
         check.name == "provider model probe"
             && check.level != DoctorCheckLevel::Pass
-            && check.detail.contains(MODEL_CATALOG_PROBE_FAILED_MARKER)
+            && (check.detail.contains(MODEL_CATALOG_PROBE_FAILED_MARKER)
+                || check.detail.contains(
+                    crate::provider_route_diagnostics::MODEL_CATALOG_TRANSPORT_FAILED_MARKER,
+                ))
     }) {
-        let provider_model_probe_auth_failure = checks.iter().any(|check| {
+        let provider_model_probe_transport_failure = checks.iter().any(|check| {
             check.name == "provider model probe"
                 && check.level != DoctorCheckLevel::Pass
-                && check.detail.contains(MODEL_CATALOG_PROBE_FAILED_MARKER)
-                && mvp::provider::is_auth_style_failure_message(check.detail.as_str())
+                && check.detail.contains(
+                    crate::provider_route_diagnostics::MODEL_CATALOG_TRANSPORT_FAILED_MARKER,
+                )
         });
-        match config.provider.model_catalog_probe_recovery() {
-            mvp::config::ModelCatalogProbeRecovery::RequiresExplicitModel {
-                recommended_onboarding_model: Some(model),
-            } => {
+        if provider_model_probe_transport_failure {
+            if checks.iter().any(|check| {
+                check.name == crate::provider_route_diagnostics::PROVIDER_ROUTE_PROBE_CHECK_NAME
+                    && check.level != DoctorCheckLevel::Pass
+            }) {
                 push_unique_step(
                     &mut steps,
                     format!(
-                        "Rerun onboarding and accept reviewed model `{model}`: {rerun_onboard_command}"
+                        "Fix the active provider route (DNS / proxy / TUN), then re-run diagnostics: {rerun_command}"
                     ),
                 );
+                if checks.iter().any(|check| {
+                    check.name == crate::provider_route_diagnostics::PROVIDER_ROUTE_PROBE_CHECK_NAME
+                        && check.detail.contains("fake-ip-style")
+                }) {
+                    push_unique_step(
+                        &mut steps,
+                        "If the provider host should bypass proxying, add it to your direct/bypass rules; otherwise keep the fake-ip/TUN proxy healthy before retrying.".to_owned(),
+                    );
+                }
+            } else {
                 push_unique_step(
                     &mut steps,
                     format!(
-                        "Or set `provider.model` / `preferred_models` explicitly, then re-run diagnostics: {rerun_command}"
-                    ),
-                );
-            }
-            mvp::config::ModelCatalogProbeRecovery::RequiresExplicitModel {
-                recommended_onboarding_model: None,
-            } => {
-                push_unique_step(
-                    &mut steps,
-                    format!(
-                        "Set `provider.model` / `preferred_models` explicitly, then re-run diagnostics: {rerun_command}"
-                    ),
-                );
-            }
-            mvp::config::ModelCatalogProbeRecovery::ExplicitModel(_)
-            | mvp::config::ModelCatalogProbeRecovery::ConfiguredPreferredModels(_) => {
-                push_unique_step(
-                    &mut steps,
-                    format!(
-                        "Retry provider probe only after credentials are ready: {rerun_command}"
-                    ),
-                );
-                push_unique_step(
-                    &mut steps,
-                    format!(
-                        "If your provider blocks model listing during setup, retry with: {rerun_command} --skip-model-probe"
+                        "Re-run diagnostics after checking the active provider route: {rerun_command}"
                     ),
                 );
             }
-        }
-        if provider_model_probe_auth_failure
-            && let Some(hint) = config.provider.region_endpoint_failure_hint()
-        {
-            push_unique_step(&mut steps, hint);
+        } else {
+            let provider_model_probe_auth_failure = checks.iter().any(|check| {
+                check.name == "provider model probe"
+                    && check.level != DoctorCheckLevel::Pass
+                    && check.detail.contains(MODEL_CATALOG_PROBE_FAILED_MARKER)
+                    && mvp::provider::is_auth_style_failure_message(check.detail.as_str())
+            });
+            match config.provider.model_catalog_probe_recovery() {
+                mvp::config::ModelCatalogProbeRecovery::RequiresExplicitModel {
+                    recommended_onboarding_model: Some(model),
+                } => {
+                    push_unique_step(
+                        &mut steps,
+                        format!(
+                            "Rerun onboarding and accept reviewed model `{model}`: {rerun_onboard_command}"
+                        ),
+                    );
+                    push_unique_step(
+                        &mut steps,
+                        format!(
+                            "Or set `provider.model` / `preferred_models` explicitly, then re-run diagnostics: {rerun_command}"
+                        ),
+                    );
+                }
+                mvp::config::ModelCatalogProbeRecovery::RequiresExplicitModel {
+                    recommended_onboarding_model: None,
+                } => {
+                    push_unique_step(
+                        &mut steps,
+                        format!(
+                            "Set `provider.model` / `preferred_models` explicitly, then re-run diagnostics: {rerun_command}"
+                        ),
+                    );
+                }
+                mvp::config::ModelCatalogProbeRecovery::ExplicitModel(_)
+                | mvp::config::ModelCatalogProbeRecovery::ConfiguredPreferredModels(_) => {
+                    push_unique_step(
+                        &mut steps,
+                        format!(
+                            "Retry provider probe only after credentials are ready: {rerun_command}"
+                        ),
+                    );
+                    push_unique_step(
+                        &mut steps,
+                        format!(
+                            "If your provider blocks model listing during setup, retry with: {rerun_command} --skip-model-probe"
+                        ),
+                    );
+                }
+            }
+            if provider_model_probe_auth_failure
+                && let Some(hint) = config.provider.region_endpoint_failure_hint()
+            {
+                push_unique_step(&mut steps, hint);
+            }
         }
     }
 
@@ -1798,30 +1992,48 @@ mod tests {
         let mut config = mvp::config::LoongClawConfig::default();
         config.telegram.enabled = true;
         config.telegram.bot_token = Some("123456:test-token".to_owned());
+        config.telegram.allowed_chat_ids = vec![123_i64];
         config.feishu.enabled = true;
         config.feishu.app_id = Some("cli_a1b2c3".to_owned());
         config.feishu.app_secret = Some("feishu-secret".to_owned());
+        config.matrix.enabled = true;
+        config.matrix.access_token = Some("matrix-token".to_owned());
+        config.matrix.base_url = Some("https://matrix.example.org".to_owned());
+        config.matrix.allowed_room_ids = vec!["!ops:example.org".to_owned()];
+        config.matrix.user_id = Some("@ops-bot:example.org".to_owned());
 
-        let checks = collect_channel_doctor_checks(&config);
+        let checks = check_channel_surfaces(&config);
         let names = checks
             .iter()
             .map(|check| check.name.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(
-            names,
-            vec![
-                "telegram channel",
-                "feishu channel",
-                "feishu webhook verification"
-            ]
+        assert!(
+            names.contains(&"telegram channel"),
+            "telegram send/serve surfaces should appear in live doctor output: {checks:#?}"
+        );
+        assert!(
+            names.contains(&"telegram channel runtime"),
+            "ready telegram serve surfaces should emit runtime checks in live doctor output: {checks:#?}"
+        );
+        assert!(
+            names.contains(&"matrix channel") && names.contains(&"matrix room sync"),
+            "matrix send/serve surfaces should appear in live doctor output: {checks:#?}"
+        );
+        assert!(
+            names.contains(&"matrix channel runtime"),
+            "ready matrix serve surfaces should emit runtime checks in live doctor output: {checks:#?}"
+        );
+        assert!(
+            names.contains(&"feishu channel") && names.contains(&"feishu inbound transport"),
+            "feishu send/serve surfaces should appear in live doctor output: {checks:#?}"
         );
         assert!(
             checks
                 .iter()
-                .any(|check| check.name == "telegram channel"
+                .any(|check| check.name == "matrix room sync"
                     && check.level == DoctorCheckLevel::Pass),
-            "telegram doctor check should come from the channel registry: {checks:#?}"
+            "matrix serve configuration should stay healthy through the live doctor path: {checks:#?}"
         );
     }
 
@@ -1833,6 +2045,7 @@ mod tests {
         config.feishu.app_secret_env = None;
         config.feishu.verification_token_env = None;
         config.feishu.encrypt_key_env = None;
+        config.matrix.access_token_env = None;
 
         let mut fixes = Vec::new();
         let changed = maybe_apply_channel_env_fix(&mut config, true, &mut fixes);
@@ -1855,7 +2068,11 @@ mod tests {
             config.feishu.encrypt_key_env.as_deref(),
             Some("FEISHU_ENCRYPT_KEY")
         );
-        assert_eq!(fixes.len(), 5);
+        assert_eq!(
+            config.matrix.access_token_env.as_deref(),
+            Some("MATRIX_ACCESS_TOKEN")
+        );
+        assert_eq!(fixes.len(), 6);
     }
 
     #[test]
@@ -1931,6 +2148,34 @@ mod tests {
         assert!(
             check.detail.contains("explicitly configured"),
             "doctor should explain that explicit-model runtime may still work when catalog probing fails: {check:#?}"
+        );
+    }
+
+    #[test]
+    fn provider_model_probe_transport_failure_prioritizes_route_guidance() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.provider.model = "custom-explicit-model".to_owned();
+
+        let check = provider_model_probe_failure_check(
+            &config,
+            "provider model-list request failed on attempt 3/3: operation timed out".to_owned(),
+        );
+
+        assert_eq!(check.name, "provider model probe");
+        assert_eq!(check.level, DoctorCheckLevel::Fail);
+        assert!(
+            check
+                .detail
+                .contains(crate::provider_route_diagnostics::MODEL_CATALOG_TRANSPORT_FAILED_MARKER),
+            "transport probe failures should use the route-focused marker: {check:#?}"
+        );
+        assert!(
+            !check.detail.contains("provider.model"),
+            "transport probe failures should not suggest model-selection repair when the route is the real blocker: {check:#?}"
+        );
+        assert!(
+            !check.detail.contains("below"),
+            "doctor should not promise a later route-probe section that may not exist when collection is unavailable: {check:#?}"
         );
     }
 
@@ -2232,6 +2477,79 @@ mod tests {
         assert!(check.detail.contains("not writable"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn audit_retention_doctor_check_fails_when_parent_directory_is_not_writable() {
+        let temp_dir = browser_companion_temp_dir("audit-target-parent-readonly");
+        let readonly_dir = temp_dir.join("readonly-audit");
+        std::fs::create_dir_all(&readonly_dir).expect("create readonly audit directory");
+        let original_permissions = std::fs::metadata(&readonly_dir)
+            .expect("readonly audit directory metadata")
+            .permissions();
+        let mut permissions = original_permissions.clone();
+        permissions.set_mode(0o555);
+        std::fs::set_permissions(&readonly_dir, permissions)
+            .expect("mark audit directory readonly");
+        let _permission_restore =
+            PermissionRestore::new(readonly_dir.clone(), original_permissions);
+
+        let journal_path = readonly_dir.join("events.jsonl");
+        let check = audit_retention_doctor_check(&mvp::config::AuditConfig {
+            mode: mvp::config::AuditMode::Fanout,
+            path: journal_path.display().to_string(),
+            retain_in_memory: true,
+        });
+
+        assert_eq!(check.name, "audit retention");
+        assert_eq!(check.level, DoctorCheckLevel::Fail);
+        assert!(check.detail.contains("runtime open + lock probe failed"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit_retention_doctor_check_fails_when_missing_parent_chain_is_not_creatable() {
+        let temp_dir = browser_companion_temp_dir("audit-target-missing-parent-chain");
+        let readonly_dir = temp_dir.join("readonly-audit");
+        std::fs::create_dir_all(&readonly_dir).expect("create readonly audit directory");
+        let original_permissions = std::fs::metadata(&readonly_dir)
+            .expect("readonly audit directory metadata")
+            .permissions();
+        let mut permissions = original_permissions.clone();
+        permissions.set_mode(0o555);
+        std::fs::set_permissions(&readonly_dir, permissions)
+            .expect("mark audit directory readonly");
+        let _permission_restore =
+            PermissionRestore::new(readonly_dir.clone(), original_permissions);
+
+        let journal_path = readonly_dir.join("nested").join("events.jsonl");
+        let check = audit_retention_doctor_check(&mvp::config::AuditConfig {
+            mode: mvp::config::AuditMode::Fanout,
+            path: journal_path.display().to_string(),
+            retain_in_memory: true,
+        });
+
+        assert_eq!(check.name, "audit retention");
+        assert_eq!(check.level, DoctorCheckLevel::Fail);
+        assert!(check.detail.contains("runtime open + lock probe failed"));
+    }
+
+    #[test]
+    fn audit_retention_doctor_check_cleans_up_probe_artifacts_for_creatable_missing_path() {
+        let temp_dir = browser_companion_temp_dir("audit-target-cleanup");
+        let journal_path = temp_dir.join("nested").join("events.jsonl");
+
+        let check = audit_retention_doctor_check(&mvp::config::AuditConfig {
+            mode: mvp::config::AuditMode::Fanout,
+            path: journal_path.display().to_string(),
+            retain_in_memory: true,
+        });
+
+        assert_eq!(check.name, "audit retention");
+        assert_eq!(check.level, DoctorCheckLevel::Pass);
+        assert!(!journal_path.exists());
+        assert!(!journal_path.parent().expect("nested parent").exists());
+    }
+
     fn unique_temp_feishu_db(label: &str) -> String {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -2402,14 +2720,14 @@ mod tests {
                 mvp::config::ChannelDefaultAccountSelectionSource::RuntimeIdentity,
             label: "Feishu/Lark",
             aliases: vec!["lark"],
-            transport: "feishu_openapi_webhook",
+            transport: "feishu_openapi_webhook_or_websocket",
             compiled: true,
             enabled: true,
             api_base_url: Some("https://open.feishu.cn".to_owned()),
             notes: Vec::new(),
             operations: vec![ChannelOperationStatus {
                 id: "serve",
-                label: "webhook reply server",
+                label: "inbound reply service",
                 command: "feishu-serve",
                 health: ChannelOperationHealth::Ready,
                 detail: "ready".to_owned(),
@@ -2435,7 +2753,7 @@ mod tests {
 
         assert!(
             checks.iter().any(|check| {
-                check.name == "feishu webhook runtime"
+                check.name == "feishu serve runtime"
                     && check.level == DoctorCheckLevel::Fail
                     && check.detail.contains("stale")
                     && check.detail.contains("pid=4242")
@@ -2509,7 +2827,7 @@ mod tests {
                 mvp::config::ChannelDefaultAccountSelectionSource::ExplicitDefault,
             label: "Feishu/Lark",
             aliases: vec!["lark"],
-            transport: "feishu_openapi_webhook",
+            transport: "feishu_openapi_webhook_or_websocket",
             compiled: true,
             enabled: true,
             api_base_url: Some("https://open.feishu.cn".to_owned()),
@@ -2524,7 +2842,7 @@ mod tests {
             ],
             operations: vec![ChannelOperationStatus {
                 id: "serve",
-                label: "webhook reply server",
+                label: "inbound reply service",
                 command: "feishu-serve",
                 health: ChannelOperationHealth::Ready,
                 detail: "ready".to_owned(),
@@ -2757,6 +3075,23 @@ mod tests {
                 == "Re-run diagnostics: loongclaw doctor --config '/tmp/loongclaw.toml'"),
             "doctor should tell the operator how to confirm the repair path: {next_steps:#?}"
         );
+    }
+
+    #[test]
+    fn provider_credentials_doctor_check_adds_volcengine_auth_guidance() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.provider.kind = mvp::config::ProviderKind::Volcengine;
+        config.provider.api_key = None;
+        config.provider.api_key_env = None;
+        config.provider.oauth_access_token = None;
+        config.provider.oauth_access_token_env = None;
+
+        let check = provider_credentials_doctor_check(&config, false);
+
+        assert_eq!(check.name, "provider credentials");
+        assert_eq!(check.level, DoctorCheckLevel::Warn);
+        assert!(check.detail.contains("ARK_API_KEY"));
+        assert!(check.detail.contains("Authorization: Bearer <ARK_API_KEY>"));
     }
 
     #[test]
@@ -3013,6 +3348,48 @@ mod tests {
                 step == "If your provider blocks model listing during setup, retry with: loongclaw doctor --config '/tmp/loongclaw.toml' --skip-model-probe"
             }),
             "warn-level preferred-model recovery should still keep the skip-model-probe escape hatch visible: {next_steps:#?}"
+        );
+    }
+
+    #[test]
+    fn build_doctor_next_steps_guides_provider_route_probe_repairs() {
+        let checks = vec![
+            DoctorCheck {
+                name: "provider model probe".to_owned(),
+                level: DoctorCheckLevel::Fail,
+                detail:
+                    "OpenAI [openai]: model catalog transport failed (provider model-list request failed on attempt 3/3: operation timed out)"
+                        .to_owned(),
+            },
+            DoctorCheck {
+                name: "provider route probe".to_owned(),
+                level: DoctorCheckLevel::Warn,
+                detail:
+                    "request/models host api.openai.com:443: dns resolved to 198.18.0.2 (fake-ip-style); tcp connect ok. the route currently depends on local fake-ip/TUN interception."
+                        .to_owned(),
+            },
+        ];
+
+        let next_steps = build_doctor_next_steps_with_path_env(
+            &checks,
+            Path::new("/tmp/loongclaw.toml"),
+            &mvp::config::LoongClawConfig::default(),
+            false,
+            Some(std::ffi::OsStr::new("")),
+        );
+
+        assert!(
+            next_steps.iter().any(|step| {
+                step.contains("provider route")
+                    && step.contains("loongclaw doctor --config '/tmp/loongclaw.toml'")
+            }),
+            "route-probe findings should produce a concrete diagnostics rerun step: {next_steps:#?}"
+        );
+        assert!(
+            next_steps.iter().any(|step| {
+                step.contains("fake-ip") || step.contains("direct/bypass") || step.contains("proxy")
+            }),
+            "route-probe findings should explain how to repair proxy/fake-ip routing instead of leaving recovery implicit: {next_steps:#?}"
         );
     }
 

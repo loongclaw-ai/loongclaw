@@ -414,6 +414,8 @@ pub enum ProviderKind {
     Qianfan,
     #[serde(alias = "qwen_compatible", alias = "dashscope")]
     Qwen,
+    #[serde(alias = "bailian_coding_compatible")]
+    BailianCoding,
     #[serde(alias = "sambanova_compatible", alias = "samba_nova")]
     Sambanova,
     #[serde(alias = "sglang_compatible")]
@@ -1057,6 +1059,75 @@ impl ProviderConfig {
                 }
                 first_non_empty_env_name(&self.api_key_env_names())
             }
+        }
+    }
+
+    pub fn auth_hint_env_names(&self) -> Vec<String> {
+        let mut env_names = Vec::new();
+        push_inline_env_reference(&mut env_names, self.oauth_access_token.as_deref());
+        push_inline_env_reference(&mut env_names, self.api_key.as_deref());
+        for env_name in self.credential_env_names() {
+            push_unique_env_key(&mut env_names, Some(env_name.as_str()));
+        }
+        env_names
+    }
+
+    pub fn requires_explicit_auth_configuration(&self) -> bool {
+        !self.auth_hint_env_names().is_empty()
+    }
+
+    pub fn auth_guidance_hint(&self) -> Option<String> {
+        if self.kind.feature_family() == ProviderFeatureFamily::Volcengine {
+            let provider_label = if matches!(
+                self.kind,
+                ProviderKind::Byteplus | ProviderKind::ByteplusCoding
+            ) {
+                "BytePlus"
+            } else {
+                "Volcengine"
+            };
+            let env_name = self
+                .kind
+                .default_api_key_env()
+                .unwrap_or("PROVIDER_API_KEY");
+            Some(format!(
+                "LoongClaw's {provider_label} OpenAI-compatible path uses `provider.api_key` / `{env_name}` and sends `Authorization: Bearer <{env_name}>`; AK/SK request signing is not used on this path"
+            ))
+        } else {
+            None
+        }
+    }
+
+    pub fn missing_auth_configuration_message(&self) -> String {
+        let env_names = self.auth_hint_env_names();
+        let mut configuration_paths = vec!["configure provider credentials".to_owned()];
+        if !env_names.is_empty() {
+            configuration_paths.push(format!("set {} in env", env_names.join(", ")));
+        }
+        if let Some(hint) = self.alternative_auth_configuration_hint() {
+            configuration_paths.push(hint);
+        }
+        let mut message = format!(
+            "provider credentials are missing; {}",
+            join_guidance_options(&configuration_paths)
+        );
+        if let Some(hint) = self.auth_guidance_hint() {
+            message.push(' ');
+            message.push_str(hint.as_str());
+        }
+        message
+    }
+
+    fn alternative_auth_configuration_hint(&self) -> Option<String> {
+        if self.kind == ProviderKind::Bedrock {
+            Some(
+                "configure AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY with AWS_REGION or AWS_DEFAULT_REGION for SigV4"
+                    .to_owned(),
+            )
+        } else if self.kind == ProviderKind::Custom {
+            Some("add `Authorization` / `X-API-Key` in `provider.headers`".to_owned())
+        } else {
+            None
         }
     }
 
@@ -1937,6 +2008,7 @@ impl ProviderKind {
             ProviderKind::Perplexity => "Perplexity",
             ProviderKind::Qianfan => "Qianfan",
             ProviderKind::Qwen => "Qwen",
+            ProviderKind::BailianCoding => "Bailian Coding",
             ProviderKind::Sambanova => "SambaNova",
             ProviderKind::Sglang => "SGLang",
             ProviderKind::Siliconflow => "SiliconFlow",
@@ -1960,6 +2032,7 @@ impl ProviderKind {
     pub fn profile(self) -> &'static ProviderProfile {
         let [
             anthropic,
+            bailian_coding,
             bedrock,
             byteplus,
             byteplus_coding,
@@ -1973,12 +2046,12 @@ impl ProviderKind {
             groq,
             kimi,
             kimi_coding,
+            llamacpp,
+            lm_studio,
             mistral,
             minimax,
             novita,
             nvidia,
-            llamacpp,
-            lm_studio,
             ollama,
             openai,
             openrouter,
@@ -2002,6 +2075,7 @@ impl ProviderKind {
 
         match self {
             ProviderKind::Anthropic => anthropic,
+            ProviderKind::BailianCoding => bailian_coding,
             ProviderKind::Bedrock => bedrock,
             ProviderKind::Byteplus => byteplus,
             ProviderKind::ByteplusCoding => byteplus_coding,
@@ -2009,17 +2083,18 @@ impl ProviderKind {
             ProviderKind::CloudflareAiGateway => cloudflare_ai_gateway,
             ProviderKind::Cohere => cohere,
             ProviderKind::Custom => custom,
+            ProviderKind::Deepseek => deepseek,
+            ProviderKind::Fireworks => fireworks,
             ProviderKind::Gemini => gemini,
+            ProviderKind::Groq => groq,
             ProviderKind::Kimi => kimi,
             ProviderKind::KimiCoding => kimi_coding,
-            ProviderKind::Groq => groq,
-            ProviderKind::Fireworks => fireworks,
+            ProviderKind::Llamacpp => llamacpp,
+            ProviderKind::LmStudio => lm_studio,
             ProviderKind::Mistral => mistral,
             ProviderKind::Minimax => minimax,
             ProviderKind::Novita => novita,
             ProviderKind::Nvidia => nvidia,
-            ProviderKind::Llamacpp => llamacpp,
-            ProviderKind::LmStudio => lm_studio,
             ProviderKind::Ollama => ollama,
             ProviderKind::Openai => openai,
             ProviderKind::Openrouter => openrouter,
@@ -2033,13 +2108,12 @@ impl ProviderKind {
             ProviderKind::Together => together,
             ProviderKind::Venice => venice,
             ProviderKind::VercelAiGateway => vercel_ai_gateway,
+            ProviderKind::Vllm => vllm,
             ProviderKind::Volcengine => volcengine,
             ProviderKind::VolcengineCoding => volcengine_coding,
             ProviderKind::Xai => xai,
             ProviderKind::Zai => zai,
             ProviderKind::Zhipu => zhipu,
-            ProviderKind::Deepseek => deepseek,
-            ProviderKind::Vllm => vllm,
         }
     }
 
@@ -2218,6 +2292,7 @@ impl ProviderKind {
             | ProviderKind::Perplexity
             | ProviderKind::Qianfan
             | ProviderKind::Qwen
+            | ProviderKind::BailianCoding
             | ProviderKind::Sambanova
             | ProviderKind::Sglang
             | ProviderKind::Siliconflow
@@ -2269,8 +2344,9 @@ pub fn parse_provider_kind_id(raw: &str) -> Option<ProviderKind> {
     None
 }
 
-const PROVIDER_KIND_ORDER: [ProviderKind; 39] = [
+const PROVIDER_KIND_ORDER: [ProviderKind; 40] = [
     ProviderKind::Anthropic,
+    ProviderKind::BailianCoding,
     ProviderKind::Bedrock,
     ProviderKind::Byteplus,
     ProviderKind::ByteplusCoding,
@@ -2311,7 +2387,7 @@ const PROVIDER_KIND_ORDER: [ProviderKind; 39] = [
     ProviderKind::Zhipu,
 ];
 
-const PROVIDER_PROFILES: [ProviderProfile; 39] = [
+const PROVIDER_PROFILES: [ProviderProfile; 40] = [
     ProviderProfile {
         kind: ProviderKind::Anthropic,
         id: "anthropic",
@@ -2328,6 +2404,23 @@ const PROVIDER_PROFILES: [ProviderProfile; 39] = [
         default_oauth_access_token_env: None,
         oauth_access_token_env_aliases: &[],
         feature_family: ProviderFeatureFamily::Anthropic,
+    },
+    ProviderProfile {
+        kind: ProviderKind::BailianCoding,
+        id: "bailian_coding",
+        aliases: &["bailian_coding_compatible"],
+        base_url: "https://coding.dashscope.aliyuncs.com/v1",
+        chat_completions_path: "/chat/completions",
+        models_path: Some("/models"),
+        protocol_family: ProviderProtocolFamily::OpenAiChatCompletions,
+        auth_scheme: ProviderAuthScheme::Bearer,
+        default_headers: &[],
+        default_api_key_env: Some("BAILIAN_API_KEY"),
+        api_key_env_aliases: &[],
+        default_user_agent: Some("openclaw"),
+        default_oauth_access_token_env: None,
+        oauth_access_token_env_aliases: &[],
+        feature_family: ProviderFeatureFamily::OpenAiCompatible,
     },
     ProviderProfile {
         kind: ProviderKind::Bedrock,
@@ -2561,6 +2654,40 @@ const PROVIDER_PROFILES: [ProviderProfile; 39] = [
         feature_family: ProviderFeatureFamily::OpenAiCompatible,
     },
     ProviderProfile {
+        kind: ProviderKind::Llamacpp,
+        id: "llamacpp",
+        aliases: &["llama.cpp", "llama_cpp"],
+        base_url: "http://127.0.0.1:8080",
+        chat_completions_path: "/v1/chat/completions",
+        models_path: None,
+        protocol_family: ProviderProtocolFamily::OpenAiChatCompletions,
+        auth_scheme: ProviderAuthScheme::Bearer,
+        default_headers: &[],
+        default_api_key_env: None,
+        api_key_env_aliases: &[],
+        default_user_agent: None,
+        default_oauth_access_token_env: None,
+        oauth_access_token_env_aliases: &[],
+        feature_family: ProviderFeatureFamily::OpenAiCompatible,
+    },
+    ProviderProfile {
+        kind: ProviderKind::LmStudio,
+        id: "lm_studio",
+        aliases: &["lmstudio", "lm-studio"],
+        base_url: "http://127.0.0.1:1234",
+        chat_completions_path: "/v1/chat/completions",
+        models_path: None,
+        protocol_family: ProviderProtocolFamily::OpenAiChatCompletions,
+        auth_scheme: ProviderAuthScheme::Bearer,
+        default_headers: &[],
+        default_api_key_env: None,
+        api_key_env_aliases: &[],
+        default_user_agent: None,
+        default_oauth_access_token_env: None,
+        oauth_access_token_env_aliases: &[],
+        feature_family: ProviderFeatureFamily::OpenAiCompatible,
+    },
+    ProviderProfile {
         kind: ProviderKind::Mistral,
         id: "mistral",
         aliases: &["mistral_compatible"],
@@ -2627,40 +2754,6 @@ const PROVIDER_PROFILES: [ProviderProfile; 39] = [
         auth_scheme: ProviderAuthScheme::Bearer,
         default_headers: &[],
         default_api_key_env: Some("NVIDIA_API_KEY"),
-        api_key_env_aliases: &[],
-        default_user_agent: None,
-        default_oauth_access_token_env: None,
-        oauth_access_token_env_aliases: &[],
-        feature_family: ProviderFeatureFamily::OpenAiCompatible,
-    },
-    ProviderProfile {
-        kind: ProviderKind::Llamacpp,
-        id: "llamacpp",
-        aliases: &["llama.cpp", "llama_cpp"],
-        base_url: "http://127.0.0.1:8080",
-        chat_completions_path: "/v1/chat/completions",
-        models_path: None,
-        protocol_family: ProviderProtocolFamily::OpenAiChatCompletions,
-        auth_scheme: ProviderAuthScheme::Bearer,
-        default_headers: &[],
-        default_api_key_env: None,
-        api_key_env_aliases: &[],
-        default_user_agent: None,
-        default_oauth_access_token_env: None,
-        oauth_access_token_env_aliases: &[],
-        feature_family: ProviderFeatureFamily::OpenAiCompatible,
-    },
-    ProviderProfile {
-        kind: ProviderKind::LmStudio,
-        id: "lm_studio",
-        aliases: &["lmstudio", "lm-studio"],
-        base_url: "http://127.0.0.1:1234",
-        chat_completions_path: "/v1/chat/completions",
-        models_path: None,
-        protocol_family: ProviderProtocolFamily::OpenAiChatCompletions,
-        auth_scheme: ProviderAuthScheme::Bearer,
-        default_headers: &[],
-        default_api_key_env: None,
         api_key_env_aliases: &[],
         default_user_agent: None,
         default_oauth_access_token_env: None,
@@ -3143,6 +3236,31 @@ fn push_unique_env_key(keys: &mut Vec<String>, maybe_key: Option<&str>) {
         return;
     }
     keys.push(trimmed.to_owned());
+}
+
+fn push_inline_env_reference(keys: &mut Vec<String>, maybe_secret: Option<&str>) {
+    let Some(secret) = non_empty(maybe_secret) else {
+        return;
+    };
+    push_unique_env_key(keys, parse_explicit_env_reference(secret));
+}
+
+fn join_guidance_options(options: &[String]) -> String {
+    let Some((last, rest)) = options.split_last() else {
+        return String::new();
+    };
+
+    if let [first] = rest {
+        return format!("{first} or {last}");
+    }
+    if rest.is_empty() {
+        return last.clone();
+    }
+
+    let mut joined = rest.join(", ");
+    joined.push_str(", or ");
+    joined.push_str(last);
+    joined
 }
 
 fn non_empty(value: Option<&str>) -> Option<&str> {

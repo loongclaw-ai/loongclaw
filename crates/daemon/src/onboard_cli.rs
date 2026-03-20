@@ -20,8 +20,7 @@ const BACKUP_TIMESTAMP_FORMAT: &[FormatItem<'static>] =
 const ONBOARD_CLEAR_INPUT_TOKEN: &str = ":clear";
 const ONBOARD_CUSTOM_MODEL_OPTION_SLUG: &str = "__custom_model__";
 const ONBOARD_ESCAPE_CANCEL_HINT: &str = "- press Esc then Enter to cancel onboarding";
-const ONBOARD_SINGLE_LINE_INPUT_HINT: &str =
-    "- terminal input is single line; extra pasted lines are ignored";
+const ONBOARD_SINGLE_LINE_INPUT_HINT: &str = "- single-line input only";
 const ONBOARD_PASTE_DRAIN_WINDOW_ENV: &str = "LOONGCLAW_ONBOARD_PASTE_DRAIN_WINDOW_MS";
 const DEFAULT_ONBOARD_PASTE_DRAIN_WINDOW: Duration = Duration::from_millis(75);
 const ONBOARD_LINE_READER_BUFFER_SIZE: usize = 64;
@@ -59,6 +58,9 @@ pub trait OnboardUi {
     fn print_line(&mut self, line: &str) -> CliResult<()>;
     fn prompt_with_default(&mut self, label: &str, default: &str) -> CliResult<String>;
     fn prompt_required(&mut self, label: &str) -> CliResult<String>;
+    fn prompt_allow_empty(&mut self, label: &str) -> CliResult<String> {
+        self.prompt_required(label)
+    }
     fn prompt_confirm(&mut self, message: &str, default: bool) -> CliResult<bool>;
     fn select_one(
         &mut self,
@@ -97,6 +99,24 @@ impl OnboardRuntimeContext {
         }
     }
 }
+
+const MEMORY_PROFILE_CHOICES: [(mvp::config::MemoryProfile, &str, &str); 3] = [
+    (
+        mvp::config::MemoryProfile::WindowOnly,
+        "recent turns only",
+        "only load the recent conversation turns",
+    ),
+    (
+        mvp::config::MemoryProfile::WindowPlusSummary,
+        "window plus summary",
+        "load recent turns plus a short summary of earlier context",
+    ),
+    (
+        mvp::config::MemoryProfile::ProfilePlusWindow,
+        "profile plus window",
+        "load recent turns plus durable profile notes",
+    ),
+];
 
 trait OnboardPromptLineReader {
     fn read_blocking_line(&mut self) -> CliResult<OnboardPromptRead>;
@@ -338,6 +358,13 @@ impl OnboardUi for StdioOnboardUi {
         prompt_required_stdio(self.stdio_line_reader(), label)
     }
 
+    fn prompt_allow_empty(&mut self, label: &str) -> CliResult<String> {
+        if rich_prompt_ui_available() {
+            return prompt_allow_empty_rich(label);
+        }
+        prompt_required_stdio(self.stdio_line_reader(), label)
+    }
+
     fn prompt_confirm(&mut self, message: &str, default: bool) -> CliResult<bool> {
         if rich_prompt_ui_available() {
             return prompt_confirm_rich(message, default);
@@ -496,12 +523,16 @@ fn map_rich_prompt_error(action: &str, error: DialoguerError) -> String {
 
 fn prompt_with_default_rich(label: &str, default: &str) -> CliResult<String> {
     let term = rich_prompt_term();
+    prompt_with_default_rich_on(&term, label, default)
+}
+
+fn prompt_with_default_rich_on(term: &Term, label: &str, default: &str) -> CliResult<String> {
     let theme = rich_prompt_theme();
     let value = Input::<String>::with_theme(&theme)
         .with_prompt(label)
         .default(default.to_owned())
         .report(false)
-        .interact_text_on(&term)
+        .interact_text_on(term)
         .map_err(|error| map_rich_prompt_error("interactive prompt", error))?;
     let value = ensure_onboard_input_not_cancelled(value)?;
     let trimmed = value.trim();
@@ -513,11 +544,32 @@ fn prompt_with_default_rich(label: &str, default: &str) -> CliResult<String> {
 
 fn prompt_required_rich(label: &str) -> CliResult<String> {
     let term = rich_prompt_term();
+    prompt_required_rich_on(&term, label)
+}
+
+fn prompt_required_rich_on(term: &Term, label: &str) -> CliResult<String> {
     let theme = rich_prompt_theme();
     let value = Input::<String>::with_theme(&theme)
         .with_prompt(label)
         .report(false)
-        .interact_text_on(&term)
+        .interact_text_on(term)
+        .map_err(|error| map_rich_prompt_error("interactive prompt", error))?;
+    let value = ensure_onboard_input_not_cancelled(value)?;
+    Ok(value.trim().to_owned())
+}
+
+fn prompt_allow_empty_rich(label: &str) -> CliResult<String> {
+    let term = rich_prompt_term();
+    prompt_allow_empty_rich_on(&term, label)
+}
+
+fn prompt_allow_empty_rich_on(term: &Term, label: &str) -> CliResult<String> {
+    let theme = rich_prompt_theme();
+    let value = Input::<String>::with_theme(&theme)
+        .with_prompt(label)
+        .allow_empty(true)
+        .report(false)
+        .interact_text_on(term)
         .map_err(|error| map_rich_prompt_error("interactive prompt", error))?;
     let value = ensure_onboard_input_not_cancelled(value)?;
     Ok(value.trim().to_owned())
@@ -692,7 +744,7 @@ fn build_existing_config_write_screen_options() -> Vec<OnboardScreenOption> {
             detail_lines: vec![
                 "save a timestamped .bak copy first, then write the new config".to_owned(),
             ],
-            recommended: false,
+            recommended: true,
         },
         OnboardScreenOption {
             key: "c".to_owned(),
@@ -790,7 +842,7 @@ fn prompt_optional(
     label: &str,
     current: Option<&str>,
 ) -> CliResult<Option<String>> {
-    let value = ui.prompt_required(label)?;
+    let value = ui.prompt_allow_empty(label)?;
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Ok(current
@@ -1176,7 +1228,7 @@ pub async fn run_onboard_cli_with_ui(
     let skip_detailed_setup = if let Some(shortcut_kind) = shortcut_kind {
         print_lines(
             ui,
-            render_onboard_shortcut_screen_lines_with_style(
+            render_onboard_shortcut_header_lines_with_style(
                 shortcut_kind,
                 &config,
                 starting_selection.import_source.as_deref(),
@@ -1294,6 +1346,7 @@ pub async fn run_onboard_cli_with_ui(
     }
 
     let checks = run_preflight_checks(&config, options.skip_model_probe).await;
+    let config_validation_failure = config_validation_failure_message(&checks);
 
     let credential_ok = checks
         .iter()
@@ -1314,6 +1367,9 @@ pub async fn run_onboard_cli_with_ui(
         });
 
     if options.non_interactive {
+        if let Some(message) = config_validation_failure {
+            return Err(message);
+        }
         if !credential_ok {
             let credential_hint = provider_credential_env_hint(&config.provider)
                 .unwrap_or_else(|| "PROVIDER_API_KEY".to_owned());
@@ -1341,6 +1397,9 @@ pub async fn run_onboard_cli_with_ui(
                 true,
             ),
         )?;
+        if let Some(message) = config_validation_failure {
+            return Err(message);
+        }
         if (has_failures || has_warnings)
             && !ui.prompt_confirm(
                 crate::onboard_presentation::preflight_confirm_prompt(),
@@ -1892,40 +1951,61 @@ fn resolve_api_key_env_selection(
     ui: &mut impl OnboardUi,
     context: &OnboardRuntimeContext,
 ) -> CliResult<String> {
+    let explicit_selection = if let Some(api_key_env) = options.api_key_env.as_deref() {
+        if is_explicit_onboard_clear_input(api_key_env) {
+            return Ok(String::new());
+        }
+        let trimmed = api_key_env.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(validate_selected_provider_credential_env(config, trimmed)?)
+        }
+    } else {
+        None
+    };
+
     if options.non_interactive {
-        if let Some(api_key_env) = options.api_key_env.as_deref() {
-            if is_explicit_onboard_clear_input(api_key_env) {
-                return Ok(String::new());
-            }
-            let trimmed = api_key_env.trim();
-            if !trimmed.is_empty() {
-                return Ok(trimmed.to_owned());
+        return Ok(explicit_selection.unwrap_or(default_api_key_env));
+    }
+    let initial = explicit_selection
+        .as_deref()
+        .unwrap_or(default_api_key_env.as_str());
+    let example_env_name = provider_credential_env_hint(&config.provider)
+        .unwrap_or_else(|| "PROVIDER_API_KEY".to_owned());
+    loop {
+        print_lines(
+            ui,
+            render_api_key_env_selection_screen_lines_with_style(
+                config,
+                default_api_key_env.as_str(),
+                initial,
+                guided_prompt_path,
+                context.render_width,
+                true,
+            ),
+        )?;
+        let value = ui.prompt_with_default("Credential env var name", initial)?;
+        if is_explicit_onboard_clear_input(&value) {
+            return Ok(String::new());
+        }
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Ok(String::new());
+        }
+        match validate_selected_provider_credential_env(config, trimmed) {
+            Ok(validated) => return Ok(validated),
+            Err(error) => {
+                print_message(ui, error)?;
+                print_message(
+                    ui,
+                    format!(
+                        "enter the environment variable name only, for example {example_env_name}, or type :clear to remove the env binding"
+                    ),
+                )?;
             }
         }
-        return Ok(default_api_key_env);
     }
-    let initial = options
-        .api_key_env
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(default_api_key_env.as_str());
-    print_lines(
-        ui,
-        render_api_key_env_selection_screen_lines_with_style(
-            config,
-            default_api_key_env.as_str(),
-            initial,
-            guided_prompt_path,
-            context.render_width,
-            true,
-        ),
-    )?;
-    let value = ui.prompt_with_default("Credential env var", initial)?;
-    if is_explicit_onboard_clear_input(&value) {
-        return Ok(String::new());
-    }
-    Ok(value.trim().to_owned())
 }
 
 fn apply_selected_api_key_env(
@@ -2062,7 +2142,7 @@ fn resolve_prompt_addendum_selection(
     )?;
     prompt_optional(
         ui,
-        "Prompt addendum (blank keeps current, '-' clears)",
+        "Prompt addendum",
         config.cli.system_prompt_addendum.as_deref(),
     )
 }
@@ -2136,25 +2216,7 @@ fn resolve_memory_profile_selection(
         .as_deref()
         .and_then(parse_memory_profile)
         .unwrap_or(config.memory.profile);
-
-    let profiles = [
-        (
-            mvp::config::MemoryProfile::WindowOnly,
-            "recent turns only",
-            "load only the active sliding window",
-        ),
-        (
-            mvp::config::MemoryProfile::WindowPlusSummary,
-            "window plus summary",
-            "add a summary block before the recent window",
-        ),
-        (
-            mvp::config::MemoryProfile::ProfilePlusWindow,
-            "profile plus window",
-            "inject durable profile notes before the recent window",
-        ),
-    ];
-    let select_options: Vec<SelectOption> = profiles
+    let select_options: Vec<SelectOption> = MEMORY_PROFILE_CHOICES
         .iter()
         .map(|(p, label, desc)| SelectOption {
             label: label.to_string(),
@@ -2163,7 +2225,9 @@ fn resolve_memory_profile_selection(
             recommended: *p == default_profile,
         })
         .collect();
-    let default_idx = profiles.iter().position(|(p, _, _)| *p == default_profile);
+    let default_idx = MEMORY_PROFILE_CHOICES
+        .iter()
+        .position(|(p, _, _)| *p == default_profile);
 
     print_lines(
         ui,
@@ -2179,7 +2243,7 @@ fn resolve_memory_profile_selection(
         default_idx,
         SelectInteractionMode::List,
     )?;
-    let (profile, _, _) = profiles
+    let (profile, _, _) = MEMORY_PROFILE_CHOICES
         .get(idx)
         .ok_or_else(|| format!("memory profile selection index {idx} out of range"))?;
     Ok(*profile)
@@ -2190,6 +2254,9 @@ async fn run_preflight_checks(
     skip_model_probe: bool,
 ) -> Vec<OnboardCheck> {
     let mut checks = Vec::new();
+    if let Some(validation_check) = config_validation_check(config) {
+        checks.push(validation_check);
+    }
     let credential_check = provider_credential_check(config);
     let has_credentials = credential_check.level == OnboardCheckLevel::Pass;
     checks.push(credential_check);
@@ -2218,7 +2285,22 @@ async fn run_preflight_checks(
                 detail: format!("{} model(s) available", models.len()),
                 non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
             }),
-            Err(error) => checks.push(provider_model_probe_failure_check(config, error)),
+            Err(error) => {
+                let transport_style_failure =
+                    crate::provider_route_diagnostics::is_transport_style_model_probe_failure(
+                        error.as_str(),
+                    );
+                checks.push(provider_model_probe_failure_check(config, error));
+                if transport_style_failure
+                    && let Some(route_probe) =
+                        crate::provider_route_diagnostics::collect_provider_route_probe(
+                            &config.provider,
+                        )
+                        .await
+                {
+                    checks.push(provider_route_probe_preflight_check(&route_probe));
+                }
+            }
         }
     }
 
@@ -2233,6 +2315,15 @@ async fn run_preflight_checks(
     checks.extend(collect_channel_preflight_checks(config));
 
     checks
+}
+
+fn config_validation_check(config: &mvp::config::LoongClawConfig) -> Option<OnboardCheck> {
+    config.validate().err().map(|detail| OnboardCheck {
+        name: "config validation",
+        level: OnboardCheckLevel::Fail,
+        detail,
+        non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+    })
 }
 
 fn provider_check_detail_prefix(config: &mvp::config::LoongClawConfig) -> String {
@@ -2252,6 +2343,17 @@ fn provider_model_probe_failure_check(
     error: String,
 ) -> OnboardCheck {
     let provider_prefix = provider_check_detail_prefix(config);
+    if crate::provider_route_diagnostics::is_transport_style_model_probe_failure(error.as_str()) {
+        return OnboardCheck {
+            name: "provider model probe",
+            level: OnboardCheckLevel::Fail,
+            detail: format!(
+                "{provider_prefix}: {} ({error}); runtime could not verify the provider route. inspect provider route diagnostics and retry once dns / proxy / TUN routing is stable",
+                crate::provider_route_diagnostics::MODEL_CATALOG_TRANSPORT_FAILED_MARKER
+            ),
+            non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+        };
+    }
     let auth_style_failure = mvp::provider::is_auth_style_failure_message(error.as_str());
     let append_region_hint = |mut detail: String| {
         if auth_style_failure && let Some(hint) = config.provider.region_endpoint_failure_hint() {
@@ -2353,9 +2455,31 @@ fn non_interactive_preflight_failure_message(checks: &[OnboardCheck]) -> String 
     let detail = checks
         .iter()
         .find(|check| check.level == OnboardCheckLevel::Fail)
-        .map(|check| check.detail.as_str())
-        .unwrap_or("preflight checks failed");
+        .map(|check| {
+            let mut detail = check.detail.clone();
+            if check.name == "provider model probe"
+                && check.detail.contains(
+                    crate::provider_route_diagnostics::MODEL_CATALOG_TRANSPORT_FAILED_MARKER,
+                )
+                && let Some(route_probe) = checks.iter().find(|candidate| {
+                    candidate.name
+                        == crate::provider_route_diagnostics::PROVIDER_ROUTE_PROBE_CHECK_NAME
+                })
+            {
+                detail.push_str(" provider route probe: ");
+                detail.push_str(route_probe.detail.as_str());
+            }
+            detail
+        })
+        .unwrap_or_else(|| "preflight checks failed".to_owned());
     format!("onboard preflight failed: {detail}")
+}
+
+fn config_validation_failure_message(checks: &[OnboardCheck]) -> Option<String> {
+    checks
+        .iter()
+        .find(|check| check.name == "config validation" && check.level == OnboardCheckLevel::Fail)
+        .map(|check| format!("onboard preflight failed: {}", check.detail))
 }
 
 pub fn provider_credential_check(config: &mvp::config::LoongClawConfig) -> OnboardCheck {
@@ -2401,9 +2525,13 @@ pub fn provider_credential_check(config: &mvp::config::LoongClawConfig) -> Onboa
         };
     }
 
-    let detail = provider_credential_env_hint(provider)
+    let mut detail = provider_credential_env_hint(provider)
         .map(|env_name| format!("{env_name} is not set"))
         .unwrap_or_else(|| "provider credentials are not configured".to_owned());
+    if let Some(hint) = provider.auth_guidance_hint() {
+        detail.push(' ');
+        detail.push_str(hint.as_str());
+    }
     OnboardCheck {
         name: "provider credentials",
         level: OnboardCheckLevel::Warn,
@@ -2422,6 +2550,27 @@ fn provider_transport_check(config: &mvp::config::LoongClawConfig) -> OnboardChe
             mvp::config::ProviderTransportReadinessLevel::Unsupported => OnboardCheckLevel::Fail,
         },
         detail: readiness.detail,
+        non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+    }
+}
+
+fn provider_route_probe_preflight_check(
+    probe: &crate::provider_route_diagnostics::ProviderRouteProbe,
+) -> OnboardCheck {
+    OnboardCheck {
+        name: crate::provider_route_diagnostics::PROVIDER_ROUTE_PROBE_CHECK_NAME,
+        level: match probe.level {
+            crate::provider_route_diagnostics::ProviderRouteProbeLevel::Pass => {
+                OnboardCheckLevel::Pass
+            }
+            crate::provider_route_diagnostics::ProviderRouteProbeLevel::Warn => {
+                OnboardCheckLevel::Warn
+            }
+            crate::provider_route_diagnostics::ProviderRouteProbeLevel::Fail => {
+                OnboardCheckLevel::Fail
+            }
+        },
+        detail: probe.detail.clone(),
         non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
     }
 }
@@ -2465,6 +2614,20 @@ pub fn provider_credential_env_hints(provider: &mvp::config::ProviderConfig) -> 
 
 pub fn provider_credential_env_hint(provider: &mvp::config::ProviderConfig) -> Option<String> {
     provider_credential_env_hints(provider).into_iter().next()
+}
+
+fn validate_selected_provider_credential_env(
+    config: &mvp::config::LoongClawConfig,
+    selected_env_name: &str,
+) -> CliResult<String> {
+    let trimmed = selected_env_name.trim();
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut candidate = config.clone();
+    apply_selected_api_key_env(&mut candidate.provider, trimmed.to_owned());
+    candidate.validate().map(|_| trimmed.to_owned())
 }
 
 pub fn preferred_provider_credential_env_binding(
@@ -2595,16 +2758,62 @@ fn push_provider_credential_env_hint(hints: &mut Vec<String>, maybe_env_name: Op
     }
 }
 
-fn normalize_provider_credential_env_name(raw: &str) -> Option<String> {
+fn provider_credential_env_name_is_safe(raw: &str) -> bool {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
+        return false;
+    }
+
+    let mut config = mvp::config::LoongClawConfig::default();
+    config.provider.api_key = None;
+    config.provider.api_key_env = Some(trimmed.to_owned());
+    config.validate().is_ok()
+}
+
+fn normalize_provider_credential_env_name(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || !provider_credential_env_name_is_safe(trimmed) {
         return None;
     }
     Some(trimmed.to_owned())
 }
 
 fn render_provider_credential_source_value(raw: Option<&str>) -> Option<String> {
-    normalize_provider_credential_env_name(raw?).map(|env_name| format!("${{{env_name}}}"))
+    let trimmed = raw?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    normalize_provider_credential_env_name(trimmed)
+        .map(|env_name| format!("${{{env_name}}}"))
+        .or_else(|| Some("environment variable".to_owned()))
+}
+
+fn render_configured_provider_credential_source_value(
+    provider: &mvp::config::ProviderConfig,
+) -> Option<String> {
+    provider
+        .oauth_access_token_env
+        .as_deref()
+        .and_then(|value| render_provider_credential_source_value(Some(value)))
+        .or_else(|| {
+            provider
+                .api_key_env
+                .as_deref()
+                .and_then(|value| render_provider_credential_source_value(Some(value)))
+        })
+}
+
+fn provider_has_configured_credential_env(provider: &mvp::config::ProviderConfig) -> bool {
+    provider
+        .oauth_access_token_env
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+        || provider
+            .api_key_env
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
 }
 
 pub fn preferred_api_key_env_default(config: &mvp::config::LoongClawConfig) -> String {
@@ -2980,7 +3189,7 @@ fn print_onboard_entry_options(
 ) -> CliResult<()> {
     print_lines(
         ui,
-        render_onboard_entry_screen_lines_with_style(
+        render_onboard_entry_interactive_screen_lines_with_style(
             current_setup_state,
             current_candidate,
             import_candidates,
@@ -3054,6 +3263,47 @@ fn render_onboard_entry_screen_lines_with_style(
         lines.push(String::new());
         lines.extend(render_onboard_wrapped_display_lines(footer_lines, width));
     }
+    lines
+}
+
+fn render_onboard_entry_interactive_screen_lines_with_style(
+    current_setup_state: crate::migration::CurrentSetupState,
+    current_candidate: Option<&ImportCandidate>,
+    import_candidates: &[ImportCandidate],
+    options: &[OnboardEntryOption],
+    workspace_root: Option<&Path>,
+    width: usize,
+    color_enabled: bool,
+) -> Vec<String> {
+    let recommended_plan_available = import_candidates.iter().any(|candidate| {
+        candidate.source_kind == crate::migration::ImportSourceKind::RecommendedPlan
+    });
+    let mut lines = render_onboard_header(
+        OnboardHeaderStyle::Compact,
+        width,
+        "guided setup for provider, channels, and workspace guidance",
+        color_enabled,
+    );
+    lines.push(String::new());
+    lines.push(crate::onboard_presentation::detected_settings_section_heading().to_owned());
+    lines.extend(render_onboard_wrapped_display_lines(
+        render_detected_settings_digest_lines(
+            current_setup_state,
+            current_candidate,
+            import_candidates,
+            workspace_root,
+            recommended_plan_available,
+        ),
+        width,
+    ));
+    if !options.is_empty() {
+        lines.push(String::new());
+        lines.push(crate::onboard_presentation::entry_choice_section_heading().to_owned());
+    }
+    lines.extend(render_onboard_wrapped_display_lines(
+        append_escape_cancel_hint(Vec::<String>::new()),
+        width,
+    ));
     lines
 }
 
@@ -3494,7 +3744,7 @@ fn print_import_candidates(
 ) -> CliResult<()> {
     print_lines(
         ui,
-        render_starting_point_selection_screen_lines_with_style(
+        render_starting_point_selection_header_lines_with_style(
             candidates,
             context.render_width,
             true,
@@ -3697,23 +3947,41 @@ fn render_onboard_review_lines_with_guidance_and_style(
     lines.push("review setup".to_owned());
     lines.push(flow_style.progress_line());
     if let Some(source) = import_source {
-        lines.extend(mvp::presentation::render_wrapped_text_line(
-            "- starting point: ",
-            &onboard_starting_point_label(None, source),
-            width,
-        ));
+        append_onboard_review_section(
+            &mut lines,
+            "starting point",
+            mvp::presentation::render_wrapped_text_line(
+                "- starting point: ",
+                &onboard_starting_point_label(None, source),
+                width,
+            ),
+        );
     }
-    lines.extend(render_onboard_review_digest_lines(config, width));
+    append_onboard_review_section(
+        &mut lines,
+        "configuration",
+        render_onboard_review_digest_lines(config, width),
+    );
     let review_candidate = build_onboard_review_candidate_with_selected_context(
         config,
         workspace_guidance,
         selected_candidate,
     );
-    lines.extend(crate::migration::render::render_candidate_preview_lines(
-        &review_candidate,
-        width,
-    ));
+    append_onboard_review_section(
+        &mut lines,
+        "draft source",
+        crate::migration::render::render_candidate_preview_lines(&review_candidate, width),
+    );
     lines
+}
+
+fn append_onboard_review_section(lines: &mut Vec<String>, title: &str, section_lines: Vec<String>) {
+    if section_lines.is_empty() {
+        return;
+    }
+    lines.push(String::new());
+    lines.push(title.to_owned());
+    lines.extend(section_lines);
 }
 
 pub fn build_onboarding_success_summary(
@@ -4115,10 +4383,10 @@ fn render_api_key_env_selection_default_hint_line(
     suggested_env: &str,
     prompt_default: &str,
 ) -> String {
-    let prompt_default = render_provider_credential_source_value(Some(prompt_default))
-        .unwrap_or_else(|| prompt_default.trim().to_owned());
-    let suggested_env = render_provider_credential_source_value(Some(suggested_env))
-        .unwrap_or_else(|| suggested_env.trim().to_owned());
+    let prompt_default =
+        render_provider_credential_source_value(Some(prompt_default)).unwrap_or_default();
+    let suggested_env =
+        render_provider_credential_source_value(Some(suggested_env)).unwrap_or_default();
     let current_env =
         configured_provider_credential_env_binding(&config.provider).and_then(|binding| {
             render_provider_credential_source_value(Some(binding.env_name.as_str()))
@@ -4293,6 +4561,36 @@ fn render_onboard_shortcut_screen_lines_with_style(
         context_lines,
         build_onboard_shortcut_screen_options(shortcut_kind),
         vec![render_shortcut_default_choice_footer_line(shortcut_kind)],
+        color_enabled,
+    )
+}
+
+fn render_onboard_shortcut_header_lines_with_style(
+    shortcut_kind: OnboardShortcutKind,
+    config: &mvp::config::LoongClawConfig,
+    import_source: Option<&str>,
+    width: usize,
+    color_enabled: bool,
+) -> Vec<String> {
+    let mut context_lines = Vec::new();
+    if let Some(source) = import_source {
+        context_lines.push(format!(
+            "- starting point: {}",
+            onboard_starting_point_label(None, source)
+        ));
+    }
+    context_lines.extend(render_onboard_review_digest_lines(config, width));
+    context_lines.push(shortcut_kind.summary_line().to_owned());
+
+    render_onboard_choice_screen(
+        OnboardHeaderStyle::Compact,
+        width,
+        shortcut_kind.subtitle(),
+        shortcut_kind.title(),
+        None,
+        context_lines,
+        Vec::new(),
+        Vec::new(),
         color_enabled,
     )
 }
@@ -4897,6 +5195,24 @@ fn render_starting_point_selection_screen_lines_with_style(
     )
 }
 
+fn render_starting_point_selection_header_lines_with_style(
+    _candidates: &[ImportCandidate],
+    width: usize,
+    color_enabled: bool,
+) -> Vec<String> {
+    render_onboard_choice_screen(
+        OnboardHeaderStyle::Compact,
+        width,
+        crate::onboard_presentation::starting_point_selection_subtitle(),
+        crate::onboard_presentation::starting_point_selection_title(),
+        None,
+        vec![crate::onboard_presentation::starting_point_selection_hint().to_owned()],
+        Vec::new(),
+        Vec::new(),
+        color_enabled,
+    )
+}
+
 pub fn render_provider_selection_screen_lines(
     plan: &crate::migration::ProviderSelectionPlan,
     width: usize,
@@ -5142,10 +5458,7 @@ fn render_api_key_env_selection_screen_lines_with_style(
         "- provider: {}",
         crate::provider_presentation::guided_provider_label(config.provider.kind)
     )];
-    if let Some(current_env) = configured_provider_credential_env_binding(&config.provider)
-        .and_then(|binding| {
-            render_provider_credential_source_value(Some(binding.env_name.as_str()))
-        })
+    if let Some(current_env) = render_configured_provider_credential_source_value(&config.provider)
     {
         context_lines.push(format!("- current source: {current_env}"));
     }
@@ -5155,11 +5468,15 @@ fn render_api_key_env_selection_screen_lines_with_style(
         context_lines.push(format!("- suggested source: {suggested_source}"));
     }
 
+    let example_env_name = provider_credential_env_hint(&config.provider)
+        .unwrap_or_else(|| "PROVIDER_API_KEY".to_owned());
     let mut hint_lines = vec![render_api_key_env_selection_default_hint_line(
         config,
         default_api_key_env,
         prompt_default,
     )];
+    hint_lines.push("- enter an env var name, not the secret value itself".to_owned());
+    hint_lines.push(format!("- example: {example_env_name}"));
     if prompt_default.trim().is_empty() {
         if provider_has_inline_credential(&config.provider) {
             hint_lines.push("- leave this blank to keep inline credentials".to_owned());
@@ -5363,7 +5680,7 @@ fn render_prompt_addendum_selection_screen_lines_with_style(
             format!("- current addendum: {current_addendum}"),
         ],
         vec![
-            "- blank keeps the current addendum".to_owned(),
+            "- press Enter to keep current addendum".to_owned(),
             "- type '-' to clear it".to_owned(),
             ONBOARD_SINGLE_LINE_INPUT_HINT.to_owned(),
         ],
@@ -5391,31 +5708,15 @@ fn render_memory_profile_selection_screen_lines_with_style(
     width: usize,
     color_enabled: bool,
 ) -> Vec<String> {
-    let options = [
-        (
-            mvp::config::MemoryProfile::WindowOnly,
-            "recent turns only",
-            "load only the active sliding window",
-        ),
-        (
-            mvp::config::MemoryProfile::WindowPlusSummary,
-            "window plus summary",
-            "add a summary block before the recent window",
-        ),
-        (
-            mvp::config::MemoryProfile::ProfilePlusWindow,
-            "profile plus window",
-            "inject durable profile notes before the recent window",
-        ),
-    ]
-    .into_iter()
-    .map(|(profile, label, detail)| OnboardScreenOption {
-        key: memory_profile_id(profile).to_owned(),
-        label: label.to_owned(),
-        detail_lines: vec![detail.to_owned()],
-        recommended: profile == default_profile,
-    })
-    .collect::<Vec<_>>();
+    let options = MEMORY_PROFILE_CHOICES
+        .into_iter()
+        .map(|(profile, label, detail)| OnboardScreenOption {
+            key: memory_profile_id(profile).to_owned(),
+            label: label.to_owned(),
+            detail_lines: vec![detail.to_owned()],
+            recommended: profile == default_profile,
+        })
+        .collect::<Vec<_>>();
 
     render_onboard_choice_screen(
         OnboardHeaderStyle::Compact,
@@ -5477,7 +5778,31 @@ fn render_existing_config_write_screen_lines_with_style(
             "- choose whether to replace it, keep a backup, or cancel".to_owned(),
         ],
         build_existing_config_write_screen_options(),
-        vec![render_default_choice_footer_line("c", "cancel")],
+        vec![render_default_choice_footer_line(
+            "b",
+            "create backup and replace",
+        )],
+        color_enabled,
+    )
+}
+
+fn render_existing_config_write_header_lines_with_style(
+    config_path: &str,
+    width: usize,
+    color_enabled: bool,
+) -> Vec<String> {
+    render_onboard_choice_screen(
+        OnboardHeaderStyle::Compact,
+        width,
+        "decide how to write the config",
+        "existing config found",
+        None,
+        vec![
+            format!("- config: {config_path}"),
+            "- choose whether to replace it, keep a backup, or cancel".to_owned(),
+        ],
+        Vec::new(),
+        Vec::new(),
         color_enabled,
     )
 }
@@ -5575,14 +5900,10 @@ fn summarize_provider_credential(
             value: "inline oauth token".to_owned(),
         });
     }
-    if let Some(oauth_env) = provider
-        .oauth_access_token_env
-        .as_deref()
-        .and_then(|value| render_provider_credential_source_value(Some(value)))
-    {
+    if let Some(configured_env) = render_configured_provider_credential_source_value(provider) {
         return Some(OnboardingCredentialSummary {
             label: "credential source",
-            value: oauth_env,
+            value: configured_env,
         });
     }
     if provider
@@ -5608,7 +5929,7 @@ fn summarize_provider_credential(
 
 fn provider_supports_blank_api_key_env(config: &mvp::config::LoongClawConfig) -> bool {
     provider_has_inline_credential(&config.provider)
-        || configured_provider_credential_env_binding(&config.provider).is_some()
+        || provider_has_configured_credential_env(&config.provider)
 }
 
 fn prompt_import_candidate_choice(
@@ -5964,7 +6285,7 @@ fn resolve_write_plan(
     let existing_path = output_path.display().to_string();
     print_lines(
         ui,
-        render_existing_config_write_screen_lines_with_style(
+        render_existing_config_write_header_lines_with_style(
             &existing_path,
             context.render_width,
             true,
@@ -5976,7 +6297,7 @@ fn resolve_write_plan(
             ui,
             "Your choice",
             &options,
-            Some("c"),
+            Some("b"),
         )?)
         .ok_or_else(|| "existing-config write selection out of range".to_owned())?;
     match selected.key.as_str() {
@@ -6165,6 +6486,18 @@ mod tests {
         }
     }
 
+    struct AllowEmptyOnlyTestUi {
+        inputs: VecDeque<String>,
+    }
+
+    impl AllowEmptyOnlyTestUi {
+        fn with_inputs(inputs: impl IntoIterator<Item = impl Into<String>>) -> Self {
+            Self {
+                inputs: inputs.into_iter().map(Into::into).collect(),
+            }
+        }
+    }
+
     fn browser_companion_temp_dir(label: &str) -> PathBuf {
         static NEXT_TEMP_DIR_SEED: AtomicU64 = AtomicU64::new(1);
         let seed = NEXT_TEMP_DIR_SEED.fetch_add(1, Ordering::Relaxed);
@@ -6310,6 +6643,42 @@ mod tests {
                     default.ok_or_else(|| "missing test input for required selection".to_owned())
                 }
             }
+        }
+    }
+
+    impl OnboardUi for AllowEmptyOnlyTestUi {
+        fn print_line(&mut self, _line: &str) -> CliResult<()> {
+            Ok(())
+        }
+
+        fn prompt_with_default(&mut self, _label: &str, _default: &str) -> CliResult<String> {
+            Err("test expected prompt_allow_empty instead of prompt_with_default".to_owned())
+        }
+
+        fn prompt_required(&mut self, _label: &str) -> CliResult<String> {
+            Err("test expected prompt_allow_empty instead of prompt_required".to_owned())
+        }
+
+        fn prompt_allow_empty(&mut self, _label: &str) -> CliResult<String> {
+            let value = self
+                .inputs
+                .pop_front()
+                .ok_or_else(|| "missing allow-empty test input".to_owned())?;
+            Ok(ensure_onboard_input_not_cancelled(value)?.trim().to_owned())
+        }
+
+        fn prompt_confirm(&mut self, _message: &str, _default: bool) -> CliResult<bool> {
+            Err("test expected prompt_allow_empty instead of prompt_confirm".to_owned())
+        }
+
+        fn select_one(
+            &mut self,
+            _label: &str,
+            _options: &[SelectOption],
+            _default: Option<usize>,
+            _interaction_mode: SelectInteractionMode,
+        ) -> CliResult<usize> {
+            Err("test expected prompt_allow_empty instead of select_one".to_owned())
         }
     }
 
@@ -6525,6 +6894,27 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn run_preflight_checks_fail_for_invalid_provider_credential_env_value() {
+        let secret = "sk-live-direct-secret-value";
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.provider.kind = mvp::config::ProviderKind::Openai;
+        config.provider.api_key_env = Some(secret.to_owned());
+        config.provider.api_key = None;
+
+        let checks = run_preflight_checks(&config, true).await;
+
+        assert!(
+            checks.iter().any(|check| {
+                check.name == "config validation"
+                    && check.level == OnboardCheckLevel::Fail
+                    && check.detail.contains("provider.api_key_env")
+                    && !check.detail.contains(secret)
+            }),
+            "preflight should fail fast on invalid provider credential env values without echoing the secret: {checks:#?}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn browser_companion_onboard_preflight_warns_when_runtime_gate_is_closed() {
         let _env_guard = BrowserCompanionEnvGuard::runtime_gate_closed();
         let temp_dir = browser_companion_temp_dir("runtime-gate");
@@ -6595,6 +6985,34 @@ mod tests {
         assert!(
             check.detail.contains("explicitly configured"),
             "explicit-model probe failures should explain that catalog discovery is advisory: {check:#?}"
+        );
+    }
+
+    #[test]
+    fn provider_model_probe_transport_failure_prioritizes_route_guidance() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.provider.model = "custom-explicit-model".to_owned();
+
+        let check = provider_model_probe_failure_check(
+            &config,
+            "provider model-list request failed on attempt 3/3: operation timed out".to_owned(),
+        );
+
+        assert_eq!(check.name, "provider model probe");
+        assert_eq!(check.level, OnboardCheckLevel::Fail);
+        assert!(
+            check
+                .detail
+                .contains(crate::provider_route_diagnostics::MODEL_CATALOG_TRANSPORT_FAILED_MARKER),
+            "transport probe failures should use the route-focused marker during onboarding: {check:#?}"
+        );
+        assert!(
+            !check.detail.contains("provider.model"),
+            "transport probe failures should not suggest model-selection repair when the route is the real blocker: {check:#?}"
+        );
+        assert!(
+            !check.detail.contains("below"),
+            "transport probe failures should not promise a later probe section that may not exist in non-interactive output: {check:#?}"
         );
     }
 
@@ -6809,6 +7227,123 @@ mod tests {
     }
 
     #[test]
+    fn non_interactive_preflight_failure_message_appends_provider_route_probe_detail_for_transport_failures()
+     {
+        let checks = vec![
+            OnboardCheck {
+                name: "provider model probe",
+                level: OnboardCheckLevel::Fail,
+                detail:
+                    "OpenAI [openai]: model catalog transport failed (provider model-list request failed on attempt 3/3: operation timed out); runtime could not verify the provider route. inspect provider route diagnostics and retry once dns / proxy / TUN routing is stable"
+                        .to_owned(),
+                non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+            },
+            OnboardCheck {
+                name: "provider route probe",
+                level: OnboardCheckLevel::Warn,
+                detail:
+                    "request/models host api.openai.com:443: dns resolved to 198.18.0.2 (fake-ip-style); tcp connect ok via 198.18.0.2. the route currently depends on local fake-ip/TUN interception, so intermittent long-request failures usually point to proxy health or direct/bypass rules."
+                        .to_owned(),
+                non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+            },
+        ];
+
+        let message = non_interactive_preflight_failure_message(&checks);
+
+        assert!(
+            message.contains("provider route probe"),
+            "non-interactive onboarding should mention the collected provider route probe when transport diagnostics are available: {message}"
+        );
+        assert!(
+            message.contains("fake-ip-style"),
+            "non-interactive onboarding should include the route-probe detail instead of dropping it behind the first failing check: {message}"
+        );
+    }
+
+    #[test]
+    fn config_validation_failure_message_only_matches_config_validation_failures() {
+        let checks = vec![
+            OnboardCheck {
+                name: "provider credentials",
+                level: OnboardCheckLevel::Fail,
+                detail: "credentials missing".to_owned(),
+                non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+            },
+            OnboardCheck {
+                name: "config validation",
+                level: OnboardCheckLevel::Fail,
+                detail: "provider.api_key_env must be an environment variable name".to_owned(),
+                non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+            },
+        ];
+
+        assert_eq!(
+            config_validation_failure_message(&checks),
+            Some("onboard preflight failed: provider.api_key_env must be an environment variable name".to_owned()),
+            "config validation failures should be surfaced as terminal preflight errors"
+        );
+    }
+
+    #[test]
+    fn provider_credential_check_adds_volcengine_auth_guidance_when_missing() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.provider.kind = mvp::config::ProviderKind::VolcengineCoding;
+        config.provider.api_key = None;
+        config.provider.api_key_env = None;
+        config.provider.oauth_access_token = None;
+        config.provider.oauth_access_token_env = None;
+
+        let check = provider_credential_check(&config);
+
+        assert_eq!(check.name, "provider credentials");
+        assert_eq!(check.level, OnboardCheckLevel::Warn);
+        assert!(check.detail.contains("ARK_API_KEY"));
+        assert!(check.detail.contains("Authorization: Bearer <ARK_API_KEY>"));
+    }
+
+    #[test]
+    fn preferred_api_key_env_default_ignores_invalid_configured_secret_literal() {
+        let secret = "sk-live-direct-secret-value";
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.provider.kind = mvp::config::ProviderKind::Openai;
+        config.provider.api_key_env = Some(secret.to_owned());
+
+        let default_env = preferred_api_key_env_default(&config);
+
+        assert_eq!(
+            default_env, "OPENAI_CODEX_OAUTH_TOKEN",
+            "invalid configured credential env values should fall back to the provider's safe onboarding default instead of being reused as the interactive prompt default"
+        );
+        assert!(
+            !default_env.contains(secret),
+            "prompt defaults must never echo the rejected secret-like value"
+        );
+    }
+
+    #[test]
+    fn build_onboarding_success_summary_does_not_echo_invalid_credential_env_value() {
+        let secret = "sk-live-direct-secret-value";
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.provider.kind = mvp::config::ProviderKind::Openai;
+        config.provider.api_key_env = Some(secret.to_owned());
+
+        let summary =
+            build_onboarding_success_summary(Path::new("/tmp/loongclaw.toml"), &config, None);
+        let credential = summary
+            .credential
+            .expect("summary should still describe the configured credential lane");
+
+        assert_eq!(
+            credential.value, "environment variable",
+            "success summary should redact invalid configured env pointers instead of inventing a provider default binding"
+        );
+        assert!(
+            !credential.value.contains(secret),
+            "success summary must never echo invalid secret-like env input: {credential:#?}"
+        );
+    }
+
+    #[test]
     fn resolve_api_key_env_selection_accepts_explicit_clear_token_in_interactive_mode() {
         let mut config = mvp::config::LoongClawConfig::default();
         config.provider.kind = mvp::config::ProviderKind::Openai;
@@ -6841,6 +7376,82 @@ mod tests {
         assert!(
             selected.is_empty(),
             "typing :clear should explicitly clear the api-key env selection instead of persisting the literal token: {selected:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_api_key_env_selection_reprompts_after_secret_literal_interactively() {
+        let secret = "sk-live-direct-secret-value";
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.provider.kind = mvp::config::ProviderKind::Openai;
+        let mut ui = TestOnboardUi::with_inputs([secret, "OPENAI_API_KEY"]);
+        let context = OnboardRuntimeContext::new_for_tests(80, None, std::iter::empty::<PathBuf>());
+
+        let selected = resolve_api_key_env_selection(
+            &OnboardCommandOptions {
+                output: None,
+                force: false,
+                non_interactive: false,
+                accept_risk: true,
+                provider: None,
+                model: None,
+                api_key_env: None,
+                personality: None,
+                memory_profile: None,
+                system_prompt: None,
+                skip_model_probe: false,
+            },
+            &config,
+            "OPENAI_API_KEY".to_owned(),
+            GuidedPromptPath::NativePromptPack,
+            &mut ui,
+            &context,
+        )
+        .expect("interactive credential selection should reprompt on invalid secret-like input");
+
+        assert_eq!(
+            selected, "OPENAI_API_KEY",
+            "interactive onboarding should reject secret-like input and keep asking for an env var name"
+        );
+    }
+
+    #[test]
+    fn resolve_api_key_env_selection_rejects_secret_literal_non_interactively() {
+        let secret = "sk-live-direct-secret-value";
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.provider.kind = mvp::config::ProviderKind::Openai;
+        let mut ui = TestOnboardUi::with_inputs(std::iter::empty::<&str>());
+        let context = OnboardRuntimeContext::new_for_tests(80, None, std::iter::empty::<PathBuf>());
+
+        let error = resolve_api_key_env_selection(
+            &OnboardCommandOptions {
+                output: None,
+                force: false,
+                non_interactive: true,
+                accept_risk: true,
+                provider: None,
+                model: None,
+                api_key_env: Some(secret.to_owned()),
+                personality: None,
+                memory_profile: None,
+                system_prompt: None,
+                skip_model_probe: false,
+            },
+            &config,
+            "OPENAI_API_KEY".to_owned(),
+            GuidedPromptPath::NativePromptPack,
+            &mut ui,
+            &context,
+        )
+        .expect_err("non-interactive onboarding should reject secret-like env selections");
+
+        assert!(
+            error.contains("provider.api_key_env"),
+            "the validation error should identify the bad field: {error}"
+        );
+        assert!(
+            !error.contains(secret),
+            "non-interactive validation must not echo the secret-like input: {error}"
         );
     }
 
@@ -6984,6 +7595,138 @@ mod tests {
             selected,
             SystemPromptSelection::Set("prefer concise code reviews".to_owned()),
             "using the prompt default should still apply a prefilled system prompt override"
+        );
+    }
+
+    #[test]
+    fn resolve_prompt_addendum_selection_keeps_current_addendum_when_blank_input_is_used() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.cli.system_prompt_addendum = Some("Keep answers direct.".to_owned());
+        let mut ui = TestOnboardUi::with_inputs([""]);
+        let context = OnboardRuntimeContext::new_for_tests(80, None, std::iter::empty::<PathBuf>());
+
+        let selected = resolve_prompt_addendum_selection(
+            &OnboardCommandOptions {
+                output: None,
+                force: false,
+                non_interactive: false,
+                accept_risk: true,
+                provider: None,
+                model: None,
+                api_key_env: None,
+                personality: None,
+                memory_profile: None,
+                system_prompt: None,
+                skip_model_probe: false,
+            },
+            &config,
+            &mut ui,
+            &context,
+        )
+        .expect("resolve prompt addendum selection");
+
+        assert_eq!(
+            selected.as_deref(),
+            Some("Keep answers direct."),
+            "blank optional input should keep the current addendum"
+        );
+    }
+
+    #[test]
+    fn resolve_prompt_addendum_selection_uses_allow_empty_prompt_path_for_blank_first_run_input() {
+        let config = mvp::config::LoongClawConfig::default();
+        let mut ui = AllowEmptyOnlyTestUi::with_inputs([""]);
+        let context = OnboardRuntimeContext::new_for_tests(80, None, std::iter::empty::<PathBuf>());
+
+        let selected = resolve_prompt_addendum_selection(
+            &OnboardCommandOptions {
+                output: None,
+                force: false,
+                non_interactive: false,
+                accept_risk: true,
+                provider: None,
+                model: None,
+                api_key_env: None,
+                personality: None,
+                memory_profile: None,
+                system_prompt: None,
+                skip_model_probe: false,
+            },
+            &config,
+            &mut ui,
+            &context,
+        )
+        .expect("resolve prompt addendum selection");
+
+        assert_eq!(
+            selected, None,
+            "blank first-run optional input should preserve the absence of an addendum"
+        );
+    }
+
+    #[test]
+    fn resolve_prompt_addendum_selection_uses_allow_empty_prompt_path_for_clear_input() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.cli.system_prompt_addendum = Some("Keep answers direct.".to_owned());
+        let mut ui = AllowEmptyOnlyTestUi::with_inputs(["-"]);
+        let context = OnboardRuntimeContext::new_for_tests(80, None, std::iter::empty::<PathBuf>());
+
+        let selected = resolve_prompt_addendum_selection(
+            &OnboardCommandOptions {
+                output: None,
+                force: false,
+                non_interactive: false,
+                accept_risk: true,
+                provider: None,
+                model: None,
+                api_key_env: None,
+                personality: None,
+                memory_profile: None,
+                system_prompt: None,
+                skip_model_probe: false,
+            },
+            &config,
+            &mut ui,
+            &context,
+        )
+        .expect("resolve prompt addendum selection");
+
+        assert_eq!(
+            selected, None,
+            "allow-empty prompt handling should still respect the explicit clear token"
+        );
+    }
+
+    #[test]
+    fn resolve_prompt_addendum_selection_clears_current_addendum_when_dash_input_is_used() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.cli.system_prompt_addendum = Some("Keep answers direct.".to_owned());
+        let mut ui = TestOnboardUi::with_inputs(["-"]);
+        let context = OnboardRuntimeContext::new_for_tests(80, None, std::iter::empty::<PathBuf>());
+
+        let selected = resolve_prompt_addendum_selection(
+            &OnboardCommandOptions {
+                output: None,
+                force: false,
+                non_interactive: false,
+                accept_risk: true,
+                provider: None,
+                model: None,
+                api_key_env: None,
+                personality: None,
+                memory_profile: None,
+                system_prompt: None,
+                skip_model_probe: false,
+            },
+            &config,
+            &mut ui,
+            &context,
+        )
+        .expect("resolve prompt addendum selection");
+
+        assert_eq!(
+            selected, None,
+            "typing '-' should still clear the current addendum"
         );
     }
 
@@ -7605,10 +8348,8 @@ mod tests {
         );
 
         assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("single line") && line.contains("ignored")),
-            "prompt addendum screen should explain how terminal onboarding handles pasted multiline text: {lines:#?}"
+            lines.iter().any(|line| line == "- single-line input only"),
+            "prompt addendum screen should keep the terminal input note concise: {lines:#?}"
         );
     }
 
@@ -7620,10 +8361,8 @@ mod tests {
         );
 
         assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("single line") && line.contains("ignored")),
-            "system prompt screen should explain how terminal onboarding handles pasted multiline text: {lines:#?}"
+            lines.iter().any(|line| line == "- single-line input only"),
+            "system prompt screen should keep the terminal input note concise: {lines:#?}"
         );
     }
 
@@ -7734,6 +8473,99 @@ mod tests {
                 )
             ),
             "wrapped option labels should continue under the label text instead of snapping back to a fixed indent: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn interactive_entry_screen_omits_static_options_when_selection_widget_handles_choices() {
+        let options = recommended_import_entry_options();
+        let lines = render_onboard_entry_interactive_screen_lines_with_style(
+            crate::migration::CurrentSetupState::Absent,
+            None,
+            &[],
+            &options,
+            None,
+            80,
+            false,
+        );
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == crate::onboard_presentation::entry_choice_section_heading()),
+            "interactive entry screen should keep the section heading even when the chooser renders options separately: {lines:#?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|line| !line.contains("Continue current setup")),
+            "interactive entry screen should not duplicate option labels before the selection widget renders them: {lines:#?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|line| !line.contains("press Enter to use default")),
+            "interactive entry screen should omit the redundant static default footer: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn interactive_starting_point_screen_omits_static_options_when_selection_widget_handles_choices()
+     {
+        let candidate = ImportCandidate {
+            source_kind: crate::migration::ImportSourceKind::CodexConfig,
+            source: "Codex config at ~/.codex/config.toml".to_owned(),
+            config: mvp::config::LoongClawConfig::default(),
+            surfaces: Vec::new(),
+            domains: Vec::new(),
+            channel_candidates: Vec::new(),
+            workspace_guidance: Vec::new(),
+        };
+        let lines =
+            render_starting_point_selection_header_lines_with_style(&[candidate], 80, false);
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == crate::onboard_presentation::starting_point_selection_title()),
+            "interactive starting-point screen should keep the title even when choices render separately: {lines:#?}"
+        );
+        assert!(
+            lines.iter().all(|line| !line.contains("(recommended)")),
+            "interactive starting-point screen should not duplicate static choice rows before the selection widget renders them: {lines:#?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|line| !line.contains("press Enter to use default")),
+            "interactive starting-point screen should omit the redundant static default footer: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn interactive_existing_config_write_screen_omits_static_options_when_selection_widget_handles_choices()
+     {
+        let lines = render_existing_config_write_header_lines_with_style(
+            "/tmp/loongclaw-config.toml",
+            80,
+            false,
+        );
+
+        assert!(
+            lines.iter().any(|line| line == "existing config found"),
+            "interactive existing-config screen should keep its heading: {lines:#?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|line| !line.contains("Replace existing config")),
+            "interactive existing-config screen should let the selection widget own the actual options: {lines:#?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|line| !line.contains("press Enter to use default")),
+            "interactive existing-config screen should omit the redundant static default footer: {lines:#?}"
         );
     }
 

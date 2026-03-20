@@ -13,6 +13,8 @@ on:
 env:
   BIN_NAME: loongclaw
   PACKAGE_NAME: loongclaw
+  CROSS_VERSION: "0.2.5"
+  LINUX_ARM64_GLIBC_FLOOR: "2.17"
 
 jobs:
   verify-release:
@@ -69,6 +71,11 @@ jobs:
             target: x86_64-unknown-linux-gnu
             ext: ""
             archive: tar.gz
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            ext: ""
+            archive: tar.gz
+            use_cross: true
           - os: macos-14
             target: x86_64-apple-darwin
             ext: ""
@@ -98,7 +105,18 @@ jobs:
       - name: Cache Cargo Artifacts
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
 
-      - name: Build release binary
+      - name: Install cross (if needed)
+        if: matrix.use_cross == true
+        run: cargo install cross --version "${{ env.CROSS_VERSION }}" --locked
+
+      - name: Build release binary (with cross)
+        if: matrix.use_cross == true
+        env:
+          LOONGCLAW_RELEASE_BUILD: "1"
+        run: cross build --release --locked -p loongclaw-daemon --bin ${{ env.BIN_NAME }} --target ${{ matrix.target }}
+
+      - name: Build release binary (native)
+        if: matrix.use_cross != true
         env:
           LOONGCLAW_RELEASE_BUILD: "1"
         run: cargo build --release --locked -p loongclaw-daemon --bin ${{ env.BIN_NAME }} --target ${{ matrix.target }}
@@ -126,6 +144,10 @@ jobs:
           Compress-Archive -Path "target/${{ matrix.target }}/release/${env:BIN_NAME}${{ matrix.ext }}" -DestinationPath "dist/$archive" -Force
           $hash = (Get-FileHash -Algorithm SHA256 "dist/$archive").Hash.ToLowerInvariant()
           Set-Content -Path "dist/$archive.sha256" -Value "$hash  $archive"
+
+      - name: Verify glibc floor (Linux ARM64 only)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: ./scripts/check_glibc_floor.sh "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}" "${{ env.LINUX_ARM64_GLIBC_FLOOR }}"
 
       - name: Upload packaged artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
@@ -156,6 +178,18 @@ jobs:
         run: |
           cp scripts/install.sh dist/install.sh
           cp scripts/install.ps1 dist/install.ps1
+
+      - name: Generate shell completions
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          tar -xzf "dist/loongclaw-${RELEASE_TAG}-x86_64-unknown-linux-gnu.tar.gz" -C /tmp loongclaw
+          /tmp/loongclaw completions bash        > dist/loongclaw.bash
+          /tmp/loongclaw completions zsh         > dist/_loongclaw
+          /tmp/loongclaw completions fish        > dist/loongclaw.fish
+          /tmp/loongclaw completions powershell  > dist/loongclaw.ps1
+          /tmp/loongclaw completions elvish      > dist/loongclaw.elv
 
       - name: Resolve release channel
         id: release_meta

@@ -256,7 +256,10 @@ impl Drop for ScopedTurnMiddlewareEnvOverride {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{
+        MutexGuard,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
 
     use async_trait::async_trait;
 
@@ -264,6 +267,12 @@ mod tests {
         SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID, SYSTEM_PROMPT_TOOL_VIEW_TURN_MIDDLEWARE_ID,
     };
     use super::*;
+
+    fn registry_test_guard() -> MutexGuard<'static, ()> {
+        super::super::context_engine_registry::conversation_selector_env_lock()
+            .lock()
+            .expect("registry test lock")
+    }
 
     struct StaticIdTurnMiddleware {
         id: &'static str,
@@ -278,6 +287,7 @@ mod tests {
 
     #[test]
     fn list_turn_middleware_ids_includes_builtin_defaults() {
+        let _registry_lock = registry_test_guard();
         let ids = list_turn_middleware_ids().expect("list ids");
         assert!(
             ids.iter()
@@ -293,6 +303,7 @@ mod tests {
 
     #[test]
     fn registry_can_register_and_resolve_custom_turn_middleware() {
+        let _registry_lock = registry_test_guard();
         register_turn_middleware("registry-turn-middleware-custom", || {
             Box::new(StaticIdTurnMiddleware {
                 id: "registry-turn-middleware-custom",
@@ -306,6 +317,7 @@ mod tests {
 
     #[test]
     fn resolve_turn_middleware_returns_error_for_unknown_id() {
+        let _registry_lock = registry_test_guard();
         let error = match resolve_turn_middleware("not-registered") {
             Ok(middleware) => panic!(
                 "expected unknown turn middleware to fail, got {}",
@@ -318,6 +330,7 @@ mod tests {
 
     #[test]
     fn list_turn_middleware_metadata_exposes_capabilities() {
+        let _registry_lock = registry_test_guard();
         register_turn_middleware("registry-turn-middleware-capability", || {
             Box::new(StaticIdTurnMiddleware {
                 id: "registry-turn-middleware-capability",
@@ -336,6 +349,7 @@ mod tests {
 
     #[test]
     fn register_turn_middleware_rejects_duplicate_id() {
+        let _registry_lock = registry_test_guard();
         register_turn_middleware("registry-turn-middleware-duplicate", || {
             Box::new(StaticIdTurnMiddleware {
                 id: "registry-turn-middleware-duplicate",
@@ -357,6 +371,7 @@ mod tests {
 
     #[test]
     fn register_turn_middleware_duplicate_id_does_not_invoke_factory() {
+        let _registry_lock = registry_test_guard();
         register_turn_middleware("registry-turn-middleware-duplicate-fast-fail", || {
             Box::new(StaticIdTurnMiddleware {
                 id: "registry-turn-middleware-duplicate-fast-fail",
@@ -387,6 +402,7 @@ mod tests {
 
     #[test]
     fn list_turn_middleware_metadata_runs_factories_outside_registry_lock() {
+        let _registry_lock = registry_test_guard();
         let factory_ran_outside_registry_lock = Arc::new(AtomicBool::new(false));
         let observed = factory_ran_outside_registry_lock.clone();
         register_turn_middleware("registry-turn-middleware-metadata-lock-scope", move || {
@@ -411,6 +427,7 @@ mod tests {
 
     #[test]
     fn resolve_turn_middleware_runs_factory_outside_registry_lock() {
+        let _registry_lock = registry_test_guard();
         let factory_ran_outside_registry_lock = Arc::new(AtomicBool::new(false));
         let observed = factory_ran_outside_registry_lock.clone();
         register_turn_middleware("registry-turn-middleware-resolve-lock-scope", move || {
@@ -435,9 +452,7 @@ mod tests {
 
     #[test]
     fn turn_middleware_ids_from_env_normalizes_and_deduplicates() {
-        let _env_lock = super::super::context_engine_registry::conversation_selector_env_lock()
-            .lock()
-            .expect("env lock");
+        let _registry_lock = registry_test_guard();
         let _scoped_env = ScopedTurnMiddlewareEnvOverride::set(Some(" Alpha , beta ,, alpha "));
         let ids = turn_middleware_ids_from_env().expect("turn middleware ids from env");
         assert_eq!(ids, vec!["alpha".to_owned(), "beta".to_owned()]);

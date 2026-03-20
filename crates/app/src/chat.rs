@@ -873,12 +873,24 @@ fn format_fast_lane_segments(segments: &[FastLaneToolBatchSegmentSnapshot]) -> S
     segments
         .iter()
         .map(|segment| {
+            let observed_suffix = match (
+                segment.observed_peak_in_flight,
+                segment.observed_wall_time_ms,
+            ) {
+                (None, None) => String::new(),
+                (observed_peak_in_flight, observed_wall_time_ms) => format!(
+                    "[peak={} wall_ms={}]",
+                    format_fast_lane_summary_optional(observed_peak_in_flight),
+                    format_fast_lane_summary_optional(observed_wall_time_ms)
+                ),
+            };
             format!(
-                "{}:{}/{}/{}",
+                "{}:{}/{}/{}{}",
                 segment.segment_index,
                 segment.scheduling_class,
                 segment.execution_mode,
-                segment.intent_count
+                segment.intent_count,
+                observed_suffix,
             )
         })
         .collect::<Vec<_>>()
@@ -891,6 +903,29 @@ fn format_fast_lane_summary(
     limit: usize,
     summary: &FastLaneToolBatchEventSummary,
 ) -> String {
+    let parallel_safe_ratio = format_ratio(
+        summary.total_parallel_safe_intents_seen,
+        summary.total_intents_seen,
+    );
+    let serial_only_ratio = format_ratio(
+        summary.total_serial_only_intents_seen,
+        summary.total_intents_seen,
+    );
+    let configured_max_in_flight_avg = format_average(
+        summary.parallel_execution_max_in_flight_sum,
+        summary.parallel_execution_max_in_flight_samples,
+    );
+    let observed_peak_in_flight_avg = format_average(
+        summary.observed_peak_in_flight_sum,
+        summary.observed_peak_in_flight_samples,
+    );
+    let observed_wall_time_ms_avg = format_average(
+        summary.observed_wall_time_ms_sum,
+        summary.observed_wall_time_ms_samples,
+    );
+    let scheduling_class_rollup = format_rollup_counts(&summary.scheduling_class_counts);
+    let execution_mode_rollup = format_rollup_counts(&summary.execution_mode_counts);
+
     [
         format!("fast_lane_summary session={session_id} limit={limit}"),
         format!(
@@ -899,10 +934,51 @@ fn format_fast_lane_summary(
             format_fast_lane_summary_optional(summary.latest_schema_version)
         ),
         format!(
-            "latest_batch total_intents={} parallel_enabled={} max_in_flight={} parallel_safe_intents={} serial_only_intents={} parallel_segments={} sequential_segments={}",
+            "aggregate_batches parallel_enabled={} parallel_only={} mixed={} sequential_only={} without_segments={}",
+            summary.parallel_execution_enabled_batches,
+            summary.parallel_only_batches,
+            summary.mixed_execution_batches,
+            summary.sequential_only_batches,
+            summary.batches_without_segments,
+        ),
+        format!(
+            "aggregate_intents total={} parallel_safe={} serial_only={} parallel_safe_ratio={} serial_only_ratio={}",
+            summary.total_intents_seen,
+            summary.total_parallel_safe_intents_seen,
+            summary.total_serial_only_intents_seen,
+            parallel_safe_ratio,
+            serial_only_ratio,
+        ),
+        format!(
+            "aggregate_segments parallel={} sequential={}",
+            summary.total_parallel_segments_seen,
+            summary.total_sequential_segments_seen,
+        ),
+        format!(
+            "aggregate_execution configured_max_in_flight_avg={} configured_max_in_flight_max={} configured_max_in_flight_samples={} observed_peak_in_flight_avg={} observed_peak_in_flight_max={} observed_peak_in_flight_samples={} degraded_parallel_segments={}",
+            configured_max_in_flight_avg,
+            format_fast_lane_summary_optional(summary.parallel_execution_max_in_flight_max),
+            summary.parallel_execution_max_in_flight_samples,
+            observed_peak_in_flight_avg,
+            format_fast_lane_summary_optional(summary.observed_peak_in_flight_max),
+            summary.observed_peak_in_flight_samples,
+            summary.degraded_parallel_segments,
+        ),
+        format!(
+            "aggregate_latency observed_wall_time_ms_avg={} observed_wall_time_ms_max={} observed_wall_time_ms_samples={}",
+            observed_wall_time_ms_avg,
+            format_fast_lane_summary_optional(summary.observed_wall_time_ms_max),
+            summary.observed_wall_time_ms_samples,
+        ),
+        format!("rollup scheduling_classes={scheduling_class_rollup}"),
+        format!("rollup execution_modes={execution_mode_rollup}"),
+        format!(
+            "latest_batch total_intents={} parallel_enabled={} max_in_flight={} observed_peak_in_flight={} observed_wall_time_ms={} parallel_safe_intents={} serial_only_intents={} parallel_segments={} sequential_segments={}",
             format_fast_lane_summary_optional(summary.latest_total_intents),
             format_fast_lane_summary_optional(summary.latest_parallel_execution_enabled),
             format_fast_lane_summary_optional(summary.latest_parallel_execution_max_in_flight),
+            format_fast_lane_summary_optional(summary.latest_observed_peak_in_flight),
+            format_fast_lane_summary_optional(summary.latest_observed_wall_time_ms),
             format_fast_lane_summary_optional(summary.latest_parallel_safe_intents),
             format_fast_lane_summary_optional(summary.latest_serial_only_intents),
             format_fast_lane_summary_optional(summary.latest_parallel_segments),
@@ -1490,6 +1566,22 @@ fn format_milli_ratio(value: Option<u32>) -> String {
         .unwrap_or_else(|| "-".to_owned())
 }
 
+#[cfg(any(test, feature = "memory-sqlite"))]
+fn format_ratio(numerator: u64, denominator: u64) -> String {
+    if denominator == 0 {
+        return "-".to_owned();
+    }
+    format!("{:.3}", numerator as f64 / denominator as f64)
+}
+
+#[cfg(any(test, feature = "memory-sqlite"))]
+fn format_average(sum: u64, samples: u32) -> String {
+    if samples == 0 {
+        return "-".to_owned();
+    }
+    format!("{:.3}", sum as f64 / f64::from(samples))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1785,13 +1877,62 @@ mod tests {
                 "type": "conversation_event",
                 "event": "fast_lane_tool_batch",
                 "payload": {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "total_intents": 5,
                     "parallel_execution_enabled": true,
                     "parallel_execution_max_in_flight": 2,
+                    "observed_peak_in_flight": 2,
+                    "observed_wall_time_ms": 34,
                     "parallel_safe_intents": 4,
                     "serial_only_intents": 1,
                     "parallel_segments": 2,
+                    "sequential_segments": 1,
+                    "segments": [
+                        {
+                            "segment_index": 0,
+                            "scheduling_class": "parallel_safe",
+                            "execution_mode": "parallel",
+                            "intent_count": 2,
+                            "observed_peak_in_flight": 2,
+                            "observed_wall_time_ms": 14
+                        },
+                        {
+                            "segment_index": 1,
+                            "scheduling_class": "serial_only",
+                            "execution_mode": "sequential",
+                            "intent_count": 1,
+                            "observed_peak_in_flight": 1,
+                            "observed_wall_time_ms": 8
+                        },
+                        {
+                            "segment_index": 2,
+                            "scheduling_class": "parallel_safe",
+                            "execution_mode": "parallel",
+                            "intent_count": 2,
+                            "observed_peak_in_flight": 2,
+                            "observed_wall_time_ms": 12
+                        }
+                    ]
+                }
+            })
+            .to_string(),
+        ]
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    fn legacy_fast_lane_tool_batch_event_payloads() -> Vec<String> {
+        vec![
+            json!({
+                "type": "conversation_event",
+                "event": "fast_lane_tool_batch",
+                "payload": {
+                    "schema_version": 1,
+                    "total_intents": 3,
+                    "parallel_execution_enabled": true,
+                    "parallel_execution_max_in_flight": 2,
+                    "parallel_safe_intents": 2,
+                    "serial_only_intents": 1,
+                    "parallel_segments": 1,
                     "sequential_segments": 1,
                     "segments": [
                         {
@@ -1805,12 +1946,6 @@ mod tests {
                             "scheduling_class": "serial_only",
                             "execution_mode": "sequential",
                             "intent_count": 1
-                        },
-                        {
-                            "segment_index": 2,
-                            "scheduling_class": "parallel_safe",
-                            "execution_mode": "parallel",
-                            "intent_count": 2
                         }
                     ]
                 }
@@ -2017,7 +2152,21 @@ mod tests {
         assert!(direct_output.contains("batch_events=1"));
         assert!(direct_output.contains("total_intents=5"));
         assert!(direct_output.contains("parallel_safe_intents=4"));
-        assert!(direct_output.contains("latest_segments=0:parallel_safe/parallel/2,1:serial_only/sequential/1,2:parallel_safe/parallel/2"));
+        assert!(direct_output.contains(
+            "aggregate_batches parallel_enabled=1 parallel_only=0 mixed=1 sequential_only=0 without_segments=0"
+        ));
+        assert!(direct_output.contains(
+            "aggregate_execution configured_max_in_flight_avg=2.000 configured_max_in_flight_max=2 configured_max_in_flight_samples=1 observed_peak_in_flight_avg=2.000 observed_peak_in_flight_max=2 observed_peak_in_flight_samples=1 degraded_parallel_segments=0"
+        ));
+        assert!(direct_output.contains(
+            "aggregate_latency observed_wall_time_ms_avg=34.000 observed_wall_time_ms_max=34 observed_wall_time_ms_samples=1"
+        ));
+        assert!(direct_output.contains(
+            "latest_batch total_intents=5 parallel_enabled=true max_in_flight=2 observed_peak_in_flight=2 observed_wall_time_ms=34 parallel_safe_intents=4 serial_only_intents=1 parallel_segments=2 sequential_segments=1"
+        ));
+        assert!(direct_output.contains(
+            "latest_segments=0:parallel_safe/parallel/2[peak=2 wall_ms=14],1:serial_only/sequential/1[peak=1 wall_ms=8],2:parallel_safe/parallel/2[peak=2 wall_ms=12]"
+        ));
 
         let kernel_payloads = fast_lane_tool_batch_event_payloads();
         let (kernel_ctx, invocations) =
@@ -2037,7 +2186,21 @@ mod tests {
         assert!(kernel_output.contains("batch_events=1"));
         assert!(kernel_output.contains("total_intents=5"));
         assert!(kernel_output.contains("parallel_safe_intents=4"));
-        assert!(kernel_output.contains("latest_segments=0:parallel_safe/parallel/2,1:serial_only/sequential/1,2:parallel_safe/parallel/2"));
+        assert!(kernel_output.contains(
+            "aggregate_batches parallel_enabled=1 parallel_only=0 mixed=1 sequential_only=0 without_segments=0"
+        ));
+        assert!(kernel_output.contains(
+            "aggregate_execution configured_max_in_flight_avg=2.000 configured_max_in_flight_max=2 configured_max_in_flight_samples=1 observed_peak_in_flight_avg=2.000 observed_peak_in_flight_max=2 observed_peak_in_flight_samples=1 degraded_parallel_segments=0"
+        ));
+        assert!(kernel_output.contains(
+            "aggregate_latency observed_wall_time_ms_avg=34.000 observed_wall_time_ms_max=34 observed_wall_time_ms_samples=1"
+        ));
+        assert!(kernel_output.contains(
+            "latest_batch total_intents=5 parallel_enabled=true max_in_flight=2 observed_peak_in_flight=2 observed_wall_time_ms=34 parallel_safe_intents=4 serial_only_intents=1 parallel_segments=2 sequential_segments=1"
+        ));
+        assert!(kernel_output.contains(
+            "latest_segments=0:parallel_safe/parallel/2[peak=2 wall_ms=14],1:serial_only/sequential/1[peak=1 wall_ms=8],2:parallel_safe/parallel/2[peak=2 wall_ms=12]"
+        ));
 
         let captured = invocations.lock().expect("invocations lock");
         assert_eq!(captured.len(), 1);
@@ -2050,6 +2213,109 @@ mod tests {
         assert_eq!(captured[0].payload["allow_extended_limit"], json!(true));
 
         cleanup_chat_test_memory(&sqlite_path);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fast_lane_summary_output_accepts_legacy_schema_v1_events() {
+        let (_config, memory_config, sqlite_path) = init_chat_test_memory("fast-lane-legacy");
+
+        let payloads = legacy_fast_lane_tool_batch_event_payloads();
+        append_assistant_payloads("chat-binding-fast-lane-legacy", &payloads, &memory_config);
+
+        let output = load_fast_lane_summary_output(
+            "chat-binding-fast-lane-legacy",
+            32,
+            ConversationRuntimeBinding::direct(),
+            &memory_config,
+        )
+        .await
+        .expect("load fast lane summary for legacy schema");
+
+        assert!(output.contains("schema_version=1"));
+        assert!(output.contains(
+            "aggregate_execution configured_max_in_flight_avg=2.000 configured_max_in_flight_max=2 configured_max_in_flight_samples=1 observed_peak_in_flight_avg=- observed_peak_in_flight_max=- observed_peak_in_flight_samples=0 degraded_parallel_segments=0"
+        ));
+        assert!(output.contains(
+            "aggregate_latency observed_wall_time_ms_avg=- observed_wall_time_ms_max=- observed_wall_time_ms_samples=0"
+        ));
+        assert!(output.contains(
+            "latest_batch total_intents=3 parallel_enabled=true max_in_flight=2 observed_peak_in_flight=- observed_wall_time_ms=- parallel_safe_intents=2 serial_only_intents=1 parallel_segments=1 sequential_segments=1"
+        ));
+        assert!(
+            output
+                .contains("latest_segments=0:parallel_safe/parallel/2,1:serial_only/sequential/1")
+        );
+
+        cleanup_chat_test_memory(&sqlite_path);
+    }
+
+    #[test]
+    fn format_fast_lane_summary_includes_window_aggregates() {
+        let summary = FastLaneToolBatchEventSummary {
+            batch_events: 4,
+            latest_schema_version: Some(2),
+            latest_total_intents: Some(0),
+            latest_parallel_execution_enabled: Some(false),
+            latest_parallel_execution_max_in_flight: None,
+            latest_observed_peak_in_flight: Some(1),
+            latest_observed_wall_time_ms: Some(11),
+            latest_parallel_safe_intents: Some(0),
+            latest_serial_only_intents: Some(0),
+            latest_parallel_segments: Some(0),
+            latest_sequential_segments: Some(0),
+            latest_segments: Vec::new(),
+            parallel_execution_enabled_batches: 2,
+            parallel_only_batches: 1,
+            mixed_execution_batches: 1,
+            sequential_only_batches: 1,
+            batches_without_segments: 1,
+            total_intents_seen: 8,
+            total_parallel_safe_intents_seen: 5,
+            total_serial_only_intents_seen: 3,
+            total_parallel_segments_seen: 3,
+            total_sequential_segments_seen: 3,
+            parallel_execution_max_in_flight_samples: 3,
+            parallel_execution_max_in_flight_sum: 6,
+            parallel_execution_max_in_flight_max: Some(3),
+            observed_peak_in_flight_samples: 3,
+            observed_peak_in_flight_sum: 5,
+            observed_peak_in_flight_max: Some(3),
+            observed_wall_time_ms_samples: 3,
+            observed_wall_time_ms_sum: 72,
+            observed_wall_time_ms_max: Some(33),
+            degraded_parallel_segments: 1,
+            scheduling_class_counts: BTreeMap::from([
+                ("parallel_safe".to_owned(), 3),
+                ("serial_only".to_owned(), 3),
+            ]),
+            execution_mode_counts: BTreeMap::from([
+                ("parallel".to_owned(), 3),
+                ("sequential".to_owned(), 3),
+            ]),
+        };
+
+        let output = format_fast_lane_summary("session-fast-lane", 64, &summary);
+
+        assert!(output.contains("fast_lane_summary session=session-fast-lane limit=64"));
+        assert!(output.contains(
+            "aggregate_batches parallel_enabled=2 parallel_only=1 mixed=1 sequential_only=1 without_segments=1"
+        ));
+        assert!(output.contains(
+            "aggregate_intents total=8 parallel_safe=5 serial_only=3 parallel_safe_ratio=0.625 serial_only_ratio=0.375"
+        ));
+        assert!(output.contains("aggregate_segments parallel=3 sequential=3"));
+        assert!(output.contains(
+            "aggregate_execution configured_max_in_flight_avg=2.000 configured_max_in_flight_max=3 configured_max_in_flight_samples=3 observed_peak_in_flight_avg=1.667 observed_peak_in_flight_max=3 observed_peak_in_flight_samples=3 degraded_parallel_segments=1"
+        ));
+        assert!(output.contains(
+            "aggregate_latency observed_wall_time_ms_avg=24.000 observed_wall_time_ms_max=33 observed_wall_time_ms_samples=3"
+        ));
+        assert!(output.contains(
+            "latest_batch total_intents=0 parallel_enabled=false max_in_flight=- observed_peak_in_flight=1 observed_wall_time_ms=11 parallel_safe_intents=0 serial_only_intents=0 parallel_segments=0 sequential_segments=0"
+        ));
+        assert!(output.contains("rollup scheduling_classes=parallel_safe:3,serial_only:3"));
+        assert!(output.contains("rollup execution_modes=parallel:3,sequential:3"));
     }
 
     #[cfg(feature = "memory-sqlite")]

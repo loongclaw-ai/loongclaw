@@ -40,9 +40,15 @@ pub mod runtime_config;
 mod session;
 mod shell;
 pub mod shell_policy_ext;
-#[cfg(feature = "tool-webfetch")]
+// Browser reuses the shared SSRF and HTML helpers from web_fetch even when the
+// public web.fetch tool is compiled out.
+#[cfg(any(feature = "tool-webfetch", feature = "tool-browser"))]
 mod web_fetch;
-#[cfg(any(feature = "tool-webfetch", feature = "tool-websearch"))]
+#[cfg(any(
+    feature = "tool-webfetch",
+    feature = "tool-browser",
+    feature = "tool-websearch"
+))]
 mod web_http;
 mod web_search;
 
@@ -445,7 +451,7 @@ fn required_capabilities_for_tool_name_and_payload(
         "file.read" => {
             caps.insert(Capability::FilesystemRead);
         }
-        "file.write" => {
+        "file.write" | "file.edit" => {
             caps.insert(Capability::FilesystemWrite);
         }
         "claw.migrate" => {
@@ -701,6 +707,7 @@ fn execute_discoverable_tool_core_with_config(
         "shell.exec" => shell::execute_shell_tool_with_config(request, config),
         "file.read" => file::execute_file_read_tool_with_config(request, config),
         "file.write" => file::execute_file_write_tool_with_config(request, config),
+        "file.edit" => file::execute_file_edit_tool_with_config(request, config),
         "provider.switch" => {
             provider_switch::execute_provider_switch_tool_with_config(request, config)
         }
@@ -1744,7 +1751,7 @@ mod tests {
     fn tool_registry_returns_runtime_discoverable_tools_for_default_config() {
         let config = runtime_config::ToolRuntimeConfig::default();
         let entries = tool_registry_with_config(Some(&config));
-        assert_eq!(entries.len(), 23);
+        assert_eq!(entries.len(), 24);
         let names: Vec<&str> = entries.iter().map(|e| e.name).collect();
         assert!(names.contains(&"approval_request_resolve"));
         assert!(names.contains(&"approval_request_status"));
@@ -1757,6 +1764,7 @@ mod tests {
         assert!(names.contains(&"delegate_async"));
         assert!(names.contains(&"file.read"));
         assert!(names.contains(&"file.write"));
+        assert!(names.contains(&"file.edit"));
         assert!(names.contains(&"provider.switch"));
         assert!(names.contains(&"session_archive"));
         assert!(names.contains(&"session_cancel"));
@@ -1788,7 +1796,7 @@ mod tests {
     fn tool_registry_returns_runtime_discoverable_tools_for_default_config_no_websearch() {
         let config = runtime_config::ToolRuntimeConfig::default();
         let entries = tool_registry_with_config(Some(&config));
-        assert_eq!(entries.len(), 22);
+        assert_eq!(entries.len(), 23);
         let names: Vec<&str> = entries.iter().map(|e| e.name).collect();
         assert!(names.contains(&"approval_request_resolve"));
         assert!(names.contains(&"approval_request_status"));
@@ -1801,6 +1809,7 @@ mod tests {
         assert!(names.contains(&"delegate_async"));
         assert!(names.contains(&"file.read"));
         assert!(names.contains(&"file.write"));
+        assert!(names.contains(&"file.edit"));
         assert!(names.contains(&"provider.switch"));
         assert!(names.contains(&"session_archive"));
         assert!(names.contains(&"session_cancel"));
@@ -1894,6 +1903,15 @@ mod tests {
 
         let root_view = runtime_tool_view_for_config(&config);
         assert!(!root_view.contains("web.fetch"));
+    }
+
+    #[test]
+    fn runtime_tool_view_hides_web_search_when_disabled() {
+        let mut config = crate::config::ToolConfig::default();
+        config.web_search.enabled = false;
+
+        let root_view = runtime_tool_view_for_config(&config);
+        assert!(!root_view.contains("web.search"));
     }
 
     #[test]
@@ -2092,6 +2110,25 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tool-websearch")]
+    #[test]
+    fn tool_registry_hides_web_search_when_runtime_disabled() {
+        let config = runtime_config::ToolRuntimeConfig {
+            web_search: runtime_config::WebSearchRuntimePolicy {
+                enabled: false,
+                ..runtime_config::WebSearchRuntimePolicy::default()
+            },
+            ..runtime_config::ToolRuntimeConfig::default()
+        };
+
+        let entries = tool_registry_with_config(Some(&config));
+
+        assert!(
+            !entries.iter().any(|entry| entry.name == "web.search"),
+            "runtime-disabled web.search should not appear in tool registry"
+        );
+    }
+
     #[test]
     fn provider_tool_definitions_include_browser_open_when_enabled() {
         let catalog = tool_catalog();
@@ -2191,6 +2228,15 @@ mod tests {
         };
         assert_eq!(
             required_capabilities_for_request(&direct_file_write),
+            BTreeSet::from([Capability::InvokeTool, Capability::FilesystemWrite])
+        );
+
+        let direct_file_edit = ToolCoreRequest {
+            tool_name: "file.edit".to_owned(),
+            payload: json!({"path": "notes.txt", "old_string": "a", "new_string": "b"}),
+        };
+        assert_eq!(
+            required_capabilities_for_request(&direct_file_edit),
             BTreeSet::from([Capability::InvokeTool, Capability::FilesystemWrite])
         );
 

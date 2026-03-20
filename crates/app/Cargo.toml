@@ -6,10 +6,11 @@ license.workspace = true
 authors.workspace = true
 
 [features]
-default = ["channel-cli", "channel-telegram", "channel-feishu", "config-toml", "memory-sqlite", "feishu-integration", "tool-shell", "tool-file", "tool-browser", "tool-webfetch", "tool-websearch", "provider-openai", "provider-anthropic", "provider-bedrock", "provider-volcengine"]
+default = ["channel-cli", "channel-telegram", "channel-feishu", "channel-matrix", "config-toml", "memory-sqlite", "feishu-integration", "tool-shell", "tool-file", "tool-browser", "tool-webfetch", "tool-websearch", "provider-openai", "provider-anthropic", "provider-bedrock", "provider-volcengine"]
 channel-cli = []
 channel-telegram = []
-channel-feishu = ["dep:axum", "dep:aes", "dep:cbc", "feishu-integration"]
+channel-feishu = ["dep:axum", "dep:aes", "dep:cbc", "dep:prost", "dep:rustls", "dep:tokio-tungstenite", "feishu-integration"]
+channel-matrix = []
 provider-openai = []
 provider-anthropic = []
 provider-bedrock = ["dep:aws-config", "dep:aws-credential-types", "dep:aws-sigv4", "dep:http"]
@@ -52,9 +53,13 @@ aes = { version = "0.8", optional = true }
 cbc = { version = "0.1", optional = true }
 wait-timeout = "0.2"
 regex = { workspace = true, optional = true }
+prost = { version = "0.13", optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring"], optional = true }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+axum.workspace = true
 
 [lints]
 workspace = true

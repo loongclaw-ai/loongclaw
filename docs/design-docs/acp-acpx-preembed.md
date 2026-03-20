@@ -239,10 +239,11 @@ At the moment:
   config states, MCP proxy policy/readiness, and missing working-directory failures
 - `acp-status` projects persisted conversation bindings and queued-turn depth through the shared ACP
   manager; when a session is busy it now returns manager-local fallback status instead of racing the
-  backend, and when a session is idle it serializes backend status inspection behind the same
-  session actor as turns and control operations, so operator visibility does not depend on
-  provider/runtime internals. Session/status projections now also surface `binding_route_session_id`
-  so typed ACP bindings are operator-visible instead of hidden behind legacy labels
+  backend, preserves explicit repair states such as `cancelling` while an active turn is draining,
+  and when a session is idle it serializes backend status inspection behind the same session actor
+  as turns and control operations, so operator visibility does not depend on provider/runtime
+  internals. Session/status projections now also surface `binding_route_session_id` so typed ACP
+  bindings are operator-visible instead of hidden behind legacy labels
 - `acp-dispatch` exposes the canonical dispatch decision and reason (`allowed`,
   `dispatch_disabled`, `channel_not_allowed`, `account_not_allowed`, `thread_required`,
   `root_conversation_required`, `agent_prefix_required`) with the normalized route target, so ACP

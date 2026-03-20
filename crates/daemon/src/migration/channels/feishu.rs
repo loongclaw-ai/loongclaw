@@ -29,6 +29,7 @@ pub(super) fn collect_preview(
         || config.feishu.app_id_env != default_feishu.app_id_env
         || config.feishu.app_secret_env != default_feishu.app_secret_env
         || config.feishu.base_url != default_feishu.base_url
+        || config.feishu.mode.is_some()
         || config.feishu.receive_id_type != default_feishu.receive_id_type
         || config.feishu.webhook_bind != default_feishu.webhook_bind
         || config.feishu.webhook_path != default_feishu.webhook_path
@@ -108,14 +109,7 @@ pub(super) fn collect_preflight_checks(
     config: &mvp::config::LoongClawConfig,
 ) -> Vec<ChannelPreflightCheck> {
     let credential_state = readiness_state(config);
-    let verification_token = crate::doctor_cli::resolve_secret_value(
-        config.feishu.verification_token.as_deref(),
-        config.feishu.verification_token_env.as_deref(),
-    );
-    let encrypt_key = crate::doctor_cli::resolve_secret_value(
-        config.feishu.encrypt_key.as_deref(),
-        config.feishu.encrypt_key_env.as_deref(),
-    );
+    let (transport_level, transport_detail) = inbound_transport_check(config);
 
     vec![
         ChannelPreflightCheck {
@@ -132,17 +126,9 @@ pub(super) fn collect_preflight_checks(
             },
         },
         ChannelPreflightCheck {
-            name: "feishu webhook verification",
-            level: if verification_token.is_some() || encrypt_key.is_some() {
-                ChannelCheckLevel::Pass
-            } else {
-                ChannelCheckLevel::Warn
-            },
-            detail: if verification_token.is_some() || encrypt_key.is_some() {
-                "verification token or encrypt key is configured".to_owned()
-            } else {
-                "verification token and encrypt key are both missing".to_owned()
-            },
+            name: "feishu inbound transport",
+            level: transport_level,
+            detail: transport_detail,
         },
     ]
 }
@@ -151,14 +137,7 @@ pub(super) fn collect_doctor_checks(
     config: &mvp::config::LoongClawConfig,
 ) -> Vec<ChannelDoctorCheck> {
     let credential_state = readiness_state(config);
-    let verification_token = crate::doctor_cli::resolve_secret_value(
-        config.feishu.verification_token.as_deref(),
-        config.feishu.verification_token_env.as_deref(),
-    );
-    let encrypt_key = crate::doctor_cli::resolve_secret_value(
-        config.feishu.encrypt_key.as_deref(),
-        config.feishu.encrypt_key_env.as_deref(),
-    );
+    let (transport_level, transport_detail) = inbound_transport_check(config);
 
     vec![
         ChannelDoctorCheck {
@@ -175,17 +154,9 @@ pub(super) fn collect_doctor_checks(
             },
         },
         ChannelDoctorCheck {
-            name: "feishu webhook verification",
-            level: if verification_token.is_some() || encrypt_key.is_some() {
-                ChannelCheckLevel::Pass
-            } else {
-                ChannelCheckLevel::Warn
-            },
-            detail: if verification_token.is_some() || encrypt_key.is_some() {
-                "verification token or encrypt key is configured".to_owned()
-            } else {
-                "verification token and encrypt key are both missing".to_owned()
-            },
+            name: "feishu inbound transport",
+            level: transport_level,
+            detail: transport_detail,
         },
     ]
 }
@@ -205,18 +176,20 @@ pub(super) fn apply_default_env_bindings(config: &mut mvp::config::LoongClawConf
         "set feishu.app_secret_env",
         &mut fixes,
     );
-    ensure_default_env_binding(
-        &mut config.feishu.verification_token_env,
-        default.verification_token_env.as_deref(),
-        "set feishu.verification_token_env",
-        &mut fixes,
-    );
-    ensure_default_env_binding(
-        &mut config.feishu.encrypt_key_env,
-        default.encrypt_key_env.as_deref(),
-        "set feishu.encrypt_key_env",
-        &mut fixes,
-    );
+    if config.feishu.mode.unwrap_or_default() != mvp::config::FeishuChannelServeMode::Websocket {
+        ensure_default_env_binding(
+            &mut config.feishu.verification_token_env,
+            default.verification_token_env.as_deref(),
+            "set feishu.verification_token_env",
+            &mut fixes,
+        );
+        ensure_default_env_binding(
+            &mut config.feishu.encrypt_key_env,
+            default.encrypt_key_env.as_deref(),
+            "set feishu.encrypt_key_env",
+            &mut fixes,
+        );
+    }
     fixes
 }
 
@@ -249,6 +222,10 @@ fn merge_feishu_config(
     }
     if target.base_url == default.base_url && source.base_url != default.base_url {
         target.base_url = source.base_url.clone();
+        changed = true;
+    }
+    if target.mode.is_none() && source.mode.is_some() {
+        target.mode = source.mode;
         changed = true;
     }
     if target.receive_id_type == default.receive_id_type
@@ -299,4 +276,116 @@ fn merge_feishu_config(
 
 fn descriptor() -> &'static mvp::config::ChannelDescriptor {
     mvp::config::channel_descriptor(ID).unwrap_or(&FALLBACK_DESCRIPTOR)
+}
+
+fn inbound_transport_check(config: &mvp::config::LoongClawConfig) -> (ChannelCheckLevel, String) {
+    if config.feishu.mode.unwrap_or_default() == mvp::config::FeishuChannelServeMode::Websocket {
+        return (
+            ChannelCheckLevel::Pass,
+            "websocket mode configured; webhook secrets are not required".to_owned(),
+        );
+    }
+
+    let verification_token = crate::doctor_cli::resolve_secret_value(
+        config.feishu.verification_token.as_deref(),
+        config.feishu.verification_token_env.as_deref(),
+    );
+    let encrypt_key = crate::doctor_cli::resolve_secret_value(
+        config.feishu.encrypt_key.as_deref(),
+        config.feishu.encrypt_key_env.as_deref(),
+    );
+    if verification_token.is_some() || encrypt_key.is_some() {
+        (
+            ChannelCheckLevel::Pass,
+            "webhook verification token or encrypt key is configured".to_owned(),
+        )
+    } else {
+        (
+            ChannelCheckLevel::Warn,
+            "webhook mode is configured but verification_token and encrypt_key are both missing"
+                .to_owned(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_config(raw: &str) -> mvp::config::LoongClawConfig {
+        toml::from_str(raw).expect("deserialize loongclaw config")
+    }
+
+    #[test]
+    fn merge_preserves_explicit_top_level_webhook_mode() {
+        let mut target = parse_config(
+            r#"
+            [feishu]
+            mode = "webhook"
+            "#,
+        );
+        let source = parse_config(
+            r#"
+            [feishu]
+            mode = "websocket"
+            "#,
+        );
+
+        assert!(
+            !apply(&mut target, &source),
+            "an explicit top-level webhook selection should leave the merged config unchanged"
+        );
+        assert_eq!(
+            target
+                .feishu
+                .resolve_account(None)
+                .expect("resolve merged feishu config")
+                .mode,
+            mvp::config::FeishuChannelServeMode::Webhook,
+            "an explicit top-level webhook selection must not be replaced by a later websocket source"
+        );
+    }
+
+    #[test]
+    fn websocket_mode_skips_default_webhook_secret_bindings() {
+        let mut config = parse_config(
+            r#"
+            [feishu]
+            mode = "websocket"
+            "#,
+        );
+        config.feishu.app_id_env = None;
+        config.feishu.app_secret_env = None;
+        config.feishu.verification_token_env = None;
+        config.feishu.encrypt_key_env = None;
+
+        let fixes = apply_default_env_bindings(&mut config);
+
+        assert!(
+            fixes
+                .iter()
+                .any(|fix| fix.starts_with("set feishu.app_id_env=")),
+            "websocket mode still needs default app_id env guidance"
+        );
+        assert!(
+            fixes
+                .iter()
+                .any(|fix| fix.starts_with("set feishu.app_secret_env=")),
+            "websocket mode still needs default app_secret env guidance"
+        );
+        assert!(
+            fixes
+                .iter()
+                .all(|fix| !fix.starts_with("set feishu.verification_token_env=")),
+            "websocket mode must not auto-fill webhook verification secrets"
+        );
+        assert!(
+            fixes
+                .iter()
+                .all(|fix| !fix.starts_with("set feishu.encrypt_key_env=")),
+            "websocket mode must not auto-fill webhook encrypt secrets"
+        );
+        assert!(config.feishu.verification_token_env.is_none());
+        assert!(config.feishu.encrypt_key_env.is_none());
+    }
 }

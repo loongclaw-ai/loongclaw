@@ -16,6 +16,7 @@ test-support = []
 channel-cli = ["loongclaw-app/channel-cli"]
 channel-telegram = ["loongclaw-app/channel-telegram"]
 channel-feishu = ["loongclaw-app/channel-feishu"]
+channel-matrix = ["loongclaw-app/channel-matrix"]
 provider-openai = ["loongclaw-app/provider-openai"]
 provider-anthropic = ["loongclaw-app/provider-anthropic"]
 provider-bedrock = ["loongclaw-app/provider-bedrock"]
@@ -34,6 +35,7 @@ libc = "0.2"
 
 [dependencies]
 clap.workspace = true
+clap_complete = "4.5"
 dialoguer.workspace = true
 kernel = { package = "loongclaw-kernel", path = "../kernel" }
 loongclaw-bench = { path = "../bench" }
@@ -41,6 +43,8 @@ loongclaw-app = { path = "../app", default-features = false }
 loongclaw-spec = { path = "../spec" }
 serde.workspace = true
 serde_json.workspace = true
+reqwest.workspace = true
+rusqlite.workspace = true
 tokio.workspace = true
 time.workspace = true
 toml.workspace = true
@@ -51,7 +55,6 @@ sha2.workspace = true
 ed25519-dalek.workspace = true
 axum.workspace = true
 futures-util.workspace = true
-reqwest.workspace = true
 
 [[bin]]
 name = "loongclaw"

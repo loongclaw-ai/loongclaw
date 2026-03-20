@@ -286,6 +286,38 @@ model = "deepseek-chat"
 }
 
 #[test]
+fn migration_channel_registry_includes_matrix_when_enabled() {
+    let mut config = mvp::config::LoongClawConfig::default();
+    config.matrix.enabled = true;
+    config.matrix.access_token = Some("matrix-token".to_owned());
+    config.matrix.base_url = Some("https://matrix.example.org".to_owned());
+
+    let checks = loongclaw_daemon::migration::channels::collect_channel_doctor_checks(&config);
+    let names = checks.iter().map(|check| check.name).collect::<Vec<_>>();
+
+    assert_eq!(names, vec!["matrix channel", "matrix room sync"]);
+}
+
+#[test]
+fn migration_channel_env_binding_applies_matrix_default() {
+    let mut config = mvp::config::LoongClawConfig::default();
+    config.matrix.access_token_env = None;
+
+    let fixes =
+        loongclaw_daemon::migration::channels::apply_default_channel_env_bindings(&mut config);
+
+    assert_eq!(
+        config.matrix.access_token_env.as_deref(),
+        Some("MATRIX_ACCESS_TOKEN")
+    );
+    assert!(
+        fixes
+            .iter()
+            .any(|fix| fix == "set matrix.access_token_env=MATRIX_ACCESS_TOKEN")
+    );
+}
+
+#[test]
 fn migration_collect_import_candidates_preserves_api_key_flow_for_openai_codex_provider() {
     let root = unique_temp_dir("codex-openai-api-key-flow");
     std::fs::create_dir_all(&root).expect("create temp root");
@@ -652,7 +684,7 @@ fn migration_recommended_plan_supplements_cli_prompt_metadata_and_memory_profile
 fn channel_registry_lists_registered_channel_ids() {
     assert_eq!(
         loongclaw_daemon::migration::channels::registered_channel_ids(),
-        vec!["telegram", "feishu"]
+        vec!["telegram", "feishu", "matrix"]
     );
 }
 
@@ -836,10 +868,10 @@ fn channel_registry_collects_preflight_checks_for_enabled_channels() {
     );
     assert!(
         checks.iter().any(|check| {
-            check.name == "feishu webhook verification"
+            check.name == "feishu inbound transport"
                 && check.level == loongclaw_daemon::migration::channels::ChannelCheckLevel::Pass
         }),
-        "registry preflight should include feishu webhook verification readiness: {checks:#?}"
+        "registry preflight should include feishu inbound transport readiness: {checks:#?}"
     );
 }
 

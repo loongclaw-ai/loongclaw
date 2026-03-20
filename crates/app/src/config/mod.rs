@@ -14,14 +14,16 @@ pub use audit::{AuditConfig, AuditMode};
 pub use channels::{
     ChannelAcpConfig, ChannelDefaultAccountSelection, ChannelDefaultAccountSelectionSource,
     ChannelDescriptor, ChannelResolvedAccountRoute, ChannelRuntimeKind, CliChannelConfig,
-    FeishuAccountConfig, FeishuChannelConfig, FeishuDomain, ResolvedFeishuChannelConfig,
-    ResolvedTelegramChannelConfig, TelegramAccountConfig, TelegramChannelConfig,
-    channel_descriptor, service_channel_descriptors,
+    FeishuAccountConfig, FeishuChannelConfig, FeishuChannelServeMode, FeishuDomain,
+    MatrixAccountConfig, MatrixChannelConfig, ResolvedFeishuChannelConfig,
+    ResolvedMatrixChannelConfig, ResolvedTelegramChannelConfig, TelegramAccountConfig,
+    TelegramChannelConfig, channel_descriptor, service_channel_descriptors,
 };
 #[allow(unused_imports)]
 pub(crate) use channels::{
     FEISHU_APP_ID_ENV, FEISHU_APP_SECRET_ENV, FEISHU_ENCRYPT_KEY_ENV,
-    FEISHU_VERIFICATION_TOKEN_ENV, TELEGRAM_BOT_TOKEN_ENV,
+    FEISHU_VERIFICATION_TOKEN_ENV, MATRIX_ACCESS_TOKEN_ENV, TELEGRAM_BOT_TOKEN_ENV,
+    normalize_channel_account_id,
 };
 #[allow(unused_imports)]
 pub use conversation::{ConversationConfig, ConversationTurnLoopConfig};
@@ -60,11 +62,19 @@ pub use tools::{
     BrowserCompanionToolConfig, BrowserToolConfig, DEFAULT_BROWSER_COMPANION_TIMEOUT_SECONDS,
     DEFAULT_BROWSER_MAX_LINKS, DEFAULT_BROWSER_MAX_SESSIONS, DEFAULT_BROWSER_MAX_TEXT_CHARS,
     DEFAULT_SHELL_ALLOW, DEFAULT_WEB_FETCH_MAX_BYTES, DEFAULT_WEB_FETCH_MAX_REDIRECTS,
-    DEFAULT_WEB_FETCH_TIMEOUT_SECONDS, DEFAULT_WEB_SEARCH_MAX_RESULTS,
+    DEFAULT_WEB_FETCH_TIMEOUT_SECONDS, DEFAULT_WEB_SEARCH_MAX_RESULTS, DEFAULT_WEB_SEARCH_PROVIDER,
     DEFAULT_WEB_SEARCH_TIMEOUT_SECONDS, ExternalSkillsConfig, GovernedToolApprovalConfig,
     GovernedToolApprovalMode, MAX_BROWSER_MAX_LINKS, MAX_BROWSER_MAX_SESSIONS,
     MAX_BROWSER_MAX_TEXT_CHARS, MAX_WEB_FETCH_MAX_BYTES, SessionVisibility, ToolConfig,
     WebSearchToolConfig, WebToolConfig,
+};
+pub(crate) use tools::{
+    WEB_SEARCH_BRAVE_API_KEY_ENV, WEB_SEARCH_TAVILY_API_KEY_ENV, normalize_web_search_provider,
+};
+#[cfg(feature = "tool-websearch")]
+pub(crate) use tools::{
+    WEB_SEARCH_PROVIDER_DUCKDUCKGO, WEB_SEARCH_PROVIDER_SCHEMA_VALUES,
+    WEB_SEARCH_PROVIDER_VALID_VALUES, web_search_provider_parameter_description,
 };
 
 #[cfg(test)]
@@ -116,21 +126,40 @@ mod tests {
 
         config.telegram.enabled = true;
         config.feishu.enabled = true;
+        config.matrix.enabled = true;
 
         assert_eq!(
             config.enabled_channel_ids(),
-            vec!["cli", "telegram", "feishu"]
+            vec!["cli", "telegram", "feishu", "matrix"]
         );
         assert_eq!(
             config.enabled_service_channel_ids(),
-            vec!["telegram", "feishu"]
+            vec!["telegram", "feishu", "matrix"]
         );
 
         let service_ids = service_channel_descriptors()
             .into_iter()
             .map(|descriptor| descriptor.id)
             .collect::<Vec<_>>();
-        assert_eq!(service_ids, vec!["telegram", "feishu"]);
+        assert_eq!(service_ids, vec!["telegram", "feishu", "matrix"]);
+    }
+
+    #[test]
+    fn channel_descriptor_lookup_reports_matrix_metadata() {
+        let matrix = channel_descriptor("matrix").expect("matrix descriptor");
+        assert_eq!(matrix.id, "matrix");
+        assert_eq!(matrix.surface_label, "matrix channel");
+        assert_eq!(matrix.runtime_kind, ChannelRuntimeKind::Service);
+        assert_eq!(matrix.serve_subcommand, Some("matrix-serve"));
+    }
+
+    #[test]
+    fn service_channel_descriptors_include_matrix_surface() {
+        let service_ids = service_channel_descriptors()
+            .into_iter()
+            .map(|descriptor| descriptor.id)
+            .collect::<Vec<_>>();
+        assert_eq!(service_ids, vec!["telegram", "feishu", "matrix"]);
     }
 
     #[test]
@@ -159,6 +188,7 @@ mod tests {
             ids,
             vec![
                 "anthropic",
+                "bailian_coding",
                 "bedrock",
                 "byteplus",
                 "byteplus_coding",
@@ -794,9 +824,35 @@ kind = "kimi_coding"
 
     #[test]
     #[cfg(feature = "config-toml")]
+    fn bailian_coding_partial_config_uses_internal_defaults() {
+        let raw = r#"
+[provider]
+kind = "bailian_coding"
+"#;
+        let parsed =
+            toml::from_str::<LoongClawConfig>(raw).expect("parse minimal bailian coding config");
+        assert_eq!(parsed.provider.kind, ProviderKind::BailianCoding);
+        assert_eq!(
+            parsed.provider.endpoint(),
+            "https://coding.dashscope.aliyuncs.com/v1/chat/completions"
+        );
+        assert_eq!(
+            parsed.provider.models_endpoint(),
+            "https://coding.dashscope.aliyuncs.com/v1/models"
+        );
+        assert_eq!(
+            parsed.provider.default_api_key_env().as_deref(),
+            Some("BAILIAN_API_KEY")
+        );
+        assert_eq!(parsed.provider.kind.default_user_agent(), Some("openclaw"));
+    }
+
+    #[test]
+    #[cfg(feature = "config-toml")]
     fn provider_kind_keeps_new_provider_aliases() {
         let cases = vec![
             ("aws-bedrock", ProviderKind::Bedrock),
+            ("bailian_coding_compatible", ProviderKind::BailianCoding),
             ("byteplus_compatible", ProviderKind::Byteplus),
             ("byteplus_coding_compatible", ProviderKind::ByteplusCoding),
             ("openai_custom", ProviderKind::Custom),

@@ -28,6 +28,7 @@ mod cli_tests;
 mod doctor_feishu;
 mod feishu_cli;
 mod import_cli;
+mod memory_context_benchmark_cli;
 mod migrate_cli;
 mod migration;
 mod onboard_cli;
@@ -360,7 +361,7 @@ fn render_channel_surfaces_text_reports_aliases_and_operation_health() {
         channel_send_command("feishu")
     )));
     assert!(rendered.contains(&format!(
-        "op serve ({}) misconfigured: allowed_chat_ids is empty; verification_token is missing; encrypt_key is missing target_kinds=message_reply requirements=enabled,app_id,app_secret,allowed_chat_ids,verification_token,encrypt_key",
+        "op serve ({}) misconfigured: allowed_chat_ids is empty; verification_token is missing; encrypt_key is missing target_kinds=message_reply requirements=enabled,app_id,app_secret,mode,allowed_chat_ids,verification_token,encrypt_key",
         channel_serve_command("feishu")
     )));
     assert!(rendered.contains("running=false"));
@@ -595,6 +596,7 @@ fn build_channels_cli_json_payload_includes_operation_requirement_metadata() {
                     "enabled",
                     "app_id",
                     "app_secret",
+                    "mode",
                     "allowed_chat_ids",
                     "verification_token",
                     "encrypt_key",
@@ -716,14 +718,14 @@ fn build_channels_cli_json_payload_includes_full_channel_catalog() {
             .get("channel_catalog")
             .and_then(serde_json::Value::as_array)
             .map(Vec::len),
-        Some(4)
+        Some(inventory.channel_catalog.len())
     );
     assert_eq!(
         encoded
             .get("catalog_only_channels")
             .and_then(serde_json::Value::as_array)
             .map(Vec::len),
-        Some(2)
+        Some(inventory.catalog_only_channels.len())
     );
     assert!(
         encoded["channel_catalog"]
@@ -732,6 +734,29 @@ fn build_channels_cli_json_payload_includes_full_channel_catalog() {
             .iter()
             .any(|entry| {
                 entry.get("id").and_then(serde_json::Value::as_str) == Some("telegram")
+                    && entry
+                        .get("implementation_status")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("runtime_backed")
+                    && entry
+                        .get("supported_target_kinds")
+                        .and_then(serde_json::Value::as_array)
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .collect::<Vec<_>>()
+                        })
+                        == Some(vec!["conversation"])
+            })
+    );
+    assert!(
+        encoded["channel_catalog"]
+            .as_array()
+            .expect("channel catalog array")
+            .iter()
+            .any(|entry| {
+                entry.get("id").and_then(serde_json::Value::as_str) == Some("matrix")
                     && entry
                         .get("implementation_status")
                         .and_then(serde_json::Value::as_str)
@@ -798,7 +823,7 @@ fn build_channels_cli_json_payload_includes_grouped_channel_surfaces() {
             .get("channel_surfaces")
             .and_then(serde_json::Value::as_array)
             .map(Vec::len),
-        Some(4)
+        Some(inventory.channel_surfaces.len())
     );
 
     let surfaces = encoded["channel_surfaces"]
@@ -837,6 +862,45 @@ fn build_channels_cli_json_payload_includes_grouped_channel_surfaces() {
                         .collect::<Vec<_>>()
                 })
                 == Some(channel_supported_target_kinds("telegram"))
+            && surface
+                .get("configured_accounts")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len)
+                == Some(1)
+    }));
+
+    assert!(surfaces.iter().any(|surface| {
+        surface
+            .get("catalog")
+            .and_then(|catalog| catalog.get("id"))
+            .and_then(serde_json::Value::as_str)
+            == Some("matrix")
+            && surface
+                .get("default_configured_account_id")
+                .and_then(serde_json::Value::as_str)
+                == Some("default")
+            && surface
+                .get("catalog")
+                .and_then(|catalog| catalog.get("capabilities"))
+                .and_then(serde_json::Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .collect::<Vec<_>>()
+                })
+                == Some(channel_capability_ids("matrix"))
+            && surface
+                .get("catalog")
+                .and_then(|catalog| catalog.get("supported_target_kinds"))
+                .and_then(serde_json::Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .collect::<Vec<_>>()
+                })
+                == Some(channel_supported_target_kinds("matrix"))
             && surface
                 .get("configured_accounts")
                 .and_then(serde_json::Value::as_array)

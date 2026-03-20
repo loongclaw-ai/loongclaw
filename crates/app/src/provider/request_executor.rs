@@ -102,11 +102,15 @@ fn render_status_failure_message(
     let mut message = format!(
         "provider returned status {status_code} for model `{model}` on attempt {attempt}/{max_attempts}: {response_body}"
     );
-    if matches!(reason, ProviderFailoverReason::AuthRejected)
-        && let Some(hint) = provider.request_region_endpoint_failure_hint()
-    {
-        message.push(' ');
-        message.push_str(hint.as_str());
+    if matches!(reason, ProviderFailoverReason::AuthRejected) {
+        if let Some(hint) = provider.auth_guidance_hint() {
+            message.push(' ');
+            message.push_str(hint.as_str());
+        }
+        if let Some(hint) = provider.request_region_endpoint_failure_hint() {
+            message.push(' ');
+            message.push_str(hint.as_str());
+        }
     }
     message
 }
@@ -367,12 +371,23 @@ where
                     backoff_ms = next_backoff_ms;
                     continue;
                 }
+                let error_message = error.to_string();
+                let mut message = format!(
+                    "provider request failed for model `{}` on attempt {attempt}/{max_attempts}: {error_message}",
+                    runtime.model,
+                    max_attempts = runtime.request_policy.max_attempts
+                );
+                if let Some(route_hint) = transport::render_transport_route_hint(
+                    request_endpoint.as_str(),
+                    error_message.as_str(),
+                    error.is_timeout(),
+                    error.is_connect(),
+                ) {
+                    message.push(' ');
+                    message.push_str(route_hint.as_str());
+                }
                 return Err(build_model_request_error(
-                    format!(
-                        "provider request failed for model `{}` on attempt {attempt}/{max_attempts}: {error}",
-                        runtime.model,
-                        max_attempts = runtime.request_policy.max_attempts
-                    ),
+                    message,
                     false,
                     ProviderFailoverReason::TransportFailure,
                     ProviderFailoverStage::TransportFailure,

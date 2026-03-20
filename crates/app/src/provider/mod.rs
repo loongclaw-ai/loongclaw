@@ -61,7 +61,7 @@ use catalog_query_runtime::fetch_available_models_with_profiles;
 #[cfg(test)]
 use catalog_runtime::{
     ModelCatalogCache, clear_model_catalog_singleflight_slot,
-    fetch_model_catalog_singleflight_with_timeouts, model_catalog_singleflight_slot_count,
+    fetch_model_catalog_singleflight_with_timeouts, has_model_catalog_singleflight_slot,
 };
 #[cfg(test)]
 use catalog_runtime::{ModelCatalogCacheLookup, fetch_model_catalog_singleflight};

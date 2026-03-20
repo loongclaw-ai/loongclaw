@@ -19,6 +19,13 @@ use std::sync::{
 };
 use tokio::sync::{Barrier, Notify};
 
+const OPENAI_AUTH_ENV_KEYS: &[&str] = &[
+    "OPENAI_CODEX_OAUTH_TOKEN",
+    "OPENAI_OAUTH_ACCESS_TOKEN",
+    "OPENAI_API_KEY",
+];
+const VOLCENGINE_AUTH_ENV_KEYS: &[&str] = &["ARK_API_KEY"];
+
 fn build_provider_failover_test_kernel_context(
     agent_id: &str,
 ) -> (KernelContext, Arc<InMemoryAuditSink>) {
@@ -84,6 +91,48 @@ fn next_temp_path(prefix: &str, extension: &str) -> PathBuf {
     ))
 }
 
+fn read_local_provider_request(stream: &mut std::net::TcpStream, deadline: Instant) -> String {
+    let timeout = deadline
+        .saturating_duration_since(Instant::now())
+        .max(Duration::from_millis(1));
+    stream
+        .set_nonblocking(false)
+        .expect("set accepted stream blocking");
+    stream
+        .set_read_timeout(Some(timeout))
+        .expect("set accepted stream read timeout");
+    let mut request_buf = [0_u8; 8192];
+    let len = stream.read(&mut request_buf).expect("read request");
+    String::from_utf8_lossy(&request_buf[..len]).to_string()
+}
+
+#[test]
+fn read_local_provider_request_accepts_elapsed_deadline() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local provider listener");
+    let addr = listener.local_addr().expect("local addr");
+    let (written_tx, written_rx) = std::sync::mpsc::channel();
+    let client = std::thread::spawn(move || {
+        let mut stream = std::net::TcpStream::connect(addr).expect("connect local provider");
+        stream
+            .write_all(b"GET /models HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .expect("write local provider request");
+        stream.flush().expect("flush local provider request");
+        written_tx
+            .send(())
+            .expect("notify local provider request write");
+    });
+
+    let (mut stream, _) = listener.accept().expect("accept local provider");
+    written_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("wait for local provider request write");
+
+    let request = read_local_provider_request(&mut stream, Instant::now());
+    assert!(request.starts_with("GET /models HTTP/1.1"));
+
+    client.join().expect("join local provider client");
+}
+
 #[tokio::test]
 async fn provider_auth_ready_accepts_x_api_key_providers() {
     let config = LoongClawConfig {
@@ -132,12 +181,284 @@ async fn provider_auth_ready_accepts_bedrock_sigv4_credentials() {
     assert!(provider_auth_ready(&config).await);
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn fetch_available_models_rejects_missing_volcengine_credentials_before_network_request() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local provider listener");
+    let addr = listener.local_addr().expect("local addr");
+    let server = std::thread::spawn(move || {
+        listener
+            .set_nonblocking(true)
+            .expect("set listener nonblocking");
+        let deadline = Instant::now() + Duration::from_millis(250);
+        let mut requests = Vec::new();
+        while Instant::now() < deadline {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let request = read_local_provider_request(&mut stream, deadline);
+                    requests.push(request);
+                    let body = r#"{"error":{"message":"unexpected request"}}"#;
+                    let response = format!(
+                        "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("write response");
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::yield_now();
+                }
+                Err(error) => panic!("accept local provider request: {error}"),
+            }
+        }
+        requests
+    });
+
+    let provider = ProviderConfig {
+        kind: ProviderKind::Volcengine,
+        base_url: format!("http://{addr}"),
+        model: "auto".to_owned(),
+        api_key: None,
+        api_key_env: None,
+        oauth_access_token: None,
+        oauth_access_token_env: None,
+        ..ProviderConfig::default()
+    };
+    let mut env = ScopedEnv::new();
+    clear_provider_auth_envs(&mut env, VOLCENGINE_AUTH_ENV_KEYS);
+    let config = test_config(provider);
+
+    let error = fetch_available_models(&config)
+        .await
+        .expect_err("missing volcengine credentials should fail before any network request");
+
+    assert!(
+        error.contains("provider credentials are missing"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        error.contains("ARK_API_KEY"),
+        "missing-credential guidance should mention the Volcengine env binding: {error}"
+    );
+
+    let requests = server.join().expect("join local provider server");
+    assert!(
+        requests.is_empty(),
+        "missing managed credentials should not fall through to an anonymous model-list request: {requests:#?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fetch_available_models_enriches_volcengine_auth_failures_with_ark_guidance() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local provider listener");
+    let addr = listener.local_addr().expect("local addr");
+    let server = std::thread::spawn(move || {
+        listener
+            .set_nonblocking(true)
+            .expect("set listener nonblocking");
+        let deadline = Instant::now() + Duration::from_millis(250);
+        let mut requests = Vec::new();
+        loop {
+            if Instant::now() >= deadline {
+                panic!("timed out waiting for local provider request");
+            }
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let request = read_local_provider_request(&mut stream, deadline);
+                    requests.push(request);
+
+                    let body = r#"{"error":{"code":"AuthenticationError","message":"the API key or AK/SK in the request is missing or invalid","type":"Unauthorized"}}"#;
+                    let response = format!(
+                        "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("write response");
+                    return requests;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::yield_now();
+                }
+                Err(error) => panic!("accept local provider request: {error}"),
+            }
+        }
+    });
+
+    let config = test_config(ProviderConfig {
+        kind: ProviderKind::VolcengineCoding,
+        base_url: format!("http://{addr}"),
+        model: "auto".to_owned(),
+        api_key: Some("bad-ark-key".to_owned()),
+        api_key_env: None,
+        ..ProviderConfig::default()
+    });
+
+    let error = fetch_available_models(&config)
+        .await
+        .expect_err("volcengine auth failures should surface actionable guidance");
+
+    assert!(error.contains("status 401"), "unexpected error: {error}");
+    assert!(
+        error.contains("Authorization: Bearer <ARK_API_KEY>"),
+        "volcengine auth failures should explain the supported auth shape: {error}"
+    );
+    assert!(
+        error.contains("AK/SK request signing is not used"),
+        "volcengine auth failures should explain the unsupported auth path clearly: {error}"
+    );
+
+    let requests = server.join().expect("join local provider server");
+    assert!(
+        requests.iter().any(|request| {
+            let normalized = request.to_ascii_lowercase();
+            request.starts_with("GET /models ")
+                && normalized.contains("authorization: bearer bad-ark-key")
+        }),
+        "the catalog probe should still use the configured bearer secret when credentials exist: {requests:#?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn request_turn_auto_model_rejects_missing_volcengine_credentials_before_transport() {
+    let provider = ProviderConfig {
+        kind: ProviderKind::VolcengineCoding,
+        base_url: "http://127.0.0.1:1".to_owned(),
+        model: "auto".to_owned(),
+        api_key: None,
+        api_key_env: None,
+        oauth_access_token: None,
+        oauth_access_token_env: None,
+        ..ProviderConfig::default()
+    };
+    let mut env = ScopedEnv::new();
+    clear_provider_auth_envs(&mut env, VOLCENGINE_AUTH_ENV_KEYS);
+    let config = test_config(provider);
+
+    let error = request_turn(
+        &config,
+        "session-provider-test",
+        "turn-provider-test",
+        &[json!({
+            "role": "user",
+            "content": "ping"
+        })],
+        ProviderRuntimeBinding::direct(),
+    )
+    .await
+    .expect_err("auto-model requests should fail on missing managed credentials before transport");
+
+    assert!(
+        error.contains("provider credentials are missing"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        error.contains("ARK_API_KEY"),
+        "missing-credential request errors should preserve the provider env hint: {error}"
+    );
+    assert!(
+        !error.contains("Connection refused"),
+        "missing managed credentials should fail before a transport attempt: {error}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fetch_available_models_rejects_missing_openai_credentials_before_transport() {
+    let provider = ProviderConfig {
+        kind: ProviderKind::Openai,
+        base_url: "http://127.0.0.1:1".to_owned(),
+        model: "auto".to_owned(),
+        api_key: None,
+        api_key_env: None,
+        oauth_access_token: None,
+        oauth_access_token_env: None,
+        ..ProviderConfig::default()
+    };
+    let mut env = ScopedEnv::new();
+    clear_provider_auth_envs(&mut env, OPENAI_AUTH_ENV_KEYS);
+    let config = test_config(provider);
+
+    let error = fetch_available_models(&config)
+        .await
+        .expect_err("missing OpenAI credentials should fail before transport");
+
+    assert!(
+        error.contains("provider credentials are missing"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        error.contains("OPENAI_CODEX_OAUTH_TOKEN"),
+        "openai guidance should preserve the oauth default hint: {error}"
+    );
+    assert!(
+        error.contains("OPENAI_API_KEY"),
+        "openai guidance should preserve the api key fallback hint: {error}"
+    );
+    assert!(
+        !error.contains("Connection refused"),
+        "missing managed credentials should fail before a transport attempt: {error}"
+    );
+}
+
+#[test]
+fn byteplus_auth_guidance_uses_byteplus_api_key_env() {
+    let provider = ProviderConfig {
+        kind: ProviderKind::ByteplusCoding,
+        ..ProviderConfig::default()
+    };
+
+    let hint = provider
+        .auth_guidance_hint()
+        .expect("byteplus coding should expose auth guidance");
+
+    assert!(hint.contains("BytePlus"));
+    assert!(hint.contains("BYTEPLUS_API_KEY"));
+    assert!(hint.contains("Authorization: Bearer <BYTEPLUS_API_KEY>"));
+}
+
+#[test]
+fn custom_missing_auth_configuration_message_mentions_supported_headers() {
+    let provider = ProviderConfig {
+        kind: ProviderKind::Custom,
+        ..ProviderConfig::default()
+    };
+
+    let message = provider.missing_auth_configuration_message();
+
+    assert!(message.contains("CUSTOM_PROVIDER_API_KEY"));
+    assert!(message.contains("Authorization"));
+    assert!(message.contains("provider.headers"));
+}
+
+#[test]
+fn bedrock_missing_auth_configuration_message_mentions_sigv4_fallback() {
+    let provider = ProviderConfig {
+        kind: ProviderKind::Bedrock,
+        ..ProviderConfig::default()
+    };
+
+    let message = provider.missing_auth_configuration_message();
+
+    assert!(message.contains("AWS_BEARER_TOKEN_BEDROCK"));
+    assert!(message.contains("AWS_ACCESS_KEY_ID"));
+    assert!(message.contains("AWS_SECRET_ACCESS_KEY"));
+    assert!(message.contains("AWS_REGION"));
+}
+
 fn cleanup_sqlite_artifacts(path: &Path) {
     let _ = std::fs::remove_file(path);
     let wal = format!("{}-wal", path.display());
     let shm = format!("{}-shm", path.display());
     let _ = std::fs::remove_file(wal);
     let _ = std::fs::remove_file(shm);
+}
+
+fn clear_provider_auth_envs(env: &mut ScopedEnv, env_keys: &[&'static str]) {
+    for key in env_keys {
+        env.remove(key);
+    }
 }
 
 fn test_config(provider: ProviderConfig) -> LoongClawConfig {
@@ -886,6 +1207,21 @@ fn kimi_coding_request_headers_include_default_user_agent() {
         .to_str()
         .expect("user-agent value");
     assert_eq!(user_agent, "KimiCLI/LoongClaw");
+}
+
+#[test]
+fn bailian_coding_request_headers_include_default_user_agent() {
+    let provider = ProviderConfig {
+        kind: ProviderKind::BailianCoding,
+        ..ProviderConfig::default()
+    };
+    let headers = transport::build_request_headers(&provider).expect("headers");
+    let user_agent = headers
+        .get(reqwest::header::USER_AGENT)
+        .expect("default user-agent")
+        .to_str()
+        .expect("user-agent value");
+    assert_eq!(user_agent, "openclaw");
 }
 
 #[test]
@@ -2870,7 +3206,10 @@ async fn model_catalog_singleflight_recovers_when_leader_panics() {
         .expect("join follower")
         .expect("follower should retry and recover");
     assert_eq!(recovered, vec!["model-recovered"]);
-    assert_eq!(model_catalog_singleflight_slot_count(), 0);
+    assert!(
+        !has_model_catalog_singleflight_slot(CACHE_KEY),
+        "panic recovery should clear the singleflight slot for the recovered cache key"
+    );
     clear_model_catalog_singleflight_slot(CACHE_KEY);
 }
 

@@ -1,47 +1,89 @@
 #[cfg(feature = "channel-telegram")]
 use std::time::Duration;
-use std::{fmt, str::FromStr};
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 use std::{
+    collections::BTreeSet,
     future::Future,
     path::PathBuf,
     pin::Pin,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
+use std::{fmt, str::FromStr};
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 use async_trait::async_trait;
 use serde::Serialize;
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 use serde_json::Value;
 #[cfg(feature = "channel-telegram")]
 use tokio::time::sleep;
 
 use crate::CliResult;
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 use crate::KernelContext;
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 use crate::acp::{AcpConversationTurnOptions, AcpTurnProvenance};
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 use crate::context::{DEFAULT_TOKEN_TTL_S, bootstrap_kernel_context_with_config};
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(feature = "channel-matrix")]
+use super::config::ResolvedMatrixChannelConfig;
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 use super::config::{
     ChannelResolvedAccountRoute, LoongClawConfig, ResolvedFeishuChannelConfig,
-    ResolvedTelegramChannelConfig,
+    ResolvedTelegramChannelConfig, normalize_channel_account_id,
 };
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 use super::conversation::{
     ConversationIngressChannel, ConversationIngressContext, ConversationIngressDelivery,
     ConversationIngressDeliveryResource, ConversationIngressFeishuCallbackContext,
-    ConversationIngressPrivateContext, ConversationSessionAddress,
+    ConversationIngressPrivateContext, ConversationSessionAddress, encode_route_session_segment,
+    parse_route_session_id,
 };
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 use super::conversation::{ConversationTurnCoordinator, ProviderErrorMode};
 
 #[cfg(feature = "channel-feishu")]
 mod feishu;
+#[cfg(feature = "channel-matrix")]
+mod matrix;
 mod registry;
 mod runtime_state;
 #[cfg(feature = "channel-telegram")]
@@ -57,14 +99,15 @@ pub use registry::{
     ChannelOperationHealth, ChannelOperationStatus, ChannelRuntimeCommandDescriptor,
     ChannelStatusSnapshot, ChannelSurface, FEISHU_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
     FEISHU_COMMAND_FAMILY_DESCRIPTOR, FEISHU_RUNTIME_COMMAND_DESCRIPTOR,
-    TELEGRAM_CATALOG_COMMAND_FAMILY_DESCRIPTOR, TELEGRAM_COMMAND_FAMILY_DESCRIPTOR,
-    TELEGRAM_RUNTIME_COMMAND_DESCRIPTOR, catalog_only_channel_entries, channel_inventory,
-    channel_status_snapshots, list_channel_catalog, normalize_channel_catalog_id,
-    normalize_channel_platform, resolve_channel_catalog_command_family_descriptor,
-    resolve_channel_catalog_entry, resolve_channel_catalog_operation,
-    resolve_channel_command_family_descriptor, resolve_channel_doctor_operation_spec,
-    resolve_channel_onboarding_descriptor, resolve_channel_operation_descriptor,
-    resolve_channel_runtime_command_descriptor,
+    MATRIX_CATALOG_COMMAND_FAMILY_DESCRIPTOR, MATRIX_COMMAND_FAMILY_DESCRIPTOR,
+    MATRIX_RUNTIME_COMMAND_DESCRIPTOR, TELEGRAM_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    TELEGRAM_COMMAND_FAMILY_DESCRIPTOR, TELEGRAM_RUNTIME_COMMAND_DESCRIPTOR,
+    catalog_only_channel_entries, channel_inventory, channel_status_snapshots,
+    list_channel_catalog, normalize_channel_catalog_id, normalize_channel_platform,
+    resolve_channel_catalog_command_family_descriptor, resolve_channel_catalog_entry,
+    resolve_channel_catalog_operation, resolve_channel_command_family_descriptor,
+    resolve_channel_doctor_operation_spec, resolve_channel_onboarding_descriptor,
+    resolve_channel_operation_descriptor, resolve_channel_runtime_command_descriptor,
 };
 pub use runtime_state::ChannelOperationRuntime;
 use runtime_state::ChannelOperationRuntimeTracker;
@@ -113,6 +156,7 @@ pub(crate) struct ChannelSendReceipt {
 pub enum ChannelPlatform {
     Telegram,
     Feishu,
+    Matrix,
 }
 
 impl ChannelPlatform {
@@ -120,11 +164,16 @@ impl ChannelPlatform {
         match self {
             Self::Telegram => "telegram",
             Self::Feishu => "feishu",
+            Self::Matrix => "matrix",
         }
     }
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelSession {
     pub platform: ChannelPlatform,
@@ -135,7 +184,11 @@ pub struct ChannelSession {
     pub thread_id: Option<String>,
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 impl ChannelSession {
     pub fn new(platform: ChannelPlatform, conversation_id: impl Into<String>) -> Self {
         Self {
@@ -239,14 +292,14 @@ impl ChannelSession {
             parts.push(format!("cfg={configured_account_id}"));
         }
         if let Some(account_id) = account_id {
-            parts.push(account_id.to_owned());
+            parts.push(encode_route_session_segment(account_id));
         }
-        parts.push(conversation_id.to_owned());
+        parts.push(encode_route_session_segment(conversation_id));
         if let Some(participant_id) = participant_id {
-            parts.push(participant_id.to_owned());
+            parts.push(encode_route_session_segment(participant_id));
         }
         if let Some(thread_id) = thread_id {
-            parts.push(thread_id.to_owned());
+            parts.push(encode_route_session_segment(thread_id));
         }
         parts.join(":")
     }
@@ -264,7 +317,11 @@ impl ChannelSession {
     }
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChannelOutboundTargetKind {
@@ -273,7 +330,11 @@ pub enum ChannelOutboundTargetKind {
     ReceiveId,
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 impl ChannelOutboundTargetKind {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -308,7 +369,11 @@ impl FromStr for ChannelOutboundTargetKind {
 
 pub use self::ChannelOutboundTargetKind as ChannelCatalogTargetKind;
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ChannelOutboundDeliveryOptions {
     pub idempotency_key: Option<String>,
@@ -316,7 +381,11 @@ pub struct ChannelOutboundDeliveryOptions {
     pub feishu_reply_in_thread: Option<bool>,
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelOutboundTarget {
     pub platform: ChannelPlatform,
@@ -325,7 +394,11 @@ pub struct ChannelOutboundTarget {
     pub options: ChannelOutboundDeliveryOptions,
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 impl ChannelOutboundTarget {
     pub fn new(
         platform: ChannelPlatform,
@@ -412,7 +485,11 @@ impl ChannelOutboundTarget {
     }
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 #[derive(Debug, Clone)]
 pub struct ChannelInboundMessage {
     pub session: ChannelSession,
@@ -421,14 +498,22 @@ pub struct ChannelInboundMessage {
     pub delivery: ChannelDelivery,
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ChannelResolvedAcpTurnHints {
     bootstrap_mcp_servers: Vec<String>,
     working_directory: Option<PathBuf>,
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChannelOutboundMessage {
     Text(String),
@@ -453,7 +538,11 @@ pub struct FeishuChannelSendRequest {
     pub uuid: Option<String>,
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 #[allow(dead_code)]
 #[async_trait]
 pub trait ChannelAdapter {
@@ -476,13 +565,25 @@ pub trait ChannelAdapter {
     }
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 type ChannelProcessFuture = Pin<Box<dyn Future<Output = CliResult<String>> + Send>>;
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 type ChannelCommandFuture<'a> = Pin<Box<dyn Future<Output = CliResult<()>> + Send + 'a>>;
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum KnownChannelSessionSendTarget {
     Telegram {
@@ -495,135 +596,238 @@ enum KnownChannelSessionSendTarget {
         conversation_id: String,
         reply_message_id: Option<String>,
     },
+    Matrix {
+        account_id: Option<String>,
+        room_id: String,
+    },
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 fn parse_known_channel_session_send_target(
     config: &LoongClawConfig,
     session_id: &str,
 ) -> CliResult<KnownChannelSessionSendTarget> {
-    let mut parts = session_id.split(':');
-    let channel = parts
-        .next()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+    let (channel, scope) = parse_route_session_id(session_id)?
         .ok_or_else(|| format!("sessions_send_channel_unsupported: `{session_id}`"))?;
-    let scope = parts.map(str::trim).collect::<Vec<_>>();
 
-    match channel {
+    match channel.as_str() {
         "telegram" => parse_telegram_session_send_target(config, session_id, scope.as_slice()),
         "feishu" | "lark" => parse_feishu_session_send_target(config, session_id, scope.as_slice()),
+        "matrix" => parse_matrix_session_send_target(config, session_id, scope.as_slice()),
         _ => Err(format!("sessions_send_channel_unsupported: `{session_id}`")),
     }
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 fn parse_telegram_session_send_target(
     config: &LoongClawConfig,
     session_id: &str,
-    scope: &[&str],
+    scope: &[String],
 ) -> CliResult<KnownChannelSessionSendTarget> {
-    let account_known = |account_id: &str| {
-        config
-            .telegram
-            .resolve_account_for_session_account_id(Some(account_id))
-            .is_ok()
+    let configured_account_ids = config.telegram.configured_account_ids();
+    let runtime_account_ids = configured_runtime_account_ids(
+        configured_account_ids.as_slice(),
+        |configured_account_id| {
+            config
+                .telegram
+                .resolve_account(Some(configured_account_id))
+                .map(|resolved| resolved.account.id)
+        },
+    );
+    let (account_id, scoped_path) = split_known_channel_account_and_scope(
+        scope,
+        configured_account_ids.as_slice(),
+        runtime_account_ids.as_slice(),
+    );
+    let Some(chat_id) = scoped_path
+        .first()
+        .map(String::as_str)
+        .filter(|value| !value.is_empty())
+    else {
+        return Err(format!("sessions_send_channel_unsupported: `{session_id}`"));
     };
 
-    match scope {
-        [chat_id] if !chat_id.is_empty() => Ok(KnownChannelSessionSendTarget::Telegram {
-            account_id: None,
-            chat_id: (*chat_id).to_owned(),
-            thread_id: None,
-        }),
-        [first_segment, second_segment]
-            if !first_segment.is_empty() && !second_segment.is_empty() =>
-        {
-            if account_known(first_segment) {
-                Ok(KnownChannelSessionSendTarget::Telegram {
-                    account_id: Some((*first_segment).to_owned()),
-                    chat_id: (*second_segment).to_owned(),
-                    thread_id: None,
-                })
-            } else {
-                Ok(KnownChannelSessionSendTarget::Telegram {
-                    account_id: None,
-                    chat_id: (*first_segment).to_owned(),
-                    thread_id: Some((*second_segment).to_owned()),
-                })
-            }
-        }
-        [account_id, chat_id, thread_id]
-            if !account_id.is_empty() && !chat_id.is_empty() && !thread_id.is_empty() =>
-        {
-            if !account_known(account_id) {
-                return Err(format!("sessions_send_channel_unsupported: `{session_id}`"));
-            }
-            Ok(KnownChannelSessionSendTarget::Telegram {
-                account_id: Some((*account_id).to_owned()),
-                chat_id: (*chat_id).to_owned(),
-                thread_id: Some((*thread_id).to_owned()),
-            })
-        }
-        _ => Err(format!("sessions_send_channel_unsupported: `{session_id}`")),
-    }
+    let thread_id = scoped_path
+        .last()
+        .filter(|_| scoped_path.len() >= 2)
+        .cloned();
+    Ok(KnownChannelSessionSendTarget::Telegram {
+        account_id,
+        chat_id: chat_id.to_owned(),
+        thread_id,
+    })
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 fn parse_feishu_session_send_target(
     config: &LoongClawConfig,
     session_id: &str,
-    scope: &[&str],
+    scope: &[String],
 ) -> CliResult<KnownChannelSessionSendTarget> {
-    let account_known = |account_id: &str| {
-        config
-            .feishu
-            .resolve_account_for_session_account_id(Some(account_id))
-            .is_ok()
+    let configured_account_ids = config.feishu.configured_account_ids();
+    let runtime_account_ids = configured_runtime_account_ids(
+        configured_account_ids.as_slice(),
+        |configured_account_id| {
+            config
+                .feishu
+                .resolve_account(Some(configured_account_id))
+                .map(|resolved| resolved.account.id)
+        },
+    );
+    let (account_id, scoped_path) = split_known_channel_account_and_scope(
+        scope,
+        configured_account_ids.as_slice(),
+        runtime_account_ids.as_slice(),
+    );
+    let Some(conversation_id) = scoped_path
+        .first()
+        .map(String::as_str)
+        .filter(|value| !value.is_empty())
+    else {
+        return Err(format!("sessions_send_channel_unsupported: `{session_id}`"));
     };
 
-    match scope {
-        [conversation_id] if !conversation_id.is_empty() => {
-            Ok(KnownChannelSessionSendTarget::Feishu {
-                account_id: None,
-                conversation_id: (*conversation_id).to_owned(),
-                reply_message_id: None,
-            })
+    let reply_message_id = match scoped_path {
+        [_conversation_id] => None,
+        [_conversation_id, trailing] if looks_like_feishu_message_id(trailing.as_str()) => {
+            Some(trailing.clone())
         }
-        [first_segment, second_segment]
-            if !first_segment.is_empty() && !second_segment.is_empty() =>
-        {
-            if account_known(first_segment) {
-                Ok(KnownChannelSessionSendTarget::Feishu {
-                    account_id: Some((*first_segment).to_owned()),
-                    conversation_id: (*second_segment).to_owned(),
-                    reply_message_id: None,
-                })
-            } else {
-                Ok(KnownChannelSessionSendTarget::Feishu {
-                    account_id: None,
-                    conversation_id: (*first_segment).to_owned(),
-                    reply_message_id: Some((*second_segment).to_owned()),
-                })
-            }
-        }
-        [account_id, conversation_id, reply_message_id]
-            if !account_id.is_empty()
-                && !conversation_id.is_empty()
-                && !reply_message_id.is_empty() =>
-        {
-            if !account_known(account_id) {
-                return Err(format!("sessions_send_channel_unsupported: `{session_id}`"));
-            }
-            Ok(KnownChannelSessionSendTarget::Feishu {
-                account_id: Some((*account_id).to_owned()),
-                conversation_id: (*conversation_id).to_owned(),
-                reply_message_id: Some((*reply_message_id).to_owned()),
-            })
-        }
-        _ => Err(format!("sessions_send_channel_unsupported: `{session_id}`")),
-    }
+        [_conversation_id, _participant_id] => None,
+        _ => scoped_path.last().cloned(),
+    };
+
+    Ok(KnownChannelSessionSendTarget::Feishu {
+        account_id,
+        conversation_id: conversation_id.to_owned(),
+        reply_message_id,
+    })
 }
+
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
+fn parse_matrix_session_send_target(
+    config: &LoongClawConfig,
+    session_id: &str,
+    scope: &[String],
+) -> CliResult<KnownChannelSessionSendTarget> {
+    let configured_account_ids = config.matrix.configured_account_ids();
+    let runtime_account_ids = configured_runtime_account_ids(
+        configured_account_ids.as_slice(),
+        |configured_account_id| {
+            config
+                .matrix
+                .resolve_account(Some(configured_account_id))
+                .map(|resolved| resolved.account.id)
+        },
+    );
+    let (account_id, scoped_path) = split_known_channel_account_and_scope(
+        scope,
+        configured_account_ids.as_slice(),
+        runtime_account_ids.as_slice(),
+    );
+    let Some(room_id) = scoped_path
+        .first()
+        .map(String::as_str)
+        .filter(|value| !value.is_empty())
+    else {
+        return Err(format!("sessions_send_channel_unsupported: `{session_id}`"));
+    };
+
+    Ok(KnownChannelSessionSendTarget::Matrix {
+        account_id,
+        room_id: room_id.to_owned(),
+    })
+}
+
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
+fn configured_runtime_account_ids(
+    configured_account_ids: &[String],
+    resolve_runtime_account_id: impl Fn(&str) -> CliResult<String>,
+) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut runtime_account_ids = Vec::new();
+    for configured_account_id in configured_account_ids {
+        let Ok(runtime_account_id) = resolve_runtime_account_id(configured_account_id.as_str())
+        else {
+            continue;
+        };
+        let runtime_account_id = runtime_account_id.trim();
+        if runtime_account_id.is_empty() || !seen.insert(runtime_account_id.to_owned()) {
+            continue;
+        }
+        runtime_account_ids.push(runtime_account_id.to_owned());
+    }
+    runtime_account_ids
+}
+
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
+fn split_known_channel_account_and_scope<'a>(
+    scope: &'a [String],
+    configured_account_ids: &[String],
+    runtime_account_ids: &[String],
+) -> (Option<String>, &'a [String]) {
+    let mut scoped_path = scope;
+    let configured_account_id = scoped_path
+        .first()
+        .and_then(|segment| segment.strip_prefix("cfg="))
+        .map(str::trim)
+        .filter(|value| {
+            !value.is_empty()
+                && configured_account_ids
+                    .iter()
+                    .any(|known| known.trim() == *value)
+        })
+        .map(str::to_owned);
+    if configured_account_id.is_some() {
+        scoped_path = scoped_path.get(1..).unwrap_or_default();
+    }
+
+    let runtime_account_id = scoped_path.first().and_then(|value| {
+        let normalized_requested = normalize_channel_account_id(value);
+        runtime_account_ids.iter().find_map(|known| {
+            (normalize_channel_account_id(known) == normalized_requested).then(|| known.clone())
+        })
+    });
+    if runtime_account_id.is_some() {
+        scoped_path = scoped_path.get(1..).unwrap_or_default();
+    }
+
+    (configured_account_id.or(runtime_account_id), scoped_path)
+}
+
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
+fn looks_like_feishu_message_id(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.starts_with("om_")
+}
+
 async fn process_channel_batch<A, F>(
     adapter: &mut A,
     batch: Vec<ChannelInboundMessage>,
@@ -666,7 +870,11 @@ where
     Ok(true)
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 #[derive(Debug, Clone)]
 struct ChannelCommandContext<R> {
     resolved_path: PathBuf,
@@ -675,7 +883,11 @@ struct ChannelCommandContext<R> {
     route: ChannelResolvedAccountRoute,
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 impl<R> ChannelCommandContext<R> {
     fn emit_route_notice(&self, platform: ChannelPlatform) {
         if let Some(notice) = render_channel_route_notice(platform, &self.route) {
@@ -687,7 +899,11 @@ impl<R> ChannelCommandContext<R> {
     }
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 trait ChannelResolvedRuntimeAccount {
     fn runtime_account_id(&self) -> &str;
     fn runtime_account_label(&self) -> &str;
@@ -715,7 +931,22 @@ impl ChannelResolvedRuntimeAccount for ResolvedFeishuChannelConfig {
     }
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(feature = "channel-matrix")]
+impl ChannelResolvedRuntimeAccount for ResolvedMatrixChannelConfig {
+    fn runtime_account_id(&self) -> &str {
+        self.account.id.as_str()
+    }
+
+    fn runtime_account_label(&self) -> &str {
+        self.account.label.as_str()
+    }
+}
+
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 async fn run_channel_send_command<R, F, G>(
     context: ChannelCommandContext<R>,
     spec: ChannelSendCommandSpec,
@@ -809,13 +1040,54 @@ fn build_feishu_command_context(
     })
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(feature = "channel-matrix")]
+fn load_matrix_command_context(
+    config_path: Option<&str>,
+    account_id: Option<&str>,
+) -> CliResult<ChannelCommandContext<ResolvedMatrixChannelConfig>> {
+    let (resolved_path, config) = super::config::load(config_path)?;
+    build_matrix_command_context(resolved_path, config, account_id)
+}
+
+#[cfg(feature = "channel-matrix")]
+fn build_matrix_command_context(
+    resolved_path: PathBuf,
+    config: LoongClawConfig,
+    account_id: Option<&str>,
+) -> CliResult<ChannelCommandContext<ResolvedMatrixChannelConfig>> {
+    let resolved = config.matrix.resolve_account(account_id)?;
+    let route = config
+        .matrix
+        .resolved_account_route(account_id, resolved.configured_account_id.as_str());
+    if !resolved.enabled {
+        return Err(format!(
+            "matrix account `{}` is disabled by configuration",
+            resolved.configured_account_id
+        ));
+    }
+    Ok(ChannelCommandContext {
+        resolved_path,
+        config,
+        resolved,
+        route,
+    })
+}
+
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 #[derive(Debug, Clone, Copy)]
 struct ChannelSendCommandSpec {
     family: ChannelCommandFamilyDescriptor,
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 #[derive(Debug, Clone, Copy)]
 struct ChannelServeRuntimeSpec<'a> {
     platform: ChannelPlatform,
@@ -824,13 +1096,21 @@ struct ChannelServeRuntimeSpec<'a> {
     account_label: &'a str,
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 #[derive(Debug, Clone, Copy)]
 struct ChannelServeCommandSpec {
     family: ChannelCommandFamilyDescriptor,
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 fn channel_runtime_now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -838,7 +1118,11 @@ fn channel_runtime_now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 fn ensure_channel_operation_runtime_slot_available_in_dir(
     runtime_dir: &std::path::Path,
     spec: ChannelServeRuntimeSpec<'_>,
@@ -878,7 +1162,11 @@ fn ensure_channel_operation_runtime_slot_available_in_dir(
     ))
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 async fn with_channel_serve_runtime<T, F, Fut>(
     spec: ChannelServeRuntimeSpec<'_>,
     run: F,
@@ -911,7 +1199,11 @@ where
     }
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 async fn run_channel_serve_command<R, V, F>(
     context: ChannelCommandContext<R>,
     spec: ChannelServeCommandSpec,
@@ -1253,7 +1545,158 @@ pub async fn run_feishu_channel(
     }
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[allow(clippy::print_stdout)] // CLI output
+pub async fn run_matrix_send(
+    config_path: Option<&str>,
+    account_id: Option<&str>,
+    target: &str,
+    target_kind: ChannelOutboundTargetKind,
+    text: &str,
+) -> CliResult<()> {
+    if !cfg!(feature = "channel-matrix") {
+        return Err("matrix channel is disabled (enable feature `channel-matrix`)".to_owned());
+    }
+
+    #[cfg(not(feature = "channel-matrix"))]
+    {
+        let _ = (config_path, account_id, target, target_kind, text);
+        return Err("matrix channel is disabled (enable feature `channel-matrix`)".to_owned());
+    }
+
+    #[cfg(feature = "channel-matrix")]
+    {
+        let context = load_matrix_command_context(config_path, account_id)?;
+        let target = target.to_owned();
+        let text = text.to_owned();
+        run_channel_send_command(
+            context,
+            ChannelSendCommandSpec {
+                family: MATRIX_COMMAND_FAMILY_DESCRIPTOR,
+            },
+            |context| {
+                Box::pin(async move {
+                    let token = context.resolved.access_token().ok_or_else(|| {
+                        "matrix access token missing (set matrix.access_token or env)".to_owned()
+                    })?;
+                    matrix::run_matrix_send(
+                        &context.resolved,
+                        token,
+                        target_kind,
+                        target.as_str(),
+                        text.as_str(),
+                    )
+                    .await
+                })
+            },
+            |context| {
+                format!(
+                    "matrix message sent (config={}, configured_account={}, account={}, selected_by_default={}, default_source={}, target_kind={})",
+                    context.resolved_path.display(),
+                    context.resolved.configured_account_id,
+                    context.resolved.account.label,
+                    context.route.selected_by_default(),
+                    context.route.default_account_source.as_str(),
+                    target_kind
+                )
+            },
+        )
+        .await
+    }
+}
+
+#[allow(clippy::print_stdout)] // CLI startup banner
+pub async fn run_matrix_channel(
+    config_path: Option<&str>,
+    once: bool,
+    account_id: Option<&str>,
+) -> CliResult<()> {
+    if !cfg!(feature = "channel-matrix") {
+        return Err("matrix channel is disabled (enable feature `channel-matrix`)".to_owned());
+    }
+
+    #[cfg(not(feature = "channel-matrix"))]
+    {
+        let _ = (config_path, once, account_id);
+        return Err("matrix channel is disabled (enable feature `channel-matrix`)".to_owned());
+    }
+
+    #[cfg(feature = "channel-matrix")]
+    {
+        let context = load_matrix_command_context(config_path, account_id)?;
+        run_channel_serve_command(
+            context,
+            ChannelServeCommandSpec {
+                family: MATRIX_COMMAND_FAMILY_DESCRIPTOR,
+            },
+            validate_matrix_security_config,
+            move |context, kernel_ctx, runtime| {
+                Box::pin(async move {
+                    let route = context.route.clone();
+                    let resolved_path = context.resolved_path.clone();
+                    let resolved = context.resolved.clone();
+                    let config = context.config.clone();
+                    let batch_kernel_ctx = Arc::new(crate::KernelContext {
+                        kernel: kernel_ctx.kernel.clone(),
+                        token: kernel_ctx.token.clone(),
+                    });
+                    let token = resolved.access_token().ok_or_else(|| {
+                        "matrix access token missing (set matrix.access_token or env)".to_owned()
+                    })?;
+                    let mut adapter = matrix::MatrixAdapter::new(&resolved, token);
+
+                    println!(
+                        "{} channel started (config={}, configured_account={}, account={}, selected_by_default={}, default_source={}, timeout={}s)",
+                        adapter.name(),
+                        resolved_path.display(),
+                        resolved.configured_account_id,
+                        resolved.account.label,
+                        route.selected_by_default(),
+                        route.default_account_source.as_str(),
+                        resolved.sync_timeout_s
+                    );
+
+                    loop {
+                        let batch = adapter.receive_batch().await?;
+                        let had_messages = process_channel_batch(
+                            &mut adapter,
+                            batch,
+                            Some(runtime.as_ref()),
+                            |message| {
+                                let config = config.clone();
+                                let kernel_ctx = batch_kernel_ctx.clone();
+                                let resolved_path = resolved_path.clone();
+                                Box::pin(async move {
+                                    process_inbound_with_provider(
+                                        &config,
+                                        Some(resolved_path.as_path()),
+                                        &message,
+                                        Some(kernel_ctx.as_ref()),
+                                    )
+                                    .await
+                                })
+                            },
+                        )
+                        .await?;
+                        if !had_messages && once {
+                            break;
+                        }
+                        if once {
+                            break;
+                        }
+                    }
+                    Ok(())
+                })
+            },
+        )
+        .await
+    }
+}
+
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 pub(crate) async fn send_text_to_known_session(
     config: &LoongClawConfig,
     session_id: &str,
@@ -1371,10 +1814,61 @@ pub(crate) async fn send_text_to_known_session(
                 })
             }
         }
+        KnownChannelSessionSendTarget::Matrix {
+            account_id,
+            room_id,
+        } => {
+            #[cfg(not(feature = "channel-matrix"))]
+            {
+                let _ = (config, account_id, room_id, text);
+                Err("matrix channel is disabled (enable feature `channel-matrix`)".to_owned())
+            }
+
+            #[cfg(feature = "channel-matrix")]
+            {
+                let resolved = config
+                    .matrix
+                    .resolve_account_for_session_account_id(account_id.as_deref())?;
+                if !resolved.enabled {
+                    return Err(
+                        "sessions_send_channel_disabled: matrix channel is disabled by config"
+                            .to_owned(),
+                    );
+                }
+                if !resolved
+                    .allowed_room_ids
+                    .iter()
+                    .any(|allowed| allowed.trim() == room_id)
+                {
+                    return Err(format!(
+                        "sessions_send_target_not_allowed: matrix target `{room_id}` is not present in matrix.allowed_room_ids"
+                    ));
+                }
+                let token = resolved.access_token().ok_or_else(|| {
+                    "matrix access token missing (set matrix.access_token or env)".to_owned()
+                })?;
+                matrix::run_matrix_send(
+                    &resolved,
+                    token,
+                    ChannelOutboundTargetKind::Conversation,
+                    room_id.as_str(),
+                    text,
+                )
+                .await?;
+                Ok(ChannelSendReceipt {
+                    channel: "matrix",
+                    target: room_id,
+                })
+            }
+        }
     }
 }
 
-#[cfg(not(any(feature = "channel-telegram", feature = "channel-feishu")))]
+#[cfg(not(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+)))]
 pub(crate) async fn send_text_to_known_session(
     _config: &LoongClawConfig,
     session_id: &str,
@@ -1383,7 +1877,11 @@ pub(crate) async fn send_text_to_known_session(
     Err(format!("sessions_send_channel_unsupported: `{session_id}`"))
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 pub(super) async fn process_inbound_with_provider(
     config: &LoongClawConfig,
     resolved_path: Option<&std::path::Path>,
@@ -1413,7 +1911,11 @@ pub(super) async fn process_inbound_with_provider(
         .await
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 fn reload_channel_turn_config(
     config: &LoongClawConfig,
     resolved_path: Option<&std::path::Path>,
@@ -1424,7 +1926,11 @@ fn reload_channel_turn_config(
     }
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 fn resolve_channel_acp_turn_hints(
     config: &LoongClawConfig,
     session: &ChannelSession,
@@ -1452,10 +1958,25 @@ fn resolve_channel_acp_turn_hints(
                 working_directory,
             })
         }
+        ChannelPlatform::Matrix => {
+            let resolved = config
+                .matrix
+                .resolve_account_for_session_account_id(session.account_id.as_deref())?;
+            let acp = resolved.acp;
+            let working_directory = acp.resolved_working_directory();
+            Ok(ChannelResolvedAcpTurnHints {
+                bootstrap_mcp_servers: acp.bootstrap_mcp_servers,
+                working_directory,
+            })
+        }
     }
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 fn channel_message_acp_turn_provenance(message: &ChannelInboundMessage) -> AcpTurnProvenance<'_> {
     AcpTurnProvenance {
         trace_id: None,
@@ -1464,7 +1985,11 @@ fn channel_message_acp_turn_provenance(message: &ChannelInboundMessage) -> AcpTu
     }
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 fn channel_message_ingress_context(
     message: &ChannelInboundMessage,
 ) -> Option<ConversationIngressContext> {
@@ -1515,7 +2040,11 @@ fn channel_message_ingress_context(
     })
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 fn trimmed_non_empty(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
@@ -1523,7 +2052,11 @@ fn trimmed_non_empty(value: Option<&str>) -> Option<String> {
         .map(str::to_owned)
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 fn normalized_channel_delivery_resource(
     resource: &ChannelDeliveryResource,
 ) -> Option<ConversationIngressDeliveryResource> {
@@ -1540,7 +2073,11 @@ fn normalized_channel_delivery_resource(
     })
 }
 
-#[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 fn normalized_feishu_callback_context(
     callback: Option<&ChannelDeliveryFeishuCallback>,
 ) -> Option<ConversationIngressFeishuCallbackContext> {
@@ -1622,6 +2159,46 @@ fn validate_feishu_security_config(config: &ResolvedFeishuChannelConfig) -> CliR
     Ok(())
 }
 
+#[cfg(feature = "channel-matrix")]
+fn validate_matrix_security_config(config: &ResolvedMatrixChannelConfig) -> CliResult<()> {
+    let has_allowlist = config
+        .allowed_room_ids
+        .iter()
+        .any(|value| !value.trim().is_empty());
+    if !has_allowlist {
+        return Err(
+            "matrix.allowed_room_ids is empty; configure at least one trusted room id".to_owned(),
+        );
+    }
+
+    let base_url = config.resolved_base_url().unwrap_or_default();
+    matrix::build_matrix_client_url(base_url.as_str())?;
+
+    let has_access_token = config
+        .access_token()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    if !has_access_token {
+        return Err(
+            "matrix.access_token is missing; configure access_token or access_token_env".to_owned(),
+        );
+    }
+
+    let has_user_id = config
+        .user_id
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty());
+    if config.ignore_self_messages && !has_user_id {
+        return Err(
+            "matrix.user_id is missing; configure user_id when ignore_self_messages is enabled"
+                .to_owned(),
+        );
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1650,7 +2227,11 @@ mod tests {
             .as_millis() as u64
     }
 
-    #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+    #[cfg(any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    ))]
     #[derive(Default)]
     struct RecordingAdapter {
         sent: Arc<Mutex<Vec<(ChannelOutboundTarget, ChannelOutboundMessage)>>>,
@@ -1658,7 +2239,11 @@ mod tests {
         completed_batches: Arc<Mutex<usize>>,
     }
 
-    #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+    #[cfg(any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    ))]
     #[async_trait]
     impl ChannelAdapter for RecordingAdapter {
         fn name(&self) -> &str {
@@ -1698,7 +2283,11 @@ mod tests {
         }
     }
 
-    #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+    #[cfg(any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    ))]
     #[tokio::test]
     async fn channel_adapter_default_ack_hooks_are_noop() {
         #[derive(Default)]
@@ -1749,7 +2338,11 @@ mod tests {
             .expect("default batch completion hook should succeed");
     }
 
-    #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+    #[cfg(any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    ))]
     #[tokio::test]
     async fn process_channel_batch_acknowledges_after_successful_delivery() {
         let mut adapter = RecordingAdapter::default();
@@ -1794,7 +2387,11 @@ mod tests {
         assert_eq!(*adapter.completed_batches.lock().expect("completed"), 1);
     }
 
-    #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+    #[cfg(any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    ))]
     #[tokio::test]
     async fn channel_adapter_send_text_defaults_to_text_outbound_message() {
         let adapter = RecordingAdapter::default();
@@ -1814,7 +2411,11 @@ mod tests {
         );
     }
 
-    #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+    #[cfg(any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    ))]
     #[test]
     fn channel_outbound_target_tracks_delivery_options() {
         let target = ChannelOutboundTarget::feishu_receive_id("ou_demo")
@@ -1878,28 +2479,44 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+    #[cfg(any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    ))]
     #[test]
     fn channel_session_key_is_stable() {
         let session = ChannelSession::new(ChannelPlatform::Telegram, "123");
         assert_eq!(session.session_key(), "telegram:123");
     }
 
-    #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+    #[cfg(any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    ))]
     #[test]
     fn channel_session_key_includes_thread_id_when_present() {
         let session = ChannelSession::with_thread(ChannelPlatform::Feishu, "oc_123", "om_thread_1");
         assert_eq!(session.session_key(), "feishu:oc_123:om_thread_1");
     }
 
-    #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+    #[cfg(any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    ))]
     #[test]
     fn channel_session_key_includes_account_identity_when_present() {
         let session = ChannelSession::with_account(ChannelPlatform::Telegram, "bot_123456", "123");
         assert_eq!(session.session_key(), "telegram:bot_123456:123");
     }
 
-    #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+    #[cfg(any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    ))]
     #[test]
     fn channel_session_key_includes_configured_account_identity_when_present() {
         let session =
@@ -1911,7 +2528,11 @@ mod tests {
         );
     }
 
-    #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+    #[cfg(any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    ))]
     #[test]
     fn channel_session_key_includes_participant_id_when_present() {
         let session =
@@ -1923,7 +2544,11 @@ mod tests {
         );
     }
 
-    #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+    #[cfg(any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    ))]
     #[test]
     fn channel_session_key_includes_account_identity_and_thread_when_present() {
         let session = ChannelSession::with_account_and_thread(
@@ -1938,7 +2563,11 @@ mod tests {
         );
     }
 
-    #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+    #[cfg(any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    ))]
     #[test]
     fn channel_session_key_includes_account_participant_and_thread_when_present() {
         let session =
@@ -1951,7 +2580,11 @@ mod tests {
         );
     }
 
-    #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+    #[cfg(any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    ))]
     #[test]
     fn channel_message_ingress_context_preserves_sender_and_thread_metadata() {
         let message = ChannelInboundMessage {
@@ -2095,7 +2728,11 @@ mod tests {
         );
     }
 
-    #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+    #[cfg(any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    ))]
     #[test]
     fn channel_outbound_target_preserves_platform_kind_and_id() {
         let target = ChannelOutboundTarget::new(
@@ -2108,7 +2745,11 @@ mod tests {
         assert_eq!(target.id, "om_123");
     }
 
-    #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+    #[cfg(any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    ))]
     #[test]
     fn render_channel_route_notice_warns_on_implicit_multi_account_fallback() {
         let route = crate::config::ChannelResolvedAccountRoute {
@@ -2127,7 +2768,11 @@ mod tests {
         assert!(rendered.contains("telegram.default_account"));
     }
 
-    #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+    #[cfg(any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    ))]
     #[test]
     fn render_channel_route_notice_is_silent_for_explicit_account_selection() {
         let route = crate::config::ChannelResolvedAccountRoute {
@@ -2268,7 +2913,11 @@ mod tests {
         assert!(error.contains("--account"));
     }
 
-    #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+    #[cfg(any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    ))]
     #[tokio::test]
     async fn with_channel_serve_runtime_tracks_running_state_and_shutdown() {
         let runtime_dir = temp_runtime_dir("serve-runtime-wrapper");
@@ -2321,7 +2970,11 @@ mod tests {
         assert_eq!(finished.pid, Some(9191));
     }
 
-    #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+    #[cfg(any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    ))]
     #[tokio::test]
     async fn with_channel_serve_runtime_rejects_duplicate_running_instance() {
         let runtime_dir = temp_runtime_dir("serve-runtime-duplicate");
@@ -2360,7 +3013,11 @@ mod tests {
         assert!(error.contains("7001"));
     }
 
-    #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+    #[cfg(any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    ))]
     #[tokio::test]
     async fn with_channel_serve_runtime_allows_takeover_when_previous_instance_is_stale() {
         let runtime_dir = temp_runtime_dir("serve-runtime-stale-takeover");
@@ -2421,7 +3078,11 @@ mod tests {
         assert_eq!(entries.len(), 1);
     }
 
-    #[cfg(any(feature = "channel-telegram", feature = "channel-feishu"))]
+    #[cfg(any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    ))]
     #[tokio::test]
     async fn with_channel_serve_runtime_rejects_active_legacy_owner_after_inactive_account_prune() {
         let runtime_dir = temp_runtime_dir("serve-runtime-legacy-owner");
@@ -2525,5 +3186,245 @@ mod tests {
             .resolve_account(None)
             .expect("resolve feishu account");
         assert!(validate_feishu_security_config(&resolved).is_ok());
+    }
+
+    #[cfg(feature = "channel-matrix")]
+    #[test]
+    fn channel_session_key_encodes_matrix_segments_with_colons() {
+        let session = ChannelSession::with_account(
+            ChannelPlatform::Matrix,
+            "@ops-bot:example.org",
+            "!ops:example.org",
+        )
+        .with_participant_id("@alice:example.org")
+        .with_thread_id("$event:example.org");
+
+        assert_eq!(
+            session.session_key(),
+            "matrix:~b64~QG9wcy1ib3Q6ZXhhbXBsZS5vcmc:~b64~IW9wczpleGFtcGxlLm9yZw:~b64~QGFsaWNlOmV4YW1wbGUub3Jn:~b64~JGV2ZW50OmV4YW1wbGUub3Jn"
+        );
+    }
+
+    #[cfg(feature = "channel-matrix")]
+    #[test]
+    fn parse_known_channel_session_send_target_decodes_matrix_route_segments() {
+        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+            "matrix": {
+                "enabled": true,
+                "accounts": {
+                    "Ops": {
+                        "account_id": "@ops-bot:example.org",
+                        "access_token": "matrix-token",
+                        "base_url": "https://matrix.example.org",
+                        "allowed_room_ids": ["!ops:example.org"]
+                    }
+                }
+            }
+        }))
+        .expect("deserialize matrix config");
+        let resolved = config
+            .matrix
+            .resolve_account(None)
+            .expect("resolve default matrix account");
+        let account_id = resolved.account.id;
+        let session_id = ChannelSession::with_account(
+            ChannelPlatform::Matrix,
+            account_id.as_str(),
+            "!ops:example.org",
+        )
+        .session_key();
+
+        let parsed = parse_known_channel_session_send_target(&config, session_id.as_str())
+            .expect("parse matrix session send target");
+
+        assert_eq!(
+            parsed,
+            KnownChannelSessionSendTarget::Matrix {
+                account_id: Some(account_id),
+                room_id: "!ops:example.org".to_owned(),
+            }
+        );
+    }
+
+    #[cfg(feature = "channel-matrix")]
+    #[test]
+    fn parse_known_channel_session_send_target_accepts_legacy_matrix_account_aliases() {
+        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+            "matrix": {
+                "enabled": true,
+                "accounts": {
+                    "Ops": {
+                        "account_id": "@ops-bot:example.org",
+                        "access_token": "matrix-token",
+                        "base_url": "https://matrix.example.org",
+                        "allowed_room_ids": ["!ops:example.org"]
+                    }
+                }
+            }
+        }))
+        .expect("deserialize matrix config");
+
+        let parsed = parse_known_channel_session_send_target(
+            &config,
+            "matrix:~b64~QG9wcy1ib3Q6ZXhhbXBsZS5vcmc:~b64~IW9wczpleGFtcGxlLm9yZw",
+        )
+        .expect("parse matrix session send target");
+
+        assert_eq!(
+            parsed,
+            KnownChannelSessionSendTarget::Matrix {
+                account_id: Some("ops-bot-example-org".to_owned()),
+                room_id: "!ops:example.org".to_owned(),
+            }
+        );
+    }
+
+    #[cfg(feature = "channel-telegram")]
+    #[test]
+    fn parse_known_channel_session_send_target_matches_normalized_runtime_account_identity() {
+        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+            "telegram": {
+                "enabled": true,
+                "accounts": {
+                    "ops": {
+                        "account_id": "Ops-Bot",
+                        "bot_token": "123456:telegram-test-token",
+                        "allowed_chat_ids": [123]
+                    }
+                }
+            }
+        }))
+        .expect("deserialize telegram config");
+
+        let parsed = parse_known_channel_session_send_target(&config, "telegram:Ops-Bot:123")
+            .expect("parse telegram session send target");
+
+        assert_eq!(
+            parsed,
+            KnownChannelSessionSendTarget::Telegram {
+                account_id: Some("ops-bot".to_owned()),
+                chat_id: "123".to_owned(),
+                thread_id: None,
+            }
+        );
+    }
+
+    #[cfg(feature = "channel-telegram")]
+    #[test]
+    fn parse_known_channel_session_send_target_treats_single_segment_telegram_scope_as_chat_id() {
+        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+            "telegram": {
+                "enabled": true,
+                "bot_token": "123456:telegram-test-token",
+                "allowed_chat_ids": [123]
+            }
+        }))
+        .expect("deserialize telegram config");
+
+        let parsed = parse_known_channel_session_send_target(&config, "telegram:123")
+            .expect("parse telegram session send target");
+
+        assert_eq!(
+            parsed,
+            KnownChannelSessionSendTarget::Telegram {
+                account_id: None,
+                chat_id: "123".to_owned(),
+                thread_id: None,
+            }
+        );
+    }
+
+    #[cfg(feature = "channel-telegram")]
+    #[test]
+    fn parse_known_channel_session_send_target_honors_configured_account_marker() {
+        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+            "telegram": {
+                "enabled": true,
+                "default_account": "work",
+                "accounts": {
+                    "work": {
+                        "bot_token": "123456:work-token",
+                        "allowed_chat_ids": [123]
+                    },
+                    "alerts": {
+                        "bot_token": "654321:alerts-token",
+                        "allowed_chat_ids": [456]
+                    }
+                }
+            }
+        }))
+        .expect("deserialize telegram multi-account config");
+
+        let parsed =
+            parse_known_channel_session_send_target(&config, "telegram:cfg=alerts:bot_654321:456")
+                .expect("parse telegram session with configured marker");
+
+        assert_eq!(
+            parsed,
+            KnownChannelSessionSendTarget::Telegram {
+                account_id: Some("alerts".to_owned()),
+                chat_id: "456".to_owned(),
+                thread_id: None,
+            }
+        );
+    }
+
+    #[cfg(feature = "channel-matrix")]
+    #[test]
+    fn matrix_security_validation_requires_room_allowlist_and_transport() {
+        let config = LoongClawConfig::default();
+        let resolved = config
+            .matrix
+            .resolve_account(None)
+            .expect("resolve matrix account");
+        let error =
+            validate_matrix_security_config(&resolved).expect_err("empty config must be rejected");
+        assert!(error.contains("allowed_room_ids"));
+
+        let mut config = LoongClawConfig::default();
+        config.matrix.allowed_room_ids = vec!["!ops:example.org".to_owned()];
+        let resolved = config
+            .matrix
+            .resolve_account(None)
+            .expect("resolve matrix account with allowlist");
+        let error = validate_matrix_security_config(&resolved)
+            .expect_err("base url and token are still required");
+        assert!(error.contains("base_url"));
+    }
+
+    #[cfg(feature = "channel-matrix")]
+    #[test]
+    fn matrix_security_validation_rejects_invalid_base_url() {
+        let mut config = LoongClawConfig::default();
+        config.matrix.allowed_room_ids = vec!["!ops:example.org".to_owned()];
+        config.matrix.user_id = Some("@ops-bot:example.org".to_owned());
+        config.matrix.access_token = Some("matrix-token".to_owned());
+        config.matrix.base_url = Some("not a url".to_owned());
+
+        let resolved = config
+            .matrix
+            .resolve_account(None)
+            .expect("resolve matrix account with invalid base url");
+        let error = validate_matrix_security_config(&resolved)
+            .expect_err("invalid base url must be rejected");
+        assert!(error.contains("invalid matrix base_url"));
+    }
+
+    #[cfg(feature = "channel-matrix")]
+    #[test]
+    fn matrix_security_validation_requires_user_id_when_ignoring_self_messages() {
+        let mut config = LoongClawConfig::default();
+        config.matrix.allowed_room_ids = vec!["!ops:example.org".to_owned()];
+        config.matrix.access_token = Some("matrix-token".to_owned());
+        config.matrix.base_url = Some("https://matrix.example.org".to_owned());
+        config.matrix.ignore_self_messages = true;
+
+        let resolved = config
+            .matrix
+            .resolve_account(None)
+            .expect("resolve matrix account with self-filter enabled");
+        let error = validate_matrix_security_config(&resolved)
+            .expect_err("user_id is required when self-filtering is enabled");
+        assert!(error.contains("matrix.user_id"));
     }
 }

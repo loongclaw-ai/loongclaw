@@ -22,6 +22,11 @@
 | Asset | Size (bytes) | SHA256 | Download |
 |---|---:|---|---|
 | loongclaw-vX.Y.Z[-suffix]-x86_64-unknown-linux-gnu.tar.gz | 0 | <sha256> | [link](https://github.com/loongclaw-ai/loongclaw/releases/download/vX.Y.Z[-suffix]/<asset>) |
+| loongclaw.bash | 0 | n/a | [link](https://github.com/loongclaw-ai/loongclaw/releases/download/vX.Y.Z[-suffix]/loongclaw.bash) |
+| _loongclaw | 0 | n/a | [link](https://github.com/loongclaw-ai/loongclaw/releases/download/vX.Y.Z[-suffix]/_loongclaw) |
+| loongclaw.fish | 0 | n/a | [link](https://github.com/loongclaw-ai/loongclaw/releases/download/vX.Y.Z[-suffix]/loongclaw.fish) |
+| loongclaw.ps1 | 0 | n/a | [link](https://github.com/loongclaw-ai/loongclaw/releases/download/vX.Y.Z[-suffix]/loongclaw.ps1) |
+| loongclaw.elv | 0 | n/a | [link](https://github.com/loongclaw-ai/loongclaw/releases/download/vX.Y.Z[-suffix]/loongclaw.elv) |
 
 ## Verification
 | Check | Result | Evidence |
