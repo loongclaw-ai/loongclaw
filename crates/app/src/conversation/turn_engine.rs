@@ -1354,12 +1354,13 @@ impl TurnEngine {
         let result = async {
             let mut outputs = Vec::with_capacity(prepared.len());
             let mut remaining = prepared;
-            for (segment_index, segment) in batch_segments.iter().copied().enumerate() {
+            debug_assert_eq!(trace.segments.len(), batch_segments.len());
+            for (segment, trace_segment) in batch_segments
+                .iter()
+                .copied()
+                .zip(trace.segments.iter_mut())
+            {
                 let (prepared_segment, rest) = remaining.split_at(segment.len);
-                let trace_segment = trace
-                    .segments
-                    .get_mut(segment_index)
-                    .expect("trace should include every prepared batch segment");
                 let mut segment_outputs = match segment.execution_mode {
                     ToolBatchExecutionMode::Parallel => {
                         self.execute_prepared_batch_in_parallel(
@@ -2540,14 +2541,14 @@ mod tests {
             )
             .await;
 
-        match result {
-            TurnResult::FinalText(_) => {}
-            other => panic!("expected FinalText, got {other:?}"),
-        }
+        assert!(
+            matches!(result, TurnResult::FinalText(_)),
+            "expected FinalText, got {result:?}"
+        );
 
         let trace = trace.expect("trace should exist");
         assert_eq!(trace.total_intents, 5);
-        assert_eq!(trace.parallel_execution_enabled, true);
+        assert!(trace.parallel_execution_enabled);
         assert_eq!(trace.parallel_execution_max_in_flight, 2);
         assert_eq!(trace.observed_peak_in_flight, 2);
         assert!(

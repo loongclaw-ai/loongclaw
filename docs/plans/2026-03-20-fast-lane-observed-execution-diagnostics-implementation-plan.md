@@ -44,7 +44,7 @@ dispatcher and asserts:
 
 **Step 2: Run the targeted test to verify RED**
 
-Run: `env HOME=/tmp/loongclaw-test-home USERPROFILE=/tmp/loongclaw-test-home RUSTUP_HOME=/Users/chum/.rustup CARGO_HOME=/Users/chum/.cargo /Users/chum/.cargo/bin/cargo test -p loongclaw-app observed_fast_lane_execution -- --test-threads=1`
+Run: `env HOME=/tmp/loongclaw-test-home USERPROFILE=/tmp/loongclaw-test-home cargo test -p loongclaw-app observed_fast_lane_execution -- --test-threads=1`
 Expected: FAIL because observed metrics are not captured yet
 
 ### Task 3: Add failing analytics and CLI summary coverage
@@ -79,9 +79,9 @@ events include the new observed batch and segment fields.
 
 Run:
 
-- `env HOME=/tmp/loongclaw-test-home USERPROFILE=/tmp/loongclaw-test-home RUSTUP_HOME=/Users/chum/.rustup CARGO_HOME=/Users/chum/.cargo /Users/chum/.cargo/bin/cargo test -p loongclaw-app summarize_fast_lane_tool_batch_events -- --test-threads=1`
-- `env HOME=/tmp/loongclaw-test-home USERPROFILE=/tmp/loongclaw-test-home RUSTUP_HOME=/Users/chum/.rustup CARGO_HOME=/Users/chum/.cargo /Users/chum/.cargo/bin/cargo test -p loongclaw-app fast_lane_summary -- --test-threads=1`
-- `env HOME=/tmp/loongclaw-test-home USERPROFILE=/tmp/loongclaw-test-home RUSTUP_HOME=/Users/chum/.rustup CARGO_HOME=/Users/chum/.cargo /Users/chum/.cargo/bin/cargo test -p loongclaw-app persists_fast_lane_tool_batch_event -- --test-threads=1`
+- `env HOME=/tmp/loongclaw-test-home USERPROFILE=/tmp/loongclaw-test-home cargo test -p loongclaw-app summarize_fast_lane_tool_batch_events -- --test-threads=1`
+- `env HOME=/tmp/loongclaw-test-home USERPROFILE=/tmp/loongclaw-test-home cargo test -p loongclaw-app fast_lane_summary -- --test-threads=1`
+- `env HOME=/tmp/loongclaw-test-home USERPROFILE=/tmp/loongclaw-test-home cargo test -p loongclaw-app persists_fast_lane_tool_batch_event -- --test-threads=1`
 
 Expected: FAIL because the new observed fields are not emitted or summarized yet
 
@@ -114,7 +114,7 @@ truthful trace.
 
 **Step 4: Run the targeted trace test to verify GREEN**
 
-Run: `env HOME=/tmp/loongclaw-test-home USERPROFILE=/tmp/loongclaw-test-home RUSTUP_HOME=/Users/chum/.rustup CARGO_HOME=/Users/chum/.cargo /Users/chum/.cargo/bin/cargo test -p loongclaw-app observed_fast_lane_execution -- --test-threads=1`
+Run: `env HOME=/tmp/loongclaw-test-home USERPROFILE=/tmp/loongclaw-test-home cargo test -p loongclaw-app observed_fast_lane_execution -- --test-threads=1`
 Expected: PASS
 
 ### Task 5: Extend analytics folding and fast-lane summary output
@@ -142,9 +142,9 @@ Assert the observed fields survive the full persistence path.
 
 Run:
 
-- `env HOME=/tmp/loongclaw-test-home USERPROFILE=/tmp/loongclaw-test-home RUSTUP_HOME=/Users/chum/.rustup CARGO_HOME=/Users/chum/.cargo /Users/chum/.cargo/bin/cargo test -p loongclaw-app summarize_fast_lane_tool_batch_events -- --test-threads=1`
-- `env HOME=/tmp/loongclaw-test-home USERPROFILE=/tmp/loongclaw-test-home RUSTUP_HOME=/Users/chum/.rustup CARGO_HOME=/Users/chum/.cargo /Users/chum/.cargo/bin/cargo test -p loongclaw-app fast_lane_summary -- --test-threads=1`
-- `env HOME=/tmp/loongclaw-test-home USERPROFILE=/tmp/loongclaw-test-home RUSTUP_HOME=/Users/chum/.rustup CARGO_HOME=/Users/chum/.cargo /Users/chum/.cargo/bin/cargo test -p loongclaw-app persists_fast_lane_tool_batch_event -- --test-threads=1`
+- `env HOME=/tmp/loongclaw-test-home USERPROFILE=/tmp/loongclaw-test-home cargo test -p loongclaw-app summarize_fast_lane_tool_batch_events -- --test-threads=1`
+- `env HOME=/tmp/loongclaw-test-home USERPROFILE=/tmp/loongclaw-test-home cargo test -p loongclaw-app fast_lane_summary -- --test-threads=1`
+- `env HOME=/tmp/loongclaw-test-home USERPROFILE=/tmp/loongclaw-test-home cargo test -p loongclaw-app persists_fast_lane_tool_batch_event -- --test-threads=1`
 
 Expected: PASS
 
@@ -155,15 +155,15 @@ Expected: PASS
 
 **Step 1: Run focused fast-lane regression coverage**
 
-Run: `env HOME=/tmp/loongclaw-test-home USERPROFILE=/tmp/loongclaw-test-home RUSTUP_HOME=/Users/chum/.rustup CARGO_HOME=/Users/chum/.cargo /Users/chum/.cargo/bin/cargo test -p loongclaw-app fast_lane -- --test-threads=1`
+Run: `env HOME=/tmp/loongclaw-test-home USERPROFILE=/tmp/loongclaw-test-home cargo test -p loongclaw-app fast_lane -- --test-threads=1`
 Expected: PASS
 
 **Step 2: Run repo-level formatting and all-features verification**
 
 Run:
 
-- `env HOME=/tmp/loongclaw-test-home USERPROFILE=/tmp/loongclaw-test-home RUSTUP_HOME=/Users/chum/.rustup CARGO_HOME=/Users/chum/.cargo /Users/chum/.cargo/bin/cargo fmt --all -- --check`
-- `env HOME=/tmp/loongclaw-test-home USERPROFILE=/tmp/loongclaw-test-home RUSTUP_HOME=/Users/chum/.rustup CARGO_HOME=/Users/chum/.cargo /Users/chum/.cargo/bin/cargo test --workspace --all-features -- --test-threads=1`
+- `env HOME=/tmp/loongclaw-test-home USERPROFILE=/tmp/loongclaw-test-home cargo fmt --all -- --check`
+- `env HOME=/tmp/loongclaw-test-home USERPROFILE=/tmp/loongclaw-test-home cargo test --workspace --all-features -- --test-threads=1`
 
 Expected: PASS
 

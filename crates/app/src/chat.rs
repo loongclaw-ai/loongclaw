@@ -879,7 +879,7 @@ fn format_fast_lane_segments(segments: &[FastLaneToolBatchSegmentSnapshot]) -> S
             ) {
                 (None, None) => String::new(),
                 (observed_peak_in_flight, observed_wall_time_ms) => format!(
-                    "[peak={},wall_ms={}]",
+                    "[peak={} wall_ms={}]",
                     format_fast_lane_summary_optional(observed_peak_in_flight),
                     format_fast_lane_summary_optional(observed_wall_time_ms)
                 ),
@@ -1919,6 +1919,41 @@ mod tests {
         ]
     }
 
+    #[cfg(feature = "memory-sqlite")]
+    fn legacy_fast_lane_tool_batch_event_payloads() -> Vec<String> {
+        vec![
+            json!({
+                "type": "conversation_event",
+                "event": "fast_lane_tool_batch",
+                "payload": {
+                    "schema_version": 1,
+                    "total_intents": 3,
+                    "parallel_execution_enabled": true,
+                    "parallel_execution_max_in_flight": 2,
+                    "parallel_safe_intents": 2,
+                    "serial_only_intents": 1,
+                    "parallel_segments": 1,
+                    "sequential_segments": 1,
+                    "segments": [
+                        {
+                            "segment_index": 0,
+                            "scheduling_class": "parallel_safe",
+                            "execution_mode": "parallel",
+                            "intent_count": 2
+                        },
+                        {
+                            "segment_index": 1,
+                            "scheduling_class": "serial_only",
+                            "execution_mode": "sequential",
+                            "intent_count": 1
+                        }
+                    ]
+                }
+            })
+            .to_string(),
+        ]
+    }
+
     #[tokio::test]
     async fn run_cli_ask_rejects_empty_message() {
         let error = run_cli_ask(None, None, "   ", &CliChatOptions::default())
@@ -2130,7 +2165,7 @@ mod tests {
             "latest_batch total_intents=5 parallel_enabled=true max_in_flight=2 observed_peak_in_flight=2 observed_wall_time_ms=34 parallel_safe_intents=4 serial_only_intents=1 parallel_segments=2 sequential_segments=1"
         ));
         assert!(direct_output.contains(
-            "latest_segments=0:parallel_safe/parallel/2[peak=2,wall_ms=14],1:serial_only/sequential/1[peak=1,wall_ms=8],2:parallel_safe/parallel/2[peak=2,wall_ms=12]"
+            "latest_segments=0:parallel_safe/parallel/2[peak=2 wall_ms=14],1:serial_only/sequential/1[peak=1 wall_ms=8],2:parallel_safe/parallel/2[peak=2 wall_ms=12]"
         ));
 
         let kernel_payloads = fast_lane_tool_batch_event_payloads();
@@ -2164,7 +2199,7 @@ mod tests {
             "latest_batch total_intents=5 parallel_enabled=true max_in_flight=2 observed_peak_in_flight=2 observed_wall_time_ms=34 parallel_safe_intents=4 serial_only_intents=1 parallel_segments=2 sequential_segments=1"
         ));
         assert!(kernel_output.contains(
-            "latest_segments=0:parallel_safe/parallel/2[peak=2,wall_ms=14],1:serial_only/sequential/1[peak=1,wall_ms=8],2:parallel_safe/parallel/2[peak=2,wall_ms=12]"
+            "latest_segments=0:parallel_safe/parallel/2[peak=2 wall_ms=14],1:serial_only/sequential/1[peak=1 wall_ms=8],2:parallel_safe/parallel/2[peak=2 wall_ms=12]"
         ));
 
         let captured = invocations.lock().expect("invocations lock");
@@ -2176,6 +2211,41 @@ mod tests {
         );
         assert_eq!(captured[0].payload["limit"], json!(88));
         assert_eq!(captured[0].payload["allow_extended_limit"], json!(true));
+
+        cleanup_chat_test_memory(&sqlite_path);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fast_lane_summary_output_accepts_legacy_schema_v1_events() {
+        let (_config, memory_config, sqlite_path) = init_chat_test_memory("fast-lane-legacy");
+
+        let payloads = legacy_fast_lane_tool_batch_event_payloads();
+        append_assistant_payloads("chat-binding-fast-lane-legacy", &payloads, &memory_config);
+
+        let output = load_fast_lane_summary_output(
+            "chat-binding-fast-lane-legacy",
+            32,
+            ConversationRuntimeBinding::direct(),
+            &memory_config,
+        )
+        .await
+        .expect("load fast lane summary for legacy schema");
+
+        assert!(output.contains("schema_version=1"));
+        assert!(output.contains(
+            "aggregate_execution configured_max_in_flight_avg=2.000 configured_max_in_flight_max=2 configured_max_in_flight_samples=1 observed_peak_in_flight_avg=- observed_peak_in_flight_max=- observed_peak_in_flight_samples=0 degraded_parallel_segments=0"
+        ));
+        assert!(output.contains(
+            "aggregate_latency observed_wall_time_ms_avg=- observed_wall_time_ms_max=- observed_wall_time_ms_samples=0"
+        ));
+        assert!(output.contains(
+            "latest_batch total_intents=3 parallel_enabled=true max_in_flight=2 observed_peak_in_flight=- observed_wall_time_ms=- parallel_safe_intents=2 serial_only_intents=1 parallel_segments=1 sequential_segments=1"
+        ));
+        assert!(
+            output
+                .contains("latest_segments=0:parallel_safe/parallel/2,1:serial_only/sequential/1")
+        );
 
         cleanup_chat_test_memory(&sqlite_path);
     }
