@@ -1288,7 +1288,7 @@ fn provider_model_probe_failure_check(
             name: "provider model probe".to_owned(),
             level: DoctorCheckLevel::Fail,
             detail: format!(
-                "{provider_prefix}: {} ({error}); runtime could not verify the provider route. inspect the provider route probe below and retry once dns / proxy / TUN routing is stable",
+                "{provider_prefix}: {} ({error}); runtime could not verify the provider route. inspect provider route diagnostics and retry once dns / proxy / TUN routing is stable",
                 crate::provider_route_diagnostics::MODEL_CATALOG_TRANSPORT_FAILED_MARKER
             ),
         };
@@ -2172,6 +2172,10 @@ mod tests {
         assert!(
             !check.detail.contains("provider.model"),
             "transport probe failures should not suggest model-selection repair when the route is the real blocker: {check:#?}"
+        );
+        assert!(
+            !check.detail.contains("below"),
+            "doctor should not promise a later route-probe section that may not exist when collection is unavailable: {check:#?}"
         );
     }
 

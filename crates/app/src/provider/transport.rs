@@ -156,8 +156,14 @@ fn request_host_label(url: &str) -> Option<String> {
     Some(format!("{host}:{port}"))
 }
 
+fn message_contains_token(message: &str, token: &str) -> bool {
+    message
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .any(|part| part == token)
+}
+
 fn message_looks_like_dns_failure(message: &str) -> bool {
-    message.contains("dns")
+    message_contains_token(message, "dns")
         || message.contains("lookup address")
         || message.contains("name or service not known")
         || message.contains("nodename nor servname")
@@ -170,7 +176,9 @@ fn message_looks_like_proxy_route_failure(message: &str) -> bool {
     message.contains("proxy")
         || message.contains("tunnel")
         || message.contains("socks")
-        || message.contains("tun")
+        || message_contains_token(message, "tun")
+        || message.contains("utun")
+        || message.contains("tun0")
 }
 
 pub(super) fn render_transport_route_hint(
@@ -596,6 +604,21 @@ mod tests {
         assert!(hint.contains("api.openai.com:443"));
         assert!(hint.contains("proxy"));
         assert!(hint.contains("TUN"));
+    }
+
+    #[test]
+    fn render_transport_route_hint_does_not_treat_tuning_as_proxy_route_failure() {
+        let hint = render_transport_route_hint(
+            "https://api.openai.com/v1/chat/completions",
+            "provider tuning metadata could not be loaded",
+            false,
+            false,
+        );
+
+        assert!(
+            hint.is_none(),
+            "unrelated words like `tuning` should not be classified as proxy/TUN transport failures: {hint:#?}"
+        );
     }
 
     #[cfg(feature = "provider-bedrock")]
