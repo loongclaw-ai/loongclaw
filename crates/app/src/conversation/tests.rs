@@ -11090,6 +11090,30 @@ async fn load_fast_lane_tool_batch_event_summary_accepts_explicit_runtime_bindin
     assert_eq!(direct_summary.latest_parallel_segments, Some(2));
     assert_eq!(direct_summary.latest_sequential_segments, Some(1));
     assert_eq!(direct_summary.latest_segments.len(), 3);
+    assert_eq!(
+        direct_summary.latest_segments[0].observed_peak_in_flight,
+        Some(2)
+    );
+    assert_eq!(
+        direct_summary.latest_segments[0].observed_wall_time_ms,
+        Some(12)
+    );
+    assert_eq!(
+        direct_summary.latest_segments[1].observed_peak_in_flight,
+        Some(1)
+    );
+    assert_eq!(
+        direct_summary.latest_segments[1].observed_wall_time_ms,
+        Some(7)
+    );
+    assert_eq!(
+        direct_summary.latest_segments[2].observed_peak_in_flight,
+        Some(2)
+    );
+    assert_eq!(
+        direct_summary.latest_segments[2].observed_wall_time_ms,
+        Some(12)
+    );
 
     let audit = Arc::new(InMemoryAuditSink::default());
     let (kernel_ctx, invocations) =
@@ -11118,6 +11142,30 @@ async fn load_fast_lane_tool_batch_event_summary_accepts_explicit_runtime_bindin
     assert_eq!(kernel_summary.latest_parallel_segments, Some(2));
     assert_eq!(kernel_summary.latest_sequential_segments, Some(1));
     assert_eq!(kernel_summary.latest_segments.len(), 3);
+    assert_eq!(
+        kernel_summary.latest_segments[0].observed_peak_in_flight,
+        Some(2)
+    );
+    assert_eq!(
+        kernel_summary.latest_segments[0].observed_wall_time_ms,
+        Some(12)
+    );
+    assert_eq!(
+        kernel_summary.latest_segments[1].observed_peak_in_flight,
+        Some(1)
+    );
+    assert_eq!(
+        kernel_summary.latest_segments[1].observed_wall_time_ms,
+        Some(7)
+    );
+    assert_eq!(
+        kernel_summary.latest_segments[2].observed_peak_in_flight,
+        Some(2)
+    );
+    assert_eq!(
+        kernel_summary.latest_segments[2].observed_wall_time_ms,
+        Some(12)
+    );
 
     let captured = invocations.lock().expect("invocations lock");
     assert_eq!(captured.len(), 1);

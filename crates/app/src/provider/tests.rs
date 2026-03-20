@@ -92,15 +92,45 @@ fn next_temp_path(prefix: &str, extension: &str) -> PathBuf {
 }
 
 fn read_local_provider_request(stream: &mut std::net::TcpStream, deadline: Instant) -> String {
+    let timeout = deadline
+        .saturating_duration_since(Instant::now())
+        .max(Duration::from_millis(1));
     stream
         .set_nonblocking(false)
         .expect("set accepted stream blocking");
     stream
-        .set_read_timeout(Some(deadline.saturating_duration_since(Instant::now())))
+        .set_read_timeout(Some(timeout))
         .expect("set accepted stream read timeout");
     let mut request_buf = [0_u8; 8192];
     let len = stream.read(&mut request_buf).expect("read request");
     String::from_utf8_lossy(&request_buf[..len]).to_string()
+}
+
+#[test]
+fn read_local_provider_request_accepts_elapsed_deadline() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local provider listener");
+    let addr = listener.local_addr().expect("local addr");
+    let (written_tx, written_rx) = std::sync::mpsc::channel();
+    let client = std::thread::spawn(move || {
+        let mut stream = std::net::TcpStream::connect(addr).expect("connect local provider");
+        stream
+            .write_all(b"GET /models HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .expect("write local provider request");
+        stream.flush().expect("flush local provider request");
+        written_tx
+            .send(())
+            .expect("notify local provider request write");
+    });
+
+    let (mut stream, _) = listener.accept().expect("accept local provider");
+    written_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("wait for local provider request write");
+
+    let request = read_local_provider_request(&mut stream, Instant::now());
+    assert!(request.starts_with("GET /models HTTP/1.1"));
+
+    client.join().expect("join local provider client");
 }
 
 #[tokio::test]

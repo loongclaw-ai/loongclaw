@@ -183,7 +183,7 @@ to derive their own thresholds later.
 
 ## Risks and Mitigations
 
-### Risk: flakey concurrency assertions
+### Risk: flaky concurrency assertions
 
 Mitigation:
 
