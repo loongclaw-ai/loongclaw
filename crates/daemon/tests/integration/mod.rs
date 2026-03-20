@@ -28,6 +28,7 @@ mod cli_tests;
 mod doctor_feishu;
 mod feishu_cli;
 mod import_cli;
+mod memory_context_benchmark_cli;
 mod migrate_cli;
 mod migration;
 mod onboard_cli;

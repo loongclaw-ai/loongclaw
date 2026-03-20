@@ -29,9 +29,10 @@ pub use loongclaw_spec::spec_runtime::*;
 pub use loongclaw_spec::{CliResult, DEFAULT_AGENT_ID, DEFAULT_PACK_ID, kernel_bootstrap};
 
 pub use loongclaw_bench::{
-    run_memory_context_benchmark_cli, run_programmatic_pressure_baseline_lint_cli,
-    run_programmatic_pressure_benchmark_cli, run_wasm_cache_benchmark_cli,
+    run_programmatic_pressure_baseline_lint_cli, run_programmatic_pressure_benchmark_cli,
+    run_wasm_cache_benchmark_cli,
 };
+pub use memory_context_benchmark::run_memory_context_benchmark_cli;
 
 pub use base64;
 pub use kernel;
@@ -46,6 +47,7 @@ pub mod doctor_cli;
 pub mod feishu_cli;
 pub mod feishu_support;
 pub mod import_cli;
+mod memory_context_benchmark;
 pub mod migrate_cli;
 pub mod migration;
 pub mod next_actions;
