@@ -96,6 +96,12 @@ pub fn external_skills_operator_inspect_with_config(
     external_skills::execute_external_skills_operator_inspect_tool_with_config(skill_id, config)
 }
 
+pub(crate) fn discover_installable_external_skill_roots(
+    root: &Path,
+) -> Result<Vec<PathBuf>, String> {
+    external_skills::discover_installable_skill_roots(root)
+}
+
 tokio::task_local! {
     static TRUSTED_INTERNAL_TOOL_PAYLOAD_TASK: bool;
 }
@@ -12588,6 +12594,11 @@ mod tests {
             "# Identity\n\n- role: release copilot\n- tone: steady\n",
         );
         write_file(&root, "SKILLS.md", "# Skills\n\n- custom/skill-a\n");
+        write_file(
+            &root,
+            ".codex/skills/release-guard/SKILL.md",
+            "# Release Guard\n\nUse this skill when release discipline matters.\n",
+        );
 
         let output_path = root.join("loongclaw.toml");
 
@@ -12613,11 +12624,19 @@ mod tests {
         assert_eq!(outcome.status, "ok");
         assert_eq!(
             outcome.payload["result"]["external_skill_artifact_count"],
-            1
+            2
         );
         assert_eq!(
             outcome.payload["result"]["external_skill_entries_applied"],
-            3
+            6
+        );
+        assert_eq!(
+            outcome.payload["result"]["external_skill_managed_install_count"],
+            1
+        );
+        assert_eq!(
+            outcome.payload["result"]["external_skill_managed_skill_ids"],
+            json!(["release-guard"])
         );
         assert!(
             outcome.payload["result"]["external_skills_manifest_path"]
@@ -12627,6 +12646,13 @@ mod tests {
         );
         let raw = fs::read_to_string(&output_path).expect("read output config");
         assert!(raw.contains("Imported External Skills Artifacts"));
+        assert!(
+            root.join("external-skills-installed")
+                .join("release-guard")
+                .join("SKILL.md")
+                .exists(),
+            "claw.migrate should bridge installable local skills into the managed runtime"
+        );
 
         fs::remove_dir_all(&root).ok();
     }

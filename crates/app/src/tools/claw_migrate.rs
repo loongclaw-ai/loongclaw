@@ -381,6 +381,8 @@ fn apply_selection_result_payload(result: &migration::ApplyImportSelectionResult
         "unresolved_conflicts": result.unresolved_conflicts,
         "external_skill_artifact_count": result.external_skill_artifact_count,
         "external_skill_entries_applied": result.external_skill_entries_applied,
+        "external_skill_managed_install_count": result.external_skill_managed_install_count,
+        "external_skill_managed_skill_ids": result.external_skill_managed_skill_ids,
         "warnings": result.warnings,
     })
 }

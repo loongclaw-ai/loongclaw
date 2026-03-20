@@ -245,6 +245,11 @@ fn run_migrate_cli_apply_selected_mode_can_apply_external_skill_plan() {
         "SKILLS.md",
         "# Skills\n\n- custom/skill-a\n",
     );
+    write_file(
+        &discovery_root,
+        ".codex/skills/release-guard/SKILL.md",
+        "# Release Guard\n\nUse this skill when release discipline matters.\n",
+    );
 
     let output_path = output_root.join("selected-external.toml");
     loongclaw_daemon::migrate_cli::run_migrate_cli(
@@ -266,12 +271,24 @@ fn run_migrate_cli_apply_selected_mode_can_apply_external_skill_plan() {
     let raw = fs::read_to_string(&output_path).expect("read generated config");
     assert!(raw.contains("Imported External Skills Artifacts"));
     assert!(raw.contains("kind=skills_catalog"));
+    assert!(
+        raw.contains("enabled = true"),
+        "bridged installs should enable external skills in the written config"
+    );
     let external_manifest_path = output_root
         .join(".loongclaw-migration")
         .join("selected-external.toml.external-skills.json");
     assert!(
         external_manifest_path.exists(),
         "apply_selected mode should write external skills manifest"
+    );
+    assert!(
+        output_root
+            .join("external-skills-installed")
+            .join("release-guard")
+            .join("SKILL.md")
+            .exists(),
+        "apply_selected mode should bridge installable local skills into the managed runtime"
     );
 
     fs::remove_dir_all(&discovery_root).ok();
