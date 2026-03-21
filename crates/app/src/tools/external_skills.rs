@@ -145,6 +145,9 @@ enum SkillInvocationPolicy {
     Both,
 }
 
+/// `available` and `eligible` currently move together because a skill is only
+/// runnable when its local prerequisites are present. Keep both fields so
+/// operator-facing output can distinguish policy from current availability later.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 struct SkillEligibility {
     available: bool,
@@ -1443,6 +1446,11 @@ pub(crate) fn discover_installable_skill_roots(root: &Path) -> Result<Vec<PathBu
     find_skill_roots(root)
 }
 
+pub(crate) fn resolve_installable_skill_id(root: &Path) -> Result<String, String> {
+    let skill_markdown = load_directory_skill_markdown(root)?;
+    Ok(derive_skill_id_from_markdown(root, skill_markdown.as_str()))
+}
+
 fn visit_skill_roots(root: &Path, roots: &mut Vec<PathBuf>) -> Result<(), String> {
     let metadata = fs::symlink_metadata(root).map_err(|error| {
         format!(
@@ -1775,6 +1783,8 @@ fn build_discovered_skill_entry(
     })
 }
 
+// This currently answers both "can run right now" and "eligible to run" so
+// operator output stays explicit without silently inventing separate semantics.
 fn evaluate_skill_eligibility(
     config: &super::runtime_config::ToolRuntimeConfig,
     frontmatter: &SkillFrontmatter,

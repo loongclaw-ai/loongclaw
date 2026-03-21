@@ -593,29 +593,111 @@ fn bridge_installable_external_skills(
     Ok(installed)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InstallableExternalSkillCandidate {
+    root: PathBuf,
+    probe_rank: usize,
+    root_rank: usize,
+}
+
 fn collect_installable_external_skill_roots(
     mapping: &super::ExternalSkillMappingPlan,
 ) -> CliResult<Vec<PathBuf>> {
-    let mut roots = Vec::new();
+    let probe_roots = super::external_skill_probe_roots(&mapping.input_path)
+        .into_iter()
+        .map(|root| root.canonicalize().unwrap_or(root))
+        .collect::<Vec<_>>();
+    let mut winners = BTreeMap::new();
     let mut seen = BTreeSet::new();
     for artifact in &mapping.artifacts {
-        if !matches!(
-            artifact.kind,
-            super::ExternalSkillArtifactKind::CodexSkillsDir
-                | super::ExternalSkillArtifactKind::ClaudeSkillsDir
-                | super::ExternalSkillArtifactKind::SkillsDir
-        ) {
+        let Some(root_rank) = installable_external_skill_root_rank(artifact.kind) else {
             continue;
-        }
+        };
+        let probe_rank = installable_external_skill_probe_rank(&probe_roots, artifact);
         for root in crate::tools::discover_installable_external_skill_roots(&artifact.path)? {
             let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
-            if seen.insert(canonical.display().to_string()) {
-                roots.push(canonical);
+            if !seen.insert(canonical.clone()) {
+                continue;
+            }
+            let skill_id = crate::tools::resolve_installable_external_skill_id(&canonical)?;
+            let candidate = InstallableExternalSkillCandidate {
+                root: canonical,
+                probe_rank,
+                root_rank,
+            };
+            match winners.get(&skill_id) {
+                Some(current)
+                    if !installable_external_skill_candidate_wins(&candidate, current) => {}
+                _ => {
+                    winners.insert(skill_id, candidate);
+                }
             }
         }
     }
-    roots.sort();
-    Ok(roots)
+    let mut candidates = winners.into_values().collect::<Vec<_>>();
+    candidates.sort_by(compare_installable_external_skill_candidates);
+    Ok(candidates
+        .into_iter()
+        .map(|candidate| candidate.root)
+        .collect())
+}
+
+fn installable_external_skill_root_rank(kind: super::ExternalSkillArtifactKind) -> Option<usize> {
+    match kind {
+        super::ExternalSkillArtifactKind::CodexSkillsDir => Some(1),
+        super::ExternalSkillArtifactKind::ClaudeSkillsDir => Some(2),
+        super::ExternalSkillArtifactKind::SkillsDir => Some(3),
+        super::ExternalSkillArtifactKind::SkillsCatalog
+        | super::ExternalSkillArtifactKind::SkillsLock => None,
+    }
+}
+
+fn installable_external_skill_probe_rank(
+    probe_roots: &[PathBuf],
+    artifact: &super::ExternalSkillArtifact,
+) -> usize {
+    let Some(probe_root) = installable_external_skill_probe_root(artifact) else {
+        return probe_roots.len();
+    };
+    probe_roots
+        .iter()
+        .position(|candidate| candidate == &probe_root)
+        .unwrap_or(probe_roots.len())
+}
+
+fn installable_external_skill_probe_root(
+    artifact: &super::ExternalSkillArtifact,
+) -> Option<PathBuf> {
+    match artifact.kind {
+        super::ExternalSkillArtifactKind::CodexSkillsDir
+        | super::ExternalSkillArtifactKind::ClaudeSkillsDir => artifact
+            .path
+            .parent()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf),
+        super::ExternalSkillArtifactKind::SkillsDir => {
+            artifact.path.parent().map(Path::to_path_buf)
+        }
+        super::ExternalSkillArtifactKind::SkillsCatalog
+        | super::ExternalSkillArtifactKind::SkillsLock => None,
+    }
+}
+
+fn installable_external_skill_candidate_wins(
+    left: &InstallableExternalSkillCandidate,
+    right: &InstallableExternalSkillCandidate,
+) -> bool {
+    compare_installable_external_skill_candidates(left, right).is_lt()
+}
+
+fn compare_installable_external_skill_candidates(
+    left: &InstallableExternalSkillCandidate,
+    right: &InstallableExternalSkillCandidate,
+) -> std::cmp::Ordering {
+    left.probe_rank
+        .cmp(&right.probe_rank)
+        .then_with(|| left.root_rank.cmp(&right.root_rank))
+        .then_with(|| left.root.cmp(&right.root))
 }
 
 fn default_external_skills_install_root(output_path: &Path) -> PathBuf {
@@ -1623,6 +1705,44 @@ mod tests {
                 .join("SKILL.md")
                 .exists(),
             "installable imported skills should bridge into managed installs"
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn collect_installable_external_skill_roots_prefers_highest_precedence_duplicate_skill_ids() {
+        let root = unique_temp_dir("loongclaw-import-duplicate-installable-skill-ids");
+        fs::create_dir_all(&root).expect("create fixture root");
+
+        write_file(
+            &root,
+            ".codex/skills/release-guard-codex/SKILL.md",
+            "---\nname: release-guard\ndescription: codex winner.\n---\n\n# release guard\n",
+        );
+        write_file(
+            &root,
+            ".claude/skills/release-guard-claude/SKILL.md",
+            "---\nname: release-guard\ndescription: claude fallback.\n---\n\n# release guard\n",
+        );
+        write_file(
+            &root,
+            "skills/release-guard-project/SKILL.md",
+            "---\nname: release-guard\ndescription: project fallback.\n---\n\n# release guard\n",
+        );
+
+        let mapping = super::plan_external_skill_mapping(&root);
+        let roots = collect_installable_external_skill_roots(&mapping)
+            .expect("duplicate skill ids should still resolve deterministically");
+
+        assert_eq!(
+            roots,
+            vec![
+                root.join(".codex/skills/release-guard-codex")
+                    .canonicalize()
+                    .expect("canonicalize winning root")
+            ],
+            "duplicate installable skill ids should collapse to the highest-precedence import root"
         );
 
         fs::remove_dir_all(&root).ok();

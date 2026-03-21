@@ -102,6 +102,10 @@ pub(crate) fn discover_installable_external_skill_roots(
     external_skills::discover_installable_skill_roots(root)
 }
 
+pub(crate) fn resolve_installable_external_skill_id(root: &Path) -> Result<String, String> {
+    external_skills::resolve_installable_skill_id(root)
+}
+
 tokio::task_local! {
     static TRUSTED_INTERNAL_TOOL_PAYLOAD_TASK: bool;
 }
