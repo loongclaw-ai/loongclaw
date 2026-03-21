@@ -1,20 +1,46 @@
-import { apiPost } from "../../../lib/api/client";
+import {
+  apiGetData,
+  apiPost,
+  apiPostData,
+  type ApiRequestOptions,
+} from "../../../lib/api/client";
 import type { ApiEnvelope } from "../../../lib/api/types";
 
-interface SaveOnboardingProviderRequest {
+const ONBOARDING_READ_TIMEOUT_MS = 10_000;
+const ONBOARDING_WRITE_TIMEOUT_MS = 30_000;
+
+export interface MetaAuthInfo {
+  required: boolean;
+  scheme: string;
+  header: string;
+  tokenPath: string;
+  tokenEnv: string;
+  mode: string;
+}
+
+export interface WebMetaPayload {
+  appVersion: string;
+  apiVersion: string;
+  webInstallMode: string;
+  supportedLocales: string[];
+  defaultLocale: string;
+  auth: MetaAuthInfo;
+}
+
+export interface SaveOnboardingProviderRequest {
   kind: string;
   model: string;
   baseUrlOrEndpoint: string;
   apiKey?: string;
 }
 
-interface SaveOnboardingPreferencesRequest {
+export interface SaveOnboardingPreferencesRequest {
   personality: string;
   memoryProfile: string;
   promptAddendum?: string;
 }
 
-interface OnboardingStatusPayload {
+export interface OnboardingStatus {
   runtimeOnline: boolean;
   tokenRequired: boolean;
   tokenPaired: boolean;
@@ -41,55 +67,94 @@ export interface OnboardingValidationResult {
   endpointStatusCode: number | null;
   credentialStatus: string;
   credentialStatusCode: number | null;
-  status: OnboardingStatusPayload;
+  status: OnboardingStatus;
 }
 
 interface OnboardingPairingResult {
   paired: boolean;
   mode: string;
-  status: OnboardingStatusPayload;
+  status: OnboardingStatus;
+}
+
+function withDefaultTimeout(
+  request: ApiRequestOptions | undefined,
+  timeoutMs: number,
+): ApiRequestOptions {
+  return {
+    ...request,
+    timeoutMs: request?.timeoutMs ?? timeoutMs,
+  };
 }
 
 export const onboardingApi = {
-  async saveProvider(input: SaveOnboardingProviderRequest): Promise<void> {
+  async loadMeta(request?: ApiRequestOptions): Promise<WebMetaPayload> {
+    return apiGetData<WebMetaPayload>(
+      "/api/meta",
+      withDefaultTimeout(request, ONBOARDING_READ_TIMEOUT_MS),
+    );
+  },
+
+  async loadStatus(request?: ApiRequestOptions): Promise<OnboardingStatus> {
+    return apiGetData<OnboardingStatus>(
+      "/api/onboard/status",
+      withDefaultTimeout(request, ONBOARDING_READ_TIMEOUT_MS),
+    );
+  },
+
+  async saveProvider(
+    input: SaveOnboardingProviderRequest,
+    request?: ApiRequestOptions,
+  ): Promise<void> {
     await apiPost<ApiEnvelope<Record<string, never>>, SaveOnboardingProviderRequest>(
       "/api/onboard/provider",
       input,
+      withDefaultTimeout(request, ONBOARDING_WRITE_TIMEOUT_MS),
     );
   },
+
   async applyProvider(
     input: SaveOnboardingProviderRequest,
+    request?: ApiRequestOptions,
   ): Promise<OnboardingValidationResult> {
-    const response = await apiPost<
-      ApiEnvelope<OnboardingValidationResult>,
-      SaveOnboardingProviderRequest
-    >("/api/onboard/provider/apply", input);
-    return response.data;
+    return apiPostData<OnboardingValidationResult, SaveOnboardingProviderRequest>(
+      "/api/onboard/provider/apply",
+      input,
+      withDefaultTimeout(request, ONBOARDING_WRITE_TIMEOUT_MS),
+    );
   },
-  async validateProvider(): Promise<OnboardingValidationResult> {
-    const response = await apiPost<
-      ApiEnvelope<OnboardingValidationResult>,
-      Record<string, never>
-    >("/api/onboard/validate", {});
-    return response.data;
+
+  async validateProvider(request?: ApiRequestOptions): Promise<OnboardingValidationResult> {
+    return apiPostData<OnboardingValidationResult, Record<string, never>>(
+      "/api/onboard/validate",
+      {},
+      withDefaultTimeout(request, ONBOARDING_WRITE_TIMEOUT_MS),
+    );
   },
-  async autoPair(): Promise<OnboardingPairingResult> {
-    const response = await apiPost<
-      ApiEnvelope<OnboardingPairingResult>,
-      Record<string, never>
-    >("/api/onboard/pairing/auto", {});
-    return response.data;
+
+  async autoPair(request?: ApiRequestOptions): Promise<OnboardingPairingResult> {
+    return apiPostData<OnboardingPairingResult, Record<string, never>>(
+      "/api/onboard/pairing/auto",
+      {},
+      withDefaultTimeout(request, ONBOARDING_READ_TIMEOUT_MS),
+    );
   },
-  async clearPairing(): Promise<void> {
+
+  async clearPairing(request?: ApiRequestOptions): Promise<void> {
     await apiPost<ApiEnvelope<Record<string, never>>, Record<string, never>>(
       "/api/onboard/pairing/clear",
       {},
+      withDefaultTimeout(request, ONBOARDING_WRITE_TIMEOUT_MS),
     );
   },
-  async savePreferences(input: SaveOnboardingPreferencesRequest): Promise<void> {
-    await apiPost<
-      ApiEnvelope<Record<string, never>>,
-      SaveOnboardingPreferencesRequest
-    >("/api/onboard/preferences", input);
+
+  async savePreferences(
+    input: SaveOnboardingPreferencesRequest,
+    request?: ApiRequestOptions,
+  ): Promise<void> {
+    await apiPost<ApiEnvelope<Record<string, never>>, SaveOnboardingPreferencesRequest>(
+      "/api/onboard/preferences",
+      input,
+      withDefaultTimeout(request, ONBOARDING_WRITE_TIMEOUT_MS),
+    );
   },
 };

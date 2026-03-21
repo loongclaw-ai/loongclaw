@@ -2,8 +2,18 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { Panel } from "../../../components/surfaces/Panel";
 import { useWebConnection } from "../../../hooks/useWebConnection";
-import { ApiRequestError } from "../../../lib/api/client";
 import { onboardingApi } from "../api";
+import {
+  buildPreferencesSavePayload,
+  buildProviderSavePayload,
+  MEMORY_PROFILE_OPTIONS,
+  PERSONALITY_OPTIONS,
+  PROVIDER_KIND_SUGGESTIONS,
+  readProviderSaveError,
+  readProviderValidationFailure,
+  usePreferencesForm,
+  useProviderConfigForm,
+} from "../providerConfig";
 
 function readStageCopy(
   stage: string,
@@ -72,15 +82,19 @@ export function OnboardingStatusPanel() {
     onboardingValidationSatisfied,
     acknowledgeOnboarding,
     markOnboardingValidated,
+    acceptValidatedOnboardingStatus,
     clearOnboardingValidation,
     refreshOnboardingStatus,
     autoPairingInProgress,
     authMode,
   } = useWebConnection();
-  const [kind, setKind] = useState("");
-  const [model, setModel] = useState("");
-  const [baseUrlOrEndpoint, setBaseUrlOrEndpoint] = useState("");
-  const [apiKey, setApiKey] = useState("");
+  const providerForm = useProviderConfigForm({
+    kind: onboardingStatus?.activeProvider ?? "",
+    model: onboardingStatus?.activeModel ?? "",
+    baseUrlOrEndpoint:
+      onboardingStatus?.providerEndpoint || onboardingStatus?.providerBaseUrl || "",
+    apiKeyConfigured: onboardingStatus?.apiKeyConfigured ?? false,
+  });
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
@@ -88,9 +102,11 @@ export function OnboardingStatusPanel() {
   const [isValidating, setIsValidating] = useState(false);
   const [tokenInput, setTokenInput] = useState("");
   const [showOptionalSettings, setShowOptionalSettings] = useState(false);
-  const [personality, setPersonality] = useState("calm_engineering");
-  const [memoryProfile, setMemoryProfile] = useState("window_only");
-  const [promptAddendum, setPromptAddendum] = useState("");
+  const preferencesForm = usePreferencesForm({
+    personality: onboardingStatus?.personality || "calm_engineering",
+    memoryProfile: onboardingStatus?.memoryProfile || "window_only",
+    promptAddendum: onboardingStatus?.promptAddendum || "",
+  });
   const [preferencesError, setPreferencesError] = useState<string | null>(null);
   const [preferencesNotice, setPreferencesNotice] = useState<string | null>(null);
   const [isSavingPreferences, setIsSavingPreferences] = useState(false);
@@ -118,32 +134,12 @@ export function OnboardingStatusPanel() {
     );
 
   useEffect(() => {
-    setKind(onboardingStatus?.activeProvider ?? "");
-    setModel(onboardingStatus?.activeModel ?? "");
-    setBaseUrlOrEndpoint(
-      onboardingStatus?.providerEndpoint ||
-        onboardingStatus?.providerBaseUrl ||
-        "",
-    );
-    setApiKey("");
     setSaveError(null);
     setValidationMessage(null);
     setValidationError(null);
-    setPersonality(onboardingStatus?.personality || "calm_engineering");
-    setMemoryProfile(onboardingStatus?.memoryProfile || "window_only");
-    setPromptAddendum(onboardingStatus?.promptAddendum || "");
     setPreferencesError(null);
     setPreferencesNotice(null);
-  }, [
-    onboardingStatus?.activeModel,
-    onboardingStatus?.activeProvider,
-    onboardingStatus?.providerBaseUrl,
-    onboardingStatus?.providerEndpoint,
-    onboardingStatus?.personality,
-    onboardingStatus?.memoryProfile,
-    onboardingStatus?.promptAddendum,
-    onboardingStatus?.blockingStage,
-  ]);
+  }, [onboardingStatus?.blockingStage]);
 
   async function handleSaveProvider(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -152,21 +148,26 @@ export function OnboardingStatusPanel() {
     setValidationError(null);
     setIsSaving(true);
     try {
-      await onboardingApi.saveProvider({
-        kind,
-        model,
-        baseUrlOrEndpoint,
-        ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
-      });
-      clearOnboardingValidation();
-      setApiKey("");
-      refreshOnboardingStatus();
-    } catch (error) {
-      if (error instanceof ApiRequestError) {
-        setSaveError(error.message);
+      const result = await onboardingApi.applyProvider(
+        buildProviderSavePayload({
+          kind: providerForm.kind,
+          model: providerForm.model,
+          baseUrlOrEndpoint: providerForm.baseUrlOrEndpoint,
+          apiKey: providerForm.apiKey,
+        }),
+      );
+
+      providerForm.markApiKeyPristine();
+      if (result.passed) {
+        acceptValidatedOnboardingStatus(result.status);
+        setValidationMessage(t("onboarding.validation.success"));
       } else {
-        setSaveError(t("onboarding.form.errors.saveFailed"));
+        clearOnboardingValidation();
+        setValidationError(readProviderValidationFailure(result.credentialStatus, t));
+        refreshOnboardingStatus();
       }
+    } catch (error) {
+      setSaveError(readProviderSaveError(error, t, "onboarding.form.errors.saveFailed"));
     } finally {
       setIsSaving(false);
     }
@@ -193,20 +194,12 @@ export function OnboardingStatusPanel() {
         setValidationMessage(t("onboarding.validation.success"));
       } else {
         clearOnboardingValidation();
-        setValidationError(
-          t(`onboarding.validation.statuses.${result.credentialStatus}`, {
-            defaultValue: t("onboarding.validation.failed"),
-          }),
-        );
+        setValidationError(readProviderValidationFailure(result.credentialStatus, t));
       }
       refreshOnboardingStatus();
     } catch (error) {
       clearOnboardingValidation();
-      if (error instanceof ApiRequestError) {
-        setValidationError(error.message);
-      } else {
-        setValidationError(t("onboarding.validation.failed"));
-      }
+      setValidationError(readProviderSaveError(error, t, "onboarding.validation.failed"));
     } finally {
       setIsValidating(false);
     }
@@ -218,21 +211,17 @@ export function OnboardingStatusPanel() {
     setPreferencesNotice(null);
     setIsSavingPreferences(true);
     try {
-      await onboardingApi.savePreferences({
-        personality,
-        memoryProfile,
-        ...(promptAddendum.trim()
-          ? { promptAddendum: promptAddendum.trim() }
-          : {}),
-      });
+      await onboardingApi.savePreferences(
+        buildPreferencesSavePayload({
+          personality: preferencesForm.personality,
+          memoryProfile: preferencesForm.memoryProfile,
+          promptAddendum: preferencesForm.promptAddendum,
+        }),
+      );
       refreshOnboardingStatus();
       setPreferencesNotice(t("onboarding.preferences.saved"));
     } catch (error) {
-      if (error instanceof ApiRequestError) {
-        setPreferencesError(error.message);
-      } else {
-        setPreferencesError(t("onboarding.preferences.saveFailed"));
-      }
+      setPreferencesError(readProviderSaveError(error, t, "onboarding.preferences.saveFailed"));
     } finally {
       setIsSavingPreferences(false);
     }
@@ -399,18 +388,18 @@ export function OnboardingStatusPanel() {
                   </span>
                   <select
                     className="settings-input"
-                    value={personality}
-                    onChange={(event) => setPersonality(event.target.value)}
+                    value={preferencesForm.personality}
+                    onChange={(event) => preferencesForm.setPersonality(event.target.value)}
                   >
-                    <option value="calm_engineering">
-                      {t("onboarding.preferences.personalityCalmEngineering")}
-                    </option>
-                    <option value="friendly_collab">
-                      {t("onboarding.preferences.personalityFriendlyCollab")}
-                    </option>
-                    <option value="autonomous_executor">
-                      {t("onboarding.preferences.personalityAutonomousExecutor")}
-                    </option>
+                    {PERSONALITY_OPTIONS.map((item) => (
+                      <option key={item} value={item}>
+                        {item === "calm_engineering"
+                          ? t("onboarding.preferences.personalityCalmEngineering")
+                          : item === "friendly_collab"
+                            ? t("onboarding.preferences.personalityFriendlyCollab")
+                            : t("onboarding.preferences.personalityAutonomousExecutor")}
+                      </option>
+                    ))}
                   </select>
                 </label>
 
@@ -420,18 +409,18 @@ export function OnboardingStatusPanel() {
                   </span>
                   <select
                     className="settings-input"
-                    value={memoryProfile}
-                    onChange={(event) => setMemoryProfile(event.target.value)}
+                    value={preferencesForm.memoryProfile}
+                    onChange={(event) => preferencesForm.setMemoryProfile(event.target.value)}
                   >
-                    <option value="window_only">
-                      {t("onboarding.preferences.memoryProfileWindowOnly")}
-                    </option>
-                    <option value="window_plus_summary">
-                      {t("onboarding.preferences.memoryProfileWindowPlusSummary")}
-                    </option>
-                    <option value="profile_plus_window">
-                      {t("onboarding.preferences.memoryProfileProfilePlusWindow")}
-                    </option>
+                    {MEMORY_PROFILE_OPTIONS.map((item) => (
+                      <option key={item} value={item}>
+                        {item === "window_only"
+                          ? t("onboarding.preferences.memoryProfileWindowOnly")
+                          : item === "window_plus_summary"
+                            ? t("onboarding.preferences.memoryProfileWindowPlusSummary")
+                            : t("onboarding.preferences.memoryProfileProfilePlusWindow")}
+                      </option>
+                    ))}
                   </select>
                 </label>
 
@@ -441,8 +430,8 @@ export function OnboardingStatusPanel() {
                   </span>
                   <textarea
                     className="settings-input settings-textarea"
-                    value={promptAddendum}
-                    onChange={(event) => setPromptAddendum(event.target.value)}
+                    value={preferencesForm.promptAddendum}
+                    onChange={(event) => preferencesForm.setPromptAddendum(event.target.value)}
                     placeholder={t("onboarding.preferences.promptAddendumPlaceholder")}
                   />
                   <span className="settings-helper">
@@ -491,28 +480,16 @@ export function OnboardingStatusPanel() {
                 id="onboarding-provider-kind"
                 className="settings-input"
                 list="onboarding-provider-suggestions"
-                value={kind}
+                value={providerForm.kind}
                 onChange={(event) => {
-                  const nextKind = event.target.value;
-                  const currentRoute =
-                    onboardingStatus?.providerEndpoint ||
-                    onboardingStatus?.providerBaseUrl ||
-                    "";
-                  setKind(nextKind);
-                  if (baseUrlOrEndpoint === currentRoute) {
-                    setBaseUrlOrEndpoint("");
-                  }
+                  providerForm.setKindWithRouteReset(event.target.value);
                 }}
                 placeholder={t("onboarding.form.kindPlaceholder")}
               />
               <datalist id="onboarding-provider-suggestions">
-                <option value="openai" />
-                <option value="volcengine" />
-                <option value="deepseek" />
-                <option value="anthropic" />
-                <option value="openrouter" />
-                <option value="ollama" />
-                <option value="lmstudio" />
+                {PROVIDER_KIND_SUGGESTIONS.map((item) => (
+                  <option key={item} value={item} />
+                ))}
               </datalist>
             </div>
 
@@ -523,8 +500,8 @@ export function OnboardingStatusPanel() {
               <input
                 id="onboarding-provider-model"
                 className="settings-input"
-                value={model}
-                onChange={(event) => setModel(event.target.value)}
+                value={providerForm.model}
+                onChange={(event) => providerForm.setModel(event.target.value)}
                 placeholder={t("onboarding.form.modelPlaceholder")}
               />
             </div>
@@ -536,8 +513,8 @@ export function OnboardingStatusPanel() {
               <input
                 id="onboarding-provider-route"
                 className="settings-input"
-                value={baseUrlOrEndpoint}
-                onChange={(event) => setBaseUrlOrEndpoint(event.target.value)}
+                value={providerForm.baseUrlOrEndpoint}
+                onChange={(event) => providerForm.setBaseUrlOrEndpoint(event.target.value)}
                 placeholder={t("onboarding.form.baseUrlOrEndpointPlaceholder")}
               />
               <p className="settings-helper">
@@ -554,8 +531,8 @@ export function OnboardingStatusPanel() {
                 className="settings-input"
                 type="password"
                 autoComplete="off"
-                value={apiKey}
-                onChange={(event) => setApiKey(event.target.value)}
+                value={providerForm.apiKey}
+                onChange={(event) => providerForm.setApiKeyValue(event.target.value)}
                 placeholder={
                   onboardingStatus?.apiKeyConfigured
                     ? t("onboarding.form.apiKeyPlaceholderConfigured")

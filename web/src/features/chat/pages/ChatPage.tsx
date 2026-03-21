@@ -1,5 +1,5 @@
 import { Plus, SendHorizontal, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ReactNode } from "react";
 import { Panel } from "../../../components/surfaces/Panel";
@@ -19,12 +19,28 @@ interface ActiveToolStatus {
   status: "running" | "ok" | "error";
 }
 
+interface SessionViewState {
+  messages: ChatMessage[];
+  activeTools: ActiveToolStatus[];
+  pendingAssistantId: string | null;
+  streamPhase: StreamPhase;
+}
+
 type StreamPhase = "idle" | "connecting" | "thinking" | "streaming";
 type ToolAssistIntent = "filesystem" | "repo_search" | "shell" | "web";
 
 // Temporary Web-only workaround: keep this small and easy to remove while we
 // verify whether tool discovery reliability should be fixed deeper in runtime.
 const TOOL_ASSIST_STORAGE_KEY = "loongclaw.web.toolAssist";
+const CHAT_SELECTED_SESSION_STORAGE_KEY = "loongclaw.web.chat.selectedSessionId";
+
+function readStoredSelectedSessionId(): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const value = window.sessionStorage.getItem(CHAT_SELECTED_SESSION_STORAGE_KEY);
+  return value && value.trim() ? value : null;
+}
 
 function detectToolAssistIntent(input: string): ToolAssistIntent | null {
   const normalized = input.trim().toLowerCase();
@@ -224,7 +240,9 @@ export default function ChatPage() {
   } =
     useWebConnection();
   const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(() =>
+    readStoredSelectedSessionId(),
+  );
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [composerText, setComposerText] = useState("");
   const [isLoadingSessions, setIsLoadingSessions] = useState(true);
@@ -246,6 +264,57 @@ export default function ChatPage() {
     const stored = window.localStorage.getItem(TOOL_ASSIST_STORAGE_KEY);
     return stored === "true";
   });
+  const messageListRef = useRef<HTMLDivElement | null>(null);
+  const shouldAutoScrollRef = useRef(true);
+  const sessionViewStateRef = useRef<Map<string, SessionViewState>>(new Map());
+  const selectedSessionIdRef = useRef<string | null>(selectedSessionId);
+  const previousSelectedSessionIdRef = useRef<string | null>(selectedSessionId);
+  const messagesRef = useRef<ChatMessage[]>(messages);
+  const activeToolsRef = useRef<ActiveToolStatus[]>(activeTools);
+  const pendingAssistantIdRef = useRef<string | null>(pendingAssistantId);
+  const streamPhaseRef = useRef<StreamPhase>(streamPhase);
+
+  function getCurrentVisibleViewState(): SessionViewState {
+    return {
+      messages: messagesRef.current,
+      activeTools: activeToolsRef.current,
+      pendingAssistantId: pendingAssistantIdRef.current,
+      streamPhase: streamPhaseRef.current,
+    };
+  }
+
+  function getStoredSessionViewState(sessionId: string): SessionViewState {
+    return (
+      sessionViewStateRef.current.get(sessionId) ?? {
+        messages: [],
+        activeTools: [],
+        pendingAssistantId: null,
+        streamPhase: "idle",
+      }
+    );
+  }
+
+  function replaceSessionViewState(sessionId: string, nextState: SessionViewState) {
+    sessionViewStateRef.current.set(sessionId, nextState);
+
+    if (selectedSessionIdRef.current === sessionId) {
+      setMessages(nextState.messages);
+      setActiveTools(nextState.activeTools);
+      setPendingAssistantId(nextState.pendingAssistantId);
+      setStreamPhase(nextState.streamPhase);
+    }
+  }
+
+  function updateSessionViewState(
+    sessionId: string,
+    updater: (current: SessionViewState) => SessionViewState,
+  ) {
+    const baseState =
+      selectedSessionIdRef.current === sessionId
+        ? getCurrentVisibleViewState()
+        : getStoredSessionViewState(sessionId);
+    replaceSessionViewState(sessionId, updater(baseState));
+  }
 
   const loadingPhraseKeys = useMemo(() => {
     switch (streamPhase) {
@@ -306,6 +375,44 @@ export default function ChatPage() {
   }, [toolAssistEnabled]);
 
   useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    if (selectedSessionId) {
+      window.sessionStorage.setItem(CHAT_SELECTED_SESSION_STORAGE_KEY, selectedSessionId);
+    } else {
+      window.sessionStorage.removeItem(CHAT_SELECTED_SESSION_STORAGE_KEY);
+    }
+  }, [selectedSessionId]);
+
+  useEffect(() => {
+    const previousSessionId = previousSelectedSessionIdRef.current;
+    if (previousSessionId && previousSessionId !== selectedSessionId) {
+      sessionViewStateRef.current.set(previousSessionId, getCurrentVisibleViewState());
+    }
+
+    previousSelectedSessionIdRef.current = selectedSessionId;
+    selectedSessionIdRef.current = selectedSessionId;
+  }, [selectedSessionId]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+    activeToolsRef.current = activeTools;
+    pendingAssistantIdRef.current = pendingAssistantId;
+    streamPhaseRef.current = streamPhase;
+
+    if (selectedSessionIdRef.current) {
+      sessionViewStateRef.current.set(selectedSessionIdRef.current, {
+        messages,
+        activeTools,
+        pendingAssistantId,
+        streamPhase,
+      });
+    }
+  }, [activeTools, messages, pendingAssistantId, streamPhase]);
+
+  useEffect(() => {
     let cancelled = false;
 
     if (!canAccessProtectedApi) {
@@ -339,7 +446,16 @@ export default function ChatPage() {
           return;
         }
         setSessions(loadedSessions);
-        setSelectedSessionId((current) => current ?? loadedSessions[0]?.id ?? null);
+        setSelectedSessionId((current) => {
+          if (current && loadedSessions.some((session) => session.id === current)) {
+            return current;
+          }
+          const stored = readStoredSelectedSessionId();
+          if (stored && loadedSessions.some((session) => session.id === stored)) {
+            return stored;
+          }
+          return loadedSessions[0]?.id ?? null;
+        });
       } catch (loadError) {
         if (!cancelled) {
           if (loadError instanceof ApiRequestError && loadError.status === 401) {
@@ -415,15 +531,68 @@ export default function ChatPage() {
     if (!canAccessProtectedApi) {
       setMessages([]);
       setActiveTools([]);
+      setPendingAssistantId(null);
+      setStreamPhase("idle");
       return;
     }
 
     if (!selectedSessionId) {
+      setMessages([]);
+      setActiveTools([]);
+      setPendingAssistantId(null);
+      setStreamPhase("idle");
       return;
     }
 
     const sessionId = selectedSessionId;
+    const cachedViewState = sessionViewStateRef.current.get(sessionId);
     let cancelled = false;
+
+    if (cachedViewState) {
+      setMessages(cachedViewState.messages);
+      setActiveTools(cachedViewState.activeTools);
+      setPendingAssistantId(cachedViewState.pendingAssistantId);
+      setStreamPhase(cachedViewState.streamPhase);
+    } else {
+      setMessages([]);
+      setActiveTools([]);
+      setPendingAssistantId(null);
+      setStreamPhase("idle");
+    }
+
+    function applyHistoryState(loadedMessages: ChatMessage[]) {
+      const cachedState = sessionViewStateRef.current.get(sessionId);
+      const hasTransientState =
+        !!cachedState?.pendingAssistantId ||
+        cachedState?.streamPhase === "connecting" ||
+        cachedState?.streamPhase === "thinking" ||
+        cachedState?.streamPhase === "streaming" ||
+        (cachedState?.activeTools.length ?? 0) > 0;
+      const nextState: SessionViewState = hasTransientState
+        ? {
+            messages:
+              cachedState && cachedState.messages.length > 0
+                ? cachedState.messages
+                : loadedMessages,
+            activeTools: cachedState?.activeTools ?? [],
+            pendingAssistantId: cachedState?.pendingAssistantId ?? null,
+            streamPhase: cachedState?.streamPhase ?? "idle",
+          }
+        : {
+            messages: loadedMessages,
+            activeTools: [],
+            pendingAssistantId: null,
+            streamPhase: "idle",
+          };
+
+      sessionViewStateRef.current.set(sessionId, nextState);
+      if (!cancelled) {
+        setMessages(nextState.messages);
+        setActiveTools(nextState.activeTools);
+        setPendingAssistantId(nextState.pendingAssistantId);
+        setStreamPhase(nextState.streamPhase);
+      }
+    }
 
     async function loadHistory() {
       setIsLoadingHistory(true);
@@ -431,8 +600,21 @@ export default function ChatPage() {
       try {
         const loadedMessages = await chatApi.loadHistory(sessionId);
         if (!cancelled) {
-          setMessages(loadedMessages);
-          setActiveTools([]);
+          applyHistoryState(loadedMessages);
+
+          window.setTimeout(() => {
+            if (cancelled) {
+              return;
+            }
+            void chatApi
+              .loadHistory(sessionId)
+              .then((latestMessages) => {
+                if (!cancelled) {
+                  applyHistoryState(latestMessages);
+                }
+              })
+              .catch(() => {});
+          }, 1000);
         }
       } catch (loadError) {
         if (!cancelled) {
@@ -451,6 +633,8 @@ export default function ChatPage() {
           }
           setMessages([]);
           setActiveTools([]);
+          setPendingAssistantId(null);
+          setStreamPhase("idle");
         }
       } finally {
         if (!cancelled) {
@@ -466,6 +650,19 @@ export default function ChatPage() {
     };
   }, [authMode, canAccessProtectedApi, markUnauthorized, selectedSessionId, t, tokenEnv, tokenPath]);
 
+  useEffect(() => {
+    shouldAutoScrollRef.current = true;
+  }, [selectedSessionId]);
+
+  useEffect(() => {
+    if (!messageListRef.current || !shouldAutoScrollRef.current) {
+      return;
+    }
+
+    const container = messageListRef.current;
+    container.scrollTop = container.scrollHeight;
+  }, [messages, isLoadingHistory, selectedSessionId]);
+
   async function refreshSessions(preferredSessionId?: string) {
     const loadedSessions = await chatApi.listSessions();
     setSessions(loadedSessions);
@@ -475,45 +672,51 @@ export default function ChatPage() {
   }
 
   function handleStreamEvent(
+    sessionId: string,
     event: ChatTurnStreamEvent,
     placeholderId: string,
   ) {
     switch (event.type) {
       case "turn.started":
-        setStreamPhase("thinking");
+        updateSessionViewState(sessionId, (current) => ({
+          ...current,
+          streamPhase: "thinking",
+        }));
         break;
       case "message.delta":
-        setStreamPhase("streaming");
-        setMessages((current) =>
-          current.map((message) =>
+        updateSessionViewState(sessionId, (current) => ({
+          ...current,
+          streamPhase: "streaming",
+          messages: current.messages.map((message) =>
             message.id === placeholderId
               ? { ...message, content: `${message.content}${event.delta}` }
               : message,
           ),
-        );
+        }));
         break;
       case "tool.started":
-        setStreamPhase((current) =>
-          current === "connecting" ? "thinking" : current,
-        );
-        setActiveTools((current) => {
-          const existing = current.find((item) => item.toolId === event.toolId);
-          if (existing) {
-            return current.map((item) =>
-              item.toolId === event.toolId
-                ? { ...item, label: event.label, status: "running" }
-                : item,
-            );
-          }
-          return [
+        updateSessionViewState(sessionId, (current) => {
+          const existing = current.activeTools.find((item) => item.toolId === event.toolId);
+          return {
             ...current,
-            { toolId: event.toolId, label: event.label, status: "running" },
-          ];
+            streamPhase: current.streamPhase === "connecting" ? "thinking" : current.streamPhase,
+            activeTools: existing
+              ? current.activeTools.map((item) =>
+                  item.toolId === event.toolId
+                    ? { ...item, label: event.label, status: "running" }
+                    : item,
+                )
+              : [
+                  ...current.activeTools,
+                  { toolId: event.toolId, label: event.label, status: "running" },
+                ],
+          };
         });
         break;
       case "tool.finished":
-        setActiveTools((current) =>
-          current.map((item) =>
+        updateSessionViewState(sessionId, (current) => ({
+          ...current,
+          activeTools: current.activeTools.map((item) =>
             item.toolId === event.toolId
               ? {
                   ...item,
@@ -522,24 +725,28 @@ export default function ChatPage() {
                 }
               : item,
           ),
-        );
+        }));
         break;
       case "turn.completed":
-        setStreamPhase("idle");
-        setPendingAssistantId(null);
-        setMessages((current) =>
-          current.map((message) =>
+        updateSessionViewState(sessionId, (current) => ({
+          messages: current.messages.map((message) =>
             message.id === placeholderId ? event.message : message,
           ),
-        );
+          activeTools: [],
+          pendingAssistantId: null,
+          streamPhase: "idle",
+        }));
         break;
       case "turn.failed":
-        setStreamPhase("idle");
-        setPendingAssistantId(null);
-        setMessages((current) =>
-          current.filter((message) => message.id !== placeholderId),
-        );
-        setError(event.message);
+        updateSessionViewState(sessionId, (current) => ({
+          messages: current.messages.filter((message) => message.id !== placeholderId),
+          activeTools: [],
+          pendingAssistantId: null,
+          streamPhase: "idle",
+        }));
+        if (selectedSessionIdRef.current === sessionId) {
+          setError(event.message);
+        }
         break;
       default:
         break;
@@ -566,20 +773,32 @@ export default function ChatPage() {
       content: "",
       createdAt: nowIso,
     };
-    const previousMessages = messages;
-    const previousTools = activeTools;
+    const previousState: SessionViewState = {
+      messages,
+      activeTools,
+      pendingAssistantId,
+      streamPhase,
+    };
+    const optimisticState: SessionViewState = {
+      messages: [...messages, optimisticUserMessage, placeholderAssistantMessage],
+      activeTools: [],
+      pendingAssistantId: placeholderAssistantId,
+      streamPhase: "connecting",
+    };
 
     setError(null);
     setIsSubmitting(true);
-    setStreamPhase("connecting");
-    setPendingAssistantId(placeholderAssistantId);
-    setActiveTools([]);
-    setMessages((current) => [
-      ...current,
-      optimisticUserMessage,
-      placeholderAssistantMessage,
-    ]);
+    if (selectedSessionId) {
+      replaceSessionViewState(selectedSessionId, optimisticState);
+    } else {
+      setMessages(optimisticState.messages);
+      setActiveTools([]);
+      setPendingAssistantId(placeholderAssistantId);
+      setStreamPhase("connecting");
+    }
     setComposerText("");
+
+    let targetSessionId = selectedSessionId;
 
     try {
       // Keep the visible user message unchanged. This injects only a
@@ -587,8 +806,8 @@ export default function ChatPage() {
       const toolAssistHint = toolAssistEnabled
         ? buildToolAssistHint(detectToolAssistIntent(input))
         : null;
-      const targetSessionId =
-        selectedSessionId ?? (await chatApi.createSession(input.slice(0, 48)));
+      targetSessionId = selectedSessionId ?? (await chatApi.createSession(input.slice(0, 48)));
+      sessionViewStateRef.current.set(targetSessionId, optimisticState);
       const acceptedTurn = await chatApi.createTurn(
         targetSessionId,
         input,
@@ -597,17 +816,32 @@ export default function ChatPage() {
 
       await chatApi.streamTurn(targetSessionId, acceptedTurn.turnId, {
         onEvent: (event) => {
-          handleStreamEvent(event, placeholderAssistantId);
+          handleStreamEvent(targetSessionId!, event, placeholderAssistantId);
         },
       });
 
-      setActiveTools([]);
+      updateSessionViewState(targetSessionId, (current) => ({
+        ...current,
+        activeTools: [],
+      }));
       await refreshSessions(targetSessionId);
     } catch (submitError) {
-      setStreamPhase("idle");
-      setPendingAssistantId(null);
-      setMessages(previousMessages);
-      setActiveTools(previousTools);
+      if (targetSessionId && selectedSessionId) {
+        replaceSessionViewState(targetSessionId, {
+          messages: previousState.messages,
+          activeTools: previousState.activeTools,
+          pendingAssistantId: null,
+          streamPhase: "idle",
+        });
+      } else {
+        setMessages(previousState.messages);
+        setActiveTools(previousState.activeTools);
+        setPendingAssistantId(null);
+        setStreamPhase("idle");
+        if (targetSessionId) {
+          sessionViewStateRef.current.delete(targetSessionId);
+        }
+      }
       setError(
         toFriendlyChatError(
           submitError,
@@ -620,7 +854,6 @@ export default function ChatPage() {
       );
       setComposerText(input);
     } finally {
-      setStreamPhase("idle");
       setIsSubmitting(false);
     }
   }
@@ -682,6 +915,8 @@ export default function ChatPage() {
                 setSelectedSessionId(null);
                 setMessages([]);
                 setActiveTools([]);
+                setPendingAssistantId(null);
+                setStreamPhase("idle");
                 setError(null);
               }}
               disabled={!canAccessProtectedApi}
@@ -747,9 +982,18 @@ export default function ChatPage() {
               </div>
             </div>
 
-            <div className="message-list">
+            <div
+              className="message-list"
+              ref={messageListRef}
+              onScroll={(event) => {
+                const target = event.currentTarget;
+                const distanceToBottom =
+                  target.scrollHeight - target.scrollTop - target.clientHeight;
+                shouldAutoScrollRef.current = distanceToBottom < 80;
+              }}
+            >
               {error ? <div className="empty-state">{error}</div> : null}
-              {!error && isLoadingHistory ? (
+              {!error && isLoadingHistory && messages.length === 0 ? (
                 <div className="empty-state">Loading history...</div>
               ) : null}
               {!error && !isLoadingHistory && messages.length === 0 ? (
@@ -758,7 +1002,6 @@ export default function ChatPage() {
                 </div>
               ) : null}
               {!error &&
-                !isLoadingHistory &&
                 messages.map((message) => (
                   <article
                     key={message.id}

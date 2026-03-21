@@ -1,38 +1,14 @@
-import { createBrowserRouter, Navigate, useLocation } from "react-router-dom";
+import { lazy } from "react";
+import { createBrowserRouter, Navigate } from "react-router-dom";
 import RootLayout from "./layouts/RootLayout";
-import ChatPage from "../features/chat/pages/ChatPage";
-import DashboardPage from "../features/dashboard/pages/DashboardPage";
 
-function WorkspaceLayout() {
-  const location = useLocation();
-  const activeSection = location.pathname.startsWith("/dashboard")
-    ? "dashboard"
-    : "chat";
-
-  return (
-    <RootLayout>
-      <div
-        className="workspace-stage"
-        hidden={activeSection !== "chat"}
-        aria-hidden={activeSection !== "chat"}
-      >
-        <ChatPage />
-      </div>
-      <div
-        className="workspace-stage"
-        hidden={activeSection !== "dashboard"}
-        aria-hidden={activeSection !== "dashboard"}
-      >
-        <DashboardPage />
-      </div>
-    </RootLayout>
-  );
-}
+const ChatPage = lazy(() => import("../features/chat/pages/ChatPage"));
+const DashboardPage = lazy(() => import("../features/dashboard/pages/DashboardPage"));
 
 export const router = createBrowserRouter([
   {
     path: "/",
-    element: <WorkspaceLayout />,
+    element: <RootLayout />,
     children: [
       {
         index: true,
@@ -40,11 +16,11 @@ export const router = createBrowserRouter([
       },
       {
         path: "chat",
-        element: null,
+        element: <ChatPage />,
       },
       {
         path: "dashboard",
-        element: null,
+        element: <DashboardPage />,
       },
     ],
   },

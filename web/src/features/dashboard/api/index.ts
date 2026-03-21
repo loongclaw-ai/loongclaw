@@ -1,5 +1,6 @@
-import { apiGet } from "../../../lib/api/client";
-import type { ApiEnvelope } from "../../../lib/api/types";
+import { apiGetData, type ApiRequestOptions } from "../../../lib/api/client";
+
+const DASHBOARD_READ_TIMEOUT_MS = 15_000;
 
 export interface DashboardSummary {
   runtimeStatus: string;
@@ -98,53 +99,60 @@ interface DashboardProvidersResponse {
   items: DashboardProviderItem[];
 }
 
+function withDefaultTimeout(request?: ApiRequestOptions): ApiRequestOptions {
+  return {
+    ...request,
+    timeoutMs: request?.timeoutMs ?? DASHBOARD_READ_TIMEOUT_MS,
+  };
+}
+
 export const dashboardApi = {
-  async loadSummary(): Promise<DashboardSummary> {
-    const response = await apiGet<ApiEnvelope<DashboardSummary>>(
+  async loadSummary(request?: ApiRequestOptions): Promise<DashboardSummary> {
+    return apiGetData<DashboardSummary>(
       "/api/dashboard/summary",
+      withDefaultTimeout(request),
     );
-    return response.data;
   },
 
-  async loadProviders(): Promise<DashboardProvidersResponse> {
-    const response = await apiGet<ApiEnvelope<DashboardProvidersResponse>>(
+  async loadProviders(request?: ApiRequestOptions): Promise<DashboardProvidersResponse> {
+    return apiGetData<DashboardProvidersResponse>(
       "/api/dashboard/providers",
+      withDefaultTimeout(request),
     );
-    return response.data;
   },
 
-  async loadRuntime(): Promise<DashboardRuntime> {
-    const response = await apiGet<ApiEnvelope<DashboardRuntime>>(
+  async loadRuntime(request?: ApiRequestOptions): Promise<DashboardRuntime> {
+    return apiGetData<DashboardRuntime>(
       "/api/dashboard/runtime",
+      withDefaultTimeout(request),
     );
-    return response.data;
   },
 
-  async loadConnectivity(): Promise<DashboardConnectivity> {
-    const response = await apiGet<ApiEnvelope<DashboardConnectivity>>(
+  async loadConnectivity(request?: ApiRequestOptions): Promise<DashboardConnectivity> {
+    return apiGetData<DashboardConnectivity>(
       "/api/dashboard/connectivity",
+      withDefaultTimeout(request),
     );
-    return response.data;
   },
 
-  async loadConfig(): Promise<DashboardConfigSnapshot> {
-    const response = await apiGet<ApiEnvelope<DashboardConfigSnapshot>>(
+  async loadConfig(request?: ApiRequestOptions): Promise<DashboardConfigSnapshot> {
+    return apiGetData<DashboardConfigSnapshot>(
       "/api/dashboard/config",
+      withDefaultTimeout(request),
     );
-    return response.data;
   },
 
-  async loadTools(): Promise<DashboardTools> {
-    const response = await apiGet<ApiEnvelope<DashboardTools>>(
+  async loadTools(request?: ApiRequestOptions): Promise<DashboardTools> {
+    return apiGetData<DashboardTools>(
       "/api/dashboard/tools",
+      withDefaultTimeout(request),
     );
-    return response.data;
   },
 
-  async loadDebugConsole(): Promise<DashboardDebugConsole> {
-    const response = await apiGet<ApiEnvelope<DashboardDebugConsole>>(
+  async loadDebugConsole(request?: ApiRequestOptions): Promise<DashboardDebugConsole> {
+    return apiGetData<DashboardDebugConsole>(
       "/api/dashboard/debug-console",
+      withDefaultTimeout(request),
     );
-    return response.data;
   },
 };

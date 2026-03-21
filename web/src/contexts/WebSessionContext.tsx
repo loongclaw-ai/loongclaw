@@ -5,54 +5,21 @@ import {
   useState,
   type PropsWithChildren,
 } from "react";
+import { isApiAbortError } from "../lib/api/client";
 import { getApiBaseUrl } from "../lib/config/env";
 import {
   clearStoredToken,
   getStoredToken,
   setStoredToken,
 } from "../lib/auth/tokenStore";
-import { onboardingApi } from "../features/onboarding/api";
+import {
+  onboardingApi,
+  type MetaAuthInfo,
+  type OnboardingStatus,
+} from "../features/onboarding/api";
 
 const ONBOARDING_VALIDATION_STORAGE_KEY = "loongclaw.onboarding.validation-key";
 const ONBOARDING_ACK_STORAGE_KEY = "loongclaw.onboarding.ack-key";
-
-interface MetaAuthInfo {
-  required: boolean;
-  scheme: string;
-  header: string;
-  tokenPath: string;
-  tokenEnv: string;
-  mode: string;
-}
-
-export interface OnboardingStatus {
-  runtimeOnline: boolean;
-  tokenRequired: boolean;
-  tokenPaired: boolean;
-  configExists: boolean;
-  configLoadable: boolean;
-  providerConfigured: boolean;
-  providerReachable: boolean;
-  activeProvider: string | null;
-  activeModel: string;
-  providerBaseUrl: string;
-  providerEndpoint: string;
-  apiKeyConfigured: boolean;
-  personality: string;
-  memoryProfile: string;
-  promptAddendum: string;
-  configPath: string;
-  blockingStage:
-    | "runtime_offline"
-    | "token_pairing"
-    | "missing_config"
-    | "config_invalid"
-    | "provider_setup"
-    | "provider_unreachable"
-    | "ready"
-    | string;
-  nextAction: string;
-}
 
 export interface WebSessionContextValue {
   endpoint: string;
@@ -92,6 +59,29 @@ function buildOnboardingValidationKey(status: OnboardingStatus | null): string |
     status.providerEndpoint,
     status.configPath,
   ].join("|");
+}
+
+function buildOfflineOnboardingStatus(authMode: string | null): OnboardingStatus {
+  return {
+    runtimeOnline: false,
+    tokenRequired: authMode !== "same_origin_session",
+    tokenPaired: false,
+    configExists: false,
+    configLoadable: false,
+    providerConfigured: false,
+    providerReachable: false,
+    activeProvider: null,
+    activeModel: "",
+    providerBaseUrl: "",
+    providerEndpoint: "",
+    apiKeyConfigured: false,
+    personality: "calm_engineering",
+    memoryProfile: "window_only",
+    promptAddendum: "",
+    configPath: "",
+    blockingStage: "runtime_offline",
+    nextAction: "start_local_runtime",
+  };
 }
 
 export function WebSessionProvider({ children }: PropsWithChildren) {
@@ -146,20 +136,17 @@ export function WebSessionProvider({ children }: PropsWithChildren) {
   }
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
 
     async function loadMeta() {
       try {
-        const response = await fetch(`${getApiBaseUrl()}/api/meta`, {
-          credentials: "include",
+        const meta = await onboardingApi.loadMeta({
+          signal: controller.signal,
+          skipAuth: true,
         });
-        const payload = await response.json().catch(() => null);
-        if (cancelled || !payload?.data?.auth) {
-          return;
-        }
-        setAuthInfo(payload.data.auth as MetaAuthInfo);
-      } catch {
-        if (!cancelled) {
+        setAuthInfo(meta.auth);
+      } catch (error) {
+        if (!isApiAbortError(error)) {
           setAuthInfo(null);
         }
       }
@@ -167,61 +154,27 @@ export function WebSessionProvider({ children }: PropsWithChildren) {
 
     void loadMeta();
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
 
     async function loadOnboardingStatus() {
       setOnboardingLoading(true);
       try {
-        const headers = new Headers();
-        if (storedToken?.trim()) {
-          headers.set("Authorization", `Bearer ${storedToken.trim()}`);
-        }
-
-        const response = await fetch(`${getApiBaseUrl()}/api/onboard/status`, {
-          credentials: "include",
-          headers,
+        const status = await onboardingApi.loadStatus({
+          signal: controller.signal,
+          authToken: storedToken?.trim() ?? "",
         });
-        const payload = await response.json().catch(() => null);
-
-        if (cancelled) {
-          return;
-        }
-
-        if (payload?.data) {
-          setOnboardingStatus(payload.data as OnboardingStatus);
-        } else {
-          setOnboardingStatus(null);
-        }
-      } catch {
-        if (!cancelled) {
-          setOnboardingStatus({
-            runtimeOnline: false,
-            tokenRequired: authMode !== "same_origin_session",
-            tokenPaired: false,
-            configExists: false,
-            configLoadable: false,
-            providerConfigured: false,
-            providerReachable: false,
-            activeProvider: null,
-            activeModel: "",
-            providerBaseUrl: "",
-            providerEndpoint: "",
-            apiKeyConfigured: false,
-            personality: "calm_engineering",
-            memoryProfile: "window_only",
-            promptAddendum: "",
-            configPath: "",
-            blockingStage: "runtime_offline",
-            nextAction: "start_local_runtime",
-          });
+        setOnboardingStatus(status);
+      } catch (error) {
+        if (!isApiAbortError(error)) {
+          setOnboardingStatus(buildOfflineOnboardingStatus(authMode));
         }
       } finally {
-        if (!cancelled) {
+        if (!controller.signal.aborted) {
           setOnboardingLoading(false);
         }
       }
@@ -229,7 +182,7 @@ export function WebSessionProvider({ children }: PropsWithChildren) {
 
     void loadOnboardingStatus();
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [authMode, authRevision, onboardingRevision, storedToken]);
 
@@ -252,24 +205,26 @@ export function WebSessionProvider({ children }: PropsWithChildren) {
       return;
     }
 
-    let cancelled = false;
+    const controller = new AbortController();
 
     async function tryAutoPair() {
       setAutoPairingInProgress(true);
       try {
-        const result = await onboardingApi.autoPair();
-        if (cancelled) {
-          return;
-        }
+        const result = await onboardingApi.autoPair({
+          signal: controller.signal,
+        });
         if (result.paired) {
           setIsUnauthorized(false);
           setAuthRevision((current) => current + 1);
           setOnboardingRevision((current) => current + 1);
         }
-      } catch {
+      } catch (error) {
+        if (isApiAbortError(error)) {
+          return;
+        }
         // Fall back to manual token entry when lightweight pairing is unavailable.
       } finally {
-        if (!cancelled) {
+        if (!controller.signal.aborted) {
           setAutoPairingInProgress(false);
           setAutoPairingAttempted(true);
         }
@@ -278,7 +233,7 @@ export function WebSessionProvider({ children }: PropsWithChildren) {
 
     void tryAutoPair();
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [
     authRequired,

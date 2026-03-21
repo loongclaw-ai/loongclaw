@@ -1,5 +1,14 @@
-import { apiDelete, apiGet, apiOpenStream, apiPost } from "../../../lib/api/client";
-import type { ApiEnvelope } from "../../../lib/api/types";
+import {
+  apiDelete,
+  apiGetData,
+  apiOpenStream,
+  apiPostData,
+  buildApiUrl,
+  type ApiRequestOptions,
+} from "../../../lib/api/client";
+
+const CHAT_READ_TIMEOUT_MS = 15_000;
+const CHAT_WRITE_TIMEOUT_MS = 30_000;
 
 export interface ChatSessionSummary {
   id: string;
@@ -84,56 +93,79 @@ interface StreamHandlers {
   onEvent: (event: ChatTurnStreamEvent) => void;
 }
 
+function withDefaultTimeout(
+  request: ApiRequestOptions | undefined,
+  timeoutMs: number,
+): ApiRequestOptions {
+  return {
+    ...request,
+    timeoutMs: request?.timeoutMs ?? timeoutMs,
+  };
+}
+
+function parseStreamEvent(rawLine: string, requestTarget: string): ChatTurnStreamEvent {
+  try {
+    return JSON.parse(rawLine) as ChatTurnStreamEvent;
+  } catch {
+    throw new Error(`Failed to parse stream event (${requestTarget}).`);
+  }
+}
+
 export const chatApi = {
-  async listSessions(): Promise<ChatSessionSummary[]> {
-    const response = await apiGet<ApiEnvelope<ChatSessionsResponse>>(
+  async listSessions(request?: ApiRequestOptions): Promise<ChatSessionSummary[]> {
+    const response = await apiGetData<ChatSessionsResponse>(
       "/api/chat/sessions",
+      withDefaultTimeout(request, CHAT_READ_TIMEOUT_MS),
     );
-    return response.data.items;
+    return response.items;
   },
 
-  async loadHistory(sessionId: string): Promise<ChatMessage[]> {
-    const response = await apiGet<ApiEnvelope<ChatHistoryResponse>>(
+  async loadHistory(sessionId: string, request?: ApiRequestOptions): Promise<ChatMessage[]> {
+    const response = await apiGetData<ChatHistoryResponse>(
       `/api/chat/sessions/${encodeURIComponent(sessionId)}/history`,
+      withDefaultTimeout(request, CHAT_READ_TIMEOUT_MS),
     );
-    return response.data.messages;
+    return response.messages;
   },
 
-  async createSession(title?: string): Promise<string> {
-    const response = await apiPost<
-      ApiEnvelope<CreateChatSessionResponse>,
-      { title?: string }
-    >("/api/chat/sessions", title ? { title } : {});
-    return response.data.sessionId;
+  async createSession(title?: string, request?: ApiRequestOptions): Promise<string> {
+    const response = await apiPostData<CreateChatSessionResponse, { title?: string }>(
+      "/api/chat/sessions",
+      title ? { title } : {},
+      withDefaultTimeout(request, CHAT_WRITE_TIMEOUT_MS),
+    );
+    return response.sessionId;
   },
 
   async createTurn(
     sessionId: string,
     input: string,
     toolAssistHint?: string,
+    request?: ApiRequestOptions,
   ): Promise<ChatTurnAccepted> {
-    const response = await apiPost<
-      ApiEnvelope<CreateTurnResponse>,
-      CreateTurnRequest
-    >(`/api/chat/sessions/${encodeURIComponent(sessionId)}/turn`, {
-      input,
-      ...(toolAssistHint ? { toolAssistHint } : {}),
-    });
-    return response.data;
+    return apiPostData<CreateTurnResponse, CreateTurnRequest>(
+      `/api/chat/sessions/${encodeURIComponent(sessionId)}/turn`,
+      {
+        input,
+        ...(toolAssistHint ? { toolAssistHint } : {}),
+      },
+      withDefaultTimeout(request, CHAT_WRITE_TIMEOUT_MS),
+    );
   },
 
   async streamTurn(
     sessionId: string,
     turnId: string,
     handlers: StreamHandlers,
+    request?: ApiRequestOptions,
   ): Promise<void> {
-    const response = await apiOpenStream(
-      `/api/chat/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/stream`,
-    );
+    const streamPath = `/api/chat/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/stream`;
+    const requestTarget = `GET ${buildApiUrl(streamPath)}`;
+    const response = await apiOpenStream(streamPath, request);
 
     const reader = response.body?.getReader();
     if (!reader) {
-      throw new Error("Streaming response body is not available");
+      throw new Error(`Streaming response body is not available (${requestTarget}).`);
     }
 
     const decoder = new TextDecoder();
@@ -154,17 +186,20 @@ export const chatApi = {
         if (!trimmed) {
           continue;
         }
-        handlers.onEvent(JSON.parse(trimmed) as ChatTurnStreamEvent);
+        handlers.onEvent(parseStreamEvent(trimmed, requestTarget));
       }
     }
 
     const trailing = buffer.trim();
     if (trailing) {
-      handlers.onEvent(JSON.parse(trailing) as ChatTurnStreamEvent);
+      handlers.onEvent(parseStreamEvent(trailing, requestTarget));
     }
   },
 
-  async deleteSession(sessionId: string): Promise<void> {
-    await apiDelete(`/api/chat/sessions/${encodeURIComponent(sessionId)}`);
+  async deleteSession(sessionId: string, request?: ApiRequestOptions): Promise<void> {
+    await apiDelete(
+      `/api/chat/sessions/${encodeURIComponent(sessionId)}`,
+      withDefaultTimeout(request, CHAT_WRITE_TIMEOUT_MS),
+    );
   },
 };

@@ -4,6 +4,16 @@ import { Panel } from "../../../components/surfaces/Panel";
 import { ApiRequestError } from "../../../lib/api/client";
 import { useWebConnection } from "../../../hooks/useWebConnection";
 import { onboardingApi } from "../../onboarding/api";
+import {
+  buildPreferencesSavePayload,
+  buildProviderSavePayload,
+  MEMORY_PROFILE_OPTIONS,
+  PERSONALITY_OPTIONS,
+  readProviderSaveError,
+  readProviderValidationFailure,
+  usePreferencesForm,
+  useProviderConfigForm,
+} from "../../onboarding/providerConfig";
 import { DebugConsolePanel } from "../components/DebugConsolePanel";
 import {
   dashboardApi,
@@ -158,15 +168,6 @@ function readDashboardError(
   return error instanceof Error ? error.message : "Failed to load dashboard";
 }
 
-function readProviderValidationFailure(
-  credentialStatus: string,
-  t: ReturnType<typeof useTranslation>["t"],
-): string {
-  return t(`onboarding.validation.statuses.${credentialStatus}`, {
-    defaultValue: t("onboarding.validation.failed"),
-  });
-}
-
 function wait(ms: number) {
   return new Promise((resolve) => {
     window.setTimeout(resolve, ms);
@@ -220,14 +221,15 @@ export default function DashboardPage() {
   const {
     canAccessProtectedApi,
     acceptValidatedOnboardingStatus,
+    onboardingStatus,
+    refreshOnboardingStatus,
     authRevision,
     markUnauthorized,
     status,
     authMode,
     tokenPath,
     tokenEnv,
-  } =
-    useWebConnection();
+  } = useWebConnection();
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [providers, setProviders] = useState<DashboardProviderItem[]>([]);
   const [runtime, setRuntime] = useState<DashboardRuntime | null>(null);
@@ -235,11 +237,6 @@ export default function DashboardPage() {
   const [config, setConfig] = useState<DashboardConfigSnapshot | null>(null);
   const [tools, setTools] = useState<DashboardTools | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [providerKind, setProviderKind] = useState("");
-  const [providerModel, setProviderModel] = useState("");
-  const [providerRoute, setProviderRoute] = useState("");
-  const [providerApiKey, setProviderApiKey] = useState("");
-  const [providerApiKeyDirty, setProviderApiKeyDirty] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
@@ -328,6 +325,17 @@ export default function DashboardPage() {
 
   const activeProvider =
     providers.find((provider) => provider.enabled) ?? providers[0] ?? null;
+  const providerForm = useProviderConfigForm({
+    kind: activeProvider?.id ?? providers[0]?.id ?? "",
+    model: config?.model ?? "",
+    baseUrlOrEndpoint: config?.endpoint ?? "",
+    apiKeyConfigured: config?.apiKeyConfigured ?? false,
+  });
+  const preferencesForm = usePreferencesForm({
+    personality: onboardingStatus?.personality || config?.personality || "calm_engineering",
+    memoryProfile: onboardingStatus?.memoryProfile || config?.memoryProfile || "window_only",
+    promptAddendum: onboardingStatus?.promptAddendum || "",
+  });
   const runtimeTone: Tone =
     runtime?.status === "ready" ? "good" : runtime?.status ? "warn" : "muted";
   const providerTone: Tone = activeProvider?.enabled ? "good" : "muted";
@@ -415,15 +423,6 @@ export default function DashboardPage() {
   ];
   const debugConsoleCommand =
     debugConsole?.command ?? "$ loongclaw web debug --readonly";
-
-  useEffect(() => {
-    setProviderKind(activeProvider?.id ?? providers[0]?.id ?? "");
-    setProviderModel(config?.model ?? "");
-    setProviderRoute(config?.endpoint ?? "");
-    setProviderApiKey(config?.apiKeyConfigured ? config.apiKeyMasked ?? "••••••••" : "");
-    setProviderApiKeyDirty(false);
-    setSettingsError(null);
-  }, [activeProvider?.id, config?.endpoint, config?.model, providers]);
 
   useEffect(() => {
     let cancelled = false;
@@ -516,19 +515,26 @@ export default function DashboardPage() {
         title: t("dashboard.settings.applyPending"),
         body: t("onboarding.validation.pending"),
       });
-      const result = await onboardingApi.applyProvider({
-        kind: providerKind,
-        model: providerModel,
-        baseUrlOrEndpoint: providerRoute,
-        ...(providerApiKeyDirty && providerApiKey.trim()
-          ? { apiKey: providerApiKey.trim() }
-          : {}),
-      });
+      const result = await onboardingApi.applyProvider(
+        buildProviderSavePayload({
+          kind: providerForm.kind,
+          model: providerForm.model,
+          baseUrlOrEndpoint: providerForm.baseUrlOrEndpoint,
+          apiKey: providerForm.apiKey,
+        }),
+      );
       if (result.passed) {
         acceptValidatedOnboardingStatus(result.status);
+        await onboardingApi.savePreferences(
+          buildPreferencesSavePayload({
+            personality: preferencesForm.personality,
+            memoryProfile: preferencesForm.memoryProfile,
+            promptAddendum: preferencesForm.promptAddendum,
+          }),
+        );
+        refreshOnboardingStatus();
         await reloadDashboardData();
-        setProviderApiKey("");
-        setProviderApiKeyDirty(false);
+        providerForm.markApiKeyPristine();
         setSettingsModal({
           phase: "success",
           title: t("dashboard.settings.saved"),
@@ -537,43 +543,31 @@ export default function DashboardPage() {
         setSettingsNotice(t("dashboard.settings.saved"));
         await wait(1100);
       } else {
+        const validationError = readProviderValidationFailure(result.credentialStatus, t);
         setSettingsModal({
           phase: "error",
           title: t("onboarding.validation.failed"),
-          body: readProviderValidationFailure(result.credentialStatus, t),
+          body: validationError,
         });
         await reloadDashboardData();
-        setSettingsError(readProviderValidationFailure(result.credentialStatus, t));
+        setSettingsError(validationError);
         await wait(1600);
       }
     } catch (saveError) {
-      if (saveError instanceof ApiRequestError) {
-        if (saveError.status === 401) {
-          markUnauthorized();
-        }
-        setSettingsError(saveError.message);
-      } else {
-        setSettingsError(t("dashboard.settings.saveFailed"));
+      if (saveError instanceof ApiRequestError && saveError.status === 401) {
+        markUnauthorized();
       }
+      const saveErrorMessage = readProviderSaveError(saveError, t, "dashboard.settings.saveFailed");
+      setSettingsError(saveErrorMessage);
       setSettingsModal({
         phase: "error",
         title: t("dashboard.settings.saveFailed"),
-        body:
-          saveError instanceof ApiRequestError
-            ? saveError.message
-            : t("dashboard.settings.saveFailed"),
+        body: saveErrorMessage,
       });
       await wait(1600);
     } finally {
       setSettingsModal(null);
       setIsSavingSettings(false);
-    }
-  }
-
-  function handleApiKeyFocus() {
-    if (config?.apiKeyConfigured && !providerApiKeyDirty) {
-      setProviderApiKey("");
-      setProviderApiKeyDirty(true);
     }
   }
 
@@ -760,15 +754,9 @@ export default function DashboardPage() {
                   <span className="settings-label">{t("dashboard.settings.activeProvider")}</span>
                   <select
                     className="settings-input"
-                    value={providerKind}
+                    value={providerForm.kind}
                     onChange={(event) => {
-                      const nextKind = event.target.value;
-                      setProviderKind(nextKind);
-                      if (providerRoute === (config?.endpoint ?? "")) {
-                        // Clear the inherited route when switching kinds so save can
-                        // fall back to the selected provider's default endpoint.
-                        setProviderRoute("");
-                      }
+                      providerForm.setKindWithRouteReset(event.target.value);
                     }}
                   >
                     {providers.map((provider) => (
@@ -783,8 +771,8 @@ export default function DashboardPage() {
                   <span className="settings-label">{t("dashboard.settings.model")}</span>
                   <input
                     className="settings-input"
-                    value={providerModel}
-                    onChange={(event) => setProviderModel(event.target.value)}
+                    value={providerForm.model}
+                    onChange={(event) => providerForm.setModel(event.target.value)}
                   />
                 </label>
 
@@ -792,8 +780,10 @@ export default function DashboardPage() {
                   <span className="settings-label">{t("dashboard.settings.endpoint")}</span>
                   <input
                     className="settings-input"
-                    value={providerRoute}
-                    onChange={(event) => setProviderRoute(event.target.value)}
+                    value={providerForm.baseUrlOrEndpoint}
+                    onChange={(event) =>
+                      providerForm.setBaseUrlOrEndpoint(event.target.value)
+                    }
                   />
                 </label>
 
@@ -803,15 +793,14 @@ export default function DashboardPage() {
                     className="settings-input"
                     type="password"
                     autoComplete="off"
-                    value={providerApiKey}
-                    onFocus={handleApiKeyFocus}
+                    value={providerForm.apiKey}
+                    onFocus={providerForm.handleApiKeyFocus}
                     onChange={(event) => {
-                      setProviderApiKey(event.target.value);
-                      setProviderApiKeyDirty(true);
+                      providerForm.setApiKeyValue(event.target.value);
                     }}
                     placeholder={
                       config?.apiKeyConfigured
-                        ? ""
+                        ? t("dashboard.settings.apiKeyPlaceholderConfigured")
                         : t("dashboard.settings.apiKeyPlaceholder")
                     }
                   />
@@ -819,6 +808,57 @@ export default function DashboardPage() {
                     {config?.apiKeyConfigured
                       ? t("dashboard.settings.apiKeyMasked")
                       : t("dashboard.settings.apiKeyHelper")}
+                  </span>
+                </label>
+
+                <label className="settings-field">
+                  <span className="settings-label">{t("onboarding.preferences.personality")}</span>
+                  <select
+                    className="settings-input"
+                    value={preferencesForm.personality}
+                    onChange={(event) => preferencesForm.setPersonality(event.target.value)}
+                  >
+                    {PERSONALITY_OPTIONS.map((item) => (
+                      <option key={item} value={item}>
+                        {item === "calm_engineering"
+                          ? t("onboarding.preferences.personalityCalmEngineering")
+                          : item === "friendly_collab"
+                            ? t("onboarding.preferences.personalityFriendlyCollab")
+                            : t("onboarding.preferences.personalityAutonomousExecutor")}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="settings-field">
+                  <span className="settings-label">{t("onboarding.preferences.memoryProfile")}</span>
+                  <select
+                    className="settings-input"
+                    value={preferencesForm.memoryProfile}
+                    onChange={(event) => preferencesForm.setMemoryProfile(event.target.value)}
+                  >
+                    {MEMORY_PROFILE_OPTIONS.map((item) => (
+                      <option key={item} value={item}>
+                        {item === "window_only"
+                          ? t("onboarding.preferences.memoryProfileWindowOnly")
+                          : item === "window_plus_summary"
+                            ? t("onboarding.preferences.memoryProfileWindowPlusSummary")
+                            : t("onboarding.preferences.memoryProfileProfilePlusWindow")}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="settings-field">
+                  <span className="settings-label">{t("onboarding.preferences.promptAddendum")}</span>
+                  <textarea
+                    className="settings-input settings-textarea"
+                    value={preferencesForm.promptAddendum}
+                    onChange={(event) => preferencesForm.setPromptAddendum(event.target.value)}
+                    placeholder={t("onboarding.preferences.promptAddendumPlaceholder")}
+                  />
+                  <span className="settings-helper">
+                    {t("onboarding.preferences.helper")}
                   </span>
                 </label>
 
