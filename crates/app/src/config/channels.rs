@@ -2342,9 +2342,9 @@ mod tests {
         let off: TelegramStreamingMode = serde_json::from_str("\"off\"").expect("deserialize off");
         assert_eq!(off, TelegramStreamingMode::Off);
 
-        let draft: TelegramStreamingMode = serde_json::from_str("\"draft\"").expect("deserialize draft");
+        let draft: TelegramStreamingMode =
+            serde_json::from_str("\"draft\"").expect("deserialize draft");
         assert_eq!(draft, TelegramStreamingMode::Draft);
-
     }
 
     #[test]

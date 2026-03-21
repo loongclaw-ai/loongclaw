@@ -687,7 +687,9 @@ impl ChannelAdapter for TelegramAdapter {
         let (chat_id, thread_id) = parse_telegram_target(&target.id)?;
 
         let placeholder = "Thinking...";
-        let draft_id = self.send_draft(chat_id, thread_id.as_deref(), placeholder).await?;
+        let draft_id = self
+            .send_draft(chat_id, thread_id.as_deref(), placeholder)
+            .await?;
         let _ = self.update_draft(chat_id, &draft_id, text).await;
         Ok(())
     }
