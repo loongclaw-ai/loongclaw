@@ -96,6 +96,38 @@ pub async fn run_cli_chat(
     session_hint: Option<&str>,
     options: &CliChatOptions,
 ) -> CliResult<()> {
+    let resolved_config_path = config_path
+        .map(config::expand_path)
+        .unwrap_or_else(config::default_config_path);
+
+    if !resolved_config_path.exists() {
+        println!("Welcome to LoongClaw!");
+        println!();
+        println!("No configuration found. Would you like to run the setup wizard now? [Y/n]");
+
+        let mut input = String::new();
+        io::stdin()
+            .read_line(&mut input)
+            .map_err(|e| format!("read stdin failed: {e}"))?;
+        let input = input.trim().to_lowercase();
+
+        if input.is_empty() || input == "y" || input == "yes" {
+            let exit_status = std::process::Command::new("loongclaw")
+                .arg("onboard")
+                .spawn()
+                .map_err(|e| format!("failed to spawn onboard: {e}"))?
+                .wait()
+                .map_err(|e| format!("failed to wait for onboard: {e}"))?;
+
+            if !exit_status.success() {
+                return Err(format!("onboard exited with code {:?}", exit_status.code()));
+            }
+        } else {
+            println!("You can run 'loongclaw onboard' later to get started.");
+        }
+        return Ok(());
+    }
+
     let runtime =
         initialize_cli_turn_runtime(config_path, session_hint, options, "cli-chat").await?;
     print_cli_chat_startup(&runtime, options)?;
