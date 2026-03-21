@@ -5,7 +5,7 @@ use std::{
     net::SocketAddr,
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, Mutex as StdMutex,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -62,12 +62,47 @@ struct WebApiState {
     local_token: String,
     local_token_path: PathBuf,
     turn_streams: Mutex<HashMap<String, mpsc::UnboundedReceiver<String>>>,
+    debug_state: StdMutex<DebugConsoleRuntimeState>,
 }
 
 struct WebTurnEventSink {
+    state: Arc<WebApiState>,
     turn_id: String,
     sender: mpsc::UnboundedSender<String>,
     emitted_text: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Default, Clone)]
+struct DebugConsoleRuntimeState {
+    recent_blocks: Vec<DebugConsoleBlock>,
+}
+
+#[derive(Debug, Clone)]
+struct DebugConsoleBlock {
+    id: String,
+    kind: &'static str,
+    header: String,
+    started_at: String,
+    lines: Vec<String>,
+    tool_calls: usize,
+    delta_chunks: usize,
+    delta_chars: usize,
+}
+
+impl DebugConsoleBlock {
+    fn operation(id: String, kind: &'static str, header: String) -> Self {
+        let started_at = format_timestamp(OffsetDateTime::now_utc().unix_timestamp());
+        Self {
+            id,
+            kind,
+            header,
+            started_at,
+            lines: Vec::new(),
+            tool_calls: 0,
+            delta_chunks: 0,
+            delta_chars: 0,
+        }
+    }
 }
 
 impl mvp::acp::AcpTurnEventSink for WebTurnEventSink {
@@ -88,7 +123,9 @@ impl mvp::acp::AcpTurnEventSink for WebTurnEventSink {
                 "delta": delta,
             }),
         )
-        .map_err(|error| error.message)
+        .map_err(|error| error.message)?;
+        record_message_delta(&self.state, &self.turn_id, delta.as_str());
+        Ok(())
     }
 }
 
@@ -212,6 +249,24 @@ struct DashboardToolsPayload {
     shell_allow_count: usize,
     shell_deny_count: usize,
     items: Vec<DashboardToolItemPayload>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DashboardDebugConsolePayload {
+    generated_at: String,
+    command: String,
+    blocks: Vec<DashboardDebugConsoleBlockPayload>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DashboardDebugConsoleBlockPayload {
+    id: String,
+    kind: &'static str,
+    started_at: String,
+    header: String,
+    lines: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -381,6 +436,7 @@ async fn run_web_serve(config_path: Option<&str>, bind: &str) -> CliResult<()> {
         local_token,
         local_token_path,
         turn_streams: Mutex::new(HashMap::new()),
+        debug_state: StdMutex::new(DebugConsoleRuntimeState::default()),
     });
     let public_api = Router::new()
         .route("/meta", get(meta))
@@ -399,6 +455,7 @@ async fn run_web_serve(config_path: Option<&str>, bind: &str) -> CliResult<()> {
         .route("/dashboard/connectivity", get(dashboard_connectivity))
         .route("/dashboard/config", get(dashboard_config))
         .route("/dashboard/tools", get(dashboard_tools))
+        .route("/dashboard/debug-console", get(dashboard_debug_console))
         .route("/chat/sessions", get(chat_sessions).post(create_chat_session))
         .route("/chat/sessions/{id}", delete(delete_chat_session))
         .route("/chat/sessions/{id}/turn", post(chat_turn))
@@ -671,6 +728,23 @@ async fn dashboard_tools(
     }))
 }
 
+async fn dashboard_debug_console(
+    State(state): State<Arc<WebApiState>>,
+) -> Result<Json<ApiEnvelope<DashboardDebugConsolePayload>>, WebApiError> {
+    let snapshot = load_web_snapshot(state.as_ref())?;
+    let tool_runtime =
+        mvp::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(&snapshot.config, None);
+    let debug_state = snapshot_debug_state(state.as_ref());
+    Ok(Json(ApiEnvelope {
+        ok: true,
+        data: DashboardDebugConsolePayload {
+            generated_at: format_timestamp(OffsetDateTime::now_utc().unix_timestamp()),
+            command: "$ loongclaw web debug --readonly".to_owned(),
+            blocks: build_debug_console_blocks(&snapshot, &tool_runtime, &debug_state),
+        },
+    }))
+}
+
 async fn chat_sessions(
     State(state): State<Arc<WebApiState>>,
 ) -> Result<Json<ApiEnvelope<ChatSessionsPayload>>, WebApiError> {
@@ -713,7 +787,7 @@ async fn chat_history(
     Path(id): Path<String>,
 ) -> Result<Json<ApiEnvelope<ChatHistoryPayload>>, WebApiError> {
     let snapshot = load_web_snapshot(state.as_ref())?;
-    let history = load_session_messages(&snapshot.memory_config, &id)?;
+    let history = load_visible_session_messages(&snapshot.memory_config, &id, 128, 256)?;
 
     if history.is_empty() {
         return Err(WebApiError::not_found(format!(
@@ -723,10 +797,6 @@ async fn chat_history(
 
     let messages = history
         .into_iter()
-        .filter(|turn| {
-            !(turn.role.eq_ignore_ascii_case("assistant")
-                && is_internal_assistant_record(&turn.content))
-        })
         .enumerate()
         .map(|(index, turn)| ChatMessagePayload {
             id: format!("{id}:{index}"),
@@ -894,6 +964,27 @@ fn load_session_messages(
     mvp::memory::window_direct(session_id, 64, memory_config).map_err(WebApiError::internal)
 }
 
+fn load_visible_session_messages(
+    memory_config: &mvp::memory::runtime_config::MemoryRuntimeConfig,
+    session_id: &str,
+    visible_limit: usize,
+    raw_limit: usize,
+) -> Result<Vec<mvp::memory::ConversationTurn>, WebApiError> {
+    let mut turns =
+        mvp::memory::window_direct(session_id, raw_limit, memory_config).map_err(WebApiError::internal)?;
+    turns.retain(|turn| {
+        !(turn.role.eq_ignore_ascii_case("assistant")
+            && is_internal_assistant_record(&turn.content))
+    });
+
+    if turns.len() > visible_limit {
+        let start = turns.len() - visible_limit;
+        Ok(turns.split_off(start))
+    } else {
+        Ok(turns)
+    }
+}
+
 fn build_tool_items(
     config: &mvp::config::LoongClawConfig,
     runtime: &mvp::tools::runtime_config::ToolRuntimeConfig,
@@ -1003,6 +1094,186 @@ fn build_tool_items(
             },
         },
     ]
+}
+
+fn build_debug_console_blocks(
+    snapshot: &WebSnapshot,
+    runtime: &mvp::tools::runtime_config::ToolRuntimeConfig,
+    debug_state: &DebugConsoleRuntimeState,
+) -> Vec<DashboardDebugConsoleBlockPayload> {
+    let now = format_timestamp(OffsetDateTime::now_utc().unix_timestamp());
+    let active_provider = snapshot.config.active_provider_id().unwrap_or("none");
+    let active_model = snapshot.config.provider.model.as_str();
+    let personality = prompt_personality_id(snapshot.config.cli.resolved_personality());
+    let prompt_mode = if snapshot.config.cli.uses_native_prompt_pack() {
+        "native_prompt_pack"
+    } else {
+        "inline_prompt"
+    };
+    let memory_profile = snapshot.config.memory.resolved_profile().as_str();
+    let enabled_tool_count = build_tool_items(&snapshot.config, runtime)
+        .into_iter()
+        .filter(|item| item.enabled)
+        .count();
+
+    let mut blocks = vec![DashboardDebugConsoleBlockPayload {
+        id: "runtime-snapshot".to_owned(),
+        kind: "runtime",
+        started_at: now.clone(),
+        header: format!("{now} runtime snapshot"),
+        lines: vec![
+            format!(
+                "{now} [runtime] ready source=local_daemon provider={active_provider} model={active_model}"
+            ),
+            format!(
+                "{now} [config] prompt={prompt_mode} personality={} memory_profile={memory_profile}",
+                personality
+            ),
+            format!(
+                "{now} [provider] endpoint={}",
+                snapshot.config.provider.endpoint()
+            ),
+            format!(
+                "{now} [tools] enabled={} approval={} shell_default={}",
+                enabled_tool_count,
+                approval_mode_label(snapshot.config.tools.approval.mode),
+                snapshot.config.tools.shell_default_mode
+            ),
+        ],
+    }];
+
+    blocks.extend(
+        debug_state
+            .recent_blocks
+            .iter()
+            .rev()
+            .take(6)
+            .rev()
+            .map(|block| DashboardDebugConsoleBlockPayload {
+                id: block.id.clone(),
+                kind: block.kind,
+                started_at: block.started_at.clone(),
+                header: block.header.clone(),
+                lines: block.lines.clone(),
+            }),
+    );
+
+    if let Some(log_block) = build_log_output_block() {
+        blocks.push(log_block);
+    }
+
+    blocks
+}
+
+fn snapshot_debug_state(state: &WebApiState) -> DebugConsoleRuntimeState {
+    // This clone keeps the console builder simple and avoids holding the mutex
+    // while we format multiple output sections.
+    let Ok(debug) = state.debug_state.lock() else {
+        return DebugConsoleRuntimeState::default();
+    };
+    debug.clone()
+}
+
+fn build_log_output_block() -> Option<DashboardDebugConsoleBlockPayload> {
+    let mut lines = Vec::new();
+    append_log_tail(&mut lines, "web-api", default_web_log_root().join("web-api.log"), 10);
+    append_log_tail(
+        &mut lines,
+        "web-api:err",
+        default_web_log_root().join("web-api.err.log"),
+        8,
+    );
+    append_log_tail(&mut lines, "web-dev", default_web_log_root().join("web-dev.log"), 8);
+    append_log_tail(
+        &mut lines,
+        "web-dev:err",
+        default_web_log_root().join("web-dev.err.log"),
+        8,
+    );
+
+    (!lines.is_empty()).then(|| DashboardDebugConsoleBlockPayload {
+        id: "process-output".to_owned(),
+        kind: "logs",
+        started_at: format_timestamp(OffsetDateTime::now_utc().unix_timestamp()),
+        header: format!(
+            "{} process output",
+            format_timestamp(OffsetDateTime::now_utc().unix_timestamp())
+        ),
+        lines,
+    })
+}
+
+fn default_web_log_root() -> PathBuf {
+    mvp::config::default_loongclaw_home().join("logs")
+}
+
+fn append_log_tail(lines: &mut Vec<String>, label: &str, path: PathBuf, max_lines: usize) {
+    match read_log_tail_lines(path.as_path(), max_lines) {
+        Ok(entries) if entries.is_empty() => {}
+        Ok(entries) => {
+            lines.extend(entries.into_iter().map(|entry| format!("[{label}] {entry}")));
+        }
+        Err(message) => lines.push(format!("[{label}] unavailable {message}")),
+    }
+}
+
+fn truncate_debug_value(value: &str, max_chars: usize) -> String {
+    let mut output = String::new();
+    for (index, ch) in value.chars().enumerate() {
+        if index >= max_chars {
+            output.push_str("...");
+            break;
+        }
+        output.push(ch);
+    }
+    output
+}
+
+fn read_log_tail_lines(path: &std::path::Path, max_lines: usize) -> Result<Vec<String>, String> {
+    if !path.exists() {
+        return Ok(vec!["(missing)".to_owned()]);
+    }
+
+    let bytes = fs::read(path).map_err(|error| error.to_string())?;
+    let content = String::from_utf8_lossy(&bytes);
+    let mut entries = content
+        .lines()
+        .rev()
+        .filter(|line| !line.trim().is_empty())
+        .take(max_lines)
+        .map(strip_ansi_escape_codes)
+        .collect::<Vec<_>>();
+    entries.reverse();
+    Ok(entries)
+}
+
+fn strip_ansi_escape_codes(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let chars: Vec<char> = input.chars().collect();
+    let mut index = 0usize;
+
+    while index < chars.len() {
+        if chars[index] == '\u{1b}' {
+            index += 1;
+            if index < chars.len() && chars[index] == '[' {
+                index += 1;
+                while index < chars.len() {
+                    let ch = chars[index];
+                    index += 1;
+                    if ('@'..='~').contains(&ch) {
+                        break;
+                    }
+                }
+                continue;
+            }
+            continue;
+        }
+
+        output.push(chars[index]);
+        index += 1;
+    }
+
+    output
 }
 
 fn approval_mode_label(mode: mvp::config::GovernedToolApprovalMode) -> &'static str {
@@ -1363,6 +1634,7 @@ async fn run_chat_turn_stream(
                 "createdAt": format_timestamp(OffsetDateTime::now_utc().unix_timestamp()),
             }),
         )?;
+        record_turn_started(&state, &session_id, &turn_id);
 
         mvp::runtime_env::initialize_runtime_environment(
             &snapshot.config,
@@ -1392,6 +1664,7 @@ async fn run_chat_turn_stream(
         let coordinator = mvp::conversation::ConversationTurnCoordinator::new();
         let emitted_text = Arc::new(AtomicBool::new(false));
         let event_sink = WebTurnEventSink {
+            state: state.clone(),
             turn_id: turn_id.clone(),
             sender: sender.clone(),
             emitted_text: emitted_text.clone(),
@@ -1419,6 +1692,7 @@ async fn run_chat_turn_stream(
                 }
                 _ = poll_interval.tick() => {
                     emit_internal_tool_events(
+                        &state,
                         &snapshot.memory_config,
                         &session_id,
                         &turn_id,
@@ -1430,6 +1704,7 @@ async fn run_chat_turn_stream(
         };
 
         emit_internal_tool_events(
+            &state,
             &snapshot.memory_config,
             &session_id,
             &turn_id,
@@ -1452,6 +1727,7 @@ async fn run_chat_turn_stream(
                         "delta": delta,
                     }),
                 )?;
+                record_message_delta(&state, &turn_id, delta.as_str());
                 time::sleep(Duration::from_millis(18)).await;
             }
         }
@@ -1464,6 +1740,7 @@ async fn run_chat_turn_stream(
                 "message": final_message,
             }),
         )?;
+        record_turn_completed(&state, &turn_id);
 
         Ok(())
     }
@@ -1479,6 +1756,7 @@ async fn run_chat_turn_stream(
                 "message": error.message,
             }),
         );
+        record_turn_failed(&state, &session_id, &turn_id, error.code, error.message.as_str());
     }
 
     Ok(())
@@ -1505,6 +1783,177 @@ fn send_stream_event(
         .map_err(|_error| WebApiError::internal("web turn stream receiver dropped"))
 }
 
+fn record_turn_started(state: &Arc<WebApiState>, session_id: &str, turn_id: &str) {
+    let Ok(mut debug) = state.debug_state.lock() else {
+        return;
+    };
+    let started_at = format_timestamp(OffsetDateTime::now_utc().unix_timestamp());
+    let mut block = DebugConsoleBlock::operation(
+        format!("turn:{turn_id}"),
+        "turn",
+        format!("{started_at} dialogue {turn_id}"),
+    );
+    block.lines.push(format!(
+        "{started_at} turn.started session={session_id} turn={turn_id}"
+    ));
+    push_debug_block(&mut debug.recent_blocks, block);
+}
+
+fn record_message_delta(state: &Arc<WebApiState>, turn_id: &str, delta: &str) {
+    let Ok(mut debug) = state.debug_state.lock() else {
+        return;
+    };
+    let Some(last_turn) = find_debug_block_mut(&mut debug.recent_blocks, &format!("turn:{turn_id}"))
+    else {
+        return;
+    };
+
+    last_turn.delta_chunks += 1;
+    last_turn.delta_chars += delta.chars().count();
+    if last_turn.delta_chunks == 1 {
+        last_turn.lines.push(format!(
+            "{} message.delta first_chunk chars={}",
+            format_timestamp(OffsetDateTime::now_utc().unix_timestamp()),
+            delta.chars().count()
+        ));
+    }
+}
+
+fn record_tool_started(
+    state: &Arc<WebApiState>,
+    session_id: &str,
+    turn_id: &str,
+    tool_id: &str,
+    label: &str,
+) {
+    let Ok(mut debug) = state.debug_state.lock() else {
+        return;
+    };
+    if let Some(last_turn) = find_debug_block_mut(&mut debug.recent_blocks, &format!("turn:{turn_id}"))
+    {
+        last_turn.tool_calls += 1;
+        last_turn.lines.push(format!(
+            "{} tool.started {} ({})",
+            format_timestamp(OffsetDateTime::now_utc().unix_timestamp()),
+            label,
+            tool_id
+        ));
+    }
+    let _ = session_id;
+}
+
+fn record_tool_finished(
+    state: &Arc<WebApiState>,
+    session_id: &str,
+    turn_id: &str,
+    tool_id: &str,
+    label: &str,
+    outcome: &str,
+) {
+    let Ok(mut debug) = state.debug_state.lock() else {
+        return;
+    };
+    let at = format_timestamp(OffsetDateTime::now_utc().unix_timestamp());
+    if let Some(last_turn) = find_debug_block_mut(&mut debug.recent_blocks, &format!("turn:{turn_id}"))
+    {
+        last_turn.lines.push(format!(
+            "{at} tool.finished {label} ({tool_id}) outcome={outcome}"
+        ));
+    }
+    let _ = session_id;
+}
+
+fn record_turn_completed(state: &Arc<WebApiState>, turn_id: &str) {
+    let Ok(mut debug) = state.debug_state.lock() else {
+        return;
+    };
+    let Some(last_turn) = find_debug_block_mut(&mut debug.recent_blocks, &format!("turn:{turn_id}"))
+    else {
+        return;
+    };
+    last_turn.lines.push(format!(
+        "{} turn.completed delta_chunks={} delta_chars={} tool_calls={}",
+        format_timestamp(OffsetDateTime::now_utc().unix_timestamp()),
+        last_turn.delta_chunks,
+        last_turn.delta_chars,
+        last_turn.tool_calls
+    ));
+    if last_turn.tool_calls == 0 {
+        last_turn.lines.push(format!(
+            "{} tool.none no real tool invocation was recorded for this turn",
+            format_timestamp(OffsetDateTime::now_utc().unix_timestamp())
+        ));
+    }
+}
+
+fn record_turn_failed(
+    state: &Arc<WebApiState>,
+    session_id: &str,
+    turn_id: &str,
+    code: &str,
+    message: &str,
+) {
+    let Ok(mut debug) = state.debug_state.lock() else {
+        return;
+    };
+    let at = format_timestamp(OffsetDateTime::now_utc().unix_timestamp());
+    if let Some(last_turn) = find_debug_block_mut(&mut debug.recent_blocks, &format!("turn:{turn_id}"))
+    {
+        last_turn.lines.push(format!(
+            "{} turn.failed code={} tool_calls={} message={}",
+            at,
+            code,
+            last_turn.tool_calls,
+            truncate_debug_value(message, 180)
+        ));
+        if last_turn.tool_calls == 0 {
+            last_turn.lines.push(format!(
+                "{} tool.none no real tool invocation was recorded for this turn",
+                format_timestamp(OffsetDateTime::now_utc().unix_timestamp())
+            ));
+        }
+    }
+    let _ = session_id;
+}
+
+fn push_debug_block(blocks: &mut Vec<DebugConsoleBlock>, block: DebugConsoleBlock) {
+    blocks.push(block);
+    trim_debug_blocks(blocks);
+}
+
+fn trim_debug_blocks(blocks: &mut Vec<DebugConsoleBlock>) {
+    if blocks.len() > 24 {
+        let overflow = blocks.len() - 24;
+        blocks.drain(0..overflow);
+    }
+}
+
+fn find_debug_block_mut<'a>(
+    blocks: &'a mut [DebugConsoleBlock],
+    id: &str,
+) -> Option<&'a mut DebugConsoleBlock> {
+    blocks.iter_mut().find(|block| block.id == id)
+}
+
+pub(super) fn record_debug_operation(
+    state: &Arc<WebApiState>,
+    kind: &'static str,
+    title: String,
+    lines: Vec<String>,
+) {
+    let Ok(mut debug) = state.debug_state.lock() else {
+        return;
+    };
+    let at = format_timestamp(OffsetDateTime::now_utc().unix_timestamp());
+    let mut block = DebugConsoleBlock::operation(
+        format!("{kind}:{at}:{}", random::<u32>()),
+        kind,
+        title,
+    );
+    block.lines = lines;
+    push_debug_block(&mut debug.recent_blocks, block);
+}
+
 fn collect_internal_record_keys(turns: &[mvp::memory::ConversationTurn]) -> HashSet<String> {
     turns.iter()
         .filter_map(internal_record_key)
@@ -1517,6 +1966,7 @@ fn internal_record_key(turn: &mvp::memory::ConversationTurn) -> Option<String> {
 }
 
 fn emit_internal_tool_events(
+    state: &Arc<WebApiState>,
     memory_config: &mvp::memory::runtime_config::MemoryRuntimeConfig,
     session_id: &str,
     turn_id: &str,
@@ -1549,6 +1999,23 @@ fn emit_internal_tool_events(
             payload["outcome"] = Value::String(outcome.to_owned());
         }
         send_stream_event(sender, payload)?;
+        match event.outcome {
+            Some(outcome) => record_tool_finished(
+                state,
+                session_id,
+                turn_id,
+                event.tool_id.as_str(),
+                event.label.as_str(),
+                outcome,
+            ),
+            None => record_tool_started(
+                state,
+                session_id,
+                turn_id,
+                event.tool_id.as_str(),
+                event.label.as_str(),
+            ),
+        }
     }
     Ok(())
 }

@@ -131,6 +131,27 @@
     "reload": "Reload runtime",
     "helper": "These actions are still a UI shell. The controlled write path will be wired in a later phase."
   },
+  "debug": {
+    "title": "Debug Console",
+    "subtitle": "Inspect recent runtime operations in a read-only console view.",
+    "open": "Debug Console",
+    "back": "Back to Dashboard",
+    "eyebrow": "Runtime / Debug Console",
+    "panelTitle": "Read-only debug view",
+    "loading": "Loading runtime and log output...",
+    "errorHeader": "Error",
+    "blocks": {
+      "runtime": "{{at}} runtime snapshot",
+      "turn": "{{at}} dialogue",
+      "tool": "{{at}} tool call",
+      "providerApply": "{{at}} provider apply",
+      "providerValidate": "{{at}} provider validation",
+      "providerError": "{{at}} provider error",
+      "preferences": "{{at}} preferences update",
+      "tokenPairing": "{{at}} token pairing",
+      "logs": "{{at}} process output"
+    }
+  },
   "settings": {
     "eyebrow": "Provider Settings",
     "title": "Provider configuration",

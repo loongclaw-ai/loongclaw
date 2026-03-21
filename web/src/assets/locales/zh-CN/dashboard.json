@@ -131,6 +131,27 @@
     "reload": "重新加载 Runtime",
     "helper": "这些动作目前仍然是界面壳子。受控写入链路会在后续阶段接入。"
   },
+  "debug": {
+    "title": "调试控制台",
+    "subtitle": "在一个只读控制台里查看最近的 runtime 操作与调试输出。",
+    "open": "调试控制台",
+    "back": "返回 Dashboard",
+    "eyebrow": "Runtime / Debug Console",
+    "panelTitle": "只读调试视图",
+    "loading": "正在加载运行态与日志输出...",
+    "errorHeader": "错误",
+    "blocks": {
+      "runtime": "{{at}} 运行快照",
+      "turn": "{{at}} 对话反馈",
+      "tool": "{{at}} 工具调用",
+      "providerApply": "{{at}} Provider 应用",
+      "providerValidate": "{{at}} Provider 验证",
+      "providerError": "{{at}} Provider 错误",
+      "preferences": "{{at}} 偏好设置更新",
+      "tokenPairing": "{{at}} Token 配对",
+      "logs": "{{at}} 进程输出"
+    }
+  },
   "settings": {
     "eyebrow": "Provider Settings",
     "title": "Provider 配置",

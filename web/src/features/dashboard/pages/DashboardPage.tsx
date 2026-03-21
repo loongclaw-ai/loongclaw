@@ -7,6 +7,8 @@ import { onboardingApi } from "../../onboarding/api";
 import {
   dashboardApi,
   type DashboardConnectivity,
+  type DashboardDebugConsole,
+  type DashboardDebugConsoleBlock,
   type DashboardConfigSnapshot,
   type DashboardProviderItem,
   type DashboardRuntime,
@@ -37,6 +39,55 @@ interface ConnectivityPresentation {
   summary: string;
   recommendation: string;
   probe: string;
+}
+
+type DebugLineTone =
+  | "plain"
+  | "section"
+  | "command"
+  | "path"
+  | "success"
+  | "error"
+  | "warn"
+  | "muted";
+
+function classifyDebugLine(line: string): DebugLineTone {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return "muted";
+  }
+  if (trimmed.startsWith("$ ")) {
+    return "command";
+  }
+  if (/^\[[^\]]+\]$/.test(trimmed)) {
+    return "section";
+  }
+  if (/\[(provider:error|web-api:err|web-dev:err)\]/i.test(trimmed)) {
+    return "error";
+  }
+  if (/\[(turn|tool)\]/i.test(trimmed)) {
+    return "warn";
+  }
+  if (/\[(runtime|config|provider|tools|web-api|web-dev)\]/i.test(trimmed)) {
+    return "section";
+  }
+  if (trimmed.startsWith("path=") || trimmed.includes(" path=")) {
+    return "path";
+  }
+  if (
+    /(turn\.failed|error|failed|unavailable|denied|transport_failure|Request failed)/i.test(
+      trimmed,
+    )
+  ) {
+    return "error";
+  }
+  if (/(ready|completed|outcome=ok|\bok\b|enabled=true)/i.test(trimmed)) {
+    return "success";
+  }
+  if (/(started|pending|loading|in progress|outcome=started)/i.test(trimmed)) {
+    return "warn";
+  }
+  return "plain";
 }
 
 function formatApprovalMode(
@@ -239,6 +290,9 @@ export default function DashboardPage() {
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [isRefreshingDiagnostics, setIsRefreshingDiagnostics] = useState(false);
   const [settingsModal, setSettingsModal] = useState<SettingsModalState | null>(null);
+  const [showDebugConsole, setShowDebugConsole] = useState(false);
+  const [debugConsole, setDebugConsole] = useState<DashboardDebugConsole | null>(null);
+  const [debugConsoleError, setDebugConsoleError] = useState<string | null>(null);
 
   async function reloadDashboardData() {
     setError(null);
@@ -392,6 +446,17 @@ export default function DashboardPage() {
   ];
 
   const toolItems: DashboardToolItem[] = tools?.items ?? [];
+  const debugConsoleBlocks: DashboardDebugConsoleBlock[] = debugConsole?.blocks ?? [
+    {
+      id: "loading",
+      kind: "loading",
+      startedAt: "",
+      header: "Loading runtime and log output...",
+      lines: [],
+    },
+  ];
+  const debugConsoleCommand =
+    debugConsole?.command ?? "$ loongclaw web debug --readonly";
 
   useEffect(() => {
     setProviderKind(activeProvider?.id ?? providers[0]?.id ?? "");
@@ -401,6 +466,61 @@ export default function DashboardPage() {
     setProviderApiKeyDirty(false);
     setSettingsError(null);
   }, [activeProvider?.id, config?.endpoint, config?.model, providers]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+
+    if (!showDebugConsole || !canAccessProtectedApi) {
+      return () => {
+        cancelled = true;
+        if (timer) {
+          window.clearInterval(timer);
+        }
+      };
+    }
+
+    async function refreshDebugConsole() {
+      try {
+        const payload = await dashboardApi.loadDebugConsole();
+        if (!cancelled) {
+          setDebugConsole(payload);
+          setDebugConsoleError(null);
+        }
+      } catch (loadError) {
+        if (!cancelled) {
+          setDebugConsoleError(
+            readDashboardError(
+              loadError,
+              t,
+              markUnauthorized,
+              tokenPath,
+              tokenEnv,
+            ),
+          );
+        }
+      }
+    }
+
+    void refreshDebugConsole();
+    timer = window.setInterval(() => {
+      void refreshDebugConsole();
+    }, 4000);
+
+    return () => {
+      cancelled = true;
+      if (timer) {
+        window.clearInterval(timer);
+      }
+    };
+  }, [
+    canAccessProtectedApi,
+    markUnauthorized,
+    showDebugConsole,
+    t,
+    tokenEnv,
+    tokenPath,
+  ]);
 
   async function handleRefreshDiagnostics() {
     setSettingsError(null);
@@ -510,46 +630,120 @@ export default function DashboardPage() {
       ) : null}
 
       <section className="hero-block">
-        <div className="hero-eyebrow">{t("dashboard.eyebrow")}</div>
-        <h1 className="hero-title">{t("dashboard.title")}</h1>
-        <p className="hero-subtitle">{t("dashboard.subtitle")}</p>
-      </section>
+        <div className="dashboard-hero-head">
+          <div>
+            <div className="hero-eyebrow">{t("dashboard.eyebrow")}</div>
+            <h1 className="hero-title">
+              {showDebugConsole
+                ? t("dashboard.debug.title", { defaultValue: "调试控制台" })
+                : t("dashboard.title")}
+            </h1>
+            <p className="hero-subtitle">
+              {showDebugConsole
+                ? t("dashboard.debug.subtitle", {
+                    defaultValue: "在一个只读的终端视图里查看当前 runtime、provider、工具与配置快照。",
+                  })
+                : t("dashboard.subtitle")}
+            </p>
+          </div>
 
-      <section className="dashboard-summary-grid">
-        {summaryCards.map((card) => (
-          <article key={card.key} className="dashboard-stat-card">
-            <div className="dashboard-stat-top">
-              <div className="dashboard-stat-label">{t(`dashboard.cards.${card.key}`)}</div>
-              <span className={`dashboard-pill dashboard-pill-${card.tone}`}>{card.chip}</span>
-            </div>
-            <div className="dashboard-stat-value">{card.value}</div>
-            <div className="dashboard-stat-list">
-              {card.items.map((item) => (
-                <div key={item.label} className="dashboard-stat-row">
-                  <span>{item.label}</span>
-                  <strong title={item.value}>{item.value}</strong>
-                </div>
-              ))}
-            </div>
-          </article>
-        ))}
-      </section>
-
-      {error ? <div className="empty-state dashboard-error">{error}</div> : null}
-
-      <section className="dashboard-layout">
-        <div className="dashboard-main-column">
-          <Panel
-            eyebrow={t("dashboard.sections.providerEyebrow")}
-            title={t("dashboard.sections.providerTitle")}
-            aside={
-              <span className={`dashboard-pill dashboard-pill-${providerTone}`}>
-                {activeProvider?.enabled
-                  ? t("dashboard.values.active")
-                  : t("dashboard.values.inactive")}
-              </span>
-            }
+          <button
+            type="button"
+            className="hero-btn hero-btn-secondary dashboard-debug-toggle"
+            onClick={() => setShowDebugConsole((value) => !value)}
           >
+            {showDebugConsole
+              ? t("dashboard.debug.back", { defaultValue: "返回 Dashboard" })
+              : t("dashboard.debug.open", { defaultValue: "Debug Console" })}
+          </button>
+        </div>
+      </section>
+
+      {showDebugConsole ? (
+        <section className="dashboard-debug-shell">
+          <Panel
+            className="dashboard-debug-panel"
+            eyebrow={t("dashboard.debug.eyebrow", { defaultValue: "Runtime / Debug Console" })}
+            title={t("dashboard.debug.panelTitle", { defaultValue: "只读调试视图" })}
+          >
+            <div className="dashboard-debug-terminal" role="log" aria-live="polite">
+              <div className="dashboard-debug-command">{debugConsoleCommand}</div>
+              <div className="dashboard-debug-lines">
+                {debugConsoleBlocks.map((block) => (
+                  <section
+                    key={block.id}
+                    className={`dashboard-debug-block dashboard-debug-block-${block.kind}`}
+                  >
+                    <div className="dashboard-debug-block-header">{block.header}</div>
+                    <div className="dashboard-debug-block-lines">
+                      {block.lines.length > 0 ? (
+                        block.lines.map((line, index) => (
+                          <div
+                            key={`${block.id}-${index}-${line}`}
+                            className={`dashboard-debug-line dashboard-debug-line-${classifyDebugLine(line)}`}
+                          >
+                            {line || "\u00A0"}
+                          </div>
+                        ))
+                      ) : (
+                        <div className="dashboard-debug-line dashboard-debug-line-muted">
+                          {block.kind === "loading" ? "\u00A0" : t("dashboard.values.notSet")}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                ))}
+                {debugConsoleError ? (
+                  <section className="dashboard-debug-block dashboard-debug-block-error">
+                    <div className="dashboard-debug-block-header">ERROR</div>
+                    <div className="dashboard-debug-block-lines">
+                      <div className="dashboard-debug-line dashboard-debug-line-error">
+                        {debugConsoleError}
+                      </div>
+                    </div>
+                  </section>
+                ) : null}
+              </div>
+            </div>
+          </Panel>
+        </section>
+      ) : (
+        <>
+          <section className="dashboard-summary-grid">
+            {summaryCards.map((card) => (
+              <article key={card.key} className="dashboard-stat-card">
+                <div className="dashboard-stat-top">
+                  <div className="dashboard-stat-label">{t(`dashboard.cards.${card.key}`)}</div>
+                  <span className={`dashboard-pill dashboard-pill-${card.tone}`}>{card.chip}</span>
+                </div>
+                <div className="dashboard-stat-value">{card.value}</div>
+                <div className="dashboard-stat-list">
+                  {card.items.map((item) => (
+                    <div key={item.label} className="dashboard-stat-row">
+                      <span>{item.label}</span>
+                      <strong title={item.value}>{item.value}</strong>
+                    </div>
+                  ))}
+                </div>
+              </article>
+            ))}
+          </section>
+
+          {error ? <div className="empty-state dashboard-error">{error}</div> : null}
+
+          <section className="dashboard-layout">
+            <div className="dashboard-main-column">
+              <Panel
+                eyebrow={t("dashboard.sections.providerEyebrow")}
+                title={t("dashboard.sections.providerTitle")}
+                aside={
+                  <span className={`dashboard-pill dashboard-pill-${providerTone}`}>
+                    {activeProvider?.enabled
+                      ? t("dashboard.values.active")
+                      : t("dashboard.values.inactive")}
+                  </span>
+                }
+              >
             <div className="dashboard-provider-head">
               <div>
                 <div className="dashboard-provider-name">
@@ -623,13 +817,13 @@ export default function DashboardPage() {
                 <div className="empty-state">{t("dashboard.values.noProviders")}</div>
               )}
             </div>
-          </Panel>
+              </Panel>
 
-          <section className="dashboard-settings">
-            <Panel
-              eyebrow={t("dashboard.settings.eyebrow")}
-              title={t("dashboard.settings.title")}
-            >
+              <section className="dashboard-settings">
+                <Panel
+                  eyebrow={t("dashboard.settings.eyebrow")}
+                  title={t("dashboard.settings.title")}
+                >
               <div className="settings-header">
                 <p className="panel-copy">{t("dashboard.settings.subtitle")}</p>
               </div>
@@ -729,15 +923,15 @@ export default function DashboardPage() {
 
                 <p className="settings-note">{t("dashboard.settings.helper")}</p>
               </form>
-            </Panel>
-          </section>
-        </div>
+                </Panel>
+              </section>
+            </div>
 
-        <div className="dashboard-side-column">
-          <Panel
-            eyebrow={t("dashboard.sections.connectivityEyebrow")}
-            title={t("dashboard.sections.connectivityTitle")}
-          >
+            <div className="dashboard-side-column">
+              <Panel
+                eyebrow={t("dashboard.sections.connectivityEyebrow")}
+                title={t("dashboard.sections.connectivityTitle")}
+              >
             <p className="panel-copy">{connectivityCopy.summary}</p>
             <div className="dashboard-kv-list">
               <div className="dashboard-kv-row">
@@ -771,12 +965,12 @@ export default function DashboardPage() {
                 </strong>
               </div>
             </div>
-          </Panel>
+              </Panel>
 
-          <Panel
-            eyebrow={t("dashboard.sections.runtimeEyebrow")}
-            title={t("dashboard.sections.runtimeTitle")}
-          >
+              <Panel
+                eyebrow={t("dashboard.sections.runtimeEyebrow")}
+                title={t("dashboard.sections.runtimeTitle")}
+              >
             <div className="dashboard-stacked-section">
               <div className="dashboard-section-heading">
                 {t("dashboard.sections.runtimeDetailLabel")}
@@ -856,12 +1050,12 @@ export default function DashboardPage() {
                 </div>
               </div>
             </div>
-          </Panel>
+              </Panel>
 
-          <Panel
-            eyebrow={t("dashboard.sections.toolsEyebrow")}
-            title={t("dashboard.sections.toolsTitle")}
-          >
+              <Panel
+                eyebrow={t("dashboard.sections.toolsEyebrow")}
+                title={t("dashboard.sections.toolsTitle")}
+              >
             <div className="dashboard-tool-summary">
               <div className="dashboard-kv-card">
                 <span>{t("dashboard.fields.approval")}</span>
@@ -906,9 +1100,11 @@ export default function DashboardPage() {
                 </article>
               ))}
             </div>
-          </Panel>
-        </div>
-      </section>
+              </Panel>
+            </div>
+          </section>
+        </>
+      )}
     </div>
   );
 }

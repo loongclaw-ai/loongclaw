@@ -68,6 +68,20 @@ export interface DashboardTools {
   items: DashboardToolItem[];
 }
 
+export interface DashboardDebugConsole {
+  generatedAt: string;
+  command: string;
+  blocks: DashboardDebugConsoleBlock[];
+}
+
+export interface DashboardDebugConsoleBlock {
+  id: string;
+  kind: string;
+  startedAt: string;
+  header: string;
+  lines: string[];
+}
+
 export interface DashboardProviderItem {
   id: string;
   label: string;
@@ -123,6 +137,13 @@ export const dashboardApi = {
   async loadTools(): Promise<DashboardTools> {
     const response = await apiGet<ApiEnvelope<DashboardTools>>(
       "/api/dashboard/tools",
+    );
+    return response.data;
+  },
+
+  async loadDebugConsole(): Promise<DashboardDebugConsole> {
+    const response = await apiGet<ApiEnvelope<DashboardDebugConsole>>(
+      "/api/dashboard/debug-console",
     );
     return response.data;
   },

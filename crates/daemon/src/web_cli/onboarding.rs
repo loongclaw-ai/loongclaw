@@ -99,6 +99,23 @@ pub(super) async fn onboard_provider(
     mvp::config::write(Some(path_string.as_str()), &config, true)
         .map_err(WebApiError::internal)?;
 
+    record_debug_operation(
+        &state,
+        "provider_apply",
+        format!(
+            "{} provider config saved",
+            format_timestamp(OffsetDateTime::now_utc().unix_timestamp())
+        ),
+        vec![
+            format!("provider.kind={}", request.kind.trim()),
+            format!("provider.model={}", request.model.trim()),
+            format!(
+                "provider.route={}",
+                request.base_url_or_endpoint.trim()
+            ),
+        ],
+    );
+
     let payload = build_onboard_status_payload(state.as_ref(), true).await;
     Ok(Json(ApiEnvelope {
         ok: true,
@@ -128,6 +145,26 @@ pub(super) async fn onboard_provider_apply(
         status.blocking_stage = "ready";
         status.next_action = "open_chat";
     }
+
+    record_debug_operation(
+        &state,
+        "provider_apply",
+        format!(
+            "{} provider apply {}",
+            format_timestamp(OffsetDateTime::now_utc().unix_timestamp()),
+            if validation.passed() { "passed" } else { "failed" }
+        ),
+        vec![
+            format!("provider.kind={}", request.kind.trim()),
+            format!("provider.model={}", request.model.trim()),
+            format!(
+                "provider.route={}",
+                request.base_url_or_endpoint.trim()
+            ),
+            format!("endpoint_status={}", validation.endpoint_status),
+            format!("credential_status={}", validation.credential_status),
+        ],
+    );
 
     Ok(Json(ApiEnvelope {
         ok: true,
@@ -286,6 +323,29 @@ pub(super) async fn onboard_preferences(
     mvp::config::write(Some(path_string.as_str()), &config, true)
         .map_err(WebApiError::internal)?;
 
+    record_debug_operation(
+        &state,
+        "preferences_apply",
+        format!(
+            "{} preferences updated",
+            format_timestamp(OffsetDateTime::now_utc().unix_timestamp())
+        ),
+        vec![
+            format!("personality={}", request.personality.trim()),
+            format!("memory_profile={}", request.memory_profile.trim()),
+            format!(
+                "prompt_addendum={}",
+                request
+                    .prompt_addendum
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|_| "configured")
+                    .unwrap_or("empty")
+            ),
+        ],
+    );
+
     let payload = build_onboard_status_payload(state.as_ref(), true).await;
     Ok(Json(ApiEnvelope {
         ok: true,
@@ -308,6 +368,15 @@ pub(super) async fn onboard_pairing_auto(
         mode: "cookie",
         status: build_onboard_status_payload(state.as_ref(), true).await,
     };
+    record_debug_operation(
+        &state,
+        "token_pairing",
+        format!(
+            "{} token pairing auto",
+            format_timestamp(OffsetDateTime::now_utc().unix_timestamp())
+        ),
+        vec!["pairing.mode=cookie".to_owned(), "pairing.result=paired".to_owned()],
+    );
     let mut response = Json(ApiEnvelope {
         ok: true,
         data: payload,
@@ -351,6 +420,22 @@ pub(super) async fn onboard_validate(
         status.blocking_stage = "provider_unreachable";
         status.next_action = "validate_provider_route";
     }
+
+    record_debug_operation(
+        &state,
+        "provider_validate",
+        format!(
+            "{} provider validate {}",
+            format_timestamp(OffsetDateTime::now_utc().unix_timestamp()),
+            if validation.passed() { "passed" } else { "failed" }
+        ),
+        vec![
+            format!("provider={}", snapshot.config.provider.kind.profile().id),
+            format!("model={}", snapshot.config.provider.model),
+            format!("endpoint_status={}", validation.endpoint_status),
+            format!("credential_status={}", validation.credential_status),
+        ],
+    );
 
     Ok(Json(ApiEnvelope {
         ok: true,

@@ -1,20 +1,23 @@
 # LoongClaw Web 技术栈与目录结构
 
 状态：已进入可用 MVP，持续迭代中  
-最后更新：2026-03-20
+最后更新：2026-03-21
 
 ## 1. 目标
 
 `web/` 目录承载 LoongClaw 的本地优先 Web Console。
 
 当前目标不是独立云端产品，而是基于现有 runtime 提供：
+
 - Web Chat
 - Web Dashboard
 - 首次进入 / onboarding
+- 本地诊断与调试入口
 
 ## 2. 当前技术栈
 
 前端主栈：
+
 - React
 - TypeScript
 - Vite
@@ -23,7 +26,9 @@
 - CSS Variables + 自定义主题样式
 
 后端承接：
+
 - `crates/daemon/src/web_cli.rs`
+- `crates/daemon/src/web_cli/onboarding.rs`
 - Axum 本地 API
 
 ## 3. 当前目录
@@ -69,60 +74,77 @@ web/
 ### `web/src/features/chat/`
 
 承载：
+
 - session 列表
 - history
 - turn 创建
 - turn 流式读取
 - 生成中状态
+- 轻量消息渲染
 
 ### `web/src/features/dashboard/`
 
 承载：
+
 - runtime 摘要
 - tools 摘要
 - config 摘要
 - connectivity 诊断
 - provider 最小写入入口
+- Debug Console 入口
 
 ### `web/src/features/onboarding/`
 
 承载：
+
 - onboarding 状态读取
 - provider 最小写入
+- preferences 轻配置写入
 - validate 放行
+- token pairing 流程
 
 ### `web/src/contexts/`
 
 当前主要管理：
+
 - Web 会话连接状态
-- token 状态
+- token / pairing 状态
 - onboarding 状态与放行
 
 ### `web/src/styles/`
 
 当前已开始温和拆分：
+
 - `variables.css`：设计 token
 - `themes.css`：主题映射
-- `dashboard.css`：dashboard 与 onboarding 表单样式
-- `index.css`：全局、chat、共享布局样式
+- `dashboard.css`：Dashboard 与 Debug Console
+- `index.css`：全局、Chat 与共享布局样式
 
 ## 5. 运行约定
 
 开发模式：
+
 - 前端：`vite dev`
 - 后端：`loongclaw web serve --bind 127.0.0.1:4317`
 
 默认访问：
+
 - 前端：`http://127.0.0.1:4173/`
 - 后端：`http://127.0.0.1:4317/`
 
 推荐脚本：
-- `scripts/web/start-dev.ps1`
-- `scripts/web/stop-dev.ps1`
+
+- Windows
+  - `scripts/web/start-dev.ps1`
+  - `scripts/web/stop-dev.ps1`
+- macOS / Linux
+  - `scripts/web/start-dev.sh`
+  - `scripts/web/stop-dev.sh`
 
 ## 6. 日志位置
 
 运行日志统一落在用户目录，不再写回仓库：
+
 - `%USERPROFILE%\\.loongclaw\\logs\\web-dev.log`
 - `%USERPROFILE%\\.loongclaw\\logs\\web-dev.err.log`
 - `%USERPROFILE%\\.loongclaw\\logs\\web-api.log`
@@ -133,6 +155,7 @@ web/
 ### O1：首次进入状态检测
 
 已落地：
+
 - `GET /api/onboard/status`
 - 首屏状态面板
 - ready 状态确认进入
@@ -140,11 +163,13 @@ web/
 ### O2：最小 provider 可写配置
 
 已落地：
+
 - `POST /api/onboard/provider`
 - onboarding 表单
-- dashboard `Provider Settings` 写入
+- Dashboard `Provider Settings`
 
 当前支持字段：
+
 - provider kind
 - model
 - base_url / endpoint
@@ -153,50 +178,66 @@ web/
 ### O3：验证与放行
 
 已落地：
+
 - `POST /api/onboard/validate`
-- 先验证，再放行进入 Web
+- `POST /api/onboard/provider/apply`
+- 应用后在当前页验证，而不是强制回 onboarding
 
 ### O4：token / pairing 收口
 
 已部分落地：
-- token 输入已进入 onboarding 面板
-- 顶部零散 token banner 已移除
-- Web 会优先尝试一次轻自动配对
-- 自动配对成功后，通过本地受信 cookie 建立当前浏览器会话的配对状态
-- 自动配对失败时，再回退到手动输入 token
 
-未完成部分：
-- 安装态 / 同源态下更顺滑的自动配对
-- 更长期的无感鉴权验证
+- token 输入已进入 onboarding
+- 顶部散落 token banner 已移除
+- 轻自动配对 + 手动兜底
 
-## 8. 可选安装现状
+### O2.5：轻配置项
 
-当前还没有完整的安装形态。
+已部分落地：
 
-现阶段只有：
-- `loongclaw web serve`
-- 开发态 / 本地 API 驱动的 Web Console
+- `personality`
+- `memory_profile`
+- `prompt addendum`
 
-尚未落地：
-- `web install`
-- `web remove`
-- `web status`
-- 静态资源安装与托管闭环
+当前优先落在 onboarding 首屏的“可选个性化设置”。
 
-长期方向上，如果同时考虑“可选安装”和“官方 host”，Web 产品态更适合向同源设计收敛；开发态则继续允许 `vite dev + 本地 API` 的分离结构。
+### Debug Console
 
-## 9. Debug / Runtime Console 方向
+已落地第一版：
 
-后续 Web 可能会补一个面向观测与调试的控制台，但当前更推荐：
+- Dashboard 内嵌切换
+- 只读
+- 终端风格
+- 以“操作块”形式展示最近事件
 
-- 先做 Runtime / Debug Console
-- 展示事件流、tool 调用、provider 诊断、session 元信息
-- 暂不直接做完整浏览器终端
+## 8. 当前仍未完成
 
-## 10. 接下来最适合的工作
+- 完整的 Dashboard 轻配置项写入闭环
+- 更像真实 CLI 的连续输出流
+- 更完整的 tool trace / event timeline
+- 安装态 / 同源态能力
+- `web install / remove / status`
+- 更强的 provider / tool doctor
+
+## 9. 近期值得关注的新事项
+
+这段时间新增且会影响后续开发的事项：
+
+- Debug Console 已从“卡片拼接”转向“操作块分段”展示
+- Chat 历史已改成按**可见消息**计数
+- Dashboard 工具区已对齐更多 runtime 能力：
+  - `web_search`
+  - `browser_companion`
+  - `file_tools`
+- macOS 启停脚本已补齐
+- provider apply 已收成当前页验证流程
+
+## 10. 接下来最适合继续做什么
 
 推荐顺序：
-1. 继续补齐 O4，把 token 流程做完整
-2. 做 O2.5，把轻配置项补进 Web
-3. 继续拆分大文件，降低维护成本
-4. 之后再进入可选安装能力实现
+
+1. 继续打磨 Debug Console 的输出质量和分段可读性
+2. 把更多轻配置项稳妥接到 Dashboard
+3. 推动后端修复 `tool.search` 的中文 / 泛化召回
+4. 继续温和拆分大文件，降低长期维护成本
+5. 再进入可选安装与同源产品态实现
