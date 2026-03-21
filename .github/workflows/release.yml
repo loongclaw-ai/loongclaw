@@ -14,7 +14,6 @@ env:
   BIN_NAME: loongclaw
   PACKAGE_NAME: loongclaw
   CROSS_VERSION: "0.2.5"
-  LINUX_ARM64_GLIBC_FLOOR: "2.17"
 
 jobs:
   verify-release:
@@ -72,6 +71,11 @@ jobs:
             ext: ""
             archive: tar.gz
           - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            ext: ""
+            archive: tar.gz
+            install_musl_tools: true
+          - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             ext: ""
             archive: tar.gz
@@ -104,6 +108,10 @@ jobs:
 
       - name: Cache Cargo Artifacts
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+
+      - name: Install musl tools
+        if: matrix.install_musl_tools == true
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Install cross (if needed)
         if: matrix.use_cross == true
@@ -145,9 +153,14 @@ jobs:
           $hash = (Get-FileHash -Algorithm SHA256 "dist/$archive").Hash.ToLowerInvariant()
           Set-Content -Path "dist/$archive.sha256" -Value "$hash  $archive"
 
-      - name: Verify glibc floor (Linux ARM64 only)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: ./scripts/check_glibc_floor.sh "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}" "${{ env.LINUX_ARM64_GLIBC_FLOOR }}"
+      - name: Verify glibc floor (Linux GNU targets)
+        if: endsWith(matrix.target, '-unknown-linux-gnu')
+        shell: bash
+        run: |
+          set -euo pipefail
+          . ./scripts/release_artifact_lib.sh
+          max_glibc="$(release_gnu_glibc_floor_for_target "${{ matrix.target }}")"
+          ./scripts/check_glibc_floor.sh "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}" "$max_glibc"
 
       - name: Upload packaged artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f

@@ -57,17 +57,44 @@ EOF
     "loongclaw-v0.1.2-aarch64-unknown-linux-gnu.tar.gz" \
     "$(release_archive_name "loongclaw" "v0.1.2" "aarch64-unknown-linux-gnu")"
   assert_equals \
+    "loongclaw-v0.1.2-x86_64-unknown-linux-musl.tar.gz" \
+    "$(release_archive_name "loongclaw" "v0.1.2" "x86_64-unknown-linux-musl")"
+  assert_equals \
     "loongclaw-v0.1.2-x86_64-pc-windows-msvc.zip" \
     "$(release_archive_name "loongclaw" "v0.1.2" "x86_64-pc-windows-msvc")"
   assert_equals \
     "loongclaw-v0.1.2-x86_64-pc-windows-msvc.zip.sha256" \
     "$(release_archive_checksum_name "loongclaw" "v0.1.2" "x86_64-pc-windows-msvc")"
   assert_equals \
+    "loongclaw-v0.1.2-x86_64-unknown-linux-musl.tar.gz.sha256" \
+    "$(release_archive_checksum_name "loongclaw" "v0.1.2" "x86_64-unknown-linux-musl")"
+  assert_equals \
     "x86_64-unknown-linux-gnu" \
     "$(release_target_for_platform "Linux" "x86_64")"
   assert_equals \
     "aarch64-unknown-linux-gnu" \
     "$(release_target_for_platform "Linux" "arm64")"
+  assert_equals \
+    $'gnu\nmusl' \
+    "$(release_supported_linux_libcs_for_arch "x86_64")"
+  assert_equals \
+    "gnu" \
+    "$(release_supported_linux_libcs_for_arch "aarch64")"
+  assert_equals \
+    "x86_64-unknown-linux-musl" \
+    "$(release_linux_target_for_arch_and_libc "x86_64" "musl")"
+  assert_equals \
+    "x86_64-unknown-linux-gnu" \
+    "$(release_linux_target_for_arch_and_libc "x86_64" "gnu")"
+  assert_equals \
+    "aarch64-unknown-linux-gnu" \
+    "$(release_linux_target_for_arch_and_libc "aarch64" "gnu")"
+  assert_equals \
+    "2.39" \
+    "$(release_gnu_glibc_floor_for_target "x86_64-unknown-linux-gnu")"
+  assert_equals \
+    "2.17" \
+    "$(release_gnu_glibc_floor_for_target "aarch64-unknown-linux-gnu")"
   assert_equals \
     "x86_64-apple-darwin" \
     "$(release_target_for_platform "Darwin" "x86_64")"
@@ -93,6 +120,11 @@ EOF
 
   if release_target_for_platform "Linux" "ppc64le" >/dev/null 2>&1; then
     echo "expected release_target_for_platform to reject unsupported host arch" >&2
+    exit 1
+  fi
+
+  if release_supported_linux_libcs_for_arch "ppc64le" >/dev/null 2>&1; then
+    echo "expected release_supported_linux_libcs_for_arch to reject unsupported host arch" >&2
     exit 1
   fi
 
