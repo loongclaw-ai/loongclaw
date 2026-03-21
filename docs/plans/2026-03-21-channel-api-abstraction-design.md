@@ -42,7 +42,7 @@ The current architecture lacks a clear separation between:
 
 ### Dependency Flow
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │                           tools/                                 │
 │              Generic tool handlers (messaging, docs, calendar)    │
@@ -63,7 +63,7 @@ The current architecture lacks a clear separation between:
 │  └─────────────────────────────────────────────────────────────┘ │
 │                                                                   │
 │  ┌─────────────────────────────────────────────────────────────┐ │
-│  │                 channel/{feishu,telegram,matrix}/            │ │
+│  │                 channel/{feishu,telegram,matrix}/          │ │
 │  │            ChannelAdapter impl (transport layer)            │ │
 │  └─────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────┘
@@ -71,7 +71,7 @@ The current architecture lacks a clear separation between:
 
 ### Directory Structure
 
-```
+```text
 crates/app/src/
 ├── channel/
 │   ├── mod.rs              ← re-exports channel types
