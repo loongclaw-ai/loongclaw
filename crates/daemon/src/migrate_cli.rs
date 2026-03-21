@@ -43,7 +43,7 @@ impl MigrateMode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct MigrateCommandOptions {
     pub input: Option<String>,
     pub output: Option<String>,
