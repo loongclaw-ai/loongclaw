@@ -44,6 +44,60 @@ release_binary_name_for_target() {
   esac
 }
 
+release_normalize_linux_arch() {
+  local arch="${1:?arch is required}"
+  local normalized_arch
+  normalized_arch="$(printf '%s' "$arch" | tr '[:upper:]' '[:lower:]')"
+
+  case "$normalized_arch" in
+    x86_64|amd64) printf 'x86_64\n' ;;
+    arm64|aarch64) printf 'aarch64\n' ;;
+    *)
+      echo "unsupported Linux architecture: ${arch}" >&2
+      return 1
+      ;;
+  esac
+}
+
+release_supported_linux_libcs_for_arch() {
+  local arch
+  arch="$(release_normalize_linux_arch "${1:?arch is required}")"
+
+  case "$arch" in
+    x86_64) printf 'gnu\nmusl\n' ;;
+    aarch64) printf 'gnu\n' ;;
+  esac
+}
+
+release_linux_target_for_arch_and_libc() {
+  local arch libc
+  arch="$(release_normalize_linux_arch "${1:?arch is required}")"
+  libc="$(printf '%s' "${2:?libc is required}" | tr '[:upper:]' '[:lower:]')"
+
+  case "$arch:$libc" in
+    x86_64:gnu) printf 'x86_64-unknown-linux-gnu\n' ;;
+    x86_64:musl) printf 'x86_64-unknown-linux-musl\n' ;;
+    aarch64:gnu) printf 'aarch64-unknown-linux-gnu\n' ;;
+    *)
+      echo "unsupported Linux architecture/libc combination: ${arch}/${libc}" >&2
+      return 1
+      ;;
+  esac
+}
+
+release_gnu_glibc_floor_for_target() {
+  local target="${1:?target is required}"
+
+  case "$target" in
+    x86_64-unknown-linux-gnu) printf '2.39\n' ;;
+    aarch64-unknown-linux-gnu) printf '2.17\n' ;;
+    *)
+      echo "unsupported GNU Linux target for glibc floor lookup: ${target}" >&2
+      return 1
+      ;;
+  esac
+}
+
 release_target_for_platform() {
   local platform="${1:?platform is required}"
   local arch="${2:?arch is required}"
@@ -54,14 +108,7 @@ release_target_for_platform() {
 
   case "$normalized_platform" in
     LINUX)
-      case "$normalized_arch" in
-        x86_64|amd64) printf 'x86_64-unknown-linux-gnu\n' ;;
-        arm64|aarch64) printf 'aarch64-unknown-linux-gnu\n' ;;
-        *)
-          echo "unsupported Linux architecture: ${arch}" >&2
-          return 1
-          ;;
-      esac
+      release_linux_target_for_arch_and_libc "$normalized_arch" "gnu"
       ;;
     DARWIN)
       case "$normalized_arch" in

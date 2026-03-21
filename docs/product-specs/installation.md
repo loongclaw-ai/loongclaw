@@ -13,6 +13,9 @@ or `chat` without reverse-engineering release or source workflows.
 - [x] The bootstrap installer prefers GitHub Release binaries, verifies their
       SHA256 checksums, and installs the matching `loongclaw` binary when a
       release exists for the requested version.
+- [x] Linux x86_64 release artifacts distinguish GNU and musl variants, and the
+      Bash installer auto-selects GNU only when the host satisfies the declared
+      GNU glibc floor; otherwise it falls back to musl.
 - [x] If the repository has not published a matching release yet, the installer
       fails with an explicit next action instead of constructing a misleading or
       broken download URL.
@@ -20,6 +23,8 @@ or `chat` without reverse-engineering release or source workflows.
       the explicit `--source` fallback from a local checkout.
 - [x] The install path can hand users directly into `loongclaw onboard` after a
       successful install.
+- [x] Linux users can explicitly override the libc variant when they need a
+      specific GNU or musl artifact.
 
 ## Out of Scope
 

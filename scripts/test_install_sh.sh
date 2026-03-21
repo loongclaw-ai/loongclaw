@@ -29,33 +29,46 @@ host_target() {
 }
 
 make_release_fixture() {
-  local fixture tag target archive_name checksum_name binary_name archive_path checksum_path release_dir
+  local fixture
   fixture="$(mktemp -d)"
-  tag="${1:-v0.1.2}"
-  target="${2:-$(host_target)}"
+  write_release_fixture_asset \
+    "$fixture" \
+    "${1:-v0.1.2}" \
+    "${2:-$(host_target)}" \
+    "${3:-fixture-binary}"
+  printf '%s\n' "$fixture"
+}
+
+write_release_fixture_asset() {
+  local fixture tag target binary_label archive_name checksum_name binary_name archive_path checksum_path release_dir staging_dir
+  fixture="${1:?fixture is required}"
+  tag="${2:-v0.1.2}"
+  target="${3:-$(host_target)}"
+  binary_label="${4:-fixture-binary}"
   archive_name="$(release_archive_name "loongclaw" "$tag" "$target")"
   checksum_name="$(release_archive_checksum_name "loongclaw" "$tag" "$target")"
   binary_name="$(release_binary_name_for_target "loongclaw" "$target")"
   release_dir="$fixture/releases/download/$tag"
-  mkdir -p "$release_dir" "$fixture/staging"
+  staging_dir="$fixture/staging/$target"
+  mkdir -p "$release_dir" "$staging_dir"
 
-  cat >"$fixture/staging/$binary_name" <<'EOF'
+  cat >"$staging_dir/$binary_name" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ "${1:-}" == "onboard" ]]; then
-  printf 'onboard\n' >> "${ONBOARD_MARKER:?}"
+if [[ "\${1:-}" == "onboard" ]]; then
+  printf 'onboard\n' >> "\${ONBOARD_MARKER:?}"
 fi
-printf 'fixture-binary\n'
+printf '%s\n' "$binary_label"
 EOF
-  chmod +x "$fixture/staging/$binary_name"
+  chmod +x "$staging_dir/$binary_name"
 
   archive_path="$release_dir/$archive_name"
   case "$archive_name" in
     *.tar.gz)
-      tar -C "$fixture/staging" -czf "$archive_path" "$binary_name"
+      tar -C "$staging_dir" -czf "$archive_path" "$binary_name"
       ;;
     *.zip)
-      (cd "$fixture/staging" && zip -q "$archive_path" "$binary_name")
+      (cd "$staging_dir" && zip -q "$archive_path" "$binary_name")
       ;;
     *)
       echo "unsupported archive format in fixture: $archive_name" >&2
@@ -65,7 +78,14 @@ EOF
 
   checksum_path="$release_dir/$checksum_name"
   printf '%s  %s\n' "$(sha256_file "$archive_path")" "$archive_name" >"$checksum_path"
+}
 
+make_linux_dual_libc_fixture() {
+  local fixture tag
+  fixture="$(mktemp -d)"
+  tag="${1:-v0.1.2}"
+  write_release_fixture_asset "$fixture" "$tag" "x86_64-unknown-linux-gnu" "gnu-binary"
+  write_release_fixture_asset "$fixture" "$tag" "x86_64-unknown-linux-musl" "musl-binary"
   printf '%s\n' "$fixture"
 }
 
@@ -108,6 +128,165 @@ case "\${1:-}" in
 esac
 EOF
   chmod +x "$fixture/fake-bin/uname"
+}
+
+make_getconf_stub_bin() {
+  local fixture="$1"
+  local response="$2"
+  mkdir -p "$fixture/fake-bin"
+  cat >"$fixture/fake-bin/getconf" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "\${1:-}" != "GNU_LIBC_VERSION" ]]; then
+  echo "unexpected getconf invocation: \$*" >&2
+  exit 1
+fi
+
+if [[ "$response" == "__FAIL__" ]]; then
+  exit 1
+fi
+
+printf '%s\n' "$response"
+EOF
+  chmod +x "$fixture/fake-bin/getconf"
+}
+
+make_ldd_stub_bin() {
+  local fixture="$1"
+  local response="$2"
+  mkdir -p "$fixture/fake-bin"
+  cat >"$fixture/fake-bin/ldd" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$response" == "__FAIL__" ]]; then
+  exit 1
+fi
+
+printf '%s\n' "$response"
+EOF
+  chmod +x "$fixture/fake-bin/ldd"
+}
+
+run_linux_x86_64_prefers_gnu_when_glibc_is_supported_test() {
+  local fixture install_dir output_file installed_output
+  fixture="$(make_linux_dual_libc_fixture "v0.1.2")"
+  trap 'rm -rf "$fixture"' RETURN
+  install_dir="$fixture/install"
+  output_file="$fixture/linux-gnu.out"
+  make_uname_stub_bin "$fixture" "Linux" "x86_64"
+  make_getconf_stub_bin "$fixture" "glibc 2.39"
+
+  (
+    cd "$REPO_ROOT"
+    PATH="$fixture/fake-bin:$PATH" \
+      LOONGCLAW_INSTALL_RELEASE_BASE_URL="file://$fixture/releases" \
+      bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --prefix "$install_dir" >"$output_file" 2>&1
+  )
+
+  assert_contains "$output_file" "x86_64-unknown-linux-gnu"
+  installed_output="$("$install_dir/loongclaw")"
+  if [[ "$installed_output" != "gnu-binary" ]]; then
+    echo "expected GNU artifact to be installed but got '$installed_output'" >&2
+    exit 1
+  fi
+}
+
+run_linux_x86_64_falls_back_to_musl_when_glibc_is_too_old_test() {
+  local fixture install_dir output_file installed_output
+  fixture="$(make_linux_dual_libc_fixture "v0.1.2")"
+  trap 'rm -rf "$fixture"' RETURN
+  install_dir="$fixture/install"
+  output_file="$fixture/linux-musl-old-glibc.out"
+  make_uname_stub_bin "$fixture" "Linux" "x86_64"
+  make_getconf_stub_bin "$fixture" "glibc 2.36"
+
+  (
+    cd "$REPO_ROOT"
+    PATH="$fixture/fake-bin:$PATH" \
+      LOONGCLAW_INSTALL_RELEASE_BASE_URL="file://$fixture/releases" \
+      bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --prefix "$install_dir" >"$output_file" 2>&1
+  )
+
+  assert_contains "$output_file" "x86_64-unknown-linux-musl"
+  installed_output="$("$install_dir/loongclaw")"
+  if [[ "$installed_output" != "musl-binary" ]]; then
+    echo "expected musl fallback artifact to be installed but got '$installed_output'" >&2
+    exit 1
+  fi
+}
+
+run_linux_x86_64_falls_back_to_musl_when_glibc_detection_fails_test() {
+  local fixture install_dir output_file installed_output
+  fixture="$(make_linux_dual_libc_fixture "v0.1.2")"
+  trap 'rm -rf "$fixture"' RETURN
+  install_dir="$fixture/install"
+  output_file="$fixture/linux-musl-no-glibc.out"
+  make_uname_stub_bin "$fixture" "Linux" "x86_64"
+  make_getconf_stub_bin "$fixture" "__FAIL__"
+  make_ldd_stub_bin "$fixture" "__FAIL__"
+
+  (
+    cd "$REPO_ROOT"
+    PATH="$fixture/fake-bin:$PATH" \
+      LOONGCLAW_INSTALL_RELEASE_BASE_URL="file://$fixture/releases" \
+      bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --prefix "$install_dir" >"$output_file" 2>&1
+  )
+
+  assert_contains "$output_file" "x86_64-unknown-linux-musl"
+  installed_output="$("$install_dir/loongclaw")"
+  if [[ "$installed_output" != "musl-binary" ]]; then
+    echo "expected musl fallback artifact to be installed but got '$installed_output'" >&2
+    exit 1
+  fi
+}
+
+run_linux_x86_64_explicit_musl_override_test() {
+  local fixture install_dir output_file installed_output
+  fixture="$(make_linux_dual_libc_fixture "v0.1.2")"
+  trap 'rm -rf "$fixture"' RETURN
+  install_dir="$fixture/install"
+  output_file="$fixture/linux-musl-override.out"
+  make_uname_stub_bin "$fixture" "Linux" "x86_64"
+  make_getconf_stub_bin "$fixture" "glibc 2.39"
+
+  (
+    cd "$REPO_ROOT"
+    PATH="$fixture/fake-bin:$PATH" \
+      LOONGCLAW_INSTALL_RELEASE_BASE_URL="file://$fixture/releases" \
+      LOONGCLAW_INSTALL_TARGET_LIBC="musl" \
+      bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --prefix "$install_dir" >"$output_file" 2>&1
+  )
+
+  assert_contains "$output_file" "x86_64-unknown-linux-musl"
+  installed_output="$("$install_dir/loongclaw")"
+  if [[ "$installed_output" != "musl-binary" ]]; then
+    echo "expected musl override artifact to be installed but got '$installed_output'" >&2
+    exit 1
+  fi
+}
+
+run_linux_x86_64_explicit_gnu_override_rejects_old_glibc_test() {
+  local fixture output_file
+  fixture="$(make_linux_dual_libc_fixture "v0.1.2")"
+  trap 'rm -rf "$fixture"' RETURN
+  output_file="$fixture/linux-gnu-override-old-glibc.out"
+  make_uname_stub_bin "$fixture" "Linux" "x86_64"
+  make_getconf_stub_bin "$fixture" "glibc 2.36"
+
+  if (
+    cd "$REPO_ROOT"
+    PATH="$fixture/fake-bin:$PATH" \
+      LOONGCLAW_INSTALL_RELEASE_BASE_URL="file://$fixture/releases" \
+      bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --target-libc gnu --prefix "$fixture/install" >"$output_file" 2>&1
+  ); then
+    echo "expected install.sh to reject a GNU override on an unsupported glibc host" >&2
+    cat "$output_file" >&2
+    exit 1
+  fi
+
+  assert_contains "$output_file" "requires glibc"
 }
 
 run_release_override_install_and_onboard_test() {
@@ -203,6 +382,11 @@ run_standalone_linux_arm64_install_test() {
 run_release_override_install_and_onboard_test
 run_checksum_mismatch_fails_test
 run_missing_release_guidance_test
+run_linux_x86_64_prefers_gnu_when_glibc_is_supported_test
+run_linux_x86_64_falls_back_to_musl_when_glibc_is_too_old_test
+run_linux_x86_64_falls_back_to_musl_when_glibc_detection_fails_test
+run_linux_x86_64_explicit_musl_override_test
+run_linux_x86_64_explicit_gnu_override_rejects_old_glibc_test
 run_standalone_linux_arm64_install_test
 
 echo "install.sh smoke checks passed"

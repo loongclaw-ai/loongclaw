@@ -50,6 +50,7 @@
 ---
 
 <a id="why-loong"></a>
+
 ## Why Loong
 
 We chose **Loong** deliberately.
@@ -86,6 +87,7 @@ and build useful things together, that matters more to us.
 </p>
 
 <a id="product-positioning"></a>
+
 ## Product Positioning
 
 <p align="center">
@@ -99,15 +101,15 @@ baseline with explicit boundaries and room to keep taking shape**. If you only l
 commands like `onboard`, `ask`, or `chat`, you miss the more important story: the codebase already
 contains several layers that matter to teams.
 
-| Core capability | What is already real | Why it matters |
-|-----------------|----------------------|----------------|
-| Governance-native execution | capability tokens, policy decisions, approval requests, and audit events already sit in critical execution paths | this is much closer to a team system than to a single-user demo |
-| Explicit execution planes | `connector`, `runtime`, `tool`, and `memory` are separate kernel planes with symmetric core / extension registration | vertical shaping can replace planes instead of repeatedly rewriting the kernel |
-| Separate control plane | ACP already exists as its own control plane across backend, binding, registry, runtime, analytics, and store modules | future routing, collaboration, and richer agent lifecycle work have a place to live |
-| Shapeable context | the context engine already has `bootstrap`, `ingest`, `after_turn`, `compact_context`, and subagent hooks | context and memory are not hardcoded into a single prompt builder |
-| Runtime-truthful tool surface | the tool catalog carries risk classes, approval modes, and `Runtime / Planned` visibility | what users see is closer to what the system can actually do right now |
-| Migration-aware setup | `onboard` can detect current setup, Codex config, environment, and workspace guidance; the public migration CLI is now `loongclaw migrate` | teams do not have to rebuild configuration and long-lived context from scratch |
-| Multi-surface delivery | beyond CLI, Telegram, Feishu / Lark, and Matrix already exist as runtime-backed surfaces with typed config, routing, and security validation | the product already reaches beyond a local terminal-only experiment |
+| Core capability               | What is already real                                                                                                                         | Why it matters                                                                      |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Governance-native execution   | capability tokens, policy decisions, approval requests, and audit events already sit in critical execution paths                             | this is much closer to a team system than to a single-user demo                     |
+| Explicit execution planes     | `connector`, `runtime`, `tool`, and `memory` are separate kernel planes with symmetric core / extension registration                         | vertical shaping can replace planes instead of repeatedly rewriting the kernel      |
+| Separate control plane        | ACP already exists as its own control plane across backend, binding, registry, runtime, analytics, and store modules                         | future routing, collaboration, and richer agent lifecycle work have a place to live |
+| Shapeable context             | the context engine already has `bootstrap`, `ingest`, `after_turn`, `compact_context`, and subagent hooks                                    | context and memory are not hardcoded into a single prompt builder                   |
+| Runtime-truthful tool surface | the tool catalog carries risk classes, approval modes, and `Runtime / Planned` visibility                                                    | what users see is closer to what the system can actually do right now               |
+| Migration-aware setup         | `onboard` can detect current setup, Codex config, environment, and workspace guidance; the public migration CLI is now `loongclaw migrate`   | teams do not have to rebuild configuration and long-lived context from scratch      |
+| Multi-surface delivery        | beyond CLI, Telegram, Feishu / Lark, and Matrix already exist as runtime-backed surfaces with typed config, routing, and security validation | the product already reaches beyond a local terminal-only experiment                 |
 
 That is why we increasingly describe LoongClaw as an early foundation for vertical agents. The
 governance boundary, extension boundary, and delivery boundary are already visible today.
@@ -127,6 +129,7 @@ goal is not only to connect models to chat surfaces, but to grow a base layer th
 bridge digital systems and real-world action.
 
 <a id="why-teams-build-on-loongclaw"></a>
+
 ## Why Teams Build On LoongClaw
 
 If you place LoongClaw against a few common AI-agent product shapes, it sits between a runnable
@@ -135,20 +138,21 @@ solving team problems earlier instead of postponing them.
 
 ### Design-Orientation Comparison
 
-| Design orientation | Assistant-first products | Framework-first products | LoongClaw |
-|--------------------|--------------------------|--------------------------|-----------|
-| Starting point | optimize single-user chat experience first | offer a flexible but relatively empty builder layer first | ship a runnable baseline while bringing in team-facing boundaries early |
-| Governance | often added through perimeter systems later | possible, but usually requires extra integration work | policy, approval, and audit are modeled inside critical execution paths |
-| Extension model | often grows through plugins and scripts later | highly flexible, but each team may rebuild its own stack | extend through planes, adapters, packs, and channels with clearer boundaries |
-| Delivery surfaces | often stop at CLI or a single chat UI | often thin on built-in delivery surfaces | CLI, Telegram, Feishu / Lark, and Matrix are already real delivery surfaces |
-| Vertical evolution | can stall at being "a better assistant" | can stall at "you can build it yourself" | aims to keep shaping vertical agents on top of a stable Rust base |
-| Long-term edge | usually software-assistant-centric | usually orchestration-centric | leaves room for hardware, robotics, and embodied intelligence over time |
+| Design orientation | Assistant-first products                      | Framework-first products                                  | LoongClaw                                                                    |
+| ------------------ | --------------------------------------------- | --------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Starting point     | optimize single-user chat experience first    | offer a flexible but relatively empty builder layer first | ship a runnable baseline while bringing in team-facing boundaries early      |
+| Governance         | often added through perimeter systems later   | possible, but usually requires extra integration work     | policy, approval, and audit are modeled inside critical execution paths      |
+| Extension model    | often grows through plugins and scripts later | highly flexible, but each team may rebuild its own stack  | extend through planes, adapters, packs, and channels with clearer boundaries |
+| Delivery surfaces  | often stop at CLI or a single chat UI         | often thin on built-in delivery surfaces                  | CLI, Telegram, Feishu / Lark, and Matrix are already real delivery surfaces  |
+| Vertical evolution | can stall at being "a better assistant"       | can stall at "you can build it yourself"                  | aims to keep shaping vertical agents on top of a stable Rust base            |
+| Long-term edge     | usually software-assistant-centric            | usually orchestration-centric                             | leaves room for hardware, robotics, and embodied intelligence over time      |
 
 <p align="center">
   <img src="assets/readme/loongclaw-foundation-diagram.svg" alt="LoongClaw foundation diagram" width="100%" />
 </p>
 
 <a id="quick-start"></a>
+
 ## Quick Start
 
 ### Install Script
@@ -156,12 +160,23 @@ solving team problems earlier instead of postponing them.
 The install script prefers the matching GitHub Release binary, verifies its SHA256 checksum,
 installs `loongclaw`, and can drop you straight into guided onboarding.
 
+On Linux x86_64, the installer now treats GNU and musl as distinct release artifacts:
+
+- it prefers `x86_64-unknown-linux-gnu` when the host glibc satisfies the declared GNU floor
+- it falls back to `x86_64-unknown-linux-musl` when glibc is too old or cannot be detected
+- you can override the default with `--target-libc gnu|musl` or `LOONGCLAW_INSTALL_TARGET_LIBC`
+
 <details>
 <summary>Linux / macOS</summary>
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/loongclaw-ai/loongclaw/main/scripts/install.sh | bash -s -- --onboard
 ```
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/loongclaw-ai/loongclaw/main/scripts/install.sh | bash -s -- --target-libc musl
+```
+
 </details>
 
 <details>
@@ -172,6 +187,7 @@ $script = Join-Path $env:TEMP "loongclaw-install.ps1"
 Invoke-WebRequest https://raw.githubusercontent.com/loongclaw-ai/loongclaw/main/scripts/install.ps1 -OutFile $script
 pwsh $script -Onboard
 ```
+
 </details>
 
 ### Build From Source
@@ -190,6 +206,7 @@ pwsh ./scripts/install.ps1 -Source -Onboard
 ```bash
 cargo install --path crates/daemon
 ```
+
 </details>
 
 ### Shell Completion
@@ -221,6 +238,7 @@ loongclaw completions powershell >> $PROFILE
 ```elvish
 loongclaw completions elvish >> ~/.config/elvish/rc.elv
 ```
+
 </details>
 
 ### First Success Path
@@ -425,6 +443,7 @@ Further references:
 - `loongclaw validate-config --config ~/.loongclaw/config.toml --json`
 
 <a id="migrate-existing-setup"></a>
+
 ## Migrate Existing Setup from Other Claws or Agents
 
 LoongClaw does not assume teams should start from zero.
@@ -454,6 +473,7 @@ loongclaw migrate --mode rollback_last_apply --output ~/.loongclaw/config.toml
 Deeper migration modes also exist, including `merge_profiles` for multi-source profile merging and `map_external_skills` for external-skills artifact mapping.
 
 <a id="core-capabilities"></a>
+
 ## Core Capabilities
 
 ### Governance And Controlled Execution
@@ -501,15 +521,15 @@ contracts (leaf -- zero internal deps)
 └── daemon (binary) --> all of the above
 ```
 
-| Crate | Role |
-|-------|------|
-| `contracts` | Stable shared ABI surface |
-| `kernel` | Policy, audit, capability, pack, and governance core |
-| `protocol` | Typed transport and routing contracts |
-| `app` | Providers, tools, channels, memory, and conversation runtime |
-| `spec` | Deterministic execution specs |
-| `bench` | Benchmark harness and gates |
-| `daemon` | Runnable CLI binary and operator-facing commands |
+| Crate       | Role                                                         |
+| ----------- | ------------------------------------------------------------ |
+| `contracts` | Stable shared ABI surface                                    |
+| `kernel`    | Policy, audit, capability, pack, and governance core         |
+| `protocol`  | Typed transport and routing contracts                        |
+| `app`       | Providers, tools, channels, memory, and conversation runtime |
+| `spec`      | Deterministic execution specs                                |
+| `bench`     | Benchmark harness and gates                                  |
+| `daemon`    | Runnable CLI binary and operator-facing commands             |
 
 Three design rules matter most:
 
@@ -531,21 +551,23 @@ Some ecosystem pieces are still better described as architecture direction than 
 For the full layered execution model, see [ARCHITECTURE.md](ARCHITECTURE.md) and [Layered Kernel Design](docs/design-docs/layered-kernel-design.md).
 
 <a id="documentation"></a>
+
 ## Documentation
 
-| Document | Description |
-|----------|-------------|
-| [Architecture](ARCHITECTURE.md) | Crate map and layered execution overview |
-| [Core Beliefs](docs/design-docs/core-beliefs.md) | Core engineering principles |
-| [Roadmap](docs/ROADMAP.md) | Stage-based milestones and direction |
-| [Product Sense](docs/PRODUCT_SENSE.md) | Current product contract and user journey |
-| [Product Specs](docs/product-specs/index.md) | User-facing requirements for onboarding, ask, doctor, channels, and memory |
+| Document                                                    | Description                                                                                                 |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| [Architecture](ARCHITECTURE.md)                             | Crate map and layered execution overview                                                                    |
+| [Core Beliefs](docs/design-docs/core-beliefs.md)            | Core engineering principles                                                                                 |
+| [Roadmap](docs/ROADMAP.md)                                  | Stage-based milestones and direction                                                                        |
+| [Product Sense](docs/PRODUCT_SENSE.md)                      | Current product contract and user journey                                                                   |
+| [Product Specs](docs/product-specs/index.md)                | User-facing requirements for onboarding, ask, doctor, channels, and memory                                  |
 | [Contribution Areas](docs/references/contribution-areas.md) | The kinds of design, engineering, docs, and community help that would make the biggest difference right now |
-| [Reliability](docs/RELIABILITY.md) | Build and kernel invariants |
-| [Security](SECURITY.md) | Security policy and disclosure path |
-| [Changelog](CHANGELOG.md) | Release history |
+| [Reliability](docs/RELIABILITY.md)                          | Build and kernel invariants                                                                                 |
+| [Security](SECURITY.md)                                     | Security policy and disclosure path                                                                         |
+| [Changelog](CHANGELOG.md)                                   | Release history                                                                                             |
 
 <a id="contributing"></a>
+
 ## Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow.
