@@ -18,12 +18,22 @@
 
 前端主栈：
 
-- React
-- TypeScript
-- Vite
-- React Router
+- React 19
+- TypeScript 5.9
+- Vite 7
+- React Router 7
 - i18next / react-i18next
+- `lucide-react`
+- 原生 `fetch` + NDJSON 流读取
 - CSS Variables + 自定义主题样式
+
+工程约定：
+
+- 包管理当前以 `npm` 为主（仓库内已有 `package-lock.json`）
+- 开发态为 Vite dev server + 本地 daemon API 分离联调
+- 当前已支持 `same-origin-static` 本地同源模式
+- 产品态方向仍优先收敛到同源托管
+- 顶部导航已提供语言切换与明暗主题切换
 
 后端承接：
 
@@ -137,9 +147,61 @@ web/
 - Windows
   - `scripts/web/start-dev.ps1`
   - `scripts/web/stop-dev.ps1`
+  - `scripts/web/start-same-origin.ps1`
+  - `scripts/web/stop-same-origin.ps1`
 - macOS / Linux
   - `scripts/web/start-dev.sh`
   - `scripts/web/stop-dev.sh`
+  - `scripts/web/start-same-origin.sh`
+  - `scripts/web/stop-same-origin.sh`
+
+同源静态模式：
+
+- 默认地址：`http://127.0.0.1:4318/`
+- 需要先存在 `web/dist/index.html`
+- 可由 daemon 直接托管静态资源与 API
+
+## 5.5 当前工程实现特征（专项 review 摘要）
+
+这部分补充“代码当前实际上是怎么组织和运行的”，便于后续 WebUI 改造时快速建立共同认知。
+
+### 路由装配
+
+当前 `chat` 和 `dashboard` 还不是严格意义上的“按路由挂载”，而是：
+
+- 由 `app/router.tsx` 同时挂载 `ChatPage` 与 `DashboardPage`
+- 再通过 `hidden` / `aria-hidden` 切换可见性
+
+这意味着：
+
+- 两个页面的初始化副作用会同时存在
+- 页面切换更接近“单页分区切换”，而不是标准路由卸载/挂载
+
+### 状态组织
+
+当前状态管理是“轻全局 + 页面本地状态”为主：
+
+- `WebSessionContext` 负责 endpoint、auth、token、pairing、onboarding gate
+- `ChatPage` / `DashboardPage` / `OnboardingStatusPanel` 主要通过 `useState + useEffect` 管理各自状态
+- 当前未引入 Redux / Zustand / React Query 一类额外状态层
+
+### 数据访问
+
+当前前端请求模式主要是：
+
+- 所有请求默认 `credentials: include`
+- 本地存在 token 时，额外附带 `Authorization: Bearer <token>`
+- Chat 流式响应通过 `fetch + ReadableStream + NDJSON` 消费
+- `meta / onboard status` 与 feature API 目前还存在两套调用风格
+
+### 样式组织
+
+当前样式体系以全局 CSS 为主：
+
+- `variables.css` 负责设计 token
+- `themes.css` 负责主题映射
+- `dashboard.css` 负责 Dashboard / Debug Console
+- `index.css` 仍承担全局布局、Chat 与共享样式
 
 ## 6. 日志位置
 
@@ -215,7 +277,7 @@ web/
 - 完整的 Dashboard 轻配置项写入闭环
 - 更像真实 CLI 的连续输出流
 - 更完整的 tool trace / event timeline
-- 安装态 / 同源态能力
+- 更平滑的安装态入口与打包分发体验
 - `web install / remove / status`
 - 更强的 provider / tool doctor
 
@@ -234,10 +296,11 @@ web/
 
 ## 10. 接下来最适合继续做什么
 
-推荐顺序：
+结合 2026-03-21 的专项 review，推荐顺序调整为：
 
-1. 继续打磨 Debug Console 的输出质量和分段可读性
-2. 把更多轻配置项稳妥接到 Dashboard
-3. 推动后端修复 `tool.search` 的中文 / 泛化召回
-4. 继续温和拆分大文件，降低长期维护成本
-5. 再进入可选安装与同源产品态实现
+1. 先把 `chat / dashboard` 改成真实路由挂载，避免双页面同时初始化与重复请求
+2. 统一 Web 数据层，把 auth / onboarding / feature API 的请求、401、错误与取消机制收口
+3. 优先拆分 `ChatPage`、`DashboardPage`、`WebSessionContext` 这几个大文件
+4. 补齐运行时校验、流式解析容错、超时与中断能力
+5. 逐步推动同源 session 收口，降低前端对本地 token 持久化的依赖
+6. 在上述骨架稳定后，再继续扩展 Debug Console、Dashboard 轻配置与产品态能力

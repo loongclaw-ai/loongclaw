@@ -10,13 +10,43 @@
 
 ### `GET /api/meta`
 
-返回 Web 入口所需的基础元信息，例如：
+返回 Web 入口所需的基础元信息。
 
-- app version
-- api version
-- 当前 `web_install_mode`
-- 本地鉴权方式
-- token 文件路径 / 环境变量名
+当前前端已实际依赖的重点包括：
+
+- `appVersion`
+- `apiVersion`
+- `webInstallMode`
+- `supportedLocales`
+- `defaultLocale`
+- `auth.required`
+- `auth.scheme`
+- `auth.header`
+- `auth.tokenPath`
+- `auth.tokenEnv`
+- `auth.mode`
+
+其中鉴权模式当前有两类：
+
+- `local_token`
+- `same_origin_session`
+
+## 1.5 认证与客户端调用约定
+
+当前 Web 客户端与本地 API 的交互约定如下：
+
+- 所有请求默认带 `credentials: include`
+- 浏览器本地若已保存 token，请求会额外附带 `Authorization: Bearer <token>`
+- `GET /api/meta` 与 `GET /api/onboard/status` 用于入口状态判断
+- 自动配对成功时，浏览器会通过 HttpOnly cookie 建立当前配对状态
+- `same_origin_session` 模式下，页面请求主要依赖同源 cookie，而不是手工贴 token
+- 同源写操作当前要求来自可信 loopback origin
+- 长期方向仍然是尽量把产品态收敛到同源 session，而不是让前端长期依赖本地 token 持久化
+
+补充说明：
+
+- 当前 Chat 流式响应走的是 HTTP + NDJSON
+- 当前并未把浏览器端流式消费建立在 WebSocket / SSE 之上
 
 ## 2. Onboarding 接口
 
@@ -38,6 +68,27 @@
 - `promptAddendum`
 - `blockingStage`
 - `nextAction`
+
+当前常见 `blockingStage` 包括：
+
+- `runtime_offline`
+- `token_pairing`
+- `session_refresh`
+- `missing_config`
+- `config_invalid`
+- `provider_setup`
+- `provider_unreachable`
+- `ready`
+
+当前常见 `nextAction` 包括：
+
+- `enter_local_token`
+- `refresh_local_session`
+- `create_local_config`
+- `fix_local_config`
+- `configure_provider`
+- `validate_provider_route`
+- `open_chat`
 
 这条接口是匿名可读的，用来回答：
 
@@ -98,7 +149,9 @@
 
 - `passed`
 - `endpointStatus`
+- `endpointStatusCode`
 - `credentialStatus`
+- `credentialStatusCode`
 - `status`（最新 onboarding status 快照）
 
 ### `POST /api/onboard/pairing/auto`
@@ -128,46 +181,74 @@
 
 提供 provider 列表、当前激活项、模型、endpoint 与 key 配置状态。
 
+当前前端还会消费：
+
+- `apiKeyMasked`
+- `defaultForKind`
+
 ### `GET /api/dashboard/runtime`
 
 提供 runtime 运行态信息，例如：
 
-- config path
-- memory mode
-- active provider / model
+- `status`
+- `source`
+- `configPath`
+- `memoryBackend`
+- `memoryMode`
+- `ingestMode`
+- `webInstallMode`
+- `activeProvider`
+- `activeModel`
+- `acpEnabled`
+- `strictMemory`
 
 ### `GET /api/dashboard/config`
 
 提供 UI 关注的配置快照，例如：
 
-- endpoint
-- API key 是否已配置
-- personality
-- prompt mode
-- prompt addendum 是否已配置
-- memory profile
-- sqlite path
-- file root
-- sliding window
+- `activeProvider`
+- `lastProvider`
+- `model`
+- `endpoint`
+- `apiKeyConfigured`
+- `apiKeyMasked`
+- `personality`
+- `promptMode`
+- `promptAddendumConfigured`
+- `memoryProfile`
+- `memorySystem`
+- `sqlitePath`
+- `fileRoot`
+- `slidingWindow`
+- `summaryMaxChars`
 
 ### `GET /api/dashboard/connectivity`
 
 提供 provider route / connectivity 诊断，例如：
 
-- endpoint
-- host
-- DNS 结果
-- probe 状态
-- fake-ip 命中判断
-- 推荐修复方向
+- `status`
+- `endpoint`
+- `host`
+- `dnsAddresses`
+- `probeStatus`
+- `probeStatusCode`
+- `fakeIpDetected`
+- `proxyEnvDetected`
+- `recommendation`
 
 ### `GET /api/dashboard/tools`
 
 提供工具启用状态与策略摘要。
 
+当前除了工具项列表，前端还会消费：
+
+- `approvalMode`
+- `shellDefaultMode`
+- `shellAllowCount`
+- `shellDenyCount`
+
 当前已覆盖的重点项包括：
 
-- `shell_policy`
 - `sessions`
 - `messages`
 - `delegate`
@@ -224,6 +305,11 @@
 
 创建 turn。
 
+当前请求体至少支持：
+
+- `input`
+- `toolAssistHint`（可选，当前仅作为 Web 侧临时工具发现增强提示）
+
 当前返回：
 
 - `sessionId`
@@ -242,6 +328,13 @@
 - `tool.finished`
 - `turn.completed`
 - `turn.failed`
+
+客户端消费建议：
+
+- 以换行分隔单位消费 NDJSON 事件
+- 对单行 JSON 解析失败保留容错，而不是直接把整轮流式状态视为完全成功
+- 对 `turn.failed` 保持显式 UI 反馈，不要默默吞掉错误
+- 若未来补齐取消能力，优先通过请求中断而不是仅仅忽略返回值
 
 ## 5. 当前边界
 
