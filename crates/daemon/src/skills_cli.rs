@@ -127,13 +127,29 @@ fn execute_non_policy_skills_command(
     command: SkillsCommands,
 ) -> CliResult<ToolCoreOutcome> {
     match command {
+        SkillsCommands::List => {
+            let tool_runtime_config =
+                mvp::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(
+                    config,
+                    Some(resolved_path),
+                );
+            mvp::tools::external_skills_operator_list_with_config(&tool_runtime_config)
+        }
+        SkillsCommands::Info { skill_id } => {
+            let tool_runtime_config =
+                mvp::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(
+                    config,
+                    Some(resolved_path),
+                );
+            mvp::tools::external_skills_operator_inspect_with_config(
+                &skill_id,
+                &tool_runtime_config,
+            )
+        }
         SkillsCommands::InstallBundled { skill_id, replace } => {
             execute_install_bundled_skill_command(resolved_path, config, &skill_id, replace)
         }
-        command @ (SkillsCommands::List
-        | SkillsCommands::Info { .. }
-        | SkillsCommands::Install { .. }
-        | SkillsCommands::Remove { .. }) => {
+        command @ (SkillsCommands::Install { .. } | SkillsCommands::Remove { .. }) => {
             let tool_runtime_config =
                 mvp::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(
                     config,
@@ -534,6 +550,57 @@ pub fn render_skills_cli_text(execution: &SkillsCommandExecution) -> CliResult<S
                 skill.get("active").and_then(Value::as_bool).unwrap_or(true)
             ));
             lines.push(format!(
+                "model_visibility={}",
+                skill
+                    .get("model_visibility")
+                    .and_then(Value::as_str)
+                    .unwrap_or("visible")
+            ));
+            lines.push(format!(
+                "eligible={}",
+                skill
+                    .get("eligibility")
+                    .and_then(|eligibility| eligibility.get("available"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true)
+            ));
+            lines.push(format!(
+                "required_env={}",
+                render_string_list(skill.get("required_env"))
+            ));
+            lines.push(format!(
+                "required_bin={}",
+                render_string_list(skill.get("required_bin"))
+            ));
+            lines.push(format!(
+                "required_paths={}",
+                render_string_list(skill.get("required_paths"))
+            ));
+            lines.push(format!(
+                "missing_env={}",
+                render_string_list(
+                    skill
+                        .get("eligibility")
+                        .and_then(|eligibility| eligibility.get("missing_env"))
+                )
+            ));
+            lines.push(format!(
+                "missing_bin={}",
+                render_string_list(
+                    skill
+                        .get("eligibility")
+                        .and_then(|eligibility| eligibility.get("missing_bin"))
+                )
+            ));
+            lines.push(format!(
+                "missing_paths={}",
+                render_string_list(
+                    skill
+                        .get("eligibility")
+                        .and_then(|eligibility| eligibility.get("missing_paths"))
+                )
+            ));
+            lines.push(format!(
                 "source_path={}",
                 skill
                     .get("source_path")
@@ -799,5 +866,16 @@ fn render_skill_summary_line(skill: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or("-");
     let summary = skill.get("summary").and_then(Value::as_str).unwrap_or("-");
-    format!("{skill_id} [{active}] scope={scope} display_name={display_name} summary={summary}")
+    let model_visibility = skill
+        .get("model_visibility")
+        .and_then(Value::as_str)
+        .unwrap_or("visible");
+    let eligible = skill
+        .get("eligibility")
+        .and_then(|eligibility| eligibility.get("available"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    format!(
+        "{skill_id} [{active}] scope={scope} model_visibility={model_visibility} eligible={eligible} display_name={display_name} summary={summary}"
+    )
 }

@@ -83,6 +83,19 @@ pub fn normalize_external_skill_domain_rule(raw: &str) -> Result<String, String>
     normalize_external_skills_domain_rule(raw)
 }
 
+pub fn external_skills_operator_list_with_config(
+    config: &runtime_config::ToolRuntimeConfig,
+) -> Result<ToolCoreOutcome, String> {
+    external_skills::execute_external_skills_operator_list_tool_with_config(config)
+}
+
+pub fn external_skills_operator_inspect_with_config(
+    skill_id: &str,
+    config: &runtime_config::ToolRuntimeConfig,
+) -> Result<ToolCoreOutcome, String> {
+    external_skills::execute_external_skills_operator_inspect_tool_with_config(skill_id, config)
+}
+
 tokio::task_local! {
     static TRUSTED_INTERNAL_TOOL_PAYLOAD_TASK: bool;
 }

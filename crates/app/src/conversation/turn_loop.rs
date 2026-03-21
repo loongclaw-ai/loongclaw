@@ -981,7 +981,7 @@ mod tests {
         let user_prompt = messages[2]["content"]
             .as_str()
             .expect("user prompt should exist");
-        assert!(user_prompt.contains("managed external skill"));
+        assert!(user_prompt.contains("external skill"));
         assert!(user_prompt.contains("Original request:\nsummarize note.md"));
     }
 
