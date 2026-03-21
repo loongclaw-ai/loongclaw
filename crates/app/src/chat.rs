@@ -56,6 +56,37 @@ impl CliChatOptions {
     }
 }
 
+fn append_onboard_target_args(
+    command: &mut std::process::Command,
+    config_path: Option<&str>,
+    resolved_config_path: &Path,
+) {
+    if config_path.is_some() {
+        command.arg("--output").arg(resolved_config_path);
+    }
+}
+
+fn build_onboard_command(
+    config_path: Option<&str>,
+    resolved_config_path: &Path,
+) -> CliResult<std::process::Command> {
+    let current_exe = std::env::current_exe()
+        .map_err(|error| format!("failed to resolve current executable: {error}"))?;
+    let mut command = std::process::Command::new(current_exe);
+    command.arg("onboard");
+    append_onboard_target_args(&mut command, config_path, resolved_config_path);
+    Ok(command)
+}
+
+fn format_onboard_command_hint(config_path: Option<&str>, resolved_config_path: &Path) -> String {
+    let mut command = String::from("loongclaw onboard");
+    if config_path.is_some() {
+        command.push_str(" --output ");
+        command.push_str(&resolved_config_path.display().to_string());
+    }
+    command
+}
+
 struct CliTurnRuntime {
     resolved_path: PathBuf,
     config: LoongClawConfig,
@@ -107,6 +138,7 @@ pub async fn run_cli_chat(
     })?;
 
     if !config_exists {
+        let onboard_hint = format_onboard_command_hint(config_path, &resolved_config_path);
         println!("Welcome to LoongClaw!");
         println!();
         println!("No configuration found. Would you like to run the setup wizard now? [Y/n]");
@@ -118,11 +150,7 @@ pub async fn run_cli_chat(
         let input = input.trim().to_ascii_lowercase();
 
         if read > 0 && matches!(input.as_str(), "y" | "yes") {
-            let mut onboard = std::process::Command::new("loongclaw");
-            onboard.arg("onboard");
-            if config_path.is_some() {
-                onboard.arg("--output").arg(&resolved_config_path);
-            }
+            let mut onboard = build_onboard_command(config_path, &resolved_config_path)?;
 
             let exit_status = onboard
                 .spawn()
@@ -134,7 +162,7 @@ pub async fn run_cli_chat(
                 return Err(format!("onboard exited with code {:?}", exit_status.code()));
             }
         } else {
-            println!("You can run 'loongclaw onboard' later to get started.");
+            println!("You can run '{onboard_hint}' later to get started.");
         }
         return Ok(());
     }
