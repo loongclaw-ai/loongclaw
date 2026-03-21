@@ -1513,8 +1513,8 @@ pub async fn run_feishu_channel(
     #[cfg(feature = "channel-feishu")]
     {
         let context = load_feishu_command_context(config_path, account_id)?;
-        let _bind_override = bind_override.map(str::to_owned);
-        let _path_override = path_override.map(str::to_owned);
+        let bind_override = bind_override.map(str::to_owned);
+        let path_override = path_override.map(str::to_owned);
         run_channel_serve_command(
             context,
             ChannelServeCommandSpec {
@@ -1527,12 +1527,14 @@ pub async fn run_feishu_channel(
                     let resolved_path = context.resolved_path.clone();
                     let resolved = context.resolved.clone();
                     let config = context.config.clone();
-                    feishu::websocket::run_feishu_websocket_channel(
+                    feishu::run_feishu_channel(
                         &config,
                         &resolved,
                         &resolved_path,
                         route.selected_by_default(),
                         route.default_account_source,
+                        bind_override.as_deref(),
+                        path_override.as_deref(),
                         kernel_ctx,
                         runtime,
                     )
