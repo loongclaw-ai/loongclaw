@@ -1010,7 +1010,10 @@ fn execute_skills_command_list_shows_operator_only_and_ineligible_skill_metadata
         "source/demo-skill/SKILL.md",
         "---\nname: demo-skill\ndescription: operator-only demo skill.\nmodel_visibility: hidden\nrequires_env:\n  - DEMO_SKILL_TOKEN\n---\n\n# Demo Skill\n\nOperator should still be able to inspect this skill.\n",
     );
-    let _env = SkillsCliEnvironmentGuard::set(&[("HOME", Some(home.to_string_lossy().as_ref()))]);
+    let _env = SkillsCliEnvironmentGuard::set(&[
+        ("HOME", Some(home.to_string_lossy().as_ref())),
+        ("DEMO_SKILL_TOKEN", None),
+    ]);
 
     loongclaw_daemon::skills_cli::execute_skills_command(
         loongclaw_daemon::skills_cli::SkillsCommandOptions {
@@ -1113,7 +1116,13 @@ fn execute_skills_command_list_keeps_inactive_managed_winner_visible_to_operator
     let mut index: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&index_path).expect("read index"))
             .expect("parse index");
-    index["skills"][0]["active"] = serde_json::json!(false);
+    let managed_entry = index["skills"]
+        .as_array_mut()
+        .expect("index skills should be an array")
+        .iter_mut()
+        .find(|skill| skill["skill_id"] == "demo-skill")
+        .expect("managed demo-skill entry should exist");
+    managed_entry["active"] = serde_json::json!(false);
     fs::write(
         &index_path,
         serde_json::to_string_pretty(&index).expect("encode index"),
