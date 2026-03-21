@@ -5,8 +5,8 @@ BIND="${BIND:-127.0.0.1:4318}"
 BUILD="${BUILD:-0}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WEB_ROOT="${SCRIPT_DIR}"
-REPO_ROOT="$(cd "${WEB_ROOT}/.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+WEB_ROOT="${REPO_ROOT}/web"
 DIST_ROOT="${WEB_ROOT}/dist"
 LOG_ROOT="${HOME}/.loongclaw/logs"
 
