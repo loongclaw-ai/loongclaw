@@ -15,6 +15,8 @@ use super::{
     ChannelOutboundTarget, ChannelOutboundTargetKind, ChannelPlatform, ChannelSession,
 };
 
+pub mod api;
+
 pub(super) struct TelegramAdapter {
     account_id: String,
     token: String,

@@ -25,7 +25,8 @@ mod browser;
 #[cfg(feature = "tool-browser")]
 mod browser_companion;
 mod bundled_skills;
-mod catalog;
+pub mod catalog;
+mod channel;
 mod claw_migrate;
 pub(crate) mod delegate;
 mod external_skills;

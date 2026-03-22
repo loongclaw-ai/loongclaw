@@ -81,13 +81,15 @@ use super::conversation::{
 use super::conversation::{ConversationTurnCoordinator, ProviderErrorMode};
 
 #[cfg(feature = "channel-feishu")]
-mod feishu;
+pub mod feishu;
 #[cfg(feature = "channel-matrix")]
 mod matrix;
 mod registry;
 mod runtime_state;
 #[cfg(feature = "channel-telegram")]
 mod telegram;
+
+pub mod traits;
 
 pub use registry::{
     CHANNEL_OPERATION_SEND_ID, CHANNEL_OPERATION_SERVE_ID, ChannelCapability,

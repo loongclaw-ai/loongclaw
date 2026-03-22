@@ -25,7 +25,7 @@ serde_json = "1"
 toml = "1.0"
 semver = "1"
 thiserror = "2"
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 time = { version = "0.3.47", features = ["formatting", "local-offset", "macros", "parsing"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net", "io-util", "io-std", "process", "signal"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "cookies", "json", "multipart", "rustls-tls", "gzip", "deflate", "stream"] }
