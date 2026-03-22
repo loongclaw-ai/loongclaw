@@ -134,12 +134,7 @@ fn split_message_for_telegram(message: &str) -> Vec<String> {
     let mut remaining = message;
 
     while !remaining.is_empty() {
-        let is_first = chunks.is_empty();
-        let limit = if is_first {
-            TELEGRAM_MAX_MESSAGE_LENGTH
-        } else {
-            TELEGRAM_MAX_MESSAGE_LENGTH - TELEGRAM_CONTINUATION_OVERHEAD
-        };
+        let limit = TELEGRAM_MAX_MESSAGE_LENGTH - TELEGRAM_CONTINUATION_OVERHEAD;
 
         if remaining.chars().count() <= limit {
             chunks.push(remaining.to_string());
@@ -370,6 +365,36 @@ fn parse_telegram_target(target_id: &str) -> CliResult<(i64, Option<i64>)> {
     }
 }
 
+fn build_telegram_message_body(
+    chat_id: i64,
+    text: &str,
+    thread_id: Option<i64>,
+    disable_web_page_preview: bool,
+) -> Value {
+    let mut body = json!({
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+    });
+
+    if let Some(obj) = body.as_object_mut() {
+        if disable_web_page_preview {
+            obj.insert(
+                "disable_web_page_preview".to_string(),
+                serde_json::Value::Bool(true),
+            );
+        }
+        if let Some(tid) = thread_id {
+            obj.insert(
+                "message_thread_id".to_string(),
+                serde_json::Value::Number(tid.into()),
+            );
+        }
+    }
+
+    body
+}
+
 impl TelegramAdapter {
     fn send_typing_action_nonblocking(&self, chat_id: i64) {
         let client = self.http_client.clone();
@@ -409,22 +434,10 @@ impl TelegramAdapter {
     async fn send_draft(
         &self,
         chat_id: i64,
-        thread_id: Option<&str>,
+        thread_id: Option<i64>,
         text: &str,
     ) -> CliResult<String> {
-        let mut body = json!({
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "HTML",
-        });
-        if let Some(tid) = thread_id
-            && let Some(obj) = body.as_object_mut()
-        {
-            obj.insert(
-                "message_thread_id".to_string(),
-                serde_json::Value::String(tid.to_string()),
-            );
-        }
+        let body = build_telegram_message_body(chat_id, text, thread_id, false);
 
         let response = self
             .http_client
@@ -632,20 +645,7 @@ impl ChannelAdapter for TelegramAdapter {
             };
 
             let html = markdown_to_telegram_html(&text_to_send);
-            let mut body = json!({
-                "chat_id": chat_id,
-                "text": html,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": true,
-            });
-            if let Some(tid) = thread_id
-                && let Some(obj) = body.as_object_mut()
-            {
-                obj.insert(
-                    "message_thread_id".to_string(),
-                    serde_json::Value::Number(tid.into()),
-                );
-            }
+            let body = build_telegram_message_body(chat_id, &html, thread_id, true);
 
             let payload = self
                 .http_client
@@ -709,10 +709,7 @@ impl ChannelAdapter for TelegramAdapter {
         let (chat_id, thread_id) = parse_telegram_target(&target.id)?;
 
         let placeholder = "Thinking...";
-        let thread_id_str = thread_id.map(|tid| tid.to_string());
-        let draft_id = self
-            .send_draft(chat_id, thread_id_str.as_deref(), placeholder)
-            .await?;
+        let draft_id = self.send_draft(chat_id, thread_id, placeholder).await?;
 
         if self.update_draft(chat_id, &draft_id, text).await.is_err() {
             let _ = self.cancel_draft(chat_id, &draft_id).await;
@@ -1080,6 +1077,16 @@ mod tests {
     }
 
     #[test]
+    fn split_message_for_telegram_reserves_room_for_continuation_marker() {
+        let over: String = "a".repeat(TELEGRAM_MAX_MESSAGE_LENGTH + 1);
+        let chunks = split_message_for_telegram(&over);
+        assert!(chunks.len() > 1);
+
+        let first_payload = format!("{}\n\n(continues...)", chunks[0]);
+        assert!(first_payload.chars().count() <= TELEGRAM_MAX_MESSAGE_LENGTH);
+    }
+
+    #[test]
     fn split_message_for_telegram_preserves_content() {
         let text = "Hello\n\nWorld this is a test message that is longer than the limit";
         let chunks = split_message_for_telegram(text);
@@ -1150,6 +1157,20 @@ mod tests {
         let (chat_id, thread_id) = parse_telegram_target("-1001234567890:42").unwrap();
         assert_eq!(chat_id, -1001234567890);
         assert_eq!(thread_id, Some(42));
+    }
+
+    #[test]
+    fn build_telegram_message_body_uses_numeric_thread_id() {
+        let body = build_telegram_message_body(123456789, "Thinking...", Some(42), false);
+        assert_eq!(
+            body.get("message_thread_id").and_then(Value::as_i64),
+            Some(42)
+        );
+        assert!(
+            body.get("message_thread_id")
+                .and_then(Value::as_str)
+                .is_none()
+        );
     }
 
     #[test]
