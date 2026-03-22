@@ -28,7 +28,6 @@ pub enum ChannelRuntimeKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[cfg(feature = "channel-telegram")]
 #[serde(rename_all = "snake_case")]
 pub enum TelegramStreamingMode {
     #[default]
@@ -239,10 +238,8 @@ pub struct TelegramChannelConfig {
     pub allowed_chat_ids: Vec<i64>,
     #[serde(default)]
     pub acp: ChannelAcpConfig,
-    #[cfg(feature = "channel-telegram")]
     #[serde(default)]
     pub streaming_mode: TelegramStreamingMode,
-    #[cfg(feature = "channel-telegram")]
     #[serde(default = "default_true")]
     pub ack_reactions: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -352,10 +349,8 @@ pub struct TelegramAccountConfig {
     pub allowed_chat_ids: Option<Vec<i64>>,
     #[serde(default)]
     pub acp: Option<ChannelAcpConfig>,
-    #[cfg(feature = "channel-telegram")]
     #[serde(default)]
     pub streaming_mode: Option<TelegramStreamingMode>,
-    #[cfg(feature = "channel-telegram")]
     #[serde(default)]
     pub ack_reactions: Option<bool>,
 }
@@ -695,9 +690,7 @@ impl Default for TelegramChannelConfig {
             polling_timeout_s: default_telegram_timeout_seconds(),
             allowed_chat_ids: Vec::new(),
             acp: ChannelAcpConfig::default(),
-            #[cfg(feature = "channel-telegram")]
             streaming_mode: TelegramStreamingMode::default(),
-            #[cfg(feature = "channel-telegram")]
             ack_reactions: true,
             accounts: BTreeMap::new(),
         }
