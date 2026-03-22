@@ -325,6 +325,8 @@ async fn integ_file_write_denied_without_capability() {
             );
         }
         other @ (TurnResult::FinalText(_)
+        | TurnResult::StreamingText(_)
+        | TurnResult::StreamingDone(_)
         | TurnResult::NeedsApproval(_)
         | TurnResult::ToolError(_)
         | TurnResult::ProviderError(_)) => {

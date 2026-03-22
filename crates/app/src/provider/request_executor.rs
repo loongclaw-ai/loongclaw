@@ -1,9 +1,16 @@
+use std::marker::PhantomData;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
+use axum::body::Bytes;
+use futures_util::Stream;
 use serde_json::Value;
 use tokio::time::sleep;
 
 use crate::config::ProviderConfig;
+use crate::conversation::turn_engine::{ProviderTurn, ToolIntent};
 
 use super::{
     auth_profile_runtime::ProviderAuthProfile,
@@ -19,10 +26,25 @@ use super::{
         ModelRequestStatusPlan, classify_model_status_failure_reason_with_capability,
         plan_model_request_status_with_capability, plan_transport_error_retry,
     },
-    transport,
+    transport::{self, RequestExecutionError},
 };
 
 pub(super) struct ModelRequestRuntime<'a> {
+    pub(super) provider: &'a ProviderConfig,
+    pub(super) model: &'a str,
+    pub(super) runtime_contract: ProviderRuntimeContract,
+    pub(super) capability: ProviderCapabilityContract,
+    pub(super) auto_model_mode: bool,
+    pub(super) auth_profile: &'a ProviderAuthProfile,
+    pub(super) endpoint: &'a str,
+    pub(super) headers: &'a reqwest::header::HeaderMap,
+    pub(super) request_policy: &'a policy::ProviderRequestPolicy,
+    pub(super) client: &'a reqwest::Client,
+    pub(super) auth_context: &'a transport::RequestAuthContext,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) struct StreamingModelRequestRuntime<'a> {
     pub(super) provider: &'a ProviderConfig,
     pub(super) model: &'a str,
     pub(super) runtime_contract: ProviderRuntimeContract,
@@ -413,6 +435,507 @@ where
     }
 }
 
+pub(super) async fn execute_streaming_model_request<T, BuildBody, ParseStreamItem>(
+    runtime: StreamingModelRequestRuntime<'_>,
+    build_body: BuildBody,
+    parse_stream_item: ParseStreamItem,
+) -> Result<impl Stream<Item = Result<T, ModelRequestError>>, ModelRequestError>
+where
+    T: Unpin,
+    BuildBody: FnMut(CompletionPayloadMode) -> Value,
+    ParseStreamItem: FnMut(Value) -> Option<T> + Unpin,
+{
+    let attempt = 0usize;
+    let payload_mode =
+        CompletionPayloadMode::default_for_contract(runtime.provider, runtime.runtime_contract);
+
+    let mut build_body = build_body;
+    let body = build_body(payload_mode);
+    let request_endpoint =
+        transport::resolve_request_endpoint(runtime.provider, runtime.endpoint, runtime.model);
+    let request_endpoint = transport::resolve_request_url(
+        runtime.provider,
+        request_endpoint.as_str(),
+        runtime.auth_context,
+    )
+    .map_err(|error| {
+        build_model_request_error(
+            format!(
+                "provider request setup failed for model `{}` on attempt {}: {}",
+                runtime.model,
+                attempt + 1,
+                error
+            ),
+            false,
+            ProviderFailoverReason::TransportFailure,
+            ProviderFailoverStage::TransportFailure,
+            runtime.model,
+            attempt + 1,
+            runtime.request_policy.max_attempts,
+            None,
+            None,
+        )
+    })?;
+    let body_bytes = transport::encode_json_request_body(&body).map_err(|error| {
+        build_model_request_error(
+            format!(
+                "provider request setup failed for model `{}` on attempt {}: {}",
+                runtime.model,
+                attempt + 1,
+                error
+            ),
+            false,
+            ProviderFailoverReason::TransportFailure,
+            ProviderFailoverStage::TransportFailure,
+            runtime.model,
+            attempt + 1,
+            runtime.request_policy.max_attempts,
+            None,
+            None,
+        )
+    })?;
+    let mut headers = runtime.headers.clone();
+    transport::apply_json_request_defaults(&mut headers).map_err(|error| {
+        build_model_request_error(
+            format!(
+                "provider request setup failed for model `{}` on attempt {}: {}",
+                runtime.model,
+                attempt + 1,
+                error
+            ),
+            false,
+            ProviderFailoverReason::TransportFailure,
+            ProviderFailoverStage::TransportFailure,
+            runtime.model,
+            attempt + 1,
+            runtime.request_policy.max_attempts,
+            None,
+            None,
+        )
+    })?;
+    transport::apply_auth_profile_headers(&mut headers, Some(runtime.auth_profile)).map_err(
+        |error| {
+            build_model_request_error(
+                format!(
+                    "provider request setup failed for model `{}` on attempt {}: {}",
+                    runtime.model,
+                    attempt + 1,
+                    error
+                ),
+                false,
+                ProviderFailoverReason::TransportFailure,
+                ProviderFailoverStage::TransportFailure,
+                runtime.model,
+                attempt + 1,
+                runtime.request_policy.max_attempts,
+                None,
+                None,
+            )
+        },
+    )?;
+    let req = runtime
+        .client
+        .post(request_endpoint.as_str())
+        .headers(headers)
+        .body(body_bytes.clone())
+        .build()
+        .map_err(|error| {
+            build_model_request_error(
+                format!(
+                    "provider request setup failed for model `{}` on attempt {}: {}",
+                    runtime.model,
+                    attempt + 1,
+                    error
+                ),
+                false,
+                ProviderFailoverReason::TransportFailure,
+                ProviderFailoverStage::TransportFailure,
+                runtime.model,
+                attempt + 1,
+                runtime.request_policy.max_attempts,
+                None,
+                None,
+            )
+        })?;
+
+    let response = transport::execute_request(
+        runtime.client,
+        req,
+        Some(body_bytes.as_slice()),
+        runtime.auth_context,
+        Some(transport::BedrockService::Runtime),
+    )
+    .await
+    .map_err(|error| {
+        build_model_request_error(
+            format!(
+                "provider request failed for model `{}`: {:?}",
+                runtime.model, error
+            ),
+            false,
+            ProviderFailoverReason::TransportFailure,
+            ProviderFailoverStage::TransportFailure,
+            runtime.model,
+            attempt + 1,
+            runtime.request_policy.max_attempts,
+            None,
+            None,
+        )
+    })?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let response_body = transport::decode_response_body(response)
+            .await
+            .map_err(|error| {
+                build_model_request_error(
+                    format!(
+                        "provider response decode failed for model `{}`: {}",
+                        runtime.model, error
+                    ),
+                    false,
+                    ProviderFailoverReason::ResponseDecodeFailure,
+                    ProviderFailoverStage::ResponseDecode,
+                    runtime.model,
+                    attempt + 1,
+                    runtime.request_policy.max_attempts,
+                    None,
+                    None,
+                )
+            })?;
+        let api_error = parse_provider_api_error(&response_body);
+        let reason = classify_model_status_failure_reason_with_capability(
+            status.as_u16(),
+            &api_error,
+            runtime.runtime_contract,
+            runtime.capability,
+        );
+        return Err(build_model_request_error(
+            format!(
+                "provider returned status {} for model `{}`: {}",
+                status.as_u16(),
+                runtime.model,
+                response_body
+            ),
+            false,
+            reason,
+            ProviderFailoverStage::StatusFailure,
+            runtime.model,
+            attempt + 1,
+            runtime.request_policy.max_attempts,
+            Some(status.as_u16()),
+            Some(api_error),
+        ));
+    }
+
+    let byte_stream = transport::decode_streaming_response(response);
+    let stream = SseByteStreamParser::new(Box::pin(byte_stream), parse_stream_item);
+    Ok(stream)
+}
+
+struct SseByteStreamParser<T, ParseStreamItem> {
+    byte_stream: Pin<Box<dyn Stream<Item = Result<Bytes, RequestExecutionError>> + Send>>,
+    parse_stream_item: ParseStreamItem,
+    line_buffer: String,
+    event_type: Option<String>,
+    _phantom: PhantomData<T>,
+}
+
+impl<T, ParseStreamItem> SseByteStreamParser<T, ParseStreamItem>
+where
+    ParseStreamItem: FnMut(Value) -> Option<T>,
+{
+    fn new(
+        byte_stream: Pin<Box<dyn Stream<Item = Result<Bytes, RequestExecutionError>> + Send>>,
+        parse_stream_item: ParseStreamItem,
+    ) -> Self {
+        Self {
+            byte_stream,
+            parse_stream_item,
+            line_buffer: String::new(),
+            event_type: None,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T, ParseStreamItem> Stream for SseByteStreamParser<T, ParseStreamItem>
+where
+    T: Unpin,
+    ParseStreamItem: FnMut(Value) -> Option<T> + Unpin,
+{
+    type Item = Result<T, ModelRequestError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        loop {
+            match this.byte_stream.as_mut().poll_next(cx) {
+                Poll::Ready(Some(Ok(bytes))) => {
+                    for byte in bytes {
+                        if byte == b'\n' {
+                            let line = std::mem::take(&mut this.line_buffer);
+                            let parsed_line = transport::parse_sse_line(&line);
+                            match parsed_line {
+                                transport::SseLine::Event { event_type, data } => {
+                                    if let Some(et) = event_type {
+                                        this.event_type = Some(et);
+                                    }
+                                    if !data.is_empty()
+                                        && let Some(event) =
+                                            transport::SseStreamEvent::from_sse_lines(
+                                                this.event_type.clone(),
+                                                &[data],
+                                            )
+                                    {
+                                        match event {
+                                            transport::SseStreamEvent::Message { data, .. } => {
+                                                let parse_fn = &mut this.parse_stream_item;
+                                                if let Some(item) = parse_fn(data) {
+                                                    return Poll::Ready(Some(Ok(item)));
+                                                }
+                                            }
+                                            transport::SseStreamEvent::Error { message } => {
+                                                return Poll::Ready(Some(Err(build_model_request_error(
+                                                    message,
+                                                    false,
+                                                    ProviderFailoverReason::ResponseShapeInvalid,
+                                                    ProviderFailoverStage::ResponseDecode,
+                                                    "",
+                                                    1,
+                                                    1,
+                                                    None,
+                                                    None,
+                                                ))));
+                                            }
+                                            transport::SseStreamEvent::Done => {
+                                                return Poll::Ready(None);
+                                            }
+                                        }
+                                    }
+                                }
+                                transport::SseLine::Empty => {}
+                                transport::SseLine::Comment => {}
+                                transport::SseLine::Retry { .. } => {}
+                            }
+                            this.line_buffer.clear();
+                        } else if byte != b'\r' {
+                            this.line_buffer.push(byte as char);
+                        }
+                    }
+                }
+                Poll::Ready(Some(Err(e))) => {
+                    return Poll::Ready(Some(Err(build_model_request_error(
+                        format!("streaming response error: {:?}", e),
+                        false,
+                        ProviderFailoverReason::TransportFailure,
+                        ProviderFailoverStage::TransportFailure,
+                        "",
+                        1,
+                        1,
+                        None,
+                        None,
+                    ))));
+                }
+                Poll::Ready(None) => {
+                    return Poll::Ready(None);
+                }
+                Poll::Pending => {
+                    return Poll::Pending;
+                }
+            }
+        }
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) async fn execute_streaming_turn_request(
+    runtime: StreamingModelRequestRuntime<'_>,
+    build_body: impl FnMut(CompletionPayloadMode) -> Value + Unpin,
+    session_id: Option<&str>,
+    turn_id: Option<&str>,
+    _messages: &[Value],
+    on_token: StreamingTokenCallback,
+) -> Result<ProviderTurn, ModelRequestError> {
+    let model_name = runtime.model.to_owned();
+    let stream = execute_streaming_model_request(runtime, build_body, |data: Value| {
+        let event_type = data.get("type").and_then(|v| v.as_str())?;
+        if event_type == "content_block_start" {
+            let content_block = data.get("content_block")?;
+            if content_block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
+                let name = content_block
+                    .get("name")
+                    .and_then(|v| v.as_str())?
+                    .to_owned();
+                let id = content_block.get("id").and_then(|v| v.as_str())?.to_owned();
+                let index = data.get("index").and_then(|v| v.as_u64())? as usize;
+                return Some(StreamingEvent::ToolCallStart { index, name, id });
+            }
+        }
+        if event_type == "content_block_delta" {
+            let delta = data.get("delta")?;
+            let delta_type = delta.get("type").and_then(|v| v.as_str())?;
+            if delta_type == "text_delta" {
+                let text = delta.get("text").and_then(|v| v.as_str())?;
+                return Some(StreamingEvent::Text(text.to_owned()));
+            }
+            if delta_type == "input_json_delta" {
+                let partial = delta.get("partial_json").and_then(|v| v.as_str())?;
+                let index = data.get("index").and_then(|v| v.as_u64())? as usize;
+                return Some(StreamingEvent::ToolInputPartial {
+                    index,
+                    partial_json: partial.to_owned(),
+                });
+            }
+        }
+        if event_type == "message_delta" {
+            let delta = data.get("delta")?;
+            if delta.get("type").and_then(|v| v.as_str()) == Some("message_stop") {
+                return Some(StreamingEvent::Done);
+            }
+        }
+        None
+    })
+    .await?;
+
+    let mut accumulator = StreamingAccumulator::default();
+    futures_util::pin_mut!(stream);
+    while let Some(item) = futures_util::StreamExt::next(&mut stream).await {
+        match item {
+            Ok(StreamingEvent::Text(text)) => {
+                if let Some(ref callback) = on_token {
+                    callback(StreamingCallbackData::Text { text: text.clone() });
+                }
+                accumulator.text.push_str(&text);
+            }
+            Ok(StreamingEvent::ToolCallStart { index, name, id }) => {
+                if let Some(ref callback) = on_token {
+                    callback(StreamingCallbackData::ToolCallStart {
+                        index,
+                        name: name.clone(),
+                        id: id.clone(),
+                    });
+                }
+                accumulator.tool_calls.insert(
+                    index,
+                    ToolCallInfo {
+                        name,
+                        id,
+                        input: String::new(),
+                    },
+                );
+            }
+            Ok(StreamingEvent::ToolInputPartial {
+                index,
+                partial_json,
+            }) => {
+                if let Some(ref callback) = on_token {
+                    callback(StreamingCallbackData::ToolCallInput {
+                        index,
+                        partial_json: partial_json.clone(),
+                    });
+                }
+                if let Some(tool_call) = accumulator.tool_calls.get_mut(&index) {
+                    tool_call.input.push_str(&partial_json);
+                }
+            }
+            Ok(StreamingEvent::Done) => {
+                accumulator.done = true;
+            }
+            Err(e) => {
+                accumulator.error = Some(e);
+            }
+        }
+        if accumulator.done || accumulator.error.is_some() {
+            break;
+        }
+    }
+
+    if let Some(error) = accumulator.error {
+        return Err(error);
+    }
+
+    if !accumulator.done {
+        return Err(build_model_request_error(
+            "streaming response ended without message_stop event".to_owned(),
+            false,
+            ProviderFailoverReason::ResponseShapeInvalid,
+            ProviderFailoverStage::ResponseDecode,
+            &model_name,
+            1,
+            1,
+            None,
+            None,
+        ));
+    }
+
+    let tool_intents = accumulator
+        .tool_calls
+        .values()
+        .map(|tool_call| ToolIntent {
+            tool_name: tool_call.name.clone(),
+            args_json: serde_json::from_str(&tool_call.input)
+                .unwrap_or_else(|_| Value::Object(serde_json::Map::new())),
+            source: "streaming".to_owned(),
+            session_id: session_id.unwrap_or("").to_owned(),
+            turn_id: turn_id.unwrap_or("").to_owned(),
+            tool_call_id: tool_call.id.clone(),
+        })
+        .collect();
+
+    Ok(ProviderTurn {
+        assistant_text: accumulator.text,
+        tool_intents,
+        raw_meta: Value::Null,
+    })
+}
+
+#[derive(Clone)]
+pub(crate) struct ToolCallInfo {
+    pub name: String,
+    pub id: String,
+    pub input: String,
+}
+
+#[derive(Default)]
+pub(crate) struct StreamingAccumulator {
+    text: String,
+    tool_calls: std::collections::HashMap<usize, ToolCallInfo>,
+    done: bool,
+    error: Option<ModelRequestError>,
+}
+
+pub(crate) enum StreamingEvent {
+    Text(String),
+    ToolCallStart {
+        index: usize,
+        name: String,
+        id: String,
+    },
+    ToolInputPartial {
+        index: usize,
+        partial_json: String,
+    },
+    Done,
+}
+
+#[derive(Clone)]
+pub enum StreamingCallbackData {
+    Text {
+        text: String,
+    },
+    ToolCallStart {
+        index: usize,
+        name: String,
+        id: String,
+    },
+    ToolCallInput {
+        index: usize,
+        partial_json: String,
+    },
+}
+
+pub type StreamingTokenCallback = Option<Arc<dyn Fn(StreamingCallbackData) + Send + Sync>>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -566,5 +1089,185 @@ mod tests {
         assert!(!message.contains("provider.models_endpoint"));
         assert!(message.contains("https://api.z.ai"));
         assert!(message.contains("https://open.bigmodel.cn"));
+    }
+
+    #[test]
+    fn sse_stream_event_assembles_anthropic_delta_correctly() {
+        use crate::provider::transport::SseStreamEvent;
+        let event_type = Some("content_block_delta".to_owned());
+        let data_lines = vec!["{\"type\":\"text_delta\",\"text\":\"Hello\"}".to_owned()];
+        let event = SseStreamEvent::from_sse_lines(event_type, &data_lines);
+
+        match event {
+            Some(SseStreamEvent::Message { data, event_type }) => {
+                assert_eq!(event_type.as_deref(), Some("content_block_delta"));
+                let data: &serde_json::Value = &data;
+                assert_eq!(
+                    data.get("type")
+                        .and_then(|v: &serde_json::Value| v.as_str()),
+                    Some("text_delta")
+                );
+                assert_eq!(
+                    data.get("text")
+                        .and_then(|v: &serde_json::Value| v.as_str()),
+                    Some("Hello")
+                );
+            }
+            other => panic!("expected SseStreamEvent::Message, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn streaming_accumulator_accumulates_text_deltas() {
+        let mut accumulator = StreamingAccumulator::default();
+
+        accumulator.text.push_str("Hello");
+        assert_eq!(accumulator.text, "Hello");
+        assert!(!accumulator.done);
+        assert!(accumulator.error.is_none());
+
+        accumulator.text.push_str(" World");
+        assert_eq!(accumulator.text, "Hello World");
+
+        accumulator.done = true;
+        assert!(accumulator.done);
+    }
+
+    #[test]
+    fn streaming_accumulator_accumulates_tool_input_partials() {
+        let mut accumulator = StreamingAccumulator::default();
+
+        accumulator.tool_calls.insert(
+            0,
+            ToolCallInfo {
+                name: "get_weather".to_owned(),
+                id: "call_123".to_owned(),
+                input: "{\"location".to_owned(),
+            },
+        );
+        accumulator.tool_calls.insert(
+            1,
+            ToolCallInfo {
+                name: "other_tool".to_owned(),
+                id: "call_456".to_owned(),
+                input: "{\"arg".to_owned(),
+            },
+        );
+
+        assert_eq!(accumulator.tool_calls.len(), 2);
+        assert_eq!(
+            accumulator.tool_calls.get(&0).map(|t| &t.name),
+            Some(&"get_weather".to_owned())
+        );
+        assert_eq!(
+            accumulator.tool_calls.get(&1).map(|t| &t.input),
+            Some(&"{\"arg".to_owned())
+        );
+    }
+
+    #[test]
+    fn streaming_event_parsing_text_delta() {
+        let data = json!({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Hello"}});
+
+        let event_type = data.get("type").and_then(|v| v.as_str());
+        let delta = data.get("delta");
+        let delta_type = delta.and_then(|d| d.get("type")).and_then(|v| v.as_str());
+        let text = delta.and_then(|d| d.get("text")).and_then(|v| v.as_str());
+
+        assert_eq!(event_type, Some("content_block_delta"));
+        assert_eq!(delta_type, Some("text_delta"));
+        assert_eq!(text, Some("Hello"));
+    }
+
+    #[test]
+    fn streaming_event_parsing_input_json_delta() {
+        let data = json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": "{\"location\":\"NYC\"}"}
+        });
+
+        let event_type = data.get("type").and_then(|v| v.as_str());
+        let delta = data.get("delta");
+        let delta_type = delta.and_then(|d| d.get("type")).and_then(|v| v.as_str());
+        let partial_json = delta
+            .and_then(|d| d.get("partial_json"))
+            .and_then(|v| v.as_str());
+        let index = data
+            .get("index")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+
+        assert_eq!(event_type, Some("content_block_delta"));
+        assert_eq!(delta_type, Some("input_json_delta"));
+        assert_eq!(partial_json, Some("{\"location\":\"NYC\"}"));
+        assert_eq!(index, Some(0));
+    }
+
+    #[test]
+    fn streaming_event_parsing_message_delta_stop() {
+        let data = json!({"type": "message_delta", "delta": {"type": "message_stop"}});
+
+        let event_type = data.get("type").and_then(|v| v.as_str());
+        let delta = data.get("delta");
+        let delta_type = delta.and_then(|d| d.get("type")).and_then(|v| v.as_str());
+
+        assert_eq!(event_type, Some("message_delta"));
+        assert_eq!(delta_type, Some("message_stop"));
+    }
+
+    #[test]
+    fn streaming_event_to_token_event_conversion() {
+        use crate::acp::StreamingTokenEvent;
+        use crate::acp::TokenDelta;
+        use crate::acp::ToolCallDelta;
+
+        let text_event = StreamingTokenEvent {
+            event_type: "content_block_delta".to_owned(),
+            delta: TokenDelta {
+                text: Some("Hello".to_owned()),
+                tool_call: None,
+            },
+            index: None,
+        };
+
+        let json = serde_json::to_string(&text_event).expect("should serialize");
+        assert!(json.contains("Hello"));
+        assert!(json.contains("content_block_delta"));
+    }
+
+    #[test]
+    fn streaming_token_event_serialize_for_cli() {
+        use crate::acp::StreamingTokenEvent;
+        use crate::acp::TokenDelta;
+        use crate::acp::ToolCallDelta;
+
+        let tool_event = StreamingTokenEvent {
+            event_type: "content_block_delta".to_owned(),
+            delta: TokenDelta {
+                text: None,
+                tool_call: Some(ToolCallDelta {
+                    name: Some("get_weather".to_owned()),
+                    args: Some("{\"location\":\"NYC\"}".to_owned()),
+                    id: Some("call_123".to_owned()),
+                }),
+            },
+            index: Some(0),
+        };
+
+        let json = serde_json::to_string(&tool_event).expect("should serialize");
+        assert!(json.contains("get_weather"));
+        assert!(json.contains("NYC"));
+    }
+
+    #[test]
+    fn streaming_accumulator_with_callback() {
+        let mut accumulator = StreamingAccumulator::default();
+
+        accumulator.text.push_str("Hello");
+        accumulator.text.push_str(" World");
+
+        let final_text = accumulator.text.clone();
+        assert_eq!(final_text, "Hello World");
     }
 }
