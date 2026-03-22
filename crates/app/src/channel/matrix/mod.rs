@@ -17,6 +17,8 @@ use super::{
     ChannelOutboundTarget, ChannelOutboundTargetKind, ChannelPlatform, ChannelSession,
 };
 
+pub mod api;
+
 pub(super) struct MatrixAdapter {
     account_id: String,
     user_id: Option<String>,
