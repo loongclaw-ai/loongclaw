@@ -542,7 +542,10 @@ pub(super) fn replace_turns(
     let session_id = payload
         .get("session_id")
         .and_then(Value::as_str)
-        .ok_or_else(|| "memory.replace_turns requires payload.session_id".to_owned())?;
+        .ok_or_else(|| "memory.replace_turns requires payload.session_id".to_owned())
+        .and_then(|value| {
+            normalize_required_str(value, "memory.replace_turns requires payload.session_id")
+        })?;
     let turns = payload
         .get("turns")
         .cloned()
@@ -564,6 +567,7 @@ pub(super) fn replace_turns(
     })
 }
 
+#[cfg(test)]
 pub(super) fn replace_session_turns_direct(
     session_id: &str,
     turns: &[WindowTurn],
@@ -895,7 +899,9 @@ fn replace_turns_internal(
                         &turn.role,
                         "memory.replace_turns requires turns[*].role",
                     )?;
-                    let ts = turn.ts.unwrap_or_else(unix_ts_now);
+                    let ts = turn
+                        .ts
+                        .ok_or_else(|| "memory.replace_turns requires turns[*].ts".to_owned())?;
                     insert_turn
                         .execute(rusqlite::params![
                             session_id,

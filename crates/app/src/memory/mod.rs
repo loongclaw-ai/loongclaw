@@ -185,6 +185,7 @@ pub fn append_turn_direct(
 }
 
 #[cfg(feature = "memory-sqlite")]
+#[cfg(test)]
 pub fn replace_session_turns_direct(
     session_id: &str,
     turns: &[WindowTurn],

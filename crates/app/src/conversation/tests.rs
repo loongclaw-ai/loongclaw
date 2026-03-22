@@ -17323,6 +17323,64 @@ fn compact_window_skips_small_histories() {
 }
 
 #[test]
+fn compact_window_bounds_summary_content_and_prior_summaries() {
+    use super::compaction::{CompactPolicy, compact_window};
+
+    let prior_summary = format!("Compacted 9 earlier turns\nuser: {}", "history ".repeat(64));
+    let long_payload = "payload ".repeat(96);
+    let turns = vec![
+        crate::memory::WindowTurn {
+            role: "assistant".into(),
+            content: prior_summary,
+            ts: Some(1),
+        },
+        crate::memory::WindowTurn {
+            role: "user".into(),
+            content: long_payload.clone(),
+            ts: Some(2),
+        },
+        crate::memory::WindowTurn {
+            role: "assistant".into(),
+            content: long_payload.clone(),
+            ts: Some(3),
+        },
+        crate::memory::WindowTurn {
+            role: "user".into(),
+            content: long_payload.clone(),
+            ts: Some(4),
+        },
+        crate::memory::WindowTurn {
+            role: "assistant".into(),
+            content: long_payload,
+            ts: Some(5),
+        },
+        crate::memory::WindowTurn {
+            role: "user".into(),
+            content: "recent ask".into(),
+            ts: Some(6),
+        },
+        crate::memory::WindowTurn {
+            role: "assistant".into(),
+            content: "recent reply".into(),
+            ts: Some(7),
+        },
+    ];
+
+    let compacted = compact_window(&turns, CompactPolicy::new(2)).expect("should compact");
+    let summary = &compacted[0].content;
+
+    assert!(summary.contains("[prior compacted summary]"));
+    assert!(summary.contains("earlier turns omitted"));
+    assert!(
+        summary.len() < 512,
+        "summary should stay bounded: {}",
+        summary.len()
+    );
+    assert_eq!(compacted[1].content, "recent ask");
+    assert_eq!(compacted[2].content, "recent reply");
+}
+
+#[test]
 fn default_context_engine_metadata_advertises_context_compaction() {
     use super::context_engine::{
         ContextEngineCapability, ConversationContextEngine, DefaultContextEngine,
@@ -17389,6 +17447,74 @@ async fn default_context_engine_compact_context_rewrites_persisted_window() {
     assert_eq!(turns[2].content, "reply 2");
     assert_eq!(turns[5].content, "recent ask");
     assert_eq!(turns[6].content, "recent reply");
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn default_context_engine_compact_context_clamps_to_sliding_window() {
+    use super::context_engine::{ConversationContextEngine, DefaultContextEngine};
+
+    let mut config = test_config();
+    let db_path = unique_memory_sqlite_path("default-context-engine-compaction-clamp");
+    let _ = std::fs::remove_file(&db_path);
+    config.memory.sqlite_path = db_path.clone();
+    config.memory.sliding_window = 4;
+
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let kernel_ctx = test_kernel_context_with_memory(
+        "test-default-context-engine-compaction-clamp",
+        &memory_config,
+    );
+    let session_id = "default-context-engine-compaction-clamp";
+
+    for (role, content) in [
+        ("user", "ask 1"),
+        ("assistant", "reply 1"),
+        ("user", "ask 2"),
+        ("assistant", "reply 2"),
+        ("user", "recent ask"),
+        ("assistant", "recent reply"),
+    ] {
+        crate::memory::append_turn_direct(session_id, role, content, &memory_config)
+            .expect("seed turns should succeed");
+    }
+
+    let engine = DefaultContextEngine;
+    engine
+        .compact_context(&config, session_id, &[], &kernel_ctx)
+        .await
+        .expect("default engine compaction should succeed");
+
+    let turns = crate::memory::window_direct(session_id, 32, &memory_config)
+        .expect("window load should succeed");
+    assert_eq!(turns.len(), 4);
+    assert_eq!(turns[0].role, "assistant");
+    assert!(turns[0].content.contains("Compacted 1 earlier turns"));
+
+    let messages = engine
+        .assemble_messages(
+            &config,
+            session_id,
+            false,
+            ConversationRuntimeBinding::kernel(&kernel_ctx),
+        )
+        .await
+        .expect("assemble messages should preserve summary inside sliding window");
+    assert_eq!(messages.len(), 4);
+    assert!(
+        messages[0]["content"]
+            .as_str()
+            .expect("summary content")
+            .contains("Compacted 1 earlier turns")
+    );
+    assert_eq!(
+        messages[3]["content"]
+            .as_str()
+            .expect("recent reply content"),
+        "recent reply"
+    );
 
     let _ = std::fs::remove_file(&db_path);
 }

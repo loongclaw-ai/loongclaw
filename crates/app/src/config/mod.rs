@@ -2112,6 +2112,7 @@ system = " LuCid "
 compact_enabled = true
 compact_min_messages = 6
 compact_trigger_estimated_tokens = 120
+compact_preserve_recent_turns = 4
 compact_fail_open = false
 "#;
         let parsed =
@@ -2122,6 +2123,7 @@ compact_fail_open = false
             parsed.conversation.compact_trigger_estimated_tokens(),
             Some(120)
         );
+        assert_eq!(parsed.conversation.compact_preserve_recent_turns(), 4);
         assert!(!parsed.conversation.compaction_fail_open());
         assert!(!parsed.conversation.should_compact(5));
         assert!(parsed.conversation.should_compact(6));
@@ -2143,6 +2145,7 @@ compact_fail_open = false
         assert!(config.turn_middleware_ids().is_empty());
         assert!(config.compact_enabled);
         assert!(config.compaction_fail_open());
+        assert_eq!(config.compact_preserve_recent_turns(), 6);
         assert_eq!(config.compact_trigger_estimated_tokens(), None);
         assert!(!config.should_compact(0));
         assert!(!config.should_compact_with_estimate(0, None));

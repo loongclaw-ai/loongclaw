@@ -16,9 +16,6 @@ use super::runtime_binding::ConversationRuntimeBinding;
 
 pub const CONTEXT_ENGINE_API_VERSION: u16 = 1;
 
-#[cfg(feature = "memory-sqlite")]
-const DEFAULT_CONTEXT_COMPACTION_PRESERVE_RECENT_TURNS: usize = 6;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ContextEngineCapability {
     KernelMemoryWindowRead,
@@ -336,10 +333,15 @@ impl ConversationContextEngine for DefaultContextEngine {
                 ConversationRuntimeBinding::kernel(kernel_ctx),
             )
             .await?;
-            let Some(compacted) = compact_window(
-                &turns,
-                CompactPolicy::new(DEFAULT_CONTEXT_COMPACTION_PRESERVE_RECENT_TURNS),
-            ) else {
+            let preserve_recent_turns = config
+                .conversation
+                .compact_preserve_recent_turns()
+                .min(config.memory.sliding_window.saturating_sub(1));
+            if preserve_recent_turns == 0 {
+                return Ok(());
+            }
+            let Some(compacted) = compact_window(&turns, CompactPolicy::new(preserve_recent_turns))
+            else {
                 return Ok(());
             };
 
