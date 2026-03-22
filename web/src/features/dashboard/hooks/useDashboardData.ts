@@ -260,6 +260,7 @@ export function useDashboardData({
     setSettingsError(null);
     setSettingsNotice(null);
     setIsSavingSettings(true);
+    let providerApplied = false;
     try {
       setSettingsModal({
         phase: "pending",
@@ -275,6 +276,7 @@ export function useDashboardData({
         }),
       );
       if (result.passed) {
+        providerApplied = true;
         acceptValidatedOnboardingStatus(result.status);
         await onboardingApi.savePreferences(
           buildPreferencesSavePayload({
@@ -308,7 +310,22 @@ export function useDashboardData({
       if (saveError instanceof ApiRequestError && saveError.status === 401) {
         markUnauthorized();
       }
-      const saveErrorMessage = readProviderSaveError(saveError, t, "dashboard.settings.saveFailed");
+      if (providerApplied) {
+        refreshOnboardingStatus();
+        try {
+          await reloadDashboardData();
+        } catch {
+          // Keep the original save error visible if the recovery refresh also fails.
+        }
+        providerForm.markApiKeyPristine();
+      }
+
+      const saveErrorMessage = providerApplied
+        ? t("dashboard.settings.preferencesSaveFailed", {
+            defaultValue:
+              "Provider settings were applied, but assistant settings could not be saved.",
+          })
+        : readProviderSaveError(saveError, t, "dashboard.settings.saveFailed");
       setSettingsError(saveErrorMessage);
       setSettingsModal({
         phase: "error",

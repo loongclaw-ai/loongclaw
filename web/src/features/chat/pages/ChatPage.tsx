@@ -152,6 +152,7 @@ export default function ChatPage() {
     updateSessionViewState,
     selectSession,
     upsertSession,
+    removeSession: sessionsState.removeSession,
     refreshSessions,
     setError,
   });
@@ -247,7 +248,10 @@ export default function ChatPage() {
     const input = composerText.trim();
     if (!input) return;
     setComposerText("");
-    await sendMessage(input);
+    const accepted = await sendMessage(input);
+    if (accepted === false) {
+      setComposerText(input);
+    }
   }
 
   const selectedSession =

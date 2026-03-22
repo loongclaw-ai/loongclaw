@@ -1,6 +1,6 @@
 # LoongClaw Web 技术栈与目录结构
 
-状态：已进入可用 MVP，持续迭代中
+状态：已进入可用 MVP，持续迭代中  
 最后更新：2026-03-22
 
 ## 1. 目标
@@ -27,22 +27,52 @@
 - 原生 `fetch` + NDJSON 流读取
 - CSS Variables + 自定义主题样式
 
-工程约定：
-
-- 包管理当前以 `npm` 为主（仓库内已有 `package-lock.json`）
-- 开发态为 Vite dev server + 本地 daemon API 分离联调
-- 当前已支持 `same-origin-static` 本地同源模式
-- 产品态方向仍优先收敛到同源托管
-- 顶部导航已提供语言切换与明暗主题切换
-
 后端承接：
 
-- `crates/daemon/src/web_cli.rs`（包含 `web install/status/remove/serve` 命令）
+- `crates/daemon/src/web_cli.rs`
 - `crates/daemon/src/web_cli/onboarding.rs`
+- `crates/daemon/src/web_cli/auth.rs`
 - `crates/daemon/src/web_cli/debug_console.rs`
 - Axum 本地 API
 
-## 3. 当前目录
+## 3. 运行模式
+
+### 开发态
+
+- 前端：Vite dev server
+- 后端：本地 daemon API
+- 默认地址：
+  - `http://127.0.0.1:4173/`
+  - `http://127.0.0.1:4317/`
+
+特点：
+
+- 分离前后端
+- 热更新快
+- 适合日常开发和联调
+
+### 同源产品态骨架
+
+当前已支持：
+
+- daemon 直接托管打包后的静态资源
+- 页面和 API 走同一个 origin
+- 同源模式下走本地 session cookie，而不是手动 token 主路径
+
+### 安装态
+
+当前已实现第一版安装命令：
+
+- `loongclaw web install --source <dist-dir>`
+- `loongclaw web status`
+- `loongclaw web remove [--force]`
+
+安装目录：
+
+- `~/.loongclaw/web/dist/`
+- 清单：`~/.loongclaw/web/install.json`
+
+## 4. 当前目录
 
 ```text
 web/
@@ -80,7 +110,7 @@ web/
     main.tsx
 ```
 
-## 4. 目录职责
+## 5. 目录职责
 
 ### `web/src/features/chat/`
 
@@ -93,6 +123,11 @@ web/
 - 生成中状态
 - 轻量消息渲染
 
+当前关键状态已拆进：
+
+- `hooks/useChatSessions.ts`
+- `hooks/useChatStream.ts`
+
 ### `web/src/features/dashboard/`
 
 承载：
@@ -101,8 +136,13 @@ web/
 - tools 摘要
 - config 摘要
 - connectivity 诊断
-- provider 最小写入入口
-- Debug Console 入口
+- provider 最小写入
+- Debug Console
+
+当前关键状态已拆进：
+
+- `hooks/useDashboardData.ts`
+- `components/DebugConsolePanel.tsx`
 
 ### `web/src/features/onboarding/`
 
@@ -112,107 +152,77 @@ web/
 - provider 最小写入
 - preferences 轻配置写入
 - validate 放行
-- token pairing 流程
+- token / session 进入流程
 
-### `web/src/contexts/`
+当前关键状态已拆进：
 
-当前主要管理：
+- `components/OnboardingStatusPanel.tsx`
+- `hooks/useOnboardingFlow.ts`
+- `providerConfig.ts`
+
+### `web/src/contexts/` 与 `web/src/hooks/`
+
+当前主要承载：
 
 - Web 会话连接状态
-- token / pairing 状态
-- onboarding 状态与放行
+- token / pairing / same-origin session
+- onboarding gate
 
-### `web/src/styles/`
+当前关键入口：
 
-当前已开始温和拆分：
+- `contexts/WebSessionContext.tsx`
+- `hooks/useWebSessionManager.ts`
+- `hooks/useWebConnection.ts`
 
-- `variables.css`：设计 token
-- `themes.css`：主题映射
-- `dashboard.css`：Dashboard 与 Debug Console
-- `index.css`：全局、Chat 与共享布局样式
+## 6. 当前实现特征
 
-## 5. 运行约定
+### 路由与页面保活
 
-开发模式：
+当前 `chat` 与 `dashboard` 已加入 keep-alive 语义，用来保留切页返回后的可见状态。
 
-- 前端：`vite dev`
-- 后端：`loongclaw web serve --bind 127.0.0.1:4317`
+收益：
 
-默认访问：
+- 流式中切页返回更稳定
+- 会话列表与当前可见状态不容易丢
 
-- 前端：`http://127.0.0.1:4173/`
-- 后端：`http://127.0.0.1:4317/`
+边界：
+
+- 仍需持续关注初始化副作用与页面体积
+
+### 数据访问
+
+当前前端数据访问特点：
+
+- 默认 `credentials: include`
+- 开发态可附带本地 token
+- 同源产品态优先依赖 session cookie
+- Chat 流式消费基于 `fetch + ReadableStream + NDJSON`
+
+### 状态组织
+
+当前以“轻全局 + feature 本地状态”组合为主：
+
+- WebSessionContext：连接 / auth / onboarding gate
+- feature hooks：各自页面的数据加载、交互与错误处理
+
+当前尚未引入 Redux / Zustand / React Query 一类额外状态层。
+
+## 7. 脚本与命令
 
 推荐脚本：
 
 - Windows
   - `scripts/web/start-dev.ps1`
   - `scripts/web/stop-dev.ps1`
-  - `scripts/web/start-same-origin.ps1`
-  - `scripts/web/stop-same-origin.ps1`
+  - `web/start-same-origin.ps1`
+  - `web/stop-same-origin.ps1`
 - macOS / Linux
   - `scripts/web/start-dev.sh`
   - `scripts/web/stop-dev.sh`
-  - `scripts/web/start-same-origin.sh`
-  - `scripts/web/stop-same-origin.sh`
+  - `web/start-same-origin.sh`
+  - `web/stop-same-origin.sh`
 
-同源静态模式：
-
-- 默认地址：`http://127.0.0.1:4318/`
-- 需要先存在 `web/dist/index.html`（开发用，指定 `--static-root`），或已执行 `loongclaw web install`
-- 可由 daemon 直接托管静态资源与 API
-- `web serve` 会自动检测 `~/.loongclaw/web/dist/index.html`；检测到后无需传 `--static-root`
-
-安装模式：
-
-- 安装：`loongclaw web install --source <dist-dir>`
-- 状态：`loongclaw web status`
-- 卸载：`loongclaw web remove [--force]`
-- 安装目录：`~/.loongclaw/web/dist/`，清单：`~/.loongclaw/web/install.json`
-
-## 5.5 当前工程实现特征（专项 review 摘要）
-
-这部分补充“代码当前实际上是怎么组织和运行的”，便于后续 WebUI 改造时快速建立共同认知。
-
-### 路由装配
-
-当前 `chat` 和 `dashboard` 还不是严格意义上的“按路由挂载”，而是：
-
-- 由 `app/router.tsx` 同时挂载 `ChatPage` 与 `DashboardPage`
-- 再通过 `hidden` / `aria-hidden` 切换可见性
-
-这意味着：
-
-- 两个页面的初始化副作用会同时存在
-- 页面切换更接近“单页分区切换”，而不是标准路由卸载/挂载
-
-### 状态组织
-
-当前状态管理是“轻全局 + 页面本地状态”为主：
-
-- `WebSessionContext` 负责 endpoint、auth、token、pairing、onboarding gate
-- `ChatPage` / `DashboardPage` / `OnboardingStatusPanel` 主要通过 `useState + useEffect` 管理各自状态
-- 当前未引入 Redux / Zustand / React Query 一类额外状态层
-
-### 数据访问
-
-当前前端请求模式主要是：
-
-- 所有请求默认 `credentials: include`
-- 本地存在 token 时，额外附带 `Authorization: Bearer <token>`
-- Chat 流式响应通过 `fetch + ReadableStream + NDJSON` 消费
-- `meta / onboard status` 与 feature API 目前还存在两套调用风格
-
-### 样式组织
-
-当前样式体系以全局 CSS 为主：
-
-- `variables.css` 负责设计 token
-- `themes.css` 负责主题映射
-- `dashboard.css` 负责 Dashboard / Debug Console
-- `index.css` 仍承担全局布局、Chat 与共享样式
-
-## 6. 日志位置
+## 8. 日志位置
 
 运行日志统一落在用户目录，不再写回仓库：
 
@@ -221,99 +231,32 @@ web/
 - `%USERPROFILE%\\.loongclaw\\logs\\web-api.log`
 - `%USERPROFILE%\\.loongclaw\\logs\\web-api.err.log`
 
-## 7. 当前已落地链路
+## 9. 专项 review 后的当前重点
 
-### O1：首次进入状态检测
+这轮 WebUI 专项 review 之后，当前结构上的结论是：
 
-已落地：
+- 大状态机已经开始从页面文件拆到 feature hooks，方向是对的
+- Chat / Dashboard / Onboarding 三条主链现在都已有自己的状态 hook
+- 近期已修复几条真实运行时问题：
+  - 流式失败时不再误删已接受的用户消息
+  - 新建会话失败时不再残留空白会话
+  - Dashboard 部分成功保存后会回拉真实状态
+  - onboarding 不再把 401/session 失效误判成 runtime offline
+  - 发送失败后会恢复输入框内容
 
-- `GET /api/onboard/status`
-- 首屏状态面板
-- ready 状态确认进入
+当前仍值得继续关注：
 
-### O2：最小 provider 可写配置
+- `ChatPage.tsx`
+- `DashboardPage.tsx`
+- `OnboardingStatusPanel.tsx`
 
-已落地：
+这三个页面文件仍偏大，后续继续开发时应优先保持“先抽 hook / 子组件，再加功能”。
 
-- `POST /api/onboard/provider`
-- onboarding 表单
-- Dashboard `Provider Settings`
+## 10. 当前仍未完成
 
-当前支持字段：
-
-- provider kind
-- model
-- base_url / endpoint
-- api key
-
-### O3：验证与放行
-
-已落地：
-
-- `POST /api/onboard/validate`
-- `POST /api/onboard/provider/apply`
-- 应用后在当前页验证，而不是强制回 onboarding
-
-### O4：token / pairing 收口
-
-已部分落地：
-
-- token 输入已进入 onboarding
-- 顶部散落 token banner 已移除
-- 轻自动配对 + 手动兜底
-
-### O2.5：轻配置项
-
-已部分落地：
-
-- `personality`
-- `memory_profile`
-- `prompt addendum`
-
-当前优先落在 onboarding 首屏的“可选个性化设置”。
-
-### Debug Console
-
-已落地第一版：
-
-- Dashboard 内嵌切换
-- 只读
-- 终端风格
-- 以“操作块”形式展示最近事件
-
-## 8. 当前仍未完成
-
-- 完整的 Dashboard 轻配置项写入闭环
-- 更像真实 CLI 的连续输出流
+- 更像真实 CLI 的连续输出流 Debug Console
 - 更完整的 tool trace / event timeline
-- 更平滑的安装态打包分发体验（`web install` 已落地，分发产物的打包流程尚未建立）
-- 安装态级别的无感 token 配对（命令已实现，session 自动绑定链路待完善）
-- 更强的 provider / tool doctor
-
-## 9. 近期值得关注的新事项
-
-这段时间新增且会影响后续开发的事项：
-
-- Debug Console 已从”卡片拼接”转向”操作块分段”展示
-- Chat 历史已改成按**可见消息**计数
-- Dashboard 工具区已对齐更多 runtime 能力：
-  - `web_search`
-  - `browser_companion`
-  - `file_tools`
-- macOS 启停脚本已补齐
-- provider apply 已收成当前页验证流程
-- **`web install/status/remove` 命令已落地**，安装流程：
-  1. `npm run build`（或 CI 产出 `dist/`）
-  2. `loongclaw web install --source ./dist`
-  3. `loongclaw web serve`（自动检测已安装前端，无需 `--static-root`）
-
-## 10. 接下来最适合继续做什么
-
-结合 2026-03-21 的专项 review，推荐顺序调整为：
-
-1. 先把 `chat / dashboard` 改成真实路由挂载，避免双页面同时初始化与重复请求
-2. 统一 Web 数据层，把 auth / onboarding / feature API 的请求、401、错误与取消机制收口
-3. 优先拆分 `ChatPage`、`DashboardPage`、`WebSessionContext` 这几个大文件
-4. 补齐运行时校验、流式解析容错、超时与中断能力
-5. 逐步推动同源 session 收口，降低前端对本地 token 持久化的依赖
-6. 在上述骨架稳定后，再继续扩展 Debug Console、Dashboard 轻配置与产品态能力
+- 更完整的 Dashboard 受控写入
+- 更顺的安装态产品化体验
+- `tool.search` 中文 / 泛化意图召回问题
+- Chat 流式的更完整中断 / 重连 / 恢复语义

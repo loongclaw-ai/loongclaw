@@ -346,6 +346,26 @@ export function useChatSessions(t: TFunction) {
     }
   }, [deletingSessionId, canAccessProtectedApi, sessions, selectedSessionId, markUnauthorized]);
 
+  const removeSession = useCallback((sessionId: string) => {
+    setSessions((current) => current.filter((session) => session.id !== sessionId));
+    sessionViewStateRef.current.delete(sessionId);
+
+    if (selectedSessionIdRef.current === sessionId) {
+      setSelectedSessionId(null);
+      const emptyState: SessionViewState = {
+        messages: [],
+        activeTools: [],
+        pendingAssistantId: null,
+        streamPhase: "idle",
+      };
+      syncCurrentViewState(emptyState);
+      setMessages([]);
+      setActiveTools([]);
+      setPendingAssistantId(null);
+      setStreamPhase("idle");
+    }
+  }, [syncCurrentViewState]);
+
   return {
     sessions,
     selectedSessionId,
@@ -364,6 +384,7 @@ export function useChatSessions(t: TFunction) {
     setStreamPhase,
     selectSession,
     upsertSession,
+    removeSession,
     refreshSessions,
     deleteSession,
     updateSessionViewState,

@@ -75,6 +75,7 @@ interface UseChatStreamParams {
   updateSessionViewState: (sessionId: string, updater: (current: SessionViewState) => SessionViewState) => void;
   selectSession: (sessionId: string | null) => void;
   upsertSession: (session: ChatSessionSummary) => void;
+  removeSession: (sessionId: string) => void;
   refreshSessions: (preferredSessionId?: string) => Promise<void>;
   setError: (error: string | null) => void;
 }
@@ -91,6 +92,7 @@ export function useChatStream({
   updateSessionViewState,
   selectSession,
   upsertSession,
+  removeSession,
   refreshSessions,
   setError,
 }: UseChatStreamParams) {
@@ -172,6 +174,8 @@ export function useChatStream({
     setIsSubmitting(true);
 
     let targetSessionId = sessionId;
+    let turnAccepted = false;
+    let createdSessionId: string | null = null;
     const initialMessagesForNewSession = [optimisticUserMessage, placeholderAssistantMessage];
 
     try {
@@ -190,6 +194,7 @@ export function useChatStream({
       if (!targetSessionId) {
         const optimisticTitle = input.trim().slice(0, 48) || "New session";
         targetSessionId = await chatApi.createSession(optimisticTitle);
+        createdSessionId = targetSessionId;
         upsertSession({
           id: targetSessionId,
           title: optimisticTitle,
@@ -205,6 +210,7 @@ export function useChatStream({
       }
 
       const acceptedTurn = await chatApi.createTurn(targetSessionId, input, toolAssistHint ?? undefined);
+      turnAccepted = true;
       
       abortControllerRef.current = new AbortController();
       
@@ -216,34 +222,67 @@ export function useChatStream({
 
       updateSessionViewState(targetSessionId, (current) => ({ ...current, activeTools: [] }));
       await refreshSessions(targetSessionId);
+      return true;
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") {
-        updateSessionViewState(targetSessionId!, (current) => ({
-          ...current,
-          messages: current.messages.filter(m => m.id !== placeholderAssistantId),
-          activeTools: [],
-          pendingAssistantId: null,
-          streamPhase: "idle",
-        }));
+        if (targetSessionId) {
+          updateSessionViewState(targetSessionId, (current) => ({
+            ...current,
+            messages: current.messages.filter((m) => m.id !== placeholderAssistantId),
+            activeTools: [],
+            pendingAssistantId: null,
+            streamPhase: "idle",
+          }));
+        }
+        return turnAccepted;
       } else {
         const friendlyError = toFriendlyChatError(err, t, markUnauthorized, authMode, tokenPath, tokenEnv);
         setError(friendlyError);
-        // On failure, rollback optimistic messages
-        if (targetSessionId) {
-           updateSessionViewState(targetSessionId, (current) => ({
-             ...current,
-             messages: current.messages.filter(m => m.id !== optimisticUserMessage.id && m.id !== placeholderAssistantId),
-             activeTools: [],
-             pendingAssistantId: null,
-             streamPhase: "idle",
-           }));
+        if (turnAccepted && targetSessionId) {
+          try {
+            const latestMessages = await chatApi.loadHistory(targetSessionId);
+            updateSessionViewState(targetSessionId, (current) => ({
+              ...current,
+              messages: latestMessages,
+              activeTools: [],
+              pendingAssistantId: null,
+              streamPhase: "idle",
+            }));
+          } catch {
+            updateSessionViewState(targetSessionId, (current) => ({
+              ...current,
+              messages: current.messages.filter((m) => m.id !== placeholderAssistantId),
+              activeTools: [],
+              pendingAssistantId: null,
+              streamPhase: "idle",
+            }));
+          }
+          await refreshSessions(targetSessionId);
+          return true;
         }
+
+        if (targetSessionId) {
+          updateSessionViewState(targetSessionId, (current) => ({
+            ...current,
+            messages: current.messages.filter(
+              (m) => m.id !== optimisticUserMessage.id && m.id !== placeholderAssistantId,
+            ),
+            activeTools: [],
+            pendingAssistantId: null,
+            streamPhase: "idle",
+          }));
+        }
+
+        if (createdSessionId) {
+          removeSession(createdSessionId);
+        }
+        return false;
       }
     } finally {
       setIsSubmitting(false);
       abortControllerRef.current = null;
     }
-  }, [isSubmitting, canAccessProtectedApi, sessionId, toolAssistEnabled, updateSessionViewState, selectSession, upsertSession, t, markUnauthorized, authMode, tokenPath, tokenEnv, setError, handleStreamEvent, refreshSessions]);
+  }, [isSubmitting, canAccessProtectedApi, sessionId, toolAssistEnabled, updateSessionViewState, selectSession, upsertSession, removeSession, t, markUnauthorized, authMode, tokenPath, tokenEnv, setError, handleStreamEvent, refreshSessions]);
 
   return { isSubmitting, sendMessage, stopStream };
 }

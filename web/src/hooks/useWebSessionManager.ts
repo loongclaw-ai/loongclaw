@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { isApiAbortError } from "../lib/api/client";
+import { isApiAbortError, isApiRequestError } from "../lib/api/client";
 import { getApiBaseUrl } from "../lib/config/env";
 import {
   clearStoredToken,
@@ -50,6 +50,30 @@ function buildOfflineOnboardingStatus(authMode: string | null): OnboardingStatus
     configPath: "",
     blockingStage: "runtime_offline",
     nextAction: "start_local_runtime",
+  };
+}
+
+function buildUnauthorizedOnboardingStatus(authMode: string | null): OnboardingStatus {
+  const sameOriginSession = authMode === "same_origin_session";
+  return {
+    runtimeOnline: true,
+    tokenRequired: !sameOriginSession,
+    tokenPaired: false,
+    configExists: false,
+    configLoadable: false,
+    providerConfigured: false,
+    providerReachable: false,
+    activeProvider: null,
+    activeModel: "",
+    providerBaseUrl: "",
+    providerEndpoint: "",
+    apiKeyConfigured: false,
+    personality: "calm_engineering",
+    memoryProfile: "window_only",
+    promptAddendum: "",
+    configPath: "",
+    blockingStage: sameOriginSession ? "session_refresh" : "token_pairing",
+    nextAction: sameOriginSession ? "refresh_local_session" : "enter_local_token",
   };
 }
 
@@ -138,10 +162,16 @@ export function useWebSessionManager() {
           signal: controller.signal,
           authToken: storedToken?.trim() ?? "",
         });
+        setIsUnauthorized(false);
         setOnboardingStatus(status);
       } catch (error) {
         if (!isApiAbortError(error)) {
-          setOnboardingStatus(buildOfflineOnboardingStatus(authMode));
+          if (isApiRequestError(error) && error.status === 401) {
+            setIsUnauthorized(true);
+            setOnboardingStatus(buildUnauthorizedOnboardingStatus(authMode));
+          } else {
+            setOnboardingStatus(buildOfflineOnboardingStatus(authMode));
+          }
         }
       } finally {
         if (!controller.signal.aborted) {
