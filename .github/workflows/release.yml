@@ -13,8 +13,10 @@ on:
 env:
   BIN_NAME: loongclaw
   PACKAGE_NAME: loongclaw
-  CROSS_VERSION: "0.2.5"
   LINUX_ARM64_GLIBC_FLOOR: "2.17"
+  LINUX_ARM64_ZIG_VERSION: "0.13.0"
+  LINUX_ARM64_ZIG_SHA256: "d45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea"
+  CARGO_ZIGBUILD_VERSION: "0.22.1"
 
 jobs:
   verify-release:
@@ -52,10 +54,10 @@ jobs:
         run: cargo doc --workspace --no-deps
 
       - name: Dependency graph contract
-        run: ./scripts/check_dep_graph.sh
+        run: chmod +x ./scripts/check_dep_graph.sh && ./scripts/check_dep_graph.sh
 
       - name: Strict architecture contract
-        run: LOONGCLAW_ARCH_STRICT=true ./scripts/check_architecture_boundaries.sh
+        run: chmod +x ./scripts/check_architecture_boundaries.sh && LOONGCLAW_ARCH_STRICT=true ./scripts/check_architecture_boundaries.sh
 
   build-binaries:
     name: Build ${{ matrix.target }} on ${{ matrix.os }}
@@ -72,10 +74,15 @@ jobs:
             ext: ""
             archive: tar.gz
           - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            ext: ""
+            archive: tar.gz
+            install_musl_tools: true
+          - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             ext: ""
             archive: tar.gz
-            use_cross: true
+            use_zig: true
           - os: macos-14
             target: x86_64-apple-darwin
             ext: ""
@@ -105,18 +112,38 @@ jobs:
       - name: Cache Cargo Artifacts
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
 
-      - name: Install cross (if needed)
-        if: matrix.use_cross == true
-        run: cargo install cross --version "${{ env.CROSS_VERSION }}" --locked
+      - name: Install musl tools
+        if: matrix.install_musl_tools == true
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      - name: Build release binary (with cross)
-        if: matrix.use_cross == true
+      # 为 aarch64-unknown-linux-gnu 安装 Zig 和 cargo-zigbuild
+      - name: Install Zig and cargo-zigbuild
+        if: matrix.use_zig == true
+        run: |
+          set -euo pipefail
+          zig_tarball="zig-linux-x86_64-${{ env.LINUX_ARM64_ZIG_VERSION }}.tar.xz"
+          zig_dir="zig-linux-x86_64-${{ env.LINUX_ARM64_ZIG_VERSION }}"
+          curl -fSL "https://ziglang.org/download/${{ env.LINUX_ARM64_ZIG_VERSION }}/${zig_tarball}" -o "$zig_tarball"
+          echo "${{ env.LINUX_ARM64_ZIG_SHA256 }}  ${zig_tarball}" | shasum -a 256 --check -
+          tar -xf "$zig_tarball"
+          [ -d "$zig_dir" ] || (echo "Missing extracted Zig directory: $zig_dir" && exit 1)
+          chmod +x "$zig_dir/zig"
+          echo "$PWD/$zig_dir" >> "$GITHUB_PATH"
+          rm -f "$zig_tarball"
+          cargo install "cargo-zigbuild" --version "${{ env.CARGO_ZIGBUILD_VERSION }}" --locked
+
+      # 使用 cargo-zigbuild 构建 aarch64 目标（指定 glibc 2.17）
+      - name: Build release binary with cargo-zigbuild
+        if: matrix.use_zig == true
         env:
           LOONGCLAW_RELEASE_BUILD: "1"
-        run: cross build --release --locked -p loongclaw-daemon --bin ${{ env.BIN_NAME }} --target ${{ matrix.target }}
+        run: |
+          cargo zigbuild --release --locked -p loongclaw-daemon --bin ${{ env.BIN_NAME }} \
+            --target "${{ matrix.target }}.${{ env.LINUX_ARM64_GLIBC_FLOOR }}"
 
+      # 其他目标使用普通 cargo build
       - name: Build release binary (native)
-        if: matrix.use_cross != true
+        if: matrix.use_zig != true
         env:
           LOONGCLAW_RELEASE_BUILD: "1"
         run: cargo build --release --locked -p loongclaw-daemon --bin ${{ env.BIN_NAME }} --target ${{ matrix.target }}
@@ -145,9 +172,15 @@ jobs:
           $hash = (Get-FileHash -Algorithm SHA256 "dist/$archive").Hash.ToLowerInvariant()
           Set-Content -Path "dist/$archive.sha256" -Value "$hash  $archive"
 
-      - name: Verify glibc floor (Linux ARM64 only)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: ./scripts/check_glibc_floor.sh "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}" "${{ env.LINUX_ARM64_GLIBC_FLOOR }}"
+      - name: Verify glibc floor (Linux GNU targets)
+        if: endsWith(matrix.target, '-unknown-linux-gnu')
+        shell: bash
+        run: |
+          set -euo pipefail
+          . ./scripts/release_artifact_lib.sh
+          max_glibc="$(release_gnu_glibc_floor_for_target "${{ matrix.target }}")"
+          chmod +x ./scripts/check_glibc_floor.sh
+          ./scripts/check_glibc_floor.sh "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}" "$max_glibc"
 
       - name: Upload packaged artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f

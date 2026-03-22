@@ -38,6 +38,7 @@ use super::memory;
 use super::memory::runtime_config::MemoryRuntimeConfig;
 
 pub const DEFAULT_FIRST_PROMPT: &str = "Summarize this repository and suggest the best next step.";
+const TEST_ONBOARD_EXECUTABLE_ENV: &str = "LOONGCLAW_TEST_ONBOARD_EXECUTABLE";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CliChatOptions {
@@ -54,6 +55,59 @@ impl CliChatOptions {
             || !self.acp_bootstrap_mcp_servers.is_empty()
             || self.acp_working_directory.is_some()
     }
+}
+
+fn append_onboard_target_args(
+    command: &mut std::process::Command,
+    config_path: Option<&str>,
+    resolved_config_path: &Path,
+) {
+    if config_path.is_some() {
+        command.arg("--output").arg(resolved_config_path);
+    }
+}
+
+fn resolve_onboard_executable_path() -> CliResult<PathBuf> {
+    if cfg!(debug_assertions)
+        && let Some(executable_path) = std::env::var_os(TEST_ONBOARD_EXECUTABLE_ENV)
+    {
+        return Ok(PathBuf::from(executable_path));
+    }
+
+    std::env::current_exe()
+        .map_err(|error| format!("failed to resolve current executable: {error}"))
+}
+
+fn build_onboard_command_for_executable(
+    executable_path: PathBuf,
+    config_path: Option<&str>,
+    resolved_config_path: &Path,
+) -> std::process::Command {
+    let mut command = std::process::Command::new(executable_path);
+    command.arg("onboard");
+    append_onboard_target_args(&mut command, config_path, resolved_config_path);
+    command
+}
+
+fn build_onboard_command(
+    config_path: Option<&str>,
+    resolved_config_path: &Path,
+) -> CliResult<std::process::Command> {
+    let executable_path = resolve_onboard_executable_path()?;
+    Ok(build_onboard_command_for_executable(
+        executable_path,
+        config_path,
+        resolved_config_path,
+    ))
+}
+
+fn format_onboard_command_hint(config_path: Option<&str>, resolved_config_path: &Path) -> String {
+    let mut command = String::from("loongclaw onboard");
+    if config_path.is_some() {
+        command.push_str(" --output ");
+        command.push_str(&resolved_config_path.display().to_string());
+    }
+    command
 }
 
 struct CliTurnRuntime {
@@ -96,6 +150,46 @@ pub async fn run_cli_chat(
     session_hint: Option<&str>,
     options: &CliChatOptions,
 ) -> CliResult<()> {
+    let resolved_config_path = config_path
+        .map(config::expand_path)
+        .unwrap_or_else(config::default_config_path);
+    let config_exists = resolved_config_path.try_exists().map_err(|error| {
+        format!(
+            "failed to access config path {}: {error}",
+            resolved_config_path.display()
+        )
+    })?;
+
+    if !config_exists {
+        let onboard_hint = format_onboard_command_hint(config_path, &resolved_config_path);
+        println!("Welcome to LoongClaw!");
+        println!();
+        println!("No configuration found. Would you like to run the setup wizard now? [Y/n]");
+
+        let mut input = String::new();
+        let read = io::stdin()
+            .read_line(&mut input)
+            .map_err(|e| format!("read stdin failed: {e}"))?;
+        let input = input.trim().to_ascii_lowercase();
+
+        if read > 0 && matches!(input.as_str(), "y" | "yes") {
+            let mut onboard = build_onboard_command(config_path, &resolved_config_path)?;
+
+            let exit_status = onboard
+                .spawn()
+                .map_err(|e| format!("failed to spawn onboard: {e}"))?
+                .wait()
+                .map_err(|e| format!("failed to wait for onboard: {e}"))?;
+
+            if !exit_status.success() {
+                return Err(format!("onboard exited with code {:?}", exit_status.code()));
+            }
+        } else {
+            println!("You can run '{onboard_hint}' later to get started.");
+        }
+        return Ok(());
+    }
+
     let runtime =
         initialize_cli_turn_runtime(config_path, session_hint, options, "cli-chat").await?;
     print_cli_chat_startup(&runtime, options)?;
@@ -1586,6 +1680,7 @@ fn format_average(sum: u64, samples: u32) -> String {
 mod tests {
     use super::*;
     use crate::conversation::ConversationRuntimeBinding;
+    use std::ffi::OsStr;
     use std::path::PathBuf;
     #[cfg(feature = "memory-sqlite")]
     use std::{
@@ -1635,6 +1730,51 @@ mod tests {
     #[test]
     fn cli_chat_options_keep_automatic_routing_without_explicit_acp_inputs() {
         assert!(!CliChatOptions::default().requests_explicit_acp());
+    }
+
+    #[test]
+    fn build_onboard_command_defaults_to_current_executable() {
+        let expected_executable = std::env::current_exe().expect("current executable");
+        let command =
+            build_onboard_command(None, Path::new("/tmp/loongclaw.toml")).expect("onboard command");
+
+        assert_eq!(command.get_program(), expected_executable.as_os_str());
+        assert_eq!(
+            command
+                .get_args()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["onboard".to_owned()]
+        );
+    }
+
+    #[test]
+    fn build_onboard_command_forwards_explicit_config_path_to_output() {
+        let command = build_onboard_command_for_executable(
+            PathBuf::from("/tmp/loongclaw"),
+            Some("custom.toml"),
+            Path::new("/tmp/custom.toml"),
+        );
+
+        assert_eq!(command.get_program(), OsStr::new("/tmp/loongclaw"));
+        assert_eq!(
+            command
+                .get_args()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec![
+                "onboard".to_owned(),
+                "--output".to_owned(),
+                "/tmp/custom.toml".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn onboard_command_hint_preserves_explicit_config_path() {
+        let hint = format_onboard_command_hint(Some("custom.toml"), Path::new("/tmp/custom.toml"));
+
+        assert_eq!(hint, "loongclaw onboard --output /tmp/custom.toml");
     }
 
     #[cfg(feature = "memory-sqlite")]

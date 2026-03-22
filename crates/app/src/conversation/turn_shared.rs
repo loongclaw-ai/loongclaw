@@ -14,7 +14,7 @@ use crate::CliResult;
 
 pub const TOOL_FOLLOWUP_PROMPT: &str = "Use the tool result above to answer the original user request in natural language. Do not include raw JSON, payload wrappers, or status markers unless the user explicitly asks for raw output.";
 pub const TOOL_TRUNCATION_HINT_PROMPT: &str = "One or more tool results were truncated for context safety. If exact missing details are needed, explicitly state the truncation and request a narrower rerun.";
-pub const EXTERNAL_SKILL_FOLLOWUP_PROMPT: &str = "A managed external skill has been loaded into runtime context. Follow its instructions while answering the original user request. Do not restate the skill verbatim unless the user explicitly asks for it.";
+pub const EXTERNAL_SKILL_FOLLOWUP_PROMPT: &str = "An external skill has been loaded into runtime context. Follow its instructions while answering the original user request. Do not restate the skill verbatim unless the user explicitly asks for it.";
 pub const TOOL_LOOP_GUARD_PROMPT: &str = "Detected tool-loop behavior across rounds. Do not repeat identical or cyclical tool calls without new evidence. Adjust strategy (different tool, arguments, or decomposition) or provide the best possible final answer and clearly state remaining gaps.";
 
 const FILE_READ_FOLLOWUP_CONTENT_PREVIEW_CHARS: usize = 384;
@@ -29,6 +29,18 @@ pub fn next_conversation_turn_id() -> String {
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
     format!("turn-{nanos:x}-{seq:x}")
+}
+
+pub fn tool_loop_circuit_breaker_reply(
+    prospective_total: usize,
+    max_total_tool_calls: usize,
+) -> Option<String> {
+    (prospective_total > max_total_tool_calls).then(|| {
+        format!(
+            "tool_loop_circuit_breaker: would exceed {}/{} tool calls this turn. Do you want to continue? Reply to resume.",
+            prospective_total, max_total_tool_calls
+        )
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -607,7 +619,7 @@ fn summarize_shell_output_preview(value: Option<&Value>) -> (String, usize, bool
 
 pub fn build_external_skill_system_message(skill_context: &ExternalSkillInvokeContext) -> String {
     format!(
-        "Managed external skill `{}` ({}) is now active for this task. Treat the following `SKILL.md` content as trusted runtime guidance until superseded.\n\n{}",
+        "External skill `{}` ({}) is now active for this task. Treat the following `SKILL.md` content as trusted runtime guidance until superseded.\n\n{}",
         skill_context.skill_id, skill_context.display_name, skill_context.instructions
     )
 }
@@ -620,7 +632,7 @@ pub fn build_external_skill_followup_user_prompt(
     let mut sections = vec![
         EXTERNAL_SKILL_FOLLOWUP_PROMPT.to_owned(),
         format!(
-            "Loaded managed external skill:\n- id: {}\n- name: {}",
+            "Loaded external skill:\n- id: {}\n- name: {}",
             skill_context.skill_id, skill_context.display_name
         ),
     ];

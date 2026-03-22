@@ -32,6 +32,7 @@ async-trait.workspace = true
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml = "0.9"
 toml = { workspace = true, optional = true }
 reqwest.workspace = true
 scraper = { version = "0.26", optional = true }
