@@ -2123,6 +2123,34 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tool-shell")]
+    #[test]
+    fn shell_exec_catalog_exposes_timeout_ms() {
+        let catalog = tool_catalog();
+        let descriptor = catalog
+            .descriptor("shell.exec")
+            .expect("shell.exec should be in the catalog");
+        let definition = descriptor.provider_definition();
+        let properties = definition["function"]["parameters"]["properties"]
+            .as_object()
+            .expect("shell.exec parameters");
+
+        assert!(
+            properties.contains_key("timeout_ms"),
+            "shell.exec schema should expose timeout_ms parameter"
+        );
+
+        let entry = catalog::find_tool_catalog_entry("shell.exec")
+            .expect("shell.exec should be in catalog entries");
+        assert!(
+            entry
+                .argument_hint
+                .split(',')
+                .any(|part| part == "timeout_ms?:integer"),
+            "shell.exec argument hint should expose timeout_ms"
+        );
+    }
+
     #[cfg(feature = "tool-websearch")]
     #[test]
     fn tool_registry_hides_web_search_when_runtime_disabled() {
@@ -2510,6 +2538,77 @@ mod tests {
         );
 
         fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(feature = "tool-shell")]
+    #[test]
+    fn shell_exec_times_out_when_timeout_ms_is_small() {
+        let mut config = test_tool_runtime_config(std::env::temp_dir());
+        #[cfg(unix)]
+        {
+            config.shell_allow.insert("sleep".to_owned());
+        }
+        #[cfg(windows)]
+        {
+            config.shell_allow.insert("ping".to_owned());
+        }
+
+        #[cfg(unix)]
+        let (command, args) = ("sleep", vec!["10"]);
+        #[cfg(windows)]
+        let (command, args) = ("ping", vec!["127.0.0.1", "-n", "10"]);
+
+        let error = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "shell.exec".to_owned(),
+                payload: json!({
+                    "command": command,
+                    "args": args,
+                    "timeout_ms": 1,
+                }),
+            },
+            &config,
+        )
+        .expect_err("slow command should time out");
+
+        assert!(
+            error.contains("timed out after"),
+            "expected timeout failure for long command, got: {error}"
+        );
+    }
+
+    #[cfg(feature = "tool-shell")]
+    #[test]
+    fn shell_exec_succeeds_when_fast_command_receives_timeout_ms() {
+        #[cfg(unix)]
+        let config = test_tool_runtime_config(std::env::temp_dir());
+        #[cfg(windows)]
+        let mut config = test_tool_runtime_config(std::env::temp_dir());
+
+        #[cfg(unix)]
+        let (command, args, expected_stdout) = ("echo", vec!["hello"], "hello");
+        #[cfg(windows)]
+        {
+            config.shell_allow.insert("cmd".to_owned());
+        }
+        #[cfg(windows)]
+        let (command, args, expected_stdout) = ("cmd", vec!["/C", "echo", "hello"], "hello");
+
+        let outcome = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "shell.exec".to_owned(),
+                payload: json!({
+                    "command": command,
+                    "args": args,
+                    "timeout_ms": 5_000,
+                }),
+            },
+            &config,
+        )
+        .expect("fast command should succeed");
+
+        assert_eq!(outcome.status, "ok");
+        assert_eq!(outcome.payload["stdout"].as_str(), Some(expected_stdout));
     }
 
     #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
