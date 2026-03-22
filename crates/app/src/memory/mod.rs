@@ -87,21 +87,6 @@ pub fn execute_memory_core_with_config(
     }
 }
 
-#[cfg(test)]
-fn core_dispatch_count_for_tests() -> usize {
-    test_support::core_dispatch_count()
-}
-
-#[cfg(test)]
-fn begin_core_dispatch_capture_for_tests() {
-    test_support::begin_core_dispatch_capture();
-}
-
-#[cfg(test)]
-fn end_core_dispatch_capture_for_tests() {
-    test_support::end_core_dispatch_capture();
-}
-
 fn append_turn(
     request: MemoryCoreRequest,
     config: &runtime_config::MemoryRuntimeConfig,

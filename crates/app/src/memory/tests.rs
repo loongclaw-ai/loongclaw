@@ -221,16 +221,16 @@ fn append_turn_direct_bypasses_core_dispatch() {
         ..runtime_config::MemoryRuntimeConfig::default()
     };
 
-    begin_core_dispatch_capture_for_tests();
+    super::test_support::begin_core_dispatch_capture();
     append_turn_direct("append-fast-path-session", "user", "hello", &config)
         .expect("append_turn_direct should succeed");
 
     assert_eq!(
-        core_dispatch_count_for_tests(),
+        super::test_support::core_dispatch_count(),
         0,
         "append_turn_direct should bypass core dispatch"
     );
-    end_core_dispatch_capture_for_tests();
+    super::test_support::end_core_dispatch_capture();
 
     let _ = fs::remove_file(&db_path);
     let _ = fs::remove_dir(&tmp);
@@ -260,18 +260,18 @@ fn window_direct_bypasses_core_dispatch() {
 
     append_turn_direct("window-fast-path-session", "user", "hello", &config)
         .expect("seed append_turn_direct should succeed");
-    begin_core_dispatch_capture_for_tests();
+    super::test_support::begin_core_dispatch_capture();
 
     let turns = window_direct("window-fast-path-session", 10, &config)
         .expect("window_direct should succeed");
 
     assert_eq!(turns.len(), 1);
     assert_eq!(
-        core_dispatch_count_for_tests(),
+        super::test_support::core_dispatch_count(),
         0,
         "window_direct should bypass core dispatch"
     );
-    end_core_dispatch_capture_for_tests();
+    super::test_support::end_core_dispatch_capture();
 
     let _ = fs::remove_file(&db_path);
     let _ = fs::remove_dir(&tmp);
