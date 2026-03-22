@@ -6,8 +6,9 @@ pub const MEMORY_OP_APPEND_TURN: &str = "append_turn";
 pub const MEMORY_OP_WINDOW: &str = "window";
 pub const MEMORY_OP_CLEAR_SESSION: &str = "clear_session";
 pub const MEMORY_OP_READ_CONTEXT: &str = "read_context";
+pub const MEMORY_OP_REPLACE_TURNS: &str = "replace_turns";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowTurn {
     pub role: String,
     pub content: String,
@@ -55,6 +56,16 @@ pub fn build_read_context_request(session_id: &str) -> MemoryCoreRequest {
         operation: MEMORY_OP_READ_CONTEXT.to_owned(),
         payload: json!({
             "session_id": session_id,
+        }),
+    }
+}
+
+pub fn build_replace_turns_request(session_id: &str, turns: &[WindowTurn]) -> MemoryCoreRequest {
+    MemoryCoreRequest {
+        operation: MEMORY_OP_REPLACE_TURNS.to_owned(),
+        payload: json!({
+            "session_id": session_id,
+            "turns": turns,
         }),
     }
 }

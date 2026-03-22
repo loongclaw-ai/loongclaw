@@ -284,17 +284,17 @@ impl ConversationConfig {
 
         let min_messages = self.compact_min_messages();
         let trigger_tokens = self.compact_trigger_estimated_tokens();
+
         if min_messages.is_none() && trigger_tokens.is_none() {
-            return true;
+            return false;
         }
 
-        let message_threshold_hit = min_messages.is_some_and(|min| message_count >= min);
-        let token_threshold_hit = match (trigger_tokens, estimated_tokens) {
-            (Some(threshold), Some(tokens)) => tokens >= threshold,
-            _ => false,
-        };
+        let messages_triggered = min_messages.is_some_and(|threshold| message_count >= threshold);
+        let tokens_triggered = trigger_tokens
+            .zip(estimated_tokens)
+            .is_some_and(|(threshold, actual)| actual >= threshold);
 
-        message_threshold_hit || token_threshold_hit
+        messages_triggered || tokens_triggered
     }
 
     pub fn compaction_fail_open(&self) -> bool {

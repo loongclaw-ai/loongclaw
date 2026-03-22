@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{
-    MEMORY_OP_APPEND_TURN, MEMORY_OP_CLEAR_SESSION, MEMORY_OP_WINDOW,
-    runtime_config::MemoryRuntimeConfig,
+    MEMORY_OP_APPEND_TURN, MEMORY_OP_CLEAR_SESSION, MEMORY_OP_REPLACE_TURNS, MEMORY_OP_WINDOW,
+    WindowTurn, runtime_config::MemoryRuntimeConfig,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,6 +115,10 @@ const SQL_UPSERT_SESSION_TURN_COUNT: &str =
                  turn_count = memory_session_state.turn_count + 1
              RETURNING turn_count";
 const SQL_DELETE_SESSION_STATE: &str = "DELETE FROM memory_session_state WHERE session_id = ?1";
+const SQL_SET_SESSION_TURN_COUNT: &str = "INSERT INTO memory_session_state(session_id, turn_count)
+             VALUES (?1, ?2)
+             ON CONFLICT(session_id) DO UPDATE SET
+                 turn_count = excluded.turn_count";
 const SQL_QUERY_RECENT_TURNS_NO_ID: &str = "SELECT role, content, ts
              FROM turns
              WHERE session_id = ?1
@@ -530,6 +534,45 @@ pub(super) fn clear_session(
     })
 }
 
+pub(super) fn replace_turns(
+    request: MemoryCoreRequest,
+    config: &MemoryRuntimeConfig,
+) -> Result<MemoryCoreOutcome, String> {
+    let payload = request.payload;
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "memory.replace_turns requires payload.session_id".to_owned())?;
+    let turns = payload
+        .get("turns")
+        .cloned()
+        .ok_or_else(|| "memory.replace_turns requires payload.turns".to_owned())
+        .and_then(|value| {
+            serde_json::from_value::<Vec<WindowTurn>>(value)
+                .map_err(|error| format!("memory.replace_turns payload.turns invalid: {error}"))
+        })?;
+
+    let replaced = replace_turns_internal(session_id, &turns, config)?;
+    Ok(MemoryCoreOutcome {
+        status: "ok".to_owned(),
+        payload: json!({
+            "adapter": "sqlite-core",
+            "operation": MEMORY_OP_REPLACE_TURNS,
+            "session_id": session_id,
+            "replaced_turns": replaced,
+        }),
+    })
+}
+
+pub(super) fn replace_session_turns_direct(
+    session_id: &str,
+    turns: &[WindowTurn],
+    config: &MemoryRuntimeConfig,
+) -> Result<(), String> {
+    let _ = replace_turns_internal(session_id, turns, config)?;
+    Ok(())
+}
+
 pub(super) fn append_turn_direct(
     session_id: &str,
     role: &str,
@@ -808,6 +851,77 @@ fn append_turn_internal(
     })?;
 
     Ok(AppendTurnResult { db_path: path, ts })
+}
+
+fn replace_turns_internal(
+    session_id: &str,
+    turns: &[WindowTurn],
+    config: &MemoryRuntimeConfig,
+) -> Result<usize, String> {
+    let session_id = normalize_required_str(
+        session_id,
+        "memory.replace_turns requires payload.session_id",
+    )?;
+    let runtime = acquire_memory_runtime(config)?;
+
+    runtime.with_connection_mut("memory.replace_turns", |conn| {
+        let tx = conn
+            .transaction()
+            .map_err(|error| format!("begin memory replace transaction failed: {error}"))?;
+
+        {
+            let mut delete_turns = prepare_cached_sqlite_statement(
+                &tx,
+                SQL_DELETE_TURNS_FOR_SESSION,
+                "prepare replace-turns delete statement failed",
+            )?;
+            delete_turns
+                .execute(rusqlite::params![session_id])
+                .map_err(|error| format!("delete memory turns failed: {error}"))?;
+        }
+
+        delete_session_state(&tx, session_id)?;
+        delete_summary_checkpoint(&tx, session_id)?;
+
+        if !turns.is_empty() {
+            {
+                let mut insert_turn = prepare_cached_sqlite_statement(
+                    &tx,
+                    SQL_INSERT_TURN,
+                    "prepare replace-turns insert statement failed",
+                )?;
+                for (index, turn) in turns.iter().enumerate() {
+                    let role = normalize_required_str(
+                        &turn.role,
+                        "memory.replace_turns requires turns[*].role",
+                    )?;
+                    let ts = turn.ts.unwrap_or_else(unix_ts_now);
+                    insert_turn
+                        .execute(rusqlite::params![
+                            session_id,
+                            (index + 1) as i64,
+                            role,
+                            &turn.content,
+                            ts
+                        ])
+                        .map_err(|error| format!("insert replaced memory turn failed: {error}"))?;
+                }
+            }
+
+            let mut set_turn_count = prepare_cached_sqlite_statement(
+                &tx,
+                SQL_SET_SESSION_TURN_COUNT,
+                "prepare replace-turns session-state statement failed",
+            )?;
+            set_turn_count
+                .execute(rusqlite::params![session_id, turns.len() as i64])
+                .map_err(|error| format!("upsert replace-turns session state failed: {error}"))?;
+        }
+
+        tx.commit()
+            .map_err(|error| format!("commit memory replace transaction failed: {error}"))?;
+        Ok(turns.len())
+    })
 }
 
 fn load_window_internal(

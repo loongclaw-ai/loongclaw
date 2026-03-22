@@ -10,9 +10,14 @@ use crate::{CliResult, KernelContext};
 use crate::memory;
 use std::collections::BTreeSet;
 
+#[cfg(feature = "memory-sqlite")]
+use super::compaction::{CompactPolicy, compact_window};
 use super::runtime_binding::ConversationRuntimeBinding;
 
 pub const CONTEXT_ENGINE_API_VERSION: u16 = 1;
+
+#[cfg(feature = "memory-sqlite")]
+const DEFAULT_CONTEXT_COMPACTION_PRESERVE_RECENT_TURNS: usize = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ContextEngineCapability {
@@ -307,10 +312,46 @@ impl ConversationContextEngine for DefaultContextEngine {
 
     fn metadata(&self) -> ContextEngineMetadata {
         #[cfg(feature = "memory-sqlite")]
-        let capabilities = [ContextEngineCapability::KernelMemoryWindowRead];
+        let capabilities = [
+            ContextEngineCapability::KernelMemoryWindowRead,
+            ContextEngineCapability::ContextCompaction,
+        ];
         #[cfg(not(feature = "memory-sqlite"))]
         let capabilities: [ContextEngineCapability; 0] = [];
         ContextEngineMetadata::new("default", capabilities)
+    }
+
+    async fn compact_context(
+        &self,
+        config: &LoongClawConfig,
+        session_id: &str,
+        _messages: &[Value],
+        kernel_ctx: &KernelContext,
+    ) -> CliResult<()> {
+        #[cfg(feature = "memory-sqlite")]
+        {
+            let turns = load_memory_window(
+                config,
+                session_id,
+                ConversationRuntimeBinding::kernel(kernel_ctx),
+            )
+            .await?;
+            let Some(compacted) = compact_window(
+                &turns,
+                CompactPolicy::new(DEFAULT_CONTEXT_COMPACTION_PRESERVE_RECENT_TURNS),
+            ) else {
+                return Ok(());
+            };
+
+            persist_memory_window(session_id, &compacted, kernel_ctx).await?;
+        }
+
+        #[cfg(not(feature = "memory-sqlite"))]
+        {
+            let _ = (config, session_id, kernel_ctx);
+        }
+
+        Ok(())
     }
 
     async fn assemble_messages(
@@ -412,6 +453,36 @@ async fn load_memory_window(
             ts: Some(turn.ts),
         })
         .collect())
+}
+
+#[cfg(feature = "memory-sqlite")]
+async fn persist_memory_window(
+    session_id: &str,
+    turns: &[memory::WindowTurn],
+    kernel_ctx: &KernelContext,
+) -> CliResult<()> {
+    let request = memory::build_replace_turns_request(session_id, turns);
+    let caps = BTreeSet::from([Capability::MemoryWrite]);
+    let outcome = kernel_ctx
+        .kernel
+        .execute_memory_core(
+            kernel_ctx.pack_id(),
+            &kernel_ctx.token,
+            &caps,
+            None,
+            request,
+        )
+        .await
+        .map_err(|error| format!("persist compacted memory window via kernel failed: {error}"))?;
+
+    if outcome.status != "ok" {
+        return Err(format!(
+            "persist compacted memory window via kernel returned non-ok status: {}",
+            outcome.status
+        ));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

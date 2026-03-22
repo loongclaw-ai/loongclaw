@@ -2138,14 +2138,15 @@ compact_fail_open = false
     }
 
     #[test]
-    fn conversation_compaction_defaults_are_backward_compatible() {
+    fn conversation_compaction_defaults_require_explicit_thresholds() {
         let config = ConversationConfig::default();
         assert!(config.turn_middleware_ids().is_empty());
         assert!(config.compact_enabled);
         assert!(config.compaction_fail_open());
         assert_eq!(config.compact_trigger_estimated_tokens(), None);
-        assert!(config.should_compact(0));
-        assert!(config.should_compact_with_estimate(0, None));
+        assert!(!config.should_compact(0));
+        assert!(!config.should_compact_with_estimate(0, None));
+        assert!(!config.should_compact_with_estimate(100, Some(10_000)));
     }
 
     #[test]
