@@ -40,6 +40,18 @@ loongclaw web serve
 
 默认地址：`http://127.0.0.1:4317/`
 
+### 更新前端
+
+重新构建后再次安装即可，`install` 会直接覆盖已安装内容：
+
+```bash
+# 在 web/ 目录内
+npm run build
+loongclaw web install --source ./dist
+```
+
+然后重启 `loongclaw web serve` 生效。
+
 ### 管理
 
 ```bash
