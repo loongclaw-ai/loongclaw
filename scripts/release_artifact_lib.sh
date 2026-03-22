@@ -114,6 +114,16 @@ release_target_for_platform() {
     LINUX)
       release_linux_target_for_arch_and_libc "$normalized_arch" "gnu"
       ;;
+    ANDROID)
+      case "$normalized_arch" in
+        x86_64|amd64) printf 'x86_64-linux-android\n' ;;
+        arm64|aarch64) printf 'aarch64-linux-android\n' ;;
+        *)
+          echo "unsupported Android architecture: ${arch}" >&2
+          return 1
+          ;;
+      esac
+      ;;
     DARWIN)
       case "$normalized_arch" in
         x86_64|amd64) printf 'x86_64-apple-darwin\n' ;;
