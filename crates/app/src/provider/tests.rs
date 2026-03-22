@@ -345,6 +345,7 @@ async fn request_turn_auto_model_rejects_missing_volcengine_credentials_before_t
             "role": "user",
             "content": "ping"
         })],
+        None,
         ProviderRuntimeBinding::direct(),
     )
     .await
