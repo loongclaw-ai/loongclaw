@@ -22,8 +22,10 @@ pub(super) async fn dashboard_debug_console(
     State(state): State<Arc<WebApiState>>,
 ) -> Result<Json<ApiEnvelope<DashboardDebugConsolePayload>>, WebApiError> {
     let snapshot = load_web_snapshot(state.as_ref())?;
-    let tool_runtime =
-        mvp::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(&snapshot.config, None);
+    let tool_runtime = mvp::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(
+        &snapshot.config,
+        None,
+    );
     let debug_state = snapshot_debug_state(state.as_ref());
     Ok(Json(ApiEnvelope {
         ok: true,
@@ -113,14 +115,24 @@ fn snapshot_debug_state(state: &WebApiState) -> DebugConsoleRuntimeState {
 
 fn build_log_output_block() -> Option<DashboardDebugConsoleBlockPayload> {
     let mut lines = Vec::new();
-    append_log_tail(&mut lines, "web-api", default_web_log_root().join("web-api.log"), 10);
+    append_log_tail(
+        &mut lines,
+        "web-api",
+        default_web_log_root().join("web-api.log"),
+        10,
+    );
     append_log_tail(
         &mut lines,
         "web-api:err",
         default_web_log_root().join("web-api.err.log"),
         8,
     );
-    append_log_tail(&mut lines, "web-dev", default_web_log_root().join("web-dev.log"), 8);
+    append_log_tail(
+        &mut lines,
+        "web-dev",
+        default_web_log_root().join("web-dev.log"),
+        8,
+    );
     append_log_tail(
         &mut lines,
         "web-dev:err",
@@ -148,7 +160,11 @@ fn append_log_tail(lines: &mut Vec<String>, label: &str, path: PathBuf, max_line
     match read_log_tail_lines(path.as_path(), max_lines) {
         Ok(entries) if entries.is_empty() => {}
         Ok(entries) => {
-            lines.extend(entries.into_iter().map(|entry| format!("[{label}] {entry}")));
+            lines.extend(
+                entries
+                    .into_iter()
+                    .map(|entry| format!("[{label}] {entry}")),
+            );
         }
         Err(message) => lines.push(format!("[{label}] unavailable {message}")),
     }
@@ -177,12 +193,12 @@ fn strip_ansi_escape_codes(input: &str) -> String {
     let mut index = 0usize;
 
     while index < chars.len() {
-        if chars[index] == '\u{1b}' {
+        if chars.get(index).copied() == Some('\u{1b}') {
             index += 1;
-            if index < chars.len() && chars[index] == '[' {
+            if chars.get(index).copied() == Some('[') {
                 index += 1;
                 while index < chars.len() {
-                    let ch = chars[index];
+                    let ch = chars.get(index).copied().unwrap_or_default();
                     index += 1;
                     if ('@'..='~').contains(&ch) {
                         break;
@@ -193,7 +209,9 @@ fn strip_ansi_escape_codes(input: &str) -> String {
             continue;
         }
 
-        output.push(chars[index]);
+        if let Some(&ch) = chars.get(index) {
+            output.push(ch);
+        }
         index += 1;
     }
 
@@ -210,11 +228,8 @@ pub(super) fn record_debug_operation(
         return;
     };
     let at = format_timestamp(OffsetDateTime::now_utc().unix_timestamp());
-    let mut block = DebugConsoleBlock::operation(
-        format!("{kind}:{at}:{}", random::<u32>()),
-        kind,
-        title,
-    );
+    let mut block =
+        DebugConsoleBlock::operation(format!("{kind}:{at}:{}", random::<u32>()), kind, title);
     block.lines = lines;
     push_debug_block(&mut debug.recent_blocks, block);
 }

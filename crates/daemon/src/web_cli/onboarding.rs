@@ -78,10 +78,8 @@ pub(super) async fn onboard_status(
     State(state): State<Arc<WebApiState>>,
     headers: HeaderMap,
 ) -> Json<ApiEnvelope<OnboardStatusPayload>> {
-    let token_paired = request_is_authenticated(
-        state.as_ref(),
-        extract_request_token(&headers).as_deref(),
-    );
+    let token_paired =
+        request_is_authenticated(state.as_ref(), extract_request_token(&headers).as_deref());
     let payload = build_onboard_status_payload(state.as_ref(), token_paired).await;
 
     Json(ApiEnvelope {
@@ -98,8 +96,7 @@ pub(super) async fn onboard_provider(
     let mut config = load_or_default_web_config(state.as_ref())?;
     apply_provider_request_to_config(&mut config, &request)?;
     let path_string = config_path.display().to_string();
-    mvp::config::write(Some(path_string.as_str()), &config, true)
-        .map_err(WebApiError::internal)?;
+    mvp::config::write(Some(path_string.as_str()), &config, true).map_err(WebApiError::internal)?;
 
     record_debug_operation(
         &state,
@@ -111,10 +108,7 @@ pub(super) async fn onboard_provider(
         vec![
             format!("provider.kind={}", request.kind.trim()),
             format!("provider.model={}", request.model.trim()),
-            format!(
-                "provider.route={}",
-                request.base_url_or_endpoint.trim()
-            ),
+            format!("provider.route={}", request.base_url_or_endpoint.trim()),
         ],
     );
 
@@ -154,15 +148,16 @@ pub(super) async fn onboard_provider_apply(
         format!(
             "{} provider apply {}",
             format_timestamp(OffsetDateTime::now_utc().unix_timestamp()),
-            if validation.passed() { "passed" } else { "failed" }
+            if validation.passed() {
+                "passed"
+            } else {
+                "failed"
+            }
         ),
         vec![
             format!("provider.kind={}", request.kind.trim()),
             format!("provider.model={}", request.model.trim()),
-            format!(
-                "provider.route={}",
-                request.base_url_or_endpoint.trim()
-            ),
+            format!("provider.route={}", request.base_url_or_endpoint.trim()),
             format!("endpoint_status={}", validation.endpoint_status),
             format!("credential_status={}", validation.credential_status),
         ],
@@ -197,7 +192,7 @@ fn route_matches_existing_provider_route(
             .endpoint
             .as_deref()
             .map(str::trim)
-        .is_some_and(|value| normalized == value)
+            .is_some_and(|value| normalized == value)
 }
 
 fn load_or_default_web_config(
@@ -219,10 +214,7 @@ fn apply_provider_request_to_config(
     request: &OnboardProviderWriteRequest,
 ) -> Result<(), WebApiError> {
     let kind = mvp::config::parse_provider_kind_id(request.kind.as_str()).ok_or_else(|| {
-        WebApiError::bad_request(format!(
-            "unknown provider kind `{}`",
-            request.kind.trim()
-        ))
+        WebApiError::bad_request(format!("unknown provider kind `{}`", request.kind.trim()))
     })?;
     let model = request.model.trim();
     if model.is_empty() {
@@ -291,15 +283,13 @@ pub(super) async fn onboard_preferences(
                 request.personality.trim()
             ))
         })?;
-    let memory_profile =
-        crate::onboard_cli::parse_memory_profile(request.memory_profile.as_str()).ok_or_else(
-            || {
-                WebApiError::bad_request(format!(
-                    "unknown memory profile `{}`",
-                    request.memory_profile.trim()
-                ))
-            },
-        )?;
+    let memory_profile = crate::onboard_cli::parse_memory_profile(request.memory_profile.as_str())
+        .ok_or_else(|| {
+            WebApiError::bad_request(format!(
+                "unknown memory profile `{}`",
+                request.memory_profile.trim()
+            ))
+        })?;
 
     let config_path = resolve_web_config_path(state.as_ref());
     let config_exists = config_path.is_file();
@@ -322,8 +312,7 @@ pub(super) async fn onboard_preferences(
         .map(ToOwned::to_owned);
 
     let path_string = config_path.display().to_string();
-    mvp::config::write(Some(path_string.as_str()), &config, true)
-        .map_err(WebApiError::internal)?;
+    mvp::config::write(Some(path_string.as_str()), &config, true).map_err(WebApiError::internal)?;
 
     record_debug_operation(
         &state,
@@ -377,16 +366,20 @@ pub(super) async fn onboard_pairing_auto(
             "{} token pairing auto",
             format_timestamp(OffsetDateTime::now_utc().unix_timestamp())
         ),
-        vec!["pairing.mode=cookie".to_owned(), "pairing.result=paired".to_owned()],
+        vec![
+            "pairing.mode=cookie".to_owned(),
+            "pairing.result=paired".to_owned(),
+        ],
     );
     let mut response = Json(ApiEnvelope {
         ok: true,
         data: payload,
     })
     .into_response();
-    response
-        .headers_mut()
-        .append(SET_COOKIE, build_pairing_cookie(state.local_token.as_str())?);
+    response.headers_mut().append(
+        SET_COOKIE,
+        build_pairing_cookie(state.local_token.as_str())?,
+    );
     Ok(response)
 }
 
@@ -432,7 +425,11 @@ pub(super) async fn onboard_validate(
         format!(
             "{} provider validate {}",
             format_timestamp(OffsetDateTime::now_utc().unix_timestamp()),
-            if validation.passed() { "passed" } else { "failed" }
+            if validation.passed() {
+                "passed"
+            } else {
+                "failed"
+            }
         ),
         vec![
             format!("provider={}", snapshot.config.provider.kind.profile().id),
@@ -508,9 +505,10 @@ async fn build_onboard_status_payload(
             payload.provider_base_url = snapshot.config.provider.resolved_base_url();
             payload.provider_endpoint = snapshot.config.provider.endpoint();
             payload.provider_configured = provider_is_configured(&snapshot.config);
-            payload.personality =
-                crate::onboard_cli::prompt_personality_id(snapshot.config.cli.resolved_personality())
-                    .to_owned();
+            payload.personality = crate::onboard_cli::prompt_personality_id(
+                snapshot.config.cli.resolved_personality(),
+            )
+            .to_owned();
             payload.memory_profile =
                 crate::onboard_cli::memory_profile_id(snapshot.config.memory.resolved_profile())
                     .to_owned();
@@ -715,19 +713,24 @@ async fn validate_provider_config(
                 Err(_) => ("transport_failure", None),
             }
         }
-        _ => match client.head(endpoint.as_str()).headers(headers).send().await {
-            Ok(response) if matches!(response.status().as_u16(), 401 | 403) => {
-                ("auth_rejected", Some(response.status().as_u16()))
+        mvp::config::ProviderProtocolFamily::AnthropicMessages
+        | mvp::config::ProviderProtocolFamily::BedrockConverse => {
+            match client.head(endpoint.as_str()).headers(headers).send().await {
+                Ok(response) if matches!(response.status().as_u16(), 401 | 403) => {
+                    ("auth_rejected", Some(response.status().as_u16()))
+                }
+                Ok(response)
+                    if response.status().is_success() || response.status().as_u16() == 405 =>
+                {
+                    ("validated", Some(response.status().as_u16()))
+                }
+                Ok(response) if response.status().is_server_error() => {
+                    ("upstream_unavailable", Some(response.status().as_u16()))
+                }
+                Ok(response) => ("request_rejected", Some(response.status().as_u16())),
+                Err(_) => ("transport_failure", None),
             }
-            Ok(response) if response.status().is_success() || response.status().as_u16() == 405 => {
-                ("validated", Some(response.status().as_u16()))
-            }
-            Ok(response) if response.status().is_server_error() => {
-                ("upstream_unavailable", Some(response.status().as_u16()))
-            }
-            Ok(response) => ("request_rejected", Some(response.status().as_u16())),
-            Err(_) => ("transport_failure", None),
-        },
+        }
     };
 
     ProviderValidationResult {

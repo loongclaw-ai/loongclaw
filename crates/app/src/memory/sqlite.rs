@@ -569,7 +569,7 @@ pub(super) fn list_recent_sessions_direct(
     config: &MemoryRuntimeConfig,
 ) -> Result<Vec<ConversationSessionSummary>, String> {
     let runtime = acquire_memory_runtime(config)?;
-    let bounded_limit = limit.max(1).min(200) as i64;
+    let bounded_limit = limit.clamp(1, 200) as i64;
     runtime.with_connection("memory.list_recent_sessions", |conn| {
         let mut statement = prepare_cached_sqlite_statement(
             conn,

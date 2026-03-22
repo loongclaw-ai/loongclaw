@@ -10,6 +10,7 @@ use std::{
     },
 };
 
+use ::time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use axum::{
     Json, Router,
     body::Body,
@@ -31,7 +32,6 @@ use futures_util::stream;
 use rand::random;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use ::time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::{
     sync::{Mutex, mpsc},
     time::{self, Duration},
@@ -39,14 +39,14 @@ use tokio::{
 
 use crate::{CliResult, mvp, with_graceful_shutdown};
 
-mod onboarding;
 mod auth;
 mod debug_console;
+mod onboarding;
 
 use auth::{
     build_clear_pairing_cookie, build_clear_same_origin_session_cookie, build_pairing_cookie,
-    build_same_origin_session_cookie, extract_request_token, request_is_authenticated,
-    require_local_token, require_same_origin_write_origin, extract_allowed_local_origin,
+    build_same_origin_session_cookie, extract_allowed_local_origin, extract_request_token,
+    request_is_authenticated, require_local_token, require_same_origin_write_origin,
 };
 use debug_console::{dashboard_debug_console, record_debug_operation};
 
@@ -58,9 +58,32 @@ pub enum WebCommand {
         config: Option<String>,
         #[arg(long, default_value = "127.0.0.1:4317")]
         bind: String,
+        /// Path to the built frontend assets. If omitted, uses installed assets
+        /// from `web install` when available, otherwise runs in API-only mode.
         #[arg(long)]
         static_root: Option<String>,
     },
+    /// Install the Web Console UI assets to ~/.loongclaw/web
+    Install {
+        /// Path to the built frontend assets directory (e.g. web/dist)
+        #[arg(long)]
+        source: String,
+    },
+    /// Show Web Console installation status
+    Status,
+    /// Remove the installed Web Console UI assets
+    Remove {
+        /// Skip the confirmation prompt
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WebInstallManifest {
+    installed_at: String,
+    source_path: String,
+    install_dir: String,
 }
 
 const WEB_API_TOKEN_ENV: &str = "LOONGCLAW_WEB_TOKEN";
@@ -424,9 +447,10 @@ pub async fn run_web_command(command: WebCommand) -> CliResult<()> {
             config,
             bind,
             static_root,
-        } => {
-            run_web_serve(config.as_deref(), &bind, static_root.as_deref()).await
-        }
+        } => run_web_serve(config.as_deref(), &bind, static_root.as_deref()).await,
+        WebCommand::Install { source } => run_web_install(&source),
+        WebCommand::Status => run_web_status(),
+        WebCommand::Remove { force } => run_web_remove(force),
     }
 }
 
@@ -438,7 +462,17 @@ async fn run_web_serve(
     let (local_token, local_token_path) = resolve_local_web_token()
         .map_err(|error| format!("initialize local web api token failed: {}", error.message))?;
     let token_path_display = local_token_path.display().to_string();
-    let resolved_static_root = resolve_static_root(static_root)?;
+    let explicit_static_root = resolve_static_root(static_root)?;
+    let resolved_static_root = if explicit_static_root.is_some() {
+        explicit_static_root
+    } else {
+        let auto_dist = web_install_dist_dir(&default_web_install_dir());
+        if auto_dist.join("index.html").is_file() {
+            Some(auto_dist)
+        } else {
+            None
+        }
+    };
     let web_install_mode = if resolved_static_root.is_some() {
         "same_origin_static"
     } else {
@@ -456,13 +490,25 @@ async fn run_web_serve(
     let public_api = Router::new()
         .route("/meta", get(meta))
         .route("/onboard/status", get(onboarding::onboard_status))
-        .route("/onboard/pairing/auto", post(onboarding::onboard_pairing_auto))
-        .route("/onboard/pairing/clear", post(onboarding::onboard_pairing_clear))
+        .route(
+            "/onboard/pairing/auto",
+            post(onboarding::onboard_pairing_auto),
+        )
+        .route(
+            "/onboard/pairing/clear",
+            post(onboarding::onboard_pairing_clear),
+        )
         .with_state(state.clone());
     let protected_api = Router::new()
         .route("/onboard/provider", post(onboarding::onboard_provider))
-        .route("/onboard/provider/apply", post(onboarding::onboard_provider_apply))
-        .route("/onboard/preferences", post(onboarding::onboard_preferences))
+        .route(
+            "/onboard/provider/apply",
+            post(onboarding::onboard_provider_apply),
+        )
+        .route(
+            "/onboard/preferences",
+            post(onboarding::onboard_preferences),
+        )
         .route("/onboard/validate", post(onboarding::onboard_validate))
         .route("/dashboard/summary", get(dashboard_summary))
         .route("/dashboard/providers", get(dashboard_providers))
@@ -471,10 +517,16 @@ async fn run_web_serve(
         .route("/dashboard/config", get(dashboard_config))
         .route("/dashboard/tools", get(dashboard_tools))
         .route("/dashboard/debug-console", get(dashboard_debug_console))
-        .route("/chat/sessions", get(chat_sessions).post(create_chat_session))
+        .route(
+            "/chat/sessions",
+            get(chat_sessions).post(create_chat_session),
+        )
         .route("/chat/sessions/{id}", delete(delete_chat_session))
         .route("/chat/sessions/{id}/turn", post(chat_turn))
-        .route("/chat/sessions/{id}/turns/{turn_id}/stream", get(chat_turn_stream))
+        .route(
+            "/chat/sessions/{id}/turns/{turn_id}/stream",
+            get(chat_turn_stream),
+        )
         .route("/chat/sessions/{id}/history", get(chat_history))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -530,7 +582,10 @@ async fn healthz() -> Json<ApiEnvelope<HealthPayload>> {
 async fn local_web_cors(request: Request, next: Next) -> Response {
     let allowed_origin = extract_allowed_local_origin(request.headers());
     if request.method() == Method::OPTIONS {
-        return with_cors_headers(StatusCode::NO_CONTENT.into_response(), allowed_origin.as_deref());
+        return with_cors_headers(
+            StatusCode::NO_CONTENT.into_response(),
+            allowed_origin.as_deref(),
+        );
     }
 
     let response = next.run(request).await;
@@ -538,19 +593,19 @@ async fn local_web_cors(request: Request, next: Next) -> Response {
 }
 
 fn with_cors_headers(mut response: Response, allowed_origin: Option<&str>) -> Response {
-    if let Some(origin) = allowed_origin {
-        if let Ok(value) = HeaderValue::from_str(origin) {
-            response
-                .headers_mut()
-                .insert(ACCESS_CONTROL_ALLOW_ORIGIN, value);
-            response.headers_mut().insert(
-                ACCESS_CONTROL_ALLOW_CREDENTIALS,
-                HeaderValue::from_static("true"),
-            );
-            response
-                .headers_mut()
-                .insert(VARY, HeaderValue::from_static("Origin"));
-        }
+    if let Some(origin) = allowed_origin
+        && let Ok(value) = HeaderValue::from_str(origin)
+    {
+        response
+            .headers_mut()
+            .insert(ACCESS_CONTROL_ALLOW_ORIGIN, value);
+        response.headers_mut().insert(
+            ACCESS_CONTROL_ALLOW_CREDENTIALS,
+            HeaderValue::from_static("true"),
+        );
+        response
+            .headers_mut()
+            .insert(VARY, HeaderValue::from_static("Origin"));
     }
     response.headers_mut().insert(
         ACCESS_CONTROL_ALLOW_METHODS,
@@ -662,7 +717,9 @@ async fn dashboard_connectivity(
     let snapshot = load_web_snapshot(state.as_ref())?;
     let endpoint = snapshot.config.provider.endpoint();
     let parsed = reqwest::Url::parse(&endpoint).map_err(|error| {
-        WebApiError::internal(format!("parse provider endpoint for connectivity failed: {error}"))
+        WebApiError::internal(format!(
+            "parse provider endpoint for connectivity failed: {error}"
+        ))
     })?;
     let host = parsed
         .host_str()
@@ -670,7 +727,9 @@ async fn dashboard_connectivity(
         .to_owned();
     let port = parsed.port_or_known_default().unwrap_or(443);
     let dns_addresses = resolve_provider_host_addresses(host.as_str(), port).await;
-    let fake_ip_detected = dns_addresses.iter().any(|address| is_fake_ip_address(address));
+    let fake_ip_detected = dns_addresses
+        .iter()
+        .any(|address| is_fake_ip_address(address));
     let proxy_env_detected = has_proxy_environment();
     let (probe_status, probe_status_code) = probe_provider_endpoint(endpoint.as_str()).await;
     let degraded = fake_ip_detected || probe_status != "reachable";
@@ -732,10 +791,25 @@ async fn dashboard_config(
                 .as_deref()
                 .map(str::trim)
                 .is_some_and(|value| !value.is_empty()),
-            memory_profile: snapshot.config.memory.resolved_profile().as_str().to_owned(),
+            memory_profile: snapshot
+                .config
+                .memory
+                .resolved_profile()
+                .as_str()
+                .to_owned(),
             memory_system: snapshot.config.memory.resolved_system().as_str(),
-            sqlite_path: snapshot.config.memory.resolved_sqlite_path().display().to_string(),
-            file_root: snapshot.config.tools.resolved_file_root().display().to_string(),
+            sqlite_path: snapshot
+                .config
+                .memory
+                .resolved_sqlite_path()
+                .display()
+                .to_string(),
+            file_root: snapshot
+                .config
+                .tools
+                .resolved_file_root()
+                .display()
+                .to_string(),
             sliding_window: snapshot.config.memory.sliding_window,
             summary_max_chars: snapshot.config.memory.summary_max_chars,
         },
@@ -746,8 +820,10 @@ async fn dashboard_tools(
     State(state): State<Arc<WebApiState>>,
 ) -> Result<Json<ApiEnvelope<DashboardToolsPayload>>, WebApiError> {
     let snapshot = load_web_snapshot(state.as_ref())?;
-    let tool_runtime =
-        mvp::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(&snapshot.config, None);
+    let tool_runtime = mvp::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(
+        &snapshot.config,
+        None,
+    );
     Ok(Json(ApiEnvelope {
         ok: true,
         data: DashboardToolsPayload {
@@ -835,7 +911,8 @@ async fn delete_chat_session(
     Path(id): Path<String>,
 ) -> Result<StatusCode, WebApiError> {
     let snapshot = load_web_snapshot(state.as_ref())?;
-    mvp::memory::clear_session_direct(&id, &snapshot.memory_config).map_err(WebApiError::internal)?;
+    mvp::memory::clear_session_direct(&id, &snapshot.memory_config)
+        .map_err(WebApiError::internal)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -936,9 +1013,8 @@ struct WebSessionSummary {
 fn load_web_snapshot(state: &WebApiState) -> Result<WebSnapshot, WebApiError> {
     let (resolved_path, config) =
         mvp::config::load(state.config_path.as_deref()).map_err(WebApiError::internal)?;
-    let memory_config = mvp::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(
-        &config.memory,
-    );
+    let memory_config =
+        mvp::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
     let sessions = list_sessions(&memory_config)?;
 
     Ok(WebSnapshot {
@@ -985,8 +1061,8 @@ fn load_visible_session_messages(
     visible_limit: usize,
     raw_limit: usize,
 ) -> Result<Vec<mvp::memory::ConversationTurn>, WebApiError> {
-    let mut turns =
-        mvp::memory::window_direct(session_id, raw_limit, memory_config).map_err(WebApiError::internal)?;
+    let mut turns = mvp::memory::window_direct(session_id, raw_limit, memory_config)
+        .map_err(WebApiError::internal)?;
     turns.retain(|turn| {
         !(turn.role.eq_ignore_ascii_case("assistant")
             && is_internal_assistant_record(&turn.content))
@@ -1159,14 +1235,21 @@ fn is_fake_ip_address(address: &str) -> bool {
 }
 
 fn has_proxy_environment() -> bool {
-    ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"]
-        .into_iter()
-        .any(|key| {
-            env::var(key)
-                .ok()
-                .map(|value| !value.trim().is_empty())
-                .unwrap_or(false)
-        })
+    [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ]
+    .into_iter()
+    .any(|key| {
+        env::var(key)
+            .ok()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+    })
 }
 
 async fn probe_provider_endpoint(endpoint: &str) -> (&'static str, Option<u16>) {
@@ -1247,7 +1330,8 @@ fn provider_item_from_parts(
 }
 
 fn derive_session_title(turns: &[mvp::memory::ConversationTurn]) -> Option<String> {
-    turns.iter()
+    turns
+        .iter()
         .find(|turn| turn.role.eq_ignore_ascii_case("user"))
         .or_else(|| turns.first())
         .map(|turn| truncate_title(turn.content.as_str(), 56))
@@ -1318,10 +1402,173 @@ fn resolve_local_web_token() -> Result<(String, PathBuf), WebApiError> {
         random::<u64>(),
         random::<u64>()
     );
-    fs::write(&token_path, format!("{token}\n"))
-        .map_err(|error| WebApiError::internal(format!("write local web api token failed: {error}")))?;
+    fs::write(&token_path, format!("{token}\n")).map_err(|error| {
+        WebApiError::internal(format!("write local web api token failed: {error}"))
+    })?;
     Ok((token, token_path))
 }
+
+// ── Web install helpers ──────────────────────────────────────────────────────
+
+fn default_web_install_dir() -> PathBuf {
+    mvp::config::default_loongclaw_home().join("web")
+}
+
+fn web_install_dist_dir(install_dir: &FsPath) -> PathBuf {
+    install_dir.join("dist")
+}
+
+fn web_install_manifest_path(install_dir: &FsPath) -> PathBuf {
+    install_dir.join("install.json")
+}
+
+fn copy_dir_all(src: &FsPath, dst: &FsPath) -> CliResult<()> {
+    for entry in
+        fs::read_dir(src).map_err(|error| format!("failed to read `{}`: {error}", src.display()))?
+    {
+        let entry = entry.map_err(|error| format!("failed to read directory entry: {error}"))?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            fs::create_dir_all(&dst_path)
+                .map_err(|error| format!("failed to create `{}`: {error}", dst_path.display()))?;
+            copy_dir_all(&src_path, &dst_path)?;
+        } else {
+            fs::copy(&src_path, &dst_path).map_err(|error| {
+                format!(
+                    "failed to copy `{}` to `{}`: {error}",
+                    src_path.display(),
+                    dst_path.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn run_web_install(source: &str) -> CliResult<()> {
+    let source_path = PathBuf::from(source);
+    if !source_path.exists() {
+        return Err(format!(
+            "source path `{}` does not exist",
+            source_path.display()
+        ));
+    }
+    if !source_path.is_dir() {
+        return Err(format!(
+            "source path `{}` is not a directory",
+            source_path.display()
+        ));
+    }
+    if !source_path.join("index.html").is_file() {
+        return Err(format!(
+            "source path `{}` is missing `index.html` — run `npm run build` first",
+            source_path.display()
+        ));
+    }
+
+    let install_dir = default_web_install_dir();
+    let dist_dir = web_install_dist_dir(&install_dir);
+
+    if dist_dir.exists() {
+        fs::remove_dir_all(&dist_dir).map_err(|error| {
+            format!(
+                "failed to remove existing install at `{}`: {error}",
+                dist_dir.display()
+            )
+        })?;
+    }
+    fs::create_dir_all(&dist_dir).map_err(|error| {
+        format!(
+            "failed to create install directory `{}`: {error}",
+            dist_dir.display()
+        )
+    })?;
+
+    copy_dir_all(&source_path, &dist_dir)?;
+
+    let canonical_source = source_path
+        .canonicalize()
+        .unwrap_or_else(|_| source_path.clone());
+    let manifest = WebInstallManifest {
+        installed_at: OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .unwrap_or_default(),
+        source_path: canonical_source.display().to_string(),
+        install_dir: install_dir.display().to_string(),
+    };
+    let manifest_json = serde_json::to_string_pretty(&manifest)
+        .map_err(|error| format!("failed to serialize install manifest: {error}"))?;
+    fs::write(web_install_manifest_path(&install_dir), manifest_json)
+        .map_err(|error| format!("failed to write install manifest: {error}"))?;
+
+    println!("Web Console installed to: {}", dist_dir.display());
+    println!("Run `loongclaw web serve` to start the same-origin Web Console.");
+    Ok(())
+}
+
+fn run_web_status() -> CliResult<()> {
+    let install_dir = default_web_install_dir();
+    let manifest_path = web_install_manifest_path(&install_dir);
+    let dist_dir = web_install_dist_dir(&install_dir);
+
+    if !manifest_path.exists() {
+        println!("Web Console: not installed");
+        println!("Run `loongclaw web install --source <path/to/web/dist>` to install.");
+        return Ok(());
+    }
+
+    let manifest_raw = fs::read_to_string(&manifest_path)
+        .map_err(|error| format!("failed to read install manifest: {error}"))?;
+    let manifest: WebInstallManifest = serde_json::from_str(&manifest_raw)
+        .map_err(|error| format!("failed to parse install manifest: {error}"))?;
+
+    let assets_ok = dist_dir.join("index.html").is_file();
+    println!("Web Console: installed");
+    println!("Install dir:  {}", manifest.install_dir);
+    println!("Installed at: {}", manifest.installed_at);
+    println!("Source:       {}", manifest.source_path);
+    println!(
+        "Assets:       {}",
+        if assets_ok {
+            "ok"
+        } else {
+            "missing (dist/index.html not found — re-run `web install`)"
+        }
+    );
+    Ok(())
+}
+
+fn run_web_remove(force: bool) -> CliResult<()> {
+    let install_dir = default_web_install_dir();
+    let manifest_path = web_install_manifest_path(&install_dir);
+    let dist_dir = web_install_dist_dir(&install_dir);
+
+    if !manifest_path.exists() && !dist_dir.exists() {
+        println!("Web Console: not installed, nothing to remove.");
+        return Ok(());
+    }
+
+    if !force {
+        println!("This will remove: {}", install_dir.display());
+        println!("Re-run with --force to confirm removal.");
+        return Ok(());
+    }
+
+    if dist_dir.exists() {
+        fs::remove_dir_all(&dist_dir)
+            .map_err(|error| format!("failed to remove `{}`: {error}", dist_dir.display()))?;
+    }
+    if manifest_path.exists() {
+        fs::remove_file(&manifest_path)
+            .map_err(|error| format!("failed to remove `{}`: {error}", manifest_path.display()))?;
+    }
+
+    println!("Web Console removed from: {}", install_dir.display());
+    Ok(())
+}
+
+// ── Config / static root helpers ─────────────────────────────────────────────
 
 fn resolve_web_config_path(state: &WebApiState) -> PathBuf {
     state
@@ -1337,10 +1584,16 @@ fn resolve_static_root(static_root: Option<&str>) -> CliResult<Option<PathBuf>> 
     };
     let root = PathBuf::from(raw_root);
     if !root.exists() {
-        return Err(format!("web static root `{}` does not exist", root.display()));
+        return Err(format!(
+            "web static root `{}` does not exist",
+            root.display()
+        ));
     }
     if !root.is_dir() {
-        return Err(format!("web static root `{}` is not a directory", root.display()));
+        return Err(format!(
+            "web static root `{}` is not a directory",
+            root.display()
+        ));
     }
     let index_path = root.join("index.html");
     if !index_path.is_file() {
@@ -1384,9 +1637,10 @@ async fn serve_web_static(
         .body(Body::from(bytes))
         .map_err(|error| WebApiError::internal(format!("build static response failed: {error}")))?;
     if state.web_install_mode == "same_origin_static" {
-        response
-            .headers_mut()
-            .append(SET_COOKIE, build_same_origin_session_cookie(state.local_token.as_str())?);
+        response.headers_mut().append(
+            SET_COOKIE,
+            build_same_origin_session_cookie(state.local_token.as_str())?,
+        );
     }
     Ok(response)
 }
@@ -1402,7 +1656,10 @@ fn resolve_static_asset_path(static_root: &FsPath, request_path: &str) -> Option
     for component in relative.components() {
         match component {
             std::path::Component::Normal(segment) => resolved.push(segment),
-            _ => return None,
+            std::path::Component::Prefix(_)
+            | std::path::Component::RootDir
+            | std::path::Component::CurDir
+            | std::path::Component::ParentDir => return None,
         }
     }
     if resolved.is_dir() {
@@ -1464,7 +1721,9 @@ fn extract_stream_text_delta(event: &Value) -> Option<String> {
     if event.get("sessionUpdate").and_then(Value::as_str) == Some("agent_message_chunk") {
         return extract_nested_text(event);
     }
-    let payload = event.get("params").and_then(|params| params.get("update"))?;
+    let payload = event
+        .get("params")
+        .and_then(|params| params.get("update"))?;
     if payload.get("sessionUpdate").and_then(Value::as_str) == Some("agent_message_chunk") {
         return extract_nested_text(payload);
     }
@@ -1472,7 +1731,8 @@ fn extract_stream_text_delta(event: &Value) -> Option<String> {
 }
 
 fn extract_nested_text(value: &Value) -> Option<String> {
-    value.get("content")
+    value
+        .get("content")
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
         .or_else(|| {
@@ -1500,9 +1760,10 @@ async fn run_chat_turn_stream(
 ) -> Result<(), WebApiError> {
     let stream_result: Result<(), WebApiError> = async {
         let snapshot = load_web_snapshot(state.as_ref())?;
-        let mut seen_internal_records = collect_internal_record_keys(
-            &load_session_messages(&snapshot.memory_config, &session_id)?,
-        );
+        let mut seen_internal_records = collect_internal_record_keys(&load_session_messages(
+            &snapshot.memory_config,
+            &session_id,
+        )?);
 
         send_stream_event(
             &sender,
@@ -1548,8 +1809,8 @@ async fn run_chat_turn_stream(
             sender: sender.clone(),
             emitted_text: emitted_text.clone(),
         };
-        let acp_options = mvp::acp::AcpConversationTurnOptions::automatic()
-            .with_event_sink(Some(&event_sink));
+        let acp_options =
+            mvp::acp::AcpConversationTurnOptions::automatic().with_event_sink(Some(&event_sink));
 
         let turn_future = coordinator.handle_turn_with_address_and_acp_options(
             &turn_config,
@@ -1635,7 +1896,13 @@ async fn run_chat_turn_stream(
                 "message": error.message,
             }),
         );
-        record_turn_failed(&state, &session_id, &turn_id, error.code, error.message.as_str());
+        record_turn_failed(
+            &state,
+            &session_id,
+            &turn_id,
+            error.code,
+            error.message.as_str(),
+        );
     }
 
     Ok(())
@@ -1655,8 +1922,9 @@ fn send_stream_event(
     sender: &mpsc::UnboundedSender<String>,
     payload: Value,
 ) -> Result<(), WebApiError> {
-    let line = serde_json::to_string(&payload)
-        .map_err(|error| WebApiError::internal(format!("serialize stream event failed: {error}")))?;
+    let line = serde_json::to_string(&payload).map_err(|error| {
+        WebApiError::internal(format!("serialize stream event failed: {error}"))
+    })?;
     sender
         .send(line)
         .map_err(|_error| WebApiError::internal("web turn stream receiver dropped"))
@@ -1682,7 +1950,8 @@ fn record_message_delta(state: &Arc<WebApiState>, turn_id: &str, delta: &str) {
     let Ok(mut debug) = state.debug_state.lock() else {
         return;
     };
-    let Some(last_turn) = find_debug_block_mut(&mut debug.recent_blocks, &format!("turn:{turn_id}"))
+    let Some(last_turn) =
+        find_debug_block_mut(&mut debug.recent_blocks, &format!("turn:{turn_id}"))
     else {
         return;
     };
@@ -1708,7 +1977,8 @@ fn record_tool_started(
     let Ok(mut debug) = state.debug_state.lock() else {
         return;
     };
-    if let Some(last_turn) = find_debug_block_mut(&mut debug.recent_blocks, &format!("turn:{turn_id}"))
+    if let Some(last_turn) =
+        find_debug_block_mut(&mut debug.recent_blocks, &format!("turn:{turn_id}"))
     {
         last_turn.tool_calls += 1;
         last_turn.lines.push(format!(
@@ -1733,7 +2003,8 @@ fn record_tool_finished(
         return;
     };
     let at = format_timestamp(OffsetDateTime::now_utc().unix_timestamp());
-    if let Some(last_turn) = find_debug_block_mut(&mut debug.recent_blocks, &format!("turn:{turn_id}"))
+    if let Some(last_turn) =
+        find_debug_block_mut(&mut debug.recent_blocks, &format!("turn:{turn_id}"))
     {
         last_turn.lines.push(format!(
             "{at} tool.finished {label} ({tool_id}) outcome={outcome}"
@@ -1746,7 +2017,8 @@ fn record_turn_completed(state: &Arc<WebApiState>, turn_id: &str) {
     let Ok(mut debug) = state.debug_state.lock() else {
         return;
     };
-    let Some(last_turn) = find_debug_block_mut(&mut debug.recent_blocks, &format!("turn:{turn_id}"))
+    let Some(last_turn) =
+        find_debug_block_mut(&mut debug.recent_blocks, &format!("turn:{turn_id}"))
     else {
         return;
     };
@@ -1776,7 +2048,8 @@ fn record_turn_failed(
         return;
     };
     let at = format_timestamp(OffsetDateTime::now_utc().unix_timestamp());
-    if let Some(last_turn) = find_debug_block_mut(&mut debug.recent_blocks, &format!("turn:{turn_id}"))
+    if let Some(last_turn) =
+        find_debug_block_mut(&mut debug.recent_blocks, &format!("turn:{turn_id}"))
     {
         last_turn.lines.push(format!(
             "{} turn.failed code={} tool_calls={} message={}",
@@ -1815,9 +2088,7 @@ fn find_debug_block_mut<'a>(
 }
 
 fn collect_internal_record_keys(turns: &[mvp::memory::ConversationTurn]) -> HashSet<String> {
-    turns.iter()
-        .filter_map(internal_record_key)
-        .collect()
+    turns.iter().filter_map(internal_record_key).collect()
 }
 
 fn internal_record_key(turn: &mvp::memory::ConversationTurn) -> Option<String> {
@@ -1849,15 +2120,22 @@ fn emit_internal_tool_events(
         } else {
             "tool.started"
         };
-        let mut payload = json!({
-            "type": event_type,
-            "turnId": turn_id,
-            "toolId": event.tool_id,
-            "label": event.label,
-        });
-        if let Some(outcome) = event.outcome {
-            payload["outcome"] = Value::String(outcome.to_owned());
-        }
+        let payload = if let Some(ref outcome) = event.outcome {
+            json!({
+                "type": event_type,
+                "turnId": turn_id,
+                "toolId": event.tool_id,
+                "label": event.label,
+                "outcome": outcome,
+            })
+        } else {
+            json!({
+                "type": event_type,
+                "turnId": turn_id,
+                "toolId": event.tool_id,
+                "label": event.label,
+            })
+        };
         send_stream_event(sender, payload)?;
         match event.outcome {
             Some(outcome) => record_tool_finished(
@@ -1887,7 +2165,11 @@ fn stream_tool_event_from_record(content: &str) -> Option<StreamToolEvent> {
     let label = parsed
         .pointer("/decision/tool_name")
         .and_then(Value::as_str)
-        .or_else(|| parsed.pointer("/outcome/payload/tool").and_then(Value::as_str))
+        .or_else(|| {
+            parsed
+                .pointer("/outcome/payload/tool")
+                .and_then(Value::as_str)
+        })
         .or_else(|| parsed.pointer("/outcome/tool_name").and_then(Value::as_str))
         .map(str::to_owned)
         .unwrap_or_else(|| tool_id.clone());
