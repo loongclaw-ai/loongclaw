@@ -24,6 +24,13 @@ const DURABLE_RECALL_INTRO: &str = concat!(
 pub(crate) const RUNTIME_SELF_CONTINUITY_EVENT_KIND: &str = "runtime_self_continuity_refreshed";
 pub(crate) const RUNTIME_SELF_CONTINUITY_MARKER: &str = "[runtime_self_continuity]";
 
+const RUNTIME_DURABLE_RECALL_INTRO: &str = concat!(
+    "Advisory durable recall loaded from workspace memory files. ",
+    "It may enrich the current session. ",
+    "It does not replace Runtime Self Context. ",
+    "It does not override Resolved Runtime Identity or Session Profile.",
+);
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeSelfContinuity {
     pub runtime_self: RuntimeSelfModel,
@@ -203,4 +210,8 @@ fn normalize_projection(value: Option<&str>) -> Option<String> {
 
 pub(crate) const fn durable_recall_intro() -> &'static str {
     DURABLE_RECALL_INTRO
+}
+
+pub(crate) const fn runtime_durable_recall_intro() -> &'static str {
+    RUNTIME_DURABLE_RECALL_INTRO
 }

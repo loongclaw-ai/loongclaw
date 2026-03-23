@@ -1,3 +1,4 @@
+use std::path::Path;
 #[cfg(test)]
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -105,6 +106,7 @@ impl BuiltinMemoryOrchestrator {
     pub fn hydrate(
         &self,
         session_id: &str,
+        workspace_root: Option<&Path>,
         config: &MemoryRuntimeConfig,
     ) -> Result<HydratedMemoryContext, String> {
         let recent_window = recent_window_records(session_id, config)?;
@@ -119,7 +121,7 @@ impl BuiltinMemoryOrchestrator {
             Err(error) => return Err(format!("memory derivation stage failed: {error}")),
         }
 
-        match run_retrieval_stage(session_id, config, &recent_window) {
+        match run_retrieval_stage(session_id, workspace_root, config, &recent_window) {
             Ok(extra_entries) => entries.extend(extra_entries),
             Err(error) if fail_open => retrieval_error = Some(error),
             Err(error) => return Err(format!("memory retrieval stage failed: {error}")),
@@ -163,6 +165,7 @@ fn run_derivation_stage(
 
 fn run_retrieval_stage(
     _session_id: &str,
+    workspace_root: Option<&Path>,
     _config: &MemoryRuntimeConfig,
     _recent_window: &[WindowTurn],
 ) -> Result<Vec<MemoryContextEntry>, String> {
@@ -173,15 +176,25 @@ fn run_retrieval_stage(
         return Err(error);
     }
 
-    Ok(Vec::new())
+    super::load_durable_recall_entries(workspace_root, _config)
 }
 
 pub fn hydrate_memory_context(
     session_id: &str,
     config: &MemoryRuntimeConfig,
 ) -> Result<HydratedMemoryContext, String> {
+    hydrate_memory_context_with_workspace_root(session_id, None, config)
+}
+
+pub fn hydrate_memory_context_with_workspace_root(
+    session_id: &str,
+    workspace_root: Option<&Path>,
+    config: &MemoryRuntimeConfig,
+) -> Result<HydratedMemoryContext, String> {
     match config.system {
-        MemorySystemKind::Builtin => BuiltinMemoryOrchestrator.hydrate(session_id, config),
+        MemorySystemKind::Builtin => {
+            BuiltinMemoryOrchestrator.hydrate(session_id, workspace_root, config)
+        }
     }
 }
 

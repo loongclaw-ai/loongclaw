@@ -22,6 +22,7 @@ pub struct WindowTurn {
 pub enum MemoryContextKind {
     Profile,
     Summary,
+    RetrievedMemory,
     Turn,
 }
 
