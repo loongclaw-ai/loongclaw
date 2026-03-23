@@ -273,15 +273,12 @@ impl SupervisorState {
     }
 
     pub fn request_shutdown(&mut self, reason: String) -> Result<(), String> {
-        if reason.trim().is_empty() {
-            return Err("shutdown reason cannot be empty".to_owned());
+        if self.shutdown_reason.is_some() {
+            return Ok(());
         }
 
-        if matches!(
-            self.shutdown_reason,
-            Some(SupervisorShutdownReason::SurfaceFailed { .. })
-        ) {
-            return Ok(());
+        if reason.trim().is_empty() {
+            return Err("shutdown reason cannot be empty".to_owned());
         }
 
         self.shutdown_reason = Some(SupervisorShutdownReason::Requested { reason });
@@ -302,7 +299,19 @@ impl SupervisorState {
         stopped_at_ms: u64,
         error: impl Into<String>,
     ) -> Result<(), String> {
+        let current_phase = self
+            .surface_state(surface)
+            .ok_or_else(|| format!("unknown background surface: {surface}"))?
+            .phase;
+        if matches!(current_phase, SurfacePhase::Stopped | SurfacePhase::Failed) {
+            return Ok(());
+        }
+
         let error = error.into();
+        let preserve_shutdown_reason = matches!(
+            self.shutdown_reason,
+            Some(SupervisorShutdownReason::SurfaceFailed { .. })
+        );
         let state = self.surface_state_mut(surface)?;
         state.phase = SurfacePhase::Failed;
         state.stopped_at_ms = Some(stopped_at_ms);
@@ -310,10 +319,12 @@ impl SupervisorState {
         state.exit_reason = Some(format!("surface failed: {error}"));
 
         self.phase = RuntimeOwnerPhase::Failed;
-        self.shutdown_reason = Some(SupervisorShutdownReason::SurfaceFailed {
-            surface: surface.clone(),
-            error,
-        });
+        if !preserve_shutdown_reason {
+            self.shutdown_reason = Some(SupervisorShutdownReason::SurfaceFailed {
+                surface: surface.clone(),
+                error,
+            });
+        }
 
         for (tracked_surface, tracked_state) in &mut self.surfaces {
             if tracked_surface != surface
@@ -729,6 +740,163 @@ mod tests {
         assert!(
             error.contains("lost upstream connection"),
             "failure result should keep the original failure reason: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn duplicate_shutdown_request_preserves_original_reason_and_terminal_phase() {
+        let telegram = telegram_surface(Some("bot_123456"));
+        let mut supervisor =
+            SupervisorState::new(sample_spec(vec![telegram.clone()]).expect("build spec"));
+
+        supervisor
+            .mark_surface_running(&telegram, 1_710_000_000_000)
+            .expect("start telegram");
+        supervisor
+            .request_shutdown("ctrl-c received".to_owned())
+            .expect("request shutdown");
+        supervisor
+            .mark_surface_stopped(&telegram, 1_710_000_000_500)
+            .expect("stop telegram");
+        supervisor
+            .request_shutdown("   ".to_owned())
+            .expect("duplicate shutdown should be ignored");
+
+        assert_eq!(supervisor.phase(), RuntimeOwnerPhase::Stopped);
+        assert_eq!(
+            supervisor.shutdown_reason(),
+            Some(&SupervisorShutdownReason::Requested {
+                reason: "ctrl-c received".to_owned(),
+            })
+        );
+        assert!(supervisor.final_exit_result().is_ok());
+        assert_eq!(
+            supervisor
+                .surface_state(&telegram)
+                .expect("telegram surface")
+                .exit_reason
+                .as_deref(),
+            Some("shutdown requested: ctrl-c received")
+        );
+    }
+
+    #[tokio::test]
+    async fn first_surface_failure_remains_root_cause_when_sibling_fails_during_unwind() {
+        let telegram = telegram_surface(Some("bot_123456"));
+        let feishu = feishu_surface(Some("alerts"));
+        let mut supervisor = SupervisorState::new(
+            sample_spec(vec![telegram.clone(), feishu.clone()]).expect("build spec"),
+        );
+
+        supervisor
+            .mark_surface_running(&telegram, 1_710_000_000_000)
+            .expect("start telegram");
+        supervisor
+            .mark_surface_running(&feishu, 1_710_000_000_100)
+            .expect("start feishu");
+
+        supervisor
+            .record_surface_failure(&telegram, 1_710_000_000_500, "telegram failed first")
+            .expect("record telegram failure");
+        supervisor
+            .record_surface_failure(&feishu, 1_710_000_000_700, "feishu failed second")
+            .expect("record feishu failure");
+
+        assert_eq!(
+            supervisor.shutdown_reason(),
+            Some(&SupervisorShutdownReason::SurfaceFailed {
+                surface: telegram.clone(),
+                error: "telegram failed first".to_owned(),
+            })
+        );
+        let error = supervisor
+            .final_exit_result()
+            .expect_err("first failure should keep the supervisor in failed state");
+        assert!(
+            error.contains("telegram failed first"),
+            "root-cause summary should preserve the first failure: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn late_failure_after_requested_shutdown_does_not_rewrite_clean_stop() {
+        let telegram = telegram_surface(Some("bot_123456"));
+        let mut supervisor =
+            SupervisorState::new(sample_spec(vec![telegram.clone()]).expect("build spec"));
+
+        supervisor
+            .mark_surface_running(&telegram, 1_710_000_000_000)
+            .expect("start telegram");
+        supervisor
+            .request_shutdown("ctrl-c received".to_owned())
+            .expect("request shutdown");
+        supervisor
+            .mark_surface_stopped(&telegram, 1_710_000_000_500)
+            .expect("stop telegram");
+        supervisor
+            .record_surface_failure(
+                &telegram,
+                1_710_000_000_700,
+                "late failure should not rewrite a clean shutdown",
+            )
+            .expect("late failure after clean shutdown should be ignored");
+
+        assert_eq!(supervisor.phase(), RuntimeOwnerPhase::Stopped);
+        assert_eq!(
+            supervisor.shutdown_reason(),
+            Some(&SupervisorShutdownReason::Requested {
+                reason: "ctrl-c received".to_owned(),
+            })
+        );
+        let state = supervisor
+            .surface_state(&telegram)
+            .expect("telegram surface");
+        assert_eq!(state.phase, SurfacePhase::Stopped);
+        assert_eq!(state.last_error, None);
+        assert_eq!(
+            state.exit_reason.as_deref(),
+            Some("shutdown requested: ctrl-c received")
+        );
+        assert!(supervisor.final_exit_result().is_ok());
+    }
+
+    #[tokio::test]
+    async fn late_failure_after_failure_unwind_stop_does_not_rewrite_surface_state() {
+        let telegram = telegram_surface(Some("bot_123456"));
+        let feishu = feishu_surface(Some("alerts"));
+        let mut supervisor = SupervisorState::new(
+            sample_spec(vec![telegram.clone(), feishu.clone()]).expect("build spec"),
+        );
+
+        supervisor
+            .mark_surface_running(&telegram, 1_710_000_000_000)
+            .expect("start telegram");
+        supervisor
+            .mark_surface_running(&feishu, 1_710_000_000_100)
+            .expect("start feishu");
+        supervisor
+            .record_surface_failure(&telegram, 1_710_000_000_500, "telegram failed first")
+            .expect("record telegram failure");
+        supervisor
+            .mark_surface_stopped(&feishu, 1_710_000_000_600)
+            .expect("stop feishu during unwind");
+        supervisor
+            .record_surface_failure(&feishu, 1_710_000_000_700, "late feishu failure")
+            .expect("late failure after stop should be ignored");
+
+        assert_eq!(
+            supervisor.shutdown_reason(),
+            Some(&SupervisorShutdownReason::SurfaceFailed {
+                surface: telegram.clone(),
+                error: "telegram failed first".to_owned(),
+            })
+        );
+        let state = supervisor.surface_state(&feishu).expect("feishu surface");
+        assert_eq!(state.phase, SurfacePhase::Stopped);
+        assert_eq!(state.last_error, None);
+        assert_eq!(
+            state.exit_reason.as_deref(),
+            Some("shutdown after telegram(account=bot_123456) failed: telegram failed first")
         );
     }
 
