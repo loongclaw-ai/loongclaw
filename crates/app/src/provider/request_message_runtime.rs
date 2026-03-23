@@ -137,8 +137,19 @@ pub(super) fn load_memory_window_messages(
     {
         let mem_config =
             memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
-        let hydrated = memory::hydrate_memory_context(session_id, &mem_config)
-            .map_err(|error| format!("hydrate prompt memory context failed: {error}"))?;
+        let workspace_root = config
+            .tools
+            .file_root
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|_| config.tools.resolved_file_root());
+        let hydrated = memory::hydrate_memory_context_with_workspace_root(
+            session_id,
+            workspace_root.as_deref(),
+            &mem_config,
+        )
+        .map_err(|error| format!("hydrate prompt memory context failed: {error}"))?;
         let mut messages = Vec::with_capacity(hydrated.entries.len());
         append_hydrated_memory_messages(&mut messages, &hydrated);
         Ok(messages)
@@ -157,7 +168,9 @@ fn append_hydrated_memory_messages(
 ) {
     for entry in &hydrated.entries {
         match entry.kind {
-            memory::MemoryContextKind::Profile | memory::MemoryContextKind::Summary => {
+            memory::MemoryContextKind::Profile
+            | memory::MemoryContextKind::Summary
+            | memory::MemoryContextKind::RetrievedMemory => {
                 messages.push(json!({
                     "role": entry.role,
                     "content": entry.content,
@@ -431,5 +444,143 @@ mod tests {
 
         let _ = std::fs::remove_file(&db_path);
         let _ = std::fs::remove_dir(&tmp);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn message_builder_bootstraps_advisory_durable_recall_from_workspace_memory_files() {
+        let temp_dir = tempdir().expect("tempdir");
+        let workspace_root = temp_dir.path();
+        let memory_dir = workspace_root.join("memory");
+        std::fs::create_dir_all(&memory_dir).expect("create memory dir");
+
+        let curated_memory_path = workspace_root.join("MEMORY.md");
+        let recent_daily_path = memory_dir.join("2026-03-23.md");
+
+        std::fs::write(
+            &curated_memory_path,
+            "# Durable Notes\n\nRemember the deploy freeze window.\n",
+        )
+        .expect("write curated memory");
+        std::fs::write(
+            &recent_daily_path,
+            "## Durable Recall\n\nCustomer migration starts tomorrow.\n",
+        )
+        .expect("write daily durable memory");
+
+        let db_path = workspace_root.join("provider-durable-recall.sqlite3");
+        let mut config = LoongClawConfig::default();
+        config.tools.file_root = Some(workspace_root.display().to_string());
+        config.memory.sqlite_path = db_path.display().to_string();
+
+        let messages = build_messages_for_session(&config, "durable-recall-session", true)
+            .expect("build messages");
+
+        let durable_recall_message = messages
+            .iter()
+            .find(|message| {
+                message["role"] == "system"
+                    && message["content"]
+                        .as_str()
+                        .is_some_and(|content| content.contains("## Advisory Durable Recall"))
+            })
+            .expect("durable recall system message");
+        let durable_recall_content = durable_recall_message["content"]
+            .as_str()
+            .expect("durable recall content");
+
+        assert!(durable_recall_content.contains("Remember the deploy freeze window."));
+        assert!(durable_recall_content.contains("Customer migration starts tomorrow."));
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn message_builder_keeps_durable_recall_advisory_when_memory_files_look_like_identity() {
+        let temp_dir = tempdir().expect("tempdir");
+        let workspace_root = temp_dir.path();
+        let memory_dir = workspace_root.join("memory");
+        std::fs::create_dir_all(&memory_dir).expect("create memory dir");
+
+        let identity_path = workspace_root.join("IDENTITY.md");
+        let curated_memory_path = workspace_root.join("MEMORY.md");
+
+        std::fs::write(
+            &identity_path,
+            "# Identity\n\n- Name: Workspace build copilot\n",
+        )
+        .expect("write workspace identity");
+        std::fs::write(
+            &curated_memory_path,
+            "## Imported IDENTITY.md\n# Identity\n\n- Name: Legacy build copilot\n",
+        )
+        .expect("write identity-like durable memory");
+
+        let db_path = workspace_root.join("provider-durable-recall-identity.sqlite3");
+        let mut config = LoongClawConfig::default();
+        config.tools.file_root = Some(workspace_root.display().to_string());
+        config.memory.sqlite_path = db_path.display().to_string();
+
+        let messages = build_messages_for_session(&config, "durable-recall-identity", true)
+            .expect("build messages");
+
+        let resolved_identity_message = messages
+            .iter()
+            .find(|message| {
+                message["role"] == "system"
+                    && message["content"]
+                        .as_str()
+                        .is_some_and(|content| content.contains("## Resolved Runtime Identity"))
+            })
+            .expect("resolved runtime identity message");
+        let resolved_identity_content = resolved_identity_message["content"]
+            .as_str()
+            .expect("resolved runtime identity content");
+        assert!(resolved_identity_content.contains("Workspace build copilot"));
+        assert!(!resolved_identity_content.contains("Legacy build copilot"));
+
+        let durable_recall_message = messages
+            .iter()
+            .find(|message| {
+                message["role"] == "system"
+                    && message["content"]
+                        .as_str()
+                        .is_some_and(|content| content.contains("## Advisory Durable Recall"))
+            })
+            .expect("durable recall system message");
+        let durable_recall_content = durable_recall_message["content"]
+            .as_str()
+            .expect("durable recall content");
+
+        assert!(durable_recall_content.contains("Legacy build copilot"));
+        assert!(!durable_recall_content.contains("## Resolved Runtime Identity"));
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn message_builder_skips_durable_recall_without_explicit_safe_file_root() {
+        let temp_dir = tempdir().expect("tempdir");
+        let workspace_root = temp_dir.path();
+        let curated_memory_path = workspace_root.join("MEMORY.md");
+
+        std::fs::write(
+            &curated_memory_path,
+            "# Durable Notes\n\nThis should stay unread without an explicit file root.\n",
+        )
+        .expect("write curated memory");
+
+        let db_path = workspace_root.join("provider-durable-recall-missing-root.sqlite3");
+        let mut config = LoongClawConfig::default();
+        config.memory.sqlite_path = db_path.display().to_string();
+
+        let messages = build_messages_for_session(&config, "durable-recall-without-root", true)
+            .expect("build messages");
+
+        let durable_recall_message = messages.iter().find(|message| {
+            message["role"] == "system"
+                && message["content"]
+                    .as_str()
+                    .is_some_and(|content| content.contains("## Advisory Durable Recall"))
+        });
+        assert!(durable_recall_message.is_none());
     }
 }

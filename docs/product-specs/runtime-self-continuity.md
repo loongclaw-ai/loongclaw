@@ -42,6 +42,10 @@ mixing identity authority with transient task context.
 - When a safe workspace file root is configured and compaction is about to run,
   LoongClaw may export advisory durable recall into `memory/YYYY-MM-DD.md`
   before compaction proceeds.
+- When a safe workspace file root is configured and durable memory files are
+  present, LoongClaw may bootstrap advisory durable recall from `MEMORY.md`,
+  `memory/MEMORY.md`, and recent `memory/YYYY-MM-DD.md` logs into runtime
+  context.
 - Session-local content is never promoted into durable self state implicitly.
 
 ## Acceptance Criteria
@@ -53,5 +57,7 @@ mixing identity authority with transient task context.
 - Delegate child sessions always receive an explicit self continuity contract.
 - Pre-compaction durable exports, when enabled by workspace configuration, stay
   advisory and do not become an identity override path.
+- Runtime durable-recall bootstrap, when enabled by workspace configuration,
+  stays advisory and does not become an identity override path.
 - The relationship to `#421` and `#429` is explicit: retrieval may enrich
   durable context, but it must not become an identity override path.

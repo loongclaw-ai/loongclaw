@@ -59,7 +59,7 @@ impl RuntimeSelfModel {
 }
 
 pub(crate) fn load_runtime_self_model(workspace_root: &Path) -> RuntimeSelfModel {
-    let candidate_roots = candidate_roots(workspace_root);
+    let candidate_roots = candidate_workspace_roots(workspace_root);
     let mut loaded_paths = BTreeSet::new();
     let mut model = RuntimeSelfModel::default();
 
@@ -102,7 +102,7 @@ pub(crate) fn render_runtime_self_section(model: &RuntimeSelfModel) -> Option<St
     Some(sections.join("\n\n"))
 }
 
-fn candidate_roots(workspace_root: &Path) -> Vec<PathBuf> {
+pub(crate) fn candidate_workspace_roots(workspace_root: &Path) -> Vec<PathBuf> {
     let mut roots = Vec::new();
     roots.push(workspace_root.to_path_buf());
 
