@@ -116,7 +116,6 @@ release_target_for_platform() {
       ;;
     ANDROID)
       case "$normalized_arch" in
-        x86_64|amd64) printf 'x86_64-linux-android\n' ;;
         arm64|aarch64) printf 'aarch64-linux-android\n' ;;
         *)
           echo "unsupported Android architecture: ${arch}" >&2

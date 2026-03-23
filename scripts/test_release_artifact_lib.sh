@@ -80,6 +80,10 @@ EOF
   assert_equals \
     "aarch64-linux-android" \
     "$(release_target_for_platform "Android" "arm64")"
+  if release_target_for_platform "Android" "x86_64" >/dev/null 2>&1; then
+    echo "expected release_target_for_platform to reject unsupported Android x86_64 hosts" >&2
+    exit 1
+  fi
   assert_equals \
     $'gnu\nmusl' \
     "$(release_supported_linux_libcs_for_arch "x86_64")"

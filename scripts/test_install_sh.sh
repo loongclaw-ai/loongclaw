@@ -256,6 +256,30 @@ run_termux_arm64_installs_android_release_test() {
     exit 1
   fi
 }
+
+run_termux_x86_64_rejects_android_release_test() {
+  local fixture output_file
+  fixture="$(mktemp -d)"
+  trap 'rm -rf "$fixture"' RETURN
+  output_file="$fixture/termux-android-x86_64.out"
+  make_uname_stub_bin "$fixture" "Linux" "x86_64" "Android"
+
+  if (
+    cd "$REPO_ROOT"
+    PATH="$fixture/fake-bin:$PATH" \
+      TERMUX_VERSION="0.119.0" \
+      PREFIX="/data/data/com.termux/files/usr" \
+      LOONGCLAW_INSTALL_RELEASE_BASE_URL="file://$fixture/releases" \
+      bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --prefix "$fixture/install" >"$output_file" 2>&1
+  ); then
+    echo "expected install.sh to reject unsupported Android x86_64 hosts" >&2
+    cat "$output_file" >&2
+    exit 1
+  fi
+
+  assert_contains "$output_file" "unsupported Android architecture"
+}
+
 run_linux_x86_64_falls_back_to_musl_when_glibc_is_too_old_test() {
   local fixture install_dir output_file installed_output
   fixture="$(make_linux_dual_libc_fixture "v0.1.2")"
@@ -579,6 +603,7 @@ run_checksum_mismatch_fails_test
 run_missing_release_guidance_test
 run_linux_x86_64_prefers_gnu_when_glibc_is_supported_test
 run_termux_arm64_installs_android_release_test
+run_termux_x86_64_rejects_android_release_test
 run_version_at_least_falls_back_when_sort_version_is_unavailable_test
 run_version_at_least_rejects_older_version_with_sort_version_test
 run_detect_host_glibc_version_rejects_musl_ldd_output_test
