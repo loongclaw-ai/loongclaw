@@ -78,6 +78,15 @@ pub(crate) use workspace_files::{
     collect_workspace_memory_document_locations,
 };
 
+pub(crate) fn normalize_system_id(raw: &str) -> Option<String> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
 pub fn execute_memory_core(request: MemoryCoreRequest) -> Result<MemoryCoreOutcome, String> {
     execute_memory_core_with_config(request, runtime_config::get_memory_runtime_config())
 }
