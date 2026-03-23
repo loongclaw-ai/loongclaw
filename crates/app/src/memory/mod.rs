@@ -23,6 +23,7 @@ mod protocol;
 pub mod runtime_config;
 #[cfg(feature = "memory-sqlite")]
 mod sqlite;
+mod stage;
 mod system;
 mod system_registry;
 #[cfg(test)]
@@ -52,9 +53,15 @@ pub use protocol::{
     build_append_turn_request, build_read_context_request, build_replace_turns_request,
     build_replace_turns_request_with_expectation, build_window_request,
     decode_memory_context_entries, decode_window_turn_count, decode_window_turns,
+    decode_stage_envelope, decode_window_turns, encode_stage_envelope_payload,
+    encode_stage_envelope_payload,
 };
 #[cfg(feature = "memory-sqlite")]
 pub use sqlite::{ConversationTurn, SqliteBootstrapDiagnostics, SqliteContextLoadDiagnostics};
+pub use stage::{
+    DerivedMemoryKind, MemoryRetrievalRequest, MemoryStageFamily, StageDiagnostics, StageEnvelope,
+    StageOutcome, builtin_post_turn_stage_families, builtin_pre_assembly_stage_families,
+};
 pub use system::{
     BuiltinMemorySystem, DEFAULT_MEMORY_SYSTEM_ID, MEMORY_SYSTEM_API_VERSION, MemorySystem,
     MemorySystemCapability, MemorySystemMetadata,
