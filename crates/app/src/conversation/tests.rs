@@ -2075,6 +2075,76 @@ async fn default_runtime_build_context_merges_delegate_runtime_contract_with_sys
     );
 }
 
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn default_runtime_kernel_stage_hydration_still_applies_system_prompt_addition_and_tool_view()
+{
+    let mut config = test_config();
+    config.memory.system = MemorySystemKind::Builtin;
+    config.memory.profile = MemoryProfile::WindowPlusSummary;
+    config.memory.sliding_window = 2;
+    let child_session_id = seed_delegate_child_session_with_runtime_narrowing(
+        &mut config,
+        "kernel-stage-hydration-tool-view",
+        sample_delegate_runtime_narrowing(),
+    );
+    let runtime_config =
+        crate::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+    crate::memory::append_turn_direct(&child_session_id, "user", "turn 1", &runtime_config)
+        .expect("append turn 1 should succeed");
+    crate::memory::append_turn_direct(&child_session_id, "assistant", "turn 2", &runtime_config)
+        .expect("append turn 2 should succeed");
+    crate::memory::append_turn_direct(&child_session_id, "user", "turn 3", &runtime_config)
+        .expect("append turn 3 should succeed");
+    crate::memory::append_turn_direct(&child_session_id, "assistant", "turn 4", &runtime_config)
+        .expect("append turn 4 should succeed");
+
+    let runtime = DefaultConversationRuntime::default();
+    let kernel_ctx = test_kernel_context_with_memory(
+        "default-runtime-kernel-stage-hydration-tool-view",
+        &runtime_config,
+    );
+
+    let assembled = runtime
+        .build_context(
+            &config,
+            &child_session_id,
+            true,
+            ConversationRuntimeBinding::kernel(&kernel_ctx),
+        )
+        .await
+        .expect("build kernel context with staged hydration and runtime middlewares");
+
+    let system_content = assembled.messages[0]["content"]
+        .as_str()
+        .expect("system prompt should stay string");
+    assert!(
+        system_content.contains("[delegate_child_runtime_contract]"),
+        "expected runtime-owned system prompt addition in kernel-bound staged assembly, got: {system_content}"
+    );
+    assert!(
+        system_content.contains("Plan within these child-session runtime limits:"),
+        "expected delegate runtime contract body, got: {system_content}"
+    );
+    assert!(
+        !system_content.contains("- delegate:"),
+        "expected child tool-view shaping to hide delegate tools in the rewritten system prompt, got: {system_content}"
+    );
+    assert!(
+        !system_content.contains("- shell.exec:"),
+        "expected child tool-view shaping to keep shell hidden by default, got: {system_content}"
+    );
+    assert!(
+        assembled.messages.iter().any(|message| {
+            message["role"] == "system"
+                && message["content"]
+                    .as_str()
+                    .is_some_and(|content| content.contains("## Memory Summary"))
+        }),
+        "expected staged hydration summary block to remain present after runtime middlewares"
+    );
+}
+
 #[tokio::test]
 async fn default_runtime_build_context_does_not_add_delegate_runtime_contract_for_unpersisted_session()
  {
