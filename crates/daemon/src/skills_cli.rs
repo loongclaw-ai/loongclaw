@@ -12,6 +12,22 @@ pub enum SkillsCommands {
     /// Inspect one resolved external skill
     #[command(visible_alias = "inspect")]
     Info { skill_id: String },
+    /// Download an external skill package and optionally sync it into the managed runtime
+    Fetch {
+        url: String,
+        #[arg(long)]
+        save_as: Option<String>,
+        #[arg(long)]
+        max_bytes: Option<usize>,
+        #[arg(long, default_value_t = false)]
+        approve_download: bool,
+        #[arg(long, default_value_t = false)]
+        install: bool,
+        #[arg(long)]
+        skill_id: Option<String>,
+        #[arg(long, default_value_t = false)]
+        replace: bool,
+    },
     /// Install a managed external skill from a local directory or archive
     Install {
         path: String,
@@ -109,6 +125,7 @@ pub fn execute_skills_command(options: SkillsCommandOptions) -> CliResult<Skills
         }
         command @ (SkillsCommands::List
         | SkillsCommands::Info { .. }
+        | SkillsCommands::Fetch { .. }
         | SkillsCommands::Install { .. }
         | SkillsCommands::InstallBundled { .. }
         | SkillsCommands::Remove { .. }) => {
@@ -146,6 +163,25 @@ fn execute_non_policy_skills_command(
                 &tool_runtime_config,
             )
         }
+        SkillsCommands::Fetch {
+            url,
+            save_as,
+            max_bytes,
+            approve_download,
+            install,
+            skill_id,
+            replace,
+        } => execute_fetch_command(
+            resolved_path,
+            config,
+            &url,
+            save_as.as_deref(),
+            max_bytes,
+            approve_download,
+            install,
+            skill_id.as_deref(),
+            replace,
+        ),
         SkillsCommands::InstallBundled { skill_id, replace } => {
             execute_install_bundled_skill_command(resolved_path, config, &skill_id, replace)
         }
@@ -176,22 +212,17 @@ fn build_skills_tool_request(command: SkillsCommands) -> CliResult<ToolCoreReque
                 "skill_id": skill_id,
             }),
         }),
+        SkillsCommands::Fetch { .. } => {
+            Err("skills fetch requests are handled directly by the daemon CLI".to_owned())
+        }
         SkillsCommands::Install {
             path,
             skill_id,
             replace,
-        } => {
-            let mut payload = Map::new();
-            payload.insert("path".to_owned(), json!(path));
-            payload.insert("replace".to_owned(), json!(replace));
-            if let Some(skill_id) = skill_id {
-                payload.insert("skill_id".to_owned(), json!(skill_id));
-            }
-            Ok(ToolCoreRequest {
-                tool_name: "external_skills.install".to_owned(),
-                payload: Value::Object(payload),
-            })
-        }
+        } => Ok(ToolCoreRequest {
+            tool_name: "external_skills.install".to_owned(),
+            payload: build_install_payload(&path, skill_id.as_deref(), replace),
+        }),
         SkillsCommands::InstallBundled { .. } | SkillsCommands::EnableBrowserPreview { .. } => {
             Err("bundled skills install requests are handled directly by the daemon CLI".to_owned())
         }
@@ -204,6 +235,101 @@ fn build_skills_tool_request(command: SkillsCommands) -> CliResult<ToolCoreReque
         SkillsCommands::Policy { .. } => {
             Err("skills policy requests are handled directly by the daemon CLI".to_owned())
         }
+    }
+}
+
+fn execute_fetch_command(
+    resolved_path: &Path,
+    config: &mvp::config::LoongClawConfig,
+    url: &str,
+    save_as: Option<&str>,
+    max_bytes: Option<usize>,
+    approve_download: bool,
+    install: bool,
+    skill_id: Option<&str>,
+    replace: bool,
+) -> CliResult<ToolCoreOutcome> {
+    if !install {
+        if skill_id.is_some() {
+            return Err("skills fetch --skill-id requires --install".to_owned());
+        }
+        if replace {
+            return Err("skills fetch --replace requires --install".to_owned());
+        }
+    }
+
+    let tool_runtime_config = mvp::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(
+        config,
+        Some(resolved_path),
+    );
+    let fetch_request = build_fetch_tool_request(url, save_as, max_bytes, approve_download);
+    let fetch_outcome =
+        mvp::tools::execute_tool_core_with_config(fetch_request, &tool_runtime_config)?;
+    let fetched = fetch_outcome.payload;
+
+    let installed = if install {
+        let saved_path = fetched
+            .get("saved_path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "external skills fetch payload missing `saved_path`".to_owned())?;
+        let install_request = build_install_request(saved_path, skill_id, replace);
+        Some(
+            mvp::tools::execute_tool_core_with_config(install_request, &tool_runtime_config)?
+                .payload,
+        )
+    } else {
+        None
+    };
+
+    Ok(ToolCoreOutcome {
+        status: "ok".to_owned(),
+        payload: json!({
+            "adapter": "daemon-cli",
+            "tool_name": "skills.fetch",
+            "sync_applied": install,
+            "fetched": fetched,
+            "installed": installed,
+        }),
+    })
+}
+
+fn build_fetch_tool_request(
+    url: &str,
+    save_as: Option<&str>,
+    max_bytes: Option<usize>,
+    approve_download: bool,
+) -> ToolCoreRequest {
+    let mut payload = Map::new();
+    payload.insert("url".to_owned(), json!(url));
+    if let Some(save_as) = save_as {
+        payload.insert("save_as".to_owned(), json!(save_as));
+    }
+    if let Some(max_bytes) = max_bytes {
+        payload.insert("max_bytes".to_owned(), json!(max_bytes));
+    }
+    if approve_download {
+        payload.insert("approval_granted".to_owned(), json!(true));
+    }
+    ToolCoreRequest {
+        tool_name: "external_skills.fetch".to_owned(),
+        payload: Value::Object(payload),
+    }
+}
+
+fn build_install_payload(path: &str, skill_id: Option<&str>, replace: bool) -> Value {
+    let mut payload = Map::new();
+    payload.insert("path".to_owned(), json!(path));
+    payload.insert("replace".to_owned(), json!(replace));
+    if let Some(skill_id) = skill_id {
+        payload.insert("skill_id".to_owned(), json!(skill_id));
+    }
+    Value::Object(payload)
+}
+
+fn build_install_request(path: &str, skill_id: Option<&str>, replace: bool) -> ToolCoreRequest {
+    ToolCoreRequest {
+        tool_name: "external_skills.install".to_owned(),
+        payload: build_install_payload(path, skill_id, replace),
     }
 }
 
@@ -525,11 +651,90 @@ pub fn render_skills_cli_text(execution: &SkillsCommandExecution) -> CliResult<S
                 }
             }
         }
+        "skills.fetch" => {
+            let fetched = payload
+                .get("fetched")
+                .and_then(Value::as_object)
+                .ok_or_else(|| "skills fetch payload missing `fetched` object".to_owned())?;
+            lines.push(format!(
+                "saved_path={}",
+                fetched
+                    .get("saved_path")
+                    .and_then(Value::as_str)
+                    .unwrap_or("-")
+            ));
+            lines.push(format!(
+                "bytes_downloaded={}",
+                fetched
+                    .get("bytes_downloaded")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+            ));
+            lines.push(format!(
+                "sha256={}",
+                fetched.get("sha256").and_then(Value::as_str).unwrap_or("-")
+            ));
+            lines.push(format!(
+                "approval_required={}",
+                fetched
+                    .get("approval_required")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            ));
+            lines.push(format!(
+                "approval_granted={}",
+                fetched
+                    .get("approval_granted")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            ));
+            let sync_applied = payload
+                .get("sync_applied")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            lines.push(format!("sync_applied={sync_applied}"));
+            if sync_applied {
+                let installed = payload
+                    .get("installed")
+                    .and_then(Value::as_object)
+                    .ok_or_else(|| "skills fetch payload missing `installed` object".to_owned())?;
+                lines.push(format!(
+                    "installed skill_id={}",
+                    installed
+                        .get("skill_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("-")
+                ));
+                lines.push(format!(
+                    "display_name={}",
+                    installed
+                        .get("display_name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("-")
+                ));
+                lines.push(format!(
+                    "install_path={}",
+                    installed
+                        .get("install_path")
+                        .and_then(Value::as_str)
+                        .unwrap_or("-")
+                ));
+                lines.push(format!(
+                    "replaced={}",
+                    installed
+                        .get("replaced")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                ));
+            }
+        }
         "external_skills.inspect" => {
             let skill = payload
                 .get("skill")
                 .and_then(Value::as_object)
                 .ok_or_else(|| "skills info payload missing `skill` object".to_owned())?;
+            let metadata = skill.get("metadata").and_then(Value::as_object);
+            let eligibility = skill.get("eligibility").and_then(Value::as_object);
             lines.push(format!(
                 "skill_id={}",
                 skill.get("skill_id").and_then(Value::as_str).unwrap_or("-")
@@ -554,51 +759,59 @@ pub fn render_skills_cli_text(execution: &SkillsCommandExecution) -> CliResult<S
                 skill
                     .get("model_visibility")
                     .and_then(Value::as_str)
+                    .or_else(|| {
+                        metadata
+                            .and_then(|value| value.get("model_visibility"))
+                            .and_then(Value::as_str)
+                    })
                     .unwrap_or("visible")
             ));
             lines.push(format!(
                 "eligible={}",
-                skill
-                    .get("eligibility")
-                    .and_then(|eligibility| eligibility.get("available"))
-                    .and_then(Value::as_bool)
+                eligibility
+                    .and_then(|value| {
+                        value
+                            .get("available")
+                            .and_then(Value::as_bool)
+                            .or_else(|| value.get("eligible").and_then(Value::as_bool))
+                    })
                     .unwrap_or(true)
             ));
             lines.push(format!(
                 "required_env={}",
-                render_string_list(skill.get("required_env"))
+                render_string_list(
+                    skill
+                        .get("required_env")
+                        .or_else(|| metadata.and_then(|value| value.get("required_env")))
+                )
             ));
             lines.push(format!(
                 "required_bin={}",
-                render_string_list(skill.get("required_bin"))
+                render_string_list(
+                    skill
+                        .get("required_bin")
+                        .or_else(|| metadata.and_then(|value| value.get("required_bins")))
+                )
             ));
             lines.push(format!(
                 "required_paths={}",
-                render_string_list(skill.get("required_paths"))
+                render_string_list(
+                    skill
+                        .get("required_paths")
+                        .or_else(|| metadata.and_then(|value| value.get("required_paths")))
+                )
             ));
             lines.push(format!(
                 "missing_env={}",
-                render_string_list(
-                    skill
-                        .get("eligibility")
-                        .and_then(|eligibility| eligibility.get("missing_env"))
-                )
+                render_string_list(eligibility.and_then(|value| value.get("missing_env")))
             ));
             lines.push(format!(
                 "missing_bin={}",
-                render_string_list(
-                    skill
-                        .get("eligibility")
-                        .and_then(|eligibility| eligibility.get("missing_bin"))
-                )
+                render_string_list(eligibility.and_then(|value| value.get("missing_bin")))
             ));
             lines.push(format!(
                 "missing_paths={}",
-                render_string_list(
-                    skill
-                        .get("eligibility")
-                        .and_then(|eligibility| eligibility.get("missing_paths"))
-                )
+                render_string_list(eligibility.and_then(|value| value.get("missing_paths")))
             ));
             lines.push(format!(
                 "source_path={}",
@@ -625,6 +838,18 @@ pub fn render_skills_cli_text(execution: &SkillsCommandExecution) -> CliResult<S
                 "sha256={}",
                 skill.get("sha256").and_then(Value::as_str).unwrap_or("-")
             ));
+            lines.push(format!(
+                "invocation_policy={}",
+                skill
+                    .get("invocation_policy")
+                    .and_then(Value::as_str)
+                    .or_else(|| {
+                        metadata
+                            .and_then(|value| value.get("invocation_policy"))
+                            .and_then(Value::as_str)
+                    })
+                    .unwrap_or("model")
+            ));
             lines.push("instructions_preview:".to_owned());
             lines.push(
                 payload
@@ -633,6 +858,60 @@ pub fn render_skills_cli_text(execution: &SkillsCommandExecution) -> CliResult<S
                     .unwrap_or("-")
                     .to_owned(),
             );
+            render_string_section(
+                &mut lines,
+                "eligibility_issues:",
+                eligibility.and_then(|value| value.get("issues")),
+                "skills info payload missing `skill.eligibility.issues` array",
+            )?;
+            render_string_section(
+                &mut lines,
+                "required_env:",
+                skill
+                    .get("required_env")
+                    .or_else(|| metadata.and_then(|value| value.get("required_env"))),
+                "skills info payload missing `skill.required_env` array",
+            )?;
+            render_string_section(
+                &mut lines,
+                "required_bins:",
+                skill
+                    .get("required_bin")
+                    .or_else(|| metadata.and_then(|value| value.get("required_bins"))),
+                "skills info payload missing `skill.required_bin` array",
+            )?;
+            render_string_section(
+                &mut lines,
+                "required_paths:",
+                skill
+                    .get("required_paths")
+                    .or_else(|| metadata.and_then(|value| value.get("required_paths"))),
+                "skills info payload missing `skill.required_paths` array",
+            )?;
+            render_string_section(
+                &mut lines,
+                "required_config:",
+                skill
+                    .get("required_config")
+                    .or_else(|| metadata.and_then(|value| value.get("required_config"))),
+                "skills info payload missing `skill.required_config` array",
+            )?;
+            render_string_section(
+                &mut lines,
+                "allowed_tools:",
+                skill
+                    .get("allowed_tools")
+                    .or_else(|| metadata.and_then(|value| value.get("allowed_tools"))),
+                "skills info payload missing `skill.allowed_tools` array",
+            )?;
+            render_string_section(
+                &mut lines,
+                "blocked_tools:",
+                skill
+                    .get("blocked_tools")
+                    .or_else(|| metadata.and_then(|value| value.get("blocked_tools"))),
+                "skills info payload missing `skill.blocked_tools` array",
+            )?;
             let shadowed = payload
                 .get("shadowed_skills")
                 .and_then(Value::as_array)
@@ -869,13 +1148,33 @@ fn render_skill_summary_line(skill: &Value) -> String {
     let model_visibility = skill
         .get("model_visibility")
         .and_then(Value::as_str)
+        .or_else(|| {
+            skill
+                .get("metadata")
+                .and_then(|value| value.get("model_visibility"))
+                .and_then(Value::as_str)
+        })
         .unwrap_or("visible");
     let eligible = skill
         .get("eligibility")
-        .and_then(|eligibility| eligibility.get("available"))
-        .and_then(Value::as_bool)
+        .and_then(|value| {
+            value
+                .get("available")
+                .and_then(Value::as_bool)
+                .or_else(|| value.get("eligible").and_then(Value::as_bool))
+        })
         .unwrap_or(true);
+    let invocation_policy = skill
+        .get("invocation_policy")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            skill
+                .get("metadata")
+                .and_then(|value| value.get("invocation_policy"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or("model");
     format!(
-        "{skill_id} [{active}] scope={scope} model_visibility={model_visibility} eligible={eligible} display_name={display_name} summary={summary}"
+        "{skill_id} [{active}] scope={scope} model_visibility={model_visibility} eligible={eligible} invocation_policy={invocation_policy} display_name={display_name} summary={summary}"
     )
 }

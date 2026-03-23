@@ -117,6 +117,19 @@ impl ConversationRuntime for TraitDefaultToolViewRuntime {
         Err("trait default tool view test should not request a provider turn".to_owned())
     }
 
+    async fn request_turn_streaming(
+        &self,
+        _config: &LoongClawConfig,
+        _session_id: &str,
+        _turn_id: &str,
+        _messages: &[Value],
+        _tool_view: &crate::tools::ToolView,
+        _binding: ConversationRuntimeBinding<'_>,
+        _on_token: crate::provider::StreamingTokenCallback,
+    ) -> CliResult<ProviderTurn> {
+        Err("trait default tool view test should not request a provider turn".to_owned())
+    }
+
     async fn persist_turn(
         &self,
         _session_id: &str,
@@ -1276,6 +1289,20 @@ impl ConversationRuntime for FakeRuntime {
             }
             Err(error) => Err(error),
         }
+    }
+
+    async fn request_turn_streaming(
+        &self,
+        config: &LoongClawConfig,
+        session_id: &str,
+        turn_id: &str,
+        messages: &[Value],
+        tool_view: &crate::tools::ToolView,
+        binding: ConversationRuntimeBinding<'_>,
+        _on_token: crate::provider::StreamingTokenCallback,
+    ) -> CliResult<ProviderTurn> {
+        self.request_turn(config, session_id, turn_id, messages, tool_view, binding)
+            .await
     }
 
     async fn persist_turn(
@@ -8200,6 +8227,8 @@ fn provider_hidden_tool_denial_does_not_leak_name() {
             );
         }
         other @ TurnResult::FinalText(_)
+        | other @ TurnResult::StreamingText(_)
+        | other @ TurnResult::StreamingDone(_)
         | other @ TurnResult::NeedsApproval(_)
         | other @ TurnResult::ToolError(_)
         | other @ TurnResult::ProviderError(_) => {
@@ -8344,6 +8373,8 @@ fn turn_engine_denies_known_tool_outside_restricted_view() {
             );
         }
         other @ TurnResult::FinalText(_)
+        | other @ TurnResult::StreamingText(_)
+        | other @ TurnResult::StreamingDone(_)
         | other @ TurnResult::NeedsApproval(_)
         | other @ TurnResult::ToolError(_)
         | other @ TurnResult::ProviderError(_) => {
@@ -8433,7 +8464,9 @@ async fn turn_engine_routes_app_tools_through_dispatcher() {
         other @ TurnResult::ToolDenied(_)
         | other @ TurnResult::NeedsApproval(_)
         | other @ TurnResult::ToolError(_)
-        | other @ TurnResult::ProviderError(_) => {
+        | other @ TurnResult::ProviderError(_)
+        | other @ TurnResult::StreamingText(_)
+        | other @ TurnResult::StreamingDone(_) => {
             panic!("expected FinalText, got: {other:?}")
         }
     }
@@ -8532,7 +8565,9 @@ async fn turn_engine_routes_direct_binding_to_app_dispatcher() {
         other @ TurnResult::NeedsApproval(_)
         | other @ TurnResult::ToolDenied(_)
         | other @ TurnResult::ToolError(_)
-        | other @ TurnResult::ProviderError(_) => {
+        | other @ TurnResult::ProviderError(_)
+        | other @ TurnResult::StreamingText(_)
+        | other @ TurnResult::StreamingDone(_) => {
             panic!("expected FinalText, got: {other:?}")
         }
     }
@@ -8650,6 +8685,8 @@ async fn turn_engine_fails_closed_before_governed_approval_for_later_app_intent(
             );
         }
         other @ TurnResult::FinalText(_)
+        | other @ TurnResult::StreamingText(_)
+        | other @ TurnResult::StreamingDone(_)
         | other @ TurnResult::ToolDenied(_)
         | other @ TurnResult::ToolError(_)
         | other @ TurnResult::ProviderError(_) => {
@@ -8743,6 +8780,8 @@ async fn turn_engine_fails_closed_before_kernel_binding_error_for_later_core_int
             assert_eq!(failure.reason.as_str(), "no_kernel_context");
         }
         other @ TurnResult::FinalText(_)
+        | other @ TurnResult::StreamingText(_)
+        | other @ TurnResult::StreamingDone(_)
         | other @ TurnResult::NeedsApproval(_)
         | other @ TurnResult::ToolError(_)
         | other @ TurnResult::ProviderError(_) => {
@@ -8883,7 +8922,9 @@ async fn turn_engine_parallel_safe_app_batch_executes_concurrently_in_source_ord
         other @ TurnResult::NeedsApproval(_)
         | other @ TurnResult::ToolDenied(_)
         | other @ TurnResult::ToolError(_)
-        | other @ TurnResult::ProviderError(_) => {
+        | other @ TurnResult::ProviderError(_)
+        | other @ TurnResult::StreamingText(_)
+        | other @ TurnResult::StreamingDone(_) => {
             panic!("expected FinalText, got: {other:?}")
         }
     }
@@ -9000,6 +9041,8 @@ async fn turn_engine_parallel_safe_app_batch_returns_failure_without_waiting_for
             );
         }
         other @ TurnResult::FinalText(_)
+        | other @ TurnResult::StreamingText(_)
+        | other @ TurnResult::StreamingDone(_)
         | other @ TurnResult::NeedsApproval(_)
         | other @ TurnResult::ToolDenied(_)
         | other @ TurnResult::ProviderError(_) => {
@@ -9204,7 +9247,9 @@ async fn turn_engine_mixed_batch_parallelizes_parallel_safe_segments_without_cro
         other @ TurnResult::NeedsApproval(_)
         | other @ TurnResult::ToolDenied(_)
         | other @ TurnResult::ToolError(_)
-        | other @ TurnResult::ProviderError(_) => {
+        | other @ TurnResult::ProviderError(_)
+        | other @ TurnResult::StreamingText(_)
+        | other @ TurnResult::StreamingDone(_) => {
             panic!("expected FinalText, got: {other:?}")
         }
     }
@@ -9980,7 +10025,9 @@ async fn turn_engine_keeps_external_skill_invoke_payloads_intact() {
         )
         .await;
     match result {
-        TurnResult::FinalText(text) => {
+        TurnResult::FinalText(text)
+        | TurnResult::StreamingText(text)
+        | TurnResult::StreamingDone(text) => {
             let line = text.lines().next().expect("tool result line should exist");
             let payload = line
                 .strip_prefix("[ok] ")
@@ -10116,7 +10163,9 @@ async fn turn_engine_injects_browser_scope_into_kernel_request() {
         .await;
 
     match result {
-        TurnResult::FinalText(text) => {
+        TurnResult::FinalText(text)
+        | TurnResult::StreamingText(text)
+        | TurnResult::StreamingDone(text) => {
             let line = text.lines().next().expect("tool result line should exist");
             let payload = line
                 .strip_prefix("[ok] ")
@@ -13584,7 +13633,9 @@ async fn handle_turn_with_runtime_child_session_injects_runtime_narrowing_into_k
         .await;
 
     match result {
-        TurnResult::FinalText(text) => {
+        TurnResult::FinalText(text)
+        | TurnResult::StreamingText(text)
+        | TurnResult::StreamingDone(text) => {
             let line = text.lines().next().expect("tool result line should exist");
             let payload = line
                 .strip_prefix("[ok] ")
@@ -18279,6 +18330,23 @@ impl ConversationRuntime for DefaultCompactingRuntime {
     ) -> CliResult<ProviderTurn> {
         self.inner
             .request_turn(config, session_id, turn_id, messages, tool_view, binding)
+            .await
+    }
+
+    async fn request_turn_streaming(
+        &self,
+        config: &LoongClawConfig,
+        session_id: &str,
+        turn_id: &str,
+        messages: &[Value],
+        tool_view: &crate::tools::ToolView,
+        binding: ConversationRuntimeBinding<'_>,
+        on_token: crate::provider::StreamingTokenCallback,
+    ) -> CliResult<ProviderTurn> {
+        self.inner
+            .request_turn_streaming(
+                config, session_id, turn_id, messages, tool_view, binding, on_token,
+            )
             .await
     }
 
