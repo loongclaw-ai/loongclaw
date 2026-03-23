@@ -11,6 +11,7 @@ pub const MEMORY_OP_APPEND_TURN: &str = "append_turn";
 pub const MEMORY_OP_WINDOW: &str = "window";
 pub const MEMORY_OP_CLEAR_SESSION: &str = "clear_session";
 pub const MEMORY_OP_READ_CONTEXT: &str = "read_context";
+pub const MEMORY_OP_READ_STAGE_ENVELOPE: &str = "read_stage_envelope";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowTurn {
@@ -132,6 +133,15 @@ pub fn build_window_request(session_id: &str, limit: usize) -> MemoryCoreRequest
 pub fn build_read_context_request(session_id: &str) -> MemoryCoreRequest {
     MemoryCoreRequest {
         operation: MEMORY_OP_READ_CONTEXT.to_owned(),
+        payload: json!({
+            "session_id": session_id,
+        }),
+    }
+}
+
+pub fn build_read_stage_envelope_request(session_id: &str) -> MemoryCoreRequest {
+    MemoryCoreRequest {
+        operation: MEMORY_OP_READ_STAGE_ENVELOPE.to_owned(),
         payload: json!({
             "session_id": session_id,
         }),
