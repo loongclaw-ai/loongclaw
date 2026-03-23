@@ -4,7 +4,10 @@ use std::path::Path;
 use loongclaw_app as mvp;
 
 use super::channels;
-use super::discovery::{build_import_candidate, resolve_channel_import_readiness_from_config};
+use super::discovery::{
+    build_import_candidate, memory_sqlite_path_looks_default,
+    resolve_channel_import_readiness_from_config,
+};
 use super::provider_transport;
 use super::types::{
     ChannelCandidate, DomainPreview, ImportCandidate, ImportSourceKind, PreviewDecision,
@@ -510,7 +513,9 @@ fn supplement_memory_config(
         target.profile = source.profile;
         changed = true;
     }
-    if target.sqlite_path == default.sqlite_path && source.sqlite_path != default.sqlite_path {
+    if memory_sqlite_path_looks_default(&target.sqlite_path, &default)
+        && !memory_sqlite_path_looks_default(&source.sqlite_path, &default)
+    {
         target.sqlite_path = source.sqlite_path.clone();
         changed = true;
     }

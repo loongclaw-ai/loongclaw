@@ -19,6 +19,7 @@ mod protocol;
 pub mod runtime_config;
 #[cfg(feature = "memory-sqlite")]
 mod sqlite;
+mod stage;
 mod system;
 mod system_registry;
 #[cfg(test)]
@@ -34,17 +35,23 @@ pub use context::load_prompt_context;
 pub use kernel_adapter::MvpMemoryAdapter;
 pub use orchestrator::{
     BuiltinMemoryOrchestrator, HydratedMemoryContext, MemoryDiagnostics, hydrate_memory_context,
+    hydrate_stage_envelope,
 };
 #[cfg(test)]
 pub use orchestrator::{MemoryOrchestratorTestFaults, ScopedMemoryOrchestratorTestFaults};
 pub use protocol::{
-    MEMORY_OP_APPEND_TURN, MEMORY_OP_CLEAR_SESSION, MEMORY_OP_READ_CONTEXT, MEMORY_OP_WINDOW,
-    MemoryContextEntry, MemoryContextKind, WindowTurn, build_append_turn_request,
-    build_read_context_request, build_window_request, decode_memory_context_entries,
-    decode_window_turns,
+    MEMORY_OP_APPEND_TURN, MEMORY_OP_CLEAR_SESSION, MEMORY_OP_READ_CONTEXT,
+    MEMORY_OP_READ_STAGE_ENVELOPE, MEMORY_OP_WINDOW, MemoryContextEntry, MemoryContextKind,
+    WindowTurn, build_append_turn_request, build_read_context_request,
+    build_read_stage_envelope_request, build_window_request, decode_memory_context_entries,
+    decode_stage_envelope, decode_window_turns, encode_stage_envelope_payload,
 };
 #[cfg(feature = "memory-sqlite")]
 pub use sqlite::{ConversationTurn, SqliteBootstrapDiagnostics, SqliteContextLoadDiagnostics};
+pub use stage::{
+    DerivedMemoryKind, MemoryRetrievalRequest, MemoryStageFamily, StageDiagnostics, StageEnvelope,
+    StageOutcome, builtin_post_turn_stage_families, builtin_pre_assembly_stage_families,
+};
 pub use system::{
     BuiltinMemorySystem, DEFAULT_MEMORY_SYSTEM_ID, MEMORY_SYSTEM_API_VERSION, MemorySystem,
     MemorySystemCapability, MemorySystemMetadata,
@@ -56,6 +63,15 @@ pub use system_registry::{
     memory_system_id_from_env, register_memory_system, resolve_memory_system,
     resolve_memory_system_selection, supported_memory_system_kind_from_env,
 };
+
+pub(crate) fn normalize_system_id(raw: &str) -> Option<String> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
 
 pub fn execute_memory_core(request: MemoryCoreRequest) -> Result<MemoryCoreOutcome, String> {
     execute_memory_core_with_config(request, runtime_config::get_memory_runtime_config())
@@ -74,6 +90,7 @@ pub fn execute_memory_core_with_config(
             MEMORY_OP_WINDOW => load_window(request, config),
             MEMORY_OP_CLEAR_SESSION => clear_session(request, config),
             MEMORY_OP_READ_CONTEXT => context::read_context(request, config),
+            MEMORY_OP_READ_STAGE_ENVELOPE => context::read_stage_envelope(request, config),
             _ => Ok(MemoryCoreOutcome {
                 status: "ok".to_owned(),
                 payload: json!({

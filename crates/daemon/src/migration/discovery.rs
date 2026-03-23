@@ -409,7 +409,7 @@ fn collect_domain_previews(
     domains
 }
 
-fn memory_sqlite_path_looks_default(
+pub(super) fn memory_sqlite_path_looks_default(
     sqlite_path: &str,
     default_memory: &mvp::config::MemoryConfig,
 ) -> bool {

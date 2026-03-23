@@ -475,8 +475,12 @@ fn migration_domain_previews_preserve_source_attribution() {
 fn migration_classify_current_setup_distinguishes_basic_states() {
     let home = unique_temp_dir("classify-home");
     std::fs::create_dir_all(&home).expect("create classify home");
-    let _env_guard =
-        MigrationEnvironmentGuard::set(&[("HOME", Some(home.to_string_lossy().as_ref()))]);
+    let _env_guard = MigrationEnvironmentGuard::set(&[
+        ("HOME", Some(home.to_string_lossy().as_ref())),
+        ("OPENAI_API_KEY", None),
+        ("OPENAI_CODEX_OAUTH_TOKEN", None),
+        ("OPENAI_OAUTH_ACCESS_TOKEN", None),
+    ]);
 
     let missing = unique_temp_dir("missing").join("config.toml");
     assert_eq!(
@@ -1720,8 +1724,15 @@ fn migration_compose_recommended_candidate_ignores_home_drift_for_default_memory
     std::fs::create_dir_all(&home_b).expect("create second home");
 
     let (codex, env) = {
-        let _guard =
-            MigrationEnvironmentGuard::set(&[("HOME", Some(home_a.to_string_lossy().as_ref()))]);
+        let _guard = MigrationEnvironmentGuard::set(&[
+            ("HOME", Some(home_a.to_string_lossy().as_ref())),
+            ("TELEGRAM_BOT_TOKEN", None),
+            ("FEISHU_APP_ID", None),
+            ("FEISHU_APP_SECRET", None),
+            ("FEISHU_VERIFICATION_TOKEN", None),
+            ("FEISHU_ENCRYPT_KEY", None),
+            ("MATRIX_ACCESS_TOKEN", None),
+        ]);
 
         let mut codex = mvp::config::LoongClawConfig::default();
         codex.provider.model = "openai/gpt-5.1-codex".to_owned();
@@ -1737,8 +1748,15 @@ fn migration_compose_recommended_candidate_ignores_home_drift_for_default_memory
         (codex, env)
     };
 
-    let _guard =
-        MigrationEnvironmentGuard::set(&[("HOME", Some(home_b.to_string_lossy().as_ref()))]);
+    let _guard = MigrationEnvironmentGuard::set(&[
+        ("HOME", Some(home_b.to_string_lossy().as_ref())),
+        ("TELEGRAM_BOT_TOKEN", None),
+        ("FEISHU_APP_ID", None),
+        ("FEISHU_APP_SECRET", None),
+        ("FEISHU_VERIFICATION_TOKEN", None),
+        ("FEISHU_ENCRYPT_KEY", None),
+        ("MATRIX_ACCESS_TOKEN", None),
+    ]);
 
     let codex_candidate = crate::migration::discovery::build_import_candidate(
         crate::migration::types::ImportSourceKind::CodexConfig,

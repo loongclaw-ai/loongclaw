@@ -433,6 +433,7 @@ impl ConversationContextEngine for StubSystemPromptAdditionEngine {
                 "role": "system",
                 "content": "base-system-prompt",
             })],
+            artifacts: vec![],
             estimated_tokens: Some(42),
             system_prompt_addition: Some("runtime-policy-addition".to_owned()),
         })
@@ -1412,9 +1413,18 @@ fn test_kernel_context_with_memory(
     agent_id: &str,
     memory_config: &MemoryRuntimeConfig,
 ) -> KernelContext {
+    test_kernel_context_with_memory_and_audit(agent_id, memory_config).0
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn test_kernel_context_with_memory_and_audit(
+    agent_id: &str,
+    memory_config: &MemoryRuntimeConfig,
+) -> (KernelContext, Arc<InMemoryAuditSink>) {
     let clock = Arc::new(FixedClock::new(1_700_000_000));
     let audit = Arc::new(InMemoryAuditSink::default());
-    let mut kernel = LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock, audit);
+    let mut kernel =
+        LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock, audit.clone());
 
     let pack = VerticalPackManifest {
         pack_id: "test-pack-memory".to_owned(),
@@ -1442,10 +1452,30 @@ fn test_kernel_context_with_memory(
         .issue_token("test-pack-memory", agent_id, 60)
         .expect("issue memory test token");
 
-    KernelContext {
-        kernel: Arc::new(kernel),
-        token,
-    }
+    (
+        KernelContext {
+            kernel: Arc::new(kernel),
+            token,
+        },
+        audit,
+    )
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn assert_kernel_memory_plane_invoked(audit: &Arc<InMemoryAuditSink>, context: &str) {
+    let has_memory_plane = audit.snapshot().iter().any(|event| {
+        matches!(
+            &event.kind,
+            loongclaw_kernel::AuditEventKind::PlaneInvoked {
+                plane: loongclaw_contracts::ExecutionPlane::Memory,
+                ..
+            }
+        )
+    });
+    assert!(
+        has_memory_plane,
+        "expected kernel memory-plane invocation for {context}"
+    );
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -2101,6 +2131,97 @@ async fn default_runtime_build_context_merges_delegate_runtime_contract_with_sys
     );
 }
 
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn default_runtime_kernel_stage_hydration_still_applies_system_prompt_addition_and_tool_view()
+{
+    let mut config = test_config();
+    config.memory.system = MemorySystemKind::Builtin;
+    config.memory.profile = MemoryProfile::WindowPlusSummary;
+    config.memory.sliding_window = 2;
+    let child_session_id = seed_delegate_child_session_with_runtime_narrowing(
+        &mut config,
+        "kernel-stage-hydration-tool-view",
+        sample_delegate_runtime_narrowing(),
+    );
+    let runtime_config =
+        crate::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+    crate::memory::append_turn_direct(&child_session_id, "user", "turn 1", &runtime_config)
+        .expect("append turn 1 should succeed");
+    crate::memory::append_turn_direct(&child_session_id, "assistant", "turn 2", &runtime_config)
+        .expect("append turn 2 should succeed");
+    crate::memory::append_turn_direct(&child_session_id, "user", "turn 3", &runtime_config)
+        .expect("append turn 3 should succeed");
+    crate::memory::append_turn_direct(&child_session_id, "assistant", "turn 4", &runtime_config)
+        .expect("append turn 4 should succeed");
+
+    let runtime = DefaultConversationRuntime::default();
+    let kernel_ctx = test_kernel_context_with_memory(
+        "default-runtime-kernel-stage-hydration-tool-view",
+        &runtime_config,
+    );
+
+    let assembled = runtime
+        .build_context(
+            &config,
+            &child_session_id,
+            true,
+            ConversationRuntimeBinding::kernel(&kernel_ctx),
+        )
+        .await
+        .expect("build kernel context with staged hydration and runtime middlewares");
+
+    let system_content = assembled.messages[0]["content"]
+        .as_str()
+        .expect("system prompt should stay string");
+    assert!(
+        system_content.contains("[delegate_child_runtime_contract]"),
+        "expected runtime-owned system prompt addition in kernel-bound staged assembly, got: {system_content}"
+    );
+    assert!(
+        system_content.contains("Plan within these child-session runtime limits:"),
+        "expected delegate runtime contract body, got: {system_content}"
+    );
+    assert!(
+        !system_content.contains("- delegate:"),
+        "expected child tool-view shaping to hide delegate tools in the rewritten system prompt, got: {system_content}"
+    );
+    assert!(
+        !system_content.contains("- shell.exec:"),
+        "expected child tool-view shaping to keep shell hidden by default, got: {system_content}"
+    );
+    assert!(
+        assembled.messages.iter().any(|message| {
+            message["role"] == "system"
+                && message["content"]
+                    .as_str()
+                    .is_some_and(|content| content.contains("## Memory Summary"))
+        }),
+        "expected staged hydration summary block to remain present after runtime middlewares"
+    );
+    assert!(
+        assembled.artifacts.iter().any(|artifact| {
+            artifact.artifact_kind == ContextArtifactKind::RuntimeContract
+                && artifact.message_index < assembled.messages.len()
+        }),
+        "expected runtime-contract artifact descriptor on child-session staged path"
+    );
+    assert!(
+        assembled.artifacts.iter().any(|artifact| {
+            artifact.artifact_kind == ContextArtifactKind::Summary
+                && artifact.message_index < assembled.messages.len()
+        }),
+        "expected summary artifact descriptor on child-session staged path"
+    );
+    assert!(
+        assembled
+            .artifacts
+            .iter()
+            .all(|artifact| artifact.message_index < assembled.messages.len()),
+        "child-session staged-path artifact indices must point at emitted messages"
+    );
+}
+
 #[tokio::test]
 async fn default_runtime_build_context_does_not_add_delegate_runtime_contract_for_unpersisted_session()
  {
@@ -2305,6 +2426,13 @@ async fn default_runtime_build_context_matches_builtin_summary_projection() {
         }),
         "expected hydrated summary block in default runtime messages"
     );
+    assert!(
+        assembled
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.artifact_kind == ContextArtifactKind::Summary),
+        "direct-mode builtin summary projection should preserve summary artifacts"
+    );
 
     let _ = std::fs::remove_file(sqlite_path);
 }
@@ -2351,6 +2479,13 @@ async fn default_runtime_build_context_explicit_builtin_system_preserves_profile
                     .is_some_and(|content| content.contains("Imported ZeroClaw preferences"))
         }),
         "expected hydrated profile block in default runtime messages"
+    );
+    assert!(
+        assembled
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.artifact_kind == ContextArtifactKind::Profile),
+        "direct-mode builtin profile projection should preserve profile artifacts"
     );
 
     let _ = std::fs::remove_file(sqlite_path);
@@ -2411,6 +2546,188 @@ async fn default_runtime_build_context_fail_open_memory_derivation_preserves_rec
             ("user".to_owned(), "turn 3".to_owned()),
         ]
     );
+
+    let _ = std::fs::remove_file(sqlite_path);
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn default_runtime_kernel_build_context_matches_builtin_summary_projection() {
+    let runtime = DefaultConversationRuntime::default();
+    let session_id = unique_acp_test_id("default-runtime-kernel-context", "summary");
+    let sqlite_path = unique_memory_sqlite_path("kernel-summary");
+    let mut config = test_config();
+    config.memory.system = MemorySystemKind::Builtin;
+    config.memory.profile = MemoryProfile::WindowPlusSummary;
+    config.memory.sliding_window = 2;
+    config.memory.sqlite_path = sqlite_path.clone();
+
+    let runtime_config =
+        crate::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+    crate::memory::append_turn_direct(&session_id, "user", "turn 1", &runtime_config)
+        .expect("append turn 1 should succeed");
+    crate::memory::append_turn_direct(&session_id, "assistant", "turn 2", &runtime_config)
+        .expect("append turn 2 should succeed");
+    crate::memory::append_turn_direct(&session_id, "user", "turn 3", &runtime_config)
+        .expect("append turn 3 should succeed");
+    crate::memory::append_turn_direct(&session_id, "assistant", "turn 4", &runtime_config)
+        .expect("append turn 4 should succeed");
+
+    let (kernel_ctx, audit) = test_kernel_context_with_memory_and_audit(
+        "default-runtime-kernel-context-summary",
+        &runtime_config,
+    );
+    let assembled = runtime
+        .build_context(
+            &config,
+            &session_id,
+            true,
+            ConversationRuntimeBinding::kernel(&kernel_ctx),
+        )
+        .await
+        .expect("build kernel context from default runtime");
+    let provider_messages = crate::provider::build_messages_for_session(&config, &session_id, true)
+        .expect("build provider messages");
+
+    assert_eq!(
+        assembled.messages, provider_messages,
+        "kernel-bound default runtime should match the builtin staged projection"
+    );
+    assert_kernel_memory_plane_invoked(&audit, "default-runtime-kernel-context-summary");
+
+    let _ = std::fs::remove_file(sqlite_path);
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn default_runtime_kernel_build_context_preserves_profile_projection() {
+    let runtime = DefaultConversationRuntime::default();
+    let session_id = unique_acp_test_id("default-runtime-kernel-context", "profile");
+    let sqlite_path = unique_memory_sqlite_path("kernel-profile");
+    let mut config = test_config();
+    config.memory.system = MemorySystemKind::Builtin;
+    config.memory.profile = MemoryProfile::ProfilePlusWindow;
+    config.memory.profile_note = Some("Imported ZeroClaw preferences".to_owned());
+    config.memory.sliding_window = 2;
+    config.memory.sqlite_path = sqlite_path.clone();
+
+    let runtime_config =
+        crate::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+    crate::memory::append_turn_direct(&session_id, "assistant", "turn 1", &runtime_config)
+        .expect("append turn should succeed");
+
+    let (kernel_ctx, audit) = test_kernel_context_with_memory_and_audit(
+        "default-runtime-kernel-context-profile",
+        &runtime_config,
+    );
+    let assembled = runtime
+        .build_context(
+            &config,
+            &session_id,
+            true,
+            ConversationRuntimeBinding::kernel(&kernel_ctx),
+        )
+        .await
+        .expect("build kernel context from default runtime");
+    let provider_messages = crate::provider::build_messages_for_session(&config, &session_id, true)
+        .expect("build provider messages");
+
+    assert_eq!(
+        assembled.messages, provider_messages,
+        "kernel-bound default runtime should preserve builtin profile projection"
+    );
+    assert!(
+        assembled.artifacts.iter().any(|artifact| {
+            artifact.artifact_kind == ContextArtifactKind::Profile
+                && artifact.message_index < assembled.messages.len()
+        }),
+        "expected a profile artifact descriptor for the injected profile block"
+    );
+    assert_kernel_memory_plane_invoked(&audit, "default-runtime-kernel-context-profile");
+
+    let _ = std::fs::remove_file(sqlite_path);
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn default_runtime_kernel_build_context_emits_context_artifact_annotations() {
+    let runtime = DefaultConversationRuntime::default();
+    let session_id = unique_acp_test_id("default-runtime-kernel-context", "artifacts");
+    let sqlite_path = unique_memory_sqlite_path("kernel-artifacts");
+    let mut config = test_config();
+    config.memory.system = MemorySystemKind::Builtin;
+    config.memory.profile = MemoryProfile::WindowPlusSummary;
+    config.memory.sliding_window = 2;
+    config.memory.sqlite_path = sqlite_path.clone();
+
+    let runtime_config =
+        crate::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+    crate::memory::append_turn_direct(&session_id, "user", "turn 1", &runtime_config)
+        .expect("append turn 1 should succeed");
+    crate::memory::append_turn_direct(&session_id, "assistant", "turn 2", &runtime_config)
+        .expect("append turn 2 should succeed");
+    crate::memory::append_turn_direct(&session_id, "user", "turn 3", &runtime_config)
+        .expect("append turn 3 should succeed");
+
+    let (kernel_ctx, audit) = test_kernel_context_with_memory_and_audit(
+        "default-runtime-kernel-context-artifacts",
+        &runtime_config,
+    );
+    let assembled = runtime
+        .build_context(
+            &config,
+            &session_id,
+            true,
+            ConversationRuntimeBinding::kernel(&kernel_ctx),
+        )
+        .await
+        .expect("build kernel context from default runtime");
+
+    assert!(
+        assembled
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.artifact_kind == ContextArtifactKind::SystemPrompt),
+        "expected a system prompt artifact descriptor"
+    );
+    assert!(
+        assembled
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.artifact_kind == ContextArtifactKind::RuntimeContract),
+        "expected a runtime-contract artifact descriptor"
+    );
+    assert!(
+        assembled
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.artifact_kind == ContextArtifactKind::Summary),
+        "expected a summary artifact descriptor"
+    );
+    assert!(
+        assembled
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.artifact_kind == ContextArtifactKind::ConversationTurn)
+            .count()
+            >= 2,
+        "expected conversation-turn artifact descriptors for projected turns"
+    );
+    assert!(
+        assembled
+            .artifacts
+            .iter()
+            .all(|artifact| artifact.message_index < assembled.messages.len()),
+        "artifact indices must point at emitted messages"
+    );
+    assert!(
+        assembled
+            .artifacts
+            .iter()
+            .all(|artifact| artifact.streaming_policy == ToolOutputStreamingPolicy::BufferFull),
+        "slice 1 artifacts should use buffered delivery"
+    );
+    assert_kernel_memory_plane_invoked(&audit, "default-runtime-kernel-context-artifacts");
 
     let _ = std::fs::remove_file(sqlite_path);
 }
@@ -10584,6 +10901,60 @@ fn discovery_first_window_turns(payloads: &[String]) -> Value {
     )
 }
 
+fn staged_memory_envelope_payload_from_window_turns(window_turns: &Value) -> Value {
+    let recent_window: Vec<crate::memory::WindowTurn> = window_turns
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|turn| crate::memory::WindowTurn {
+            role: turn
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("assistant")
+                .to_owned(),
+            content: turn
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            ts: turn.get("ts").and_then(Value::as_i64),
+        })
+        .collect();
+    let entries = recent_window
+        .iter()
+        .map(|turn| crate::memory::MemoryContextEntry {
+            kind: crate::memory::MemoryContextKind::Turn,
+            role: turn.role.clone(),
+            content: turn.content.clone(),
+        })
+        .collect::<Vec<_>>();
+    let envelope = crate::memory::StageEnvelope {
+        hydrated: crate::memory::HydratedMemoryContext {
+            diagnostics: crate::memory::MemoryDiagnostics {
+                system_id: "builtin".to_owned(),
+                fail_open: true,
+                strict_mode_requested: false,
+                strict_mode_active: false,
+                degraded: false,
+                derivation_error: None,
+                retrieval_error: None,
+                recent_window_count: recent_window.len(),
+                entry_count: entries.len(),
+            },
+            entries,
+            recent_window,
+        },
+        retrieval_request: None,
+        diagnostics: vec![
+            crate::memory::StageDiagnostics::succeeded(crate::memory::MemoryStageFamily::Derive),
+            crate::memory::StageDiagnostics::succeeded(crate::memory::MemoryStageFamily::Retrieve),
+            crate::memory::StageDiagnostics::succeeded(crate::memory::MemoryStageFamily::Rank),
+        ],
+    };
+    crate::memory::encode_stage_envelope_payload(&envelope)
+        .expect("test stage envelope payload should serialize")
+}
+
 struct SharedTestMemoryAdapter {
     invocations: Arc<Mutex<Vec<MemoryCoreRequest>>>,
     window_turns: Value,
@@ -10599,7 +10970,9 @@ impl CoreMemoryAdapter for SharedTestMemoryAdapter {
         &self,
         request: MemoryCoreRequest,
     ) -> Result<MemoryCoreOutcome, MemoryPlaneError> {
-        let payload = if request.operation == crate::memory::MEMORY_OP_WINDOW {
+        let payload = if request.operation == crate::memory::MEMORY_OP_READ_STAGE_ENVELOPE {
+            staged_memory_envelope_payload_from_window_turns(&self.window_turns)
+        } else if request.operation == crate::memory::MEMORY_OP_WINDOW {
             json!({
                 "turns": self.window_turns.clone()
             })
@@ -10632,7 +11005,13 @@ impl CoreMemoryAdapter for SequencedTestMemoryAdapter {
         &self,
         request: MemoryCoreRequest,
     ) -> Result<MemoryCoreOutcome, MemoryPlaneError> {
-        let payload = if request.operation == crate::memory::MEMORY_OP_WINDOW {
+        let payload = if request.operation == crate::memory::MEMORY_OP_READ_STAGE_ENVELOPE {
+            let turns = {
+                let mut queued_turns = self.window_turns.lock().expect("window turns lock");
+                queued_turns.pop_front().unwrap_or_else(|| json!([]))
+            };
+            staged_memory_envelope_payload_from_window_turns(&turns)
+        } else if request.operation == crate::memory::MEMORY_OP_WINDOW {
             let turns = {
                 let mut queued_turns = self.window_turns.lock().expect("window turns lock");
                 queued_turns.pop_front().unwrap_or_else(|| json!([]))
@@ -10673,7 +11052,9 @@ impl CoreMemoryAdapter for FailingWindowMemoryAdapter {
             .lock()
             .expect("invocations lock")
             .push(request.clone());
-        if request.operation == crate::memory::MEMORY_OP_WINDOW {
+        if request.operation == crate::memory::MEMORY_OP_WINDOW
+            || request.operation == crate::memory::MEMORY_OP_READ_STAGE_ENVELOPE
+        {
             return Err(MemoryPlaneError::Execution(self.error.clone()));
         }
         Ok(MemoryCoreOutcome {
@@ -10702,7 +11083,9 @@ impl CoreMemoryAdapter for RawWindowPayloadMemoryAdapter {
             .lock()
             .expect("invocations lock")
             .push(request.clone());
-        if request.operation == crate::memory::MEMORY_OP_WINDOW {
+        if request.operation == crate::memory::MEMORY_OP_WINDOW
+            || request.operation == crate::memory::MEMORY_OP_READ_STAGE_ENVELOPE
+        {
             return Ok(MemoryCoreOutcome {
                 status: "ok".to_owned(),
                 payload: self.payload.clone(),
@@ -10781,12 +11164,11 @@ async fn build_messages_routes_memory_window_through_kernel_when_context_provide
 
     let captured = invocations.lock().expect("invocations lock");
     assert_eq!(captured.len(), 1);
-    assert_eq!(captured[0].operation, crate::memory::MEMORY_OP_WINDOW);
-    assert_eq!(captured[0].payload["session_id"], "session-k-window");
     assert_eq!(
-        captured[0].payload["limit"],
-        json!(config.memory.sliding_window)
+        captured[0].operation,
+        crate::memory::MEMORY_OP_READ_STAGE_ENVELOPE
     );
+    assert_eq!(captured[0].payload["session_id"], "session-k-window");
 
     let events = audit.snapshot();
     let has_memory_plane = events.iter().any(|event| {
@@ -12266,6 +12648,7 @@ async fn repair_turn_checkpoint_tail_rebuilds_original_finalization_context_for_
                     json!({"role": "user", "content": "hello"}),
                     json!({"role": "assistant", "content": "assistant-reply"}),
                 ],
+                artifacts: vec![],
                 estimated_tokens: Some(3),
                 system_prompt_addition: None,
             },
@@ -12274,6 +12657,7 @@ async fn repair_turn_checkpoint_tail_rebuilds_original_finalization_context_for_
                     json!({"role": "user", "content": "hello"}),
                     json!({"role": "assistant", "content": "assistant-reply"}),
                 ],
+                artifacts: vec![],
                 estimated_tokens: Some(2),
                 system_prompt_addition: None,
             },
@@ -12387,6 +12771,7 @@ async fn repair_turn_checkpoint_tail_prefers_checkpoint_estimate_for_compaction_
                 json!({"role": "user", "content": "hello"}),
                 json!({"role": "assistant", "content": "assistant-reply"}),
             ],
+            artifacts: vec![],
             estimated_tokens: Some(1),
             system_prompt_addition: None,
         });
@@ -12499,6 +12884,7 @@ async fn probe_turn_checkpoint_tail_runtime_gate_reports_preparation_content_mis
                 json!({"role": "user", "content": "hello"}),
                 json!({"role": "assistant", "content": "assistant-reply"}),
             ],
+            artifacts: vec![],
             estimated_tokens: Some(99),
             system_prompt_addition: None,
         });
@@ -13010,6 +13396,7 @@ async fn load_turn_checkpoint_diagnostics_with_runtime_preserves_summary_assessm
                 json!({"role": "user", "content": "hello"}),
                 json!({"role": "assistant", "content": "assistant-reply"}),
             ],
+            artifacts: vec![],
             estimated_tokens: Some(99),
             system_prompt_addition: None,
         });
@@ -13134,6 +13521,7 @@ async fn load_turn_checkpoint_diagnostics_uses_single_kernel_window_snapshot_for
                 json!({"role": "user", "content": "hello"}),
                 json!({"role": "assistant", "content": "assistant-reply"}),
             ],
+            artifacts: vec![],
             estimated_tokens: Some(99),
             system_prompt_addition: None,
         });
@@ -16279,6 +16667,7 @@ async fn repair_turn_checkpoint_tail_requires_manual_repair_on_preparation_conte
                 json!({"role": "user", "content": "hello"}),
                 json!({"role": "assistant", "content": "assistant-reply"}),
             ],
+            artifacts: vec![],
             estimated_tokens: Some(99),
             system_prompt_addition: None,
         });
@@ -16397,6 +16786,7 @@ async fn repair_turn_checkpoint_tail_requires_manual_repair_on_preparation_conte
                 json!({"role": "user", "content": "hello"}),
                 json!({"role": "assistant", "content": "assistant-reply"}),
             ],
+            artifacts: vec![],
             estimated_tokens: Some(99),
             system_prompt_addition: None,
         });
@@ -16515,6 +16905,7 @@ async fn repair_turn_checkpoint_tail_requires_manual_repair_on_malformed_prepara
                 json!({"role": "user", "content": "hello"}),
                 json!({"role": "assistant", "content": "assistant-reply"}),
             ],
+            artifacts: vec![],
             estimated_tokens: Some(99),
             system_prompt_addition: None,
         });

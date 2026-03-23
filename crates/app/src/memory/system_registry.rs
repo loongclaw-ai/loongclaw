@@ -92,10 +92,6 @@ fn registry() -> &'static RwLock<BTreeMap<String, MemorySystemFactory>> {
     })
 }
 
-fn normalize_system_id(raw: &str) -> String {
-    raw.trim().to_ascii_lowercase()
-}
-
 #[cfg(test)]
 fn env_override() -> &'static Mutex<Option<Option<String>>> {
     MEMORY_SYSTEM_ENV_OVERRIDE.get_or_init(|| Mutex::new(None))
@@ -105,10 +101,8 @@ pub fn register_memory_system<F>(id: &str, factory: F) -> CliResult<()>
 where
     F: Fn() -> Box<dyn MemorySystem> + Send + Sync + 'static,
 {
-    let normalized = normalize_system_id(id);
-    if normalized.is_empty() {
-        return Err("memory system id must not be empty".to_owned());
-    }
+    let normalized = super::normalize_system_id(id)
+        .ok_or_else(|| "memory system id must not be empty".to_owned())?;
     if normalized == DEFAULT_MEMORY_SYSTEM_ID {
         return Err(format!(
             "memory system `{DEFAULT_MEMORY_SYSTEM_ID}` is reserved and cannot be overridden"
@@ -116,9 +110,11 @@ where
     }
 
     let system = factory();
-    let runtime_id = normalize_system_id(system.id());
+    let runtime_id = super::normalize_system_id(system.id())
+        .ok_or_else(|| "memory system runtime id must not be empty".to_owned())?;
     let metadata = system.metadata();
-    let metadata_id = normalize_system_id(metadata.id);
+    let metadata_id = super::normalize_system_id(metadata.id)
+        .ok_or_else(|| "memory system metadata id must not be empty".to_owned())?;
     if runtime_id != normalized || metadata_id != normalized {
         return Err(format!(
             "registered memory system id `{normalized}` must match system.id `{}` and metadata.id `{}`",
@@ -155,8 +151,7 @@ pub fn list_memory_system_metadata() -> CliResult<Vec<MemorySystemMetadata>> {
 
 pub fn resolve_memory_system(id: Option<&str>) -> CliResult<Box<dyn MemorySystem>> {
     let normalized = id
-        .map(normalize_system_id)
-        .filter(|value| !value.is_empty())
+        .and_then(super::normalize_system_id)
         .unwrap_or_else(|| DEFAULT_MEMORY_SYSTEM_ID.to_owned());
 
     let guard = registry()
@@ -185,8 +180,7 @@ pub fn memory_system_id_from_env() -> Option<String> {
 
     std::env::var(MEMORY_SYSTEM_ENV)
         .ok()
-        .map(|value| normalize_system_id(value.as_str()))
-        .filter(|value| !value.is_empty())
+        .and_then(|value| super::normalize_system_id(value.as_str()))
 }
 
 pub fn supported_memory_system_kind_from_env() -> Option<MemorySystemKind> {
@@ -235,9 +229,7 @@ pub fn collect_memory_system_runtime_snapshot(
 
 #[cfg(test)]
 pub(crate) fn set_memory_system_env_override(value: Option<&str>) {
-    let normalized = value
-        .map(normalize_system_id)
-        .filter(|entry| !entry.is_empty());
+    let normalized = value.and_then(super::normalize_system_id);
     if let Ok(mut guard) = env_override().lock() {
         *guard = Some(normalized);
     }

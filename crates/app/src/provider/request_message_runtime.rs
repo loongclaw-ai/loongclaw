@@ -2,10 +2,19 @@ use serde_json::{Value, json};
 
 use crate::CliResult;
 use crate::config::LoongClawConfig;
+use crate::conversation::{
+    ContextArtifactDescriptor, ContextArtifactKind, ToolOutputStreamingPolicy,
+};
 use crate::tools::{self, ToolView};
 
 #[cfg(feature = "memory-sqlite")]
 use crate::memory;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProjectedMessageContext {
+    pub messages: Vec<Value>,
+    pub artifacts: Vec<ContextArtifactDescriptor>,
+}
 
 pub(super) fn build_system_message(
     config: &LoongClawConfig,
@@ -50,13 +59,6 @@ fn build_system_message_with_tool_runtime_config(
     }))
 }
 
-pub(super) fn build_base_messages(
-    config: &LoongClawConfig,
-    include_system_prompt: bool,
-) -> Vec<Value> {
-    build_base_messages_for_view(config, include_system_prompt, &tools::runtime_tool_view())
-}
-
 pub(super) fn build_base_messages_for_view(
     config: &LoongClawConfig,
     include_system_prompt: bool,
@@ -85,7 +87,21 @@ pub(super) fn build_messages_for_session(
     session_id: &str,
     include_system_prompt: bool,
 ) -> CliResult<Vec<Value>> {
-    build_messages_for_session_in_view(
+    build_projected_context_for_session_in_view(
+        config,
+        session_id,
+        include_system_prompt,
+        &tools::runtime_tool_view(),
+    )
+    .map(|projected| projected.messages)
+}
+
+pub(crate) fn build_projected_context_for_session(
+    config: &LoongClawConfig,
+    session_id: &str,
+    include_system_prompt: bool,
+) -> CliResult<ProjectedMessageContext> {
+    build_projected_context_for_session_in_view(
         config,
         session_id,
         include_system_prompt,
@@ -93,53 +109,112 @@ pub(super) fn build_messages_for_session(
     )
 }
 
-pub(super) fn build_messages_for_session_in_view(
+pub(crate) fn build_projected_context_for_session_in_view(
     config: &LoongClawConfig,
     session_id: &str,
     include_system_prompt: bool,
     tool_view: &ToolView,
-) -> CliResult<Vec<Value>> {
-    let mut messages = build_base_messages_for_view(config, include_system_prompt, tool_view);
-    messages.extend(load_memory_window_messages(config, session_id)?);
-    Ok(messages)
-}
-
-pub(super) fn load_memory_window_messages(
-    config: &LoongClawConfig,
-    session_id: &str,
-) -> CliResult<Vec<Value>> {
+) -> CliResult<ProjectedMessageContext> {
     #[cfg(feature = "memory-sqlite")]
     {
         let mem_config =
             memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
         let hydrated = memory::hydrate_memory_context(session_id, &mem_config)
             .map_err(|error| format!("hydrate prompt memory context failed: {error}"))?;
-        let mut messages = Vec::with_capacity(hydrated.entries.len());
-        append_hydrated_memory_messages(&mut messages, &hydrated);
-        Ok(messages)
+        Ok(project_hydrated_memory_context_for_view(
+            config,
+            include_system_prompt,
+            tool_view,
+            &hydrated,
+        ))
     }
+
     #[cfg(not(feature = "memory-sqlite"))]
     {
-        let _ = (config, session_id);
-        Ok(Vec::new())
+        let _ = session_id;
+        let messages = build_base_messages_for_view(config, include_system_prompt, tool_view);
+        Ok(ProjectedMessageContext {
+            artifacts: build_base_context_artifacts(&messages),
+            messages,
+        })
+    }
+}
+
+fn build_base_context_artifacts(messages: &[Value]) -> Vec<ContextArtifactDescriptor> {
+    if messages.is_empty() {
+        return Vec::new();
+    }
+
+    vec![
+        ContextArtifactDescriptor {
+            message_index: 0,
+            artifact_kind: ContextArtifactKind::SystemPrompt,
+            maskable: false,
+            streaming_policy: ToolOutputStreamingPolicy::BufferFull,
+        },
+        ContextArtifactDescriptor {
+            message_index: 0,
+            artifact_kind: ContextArtifactKind::RuntimeContract,
+            maskable: false,
+            streaming_policy: ToolOutputStreamingPolicy::BufferFull,
+        },
+    ]
+}
+
+pub(crate) fn project_hydrated_memory_context_for_view(
+    config: &LoongClawConfig,
+    include_system_prompt: bool,
+    tool_view: &ToolView,
+    #[cfg(feature = "memory-sqlite")] hydrated: &memory::HydratedMemoryContext,
+) -> ProjectedMessageContext {
+    let mut messages = build_base_messages_for_view(config, include_system_prompt, tool_view);
+    let mut artifacts = build_base_context_artifacts(&messages);
+
+    #[cfg(feature = "memory-sqlite")]
+    append_hydrated_memory_messages(&mut messages, &mut artifacts, hydrated);
+
+    ProjectedMessageContext {
+        messages,
+        artifacts,
     }
 }
 
 #[cfg(feature = "memory-sqlite")]
 fn append_hydrated_memory_messages(
     messages: &mut Vec<Value>,
+    artifacts: &mut Vec<ContextArtifactDescriptor>,
     hydrated: &memory::HydratedMemoryContext,
 ) {
     for entry in &hydrated.entries {
         match entry.kind {
             memory::MemoryContextKind::Profile | memory::MemoryContextKind::Summary => {
+                let message_index = messages.len();
                 messages.push(json!({
                     "role": entry.role,
                     "content": entry.content,
                 }));
+                artifacts.push(ContextArtifactDescriptor {
+                    message_index,
+                    artifact_kind: if matches!(entry.kind, memory::MemoryContextKind::Profile) {
+                        ContextArtifactKind::Profile
+                    } else {
+                        ContextArtifactKind::Summary
+                    },
+                    maskable: false,
+                    streaming_policy: ToolOutputStreamingPolicy::BufferFull,
+                });
             }
             memory::MemoryContextKind::Turn => {
+                let original_len = messages.len();
                 push_history_message(messages, entry.role.as_str(), entry.content.as_str());
+                if messages.len() != original_len {
+                    artifacts.push(ContextArtifactDescriptor {
+                        message_index: original_len,
+                        artifact_kind: ContextArtifactKind::ConversationTurn,
+                        maskable: false,
+                        streaming_policy: ToolOutputStreamingPolicy::BufferFull,
+                    });
+                }
             }
         }
     }
