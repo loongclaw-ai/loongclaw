@@ -1,4 +1,408 @@
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
+
 use loongclaw_spec::CliResult;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BackgroundChannelSurface {
+    Telegram { account_id: Option<String> },
+    Feishu { account_id: Option<String> },
+}
+
+impl BackgroundChannelSurface {
+    pub fn all_from_accounts(
+        telegram_account: Option<&str>,
+        feishu_account: Option<&str>,
+    ) -> Vec<Self> {
+        vec![
+            Self::Telegram {
+                account_id: telegram_account.map(str::to_owned),
+            },
+            Self::Feishu {
+                account_id: feishu_account.map(str::to_owned),
+            },
+        ]
+    }
+}
+
+impl fmt::Display for BackgroundChannelSurface {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Telegram {
+                account_id: Some(account_id),
+            } => write!(f, "telegram(account={account_id})"),
+            Self::Telegram { account_id: None } => write!(f, "telegram"),
+            Self::Feishu {
+                account_id: Some(account_id),
+            } => write!(f, "feishu(account={account_id})"),
+            Self::Feishu { account_id: None } => write!(f, "feishu"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfacePhase {
+    Starting,
+    Running,
+    Stopping,
+    Stopped,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceState {
+    pub surface: BackgroundChannelSurface,
+    pub phase: SurfacePhase,
+    pub started_at_ms: Option<u64>,
+    pub stopped_at_ms: Option<u64>,
+    pub last_error: Option<String>,
+    pub exit_reason: Option<String>,
+}
+
+impl SurfaceState {
+    fn new(surface: BackgroundChannelSurface) -> Self {
+        Self {
+            surface,
+            phase: SurfacePhase::Starting,
+            started_at_ms: None,
+            stopped_at_ms: None,
+            last_error: None,
+            exit_reason: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeOwnerPhase {
+    Starting,
+    Running,
+    Stopping,
+    Stopped,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SupervisorShutdownReason {
+    Requested {
+        reason: String,
+    },
+    SurfaceFailed {
+        surface: BackgroundChannelSurface,
+        error: String,
+    },
+}
+
+impl SupervisorShutdownReason {
+    fn surface_exit_reason(&self) -> String {
+        match self {
+            Self::Requested { reason } => format!("shutdown requested: {reason}"),
+            Self::SurfaceFailed { surface, error } => {
+                format!("shutdown after {surface} failed: {error}")
+            }
+        }
+    }
+}
+
+impl fmt::Display for SupervisorShutdownReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Requested { reason } => write!(f, "shutdown requested: {reason}"),
+            Self::SurfaceFailed { surface, error } => {
+                write!(f, "{surface} exited unexpectedly: {error}")
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeOwnerMode {
+    MultiChannelServe { cli_session: String },
+}
+
+impl RuntimeOwnerMode {
+    fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::MultiChannelServe { cli_session } => {
+                if cli_session.trim().is_empty() {
+                    return Err("multi-channel supervisor requires a non-empty CLI session".into());
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupervisorSpec {
+    pub mode: RuntimeOwnerMode,
+    pub surfaces: Vec<BackgroundChannelSurface>,
+}
+
+impl SupervisorSpec {
+    pub fn new(
+        mode: RuntimeOwnerMode,
+        surfaces: Vec<BackgroundChannelSurface>,
+    ) -> Result<Self, String> {
+        mode.validate()?;
+        if surfaces.is_empty() {
+            return Err("supervisor requires at least one background surface".to_owned());
+        }
+
+        let mut seen = BTreeSet::new();
+        for surface in &surfaces {
+            if !seen.insert(surface.clone()) {
+                return Err(format!(
+                    "duplicate background surface configured: {surface}"
+                ));
+            }
+        }
+
+        Ok(Self { mode, surfaces })
+    }
+
+    pub fn from_multi_channel_serve(
+        session: &str,
+        telegram_account: Option<&str>,
+        feishu_account: Option<&str>,
+    ) -> Result<Self, String> {
+        Self::new(
+            RuntimeOwnerMode::MultiChannelServe {
+                cli_session: session.to_owned(),
+            },
+            BackgroundChannelSurface::all_from_accounts(telegram_account, feishu_account),
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SupervisorState {
+    spec: SupervisorSpec,
+    phase: RuntimeOwnerPhase,
+    surfaces: BTreeMap<BackgroundChannelSurface, SurfaceState>,
+    shutdown_reason: Option<SupervisorShutdownReason>,
+}
+
+impl SupervisorState {
+    pub fn new(spec: SupervisorSpec) -> Self {
+        let surfaces = spec
+            .surfaces
+            .iter()
+            .cloned()
+            .map(|surface| {
+                let state = SurfaceState::new(surface.clone());
+                (surface, state)
+            })
+            .collect();
+
+        Self {
+            spec,
+            phase: RuntimeOwnerPhase::Starting,
+            surfaces,
+            shutdown_reason: None,
+        }
+    }
+
+    pub fn spec(&self) -> &SupervisorSpec {
+        &self.spec
+    }
+
+    pub fn phase(&self) -> RuntimeOwnerPhase {
+        self.phase
+    }
+
+    pub fn shutdown_requested(&self) -> bool {
+        self.shutdown_reason.is_some()
+    }
+
+    pub fn shutdown_reason(&self) -> Option<&SupervisorShutdownReason> {
+        self.shutdown_reason.as_ref()
+    }
+
+    pub fn surface_state(&self, surface: &BackgroundChannelSurface) -> Option<&SurfaceState> {
+        self.surfaces.get(surface)
+    }
+
+    pub fn mark_surface_running(
+        &mut self,
+        surface: &BackgroundChannelSurface,
+        started_at_ms: u64,
+    ) -> Result<(), String> {
+        let state = self.surface_state_mut(surface)?;
+        state.phase = SurfacePhase::Running;
+        state.started_at_ms = Some(started_at_ms);
+        state.stopped_at_ms = None;
+        state.last_error = None;
+        state.exit_reason = None;
+
+        if self.all_surfaces_in_phase(SurfacePhase::Running) {
+            self.phase = RuntimeOwnerPhase::Running;
+        } else if !matches!(
+            self.phase,
+            RuntimeOwnerPhase::Stopping | RuntimeOwnerPhase::Stopped | RuntimeOwnerPhase::Failed
+        ) {
+            self.phase = RuntimeOwnerPhase::Starting;
+        }
+
+        Ok(())
+    }
+
+    pub fn request_shutdown(&mut self, reason: String) -> Result<(), String> {
+        if reason.trim().is_empty() {
+            return Err("shutdown reason cannot be empty".to_owned());
+        }
+
+        if matches!(
+            self.shutdown_reason,
+            Some(SupervisorShutdownReason::SurfaceFailed { .. })
+        ) {
+            return Ok(());
+        }
+
+        self.shutdown_reason = Some(SupervisorShutdownReason::Requested { reason });
+        self.phase = RuntimeOwnerPhase::Stopping;
+
+        for state in self.surfaces.values_mut() {
+            if matches!(state.phase, SurfacePhase::Running | SurfacePhase::Starting) {
+                state.phase = SurfacePhase::Stopping;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn record_surface_failure(
+        &mut self,
+        surface: &BackgroundChannelSurface,
+        stopped_at_ms: u64,
+        error: impl Into<String>,
+    ) -> Result<(), String> {
+        let error = error.into();
+        let state = self.surface_state_mut(surface)?;
+        state.phase = SurfacePhase::Failed;
+        state.stopped_at_ms = Some(stopped_at_ms);
+        state.last_error = Some(error.clone());
+        state.exit_reason = Some(format!("surface failed: {error}"));
+
+        self.phase = RuntimeOwnerPhase::Failed;
+        self.shutdown_reason = Some(SupervisorShutdownReason::SurfaceFailed {
+            surface: surface.clone(),
+            error,
+        });
+
+        for (tracked_surface, tracked_state) in &mut self.surfaces {
+            if tracked_surface != surface && matches!(tracked_state.phase, SurfacePhase::Running) {
+                tracked_state.phase = SurfacePhase::Stopping;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn mark_surface_stopped(
+        &mut self,
+        surface: &BackgroundChannelSurface,
+        stopped_at_ms: u64,
+    ) -> Result<(), String> {
+        let exit_reason = self.shutdown_reason.as_ref().map(|reason| match reason {
+            SupervisorShutdownReason::Requested { reason } => {
+                format!("shutdown requested: {reason}")
+            }
+            SupervisorShutdownReason::SurfaceFailed {
+                surface: failed_surface,
+                error,
+            } if failed_surface == surface => format!("surface failed: {error}"),
+            reason => reason.surface_exit_reason(),
+        });
+
+        let state = self.surface_state_mut(surface)?;
+        state.phase = SurfacePhase::Stopped;
+        state.stopped_at_ms = Some(stopped_at_ms);
+        if state.exit_reason.is_none() {
+            state.exit_reason = exit_reason;
+        }
+
+        if self.all_surfaces_terminal() && !matches!(self.phase, RuntimeOwnerPhase::Failed) {
+            self.phase = RuntimeOwnerPhase::Stopped;
+        }
+
+        Ok(())
+    }
+
+    pub fn failure_summary(&self) -> Option<String> {
+        match self.shutdown_reason() {
+            Some(SupervisorShutdownReason::SurfaceFailed { surface, error }) => Some(format!(
+                "multi-channel supervisor failed because {surface} exited unexpectedly: {error}"
+            )),
+            _ => self
+                .surfaces
+                .values()
+                .find(|state| state.phase == SurfacePhase::Failed)
+                .map(|state| {
+                    let error = state
+                        .last_error
+                        .as_deref()
+                        .unwrap_or("unknown background surface failure");
+                    format!(
+                        "multi-channel supervisor failed because {} exited unexpectedly: {error}",
+                        state.surface
+                    )
+                }),
+        }
+    }
+
+    pub fn final_exit_summary(&self) -> String {
+        if let Some(summary) = self.failure_summary() {
+            return summary;
+        }
+
+        let surfaces = self
+            .spec
+            .surfaces
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        match self.shutdown_reason() {
+            Some(reason) => format!(
+                "multi-channel supervisor exited cleanly after {reason}; surfaces: {surfaces}"
+            ),
+            None => format!("multi-channel supervisor is still active for surfaces: {surfaces}"),
+        }
+    }
+
+    pub fn final_exit_result(&self) -> CliResult<()> {
+        if let Some(summary) = self.failure_summary() {
+            return Err(summary);
+        }
+
+        if self.all_surfaces_terminal() {
+            return Ok(());
+        }
+
+        Err(self.final_exit_summary())
+    }
+
+    fn surface_state_mut(
+        &mut self,
+        surface: &BackgroundChannelSurface,
+    ) -> Result<&mut SurfaceState, String> {
+        self.surfaces
+            .get_mut(surface)
+            .ok_or_else(|| format!("unknown background surface: {surface}"))
+    }
+
+    fn all_surfaces_in_phase(&self, phase: SurfacePhase) -> bool {
+        self.surfaces.values().all(|state| state.phase == phase)
+    }
+
+    fn all_surfaces_terminal(&self) -> bool {
+        self.surfaces
+            .values()
+            .all(|state| matches!(state.phase, SurfacePhase::Stopped | SurfacePhase::Failed))
+    }
+}
 
 pub async fn run_multi_channel_serve(
     config_path: Option<&str>,
@@ -6,6 +410,184 @@ pub async fn run_multi_channel_serve(
     telegram_account: Option<&str>,
     feishu_account: Option<&str>,
 ) -> CliResult<()> {
-    let _ = (config_path, session, telegram_account, feishu_account);
+    let spec = SupervisorSpec::from_multi_channel_serve(session, telegram_account, feishu_account)?;
+    let _ = (config_path, spec);
     Err("multi-channel-serve is not implemented yet".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        BackgroundChannelSurface, RuntimeOwnerMode, RuntimeOwnerPhase, SupervisorShutdownReason,
+        SupervisorSpec, SupervisorState, SurfacePhase,
+    };
+
+    fn telegram_surface(account_id: Option<&str>) -> BackgroundChannelSurface {
+        BackgroundChannelSurface::Telegram {
+            account_id: account_id.map(str::to_owned),
+        }
+    }
+
+    fn feishu_surface(account_id: Option<&str>) -> BackgroundChannelSurface {
+        BackgroundChannelSurface::Feishu {
+            account_id: account_id.map(str::to_owned),
+        }
+    }
+
+    fn sample_spec(surfaces: Vec<BackgroundChannelSurface>) -> Result<SupervisorSpec, String> {
+        SupervisorSpec::new(
+            RuntimeOwnerMode::MultiChannelServe {
+                cli_session: "cli-supervisor".to_owned(),
+            },
+            surfaces,
+        )
+    }
+
+    #[tokio::test]
+    async fn background_surface_startup_records_start_timestamp_and_running_phase() {
+        let telegram = telegram_surface(Some("bot_123456"));
+        let mut supervisor =
+            SupervisorState::new(sample_spec(vec![telegram.clone()]).expect("build spec"));
+
+        supervisor
+            .mark_surface_running(&telegram, 1_710_000_000_000)
+            .expect("mark telegram running");
+
+        let state = supervisor
+            .surface_state(&telegram)
+            .expect("telegram surface should be tracked");
+        assert_eq!(state.phase, SurfacePhase::Running);
+        assert_eq!(state.started_at_ms, Some(1_710_000_000_000));
+        assert_eq!(supervisor.phase(), RuntimeOwnerPhase::Running);
+    }
+
+    #[tokio::test]
+    async fn background_surface_failure_marks_runtime_owner_failed() {
+        let telegram = telegram_surface(Some("bot_123456"));
+        let feishu = feishu_surface(Some("alerts"));
+        let mut supervisor = SupervisorState::new(
+            sample_spec(vec![telegram.clone(), feishu.clone()]).expect("build spec"),
+        );
+
+        supervisor
+            .mark_surface_running(&telegram, 1_710_000_000_000)
+            .expect("start telegram");
+        supervisor
+            .mark_surface_running(&feishu, 1_710_000_000_100)
+            .expect("start feishu");
+
+        supervisor
+            .record_surface_failure(
+                &telegram,
+                1_710_000_000_500,
+                "telegram task exited unexpectedly",
+            )
+            .expect("record telegram failure");
+
+        assert_eq!(supervisor.phase(), RuntimeOwnerPhase::Failed);
+        assert!(supervisor.shutdown_requested());
+        assert_eq!(
+            supervisor.shutdown_reason(),
+            Some(&SupervisorShutdownReason::SurfaceFailed {
+                surface: telegram.clone(),
+                error: "telegram task exited unexpectedly".to_owned(),
+            })
+        );
+        let summary = supervisor
+            .failure_summary()
+            .expect("failure summary should exist");
+        assert!(
+            summary.contains("telegram"),
+            "summary should name the failed surface: {summary}"
+        );
+    }
+
+    #[tokio::test]
+    async fn graceful_shutdown_marks_running_children_stopping_then_stopped() {
+        let telegram = telegram_surface(Some("bot_123456"));
+        let feishu = feishu_surface(Some("alerts"));
+        let mut supervisor = SupervisorState::new(
+            sample_spec(vec![telegram.clone(), feishu.clone()]).expect("build spec"),
+        );
+
+        supervisor
+            .mark_surface_running(&telegram, 1_710_000_000_000)
+            .expect("start telegram");
+        supervisor
+            .mark_surface_running(&feishu, 1_710_000_000_100)
+            .expect("start feishu");
+
+        supervisor
+            .request_shutdown("ctrl-c received".to_owned())
+            .expect("request shutdown");
+
+        assert_eq!(supervisor.phase(), RuntimeOwnerPhase::Stopping);
+        assert_eq!(
+            supervisor
+                .surface_state(&telegram)
+                .expect("telegram surface")
+                .phase,
+            SurfacePhase::Stopping
+        );
+        assert_eq!(
+            supervisor
+                .surface_state(&feishu)
+                .expect("feishu surface")
+                .phase,
+            SurfacePhase::Stopping
+        );
+
+        supervisor
+            .mark_surface_stopped(&telegram, 1_710_000_000_800)
+            .expect("stop telegram");
+        supervisor
+            .mark_surface_stopped(&feishu, 1_710_000_000_900)
+            .expect("stop feishu");
+
+        assert_eq!(supervisor.phase(), RuntimeOwnerPhase::Stopped);
+        assert_eq!(
+            supervisor
+                .surface_state(&telegram)
+                .expect("telegram surface")
+                .phase,
+            SurfacePhase::Stopped
+        );
+        assert_eq!(
+            supervisor
+                .surface_state(&telegram)
+                .expect("telegram surface")
+                .exit_reason
+                .as_deref(),
+            Some("shutdown requested: ctrl-c received")
+        );
+        assert!(supervisor.final_exit_result().is_ok());
+    }
+
+    #[tokio::test]
+    async fn final_exit_reason_is_recorded_for_failed_child() {
+        let telegram = telegram_surface(Some("bot_123456"));
+        let mut supervisor =
+            SupervisorState::new(sample_spec(vec![telegram.clone()]).expect("build spec"));
+
+        supervisor
+            .mark_surface_running(&telegram, 1_710_000_000_000)
+            .expect("start telegram");
+        supervisor
+            .record_surface_failure(&telegram, 1_710_000_000_500, "lost upstream connection")
+            .expect("record telegram failure");
+
+        let state = supervisor
+            .surface_state(&telegram)
+            .expect("telegram surface should be tracked");
+        assert_eq!(state.phase, SurfacePhase::Failed);
+        assert_eq!(state.stopped_at_ms, Some(1_710_000_000_500));
+        assert_eq!(
+            state.last_error.as_deref(),
+            Some("lost upstream connection")
+        );
+        assert_eq!(
+            state.exit_reason.as_deref(),
+            Some("surface failed: lost upstream connection")
+        );
+    }
 }
