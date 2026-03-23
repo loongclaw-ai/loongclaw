@@ -128,6 +128,15 @@ else
       LINUX)
         release_linux_target_for_arch_and_libc "$normalized_arch" "gnu"
         ;;
+      ANDROID)
+        case "$normalized_arch" in
+          arm64|aarch64) printf 'aarch64-linux-android\n' ;;
+          *)
+            echo "unsupported Android architecture: ${arch}" >&2
+            return 1
+            ;;
+        esac
+        ;;
       DARWIN)
         case "$normalized_arch" in
           x86_64|amd64) printf 'x86_64-apple-darwin\n' ;;
@@ -154,6 +163,40 @@ else
     esac
   }
 fi
+
+is_termux_environment() {
+  local uname_operating_system
+
+  uname_operating_system="$(uname -o 2>/dev/null || true)"
+  if [[ -n "$uname_operating_system" ]]; then
+    if [[ "$(printf '%s' "$uname_operating_system" | tr '[:lower:]' '[:upper:]')" == "ANDROID" ]]; then
+      return 0
+    fi
+    return 1
+  fi
+
+  if [[ -n "${TERMUX_VERSION:-}" ]]; then
+    return 0
+  fi
+
+  case "${PREFIX:-}" in
+    */com.termux/files/usr) return 0 ;;
+  esac
+
+  return 1
+}
+
+detect_release_host_platform() {
+  local host_platform
+  host_platform="$(uname -s)"
+
+  if [[ "$(printf '%s' "$host_platform" | tr '[:lower:]' '[:upper:]')" == "LINUX" ]] && is_termux_environment; then
+    printf 'Android\n'
+    return 0
+  fi
+
+  printf '%s\n' "$host_platform"
+}
 
 prefix="${HOME}/.local/bin"
 run_onboard=0
@@ -521,7 +564,7 @@ install_from_release() {
   require_command "curl" "Install curl first or use --source inside a repository checkout."
   require_command "install" "Install coreutils or use --source inside a repository checkout."
 
-  host_platform="$(uname -s)"
+  host_platform="$(detect_release_host_platform)"
   host_arch="$(uname -m)"
   target="$(release_target_for_install "${host_platform}" "${host_arch}" "${target_libc}")"
   target_tag="$(normalize_release_tag "${release_version}")"
