@@ -16,6 +16,7 @@ mod canonical;
 mod context;
 #[cfg(feature = "memory-sqlite")]
 mod durable_flush;
+mod durable_recall;
 mod kernel_adapter;
 mod orchestrator;
 mod protocol;
@@ -36,9 +37,11 @@ pub use canonical::{
 pub use context::load_prompt_context;
 #[cfg(feature = "memory-sqlite")]
 pub(crate) use durable_flush::flush_pre_compaction_durable_memory;
+pub(crate) use durable_recall::load_durable_recall_entries;
 pub use kernel_adapter::MvpMemoryAdapter;
 pub use orchestrator::{
     BuiltinMemoryOrchestrator, HydratedMemoryContext, MemoryDiagnostics, hydrate_memory_context,
+    hydrate_memory_context_with_workspace_root,
 };
 #[cfg(test)]
 pub use orchestrator::{MemoryOrchestratorTestFaults, ScopedMemoryOrchestratorTestFaults};

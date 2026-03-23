@@ -21,6 +21,10 @@ how continuity is preserved without manually wiring different memory systems.
 - [ ] When compaction runs with a configured safe workspace root, LoongClaw can
       export advisory durable recall into `memory/YYYY-MM-DD.md` before
       compacting context.
+- [ ] When a configured safe workspace root exposes durable memory files,
+      LoongClaw can bootstrap advisory durable recall from `MEMORY.md`,
+      `memory/MEMORY.md`, and recent daily logs without overriding runtime
+      identity.
 - [ ] Legacy imported identity can still be recovered from `profile_note`, but
       it is resolved into a separate runtime identity lane rather than being
       projected back into the session profile block.
