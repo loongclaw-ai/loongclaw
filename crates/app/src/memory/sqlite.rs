@@ -567,10 +567,13 @@ pub(super) fn replace_turns(
             serde_json::from_value::<Vec<WindowTurn>>(value)
                 .map_err(|error| format!("memory.replace_turns payload.turns invalid: {error}"))
         })?;
-    let expected_turn_count = payload
-        .get("expected_turn_count")
-        .and_then(Value::as_u64)
-        .map(|value| value as usize);
+    let expected_turn_count = match payload.get("expected_turn_count") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(value.as_u64().ok_or_else(|| {
+            "memory.replace_turns payload.expected_turn_count must be a non-negative integer"
+                .to_owned()
+        })? as usize),
+    };
 
     match replace_turns_internal(session_id, &turns, expected_turn_count, config) {
         Ok(replaced) => Ok(MemoryCoreOutcome {
@@ -914,13 +917,11 @@ fn replace_turns_internal(
     runtime
         .with_connection_mut("memory.replace_turns", |conn| {
             let tx = conn
-                .transaction()
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
                 .map_err(|error| format!("begin memory replace transaction failed: {error}"))?;
 
             if let Some(expected_turn_count) = expected_turn_count {
-                let actual_turn_count = query_session_turn_count(&tx, session_id)?
-                    .unwrap_or_default()
-                    .max(0) as usize;
+                let actual_turn_count = resolve_actual_turn_count(&tx, session_id)? as usize;
                 if actual_turn_count != expected_turn_count {
                     return Ok(Err(ReplaceTurnsFailure::Conflict {
                         expected_turn_count,
@@ -1938,6 +1939,22 @@ fn query_session_turn_count(conn: &Connection, session_id: &str) -> Result<Optio
             }
         })
         .map_err(|error| format!("query session turn count failed: {error}"))
+}
+
+fn resolve_actual_turn_count(conn: &Connection, session_id: &str) -> Result<i64, String> {
+    if let Some(turn_count) = query_session_turn_count(conn, session_id)? {
+        return Ok(turn_count.max(0));
+    }
+
+    conn.query_row(
+        "SELECT COALESCE(MAX(session_turn_index), 0)
+         FROM turns
+         WHERE session_id = ?1",
+        rusqlite::params![session_id],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|turn_count| turn_count.max(0))
+    .map_err(|error| format!("query fallback session turn count failed: {error}"))
 }
 
 fn query_recent_prompt_turns_with_known_overflow(
@@ -3317,6 +3334,107 @@ mod tests {
         .expect_err("replace_turns should reject non-object payloads");
 
         assert_eq!(error, "memory.replace_turns payload must be an object");
+    }
+
+    #[test]
+    fn replace_turns_rejects_malformed_expected_turn_count() {
+        let error = replace_turns(
+            MemoryCoreRequest {
+                operation: MEMORY_OP_REPLACE_TURNS.to_owned(),
+                payload: json!({
+                    "session_id": "replace-turns-invalid-expected-count",
+                    "turns": [],
+                    "expected_turn_count": "invalid",
+                }),
+            },
+            &MemoryRuntimeConfig::default(),
+        )
+        .expect_err("replace_turns should reject malformed expected_turn_count");
+
+        assert_eq!(
+            error,
+            "memory.replace_turns payload.expected_turn_count must be a non-negative integer"
+        );
+    }
+
+    #[test]
+    fn replace_turns_uses_turn_rows_when_session_state_metadata_is_missing() {
+        use crate::config::{MemoryMode, MemoryProfile};
+
+        let _guard = sqlite_runtime_test_lock()
+            .lock()
+            .expect("runtime test lock");
+        reset_sqlite_runtime_test_state();
+
+        let tmp = std::env::temp_dir().join(format!(
+            "loongclaw-replace-turns-fallback-count-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).expect("create temp dir");
+        let db_path = tmp.join("replace-turns-fallback-count.sqlite3");
+        let _ = fs::remove_file(&db_path);
+
+        let config = MemoryRuntimeConfig {
+            profile: MemoryProfile::WindowOnly,
+            mode: MemoryMode::WindowOnly,
+            sqlite_path: Some(db_path.clone()),
+            sliding_window: 4,
+            ..MemoryRuntimeConfig::default()
+        };
+        let session_id = "replace-turns-fallback-count-session";
+
+        append_turn_direct(session_id, "user", "turn 1", &config)
+            .expect("append turn 1 should succeed");
+        append_turn_direct(session_id, "assistant", "turn 2", &config)
+            .expect("append turn 2 should succeed");
+        append_turn_direct(session_id, "user", "turn 3", &config)
+            .expect("append turn 3 should succeed");
+
+        let runtime = acquire_memory_runtime(&config).expect("acquire runtime");
+        runtime
+            .with_connection_mut("test.delete_turn_count_before_replace", |conn| {
+                conn.execute(
+                    "DELETE FROM memory_session_state WHERE session_id = ?1",
+                    rusqlite::params![session_id],
+                )
+                .map_err(|error| format!("delete session turn count metadata failed: {error}"))
+            })
+            .expect("delete turn count metadata");
+
+        let outcome = replace_turns(
+            MemoryCoreRequest {
+                operation: MEMORY_OP_REPLACE_TURNS.to_owned(),
+                payload: json!({
+                    "session_id": session_id,
+                    "turns": [
+                        {"role": "user", "content": "replacement 1", "ts": 11},
+                        {"role": "assistant", "content": "replacement 2", "ts": 12},
+                    ],
+                    "expected_turn_count": 3,
+                }),
+            },
+            &config,
+        )
+        .expect("replace_turns should fall back to turn rows when session metadata is missing");
+
+        assert_eq!(outcome.status, "ok");
+        assert_eq!(outcome.payload["replaced_turns"], 2);
+        assert_eq!(
+            read_session_turn_count(&config, session_id).expect("read session turn count"),
+            Some(2)
+        );
+        assert_eq!(
+            window_direct(session_id, 4, &config)
+                .expect("load replacement turns")
+                .into_iter()
+                .map(|turn| turn.content)
+                .collect::<Vec<_>>(),
+            vec!["replacement 1".to_owned(), "replacement 2".to_owned()]
+        );
+
+        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     #[test]
