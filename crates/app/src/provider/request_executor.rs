@@ -50,7 +50,6 @@ pub(super) struct StreamingModelRequestRuntime<'a> {
     pub(super) model: &'a str,
     pub(super) runtime_contract: ProviderRuntimeContract,
     pub(super) capability: ProviderCapabilityContract,
-    #[allow(dead_code)]
     pub(super) auto_model_mode: bool,
     pub(super) auth_profile: &'a ProviderAuthProfile,
     pub(super) endpoint: &'a str,
@@ -773,7 +772,20 @@ where
                             let line = std::mem::take(&mut this.line_buffer);
                             let line_str = match from_utf8(&line) {
                                 Ok(s) => s,
-                                Err(_) => continue,
+                                Err(e) => {
+                                    this.pending.push_back(Err(build_model_request_error(
+                                        format!("invalid UTF-8 in SSE stream: {e}"),
+                                        false,
+                                        ProviderFailoverReason::ResponseShapeInvalid,
+                                        ProviderFailoverStage::ResponseDecode,
+                                        "",
+                                        1,
+                                        1,
+                                        None,
+                                        None,
+                                    )));
+                                    continue;
+                                }
                             };
                             let parsed_line = transport::parse_sse_line(line_str);
                             match parsed_line {
@@ -919,11 +931,6 @@ where
     {
         Ok(stream) => stream,
         Err(error) => {
-            if let Some(api_error) = &error.api_error
-                && pre_status_error(api_error)
-            {
-                return Err(error);
-            }
             return Err(error);
         }
     };
