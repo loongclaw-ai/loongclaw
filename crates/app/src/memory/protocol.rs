@@ -2,6 +2,12 @@ use loongclaw_contracts::MemoryCoreRequest;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use super::{
+    DEFAULT_MEMORY_SYSTEM_ID, DerivedMemoryKind, HydratedMemoryContext, MemoryDiagnostics,
+    MemoryRetrievalRequest, MemoryScope, MemoryStageFamily, StageDiagnostics, StageEnvelope,
+    StageOutcome,
+};
+
 pub const MEMORY_OP_APPEND_TURN: &str = "append_turn";
 pub const MEMORY_OP_WINDOW: &str = "window";
 pub const MEMORY_OP_CLEAR_SESSION: &str = "clear_session";
@@ -27,6 +33,80 @@ pub struct MemoryContextEntry {
     pub kind: MemoryContextKind,
     pub role: String,
     pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct WindowTurnPayload {
+    role: String,
+    content: String,
+    #[serde(default)]
+    ts: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct MemoryDiagnosticsPayload {
+    system_id: String,
+    #[serde(default)]
+    fail_open: bool,
+    #[serde(default)]
+    strict_mode_requested: bool,
+    #[serde(default)]
+    strict_mode_active: bool,
+    #[serde(default)]
+    degraded: bool,
+    #[serde(default)]
+    derivation_error: Option<String>,
+    #[serde(default)]
+    retrieval_error: Option<String>,
+    #[serde(default)]
+    recent_window_count: usize,
+    #[serde(default)]
+    entry_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct HydratedMemoryContextPayload {
+    #[serde(default)]
+    entries: Vec<MemoryContextEntry>,
+    #[serde(default)]
+    recent_window: Vec<WindowTurnPayload>,
+    diagnostics: Option<MemoryDiagnosticsPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct MemoryRetrievalRequestPayload {
+    session_id: String,
+    #[serde(default)]
+    query: Option<String>,
+    #[serde(default)]
+    scopes: Vec<String>,
+    #[serde(default)]
+    budget_items: Option<usize>,
+    #[serde(default)]
+    allowed_kinds: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct StageDiagnosticsPayload {
+    family: String,
+    outcome: String,
+    #[serde(default)]
+    budget_ms: Option<u64>,
+    #[serde(default)]
+    elapsed_ms: Option<u64>,
+    #[serde(default)]
+    fallback_activated: bool,
+    #[serde(default)]
+    message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct StageEnvelopePayload {
+    hydrated: Option<HydratedMemoryContextPayload>,
+    #[serde(default)]
+    retrieval_request: Option<MemoryRetrievalRequestPayload>,
+    #[serde(default)]
+    diagnostics: Vec<StageDiagnosticsPayload>,
 }
 
 pub fn build_append_turn_request(session_id: &str, role: &str, content: &str) -> MemoryCoreRequest {
@@ -87,6 +167,200 @@ pub fn decode_memory_context_entries(payload: &Value) -> Vec<MemoryContextEntry>
         .cloned()
         .and_then(|entries| serde_json::from_value(entries).ok())
         .unwrap_or_default()
+}
+
+pub fn encode_stage_envelope_payload(envelope: &StageEnvelope) -> Value {
+    serde_json::to_value(StageEnvelopePayload::from(envelope)).unwrap_or(Value::Null)
+}
+
+pub fn decode_stage_envelope(payload: &Value) -> Option<StageEnvelope> {
+    let payload = serde_json::from_value::<StageEnvelopePayload>(payload.clone()).ok()?;
+
+    Some(StageEnvelope {
+        hydrated: decode_hydrated_memory_context_payload(payload.hydrated?)?,
+        retrieval_request: payload
+            .retrieval_request
+            .and_then(decode_memory_retrieval_request_payload),
+        diagnostics: payload
+            .diagnostics
+            .into_iter()
+            .filter_map(decode_stage_diagnostics_payload)
+            .collect(),
+    })
+}
+
+impl From<&WindowTurn> for WindowTurnPayload {
+    fn from(value: &WindowTurn) -> Self {
+        Self {
+            role: value.role.clone(),
+            content: value.content.clone(),
+            ts: value.ts,
+        }
+    }
+}
+
+impl From<&MemoryDiagnostics> for MemoryDiagnosticsPayload {
+    fn from(value: &MemoryDiagnostics) -> Self {
+        Self {
+            system_id: value.system_id.to_owned(),
+            fail_open: value.fail_open,
+            strict_mode_requested: value.strict_mode_requested,
+            strict_mode_active: value.strict_mode_active,
+            degraded: value.degraded,
+            derivation_error: value.derivation_error.clone(),
+            retrieval_error: value.retrieval_error.clone(),
+            recent_window_count: value.recent_window_count,
+            entry_count: value.entry_count,
+        }
+    }
+}
+
+impl From<&HydratedMemoryContext> for HydratedMemoryContextPayload {
+    fn from(value: &HydratedMemoryContext) -> Self {
+        Self {
+            entries: value.entries.clone(),
+            recent_window: value
+                .recent_window
+                .iter()
+                .map(WindowTurnPayload::from)
+                .collect(),
+            diagnostics: Some(MemoryDiagnosticsPayload::from(&value.diagnostics)),
+        }
+    }
+}
+
+impl From<&MemoryRetrievalRequest> for MemoryRetrievalRequestPayload {
+    fn from(value: &MemoryRetrievalRequest) -> Self {
+        Self {
+            session_id: value.session_id.clone(),
+            query: value.query.clone(),
+            scopes: value
+                .scopes
+                .iter()
+                .copied()
+                .map(MemoryScope::as_str)
+                .map(str::to_owned)
+                .collect(),
+            budget_items: Some(value.budget_items),
+            allowed_kinds: value
+                .allowed_kinds
+                .iter()
+                .copied()
+                .map(DerivedMemoryKind::as_str)
+                .map(str::to_owned)
+                .collect(),
+        }
+    }
+}
+
+impl From<&StageDiagnostics> for StageDiagnosticsPayload {
+    fn from(value: &StageDiagnostics) -> Self {
+        Self {
+            family: value.family.as_str().to_owned(),
+            outcome: value.outcome.as_str().to_owned(),
+            budget_ms: value.budget_ms,
+            elapsed_ms: value.elapsed_ms,
+            fallback_activated: value.fallback_activated,
+            message: value.message.clone(),
+        }
+    }
+}
+
+impl From<&StageEnvelope> for StageEnvelopePayload {
+    fn from(value: &StageEnvelope) -> Self {
+        Self {
+            hydrated: Some(HydratedMemoryContextPayload::from(&value.hydrated)),
+            retrieval_request: value
+                .retrieval_request
+                .as_ref()
+                .map(MemoryRetrievalRequestPayload::from),
+            diagnostics: value
+                .diagnostics
+                .iter()
+                .map(StageDiagnosticsPayload::from)
+                .collect(),
+        }
+    }
+}
+
+fn decode_hydrated_memory_context_payload(
+    payload: HydratedMemoryContextPayload,
+) -> Option<HydratedMemoryContext> {
+    Some(HydratedMemoryContext {
+        entries: payload.entries,
+        recent_window: payload
+            .recent_window
+            .into_iter()
+            .map(decode_window_turn_payload)
+            .collect(),
+        diagnostics: decode_memory_diagnostics_payload(payload.diagnostics?)?,
+    })
+}
+
+fn decode_window_turn_payload(payload: WindowTurnPayload) -> WindowTurn {
+    WindowTurn {
+        role: payload.role,
+        content: payload.content,
+        ts: payload.ts,
+    }
+}
+
+fn decode_memory_diagnostics_payload(
+    payload: MemoryDiagnosticsPayload,
+) -> Option<MemoryDiagnostics> {
+    Some(MemoryDiagnostics {
+        system_id: decode_memory_system_id(payload.system_id.as_str())?,
+        fail_open: payload.fail_open,
+        strict_mode_requested: payload.strict_mode_requested,
+        strict_mode_active: payload.strict_mode_active,
+        degraded: payload.degraded,
+        derivation_error: payload.derivation_error,
+        retrieval_error: payload.retrieval_error,
+        recent_window_count: payload.recent_window_count,
+        entry_count: payload.entry_count,
+    })
+}
+
+fn decode_memory_retrieval_request_payload(
+    payload: MemoryRetrievalRequestPayload,
+) -> Option<MemoryRetrievalRequest> {
+    if payload.session_id.trim().is_empty() {
+        return None;
+    }
+
+    Some(MemoryRetrievalRequest {
+        session_id: payload.session_id,
+        query: payload.query,
+        scopes: payload
+            .scopes
+            .into_iter()
+            .filter_map(|scope| MemoryScope::parse_id(scope.as_str()))
+            .collect(),
+        budget_items: payload.budget_items.unwrap_or_default(),
+        allowed_kinds: payload
+            .allowed_kinds
+            .into_iter()
+            .filter_map(|kind| DerivedMemoryKind::parse_id(kind.as_str()))
+            .collect(),
+    })
+}
+
+fn decode_stage_diagnostics_payload(payload: StageDiagnosticsPayload) -> Option<StageDiagnostics> {
+    Some(StageDiagnostics {
+        family: MemoryStageFamily::parse_id(payload.family.as_str())?,
+        outcome: StageOutcome::parse_id(payload.outcome.as_str())?,
+        budget_ms: payload.budget_ms,
+        elapsed_ms: payload.elapsed_ms,
+        fallback_activated: payload.fallback_activated,
+        message: payload.message,
+    })
+}
+
+fn decode_memory_system_id(raw: &str) -> Option<&'static str> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        DEFAULT_MEMORY_SYSTEM_ID => Some(DEFAULT_MEMORY_SYSTEM_ID),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
