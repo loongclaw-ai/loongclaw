@@ -1,35 +1,34 @@
-pub mod auth {
-    pub use crate::channel::feishu::api::auth::{
-        FEISHU_DOC_WRITE_ACCEPTED_SCOPES, FEISHU_MESSAGE_WRITE_ACCEPTED_SCOPES,
-        FEISHU_MESSAGE_WRITE_RECOMMENDED_SCOPES, FeishuAuthStartSpec, FeishuGrantAnyScopeStatus,
-        FeishuGrantStatus, FeishuTokenExchangeRequest, build_authorize_url,
-        map_user_info_to_principal, parse_token_exchange_response,
-        summarize_doc_write_scope_status, summarize_grant_status,
-        summarize_message_write_scope_status,
-    };
-}
+pub mod auth;
+pub mod client;
+pub mod error;
+pub mod outbound;
+pub mod principal;
+pub mod resources;
+pub mod runtime;
+pub mod token_store;
 
-pub use crate::channel::feishu::api::auth::{
+mod calendar;
+mod documents;
+mod messaging;
+
+pub use auth::{
     FEISHU_DOC_WRITE_ACCEPTED_SCOPES, FEISHU_MESSAGE_WRITE_ACCEPTED_SCOPES,
     FEISHU_MESSAGE_WRITE_RECOMMENDED_SCOPES, FeishuAuthStartSpec, FeishuGrantAnyScopeStatus,
     FeishuGrantStatus, FeishuTokenExchangeRequest, build_authorize_url, map_user_info_to_principal,
     parse_token_exchange_response, summarize_doc_write_scope_status,
     summarize_message_write_scope_status,
 };
-pub use crate::channel::feishu::api::client::{
+pub use client::{
     FeishuClient, FeishuUserInfo, FeishuWsEndpoint, FeishuWsEndpointClientConfig,
     parse_user_info_response,
 };
-pub use crate::channel::feishu::api::error::FeishuApiError;
-pub use crate::channel::feishu::api::outbound::{
+pub use error::FeishuApiError;
+pub use outbound::{
     FeishuOperatorOutboundMessageInput, parse_post_json_argument,
     resolve_operator_outbound_message_body, validate_operator_outbound_message_input,
 };
-pub use crate::channel::feishu::api::principal::{
-    FeishuAccountBinding, FeishuGrantScopeSet, FeishuUserPrincipal,
-};
-pub use crate::channel::feishu::api::resources;
-pub use crate::channel::feishu::api::resources::types::{
+pub use principal::{FeishuAccountBinding, FeishuGrantScopeSet, FeishuUserPrincipal};
+pub use resources::types::{
     FeishuCalendarEntry, FeishuCalendarFreebusyResult, FeishuCalendarFreebusySlot,
     FeishuCalendarListPage, FeishuCardUpdateReceipt, FeishuDocumentContent, FeishuDocumentMetadata,
     FeishuDownloadedMessageResource, FeishuMessageDetail, FeishuMessageHistoryPage,
@@ -37,12 +36,19 @@ pub use crate::channel::feishu::api::resources::types::{
     FeishuPrimaryCalendarEntry, FeishuPrimaryCalendarList, FeishuSearchMessagePage,
     FeishuUploadedFile, FeishuUploadedImage,
 };
-pub use crate::channel::feishu::api::runtime::{
+pub use runtime::{
     FeishuGrantInventory, FeishuGrantResolution, describe_grant_selection_error,
     describe_grant_selection_error_for_display, effective_selected_open_id,
     ensure_fresh_user_grant, inspect_grants_for_account, resolve_grant_selection,
     resolve_requested_feishu_account, resolve_selected_grant, unix_ts_now,
 };
-pub use crate::channel::feishu::api::token_store::{
+pub use token_store::{
     FeishuGrant, FeishuOauthStateRecord, FeishuStoredOauthState, FeishuTokenStore,
 };
+
+#[allow(unused_imports)]
+pub use calendar::*;
+#[allow(unused_imports)]
+pub use documents::*;
+#[allow(unused_imports)]
+pub use messaging::*;

@@ -14,6 +14,7 @@ use crate::config::{
 };
 
 mod adapter;
+pub mod api;
 mod payload;
 mod webhook;
 mod websocket;

@@ -22,6 +22,7 @@ const TELEGRAM_MAX_MESSAGE_LENGTH: usize = 4096;
 const TELEGRAM_CONTINUATION_OVERHEAD: usize = 30;
 const TELEGRAM_ACK_REACTIONS: &[&str] =
     &["⚡️", "👌", "👀", "🔥", "👍", "💪", "🤩", "😎", "🤘", "🙌"];
+pub mod api;
 
 pub(super) struct TelegramAdapter {
     account_id: String,

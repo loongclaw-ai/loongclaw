@@ -7,7 +7,7 @@ use super::types::{
     FeishuCalendarEntry, FeishuCalendarFreebusyResult, FeishuCalendarFreebusySlot,
     FeishuCalendarListPage, FeishuPrimaryCalendarEntry, FeishuPrimaryCalendarList,
 };
-use crate::feishu::client::FeishuClient;
+use crate::channel::feishu::api::client::FeishuClient;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct FeishuCalendarListQuery {
