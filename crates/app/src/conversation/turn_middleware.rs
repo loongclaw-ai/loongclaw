@@ -448,3 +448,131 @@ where
             .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn builtin_turn_middlewares_preserve_context_artifact_descriptors() {
+        let assembled = AssembledConversationContext {
+            messages: vec![
+                json!({
+                    "role": "system",
+                    "content": "base system\n\n[available_tools]\n- delegate: spawn a child session"
+                }),
+                json!({
+                    "role": "system",
+                    "content": "## Memory Summary\nOlder context"
+                }),
+                json!({
+                    "role": "user",
+                    "content": "latest user turn"
+                }),
+            ],
+            artifacts: vec![
+                ContextArtifactDescriptor {
+                    message_index: 0,
+                    artifact_kind: ContextArtifactKind::SystemPrompt,
+                    maskable: false,
+                    streaming_policy: ToolOutputStreamingPolicy::BufferFull,
+                },
+                ContextArtifactDescriptor {
+                    message_index: 0,
+                    artifact_kind: ContextArtifactKind::RuntimeContract,
+                    maskable: false,
+                    streaming_policy: ToolOutputStreamingPolicy::BufferFull,
+                },
+                ContextArtifactDescriptor {
+                    message_index: 1,
+                    artifact_kind: ContextArtifactKind::Summary,
+                    maskable: false,
+                    streaming_policy: ToolOutputStreamingPolicy::BufferFull,
+                },
+                ContextArtifactDescriptor {
+                    message_index: 2,
+                    artifact_kind: ContextArtifactKind::ConversationTurn,
+                    maskable: false,
+                    streaming_policy: ToolOutputStreamingPolicy::BufferFull,
+                },
+            ],
+            estimated_tokens: None,
+            system_prompt_addition: Some("runtime-policy-addition".to_owned()),
+        };
+        let runtime_tool_view = crate::tools::runtime_tool_view();
+        let requested_tool_view = crate::tools::ToolView::from_tool_names(["file.read"]);
+
+        let assembled = SystemPromptAdditionTurnMiddleware
+            .transform_context(
+                &crate::config::LoongClawConfig::default(),
+                "session-artifact-preservation",
+                true,
+                assembled,
+                &runtime_tool_view,
+                &requested_tool_view,
+                ConversationRuntimeBinding::direct(),
+            )
+            .await
+            .expect("system prompt addition middleware should succeed");
+        let transformed = SystemPromptToolViewTurnMiddleware
+            .transform_context(
+                &crate::config::LoongClawConfig::default(),
+                "session-artifact-preservation",
+                true,
+                assembled,
+                &runtime_tool_view,
+                &requested_tool_view,
+                ConversationRuntimeBinding::direct(),
+            )
+            .await
+            .expect("tool view middleware should succeed");
+
+        assert_eq!(transformed.artifacts.len(), 4);
+        assert!(
+            transformed
+                .artifacts
+                .iter()
+                .any(
+                    |artifact| artifact.artifact_kind == ContextArtifactKind::SystemPrompt
+                        && artifact.message_index == 0
+                )
+        );
+        assert!(
+            transformed
+                .artifacts
+                .iter()
+                .any(
+                    |artifact| artifact.artifact_kind == ContextArtifactKind::RuntimeContract
+                        && artifact.message_index == 0
+                )
+        );
+        assert!(transformed.artifacts.iter().any(|artifact| {
+            artifact.artifact_kind == ContextArtifactKind::Summary
+                && transformed.messages[artifact.message_index]["content"]
+                    .as_str()
+                    .is_some_and(|content| content.contains("## Memory Summary"))
+        }));
+        assert!(
+            transformed
+                .artifacts
+                .iter()
+                .any(
+                    |artifact| artifact.artifact_kind == ContextArtifactKind::ConversationTurn
+                        && transformed.messages[artifact.message_index]["content"]
+                            == "latest user turn"
+                )
+        );
+        assert!(
+            transformed
+                .artifacts
+                .iter()
+                .all(|artifact| artifact.message_index < transformed.messages.len())
+        );
+
+        let system_content = transformed.messages[0]["content"]
+            .as_str()
+            .expect("system content");
+        assert!(system_content.contains("runtime-policy-addition"));
+        assert!(system_content.contains("Non-core tools are intentionally hidden"));
+    }
+}
