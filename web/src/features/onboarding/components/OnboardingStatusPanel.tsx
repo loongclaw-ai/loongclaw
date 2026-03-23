@@ -141,7 +141,12 @@ export function OnboardingStatusPanel() {
   const canConfigureProvider =
     !onboardingLoading &&
     onboardingStatus?.tokenPaired &&
-    ["missing_config", "provider_setup", "provider_unreachable"].includes(
+    [
+      "missing_config",
+      "config_invalid",
+      "provider_setup",
+      "provider_unreachable",
+    ].includes(
       onboardingStatus?.blockingStage ?? "",
     );
 

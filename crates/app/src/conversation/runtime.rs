@@ -677,9 +677,23 @@ pub trait ConversationRuntime: Send + Sync {
         turn_id: &str,
         messages: &[Value],
         tool_view: &ToolView,
-        event_sink: Option<&dyn crate::acp::AcpTurnEventSink>,
         binding: ConversationRuntimeBinding<'_>,
     ) -> CliResult<ProviderTurn>;
+
+    async fn request_turn_with_event_sink(
+        &self,
+        config: &LoongClawConfig,
+        session_id: &str,
+        turn_id: &str,
+        messages: &[Value],
+        tool_view: &ToolView,
+        event_sink: Option<&dyn crate::acp::AcpTurnEventSink>,
+        binding: ConversationRuntimeBinding<'_>,
+    ) -> CliResult<ProviderTurn> {
+        let _ = event_sink;
+        self.request_turn(config, session_id, turn_id, messages, tool_view, binding)
+            .await
+    }
 
     async fn persist_turn(
         &self,
@@ -911,6 +925,21 @@ where
     }
 
     async fn request_turn(
+        &self,
+        config: &LoongClawConfig,
+        session_id: &str,
+        turn_id: &str,
+        messages: &[Value],
+        tool_view: &ToolView,
+        binding: ConversationRuntimeBinding<'_>,
+    ) -> CliResult<ProviderTurn> {
+        self.request_turn_with_event_sink(
+            config, session_id, turn_id, messages, tool_view, None, binding,
+        )
+        .await
+    }
+
+    async fn request_turn_with_event_sink(
         &self,
         config: &LoongClawConfig,
         session_id: &str,

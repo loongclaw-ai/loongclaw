@@ -52,7 +52,7 @@
   font-size: 1.18rem;
   font-weight: 700;
   line-height: 1.15;
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .dashboard-stat-list {
@@ -373,7 +373,7 @@
 .dashboard-debug-line {
   color: #d5d9de;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .dashboard-debug-line + .dashboard-debug-line {

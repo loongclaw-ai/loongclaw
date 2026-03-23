@@ -39,9 +39,9 @@ pub(super) async fn require_same_origin_write_origin(
         return Ok(next.run(request).await);
     }
 
-    if extract_allowed_local_origin(request.headers()).is_none() {
+    if !request_matches_exact_origin(state.as_ref(), request.headers()) {
         return Err(WebApiError::forbidden(
-            "same-origin Web writes require a trusted local loopback origin",
+            "same-origin Web writes require the daemon's exact local origin",
         ));
     }
 
@@ -98,6 +98,18 @@ pub(super) fn extract_allowed_local_origin(headers: &HeaderMap) -> Option<String
         .map(str::trim)
         .filter(|value| is_allowed_local_origin(value))
         .map(ToOwned::to_owned)
+}
+
+fn request_matches_exact_origin(state: &WebApiState, headers: &HeaderMap) -> bool {
+    let Some(expected_origin) = state.exact_origin.as_deref() else {
+        return false;
+    };
+
+    headers
+        .get(ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        == Some(expected_origin)
 }
 
 fn is_allowed_local_origin(origin: &str) -> bool {

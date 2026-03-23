@@ -1,4 +1,4 @@
-import { useState, useEffect, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { TFunction } from "i18next";
 import { ApiRequestError } from "../../../lib/api/client";
 import { onboardingApi } from "../../onboarding/api";
@@ -28,6 +28,15 @@ interface SettingsModalState {
   phase: SettingsModalPhase;
   title: string;
   body: string;
+}
+
+interface DashboardSnapshot {
+  summary: DashboardSummary;
+  providers: DashboardProviderItem[];
+  runtime: DashboardRuntime;
+  connectivity: DashboardConnectivity;
+  config: DashboardConfigSnapshot;
+  tools: DashboardTools;
 }
 
 function wait(ms: number) {
@@ -80,6 +89,7 @@ export function useDashboardData({
     authMode,
     tokenPath,
     tokenEnv,
+    onboardingStatus,
   } = connection;
 
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
@@ -97,9 +107,55 @@ export function useDashboardData({
   const [showDebugConsole, setShowDebugConsole] = useState(false);
   const [debugConsole, setDebugConsole] = useState<DashboardDebugConsole | null>(null);
   const [debugConsoleError, setDebugConsoleError] = useState<string | null>(null);
+  const dashboardLoadGenerationRef = useRef(0);
 
-  async function reloadDashboardData() {
-    setError(null);
+  function buildProviderFormSource(snapshot: DashboardSnapshot) {
+    const activeProvider =
+      snapshot.providers.find((provider) => provider.enabled) ?? snapshot.providers[0] ?? null;
+
+    return {
+      kind: activeProvider?.id ?? "",
+      model: snapshot.config.model ?? "",
+      baseUrlOrEndpoint: snapshot.config.endpoint ?? "",
+      apiKeyConfigured: snapshot.config.apiKeyConfigured ?? false,
+    };
+  }
+
+  function buildPreferencesFormSource(snapshot: DashboardSnapshot) {
+    return {
+      personality:
+        snapshot.config.personality ||
+        onboardingStatus?.personality ||
+        "calm_engineering",
+      memoryProfile:
+        snapshot.config.memoryProfile ||
+        onboardingStatus?.memoryProfile ||
+        "window_only",
+      promptAddendum: onboardingStatus?.promptAddendum || "",
+    };
+  }
+
+  function commitDashboardSnapshot(
+    snapshot: DashboardSnapshot,
+    options?: { forceFormReset?: boolean },
+  ) {
+    const forceFormReset = options?.forceFormReset ?? false;
+
+    setSummary(snapshot.summary);
+    setProviders(snapshot.providers);
+    setRuntime(snapshot.runtime);
+    setConnectivity(snapshot.connectivity);
+    setConfig(snapshot.config);
+    setTools(snapshot.tools);
+    providerForm.resetFromSource(buildProviderFormSource(snapshot), {
+      force: forceFormReset,
+    });
+    preferencesForm.resetFromSource(buildPreferencesFormSource(snapshot), {
+      force: forceFormReset,
+    });
+  }
+
+  async function fetchDashboardSnapshot(): Promise<DashboardSnapshot> {
     const [
       loadedSummary,
       loadedProviders,
@@ -116,18 +172,33 @@ export function useDashboardData({
       dashboardApi.loadTools(),
     ]);
 
-    setSummary(loadedSummary);
-    setProviders(loadedProviders.items);
-    setRuntime(loadedRuntime);
-    setConnectivity(loadedConnectivity);
-    setConfig(loadedConfig);
-    setTools(loadedTools);
+    return {
+      summary: loadedSummary,
+      providers: loadedProviders.items,
+      runtime: loadedRuntime,
+      connectivity: loadedConnectivity,
+      config: loadedConfig,
+      tools: loadedTools,
+    };
+  }
+
+  async function reloadDashboardData(options?: { forceFormReset?: boolean }) {
+    setError(null);
+    const generation = ++dashboardLoadGenerationRef.current;
+    const snapshot = await fetchDashboardSnapshot();
+    if (generation !== dashboardLoadGenerationRef.current) {
+      return null;
+    }
+
+    commitDashboardSnapshot(snapshot, options);
+    return snapshot;
   }
 
   useEffect(() => {
     let cancelled = false;
 
     if (!canAccessProtectedApi) {
+      dashboardLoadGenerationRef.current += 1;
       setSummary(null);
       setProviders([]);
       setRuntime(null);
@@ -172,8 +243,18 @@ export function useDashboardData({
 
     return () => {
       cancelled = true;
+      dashboardLoadGenerationRef.current += 1;
     };
-  }, [authRevision, canAccessProtectedApi, markUnauthorized, status, t, tokenEnv, tokenPath, authMode]);
+  }, [
+    authMode,
+    authRevision,
+    canAccessProtectedApi,
+    markUnauthorized,
+    status,
+    t,
+    tokenEnv,
+    tokenPath,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -237,8 +318,10 @@ export function useDashboardData({
     setSettingsNotice(null);
     setIsRefreshingDiagnostics(true);
     try {
-      await reloadDashboardData();
-      setSettingsNotice(t("dashboard.settings.refreshed"));
+      const snapshot = await reloadDashboardData();
+      if (snapshot) {
+        setSettingsNotice(t("dashboard.settings.refreshed"));
+      }
     } catch (loadError) {
       setSettingsError(
         readDashboardError(
@@ -286,8 +369,7 @@ export function useDashboardData({
           }),
         );
         refreshOnboardingStatus();
-        await reloadDashboardData();
-        providerForm.markApiKeyPristine();
+        await reloadDashboardData({ forceFormReset: true });
         setSettingsModal({
           phase: "success",
           title: t("dashboard.settings.saved"),
@@ -302,7 +384,7 @@ export function useDashboardData({
           title: t("onboarding.validation.failed"),
           body: validationError,
         });
-        await reloadDashboardData();
+        await reloadDashboardData({ forceFormReset: true });
         setSettingsError(validationError);
         await wait(1600);
       }
@@ -313,11 +395,10 @@ export function useDashboardData({
       if (providerApplied) {
         refreshOnboardingStatus();
         try {
-          await reloadDashboardData();
+          await reloadDashboardData({ forceFormReset: true });
         } catch {
           // Keep the original save error visible if the recovery refresh also fails.
         }
-        providerForm.markApiKeyPristine();
       }
 
       const saveErrorMessage = providerApplied

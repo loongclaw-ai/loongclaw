@@ -38,11 +38,15 @@ impl KernelContext {
     }
 }
 
-/// Bootstrap a minimal in-memory kernel suitable for tests.
+/// Bootstrap a minimal in-memory kernel with ephemeral audit retention.
 ///
-/// Registers a default pack manifest with `InvokeTool`, `MemoryRead`, and
-/// `MemoryWrite` capabilities, then issues a long-lived token for the given
-/// `agent_id`.
+/// This is a convenience entry point for MVP and development flows where
+/// durable audit storage is not required. It registers a default pack manifest
+/// with `InvokeTool`, `MemoryRead`, and `MemoryWrite` capabilities, then
+/// issues a long-lived token for the given `agent_id`.
+///
+/// Production-facing runtime entrypoints should prefer
+/// [`bootstrap_kernel_context_with_config`] so audit retention follows config.
 pub fn bootstrap_kernel_context(agent_id: &str, ttl_s: u64) -> Result<KernelContext, String> {
     bootstrap_kernel_context_with_audit_sink(
         agent_id,

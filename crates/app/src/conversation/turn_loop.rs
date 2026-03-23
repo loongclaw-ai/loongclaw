@@ -135,7 +135,6 @@ impl ConversationTurnLoop {
                         turn_id.as_str(),
                         &session.messages,
                         &tool_view,
-                        None,
                         binding,
                     )
                     .await,
