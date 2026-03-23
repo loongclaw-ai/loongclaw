@@ -2140,16 +2140,31 @@ compact_fail_open = false
     }
 
     #[test]
-    fn conversation_compaction_defaults_require_explicit_thresholds() {
+    fn conversation_compaction_defaults_preserve_backward_compatible_trigger_behavior() {
         let config = ConversationConfig::default();
         assert!(config.turn_middleware_ids().is_empty());
         assert!(config.compact_enabled);
         assert!(config.compaction_fail_open());
         assert_eq!(config.compact_preserve_recent_turns(), 6);
         assert_eq!(config.compact_trigger_estimated_tokens(), None);
-        assert!(!config.should_compact(0));
-        assert!(!config.should_compact_with_estimate(0, None));
-        assert!(!config.should_compact_with_estimate(100, Some(10_000)));
+        assert!(config.should_compact(0));
+        assert!(config.should_compact_with_estimate(0, None));
+        assert!(config.should_compact_with_estimate(100, Some(10_000)));
+    }
+
+    #[test]
+    fn conversation_compaction_enabled_without_thresholds_preserves_legacy_trigger_behavior() {
+        let config = ConversationConfig {
+            compact_enabled: true,
+            compact_min_messages: None,
+            compact_trigger_estimated_tokens: None,
+            compact_fail_open: true,
+            context_engine: None,
+            ..ConversationConfig::default()
+        };
+
+        assert!(config.should_compact(1));
+        assert!(config.should_compact_with_estimate(100, Some(10_000)));
     }
 
     #[test]

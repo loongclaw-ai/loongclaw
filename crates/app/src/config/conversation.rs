@@ -297,7 +297,7 @@ impl ConversationConfig {
         let trigger_tokens = self.compact_trigger_estimated_tokens();
 
         if min_messages.is_none() && trigger_tokens.is_none() {
-            return false;
+            return true;
         }
 
         let messages_triggered = min_messages.is_some_and(|threshold| message_count >= threshold);

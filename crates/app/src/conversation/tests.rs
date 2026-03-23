@@ -17520,6 +17520,67 @@ async fn default_context_engine_compact_context_clamps_to_sliding_window() {
 }
 
 #[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn default_context_engine_compact_context_preserves_existing_summarized_history() {
+    use super::context_engine::{ConversationContextEngine, DefaultContextEngine};
+
+    let mut config = test_config();
+    let db_path = unique_memory_sqlite_path("default-context-engine-preserve-summary-history");
+    let _ = std::fs::remove_file(&db_path);
+    config.memory.sqlite_path = db_path.clone();
+    config.memory.profile = MemoryProfile::WindowPlusSummary;
+    config.memory.sliding_window = 2;
+    config.conversation.compact_preserve_recent_turns = 1;
+
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let kernel_ctx = test_kernel_context_with_memory(
+        "test-default-context-engine-preserve-summary-history",
+        &memory_config,
+    );
+    let session_id = "default-context-engine-preserve-summary-history";
+
+    for (role, content) in [
+        ("user", "turn 1"),
+        ("assistant", "turn 2"),
+        ("user", "turn 3"),
+        ("assistant", "turn 4"),
+    ] {
+        crate::memory::append_turn_direct(session_id, role, content, &memory_config)
+            .expect("seed turns should succeed");
+    }
+
+    let before = crate::provider::build_messages_for_session(&config, session_id, false)
+        .expect("provider history before compaction");
+    assert!(
+        before.iter().any(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("turn 1"))
+        }),
+        "precondition: summarized history should include the earliest turn"
+    );
+
+    let engine = DefaultContextEngine;
+    engine
+        .compact_context(&config, session_id, &[], &kernel_ctx)
+        .await
+        .expect("default engine compaction should succeed");
+
+    let after = crate::provider::build_messages_for_session(&config, session_id, false)
+        .expect("provider history after compaction");
+    assert!(
+        after.iter().any(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("turn 1"))
+        }),
+        "compaction should preserve preexisting summarized history"
+    );
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[cfg(feature = "memory-sqlite")]
 struct DefaultCompactingRuntime {
     inner: FakeRuntime,
     context_runtime: DefaultConversationRuntime,

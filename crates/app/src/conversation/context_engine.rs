@@ -327,12 +327,16 @@ impl ConversationContextEngine for DefaultContextEngine {
     ) -> CliResult<()> {
         #[cfg(feature = "memory-sqlite")]
         {
-            let turns = load_memory_window(
-                config,
-                session_id,
-                ConversationRuntimeBinding::kernel(kernel_ctx),
-            )
-            .await?;
+            let binding = ConversationRuntimeBinding::kernel(kernel_ctx);
+            let has_summary_checkpoint = load_memory_context_entries(config, session_id, binding)
+                .await?
+                .into_iter()
+                .any(|entry| entry.kind == memory::MemoryContextKind::Summary);
+            if has_summary_checkpoint {
+                return Ok(());
+            }
+
+            let turns = load_memory_window(config, session_id, binding).await?;
             let preserve_recent_turns = config
                 .conversation
                 .compact_preserve_recent_turns()
@@ -458,6 +462,37 @@ async fn load_memory_window(
 }
 
 #[cfg(feature = "memory-sqlite")]
+async fn load_memory_context_entries(
+    config: &LoongClawConfig,
+    session_id: &str,
+    binding: ConversationRuntimeBinding<'_>,
+) -> CliResult<Vec<memory::MemoryContextEntry>> {
+    if let Some(ctx) = binding.kernel_context() {
+        let request = memory::build_read_context_request(session_id);
+        let caps = BTreeSet::from([Capability::MemoryRead]);
+        let outcome = ctx
+            .kernel
+            .execute_memory_core(ctx.pack_id(), &ctx.token, &caps, None, request)
+            .await
+            .map_err(|error| format!("load memory context via kernel failed: {error}"))?;
+
+        if outcome.status != "ok" {
+            return Err(format!(
+                "load memory context via kernel returned non-ok status: {}",
+                outcome.status
+            ));
+        }
+
+        return Ok(memory::decode_memory_context_entries(&outcome.payload));
+    }
+
+    let runtime_config =
+        memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let hydrated = memory::hydrate_memory_context(session_id, &runtime_config)
+        .map_err(|error| format!("load memory context failed: {error}"))?;
+    Ok(hydrated.entries)
+}
+
 async fn persist_memory_window(
     session_id: &str,
     turns: &[memory::WindowTurn],
