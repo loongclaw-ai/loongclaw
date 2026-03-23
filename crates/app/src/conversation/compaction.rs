@@ -27,7 +27,7 @@ pub fn compact_window(turns: &[WindowTurn], policy: CompactPolicy) -> Option<Vec
     let (older, recent) = turns.split_at(split_at);
 
     let summary = WindowTurn {
-        role: "assistant".to_owned(),
+        role: "user".to_owned(),
         content: format!(
             "Compacted {} earlier turns\n{}",
             older.len(),

@@ -10503,6 +10503,48 @@ fn build_kernel_context_with_raw_window_payload(
     (ctx, invocations)
 }
 
+fn build_kernel_context_with_compaction_conflict(
+    audit: Arc<InMemoryAuditSink>,
+) -> (KernelContext, Arc<Mutex<Vec<MemoryCoreRequest>>>) {
+    let clock = Arc::new(FixedClock::new(1_700_000_000));
+    let mut kernel = LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock, audit);
+
+    let pack = VerticalPackManifest {
+        pack_id: "test-pack".to_owned(),
+        domain: "testing".to_owned(),
+        version: "0.1.0".to_owned(),
+        default_route: ExecutionRoute {
+            harness_kind: HarnessKind::EmbeddedPi,
+            adapter: None,
+        },
+        allowed_connectors: BTreeSet::new(),
+        granted_capabilities: BTreeSet::from([Capability::MemoryWrite, Capability::MemoryRead]),
+        metadata: BTreeMap::new(),
+    };
+    kernel.register_pack(pack).expect("register pack");
+
+    let invocations = Arc::new(Mutex::new(Vec::new()));
+    let adapter = ConflictOnFirstReplaceMemoryAdapter {
+        invocations: invocations.clone(),
+        state: Mutex::new(ConflictOnFirstReplaceState::default()),
+    };
+    kernel.register_core_memory_adapter(adapter);
+    kernel
+        .set_default_core_memory_adapter("test-memory-conflict-retry")
+        .expect("set default memory adapter");
+
+    let token = kernel
+        .issue_token("test-pack", "test-agent", 3600)
+        .expect("issue token");
+
+    let ctx = KernelContext {
+        kernel: Arc::new(kernel),
+        token,
+    };
+
+    (ctx, invocations)
+}
+
 #[cfg(feature = "memory-sqlite")]
 fn prepare_discovery_first_summary_test(
     db_scope: &str,
@@ -10670,6 +10712,120 @@ impl CoreMemoryAdapter for RawWindowPayloadMemoryAdapter {
             status: "ok".to_owned(),
             payload: json!({}),
         })
+    }
+}
+
+struct ConflictOnFirstReplaceState {
+    turn_count: usize,
+    window_turns: Vec<Value>,
+    conflict_emitted: bool,
+}
+
+impl Default for ConflictOnFirstReplaceState {
+    fn default() -> Self {
+        Self {
+            turn_count: 6,
+            window_turns: vec![
+                json!({"role": "user", "content": "ask 1", "ts": 1}),
+                json!({"role": "assistant", "content": "reply 1", "ts": 2}),
+                json!({"role": "user", "content": "ask 2", "ts": 3}),
+                json!({"role": "assistant", "content": "reply 2", "ts": 4}),
+                json!({"role": "user", "content": "recent ask", "ts": 5}),
+                json!({"role": "assistant", "content": "recent reply", "ts": 6}),
+            ],
+            conflict_emitted: false,
+        }
+    }
+}
+
+struct ConflictOnFirstReplaceMemoryAdapter {
+    invocations: Arc<Mutex<Vec<MemoryCoreRequest>>>,
+    state: Mutex<ConflictOnFirstReplaceState>,
+}
+
+#[async_trait]
+impl CoreMemoryAdapter for ConflictOnFirstReplaceMemoryAdapter {
+    fn name(&self) -> &str {
+        "test-memory-conflict-retry"
+    }
+
+    async fn execute_core_memory(
+        &self,
+        request: MemoryCoreRequest,
+    ) -> Result<MemoryCoreOutcome, MemoryPlaneError> {
+        self.invocations
+            .lock()
+            .expect("invocations lock")
+            .push(request.clone());
+
+        let mut state = self.state.lock().expect("conflict state lock");
+        match request.operation.as_str() {
+            crate::memory::MEMORY_OP_READ_CONTEXT => Ok(MemoryCoreOutcome {
+                status: "ok".to_owned(),
+                payload: json!({"entries": []}),
+            }),
+            crate::memory::MEMORY_OP_WINDOW => Ok(MemoryCoreOutcome {
+                status: "ok".to_owned(),
+                payload: json!({
+                    "turns": state.window_turns.clone(),
+                    "turn_count": state.turn_count,
+                }),
+            }),
+            crate::memory::MEMORY_OP_REPLACE_TURNS => {
+                let expected_turn_count = request
+                    .payload
+                    .get("expected_turn_count")
+                    .and_then(Value::as_u64)
+                    .map(|value| value as usize);
+
+                if !state.conflict_emitted {
+                    state.turn_count += 1;
+                    let concurrent_ts = state.turn_count as i64;
+                    state.window_turns.push(json!({
+                        "role": "user",
+                        "content": "concurrent ask",
+                        "ts": concurrent_ts,
+                    }));
+                    state.conflict_emitted = true;
+                    return Ok(MemoryCoreOutcome {
+                        status: "conflict".to_owned(),
+                        payload: json!({
+                            "expected_turn_count": expected_turn_count,
+                            "actual_turn_count": state.turn_count,
+                        }),
+                    });
+                }
+
+                if expected_turn_count != Some(state.turn_count) {
+                    return Ok(MemoryCoreOutcome {
+                        status: "conflict".to_owned(),
+                        payload: json!({
+                            "expected_turn_count": expected_turn_count,
+                            "actual_turn_count": state.turn_count,
+                        }),
+                    });
+                }
+
+                let turns = request
+                    .payload
+                    .get("turns")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                state.turn_count = turns.len();
+                state.window_turns = turns;
+                Ok(MemoryCoreOutcome {
+                    status: "ok".to_owned(),
+                    payload: json!({
+                        "replaced_turns": state.turn_count,
+                    }),
+                })
+            }
+            _ => Ok(MemoryCoreOutcome {
+                status: "ok".to_owned(),
+                payload: json!({}),
+            }),
+        }
     }
 }
 
@@ -17297,6 +17453,7 @@ fn compact_window_preserves_recent_turns_and_summarizes_history() {
     let compacted = compact_window(&turns, CompactPolicy::new(2)).expect("should compact");
 
     assert_eq!(compacted.len(), 3);
+    assert_eq!(compacted[0].role, "user");
     assert!(compacted[0].content.contains("Compacted 4 earlier turns"));
     assert_eq!(compacted[1].content, "recent ask");
     assert_eq!(compacted[2].content, "recent reply");
@@ -17380,6 +17537,7 @@ fn compact_window_bounds_summary_content_and_prior_summaries() {
     assert_eq!(compacted[2].content, "recent reply");
 }
 
+#[cfg(feature = "memory-sqlite")]
 #[test]
 fn default_context_engine_metadata_advertises_context_compaction() {
     use super::context_engine::{
@@ -17441,7 +17599,7 @@ async fn default_context_engine_compact_context_rewrites_persisted_window() {
         .expect("window load should succeed");
 
     assert_eq!(turns.len(), 7);
-    assert_eq!(turns[0].role, "assistant");
+    assert_eq!(turns[0].role, "user");
     assert!(turns[0].content.contains("Compacted 2 earlier turns"));
     assert_eq!(turns[1].content, "ask 2");
     assert_eq!(turns[2].content, "reply 2");
@@ -17490,7 +17648,7 @@ async fn default_context_engine_compact_context_clamps_to_sliding_window() {
     let turns = crate::memory::window_direct(session_id, 32, &memory_config)
         .expect("window load should succeed");
     assert_eq!(turns.len(), 4);
-    assert_eq!(turns[0].role, "assistant");
+    assert_eq!(turns[0].role, "user");
     assert!(turns[0].content.contains("Compacted 1 earlier turns"));
 
     let messages = engine
@@ -17517,6 +17675,47 @@ async fn default_context_engine_compact_context_clamps_to_sliding_window() {
     );
 
     let _ = std::fs::remove_file(&db_path);
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn default_context_engine_compact_context_retries_conflict_and_preserves_concurrent_turn() {
+    use super::context_engine::{ConversationContextEngine, DefaultContextEngine};
+
+    let audit = Arc::new(InMemoryAuditSink::default());
+    let (kernel_ctx, invocations) = build_kernel_context_with_compaction_conflict(audit);
+    let mut config = test_config();
+    config.memory.sliding_window = 32;
+    config.conversation.compact_preserve_recent_turns = 2;
+
+    let engine = DefaultContextEngine;
+    engine
+        .compact_context(
+            &config,
+            "default-context-engine-conflict-retry",
+            &[],
+            &kernel_ctx,
+        )
+        .await
+        .expect("default engine compaction should retry conflict and succeed");
+
+    let captured = invocations.lock().expect("invocations lock").clone();
+    let replace_requests = captured
+        .iter()
+        .filter(|request| request.operation == crate::memory::MEMORY_OP_REPLACE_TURNS)
+        .collect::<Vec<_>>();
+
+    assert_eq!(replace_requests.len(), 2);
+    assert_eq!(replace_requests[0].payload["expected_turn_count"], 6);
+    assert_eq!(replace_requests[1].payload["expected_turn_count"], 7);
+    assert!(
+        replace_requests[1].payload["turns"]
+            .as_array()
+            .expect("replacement turns payload")
+            .iter()
+            .any(|turn| turn["content"] == "concurrent ask"),
+        "retry should preserve the turn appended during the conflict window"
+    );
 }
 
 #[cfg(feature = "memory-sqlite")]

@@ -41,7 +41,8 @@ pub use protocol::{
     MEMORY_OP_APPEND_TURN, MEMORY_OP_CLEAR_SESSION, MEMORY_OP_READ_CONTEXT,
     MEMORY_OP_REPLACE_TURNS, MEMORY_OP_WINDOW, MemoryContextEntry, MemoryContextKind, WindowTurn,
     build_append_turn_request, build_read_context_request, build_replace_turns_request,
-    build_window_request, decode_memory_context_entries, decode_window_turns,
+    build_replace_turns_request_with_expectation, build_window_request,
+    decode_memory_context_entries, decode_window_turn_count, decode_window_turns,
 };
 #[cfg(feature = "memory-sqlite")]
 pub use sqlite::{ConversationTurn, SqliteBootstrapDiagnostics, SqliteContextLoadDiagnostics};
