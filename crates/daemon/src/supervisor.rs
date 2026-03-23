@@ -229,6 +229,30 @@ impl SupervisorState {
         surface: &BackgroundChannelSurface,
         started_at_ms: u64,
     ) -> Result<(), String> {
+        let owner_in_shutdown_path = self.shutdown_requested()
+            || matches!(
+                self.phase,
+                RuntimeOwnerPhase::Stopping
+                    | RuntimeOwnerPhase::Stopped
+                    | RuntimeOwnerPhase::Failed
+            );
+        let surface_phase = self
+            .surface_state(surface)
+            .ok_or_else(|| format!("unknown background surface: {surface}"))?
+            .phase;
+        if owner_in_shutdown_path
+            || matches!(
+                surface_phase,
+                SurfacePhase::Stopping | SurfacePhase::Stopped | SurfacePhase::Failed
+            )
+        {
+            return Err(format!(
+                "cannot mark background surface as running after shutdown/failure has begun: \
+                 surface={surface}, owner_phase={:?}, surface_phase={surface_phase:?}",
+                self.phase
+            ));
+        }
+
         let state = self.surface_state_mut(surface)?;
         state.phase = SurfacePhase::Running;
         state.started_at_ms = Some(started_at_ms);
@@ -292,7 +316,12 @@ impl SupervisorState {
         });
 
         for (tracked_surface, tracked_state) in &mut self.surfaces {
-            if tracked_surface != surface && matches!(tracked_state.phase, SurfacePhase::Running) {
+            if tracked_surface != surface
+                && matches!(
+                    tracked_state.phase,
+                    SurfacePhase::Starting | SurfacePhase::Running
+                )
+            {
                 tracked_state.phase = SurfacePhase::Stopping;
             }
         }
@@ -589,5 +618,84 @@ mod tests {
             state.exit_reason.as_deref(),
             Some("surface failed: lost upstream connection")
         );
+    }
+
+    #[tokio::test]
+    async fn shutdown_while_surface_is_starting_does_not_allow_late_running_transition() {
+        let telegram = telegram_surface(Some("bot_123456"));
+        let feishu = feishu_surface(Some("alerts"));
+        let mut supervisor = SupervisorState::new(
+            sample_spec(vec![telegram.clone(), feishu.clone()]).expect("build spec"),
+        );
+
+        supervisor
+            .mark_surface_running(&telegram, 1_710_000_000_000)
+            .expect("start telegram");
+        supervisor
+            .request_shutdown("ctrl-c received".to_owned())
+            .expect("request shutdown");
+
+        assert_eq!(supervisor.phase(), RuntimeOwnerPhase::Stopping);
+        assert_eq!(
+            supervisor
+                .surface_state(&feishu)
+                .expect("feishu surface")
+                .phase,
+            SurfacePhase::Stopping
+        );
+
+        let error = supervisor
+            .mark_surface_running(&feishu, 1_710_000_000_100)
+            .expect_err("late startup completion should be rejected");
+        assert!(
+            error.contains("cannot mark background surface as running"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(supervisor.phase(), RuntimeOwnerPhase::Stopping);
+        let feishu_state = supervisor
+            .surface_state(&feishu)
+            .expect("feishu surface should still be tracked");
+        assert_eq!(feishu_state.phase, SurfacePhase::Stopping);
+        assert_eq!(feishu_state.started_at_ms, None);
+    }
+
+    #[tokio::test]
+    async fn sibling_failure_stops_starting_surface_and_rejects_late_running_transition() {
+        let telegram = telegram_surface(Some("bot_123456"));
+        let feishu = feishu_surface(Some("alerts"));
+        let mut supervisor = SupervisorState::new(
+            sample_spec(vec![telegram.clone(), feishu.clone()]).expect("build spec"),
+        );
+
+        supervisor
+            .mark_surface_running(&telegram, 1_710_000_000_000)
+            .expect("start telegram");
+        supervisor
+            .record_surface_failure(
+                &telegram,
+                1_710_000_000_500,
+                "telegram task exited unexpectedly",
+            )
+            .expect("record telegram failure");
+
+        assert_eq!(supervisor.phase(), RuntimeOwnerPhase::Failed);
+        let feishu_state = supervisor
+            .surface_state(&feishu)
+            .expect("feishu surface should still be tracked");
+        assert_eq!(feishu_state.phase, SurfacePhase::Stopping);
+
+        let error = supervisor
+            .mark_surface_running(&feishu, 1_710_000_000_900)
+            .expect_err("late startup completion should be rejected");
+        assert!(
+            error.contains("cannot mark background surface as running"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(supervisor.phase(), RuntimeOwnerPhase::Failed);
+        let feishu_state = supervisor
+            .surface_state(&feishu)
+            .expect("feishu surface should still be tracked");
+        assert_eq!(feishu_state.phase, SurfacePhase::Stopping);
+        assert_eq!(feishu_state.started_at_ms, None);
     }
 }
