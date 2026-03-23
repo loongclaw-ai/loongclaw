@@ -1261,6 +1261,42 @@ fn run_channel_serve_cli_forwards_optional_arguments_to_runner() {
 }
 
 #[test]
+fn multi_channel_serve_cli_requires_explicit_cli_session() {
+    let error = Cli::try_parse_from(["loongclaw", "multi-channel-serve"])
+        .expect_err("missing --session should fail");
+    assert!(error.to_string().contains("--session <SESSION>"));
+}
+
+#[test]
+fn multi_channel_serve_cli_parses_account_selection_flags() {
+    let cli = Cli::try_parse_from([
+        "loongclaw",
+        "multi-channel-serve",
+        "--session",
+        "cli-supervisor",
+        "--telegram-account",
+        "bot_123456",
+        "--feishu-account",
+        "alerts",
+    ])
+    .expect("multi-channel-serve should parse");
+
+    match cli.command {
+        Some(Commands::MultiChannelServe {
+            session,
+            telegram_account,
+            feishu_account,
+            ..
+        }) => {
+            assert_eq!(session, "cli-supervisor");
+            assert_eq!(telegram_account.as_deref(), Some("bot_123456"));
+            assert_eq!(feishu_account.as_deref(), Some("alerts"));
+        }
+        other => panic!("unexpected parse result: {other:?}"),
+    }
+}
+
+#[test]
 fn default_channel_send_target_kind_uses_command_family_send_metadata() {
     assert_eq!(
         default_channel_send_target_kind(ChannelSendCliSpec {

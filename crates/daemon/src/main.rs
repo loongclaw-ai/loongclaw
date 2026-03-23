@@ -493,6 +493,20 @@ async fn main() {
             )
             .await
         }
+        Commands::MultiChannelServe {
+            config,
+            session,
+            telegram_account,
+            feishu_account,
+        } => {
+            run_multi_channel_serve_cli(
+                config.as_deref(),
+                &session,
+                telegram_account.as_deref(),
+                feishu_account.as_deref(),
+            )
+            .await
+        }
         Commands::Feishu { command } => feishu_cli::run_feishu_command(command).await,
         Commands::Completions { shell } => {
             completions_cli::run_completions_cli(completions_cli::CompletionsCommandOptions {
