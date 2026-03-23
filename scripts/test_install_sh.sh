@@ -257,6 +257,55 @@ run_termux_arm64_installs_android_release_test() {
   fi
 }
 
+run_linux_guest_with_termux_env_is_not_termux_test() {
+  if (
+    source_install_functions
+    TERMUX_VERSION="0.119.0"
+    PREFIX="/data/data/com.termux/files/usr"
+    uname() {
+      case "${1:-}" in
+        -s) printf 'Linux\n' ;;
+        -m) printf 'x86_64\n' ;;
+        -o) printf 'GNU/Linux\n' ;;
+        *)
+          echo "unexpected uname invocation: $*" >&2
+          return 1
+          ;;
+      esac
+    }
+    is_termux_environment
+  ); then
+    echo "expected GNU/Linux shells with inherited Termux env to stay on Linux artifacts" >&2
+    exit 1
+  fi
+}
+
+run_linux_guest_with_termux_env_prefers_linux_release_test() {
+  local fixture install_dir output_file installed_output
+  fixture="$(make_linux_dual_libc_fixture "v0.1.2")"
+  trap 'rm -rf "$fixture"' RETURN
+  install_dir="$fixture/install"
+  output_file="$fixture/linux-termux-env.out"
+  make_uname_stub_bin "$fixture" "Linux" "x86_64" "GNU/Linux"
+  make_getconf_stub_bin "$fixture" "glibc 2.39"
+
+  (
+    cd "$REPO_ROOT"
+    PATH="$fixture/fake-bin:$PATH" \
+      TERMUX_VERSION="0.119.0" \
+      PREFIX="/data/data/com.termux/files/usr" \
+      LOONGCLAW_INSTALL_RELEASE_BASE_URL="file://$fixture/releases" \
+      bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --prefix "$install_dir" >"$output_file" 2>&1
+  )
+
+  assert_contains "$output_file" "x86_64-unknown-linux-gnu"
+  installed_output="$("$install_dir/loongclaw")"
+  if [[ "$installed_output" != "gnu-binary" ]]; then
+    echo "expected Linux artifact to be installed when uname -o reports GNU/Linux but got '$installed_output'" >&2
+    exit 1
+  fi
+}
+
 run_termux_x86_64_rejects_android_release_test() {
   local fixture output_file
   fixture="$(mktemp -d)"
@@ -603,6 +652,8 @@ run_checksum_mismatch_fails_test
 run_missing_release_guidance_test
 run_linux_x86_64_prefers_gnu_when_glibc_is_supported_test
 run_termux_arm64_installs_android_release_test
+run_linux_guest_with_termux_env_is_not_termux_test
+run_linux_guest_with_termux_env_prefers_linux_release_test
 run_termux_x86_64_rejects_android_release_test
 run_version_at_least_falls_back_when_sort_version_is_unavailable_test
 run_version_at_least_rejects_older_version_with_sort_version_test

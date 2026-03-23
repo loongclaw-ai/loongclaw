@@ -9,6 +9,7 @@ assert_contains() {
   local needle="$2"
   if ! grep -Fq "$needle" "$file"; then
     echo "expected to find '$needle' in $file" >&2
+    cat "$file" >&2
     exit 1
   fi
 }

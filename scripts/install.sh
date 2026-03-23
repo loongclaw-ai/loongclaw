@@ -167,6 +167,14 @@ fi
 is_termux_environment() {
   local uname_operating_system
 
+  uname_operating_system="$(uname -o 2>/dev/null || true)"
+  if [[ -n "$uname_operating_system" ]]; then
+    if [[ "$(printf '%s' "$uname_operating_system" | tr '[:lower:]' '[:upper:]')" == "ANDROID" ]]; then
+      return 0
+    fi
+    return 1
+  fi
+
   if [[ -n "${TERMUX_VERSION:-}" ]]; then
     return 0
   fi
@@ -174,12 +182,6 @@ is_termux_environment() {
   case "${PREFIX:-}" in
     */com.termux/files/usr) return 0 ;;
   esac
-
-  if uname_operating_system="$(uname -o 2>/dev/null || true)"; then
-    if [[ "$(printf '%s' "$uname_operating_system" | tr '[:lower:]' '[:upper:]')" == "ANDROID" ]]; then
-      return 0
-    fi
-  fi
 
   return 1
 }
@@ -195,6 +197,7 @@ detect_release_host_platform() {
 
   printf '%s\n' "$host_platform"
 }
+
 prefix="${HOME}/.local/bin"
 run_onboard=0
 install_source=0
