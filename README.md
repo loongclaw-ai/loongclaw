@@ -470,11 +470,40 @@ loongclaw migrate --mode plan_many --input ~/legacy-claws
 loongclaw migrate --mode apply_selected --input ~/legacy-claws \
   --source-id openclaw --output ~/.loongclaw/config.toml --force
 
+# Apply one selected source and bridge installable local external skills
+loongclaw migrate --mode apply_selected --input ~/legacy-claws \
+  --source-id openclaw --output ~/.loongclaw/config.toml \
+  --apply-external-skills-plan --force
+
 # Roll back the most recent migration
 loongclaw migrate --mode rollback_last_apply --output ~/.loongclaw/config.toml
 ```
 
-Deeper migration modes also exist, including `merge_profiles` for multi-source profile merging and `map_external_skills` for external-skills artifact mapping.
+Deeper migration modes also exist, including `merge_profiles` for multi-source profile merging and `map_external_skills` for external-skills artifact mapping. The bridge remains opt-in: prompt/profile import still works by default, while `--apply-external-skills-plan` adds installable local skill directories to the managed runtime without replacing unrelated managed skills.
+
+<a id="manage-external-skills"></a>
+## Manage External Skills
+
+LoongClaw's external-skills runtime is operator-visible now instead of staying hidden behind migration helpers.
+
+```bash
+# Inspect resolved managed, user, and project skills with eligibility + invocation metadata
+loongclaw skills list
+loongclaw skills info release-guard
+
+# Download a remote skill package under the external-skills policy boundary
+loongclaw skills fetch https://skills.sh/release-guard.tgz --approve-download
+
+# Download and sync a remote package into the managed runtime in one step
+loongclaw skills fetch https://skills.sh/release-guard.tgz \
+  --approve-download --install --replace
+```
+
+`loongclaw skills list` and `loongclaw skills info` surface per-skill metadata such as
+`invocation_policy`, required env or binaries, required runtime config gates, and declared tool
+restrictions. `loongclaw skills fetch --install --replace` gives operators a thin update path over
+the existing managed install lifecycle without bypassing the same runtime policy checks that govern
+downloads and installed skill execution.
 
 <a id="core-capabilities"></a>
 

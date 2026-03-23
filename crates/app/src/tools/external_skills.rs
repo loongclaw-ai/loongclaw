@@ -89,6 +89,10 @@ struct DiscoveredSkillEntry {
     required_env: Vec<String>,
     required_bin: Vec<String>,
     required_paths: Vec<String>,
+    invocation_policy: SkillInvocationPolicy,
+    required_config: Vec<String>,
+    allowed_tools: Vec<String>,
+    blocked_tools: Vec<String>,
     eligibility: SkillEligibility,
 }
 
@@ -131,26 +135,54 @@ enum SkillModelVisibility {
     Hidden,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+enum SkillInvocationPolicy {
+    #[default]
+    Model,
+    #[serde(alias = "user", alias = "operator")]
+    Manual,
+    Both,
+}
+
+/// `available` and `eligible` currently move together because a skill is only
+/// runnable when its local prerequisites are present. Keep both fields so
+/// operator-facing output can distinguish policy from current availability later.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 struct SkillEligibility {
     available: bool,
+    eligible: bool,
     missing_env: Vec<String>,
     missing_bin: Vec<String>,
     missing_paths: Vec<String>,
+    issues: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 struct SkillFrontmatter {
     name: Option<String>,
     description: Option<String>,
     #[serde(default)]
-    requires_env: Vec<String>,
-    #[serde(default, alias = "requires_bins", alias = "requires_commands")]
-    requires_bin: Vec<String>,
-    #[serde(default)]
-    requires_paths: Vec<String>,
-    #[serde(default)]
     model_visibility: SkillModelVisibility,
+    #[serde(default)]
+    invocation_policy: Option<SkillInvocationPolicy>,
+    #[serde(default, alias = "requires_env")]
+    required_env: Vec<String>,
+    #[serde(
+        default,
+        alias = "requires_bin",
+        alias = "requires_bins",
+        alias = "requires_commands"
+    )]
+    required_bins: Vec<String>,
+    #[serde(default, alias = "requires_paths")]
+    required_paths: Vec<String>,
+    #[serde(default)]
+    required_config: Vec<String>,
+    #[serde(default)]
+    allowed_tools: Vec<String>,
+    #[serde(default)]
+    blocked_tools: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -825,6 +857,22 @@ pub(super) fn execute_external_skills_invoke_tool_with_config(
     let skill = resolve_discovered_skill(&inventory, skill_id)?;
     ensure_skill_access_for_audience(&skill, SkillAudience::Model)?;
     let instructions = load_discovered_skill_markdown(config, &skill)?;
+    if !skill.eligibility.available {
+        return Err(format!(
+            "external skill `{skill_id}` is not eligible in the current runtime: {}",
+            skill.eligibility.issues.join("; ")
+        ));
+    }
+    if matches!(skill.invocation_policy, SkillInvocationPolicy::Manual) {
+        return Err(format!(
+            "external skill `{skill_id}` is marked invocation_policy=manual and cannot be invoked through external_skills.invoke"
+        ));
+    }
+    let invocation_policy_id = invocation_policy_id(skill.invocation_policy);
+    let tool_restrictions_suffix = render_tool_restrictions_suffix(
+        skill.allowed_tools.as_slice(),
+        skill.blocked_tools.as_slice(),
+    );
     Ok(ToolCoreOutcome {
         status: "ok".to_owned(),
         payload: json!({
@@ -838,9 +886,13 @@ pub(super) fn execute_external_skills_invoke_tool_with_config(
             "install_path": skill.install_path,
             "skill_md_path": skill.skill_md_path,
             "instructions": instructions,
+            "metadata": metadata_payload_from_skill(&skill),
+            "eligibility": skill.eligibility,
             "invocation_summary": format!(
-                "Loaded external skill `{}`. Apply the instructions in `SKILL.md` before continuing the task.",
-                skill_id
+                "Loaded external skill `{}` with invocation_policy={}. Apply the instructions in `SKILL.md` before continuing the task{}.",
+                skill_id,
+                invocation_policy_id,
+                tool_restrictions_suffix
             ),
         }),
     })
@@ -1025,28 +1077,6 @@ impl ExternalSkillsPolicyOverride {
             || self.require_download_approval.is_some()
             || self.allowed_domains.is_some()
             || self.blocked_domains.is_some()
-    }
-}
-
-impl SkillEligibility {
-    fn ready() -> Self {
-        Self {
-            available: true,
-            ..Self::default()
-        }
-    }
-
-    fn with_missing(
-        missing_env: Vec<String>,
-        missing_bin: Vec<String>,
-        missing_paths: Vec<String>,
-    ) -> Self {
-        Self {
-            available: missing_env.is_empty() && missing_bin.is_empty() && missing_paths.is_empty(),
-            missing_env,
-            missing_bin,
-            missing_paths,
-        }
     }
 }
 
@@ -1412,6 +1442,15 @@ fn find_skill_roots(root: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(roots)
 }
 
+pub(crate) fn discover_installable_skill_roots(root: &Path) -> Result<Vec<PathBuf>, String> {
+    find_skill_roots(root)
+}
+
+pub(crate) fn resolve_installable_skill_id(root: &Path) -> Result<String, String> {
+    let skill_markdown = load_directory_skill_markdown(root)?;
+    Ok(derive_skill_id_from_markdown(root, skill_markdown.as_str()))
+}
+
 fn visit_skill_roots(root: &Path, roots: &mut Vec<PathBuf>) -> Result<(), String> {
     let metadata = fs::symlink_metadata(root).map_err(|error| {
         format!(
@@ -1592,7 +1631,10 @@ fn parse_skill_frontmatter(skill_markdown: &str) -> Result<SkillFrontmatter, Str
     for line in lines {
         let trimmed = line.trim();
         if trimmed == "---" {
-            let raw = raw_frontmatter.join("\n");
+            let raw = raw_frontmatter.join(
+                "
+",
+            );
             if raw.trim().is_empty() {
                 return Ok(SkillFrontmatter::default());
             }
@@ -1625,12 +1667,18 @@ fn parse_skill_frontmatter(skill_markdown: &str) -> Result<SkillFrontmatter, Str
 fn normalize_skill_frontmatter(frontmatter: &mut SkillFrontmatter) {
     frontmatter.name = normalize_optional_metadata_string(frontmatter.name.take());
     frontmatter.description = normalize_optional_metadata_string(frontmatter.description.take());
-    frontmatter.requires_env =
-        normalize_metadata_string_list(std::mem::take(&mut frontmatter.requires_env));
-    frontmatter.requires_bin =
-        normalize_metadata_string_list(std::mem::take(&mut frontmatter.requires_bin));
-    frontmatter.requires_paths =
-        normalize_metadata_string_list(std::mem::take(&mut frontmatter.requires_paths));
+    frontmatter.required_env =
+        normalize_metadata_string_list(std::mem::take(&mut frontmatter.required_env));
+    frontmatter.required_bins =
+        normalize_metadata_string_list(std::mem::take(&mut frontmatter.required_bins));
+    frontmatter.required_paths =
+        normalize_metadata_string_list(std::mem::take(&mut frontmatter.required_paths));
+    frontmatter.required_config =
+        normalize_metadata_string_list(std::mem::take(&mut frontmatter.required_config));
+    frontmatter.allowed_tools =
+        normalize_metadata_string_list(std::mem::take(&mut frontmatter.allowed_tools));
+    frontmatter.blocked_tools =
+        normalize_metadata_string_list(std::mem::take(&mut frontmatter.blocked_tools));
 }
 
 fn normalize_optional_metadata_string(value: Option<String>) -> Option<String> {
@@ -1704,6 +1752,9 @@ fn build_discovered_skill_entry(
             skill_md_path
         )
     })?;
+    let invocation_policy = frontmatter
+        .invocation_policy
+        .unwrap_or(SkillInvocationPolicy::Model);
     let eligibility = evaluate_skill_eligibility(config, &frontmatter);
     Ok(DiscoveredSkillEntry {
         display_name: derive_skill_display_name_with_frontmatter(
@@ -1720,45 +1771,85 @@ fn build_discovered_skill_entry(
         active,
         install_path,
         model_visibility: frontmatter.model_visibility,
-        required_env: frontmatter.requires_env.clone(),
-        required_bin: frontmatter.requires_bin.clone(),
-        required_paths: frontmatter.requires_paths.clone(),
+        required_env: frontmatter.required_env.clone(),
+        required_bin: frontmatter.required_bins.clone(),
+        required_paths: frontmatter.required_paths.clone(),
+        invocation_policy,
+        required_config: frontmatter.required_config.clone(),
+        allowed_tools: frontmatter.allowed_tools.clone(),
+        blocked_tools: frontmatter.blocked_tools.clone(),
         eligibility,
         skill_id,
     })
 }
 
+// This currently answers both "can run right now" and "eligible to run" so
+// operator output stays explicit without silently inventing separate semantics.
 fn evaluate_skill_eligibility(
     config: &super::runtime_config::ToolRuntimeConfig,
     frontmatter: &SkillFrontmatter,
 ) -> SkillEligibility {
     let missing_env = frontmatter
-        .requires_env
+        .required_env
         .iter()
         .filter(|name| !env_var_is_present(name))
         .cloned()
         .collect::<Vec<_>>();
     let missing_bin = frontmatter
-        .requires_bin
+        .required_bins
         .iter()
-        .filter(|command| !command_on_path(command))
+        .filter(|command| !command_exists(command))
         .cloned()
         .collect::<Vec<_>>();
     let missing_paths = frontmatter
-        .requires_paths
+        .required_paths
         .iter()
         .filter(|path| !required_path_exists(config, path))
         .cloned()
         .collect::<Vec<_>>();
-    if missing_env.is_empty() && missing_bin.is_empty() && missing_paths.is_empty() {
-        SkillEligibility::ready()
-    } else {
-        SkillEligibility::with_missing(missing_env, missing_bin, missing_paths)
+
+    let mut issues = missing_env
+        .iter()
+        .map(|env_name| format!("missing env `{env_name}`"))
+        .collect::<Vec<_>>();
+    issues.extend(
+        missing_bin
+            .iter()
+            .map(|binary| format!("missing binary `{binary}`")),
+    );
+    issues.extend(
+        missing_paths
+            .iter()
+            .map(|path| format!("missing path `{path}`")),
+    );
+    for selector in &frontmatter.required_config {
+        match runtime_config_selector_enabled(config, selector) {
+            Some(true) => {}
+            Some(false) => issues.push(format!("config gate `{selector}` is disabled")),
+            None => issues.push(format!("unsupported config gate `{selector}`")),
+        }
+    }
+    let available = issues.is_empty();
+    SkillEligibility {
+        available,
+        eligible: available,
+        missing_env,
+        missing_bin,
+        missing_paths,
+        issues,
     }
 }
 
 fn env_var_is_present(name: &str) -> bool {
     std::env::var_os(name).is_some_and(|value| !value.is_empty())
+}
+
+fn command_exists(binary: &str) -> bool {
+    let candidate = binary.trim();
+    if candidate.is_empty() {
+        return false;
+    }
+    which::which(candidate).is_ok()
 }
 
 fn serialize_skill_entry_for_audience(
@@ -1783,37 +1874,6 @@ fn serialize_skill_entries_for_audience(
                 .map(DiscoveredSkillModelView::from)
                 .collect::<Vec<_>>()
         ),
-    }
-}
-
-fn command_on_path(command: &str) -> bool {
-    let Some(path_env) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path_env).any(|dir| {
-        command_candidates(command)
-            .into_iter()
-            .map(|candidate| dir.join(candidate))
-            .any(|candidate| command_candidate_is_executable(&candidate))
-    })
-}
-
-fn command_candidate_is_executable(candidate: &Path) -> bool {
-    let Ok(metadata) = fs::metadata(candidate) else {
-        return false;
-    };
-    if !metadata.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        metadata.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        true
     }
 }
 
@@ -1881,23 +1941,6 @@ fn blocked_candidate_precedes_discovered(
         candidate.root_rank,
         &candidate.entry.source_path,
     ) != Ordering::Greater
-}
-
-fn command_candidates(command: &str) -> Vec<String> {
-    #[cfg(windows)]
-    {
-        vec![
-            command.to_owned(),
-            format!("{command}.exe"),
-            format!("{command}.cmd"),
-            format!("{command}.bat"),
-            format!("{command}.com"),
-        ]
-    }
-    #[cfg(not(windows))]
-    {
-        vec![command.to_owned()]
-    }
 }
 
 fn required_path_exists(config: &super::runtime_config::ToolRuntimeConfig, raw: &str) -> bool {
@@ -2226,6 +2269,62 @@ fn discover_skill_inventory(
     });
     Ok(inventory)
 }
+
+fn metadata_payload_from_skill(skill: &DiscoveredSkillEntry) -> Value {
+    json!({
+        "model_visibility": skill.model_visibility,
+        "invocation_policy": skill.invocation_policy,
+        "required_env": skill.required_env,
+        "required_bins": skill.required_bin,
+        "required_paths": skill.required_paths,
+        "required_config": skill.required_config,
+        "allowed_tools": skill.allowed_tools,
+        "blocked_tools": skill.blocked_tools,
+    })
+}
+
+fn runtime_config_selector_enabled(
+    config: &super::runtime_config::ToolRuntimeConfig,
+    selector: &str,
+) -> Option<bool> {
+    match selector.trim().to_ascii_lowercase().as_str() {
+        "external_skills.enabled" | "tools.external_skills.enabled" => {
+            Some(config.external_skills.enabled)
+        }
+        "browser.enabled" | "tools.browser.enabled" => Some(config.browser.enabled),
+        "browser_companion.enabled" | "tools.browser_companion.enabled" => {
+            Some(config.browser_companion.enabled)
+        }
+        "delegate.enabled" | "tools.delegate.enabled" => Some(config.delegate_enabled),
+        "messages.enabled" | "tools.messages.enabled" => Some(config.messages_enabled),
+        "sessions.enabled" | "tools.sessions.enabled" => Some(config.sessions_enabled),
+        "web.enabled" | "tools.web.enabled" | "web_fetch.enabled" | "tools.web_fetch.enabled" => {
+            Some(config.web_fetch.enabled)
+        }
+        "web_search.enabled" | "tools.web_search.enabled" => Some(config.web_search.enabled),
+        _ => None,
+    }
+}
+
+fn invocation_policy_id(policy: SkillInvocationPolicy) -> &'static str {
+    match policy {
+        SkillInvocationPolicy::Model => "model",
+        SkillInvocationPolicy::Manual => "manual",
+        SkillInvocationPolicy::Both => "both",
+    }
+}
+
+fn render_tool_restrictions_suffix(allowed_tools: &[String], blocked_tools: &[String]) -> String {
+    let mut fragments = Vec::new();
+    if !allowed_tools.is_empty() {
+        fragments.push(format!(" allowed_tools={}", allowed_tools.join(",")));
+    }
+    if !blocked_tools.is_empty() {
+        fragments.push(format!(" blocked_tools={}", blocked_tools.join(",")));
+    }
+    fragments.concat()
+}
+
 #[cfg(test)]
 pub(super) fn installed_skill_snapshot_lines_with_config(
     config: &super::runtime_config::ToolRuntimeConfig,
@@ -2700,6 +2799,8 @@ fn policy_payload(policy: &super::runtime_config::ExternalSkillsRuntimePolicy) -
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
 
@@ -2774,6 +2875,10 @@ mod tests {
             let mut env = crate::test_support::ScopedEnv::new();
             env.set("HOME", &path);
             Self { _env: env, path }
+        }
+
+        fn set_env(&mut self, key: &'static str, value: impl AsRef<std::ffi::OsStr>) {
+            self._env.set(key, value);
         }
     }
 
@@ -3349,6 +3454,215 @@ mod tests {
                     .contains("Demo Skill")
             );
 
+            fs::remove_dir_all(&root).ok();
+        });
+    }
+
+    #[test]
+    fn inspect_and_invoke_surface_skill_metadata_contract() {
+        with_managed_runtime_test(|| {
+            let root = unique_temp_dir("loongclaw-ext-skill-metadata-contract");
+            fs::create_dir_all(&root).expect("create fixture root");
+            let mut home = ScopedHomeFixture::new("loongclaw-ext-skill-metadata-contract-home");
+            home.set_env("LOONGCLAW_RELEASE_GUARD_TOKEN", "present");
+            write_file(
+                &home.path,
+                ".agents/skills/release-guard/SKILL.md",
+                "---\nname: release-guard\ndescription: Guard release discipline.\ninvocation_policy: both\nrequired_env:\n- LOONGCLAW_RELEASE_GUARD_TOKEN\nrequired_bins:\n- sh\nrequired_config:\n- external_skills.enabled\nallowed_tools:\n- shell.exec\nblocked_tools:\n- web.fetch\n---\n\n# Release Guard\n\nPrefer release checklists.\n",
+            );
+            let config = managed_runtime_config(&root);
+
+            let list_outcome = crate::tools::execute_tool_core_with_config(
+                ToolCoreRequest {
+                    tool_name: "external_skills.list".to_owned(),
+                    payload: json!({}),
+                },
+                &config,
+            )
+            .expect("list should succeed");
+            let listed_skill = list_outcome.payload["skills"]
+                .as_array()
+                .expect("skills should be an array")
+                .iter()
+                .find(|skill| skill["skill_id"] == "release-guard")
+                .cloned()
+                .expect("release-guard should be listed");
+            assert!(
+                listed_skill.get("metadata").is_none(),
+                "model list should not expose operator metadata: {listed_skill:?}"
+            );
+
+            let operator_list = execute_external_skills_operator_list_tool_with_config(&config)
+                .expect("operator list should succeed");
+            let operator_skill = operator_list.payload["skills"]
+                .as_array()
+                .expect("skills should be an array")
+                .iter()
+                .find(|skill| skill["skill_id"] == "release-guard")
+                .cloned()
+                .expect("release-guard should be listed for operators");
+            assert_eq!(operator_skill["invocation_policy"], "both");
+            assert_eq!(operator_skill["allowed_tools"], json!(["shell.exec"]));
+            assert_eq!(operator_skill["blocked_tools"], json!(["web.fetch"]));
+            assert_eq!(operator_skill["eligibility"]["available"], json!(true));
+
+            let inspect_outcome =
+                execute_external_skills_operator_inspect_tool_with_config("release-guard", &config)
+                    .expect("operator inspect should succeed");
+            assert_eq!(
+                inspect_outcome.payload["skill"]["required_env"],
+                json!(["LOONGCLAW_RELEASE_GUARD_TOKEN"])
+            );
+            assert_eq!(
+                inspect_outcome.payload["skill"]["required_config"],
+                json!(["external_skills.enabled"])
+            );
+            assert_eq!(
+                inspect_outcome.payload["skill"]["eligibility"]["available"],
+                json!(true)
+            );
+
+            let invoke_outcome = crate::tools::execute_tool_core_with_config(
+                ToolCoreRequest {
+                    tool_name: "external_skills.invoke".to_owned(),
+                    payload: json!({
+                        "skill_id": "release-guard"
+                    }),
+                },
+                &config,
+            )
+            .expect("invoke should succeed");
+            assert_eq!(
+                invoke_outcome.payload["metadata"]["invocation_policy"],
+                "both"
+            );
+            assert_eq!(
+                invoke_outcome.payload["eligibility"]["available"],
+                json!(true)
+            );
+            assert!(
+                invoke_outcome.payload["invocation_summary"]
+                    .as_str()
+                    .expect("invocation summary should be text")
+                    .contains("allowed_tools=shell.exec"),
+                "tool restrictions should surface in invocation summary"
+            );
+
+            fs::remove_dir_all(&root).ok();
+        });
+    }
+
+    #[test]
+    fn invoke_rejects_manual_or_ineligible_skill_metadata_contracts() {
+        with_managed_runtime_test(|| {
+            let root = unique_temp_dir("loongclaw-ext-skill-metadata-contract-reject");
+            fs::create_dir_all(&root).expect("create fixture root");
+            let home = ScopedHomeFixture::new("loongclaw-ext-skill-metadata-contract-reject-home");
+            write_file(
+                &home.path,
+                ".agents/skills/manual-only/SKILL.md",
+                "---\ninvocation_policy: manual\n---\n\n# Manual Only\n\nUse this skill only for operator-driven checks.\n",
+            );
+            write_file(
+                &home.path,
+                ".agents/skills/env-gated/SKILL.md",
+                "---\nrequired_env:\n- LOONGCLAW_MISSING_TOKEN\n---\n\n# Env Gated\n\nNeeds a token before it can run.\n",
+            );
+            let config = managed_runtime_config(&root);
+
+            let operator_list = execute_external_skills_operator_list_tool_with_config(&config)
+                .expect("operator list should succeed");
+            let env_gated = operator_list.payload["skills"]
+                .as_array()
+                .expect("skills should be an array")
+                .iter()
+                .find(|skill| skill["skill_id"] == "env-gated")
+                .cloned()
+                .expect("env-gated should be listed for operators");
+            assert_eq!(env_gated["eligibility"]["available"], json!(false));
+            assert!(
+                env_gated["eligibility"]["issues"]
+                    .as_array()
+                    .expect("eligibility issues should be an array")
+                    .iter()
+                    .any(|issue| issue.as_str() == Some("missing env `LOONGCLAW_MISSING_TOKEN`"))
+            );
+
+            let manual_error = crate::tools::execute_tool_core_with_config(
+                ToolCoreRequest {
+                    tool_name: "external_skills.invoke".to_owned(),
+                    payload: json!({
+                        "skill_id": "manual-only"
+                    }),
+                },
+                &config,
+            )
+            .expect_err("manual-only skills should reject model invocation");
+            assert!(manual_error.contains("invocation_policy=manual"));
+
+            let env_error = crate::tools::execute_tool_core_with_config(
+                ToolCoreRequest {
+                    tool_name: "external_skills.invoke".to_owned(),
+                    payload: json!({
+                        "skill_id": "env-gated"
+                    }),
+                },
+                &config,
+            )
+            .expect_err("missing env requirements should reject invocation");
+            assert!(env_error.contains("LOONGCLAW_MISSING_TOKEN"));
+
+            fs::remove_dir_all(&root).ok();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn list_marks_non_executable_required_bin_as_ineligible() {
+        with_managed_runtime_test(|| {
+            let root = unique_temp_dir("loongclaw-ext-skill-bin-eligibility");
+            fs::create_dir_all(&root).expect("create fixture root");
+            let mut home = ScopedHomeFixture::new("loongclaw-ext-skill-bin-eligibility-home");
+            let bin_dir = unique_temp_dir("loongclaw-ext-skill-bin-eligibility-bin");
+            fs::create_dir_all(&bin_dir).expect("create fake bin dir");
+
+            let fake_bin = bin_dir.join("release-check");
+            fs::write(&fake_bin, "#!/bin/sh\nexit 0\n").expect("write fake binary");
+            let mut permissions = fs::metadata(&fake_bin)
+                .expect("read fake binary metadata")
+                .permissions();
+            permissions.set_mode(0o644);
+            fs::set_permissions(&fake_bin, permissions)
+                .expect("mark fake binary as non-executable");
+
+            home.set_env("PATH", &bin_dir);
+            write_file(
+                &home.path,
+                ".agents/skills/bin-gated/SKILL.md",
+                "---\nrequired_bins:\n- release-check\n---\n\n# Bin Gated\n\nNeeds a real executable on PATH.\n",
+            );
+            let config = managed_runtime_config(&root);
+
+            let operator_list = execute_external_skills_operator_list_tool_with_config(&config)
+                .expect("operator list should succeed");
+            let listed_skill = operator_list.payload["skills"]
+                .as_array()
+                .expect("skills should be an array")
+                .iter()
+                .find(|skill| skill["skill_id"] == "bin-gated")
+                .cloned()
+                .expect("bin-gated skill should be listed for operators");
+            assert_eq!(listed_skill["eligibility"]["available"], json!(false));
+            assert!(
+                listed_skill["eligibility"]["issues"]
+                    .as_array()
+                    .expect("eligibility issues should be an array")
+                    .iter()
+                    .any(|issue| issue.as_str() == Some("missing binary `release-check`")),
+                "non-executable files on PATH must not satisfy required_bins"
+            );
+
+            fs::remove_dir_all(&bin_dir).ok();
             fs::remove_dir_all(&root).ok();
         });
     }
@@ -4565,6 +4879,77 @@ mod tests {
             );
 
             fs::remove_dir_all(&root).ok();
+        });
+    }
+
+    #[test]
+    fn list_skips_missing_managed_installs_instead_of_failing_discovery() {
+        with_managed_runtime_test(|| {
+            let root = unique_temp_dir("loongclaw-ext-skill-discovery-broken-managed");
+            let home = unique_temp_dir("loongclaw-ext-skill-discovery-broken-managed-home");
+            fs::create_dir_all(&root).expect("create fixture root");
+            fs::create_dir_all(&home).expect("create home root");
+
+            write_file(
+                &root,
+                "source/broken-managed/SKILL.md",
+                "# Broken Managed\n\nThis managed install will be removed after indexing.\n",
+            );
+            write_file(
+                &home,
+                ".agents/skills/user-only/SKILL.md",
+                "# User Only\n\nKeep discovery alive when managed state is broken.\n",
+            );
+
+            let config = managed_runtime_config(&root);
+            let mut env = crate::test_support::ScopedEnv::new();
+            env.set("HOME", &home);
+
+            crate::tools::execute_tool_core_with_config(
+                ToolCoreRequest {
+                    tool_name: "external_skills.install".to_owned(),
+                    payload: json!({
+                        "path": "source/broken-managed"
+                    }),
+                },
+                &config,
+            )
+            .expect("install should succeed");
+
+            fs::remove_dir_all(
+                root.join("external-skills-installed")
+                    .join("broken-managed"),
+            )
+            .expect("remove managed install to simulate broken index entry");
+
+            let list_outcome = crate::tools::execute_tool_core_with_config(
+                ToolCoreRequest {
+                    tool_name: "external_skills.list".to_owned(),
+                    payload: json!({}),
+                },
+                &config,
+            )
+            .expect("broken managed installs should be skipped during discovery");
+
+            assert!(
+                list_outcome.payload["skills"]
+                    .as_array()
+                    .expect("skills should be an array")
+                    .iter()
+                    .any(|skill| skill["skill_id"] == "user-only" && skill["scope"] == "user"),
+                "healthy user skills should remain discoverable when a managed install is missing"
+            );
+            assert!(
+                !list_outcome.payload["skills"]
+                    .as_array()
+                    .expect("skills should be an array")
+                    .iter()
+                    .any(|skill| skill["skill_id"] == "broken-managed"),
+                "broken managed installs should be dropped from discovery output"
+            );
+
+            fs::remove_dir_all(&root).ok();
+            fs::remove_dir_all(&home).ok();
         });
     }
 
