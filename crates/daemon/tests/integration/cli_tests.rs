@@ -1320,24 +1320,6 @@ fn multi_channel_serve_cli_help_mentions_session_and_account_flags() {
 }
 
 #[test]
-fn multi_channel_serve_cli_fails_closed_until_implemented() {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("build test runtime");
-    let error = runtime
-        .block_on(run_multi_channel_serve_cli(
-            None,
-            "cli-supervisor",
-            None,
-            None,
-        ))
-        .expect_err("multi-channel-serve should fail closed for now");
-
-    assert!(error.contains("not implemented yet"));
-}
-
-#[test]
 fn default_channel_send_target_kind_uses_command_family_send_metadata() {
     assert_eq!(
         default_channel_send_target_kind(ChannelSendCliSpec {

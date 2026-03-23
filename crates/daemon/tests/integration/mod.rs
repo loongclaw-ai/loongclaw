@@ -32,6 +32,7 @@ mod import_cli;
 mod memory_context_benchmark_cli;
 mod migrate_cli;
 mod migration;
+mod multi_channel_serve_cli;
 mod onboard_cli;
 mod programmatic;
 mod runtime_capability_cli;

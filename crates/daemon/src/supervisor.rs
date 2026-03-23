@@ -1,9 +1,19 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
+    future::Future,
+    path::PathBuf,
+    pin::Pin,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use loongclaw_spec::CliResult;
+use tokio::{sync::Notify, task::JoinSet};
+
+use crate::{mvp, wait_for_shutdown_signal};
+
+type BoxedSupervisorFuture = Pin<Box<dyn Future<Output = CliResult<()>> + Send + 'static>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BackgroundChannelSurface {
@@ -478,15 +488,270 @@ impl SupervisorState {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct LoadedSupervisorConfig {
+    pub resolved_path: PathBuf,
+    pub config: mvp::config::LoongClawConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct BackgroundChannelRunnerRequest {
+    pub resolved_path: PathBuf,
+    pub config: mvp::config::LoongClawConfig,
+    pub account_id: Option<String>,
+    pub stop: mvp::channel::ChannelServeStopHandle,
+}
+
+#[derive(Clone)]
+pub struct SupervisorRuntimeHooks {
+    pub load_config:
+        Arc<dyn Fn(Option<&str>) -> CliResult<LoadedSupervisorConfig> + Send + Sync + 'static>,
+    pub run_cli_host: Arc<
+        dyn Fn(mvp::chat::ConcurrentCliHostOptions) -> BoxedSupervisorFuture
+            + Send
+            + Sync
+            + 'static,
+    >,
+    pub run_telegram: Arc<
+        dyn Fn(BackgroundChannelRunnerRequest) -> BoxedSupervisorFuture + Send + Sync + 'static,
+    >,
+    pub run_feishu: Arc<
+        dyn Fn(BackgroundChannelRunnerRequest) -> BoxedSupervisorFuture + Send + Sync + 'static,
+    >,
+    pub wait_for_shutdown: Arc<dyn Fn() -> BoxedSupervisorFuture + Send + Sync + 'static>,
+}
+
+impl SupervisorRuntimeHooks {
+    fn production() -> Self {
+        Self {
+            load_config: Arc::new(|config_path| {
+                let (resolved_path, config) = mvp::config::load(config_path)?;
+                Ok(LoadedSupervisorConfig {
+                    resolved_path,
+                    config,
+                })
+            }),
+            run_cli_host: Arc::new(|options| {
+                Box::pin(async move {
+                    tokio::task::spawn_blocking(move || {
+                        mvp::chat::run_concurrent_cli_host(&options)
+                    })
+                    .await
+                    .map_err(|error| format!("concurrent CLI host task failed to join: {error}"))?
+                })
+            }),
+            run_telegram: Arc::new(|request| {
+                Box::pin(async move {
+                    mvp::channel::run_telegram_channel_with_stop(
+                        request.resolved_path,
+                        request.config,
+                        false,
+                        request.account_id.as_deref(),
+                        request.stop,
+                    )
+                    .await
+                })
+            }),
+            run_feishu: Arc::new(|request| {
+                Box::pin(async move {
+                    mvp::channel::run_feishu_channel_with_stop(
+                        request.resolved_path,
+                        request.config,
+                        request.account_id.as_deref(),
+                        None,
+                        None,
+                        request.stop,
+                    )
+                    .await
+                })
+            }),
+            wait_for_shutdown: Arc::new(|| Box::pin(async { wait_for_shutdown_signal().await })),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum BackgroundTaskExit {
+    Surface {
+        surface: BackgroundChannelSurface,
+        result: CliResult<()>,
+    },
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn forward_root_shutdown(
+    supervisor: &mut SupervisorState,
+    cli_shutdown: &Arc<Notify>,
+    stop_handles: &[mvp::channel::ChannelServeStopHandle],
+    signal_active: &mut bool,
+) {
+    cli_shutdown.notify_waiters();
+    for stop in stop_handles {
+        stop.request_stop();
+    }
+    *signal_active = false;
+    if matches!(
+        supervisor.phase(),
+        RuntimeOwnerPhase::Stopping | RuntimeOwnerPhase::Failed | RuntimeOwnerPhase::Stopped
+    ) {
+        return;
+    }
+    supervisor.phase = RuntimeOwnerPhase::Stopping;
+}
+
+#[doc(hidden)]
+pub async fn run_multi_channel_serve_with_hooks_for_test(
+    config_path: Option<&str>,
+    session: &str,
+    telegram_account: Option<&str>,
+    feishu_account: Option<&str>,
+    hooks: SupervisorRuntimeHooks,
+) -> CliResult<SupervisorState> {
+    let spec = SupervisorSpec::from_multi_channel_serve(session, telegram_account, feishu_account)?;
+    let LoadedSupervisorConfig {
+        resolved_path,
+        config,
+    } = (hooks.load_config)(config_path)?;
+    let mut supervisor = SupervisorState::new(spec.clone());
+
+    let cli_shutdown = Arc::new(Notify::new());
+    let telegram_stop = mvp::channel::ChannelServeStopHandle::new();
+    let feishu_stop = mvp::channel::ChannelServeStopHandle::new();
+    let stop_handles = vec![telegram_stop.clone(), feishu_stop.clone()];
+
+    let mut background_tasks = JoinSet::new();
+
+    for surface in &spec.surfaces {
+        supervisor.mark_surface_running(surface, now_ms())?;
+        match surface {
+            BackgroundChannelSurface::Telegram { account_id } => {
+                let request = BackgroundChannelRunnerRequest {
+                    resolved_path: resolved_path.clone(),
+                    config: config.clone(),
+                    account_id: account_id.clone(),
+                    stop: telegram_stop.clone(),
+                };
+                let run_telegram = hooks.run_telegram.clone();
+                let surface = surface.clone();
+                background_tasks.spawn(async move {
+                    BackgroundTaskExit::Surface {
+                        surface,
+                        result: run_telegram(request).await,
+                    }
+                });
+            }
+            BackgroundChannelSurface::Feishu { account_id } => {
+                let request = BackgroundChannelRunnerRequest {
+                    resolved_path: resolved_path.clone(),
+                    config: config.clone(),
+                    account_id: account_id.clone(),
+                    stop: feishu_stop.clone(),
+                };
+                let run_feishu = hooks.run_feishu.clone();
+                let surface = surface.clone();
+                background_tasks.spawn(async move {
+                    BackgroundTaskExit::Surface {
+                        surface,
+                        result: run_feishu(request).await,
+                    }
+                });
+            }
+        }
+    }
+
+    let mut cli_host = Box::pin((hooks.run_cli_host)(mvp::chat::ConcurrentCliHostOptions {
+        resolved_path: resolved_path.clone(),
+        config: config.clone(),
+        session_id: session.to_owned(),
+        shutdown: cli_shutdown.clone(),
+    }));
+    let mut cli_active = true;
+
+    let mut shutdown_signal = Box::pin((hooks.wait_for_shutdown)());
+    let mut signal_active = true;
+
+    let mut foreground_failure: Option<String> = None;
+
+    while cli_active || !background_tasks.is_empty() {
+        tokio::select! {
+            cli_result = &mut cli_host, if cli_active => {
+                cli_active = false;
+                match cli_result {
+                    Ok(()) => {
+                        if !supervisor.shutdown_requested() {
+                            supervisor.request_shutdown("foreground CLI host exited".to_owned())?;
+                        }
+                        forward_root_shutdown(&mut supervisor, &cli_shutdown, &stop_handles, &mut signal_active);
+                    }
+                    Err(error) => {
+                        foreground_failure = Some(error.clone());
+                        if !supervisor.shutdown_requested() {
+                            supervisor.request_shutdown(format!("foreground CLI host failed: {error}"))?;
+                        }
+                        forward_root_shutdown(&mut supervisor, &cli_shutdown, &stop_handles, &mut signal_active);
+                    }
+                }
+            }
+            signal_result = &mut shutdown_signal, if signal_active => {
+                signal_active = false;
+                signal_result?;
+                if !supervisor.shutdown_requested() {
+                    supervisor.request_shutdown("ctrl-c received".to_owned())?;
+                }
+                forward_root_shutdown(&mut supervisor, &cli_shutdown, &stop_handles, &mut signal_active);
+            }
+            Some(joined) = background_tasks.join_next(), if !background_tasks.is_empty() => {
+                let exit = joined.map_err(|error| format!("background channel task failed to join: {error}"))?;
+                match exit {
+                    BackgroundTaskExit::Surface { surface, result } => {
+                        match result {
+                            Ok(()) => {
+                                supervisor.mark_surface_stopped(&surface, now_ms())?;
+                            }
+                            Err(error) => {
+                                supervisor.record_surface_failure(&surface, now_ms(), error)?;
+                            }
+                        }
+                    }
+                }
+
+                if supervisor.shutdown_requested() {
+                    forward_root_shutdown(&mut supervisor, &cli_shutdown, &stop_handles, &mut signal_active);
+                }
+            }
+        }
+    }
+
+    if let Some(error) = foreground_failure {
+        return Err(format!(
+            "multi-channel supervisor failed because foreground CLI host exited unexpectedly: {error}"
+        ));
+    }
+
+    Ok(supervisor)
+}
+
 pub async fn run_multi_channel_serve(
     config_path: Option<&str>,
     session: &str,
     telegram_account: Option<&str>,
     feishu_account: Option<&str>,
 ) -> CliResult<()> {
-    let spec = SupervisorSpec::from_multi_channel_serve(session, telegram_account, feishu_account)?;
-    let _ = (config_path, spec);
-    Err("multi-channel-serve is not implemented yet".to_owned())
+    let supervisor = run_multi_channel_serve_with_hooks_for_test(
+        config_path,
+        session,
+        telegram_account,
+        feishu_account,
+        SupervisorRuntimeHooks::production(),
+    )
+    .await?;
+    supervisor.final_exit_result()
 }
 
 #[cfg(test)]

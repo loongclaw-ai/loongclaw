@@ -1758,6 +1758,53 @@ pub async fn run_feishu_channel_with_stop(
     run_feishu_channel_with_context(context, bind_override, path_override, stop).await
 }
 
+#[doc(hidden)]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
+pub async fn run_channel_serve_runtime_probe_for_test(
+    platform: ChannelPlatform,
+    account_id: &str,
+    account_label: &str,
+    stop: ChannelServeStopHandle,
+    entered: Arc<Notify>,
+) -> CliResult<()> {
+    with_channel_serve_runtime_with_stop(
+        ChannelServeRuntimeSpec {
+            platform,
+            operation_id: CHANNEL_OPERATION_SERVE_ID,
+            account_id,
+            account_label,
+        },
+        stop,
+        move |_runtime, stop| async move {
+            entered.notify_one();
+            stop.wait().await;
+            Ok(())
+        },
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub fn load_channel_operation_runtime_for_account_from_dir_for_test(
+    runtime_dir: &std::path::Path,
+    platform: ChannelPlatform,
+    operation_id: &str,
+    account_id: &str,
+    now_ms: u64,
+) -> Option<ChannelOperationRuntime> {
+    runtime_state::load_channel_operation_runtime_for_account_from_dir(
+        runtime_dir,
+        platform,
+        operation_id,
+        account_id,
+        now_ms,
+    )
+}
+
 #[allow(clippy::print_stdout)] // CLI output
 pub async fn run_matrix_send(
     config_path: Option<&str>,
