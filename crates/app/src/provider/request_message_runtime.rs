@@ -87,7 +87,21 @@ pub(super) fn build_messages_for_session(
     session_id: &str,
     include_system_prompt: bool,
 ) -> CliResult<Vec<Value>> {
-    build_messages_for_session_in_view(
+    build_projected_context_for_session_in_view(
+        config,
+        session_id,
+        include_system_prompt,
+        &tools::runtime_tool_view(),
+    )
+    .map(|projected| projected.messages)
+}
+
+pub(crate) fn build_projected_context_for_session(
+    config: &LoongClawConfig,
+    session_id: &str,
+    include_system_prompt: bool,
+) -> CliResult<ProjectedMessageContext> {
+    build_projected_context_for_session_in_view(
         config,
         session_id,
         include_system_prompt,
@@ -95,12 +109,12 @@ pub(super) fn build_messages_for_session(
     )
 }
 
-pub(super) fn build_messages_for_session_in_view(
+pub(crate) fn build_projected_context_for_session_in_view(
     config: &LoongClawConfig,
     session_id: &str,
     include_system_prompt: bool,
     tool_view: &ToolView,
-) -> CliResult<Vec<Value>> {
+) -> CliResult<ProjectedMessageContext> {
     #[cfg(feature = "memory-sqlite")]
     {
         let mem_config =
@@ -112,18 +126,16 @@ pub(super) fn build_messages_for_session_in_view(
             include_system_prompt,
             tool_view,
             &hydrated,
-        )
-        .messages)
+        ))
     }
 
     #[cfg(not(feature = "memory-sqlite"))]
     {
         let _ = session_id;
-        Ok(build_base_messages_for_view(
-            config,
-            include_system_prompt,
-            tool_view,
-        ))
+        Ok(ProjectedMessageContext {
+            messages: build_base_messages_for_view(config, include_system_prompt, tool_view),
+            artifacts: Vec::new(),
+        })
     }
 }
 

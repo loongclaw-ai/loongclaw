@@ -348,12 +348,17 @@ impl ConversationContextEngine for DefaultContextEngine {
         binding: ConversationRuntimeBinding<'_>,
     ) -> CliResult<AssembledConversationContext> {
         if !binding.is_kernel_bound() {
-            return crate::provider::build_messages_for_session(
+            let projected = crate::provider::build_projected_context_for_session(
                 config,
                 session_id,
                 include_system_prompt,
-            )
-            .map(AssembledConversationContext::from_messages);
+            )?;
+            return Ok(AssembledConversationContext {
+                messages: projected.messages,
+                artifacts: projected.artifacts,
+                estimated_tokens: None,
+                system_prompt_addition: None,
+            });
         }
 
         #[cfg(feature = "memory-sqlite")]

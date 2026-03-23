@@ -2279,6 +2279,13 @@ async fn default_runtime_build_context_matches_builtin_summary_projection() {
         }),
         "expected hydrated summary block in default runtime messages"
     );
+    assert!(
+        assembled
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.artifact_kind == ContextArtifactKind::Summary),
+        "direct-mode builtin summary projection should preserve summary artifacts"
+    );
 
     let _ = std::fs::remove_file(sqlite_path);
 }
@@ -2325,6 +2332,13 @@ async fn default_runtime_build_context_explicit_builtin_system_preserves_profile
                     .is_some_and(|content| content.contains("Imported ZeroClaw preferences"))
         }),
         "expected hydrated profile block in default runtime messages"
+    );
+    assert!(
+        assembled
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.artifact_kind == ContextArtifactKind::Profile),
+        "direct-mode builtin profile projection should preserve profile artifacts"
     );
 
     let _ = std::fs::remove_file(sqlite_path);
