@@ -10,6 +10,7 @@ use crate::tools;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeSelfLane {
     StandingInstructions,
+    ToolUsagePolicy,
     SoulGuidance,
     IdentityContext,
     UserContext,
@@ -31,6 +32,10 @@ const RUNTIME_SELF_SOURCE_SPECS: &[RuntimeSelfSourceSpec] = &[
         lane: RuntimeSelfLane::StandingInstructions,
     },
     RuntimeSelfSourceSpec {
+        relative_path: "TOOLS.md",
+        lane: RuntimeSelfLane::ToolUsagePolicy,
+    },
+    RuntimeSelfSourceSpec {
         relative_path: "SOUL.md",
         lane: RuntimeSelfLane::SoulGuidance,
     },
@@ -47,6 +52,7 @@ const RUNTIME_SELF_SOURCE_SPECS: &[RuntimeSelfSourceSpec] = &[
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct RuntimeSelfModel {
     pub standing_instructions: Vec<String>,
+    pub tool_usage_policy: Vec<String>,
     pub soul_guidance: Vec<String>,
     pub identity_context: Vec<String>,
     pub user_context: Vec<String>,
@@ -91,6 +97,7 @@ pub(crate) fn load_runtime_self_model_with_config(
 
 pub(crate) fn render_runtime_self_section(model: &RuntimeSelfModel) -> Option<String> {
     let has_renderable_content = !model.standing_instructions.is_empty()
+        || !model.tool_usage_policy.is_empty()
         || !model.soul_guidance.is_empty()
         || !model.user_context.is_empty();
 
@@ -105,6 +112,11 @@ pub(crate) fn render_runtime_self_section(model: &RuntimeSelfModel) -> Option<St
         &mut sections,
         "### Standing Instructions",
         &model.standing_instructions,
+    );
+    push_rendered_lane(
+        &mut sections,
+        "### Tool Usage Policy",
+        &model.tool_usage_policy,
     );
     push_rendered_lane(&mut sections, "### Soul Guidance", &model.soul_guidance);
     push_rendered_lane(&mut sections, "### User Context", &model.user_context);
@@ -174,6 +186,9 @@ pub(crate) fn append_runtime_self_content(
     match lane {
         RuntimeSelfLane::StandingInstructions => {
             model.standing_instructions.push(content);
+        }
+        RuntimeSelfLane::ToolUsagePolicy => {
+            model.tool_usage_policy.push(content);
         }
         RuntimeSelfLane::SoulGuidance => {
             model.soul_guidance.push(content);
@@ -272,6 +287,59 @@ mod tests {
                 nested_agents_text.to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn render_runtime_self_section_includes_dedicated_tool_usage_policy_lane() {
+        let temp_dir = tempdir().expect("tempdir");
+        let workspace_root = temp_dir.path();
+
+        let agents_path = workspace_root.join("AGENTS.md");
+        let tools_path = workspace_root.join("TOOLS.md");
+
+        let agents_text = "Keep standing instructions visible.";
+        let tools_text = "When durable workspace facts may matter, search memory before answering.";
+
+        std::fs::write(&agents_path, agents_text).expect("write AGENTS");
+        std::fs::write(&tools_path, tools_text).expect("write TOOLS");
+
+        let model = load_runtime_self_model(workspace_root);
+        let rendered = render_runtime_self_section(&model).expect("render runtime self");
+
+        assert!(rendered.contains("### Standing Instructions"));
+        assert!(rendered.contains(agents_text));
+        assert!(rendered.contains("### Tool Usage Policy"));
+        assert!(rendered.contains(tools_text));
+    }
+
+    #[test]
+    fn render_runtime_self_section_keeps_root_and_nested_tool_policy_order_stable() {
+        let temp_dir = tempdir().expect("tempdir");
+        let workspace_root = temp_dir.path();
+        let nested_workspace_root = workspace_root.join("workspace");
+
+        std::fs::create_dir_all(&nested_workspace_root).expect("create nested workspace root");
+
+        let root_tools_path = workspace_root.join("TOOLS.md");
+        let nested_tools_path = nested_workspace_root.join("TOOLS.md");
+
+        let root_tools_text = "Root tool policy guidance.";
+        let nested_tools_text = "Nested workspace tool policy guidance.";
+
+        std::fs::write(&root_tools_path, root_tools_text).expect("write root TOOLS");
+        std::fs::write(&nested_tools_path, nested_tools_text).expect("write nested TOOLS");
+
+        let model = load_runtime_self_model(workspace_root);
+        let rendered = render_runtime_self_section(&model).expect("render runtime self");
+
+        let root_index = rendered
+            .find(root_tools_text)
+            .expect("root tool policy should be rendered");
+        let nested_index = rendered
+            .find(nested_tools_text)
+            .expect("nested tool policy should be rendered");
+
+        assert!(root_index < nested_index);
     }
 
     #[test]

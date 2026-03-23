@@ -494,16 +494,19 @@ mod tests {
         let workspace_root = temp_dir.path();
 
         let agents_path = workspace_root.join("AGENTS.md");
+        let tools_path = workspace_root.join("TOOLS.md");
         let soul_path = workspace_root.join("SOUL.md");
         let identity_path = workspace_root.join("IDENTITY.md");
         let user_path = workspace_root.join("USER.md");
 
         let agents_text = "Always keep workspace instructions explicit.";
+        let tools_text = "Search durable workspace memory before guessing project facts.";
         let soul_text = "Prefer calm, rigorous, low-drama execution.";
         let identity_text = "You are the migration-shaped helper identity.";
         let user_text = "The operator prefers concise technical summaries.";
 
         std::fs::write(&agents_path, agents_text).expect("write AGENTS");
+        std::fs::write(&tools_path, tools_text).expect("write TOOLS");
         std::fs::write(&soul_path, soul_text).expect("write SOUL");
         std::fs::write(&identity_path, identity_text).expect("write IDENTITY");
         std::fs::write(&user_path, user_text).expect("write USER");
@@ -528,6 +531,8 @@ mod tests {
         assert!(system_content.contains("## Runtime Self Context"));
         assert!(system_content.contains("### Standing Instructions"));
         assert!(system_content.contains(agents_text));
+        assert!(system_content.contains("### Tool Usage Policy"));
+        assert!(system_content.contains(tools_text));
         assert!(system_content.contains("### Soul Guidance"));
         assert!(system_content.contains(soul_text));
         assert!(system_content.contains("### User Context"));
