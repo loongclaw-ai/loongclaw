@@ -31,12 +31,7 @@ pub struct MemoryDiagnostics {
 
 impl MemoryDiagnostics {
     pub fn normalize_system_id(raw: &str) -> Option<String> {
-        let normalized = raw.trim().to_ascii_lowercase();
-        if normalized.is_empty() {
-            None
-        } else {
-            Some(normalized)
-        }
+        super::normalize_system_id(raw)
     }
 }
 
@@ -245,6 +240,8 @@ where
 }
 
 fn run_rank_stage(entries: Vec<MemoryContextEntry>) -> StageRunResult {
+    // Slice 1 keeps ranking as an identity stage until compaction and external
+    // ranking hooks graduate beyond the built-in pipeline contract.
     StageRunResult {
         records: entries,
         diagnostics: StageDiagnostics::succeeded(MemoryStageFamily::Rank),
