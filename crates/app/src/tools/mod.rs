@@ -96,6 +96,16 @@ pub fn external_skills_operator_inspect_with_config(
     external_skills::execute_external_skills_operator_inspect_tool_with_config(skill_id, config)
 }
 
+pub(crate) fn discover_installable_external_skill_roots(
+    root: &Path,
+) -> Result<Vec<PathBuf>, String> {
+    external_skills::discover_installable_skill_roots(root)
+}
+
+pub(crate) fn resolve_installable_external_skill_id(root: &Path) -> Result<String, String> {
+    external_skills::resolve_installable_skill_id(root)
+}
+
 tokio::task_local! {
     static TRUSTED_INTERNAL_TOOL_PAYLOAD_TASK: bool;
 }
@@ -2123,6 +2133,34 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tool-shell")]
+    #[test]
+    fn shell_exec_catalog_exposes_timeout_ms() {
+        let catalog = tool_catalog();
+        let descriptor = catalog
+            .descriptor("shell.exec")
+            .expect("shell.exec should be in the catalog");
+        let definition = descriptor.provider_definition();
+        let properties = definition["function"]["parameters"]["properties"]
+            .as_object()
+            .expect("shell.exec parameters");
+
+        assert!(
+            properties.contains_key("timeout_ms"),
+            "shell.exec schema should expose timeout_ms parameter"
+        );
+
+        let entry = catalog::find_tool_catalog_entry("shell.exec")
+            .expect("shell.exec should be in catalog entries");
+        assert!(
+            entry
+                .argument_hint
+                .split(',')
+                .any(|part| part == "timeout_ms?:integer"),
+            "shell.exec argument hint should expose timeout_ms"
+        );
+    }
+
     #[cfg(feature = "tool-websearch")]
     #[test]
     fn tool_registry_hides_web_search_when_runtime_disabled() {
@@ -2512,6 +2550,140 @@ mod tests {
         fs::remove_dir_all(&root).ok();
     }
 
+    #[cfg(feature = "tool-shell")]
+    #[test]
+    fn shell_exec_times_out_when_timeout_ms_is_small() {
+        let mut config = test_tool_runtime_config(std::env::temp_dir());
+        #[cfg(unix)]
+        {
+            config.shell_allow.insert("sleep".to_owned());
+        }
+        #[cfg(windows)]
+        {
+            config.shell_allow.insert("ping".to_owned());
+        }
+
+        #[cfg(unix)]
+        let (command, args) = ("sleep", vec!["10"]);
+        #[cfg(windows)]
+        let (command, args) = ("ping", vec!["127.0.0.1", "-n", "10"]);
+
+        let error = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "shell.exec".to_owned(),
+                payload: json!({
+                    "command": command,
+                    "args": args,
+                    "timeout_ms": 1,
+                }),
+            },
+            &config,
+        )
+        .expect_err("slow command should time out");
+
+        assert!(
+            error.contains("timed out after"),
+            "expected timeout failure for long command, got: {error}"
+        );
+    }
+
+    #[cfg(all(feature = "tool-shell", unix))]
+    #[test]
+    fn shell_exec_timeout_returns_without_waiting_for_descendant_pipe_holders() {
+        let mut config = test_tool_runtime_config(std::env::temp_dir());
+        let args = vec!["-c", "sleep 5 & wait"];
+        let started_at = std::time::Instant::now();
+
+        config.shell_allow.insert("sh".to_owned());
+
+        let error = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "shell.exec".to_owned(),
+                payload: json!({
+                    "command": "sh",
+                    "args": args,
+                    "timeout_ms": 1_000,
+                }),
+            },
+            &config,
+        )
+        .expect_err("timed-out shell should return an error");
+
+        let elapsed = started_at.elapsed();
+
+        assert!(
+            error.contains("timed out after 1000ms"),
+            "expected timeout message, got: {error}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(2_500),
+            "timeout path should not wait for descendant pipe holders; elapsed={elapsed:?}"
+        );
+    }
+
+    #[cfg(feature = "tool-shell")]
+    #[test]
+    fn shell_exec_succeeds_when_fast_command_receives_timeout_ms() {
+        #[cfg(unix)]
+        let config = test_tool_runtime_config(std::env::temp_dir());
+        #[cfg(windows)]
+        let mut config = test_tool_runtime_config(std::env::temp_dir());
+
+        #[cfg(unix)]
+        let (command, args, expected_stdout) = ("echo", vec!["hello"], "hello");
+        #[cfg(windows)]
+        {
+            config.shell_allow.insert("cmd".to_owned());
+        }
+        #[cfg(windows)]
+        let (command, args, expected_stdout) = ("cmd", vec!["/C", "echo", "hello"], "hello");
+
+        let outcome = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "shell.exec".to_owned(),
+                payload: json!({
+                    "command": command,
+                    "args": args,
+                    "timeout_ms": 5_000,
+                }),
+            },
+            &config,
+        )
+        .expect("fast command should succeed");
+
+        assert_eq!(outcome.status, "ok");
+        assert_eq!(outcome.payload["stdout"].as_str(), Some(expected_stdout));
+    }
+
+    #[cfg(all(feature = "tool-shell", unix))]
+    #[test]
+    fn shell_exec_truncates_large_stdout_without_failing_command() {
+        let mut config = test_tool_runtime_config(std::env::temp_dir());
+        config.shell_allow.insert("perl".to_owned());
+
+        let outcome = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "shell.exec".to_owned(),
+                payload: json!({
+                    "command": "perl",
+                    "args": ["-e", "print chr(97) x 2000000"],
+                    "timeout_ms": 5_000,
+                }),
+            },
+            &config,
+        )
+        .expect("large-output command should still complete");
+
+        assert_eq!(outcome.status, "ok");
+        assert_eq!(outcome.payload["exit_code"].as_i64(), Some(0));
+
+        let stdout = outcome.payload["stdout"]
+            .as_str()
+            .expect("stdout should be present");
+        assert_eq!(stdout.len(), 1_048_576);
+        assert!(stdout.bytes().all(|byte| byte == b'a'));
+    }
+
     #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
     #[test]
     fn tool_search_result_includes_compact_argument_hints() {
@@ -2534,7 +2706,8 @@ mod tests {
         let results = outcome.payload["results"].as_array().expect("results");
         assert!(results.iter().any(|entry| {
             entry["tool_id"] == "shell.exec"
-                && entry["argument_hint"].as_str() == Some("command:string,args?:string[]")
+                && entry["argument_hint"].as_str()
+                    == Some("command:string,args?:string[],timeout_ms?:integer,cwd?:string")
         }));
 
         std::fs::remove_dir_all(&root).ok();
@@ -12588,6 +12761,11 @@ mod tests {
             "# Identity\n\n- role: release copilot\n- tone: steady\n",
         );
         write_file(&root, "SKILLS.md", "# Skills\n\n- custom/skill-a\n");
+        write_file(
+            &root,
+            ".codex/skills/release-guard/SKILL.md",
+            "# Release Guard\n\nUse this skill when release discipline matters.\n",
+        );
 
         let output_path = root.join("loongclaw.toml");
 
@@ -12613,11 +12791,19 @@ mod tests {
         assert_eq!(outcome.status, "ok");
         assert_eq!(
             outcome.payload["result"]["external_skill_artifact_count"],
-            1
+            2
         );
         assert_eq!(
             outcome.payload["result"]["external_skill_entries_applied"],
-            3
+            6
+        );
+        assert_eq!(
+            outcome.payload["result"]["external_skill_managed_install_count"],
+            1
+        );
+        assert_eq!(
+            outcome.payload["result"]["external_skill_managed_skill_ids"],
+            json!(["release-guard"])
         );
         assert!(
             outcome.payload["result"]["external_skills_manifest_path"]
@@ -12627,6 +12813,13 @@ mod tests {
         );
         let raw = fs::read_to_string(&output_path).expect("read output config");
         assert!(raw.contains("Imported External Skills Artifacts"));
+        assert!(
+            root.join("external-skills-installed")
+                .join("release-guard")
+                .join("SKILL.md")
+                .exists(),
+            "claw.migrate should bridge installable local skills into the managed runtime"
+        );
 
         fs::remove_dir_all(&root).ok();
     }

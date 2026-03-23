@@ -1,12 +1,14 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::ErrorKind,
+    io::{ErrorKind, Write},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use loongclaw_contracts::ToolCoreRequest;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::CliResult;
 
@@ -96,6 +98,8 @@ pub struct ApplyImportSelectionResult {
     pub warnings: Vec<String>,
     pub external_skill_artifact_count: usize,
     pub external_skill_entries_applied: usize,
+    pub external_skill_managed_install_count: usize,
+    pub external_skill_managed_skill_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,6 +118,10 @@ struct ImportApplyManifest {
     #[serde(default)]
     external_skill_entries_applied: usize,
     #[serde(default)]
+    external_skill_managed_install_count: usize,
+    #[serde(default)]
+    external_skill_managed_skill_ids: Vec<String>,
+    #[serde(default)]
     external_skills_manifest_path: Option<String>,
 }
 
@@ -126,6 +134,8 @@ struct ExternalSkillsApplyManifest {
     declared_skills: Vec<String>,
     locked_skills: Vec<String>,
     resolved_skills: Vec<String>,
+    managed_install_root: Option<String>,
+    installed_skills: Vec<ExternalSkillsInstalledSkill>,
     warnings: Vec<String>,
 }
 
@@ -133,6 +143,16 @@ struct ExternalSkillsApplyManifest {
 struct ExternalSkillsApplyArtifact {
     kind: String,
     path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ExternalSkillsInstalledSkill {
+    skill_id: String,
+    source_kind: String,
+    source_path: String,
+    install_path: String,
+    skill_md_path: String,
+    sha256: String,
 }
 
 pub fn discover_import_sources(
@@ -272,6 +292,7 @@ pub fn apply_import_selection(
     let mut warnings = Vec::new();
     let mut external_skill_artifact_count = 0usize;
     let mut external_skill_entries_applied = 0usize;
+    let mut external_skill_managed_installs = Vec::new();
     let mut external_skill_mapping = None;
     let (merged_source_ids, prompt_owner_source_id, unresolved_conflicts) = match &request.mode {
         ImportSelectionMode::RecommendedSingleSource { .. }
@@ -325,91 +346,133 @@ pub fn apply_import_selection(
         }
     };
 
-    if request.apply_external_skills_plan {
-        let input_path = request
-            .external_skills_input_path
-            .as_deref()
-            .ok_or_else(|| {
-                "apply_external_skills_plan requires external_skills_input_path".to_owned()
+    let mut backup_context: Option<(PathBuf, bool)> = None;
+    let persist_result = (|| -> CliResult<(PathBuf, PathBuf, PathBuf, Option<PathBuf>)> {
+        if request.apply_external_skills_plan {
+            let input_path = request
+                .external_skills_input_path
+                .as_deref()
+                .ok_or_else(|| {
+                    "apply_external_skills_plan requires external_skills_input_path".to_owned()
+                })?;
+            let mapping = plan_external_skill_mapping(input_path);
+            external_skill_artifact_count = mapping.artifacts.len();
+            external_skill_entries_applied = apply_external_skill_mapping(&mut config, &mapping);
+            external_skill_managed_installs = bridge_installable_external_skills(
+                &mut config,
+                &request.output_path,
+                input_path,
+                &mapping,
+            )?;
+            warnings.extend(mapping.warnings.clone());
+            external_skill_mapping = Some(mapping);
+        }
+        dedup_strings_in_place(&mut warnings);
+
+        let state_dir = migration_state_dir(&request.output_path);
+        fs::create_dir_all(&state_dir).map_err(|error| {
+            format!(
+                "failed to create migration state directory {}: {error}",
+                state_dir.display()
+            )
+        })?;
+        let session_id = import_session_id();
+        let backup_path = backup_path_for_output(&request.output_path, &state_dir, &session_id);
+        let manifest_path = manifest_path_for_output(&request.output_path, &state_dir);
+        let output_preexisted = request.output_path.exists();
+        if output_preexisted {
+            fs::copy(&request.output_path, &backup_path).map_err(|error| {
+                format!(
+                    "failed to write import backup {}: {error}",
+                    backup_path.display()
+                )
             })?;
-        let mapping = plan_external_skill_mapping(input_path);
-        external_skill_artifact_count = mapping.artifacts.len();
-        external_skill_entries_applied = apply_external_skill_mapping(&mut config, &mapping);
-        warnings.extend(mapping.warnings.clone());
-        external_skill_mapping = Some(mapping);
-    }
-    dedup_strings_in_place(&mut warnings);
+        } else {
+            fs::write(&backup_path, "").map_err(|error| {
+                format!(
+                    "failed to initialize import backup {}: {error}",
+                    backup_path.display()
+                )
+            })?;
+        }
+        backup_context = Some((backup_path.clone(), output_preexisted));
 
-    let state_dir = migration_state_dir(&request.output_path);
-    fs::create_dir_all(&state_dir).map_err(|error| {
-        format!(
-            "failed to create migration state directory {}: {error}",
-            state_dir.display()
-        )
-    })?;
-    let session_id = import_session_id();
-    let backup_path = backup_path_for_output(&request.output_path, &state_dir, &session_id);
-    let manifest_path = manifest_path_for_output(&request.output_path, &state_dir);
-    let output_preexisted = request.output_path.exists();
-    if output_preexisted {
-        fs::copy(&request.output_path, &backup_path).map_err(|error| {
+        let output_string = request.output_path.display().to_string();
+        let written_output_path = crate::config::write(Some(&output_string), &config, true)?;
+        let external_skills_manifest_path = if let Some(mapping) = external_skill_mapping.as_ref() {
+            let external_path =
+                external_skills_manifest_path_for_output(&request.output_path, &state_dir);
+            let external_manifest = build_external_skills_apply_manifest(
+                &written_output_path,
+                mapping,
+                config.external_skills.resolved_install_root().as_deref(),
+                &external_skill_managed_installs,
+            );
+            let body = serde_json::to_vec_pretty(&external_manifest)
+                .map_err(|error| format!("failed to encode external skills manifest: {error}"))?;
+            write_bytes_atomically(&external_path, &body).map_err(|error| {
+                format!(
+                    "failed to write external skills manifest {}: {error}",
+                    external_path.display()
+                )
+            })?;
+            Some(external_path)
+        } else {
+            None
+        };
+
+        let manifest = ImportApplyManifest {
+            session_id,
+            selected_primary_source: selected_primary_source_id.clone(),
+            merged_sources: merged_source_ids.clone(),
+            prompt_owner_source: prompt_owner_source_id.clone(),
+            output_path: written_output_path.display().to_string(),
+            backup_path: backup_path.display().to_string(),
+            output_preexisted,
+            warnings: warnings.clone(),
+            unresolved_conflicts,
+            external_skill_artifact_count,
+            external_skill_entries_applied,
+            external_skill_managed_install_count: external_skill_managed_installs.len(),
+            external_skill_managed_skill_ids: external_skill_managed_installs
+                .iter()
+                .map(|skill| skill.skill_id.clone())
+                .collect(),
+            external_skills_manifest_path: external_skills_manifest_path
+                .as_ref()
+                .map(|path| path.display().to_string()),
+        };
+        let manifest_body = serde_json::to_vec_pretty(&manifest)
+            .map_err(|error| format!("failed to encode import manifest: {error}"))?;
+        write_bytes_atomically(&manifest_path, &manifest_body).map_err(|error| {
             format!(
-                "failed to write import backup {}: {error}",
-                backup_path.display()
+                "failed to write import manifest {}: {error}",
+                manifest_path.display()
             )
         })?;
-    } else {
-        fs::write(&backup_path, "").map_err(|error| {
-            format!(
-                "failed to initialize import backup {}: {error}",
-                backup_path.display()
-            )
-        })?;
-    }
 
-    let output_string = request.output_path.display().to_string();
-    let written_output_path = crate::config::write(Some(&output_string), &config, true)?;
-    let external_skills_manifest_path = if let Some(mapping) = external_skill_mapping.as_ref() {
-        let external_path =
-            external_skills_manifest_path_for_output(&request.output_path, &state_dir);
-        let external_manifest = build_external_skills_apply_manifest(&written_output_path, mapping);
-        let body = serde_json::to_vec_pretty(&external_manifest)
-            .map_err(|error| format!("failed to encode external skills manifest: {error}"))?;
-        fs::write(&external_path, body).map_err(|error| {
-            format!(
-                "failed to write external skills manifest {}: {error}",
-                external_path.display()
-            )
-        })?;
-        Some(external_path)
-    } else {
-        None
-    };
+        Ok((
+            written_output_path,
+            backup_path,
+            manifest_path,
+            external_skills_manifest_path,
+        ))
+    })();
 
-    let manifest = ImportApplyManifest {
-        session_id,
-        selected_primary_source: selected_primary_source_id.clone(),
-        merged_sources: merged_source_ids.clone(),
-        prompt_owner_source: prompt_owner_source_id.clone(),
-        output_path: written_output_path.display().to_string(),
-        backup_path: backup_path.display().to_string(),
-        output_preexisted,
-        warnings: warnings.clone(),
-        unresolved_conflicts,
-        external_skill_artifact_count,
-        external_skill_entries_applied,
-        external_skills_manifest_path: external_skills_manifest_path
-            .as_ref()
-            .map(|path| path.display().to_string()),
-    };
-    let manifest_body = serde_json::to_vec_pretty(&manifest)
-        .map_err(|error| format!("failed to encode import manifest: {error}"))?;
-    fs::write(&manifest_path, manifest_body).map_err(|error| {
-        format!(
-            "failed to write import manifest {}: {error}",
-            manifest_path.display()
-        )
-    })?;
+    let (written_output_path, backup_path, manifest_path, external_skills_manifest_path) =
+        match persist_result {
+            Ok(result) => result,
+            Err(error) => {
+                return Err(finalize_apply_import_selection_failure(
+                    error,
+                    &config,
+                    &request.output_path,
+                    request.external_skills_input_path.as_deref(),
+                    &external_skill_managed_installs,
+                    backup_context.as_ref(),
+                ));
+            }
+        };
 
     Ok(ApplyImportSelectionResult {
         output_path: written_output_path,
@@ -423,6 +486,11 @@ pub fn apply_import_selection(
         warnings,
         external_skill_artifact_count,
         external_skill_entries_applied,
+        external_skill_managed_install_count: external_skill_managed_installs.len(),
+        external_skill_managed_skill_ids: external_skill_managed_installs
+            .into_iter()
+            .map(|skill| skill.skill_id)
+            .collect(),
     })
 }
 
@@ -431,9 +499,384 @@ fn dedup_strings_in_place(values: &mut Vec<String>) {
     values.retain(|value| seen.insert(value.clone()));
 }
 
+fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    write_bytes_atomically_with(path, |file| {
+        file.write_all(bytes)?;
+        file.sync_all()
+    })
+}
+
+fn write_bytes_atomically_with<F>(path: &Path, writer: F) -> std::io::Result<()>
+where
+    F: FnOnce(&mut fs::File) -> std::io::Result<()>,
+{
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let mut staged = tempfile::NamedTempFile::new_in(parent)?;
+    writer(staged.as_file_mut())?;
+    staged.as_file_mut().sync_all()?;
+    staged.persist(path).map_err(|error| error.error)?;
+    Ok(())
+}
+
+fn bridge_installable_external_skills(
+    config: &mut crate::config::LoongClawConfig,
+    output_path: &Path,
+    input_path: &Path,
+    mapping: &super::ExternalSkillMappingPlan,
+) -> CliResult<Vec<ExternalSkillsInstalledSkill>> {
+    let installable_roots = collect_installable_external_skill_roots(mapping)?;
+    if installable_roots.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let install_root = config
+        .external_skills
+        .resolved_install_root()
+        .unwrap_or_else(|| default_external_skills_install_root(output_path));
+    config.external_skills.enabled = true;
+    if config.external_skills.install_root.is_none() {
+        config.external_skills.install_root = Some(install_root.display().to_string());
+    }
+
+    let tool_runtime = build_external_skills_bridge_runtime(config, output_path, input_path);
+    let mut installed = Vec::new();
+    for skill_root in installable_roots {
+        let install_outcome = crate::tools::execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "external_skills.install".to_owned(),
+                payload: json!({
+                    "path": skill_root.display().to_string(),
+                }),
+            },
+            &tool_runtime,
+        )
+        .map_err(|error| {
+            format!(
+                "bridge install for external skill source {} failed: {error}",
+                skill_root.display()
+            )
+        });
+        let install = match install_outcome {
+            Ok(outcome) => {
+                let current_skill_id = outcome
+                    .payload
+                    .get("skill_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned);
+                match parse_external_skills_install_outcome(&outcome) {
+                    Ok(install) => install,
+                    Err(error) => {
+                        let mut rollback_ids = installed_skill_ids(&installed);
+                        if let Some(skill_id) = current_skill_id.as_ref() {
+                            rollback_ids.push(skill_id.clone());
+                        }
+                        let error = if current_skill_id.is_none() {
+                            format!(
+                                "{error}; external skills install payload was missing `skill_id`, so the most recent bridged install may require manual cleanup"
+                            )
+                        } else {
+                            error
+                        };
+                        if let Err(rollback_error) = rollback_bridged_external_skill_ids(
+                            config,
+                            output_path,
+                            Some(input_path),
+                            &rollback_ids,
+                        ) {
+                            return Err(format!(
+                                "{error}; external skills bridge rollback also failed: {rollback_error}"
+                            ));
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+            Err(error) => {
+                let rollback_ids = installed_skill_ids(&installed);
+                if let Err(rollback_error) = rollback_bridged_external_skill_ids(
+                    config,
+                    output_path,
+                    Some(input_path),
+                    &rollback_ids,
+                ) {
+                    return Err(format!(
+                        "{error}; external skills bridge rollback also failed: {rollback_error}"
+                    ));
+                }
+                return Err(error);
+            }
+        };
+        installed.push(install);
+    }
+
+    Ok(installed)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InstallableExternalSkillCandidate {
+    root: PathBuf,
+    probe_rank: usize,
+    root_rank: usize,
+}
+
+fn collect_installable_external_skill_roots(
+    mapping: &super::ExternalSkillMappingPlan,
+) -> CliResult<Vec<PathBuf>> {
+    let probe_roots = super::external_skill_probe_roots(&mapping.input_path)
+        .into_iter()
+        .map(|root| root.canonicalize().unwrap_or(root))
+        .collect::<Vec<_>>();
+    let mut winners = BTreeMap::new();
+    let mut seen = BTreeSet::new();
+    for artifact in &mapping.artifacts {
+        let Some(root_rank) = installable_external_skill_root_rank(artifact.kind) else {
+            continue;
+        };
+        let probe_rank = installable_external_skill_probe_rank(&probe_roots, artifact);
+        for root in crate::tools::discover_installable_external_skill_roots(&artifact.path)? {
+            let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
+            if !seen.insert(canonical.clone()) {
+                continue;
+            }
+            let skill_id = crate::tools::resolve_installable_external_skill_id(&canonical)?;
+            let candidate = InstallableExternalSkillCandidate {
+                root: canonical,
+                probe_rank,
+                root_rank,
+            };
+            match winners.get(&skill_id) {
+                Some(current)
+                    if !installable_external_skill_candidate_wins(&candidate, current) => {}
+                _ => {
+                    winners.insert(skill_id, candidate);
+                }
+            }
+        }
+    }
+    let mut candidates = winners.into_values().collect::<Vec<_>>();
+    candidates.sort_by(compare_installable_external_skill_candidates);
+    Ok(candidates
+        .into_iter()
+        .map(|candidate| candidate.root)
+        .collect())
+}
+
+fn installable_external_skill_root_rank(kind: super::ExternalSkillArtifactKind) -> Option<usize> {
+    match kind {
+        super::ExternalSkillArtifactKind::CodexSkillsDir => Some(1),
+        super::ExternalSkillArtifactKind::ClaudeSkillsDir => Some(2),
+        super::ExternalSkillArtifactKind::SkillsDir => Some(3),
+        super::ExternalSkillArtifactKind::SkillsCatalog
+        | super::ExternalSkillArtifactKind::SkillsLock => None,
+    }
+}
+
+fn installable_external_skill_probe_rank(
+    probe_roots: &[PathBuf],
+    artifact: &super::ExternalSkillArtifact,
+) -> usize {
+    let Some(probe_root) = installable_external_skill_probe_root(artifact)
+        .map(|root| root.canonicalize().unwrap_or(root))
+    else {
+        return probe_roots.len();
+    };
+    probe_roots
+        .iter()
+        .position(|candidate| candidate == &probe_root)
+        .unwrap_or(probe_roots.len())
+}
+
+fn installable_external_skill_probe_root(
+    artifact: &super::ExternalSkillArtifact,
+) -> Option<PathBuf> {
+    match artifact.kind {
+        super::ExternalSkillArtifactKind::CodexSkillsDir
+        | super::ExternalSkillArtifactKind::ClaudeSkillsDir => artifact
+            .path
+            .parent()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf),
+        super::ExternalSkillArtifactKind::SkillsDir => {
+            artifact.path.parent().map(Path::to_path_buf)
+        }
+        super::ExternalSkillArtifactKind::SkillsCatalog
+        | super::ExternalSkillArtifactKind::SkillsLock => None,
+    }
+}
+
+fn installable_external_skill_candidate_wins(
+    left: &InstallableExternalSkillCandidate,
+    right: &InstallableExternalSkillCandidate,
+) -> bool {
+    compare_installable_external_skill_candidates(left, right).is_lt()
+}
+
+fn compare_installable_external_skill_candidates(
+    left: &InstallableExternalSkillCandidate,
+    right: &InstallableExternalSkillCandidate,
+) -> std::cmp::Ordering {
+    left.probe_rank
+        .cmp(&right.probe_rank)
+        .then_with(|| left.root_rank.cmp(&right.root_rank))
+        .then_with(|| left.root.cmp(&right.root))
+}
+
+fn default_external_skills_install_root(output_path: &Path) -> PathBuf {
+    output_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("external-skills-installed")
+}
+
+fn build_external_skills_bridge_runtime(
+    config: &crate::config::LoongClawConfig,
+    output_path: &Path,
+    input_path: &Path,
+) -> crate::tools::runtime_config::ToolRuntimeConfig {
+    let mut runtime = crate::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(
+        config,
+        Some(output_path),
+    );
+    runtime.file_root = Some(resolve_external_skills_bridge_file_root(input_path));
+    runtime
+}
+
+fn resolve_external_skills_bridge_file_root(input_path: &Path) -> PathBuf {
+    if input_path.is_file() {
+        input_path.parent().unwrap_or(Path::new(".")).to_path_buf()
+    } else {
+        input_path.to_path_buf()
+    }
+}
+
+fn parse_external_skills_install_outcome(
+    outcome: &loongclaw_contracts::ToolCoreOutcome,
+) -> CliResult<ExternalSkillsInstalledSkill> {
+    let payload = &outcome.payload;
+    Ok(ExternalSkillsInstalledSkill {
+        skill_id: required_string(payload, "skill_id")?,
+        source_kind: required_string(payload, "source_kind")?,
+        source_path: required_string(payload, "source_path")?,
+        install_path: required_string(payload, "install_path")?,
+        skill_md_path: required_string(payload, "skill_md_path")?,
+        sha256: required_string(payload, "sha256")?,
+    })
+}
+
+fn required_string(payload: &serde_json::Value, key: &str) -> CliResult<String> {
+    payload
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| format!("external skills install payload missing `{key}`"))
+}
+
+fn restore_output_from_backup(
+    output_path: &Path,
+    backup_path: &Path,
+    output_preexisted: bool,
+) -> CliResult<()> {
+    if output_preexisted {
+        fs::copy(backup_path, output_path).map_err(|error| {
+            format!(
+                "failed to restore config {} from backup {}: {error}",
+                output_path.display(),
+                backup_path.display()
+            )
+        })?;
+    } else if output_path.exists() {
+        fs::remove_file(output_path).map_err(|error| {
+            format!(
+                "failed to remove partial config {} after rollback: {error}",
+                output_path.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn finalize_apply_import_selection_failure(
+    error: String,
+    config: &crate::config::LoongClawConfig,
+    output_path: &Path,
+    input_path: Option<&Path>,
+    installs: &[ExternalSkillsInstalledSkill],
+    backup_context: Option<&(PathBuf, bool)>,
+) -> String {
+    let mut message = error;
+    if let Err(rollback_error) =
+        rollback_bridged_external_skills(config, output_path, input_path, installs)
+    {
+        message =
+            format!("{message}; external skills bridge rollback also failed: {rollback_error}");
+    }
+    if let Some((backup_path, output_preexisted)) = backup_context
+        && let Err(restore_error) =
+            restore_output_from_backup(output_path, backup_path, *output_preexisted)
+    {
+        message = format!("{message}; config restore also failed: {restore_error}");
+    }
+    message
+}
+
+fn installed_skill_ids(installs: &[ExternalSkillsInstalledSkill]) -> Vec<String> {
+    installs
+        .iter()
+        .map(|install| install.skill_id.clone())
+        .collect()
+}
+
+fn rollback_bridged_external_skill_ids(
+    config: &crate::config::LoongClawConfig,
+    output_path: &Path,
+    input_path: Option<&Path>,
+    skill_ids: &[String],
+) -> CliResult<()> {
+    if skill_ids.is_empty() {
+        return Ok(());
+    }
+
+    let runtime = build_external_skills_bridge_runtime(
+        config,
+        output_path,
+        input_path.unwrap_or(output_path),
+    );
+    for skill_id in skill_ids.iter().rev() {
+        crate::tools::execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "external_skills.remove".to_owned(),
+                payload: json!({
+                    "skill_id": skill_id,
+                }),
+            },
+            &runtime,
+        )
+        .map_err(|error| {
+            format!("remove bridged external skill `{skill_id}` failed during rollback: {error}")
+        })?;
+    }
+    Ok(())
+}
+
+fn rollback_bridged_external_skills(
+    config: &crate::config::LoongClawConfig,
+    output_path: &Path,
+    input_path: Option<&Path>,
+    installs: &[ExternalSkillsInstalledSkill],
+) -> CliResult<()> {
+    rollback_bridged_external_skill_ids(
+        config,
+        output_path,
+        input_path,
+        &installed_skill_ids(installs),
+    )
+}
+
 fn build_external_skills_apply_manifest(
     output_path: &Path,
     mapping: &super::ExternalSkillMappingPlan,
+    managed_install_root: Option<&Path>,
+    installed_skills: &[ExternalSkillsInstalledSkill],
 ) -> ExternalSkillsApplyManifest {
     ExternalSkillsApplyManifest {
         output_path: output_path.display().to_string(),
@@ -450,6 +893,8 @@ fn build_external_skills_apply_manifest(
         declared_skills: mapping.declared_skills.clone(),
         locked_skills: mapping.locked_skills.clone(),
         resolved_skills: mapping.resolved_skills.clone(),
+        managed_install_root: managed_install_root.map(|path| path.display().to_string()),
+        installed_skills: installed_skills.to_vec(),
         warnings: mapping.warnings.clone(),
     }
 }
@@ -781,6 +1226,8 @@ fn import_session_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -801,6 +1248,30 @@ mod tests {
             fs::create_dir_all(parent).expect("create parent directory");
         }
         fs::write(path, content).expect("write fixture");
+    }
+
+    #[test]
+    fn write_bytes_atomically_preserves_existing_file_when_staged_write_fails() {
+        let root = unique_temp_dir("loongclaw-import-atomic-write-failure");
+        fs::create_dir_all(&root).expect("create fixture root");
+
+        let target = root.join("manifest.json");
+        let baseline = br#"{"status":"old"}"#;
+        fs::write(&target, baseline).expect("write baseline manifest");
+
+        let error = write_bytes_atomically_with(&target, |_file| {
+            Err(std::io::Error::other("forced staged write failure"))
+        })
+        .expect_err("staged write failure should surface an error");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        assert_eq!(
+            fs::read(&target).expect("read preserved manifest"),
+            baseline,
+            "staged write failures should preserve the previous manifest body"
+        );
+
+        fs::remove_dir_all(&root).ok();
     }
 
     #[test]
@@ -1193,6 +1664,14 @@ mod tests {
             .expect("profile note should be present");
         assert!(profile_note.contains("Imported External Skills Artifacts"));
         assert!(profile_note.contains("kind=skills_catalog"));
+        assert!(
+            !merged_config.external_skills.enabled,
+            "metadata-only external skills imports should not enable the managed runtime"
+        );
+        assert_eq!(
+            result.external_skill_managed_install_count, 0,
+            "no installable skill roots were present in this fixture"
+        );
         let external_manifest = result
             .external_skills_manifest_path
             .as_ref()
@@ -1200,6 +1679,363 @@ mod tests {
         assert!(
             external_manifest.exists(),
             "external skills manifest should be written"
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn apply_import_selection_bridges_installable_external_skills_into_managed_runtime() {
+        let root = unique_temp_dir("loongclaw-import-apply-managed-external-skills");
+        fs::create_dir_all(&root).expect("create fixture root");
+
+        let openclaw_root = root.join("openclaw-workspace");
+        fs::create_dir_all(&openclaw_root).expect("create openclaw root");
+        write_file(
+            &openclaw_root,
+            "SOUL.md",
+            "# Soul\n\nPrefer direct answers and keep OpenClaw style concise.\n",
+        );
+        write_file(
+            &openclaw_root,
+            "IDENTITY.md",
+            "# Identity\n\n- role: release copilot\n",
+        );
+        write_file(
+            &root,
+            ".codex/skills/release-guard/SKILL.md",
+            "# Release Guard\n\nUse this skill when release discipline matters.\n",
+        );
+
+        let discovery = discover_import_sources(&root, DiscoveryOptions::default())
+            .expect("discovery should succeed");
+        let output_path = root.join("loongclaw.toml");
+
+        let result = apply_import_selection(&ApplyImportSelection {
+            discovery,
+            output_path: output_path.clone(),
+            mode: ImportSelectionMode::SelectedSingleSource {
+                source_id: "openclaw".to_owned(),
+            },
+            apply_external_skills_plan: true,
+            external_skills_input_path: Some(root.clone()),
+        })
+        .expect("apply should succeed");
+
+        let output_string = output_path.display().to_string();
+        let (_, merged_config) =
+            crate::config::load(Some(&output_string)).expect("load merged config");
+        assert!(
+            merged_config.external_skills.enabled,
+            "applying the external skills bridge should enable the managed runtime"
+        );
+        assert_eq!(result.external_skill_managed_install_count, 1);
+        assert_eq!(
+            result.external_skill_managed_skill_ids,
+            vec!["release-guard".to_owned()]
+        );
+        assert!(
+            result.external_skill_entries_applied >= 1,
+            "profile-note import metadata should still be recorded"
+        );
+        let expected_install_root = root.join("external-skills-installed");
+        let expected_install_root_string = expected_install_root.display().to_string();
+        assert_eq!(
+            merged_config.external_skills.install_root.as_deref(),
+            Some(expected_install_root_string.as_str())
+        );
+        assert!(
+            expected_install_root
+                .join("release-guard")
+                .join("SKILL.md")
+                .exists(),
+            "installable imported skills should bridge into managed installs"
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn collect_installable_external_skill_roots_prefers_highest_precedence_duplicate_skill_ids() {
+        let root = unique_temp_dir("loongclaw-import-duplicate-installable-skill-ids");
+        fs::create_dir_all(&root).expect("create fixture root");
+
+        write_file(
+            &root,
+            ".codex/skills/release-guard-codex/SKILL.md",
+            "---\nname: release-guard\ndescription: codex winner.\n---\n\n# release guard\n",
+        );
+        write_file(
+            &root,
+            ".claude/skills/release-guard-claude/SKILL.md",
+            "---\nname: release-guard\ndescription: claude fallback.\n---\n\n# release guard\n",
+        );
+        write_file(
+            &root,
+            "skills/release-guard-project/SKILL.md",
+            "---\nname: release-guard\ndescription: project fallback.\n---\n\n# release guard\n",
+        );
+
+        let mapping = super::plan_external_skill_mapping(&root);
+        let roots = collect_installable_external_skill_roots(&mapping)
+            .expect("duplicate skill ids should still resolve deterministically");
+
+        assert_eq!(
+            roots,
+            vec![
+                root.join(".codex/skills/release-guard-codex")
+                    .canonicalize()
+                    .expect("canonicalize winning root")
+            ],
+            "duplicate installable skill ids should collapse to the highest-precedence import root"
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn collect_installable_external_skill_roots_honors_probe_precedence_for_noncanonical_artifacts()
+    {
+        let root = unique_temp_dir("loongclaw-import-noncanonical-probe-precedence");
+        fs::create_dir_all(&root).expect("create fixture root");
+        fs::create_dir_all(root.join("workspace")).expect("create workspace root");
+
+        write_file(
+            &root,
+            "skills/release-guard-root/SKILL.md",
+            "---\nname: release-guard\ndescription: root winner.\n---\n\n# release guard\n",
+        );
+        write_file(
+            &root,
+            "workspace/skills/release-guard-workspace/SKILL.md",
+            "---\nname: release-guard\ndescription: workspace fallback.\n---\n\n# release guard\n",
+        );
+
+        let mapping = crate::migration::ExternalSkillMappingPlan {
+            input_path: root.join("workspace/.."),
+            artifacts: vec![
+                crate::migration::ExternalSkillArtifact {
+                    kind: crate::migration::ExternalSkillArtifactKind::SkillsDir,
+                    path: root.join("workspace/../skills"),
+                },
+                crate::migration::ExternalSkillArtifact {
+                    kind: crate::migration::ExternalSkillArtifactKind::SkillsDir,
+                    path: root.join("workspace/skills"),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let roots = collect_installable_external_skill_roots(&mapping)
+            .expect("duplicate skill ids should still resolve deterministically");
+
+        assert_eq!(
+            roots,
+            vec![
+                root.join("skills/release-guard-root")
+                    .canonicalize()
+                    .expect("canonicalize winning root")
+            ],
+            "probe-root precedence should still prefer the input root when artifact paths are noncanonical"
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn apply_import_selection_rolls_back_bridged_external_skills_when_state_dir_setup_fails() {
+        let root = unique_temp_dir("loongclaw-import-apply-managed-external-skills-state-dir");
+        fs::create_dir_all(&root).expect("create fixture root");
+
+        let openclaw_root = root.join("openclaw-workspace");
+        fs::create_dir_all(&openclaw_root).expect("create openclaw root");
+        write_file(
+            &openclaw_root,
+            "SOUL.md",
+            "# Soul\n\nPrefer direct answers and keep OpenClaw style concise.\n",
+        );
+        write_file(
+            &openclaw_root,
+            "IDENTITY.md",
+            "# Identity\n\n- role: release copilot\n",
+        );
+        write_file(
+            &root,
+            ".codex/skills/release-guard/SKILL.md",
+            "# Release Guard\n\nUse this skill when release discipline matters.\n",
+        );
+
+        let output_path = root.join("loongclaw.toml");
+        let mut baseline = crate::config::LoongClawConfig::default();
+        baseline.external_skills.install_root =
+            Some(root.join("managed-skills").display().to_string());
+        let baseline_body = crate::config::render(&baseline).expect("render baseline config");
+        fs::write(&output_path, &baseline_body).expect("write baseline config");
+
+        let state_dir = migration_state_dir(&output_path);
+        fs::write(&state_dir, "occupied").expect("occupy migration state path with file");
+
+        let discovery = discover_import_sources(&root, DiscoveryOptions::default())
+            .expect("discovery should succeed");
+        let error = apply_import_selection(&ApplyImportSelection {
+            discovery,
+            output_path: output_path.clone(),
+            mode: ImportSelectionMode::SelectedSingleSource {
+                source_id: "openclaw".to_owned(),
+            },
+            apply_external_skills_plan: true,
+            external_skills_input_path: Some(root.clone()),
+        })
+        .expect_err("state dir setup failure should abort apply");
+
+        assert!(
+            error.contains("failed to create migration state directory"),
+            "expected state dir setup failure, got: {error}"
+        );
+        assert!(
+            !root.join("managed-skills").join("release-guard").exists(),
+            "rollback should remove bridged installs when setup fails before config write"
+        );
+        assert_eq!(
+            fs::read_to_string(&output_path).expect("read preserved baseline config"),
+            baseline_body,
+            "state dir setup failures should not mutate the output config"
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn apply_import_selection_rolls_back_bridged_external_skills_when_config_write_fails() {
+        let root = unique_temp_dir("loongclaw-import-apply-managed-external-skills-rollback");
+        fs::create_dir_all(&root).expect("create fixture root");
+
+        let openclaw_root = root.join("openclaw-workspace");
+        fs::create_dir_all(&openclaw_root).expect("create openclaw root");
+        write_file(
+            &openclaw_root,
+            "SOUL.md",
+            "# Soul\n\nPrefer direct answers and keep OpenClaw style concise.\n",
+        );
+        write_file(
+            &openclaw_root,
+            "IDENTITY.md",
+            "# Identity\n\n- role: release copilot\n",
+        );
+        write_file(
+            &root,
+            ".codex/skills/release-guard/SKILL.md",
+            "# Release Guard\n\nUse this skill when release discipline matters.\n",
+        );
+
+        let output_path = root.join("readonly-loongclaw.toml");
+        let mut baseline = crate::config::LoongClawConfig::default();
+        baseline.external_skills.install_root =
+            Some(root.join("managed-skills").display().to_string());
+        let rendered = crate::config::render(&baseline).expect("render baseline config");
+        fs::write(&output_path, rendered).expect("write baseline config");
+        let mut readonly_permissions = fs::metadata(&output_path)
+            .expect("read output metadata")
+            .permissions();
+        readonly_permissions.set_mode(0o400);
+        fs::set_permissions(&output_path, readonly_permissions)
+            .expect("make output file read only");
+
+        let discovery = discover_import_sources(&root, DiscoveryOptions::default())
+            .expect("discovery should succeed");
+        let error = apply_import_selection(&ApplyImportSelection {
+            discovery,
+            output_path: output_path.clone(),
+            mode: ImportSelectionMode::SelectedSingleSource {
+                source_id: "openclaw".to_owned(),
+            },
+            apply_external_skills_plan: true,
+            external_skills_input_path: Some(root.clone()),
+        })
+        .expect_err("read-only config path should fail to persist");
+
+        assert!(
+            error.contains("failed to write config file"),
+            "expected config write failure, got: {error}"
+        );
+        assert!(
+            !root.join("managed-skills").join("release-guard").exists(),
+            "rollback should remove bridged managed installs after config persistence failure"
+        );
+
+        let mut cleanup_permissions = fs::metadata(&output_path)
+            .expect("read output metadata for cleanup")
+            .permissions();
+        cleanup_permissions.set_mode(0o600);
+        fs::set_permissions(&output_path, cleanup_permissions)
+            .expect("restore output permissions for cleanup");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn apply_import_selection_restores_config_and_rolls_back_bridged_external_skills_when_external_manifest_write_fails()
+     {
+        let root = unique_temp_dir("loongclaw-import-apply-managed-external-skills-manifest");
+        fs::create_dir_all(&root).expect("create fixture root");
+
+        let openclaw_root = root.join("openclaw-workspace");
+        fs::create_dir_all(&openclaw_root).expect("create openclaw root");
+        write_file(
+            &openclaw_root,
+            "SOUL.md",
+            "# Soul\n\nPrefer direct answers and keep OpenClaw style concise.\n",
+        );
+        write_file(
+            &openclaw_root,
+            "IDENTITY.md",
+            "# Identity\n\n- role: release copilot\n",
+        );
+        write_file(
+            &root,
+            ".codex/skills/release-guard/SKILL.md",
+            "# Release Guard\n\nUse this skill when release discipline matters.\n",
+        );
+
+        let output_path = root.join("loongclaw.toml");
+        let mut baseline = crate::config::LoongClawConfig::default();
+        baseline.external_skills.install_root =
+            Some(root.join("managed-skills").display().to_string());
+        let baseline_body = crate::config::render(&baseline).expect("render baseline config");
+        fs::write(&output_path, &baseline_body).expect("write baseline config");
+
+        let state_dir = migration_state_dir(&output_path);
+        fs::create_dir_all(&state_dir).expect("create migration state directory");
+        let external_manifest_path =
+            external_skills_manifest_path_for_output(&output_path, &state_dir);
+        fs::create_dir_all(&external_manifest_path)
+            .expect("occupy external manifest path with directory");
+
+        let discovery = discover_import_sources(&root, DiscoveryOptions::default())
+            .expect("discovery should succeed");
+        let error = apply_import_selection(&ApplyImportSelection {
+            discovery,
+            output_path: output_path.clone(),
+            mode: ImportSelectionMode::SelectedSingleSource {
+                source_id: "openclaw".to_owned(),
+            },
+            apply_external_skills_plan: true,
+            external_skills_input_path: Some(root.clone()),
+        })
+        .expect_err("external manifest write failure should abort apply");
+
+        assert!(
+            error.contains("failed to write external skills manifest"),
+            "expected external manifest write failure, got: {error}"
+        );
+        assert!(
+            !root.join("managed-skills").join("release-guard").exists(),
+            "rollback should remove bridged installs when manifest writing fails"
+        );
+        assert_eq!(
+            fs::read_to_string(&output_path).expect("read restored config"),
+            baseline_body,
+            "post-write failures should restore the previous config from backup"
         );
 
         fs::remove_dir_all(&root).ok();

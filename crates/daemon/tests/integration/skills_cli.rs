@@ -148,6 +148,7 @@ fn skills_install_cli_parses_global_flags_after_subcommand() {
                 }
                 other @ loongclaw_daemon::skills_cli::SkillsCommands::List
                 | other @ loongclaw_daemon::skills_cli::SkillsCommands::Info { .. }
+                | other @ loongclaw_daemon::skills_cli::SkillsCommands::Fetch { .. }
                 | other @ loongclaw_daemon::skills_cli::SkillsCommands::InstallBundled { .. }
                 | other @ loongclaw_daemon::skills_cli::SkillsCommands::EnableBrowserPreview {
                     ..
@@ -194,6 +195,7 @@ fn skills_install_bundled_cli_parses_global_flags_after_subcommand() {
                 }
                 other @ loongclaw_daemon::skills_cli::SkillsCommands::List
                 | other @ loongclaw_daemon::skills_cli::SkillsCommands::Info { .. }
+                | other @ loongclaw_daemon::skills_cli::SkillsCommands::Fetch { .. }
                 | other @ loongclaw_daemon::skills_cli::SkillsCommands::Install { .. }
                 | other @ loongclaw_daemon::skills_cli::SkillsCommands::EnableBrowserPreview {
                     ..
@@ -236,6 +238,7 @@ fn skills_enable_browser_preview_cli_parses_global_flags_after_subcommand() {
                 }
                 other @ loongclaw_daemon::skills_cli::SkillsCommands::List
                 | other @ loongclaw_daemon::skills_cli::SkillsCommands::Info { .. }
+                | other @ loongclaw_daemon::skills_cli::SkillsCommands::Fetch { .. }
                 | other @ loongclaw_daemon::skills_cli::SkillsCommands::Install { .. }
                 | other @ loongclaw_daemon::skills_cli::SkillsCommands::InstallBundled { .. }
                 | other @ loongclaw_daemon::skills_cli::SkillsCommands::Remove { .. }
@@ -301,6 +304,7 @@ fn skills_policy_set_cli_parses_domain_and_approval_flags() {
             },
             other @ loongclaw_daemon::skills_cli::SkillsCommands::List
             | other @ loongclaw_daemon::skills_cli::SkillsCommands::Info { .. }
+            | other @ loongclaw_daemon::skills_cli::SkillsCommands::Fetch { .. }
             | other @ loongclaw_daemon::skills_cli::SkillsCommands::Install { .. }
             | other @ loongclaw_daemon::skills_cli::SkillsCommands::InstallBundled { .. }
             | other @ loongclaw_daemon::skills_cli::SkillsCommands::EnableBrowserPreview {
@@ -312,6 +316,127 @@ fn skills_policy_set_cli_parses_domain_and_approval_flags() {
         },
         other => panic!("unexpected command parsed: {other:?}"),
     }
+}
+
+#[test]
+fn skills_fetch_cli_parses_install_flags_after_subcommand() {
+    let cli = Cli::try_parse_from([
+        "loongclaw",
+        "skills",
+        "fetch",
+        "https://skills.sh/demo.tgz",
+        "--save-as",
+        "release-guard.tgz",
+        "--max-bytes",
+        "2048",
+        "--approve-download",
+        "--install",
+        "--skill-id",
+        "release-guard",
+        "--replace",
+        "--json",
+        "--config",
+        "/tmp/loongclaw.toml",
+    ])
+    .expect("skills fetch CLI should parse");
+
+    match cli.command {
+        Some(Commands::Skills {
+            config,
+            json,
+            command,
+        }) => {
+            assert_eq!(config.as_deref(), Some("/tmp/loongclaw.toml"));
+            assert!(json);
+            match command {
+                loongclaw_daemon::skills_cli::SkillsCommands::Fetch {
+                    url,
+                    save_as,
+                    max_bytes,
+                    approve_download,
+                    install,
+                    skill_id,
+                    replace,
+                } => {
+                    assert_eq!(url, "https://skills.sh/demo.tgz");
+                    assert_eq!(save_as.as_deref(), Some("release-guard.tgz"));
+                    assert_eq!(max_bytes, Some(2048));
+                    assert!(approve_download);
+                    assert!(install);
+                    assert_eq!(skill_id.as_deref(), Some("release-guard"));
+                    assert!(replace);
+                }
+                other @ loongclaw_daemon::skills_cli::SkillsCommands::List
+                | other @ loongclaw_daemon::skills_cli::SkillsCommands::Info { .. }
+                | other @ loongclaw_daemon::skills_cli::SkillsCommands::Install { .. }
+                | other @ loongclaw_daemon::skills_cli::SkillsCommands::InstallBundled { .. }
+                | other @ loongclaw_daemon::skills_cli::SkillsCommands::EnableBrowserPreview {
+                    ..
+                }
+                | other @ loongclaw_daemon::skills_cli::SkillsCommands::Remove { .. }
+                | other @ loongclaw_daemon::skills_cli::SkillsCommands::Policy { .. } => {
+                    panic!("unexpected skills subcommand parsed: {other:?}")
+                }
+            }
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn execute_skills_command_fetch_rejects_install_options_without_install_flag() {
+    let root = unique_temp_dir("loongclaw-skills-cli-fetch-validate");
+    let _env = SkillsCliEnvironmentGuard::set(&[]);
+    let config_path = write_external_skills_config(&root, true);
+
+    let error = loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
+            config: Some(config_path.display().to_string()),
+            json: false,
+            command: loongclaw_daemon::skills_cli::SkillsCommands::Fetch {
+                url: "https://skills.sh/demo.tgz".to_owned(),
+                save_as: None,
+                max_bytes: None,
+                approve_download: true,
+                install: false,
+                skill_id: Some("release-guard".to_owned()),
+                replace: true,
+            },
+        },
+    )
+    .expect_err("fetch should reject install-only flags without --install");
+
+    assert!(error.contains("--install"));
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn execute_skills_command_fetch_propagates_runtime_policy_errors() {
+    let root = unique_temp_dir("loongclaw-skills-cli-fetch-policy");
+    let _env = SkillsCliEnvironmentGuard::set(&[]);
+    let config_path = write_external_skills_config(&root, true);
+
+    let error = loongclaw_daemon::skills_cli::execute_skills_command(
+        loongclaw_daemon::skills_cli::SkillsCommandOptions {
+            config: Some(config_path.display().to_string()),
+            json: false,
+            command: loongclaw_daemon::skills_cli::SkillsCommands::Fetch {
+                url: "https://skills.sh/demo.tgz".to_owned(),
+                save_as: None,
+                max_bytes: None,
+                approve_download: false,
+                install: false,
+                skill_id: None,
+                replace: false,
+            },
+        },
+    )
+    .expect_err("fetch should surface approval gating before network access");
+
+    assert!(error.contains("requires explicit authorization"));
+
+    fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -1569,6 +1694,89 @@ fn execute_skills_command_policy_set_rejects_invalid_domain_rules() {
     assert!(reloaded.external_skills.blocked_domains.is_empty());
 
     fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn render_skills_cli_text_surfaces_skill_contract_details() {
+    let rendered = loongclaw_daemon::skills_cli::render_skills_cli_text(
+        &loongclaw_daemon::skills_cli::SkillsCommandExecution {
+            resolved_config_path: "/tmp/loongclaw.toml".to_owned(),
+            outcome: kernel::ToolCoreOutcome {
+                status: "ok".to_owned(),
+                payload: serde_json::json!({
+                    "tool_name": "external_skills.inspect",
+                    "skill": {
+                        "skill_id": "release-guard",
+                        "display_name": "Release Guard",
+                        "scope": "managed",
+                        "active": true,
+                        "source_path": "/tmp/managed/release-guard",
+                        "install_path": "/tmp/managed/release-guard",
+                        "skill_md_path": "/tmp/managed/release-guard/SKILL.md",
+                        "sha256": "abc123",
+                        "invocation_policy": "manual",
+                        "required_env": ["LOONGCLAW_RELEASE_GUARD_TOKEN"],
+                        "required_bin": ["sh"],
+                        "required_paths": [],
+                        "required_config": ["external_skills.enabled"],
+                        "allowed_tools": ["shell.exec"],
+                        "blocked_tools": ["web.fetch"],
+                        "eligibility": {
+                            "available": false,
+                            "issues": ["missing env `LOONGCLAW_RELEASE_GUARD_TOKEN`"]
+                        }
+                    },
+                    "instructions_preview": "Prefer release checklists.",
+                    "shadowed_skills": []
+                }),
+            },
+        },
+    )
+    .expect("inspect payload should render");
+
+    assert!(rendered.contains("eligible=false"));
+    assert!(rendered.contains("invocation_policy=manual"));
+    assert!(rendered.contains("eligibility_issues:"));
+    assert!(rendered.contains("required_env:"));
+    assert!(rendered.contains("allowed_tools:"));
+    assert!(rendered.contains("blocked_tools:"));
+}
+
+#[test]
+fn render_skills_cli_text_surfaces_fetch_sync_summary() {
+    let rendered = loongclaw_daemon::skills_cli::render_skills_cli_text(
+        &loongclaw_daemon::skills_cli::SkillsCommandExecution {
+            resolved_config_path: "/tmp/loongclaw.toml".to_owned(),
+            outcome: kernel::ToolCoreOutcome {
+                status: "ok".to_owned(),
+                payload: serde_json::json!({
+                    "tool_name": "skills.fetch",
+                    "sync_applied": true,
+                    "fetched": {
+                        "saved_path": "/tmp/downloads/release-guard.tgz",
+                        "bytes_downloaded": 512,
+                        "sha256": "feedface",
+                        "approval_required": true,
+                        "approval_granted": true
+                    },
+                    "installed": {
+                        "skill_id": "release-guard",
+                        "display_name": "Release Guard",
+                        "install_path": "/tmp/managed/release-guard",
+                        "replaced": true
+                    }
+                }),
+            },
+        },
+    )
+    .expect("fetch payload should render");
+
+    assert!(rendered.contains("saved_path=/tmp/downloads/release-guard.tgz"));
+    assert!(rendered.contains("bytes_downloaded=512"));
+    assert!(rendered.contains("sha256=feedface"));
+    assert!(rendered.contains("sync_applied=true"));
+    assert!(rendered.contains("installed skill_id=release-guard"));
+    assert!(rendered.contains("replaced=true"));
 }
 
 #[test]

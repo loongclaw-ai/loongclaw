@@ -603,6 +603,25 @@ fn render_apply_selected_outcome(
             .and_then(Value::as_u64)
             .unwrap_or(0)
     );
+    println!(
+        "- managed external skills bridged: {}",
+        result
+            .get("external_skill_managed_install_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    );
+    if let Some(bridged_skill_ids) = result
+        .get("external_skill_managed_skill_ids")
+        .and_then(Value::as_array)
+    {
+        let bridged = bridged_skill_ids
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        if !bridged.is_empty() {
+            println!("- bridged skill ids: {}", bridged.join(", "));
+        }
+    }
     if let Some(manifest_path) = result
         .get("external_skills_manifest_path")
         .and_then(Value::as_str)
