@@ -2,9 +2,12 @@
 use std::collections::BTreeSet;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[cfg(feature = "memory-sqlite")]
 use loongclaw_contracts::Capability;
+use tokio::io::{self as tokio_io, AsyncBufReadExt, BufReader};
+use tokio::sync::Notify;
 
 use crate::CliResult;
 use crate::acp::{
@@ -46,6 +49,14 @@ pub struct CliChatOptions {
     pub acp_event_stream: bool,
     pub acp_bootstrap_mcp_servers: Vec<String>,
     pub acp_working_directory: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConcurrentCliHostOptions {
+    pub resolved_path: PathBuf,
+    pub config: LoongClawConfig,
+    pub session_id: String,
+    pub shutdown: Arc<Notify>,
 }
 
 impl CliChatOptions {
@@ -125,6 +136,18 @@ struct CliTurnRuntime {
     memory_config: MemoryRuntimeConfig,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CliSessionRequirement {
+    AllowImplicitDefault,
+    RequireExplicit,
+}
+
+enum CliChatLoopControl {
+    Continue,
+    Exit,
+    AssistantText(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CliChatStartupSummary {
     config_path: String,
@@ -190,10 +213,192 @@ pub async fn run_cli_chat(
         return Ok(());
     }
 
-    let runtime =
-        initialize_cli_turn_runtime(config_path, session_hint, options, "cli-chat").await?;
+    let runtime = initialize_cli_turn_runtime(config_path, session_hint, options, "cli-chat")?;
     print_cli_chat_startup(&runtime, options)?;
+    print_turn_checkpoint_startup_health(&runtime).await;
+    let acp_event_printer = options
+        .acp_event_stream
+        .then(|| JsonlAcpTurnEventSink::stderr_with_prefix("acp-event> "));
 
+    loop {
+        print!("you> ");
+        io::stdout()
+            .flush()
+            .map_err(|error| format!("flush stdout failed: {error}"))?;
+        let mut line = String::new();
+        let read = io::stdin()
+            .read_line(&mut line)
+            .map_err(|error| format!("read stdin failed: {error}"))?;
+        if read == 0 {
+            println!();
+            break;
+        }
+        match process_cli_chat_input(
+            &runtime,
+            line.trim(),
+            options,
+            acp_event_printer
+                .as_ref()
+                .map(|printer| printer as &dyn AcpTurnEventSink),
+        )
+        .await?
+        {
+            CliChatLoopControl::Continue => continue,
+            CliChatLoopControl::Exit => break,
+            CliChatLoopControl::AssistantText(assistant_text) => {
+                println!("loongclaw> {assistant_text}");
+            }
+        }
+    }
+
+    println!("bye.");
+    Ok(())
+}
+
+#[allow(clippy::print_stdout)] // CLI output
+pub async fn run_cli_ask(
+    config_path: Option<&str>,
+    session_hint: Option<&str>,
+    message: &str,
+    options: &CliChatOptions,
+) -> CliResult<()> {
+    let input = message.trim();
+    if input.is_empty() {
+        return Err("ask message must not be empty".to_owned());
+    }
+
+    let runtime = initialize_cli_turn_runtime(config_path, session_hint, options, "cli-ask")?;
+    let acp_event_printer = options
+        .acp_event_stream
+        .then(|| JsonlAcpTurnEventSink::stderr_with_prefix("acp-event> "));
+    let assistant_text = run_cli_turn(
+        &runtime,
+        input,
+        options,
+        acp_event_printer
+            .as_ref()
+            .map(|printer| printer as &dyn AcpTurnEventSink),
+    )
+    .await?;
+    println!("{assistant_text}");
+    Ok(())
+}
+
+pub fn run_concurrent_cli_host(options: &ConcurrentCliHostOptions) -> CliResult<()> {
+    let chat_options = CliChatOptions::default();
+    let runtime = initialize_cli_turn_runtime_with_loaded_config(
+        options.resolved_path.clone(),
+        options.config.clone(),
+        Some(options.session_id.as_str()),
+        &chat_options,
+        "cli-chat-concurrent",
+        CliSessionRequirement::RequireExplicit,
+    )?;
+    print_cli_chat_startup(&runtime, &chat_options)?;
+
+    let host_runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("failed to initialize concurrent CLI host runtime: {error}"))?;
+
+    host_runtime.block_on(async {
+        print_turn_checkpoint_startup_health(&runtime).await;
+        run_concurrent_cli_host_loop(&runtime, &chat_options, options.shutdown.as_ref()).await
+    })
+}
+
+fn initialize_cli_turn_runtime(
+    config_path: Option<&str>,
+    session_hint: Option<&str>,
+    options: &CliChatOptions,
+    kernel_scope: &'static str,
+) -> CliResult<CliTurnRuntime> {
+    let (resolved_path, config) = config::load(config_path)?;
+    initialize_cli_turn_runtime_with_loaded_config(
+        resolved_path,
+        config,
+        session_hint,
+        options,
+        kernel_scope,
+        CliSessionRequirement::AllowImplicitDefault,
+    )
+}
+
+fn initialize_cli_turn_runtime_with_loaded_config(
+    resolved_path: PathBuf,
+    config: LoongClawConfig,
+    session_hint: Option<&str>,
+    options: &CliChatOptions,
+    kernel_scope: &'static str,
+    session_requirement: CliSessionRequirement,
+) -> CliResult<CliTurnRuntime> {
+    if !config.cli.enabled {
+        return Err("CLI channel is disabled by config.cli.enabled=false".to_owned());
+    }
+
+    crate::runtime_env::initialize_runtime_environment(&config, Some(&resolved_path));
+    let kernel_ctx =
+        bootstrap_kernel_context_with_config(kernel_scope, DEFAULT_TOKEN_TTL_S, &config)?;
+    let explicit_acp_request = options.requests_explicit_acp();
+    let effective_bootstrap_mcp_servers = config
+        .acp
+        .dispatch
+        .bootstrap_mcp_server_names_with_additions(&options.acp_bootstrap_mcp_servers)?;
+    let effective_working_directory = options
+        .acp_working_directory
+        .clone()
+        .or_else(|| config.acp.dispatch.resolved_working_directory());
+    let session_id = resolve_cli_session_id(session_hint, session_requirement)?;
+    let session_address = ConversationSessionAddress::from_session_id(session_id.clone());
+
+    #[cfg(feature = "memory-sqlite")]
+    let (memory_config, memory_label) = {
+        let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+        let sqlite_path = config.memory.resolved_sqlite_path();
+        let initialized = memory::ensure_memory_db_ready(Some(sqlite_path), &memory_config)
+            .map_err(|error| format!("failed to initialize sqlite memory: {error}"))?;
+        (memory_config, initialized.display().to_string())
+    };
+
+    #[cfg(not(feature = "memory-sqlite"))]
+    let memory_label = "disabled".to_owned();
+
+    Ok(CliTurnRuntime {
+        resolved_path,
+        config,
+        session_id,
+        session_address,
+        turn_coordinator: ConversationTurnCoordinator::new(),
+        kernel_ctx,
+        explicit_acp_request,
+        effective_bootstrap_mcp_servers,
+        effective_working_directory,
+        memory_label,
+        #[cfg(feature = "memory-sqlite")]
+        memory_config,
+    })
+}
+
+fn resolve_cli_session_id(
+    session_hint: Option<&str>,
+    session_requirement: CliSessionRequirement,
+) -> CliResult<String> {
+    match session_hint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(session_id) => Ok(session_id.to_owned()),
+        None => match session_requirement {
+            CliSessionRequirement::AllowImplicitDefault => Ok("default".to_owned()),
+            CliSessionRequirement::RequireExplicit => {
+                Err("concurrent CLI host requires an explicit session id".to_owned())
+            }
+        },
+    }
+}
+
+#[allow(clippy::print_stdout)] // CLI output
+async fn print_turn_checkpoint_startup_health(runtime: &CliTurnRuntime) {
     #[cfg(feature = "memory-sqlite")]
     match runtime
         .turn_coordinator
@@ -224,232 +429,162 @@ pub async fn run_cli_chat(
             );
         }
     }
-    let acp_event_printer = options
-        .acp_event_stream
-        .then(|| JsonlAcpTurnEventSink::stderr_with_prefix("acp-event> "));
+}
+
+#[allow(clippy::print_stdout)] // CLI output
+async fn run_concurrent_cli_host_loop(
+    runtime: &CliTurnRuntime,
+    options: &CliChatOptions,
+    shutdown: &Notify,
+) -> CliResult<()> {
+    let mut stdin_lines = BufReader::new(tokio_io::stdin()).lines();
 
     loop {
         print!("you> ");
         io::stdout()
             .flush()
             .map_err(|error| format!("flush stdout failed: {error}"))?;
-        let mut line = String::new();
-        let read = io::stdin()
-            .read_line(&mut line)
-            .map_err(|error| format!("read stdin failed: {error}"))?;
-        if read == 0 {
+
+        let next_line = tokio::select! {
+            _ = shutdown.notified() => None,
+            line = stdin_lines.next_line() => Some(
+                line.map_err(|error| format!("read stdin failed: {error}"))?
+            ),
+        };
+
+        let Some(line) = next_line else {
+            break;
+        };
+        let Some(line) = line else {
             println!();
             break;
-        }
-        let input = line.trim();
-        if input.is_empty() {
-            continue;
-        }
-        if is_exit_command(&runtime.config, input) {
-            break;
-        }
-        if input == "/help" {
-            print_help();
-            continue;
-        }
-        if input == "/history" {
-            #[cfg(feature = "memory-sqlite")]
-            print_history(
-                &runtime.session_id,
-                runtime.config.memory.sliding_window,
-                ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
-                &runtime.memory_config,
-            )
-            .await?;
-            #[cfg(not(feature = "memory-sqlite"))]
-            print_history(
-                &runtime.session_id,
-                runtime.config.memory.sliding_window,
-                ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
-            )
-            .await?;
-            continue;
-        }
-        if let Some(limit) =
-            parse_fast_lane_summary_limit(input, runtime.config.memory.sliding_window)?
-        {
-            #[cfg(feature = "memory-sqlite")]
-            print_fast_lane_summary(
-                &runtime.session_id,
-                limit,
-                ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
-                &runtime.memory_config,
-            )
-            .await?;
-            #[cfg(not(feature = "memory-sqlite"))]
-            print_fast_lane_summary(
-                &runtime.session_id,
-                limit,
-                ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
-            )
-            .await?;
-            continue;
-        }
-        if let Some(limit) =
-            parse_safe_lane_summary_limit(input, runtime.config.memory.sliding_window)?
-        {
-            #[cfg(feature = "memory-sqlite")]
-            print_safe_lane_summary(
-                &runtime.session_id,
-                limit,
-                &runtime.config.conversation,
-                ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
-                &runtime.memory_config,
-            )
-            .await?;
-            #[cfg(not(feature = "memory-sqlite"))]
-            print_safe_lane_summary(
-                &runtime.session_id,
-                limit,
-                &runtime.config.conversation,
-                ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
-            )
-            .await?;
-            continue;
-        }
-        if let Some(limit) =
-            parse_turn_checkpoint_summary_limit(input, runtime.config.memory.sliding_window)?
-        {
-            #[cfg(feature = "memory-sqlite")]
-            print_turn_checkpoint_summary(
-                &runtime.turn_coordinator,
-                &runtime.config,
-                &runtime.session_id,
-                limit,
-                ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
-                &runtime.memory_config,
-            )
-            .await?;
-            #[cfg(not(feature = "memory-sqlite"))]
-            print_turn_checkpoint_summary(
-                &runtime.turn_coordinator,
-                &runtime.config,
-                &runtime.session_id,
-                limit,
-                ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
-            )
-            .await?;
-            continue;
-        }
-        if is_turn_checkpoint_repair_command(input)? {
-            print_turn_checkpoint_repair(
-                &runtime.turn_coordinator,
-                &runtime.config,
-                &runtime.session_id,
-                ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
-            )
-            .await?;
-            continue;
-        }
+        };
 
-        let assistant_text = run_cli_turn(
-            &runtime,
-            input,
-            options,
-            acp_event_printer
-                .as_ref()
-                .map(|printer| printer as &dyn AcpTurnEventSink),
-        )
-        .await?;
-
-        println!("loongclaw> {assistant_text}");
+        match process_cli_chat_input(runtime, line.trim(), options, None).await? {
+            CliChatLoopControl::Continue => continue,
+            CliChatLoopControl::Exit => break,
+            CliChatLoopControl::AssistantText(assistant_text) => {
+                println!("loongclaw> {assistant_text}");
+            }
+        }
     }
 
     println!("bye.");
     Ok(())
 }
 
-#[allow(clippy::print_stdout)] // CLI output
-pub async fn run_cli_ask(
-    config_path: Option<&str>,
-    session_hint: Option<&str>,
-    message: &str,
+async fn process_cli_chat_input(
+    runtime: &CliTurnRuntime,
+    input: &str,
     options: &CliChatOptions,
-) -> CliResult<()> {
-    let input = message.trim();
+    event_sink: Option<&dyn AcpTurnEventSink>,
+) -> CliResult<CliChatLoopControl> {
     if input.is_empty() {
-        return Err("ask message must not be empty".to_owned());
+        return Ok(CliChatLoopControl::Continue);
     }
-
-    let runtime =
-        initialize_cli_turn_runtime(config_path, session_hint, options, "cli-ask").await?;
-    let acp_event_printer = options
-        .acp_event_stream
-        .then(|| JsonlAcpTurnEventSink::stderr_with_prefix("acp-event> "));
-    let assistant_text = run_cli_turn(
-        &runtime,
-        input,
-        options,
-        acp_event_printer
-            .as_ref()
-            .map(|printer| printer as &dyn AcpTurnEventSink),
-    )
-    .await?;
-    println!("{assistant_text}");
-    Ok(())
-}
-
-async fn initialize_cli_turn_runtime(
-    config_path: Option<&str>,
-    session_hint: Option<&str>,
-    options: &CliChatOptions,
-    kernel_scope: &'static str,
-) -> CliResult<CliTurnRuntime> {
-    let (resolved_path, config) = config::load(config_path)?;
-    if !config.cli.enabled {
-        return Err("CLI channel is disabled by config.cli.enabled=false".to_owned());
+    if is_exit_command(&runtime.config, input) {
+        return Ok(CliChatLoopControl::Exit);
     }
-
-    crate::runtime_env::initialize_runtime_environment(&config, Some(&resolved_path));
-    let kernel_ctx =
-        bootstrap_kernel_context_with_config(kernel_scope, DEFAULT_TOKEN_TTL_S, &config)?;
-    let explicit_acp_request = options.requests_explicit_acp();
-    let effective_bootstrap_mcp_servers = config
-        .acp
-        .dispatch
-        .bootstrap_mcp_server_names_with_additions(&options.acp_bootstrap_mcp_servers)?;
-    let effective_working_directory = options
-        .acp_working_directory
-        .clone()
-        .or_else(|| config.acp.dispatch.resolved_working_directory());
-    let session_id = session_hint
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("default")
-        .to_owned();
-    let session_address = ConversationSessionAddress::from_session_id(session_id.clone());
-
-    #[cfg(feature = "memory-sqlite")]
-    let (memory_config, memory_label) = {
-        let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
-        let sqlite_path = config.memory.resolved_sqlite_path();
-        let initialized = memory::ensure_memory_db_ready(Some(sqlite_path), &memory_config)
-            .map_err(|error| format!("failed to initialize sqlite memory: {error}"))?;
-        (memory_config, initialized.display().to_string())
-    };
-
-    #[cfg(not(feature = "memory-sqlite"))]
-    let memory_label = "disabled".to_owned();
-
-    Ok(CliTurnRuntime {
-        resolved_path,
-        config,
-        session_id,
-        session_address,
-        turn_coordinator: ConversationTurnCoordinator::new(),
-        kernel_ctx,
-        explicit_acp_request,
-        effective_bootstrap_mcp_servers,
-        effective_working_directory,
-        memory_label,
+    if input == "/help" {
+        print_help();
+        return Ok(CliChatLoopControl::Continue);
+    }
+    if input == "/history" {
         #[cfg(feature = "memory-sqlite")]
-        memory_config,
-    })
+        print_history(
+            &runtime.session_id,
+            runtime.config.memory.sliding_window,
+            ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
+            &runtime.memory_config,
+        )
+        .await?;
+        #[cfg(not(feature = "memory-sqlite"))]
+        print_history(
+            &runtime.session_id,
+            runtime.config.memory.sliding_window,
+            ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
+        )
+        .await?;
+        return Ok(CliChatLoopControl::Continue);
+    }
+    if let Some(limit) = parse_fast_lane_summary_limit(input, runtime.config.memory.sliding_window)?
+    {
+        #[cfg(feature = "memory-sqlite")]
+        print_fast_lane_summary(
+            &runtime.session_id,
+            limit,
+            ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
+            &runtime.memory_config,
+        )
+        .await?;
+        #[cfg(not(feature = "memory-sqlite"))]
+        print_fast_lane_summary(
+            &runtime.session_id,
+            limit,
+            ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
+        )
+        .await?;
+        return Ok(CliChatLoopControl::Continue);
+    }
+    if let Some(limit) = parse_safe_lane_summary_limit(input, runtime.config.memory.sliding_window)?
+    {
+        #[cfg(feature = "memory-sqlite")]
+        print_safe_lane_summary(
+            &runtime.session_id,
+            limit,
+            &runtime.config.conversation,
+            ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
+            &runtime.memory_config,
+        )
+        .await?;
+        #[cfg(not(feature = "memory-sqlite"))]
+        print_safe_lane_summary(
+            &runtime.session_id,
+            limit,
+            &runtime.config.conversation,
+            ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
+        )
+        .await?;
+        return Ok(CliChatLoopControl::Continue);
+    }
+    if let Some(limit) =
+        parse_turn_checkpoint_summary_limit(input, runtime.config.memory.sliding_window)?
+    {
+        #[cfg(feature = "memory-sqlite")]
+        print_turn_checkpoint_summary(
+            &runtime.turn_coordinator,
+            &runtime.config,
+            &runtime.session_id,
+            limit,
+            ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
+            &runtime.memory_config,
+        )
+        .await?;
+        #[cfg(not(feature = "memory-sqlite"))]
+        print_turn_checkpoint_summary(
+            &runtime.turn_coordinator,
+            &runtime.config,
+            &runtime.session_id,
+            limit,
+            ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
+        )
+        .await?;
+        return Ok(CliChatLoopControl::Continue);
+    }
+    if is_turn_checkpoint_repair_command(input)? {
+        print_turn_checkpoint_repair(
+            &runtime.turn_coordinator,
+            &runtime.config,
+            &runtime.session_id,
+            ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
+        )
+        .await?;
+        return Ok(CliChatLoopControl::Continue);
+    }
+
+    Ok(CliChatLoopControl::AssistantText(
+        run_cli_turn(runtime, input, options, event_sink).await?,
+    ))
 }
 
 #[allow(clippy::print_stdout)] // CLI output
@@ -1682,10 +1817,11 @@ mod tests {
     use crate::conversation::ConversationRuntimeBinding;
     use std::ffi::OsStr;
     use std::path::PathBuf;
+    use std::sync::Arc;
     #[cfg(feature = "memory-sqlite")]
     use std::{
         collections::{BTreeMap, BTreeSet},
-        sync::{Arc, Mutex},
+        sync::Mutex,
     };
 
     #[cfg(feature = "memory-sqlite")]
@@ -1699,6 +1835,7 @@ mod tests {
     };
     #[cfg(feature = "memory-sqlite")]
     use serde_json::{Value, json};
+    use tokio::sync::Notify;
 
     #[test]
     fn cli_chat_options_detect_explicit_acp_requests() {
@@ -2101,6 +2238,43 @@ mod tests {
             .expect_err("empty one-shot message should fail");
 
         assert!(error.contains("ask message must not be empty"));
+    }
+
+    #[test]
+    fn concurrent_cli_host_requires_explicit_session_id() {
+        let shutdown = Arc::new(Notify::new());
+        let error = run_concurrent_cli_host(&ConcurrentCliHostOptions {
+            resolved_path: PathBuf::from("/tmp/loongclaw.toml"),
+            config: LoongClawConfig::default(),
+            session_id: "   ".to_owned(),
+            shutdown,
+        })
+        .expect_err("concurrent host should reject an implicit session id");
+
+        assert!(
+            error.contains("explicit session"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "memory-sqlite")]
+    fn concurrent_cli_host_exits_when_shutdown_is_requested() {
+        let (mut config, _memory_config, sqlite_path) = init_chat_test_memory("concurrent-host");
+        config.audit.mode = crate::config::AuditMode::InMemory;
+
+        let shutdown = Arc::new(Notify::new());
+        shutdown.notify_one();
+
+        run_concurrent_cli_host(&ConcurrentCliHostOptions {
+            resolved_path: PathBuf::from("/tmp/loongclaw.toml"),
+            config,
+            session_id: "cli-supervisor".to_owned(),
+            shutdown,
+        })
+        .expect("concurrent host should stop cleanly when shutdown is requested");
+
+        cleanup_chat_test_memory(&sqlite_path);
     }
 
     #[cfg(feature = "memory-sqlite")]
