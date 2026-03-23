@@ -5,9 +5,8 @@ use serde_json::{Value, json};
 use crate::memory::runtime_config::MemoryRuntimeConfig;
 
 use super::{
-    DEFAULT_MEMORY_SYSTEM_ID, DerivedMemoryKind, HydratedMemoryContext, MemoryDiagnostics,
-    MemoryRetrievalRequest, MemoryScope, MemoryStageFamily, StageDiagnostics, StageEnvelope,
-    StageOutcome,
+    DerivedMemoryKind, HydratedMemoryContext, MemoryDiagnostics, MemoryRetrievalRequest,
+    MemoryScope, MemoryStageFamily, StageDiagnostics, StageEnvelope, StageOutcome,
 };
 
 pub const MEMORY_OP_APPEND_TURN: &str = "append_turn";
@@ -350,7 +349,7 @@ fn decode_memory_diagnostics_payload(
     payload: MemoryDiagnosticsPayload,
 ) -> Option<MemoryDiagnostics> {
     Some(MemoryDiagnostics {
-        system_id: decode_memory_system_id(payload.system_id.as_str())?,
+        system_id: MemoryDiagnostics::normalize_system_id(payload.system_id.as_str())?,
         fail_open: payload.fail_open,
         strict_mode_requested: payload.strict_mode_requested,
         strict_mode_active: payload.strict_mode_active,
@@ -397,16 +396,10 @@ fn decode_stage_diagnostics_payload(payload: StageDiagnosticsPayload) -> Option<
     })
 }
 
-fn decode_memory_system_id(raw: &str) -> Option<&'static str> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        DEFAULT_MEMORY_SYSTEM_ID => Some(DEFAULT_MEMORY_SYSTEM_ID),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::{MemoryStageFamily, StageOutcome};
 
     #[test]
     fn decode_window_turns_tolerates_partial_payload_shape() {
@@ -443,5 +436,61 @@ mod tests {
         assert_eq!(decode_window_turn_count(&json!({"turn_count": 7})), Some(7));
         assert_eq!(decode_window_turn_count(&json!({"turn_count": null})), None);
         assert_eq!(decode_window_turn_count(&json!({})), None);
+    }
+
+    #[test]
+    fn decode_stage_envelope_tolerates_omitted_optional_fields() {
+        let payload = json!({
+            "hydrated": {
+                "diagnostics": {
+                    "system_id": " builtin "
+                }
+            },
+            "retrieval_request": {
+                "session_id": "session-123"
+            },
+            "diagnostics": [
+                {
+                    "family": "derive",
+                    "outcome": "succeeded"
+                },
+                {
+                    "family": "rank",
+                    "outcome": "skipped"
+                }
+            ]
+        });
+
+        let envelope = decode_stage_envelope(&payload).expect("decode stage envelope");
+        assert!(envelope.hydrated.entries.is_empty());
+        assert!(envelope.hydrated.recent_window.is_empty());
+        assert_eq!(envelope.hydrated.diagnostics.system_id, "builtin");
+        assert!(!envelope.hydrated.diagnostics.fail_open);
+        assert!(!envelope.hydrated.diagnostics.strict_mode_requested);
+        assert!(!envelope.hydrated.diagnostics.strict_mode_active);
+        assert!(!envelope.hydrated.diagnostics.degraded);
+        assert_eq!(envelope.hydrated.diagnostics.derivation_error, None);
+        assert_eq!(envelope.hydrated.diagnostics.retrieval_error, None);
+        assert_eq!(envelope.hydrated.diagnostics.recent_window_count, 0);
+        assert_eq!(envelope.hydrated.diagnostics.entry_count, 0);
+
+        let retrieval_request = envelope
+            .retrieval_request
+            .expect("retrieval request should decode");
+        assert_eq!(retrieval_request.session_id, "session-123");
+        assert_eq!(retrieval_request.query, None);
+        assert!(retrieval_request.scopes.is_empty());
+        assert_eq!(retrieval_request.budget_items, 0);
+        assert!(retrieval_request.allowed_kinds.is_empty());
+
+        assert_eq!(envelope.diagnostics.len(), 2);
+        assert_eq!(envelope.diagnostics[0].family, MemoryStageFamily::Derive);
+        assert_eq!(envelope.diagnostics[0].outcome, StageOutcome::Succeeded);
+        assert_eq!(envelope.diagnostics[0].budget_ms, None);
+        assert_eq!(envelope.diagnostics[0].elapsed_ms, None);
+        assert!(!envelope.diagnostics[0].fallback_activated);
+        assert_eq!(envelope.diagnostics[0].message, None);
+        assert_eq!(envelope.diagnostics[1].family, MemoryStageFamily::Rank);
+        assert_eq!(envelope.diagnostics[1].outcome, StageOutcome::Skipped);
     }
 }

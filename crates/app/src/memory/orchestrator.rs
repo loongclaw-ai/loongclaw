@@ -17,7 +17,7 @@ pub struct HydratedMemoryContext {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryDiagnostics {
-    pub system_id: &'static str,
+    pub system_id: String,
     pub fail_open: bool,
     pub strict_mode_requested: bool,
     pub strict_mode_active: bool,
@@ -26,6 +26,17 @@ pub struct MemoryDiagnostics {
     pub retrieval_error: Option<String>,
     pub recent_window_count: usize,
     pub entry_count: usize,
+}
+
+impl MemoryDiagnostics {
+    pub fn normalize_system_id(raw: &str) -> Option<String> {
+        let normalized = raw.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            None
+        } else {
+            Some(normalized)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -129,7 +140,8 @@ impl BuiltinMemoryOrchestrator {
 
         let degraded = derivation_error.is_some() || retrieval_error.is_some();
         let diagnostics = MemoryDiagnostics {
-            system_id: config.system.as_str(),
+            system_id: MemoryDiagnostics::normalize_system_id(config.system.as_str())
+                .unwrap_or_else(|| config.system.as_str().to_owned()),
             fail_open,
             strict_mode_requested: config.strict_mode_requested(),
             strict_mode_active: config.strict_mode_active(),

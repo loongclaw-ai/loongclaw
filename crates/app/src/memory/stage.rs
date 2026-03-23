@@ -139,6 +139,7 @@ pub struct StageEnvelope {
 }
 
 pub fn builtin_pre_assembly_stage_families() -> Vec<MemoryStageFamily> {
+    // `Compact` stays part of the declared vocabulary but is intentionally inactive in slice 1.
     vec![
         MemoryStageFamily::Derive,
         MemoryStageFamily::Retrieve,
@@ -181,7 +182,7 @@ mod tests {
                 entries: vec![],
                 recent_window: vec![],
                 diagnostics: MemoryDiagnostics {
-                    system_id: "builtin",
+                    system_id: "builtin".to_owned(),
                     fail_open: true,
                     strict_mode_requested: false,
                     strict_mode_active: false,
@@ -204,5 +205,42 @@ mod tests {
 
         let payload = encode_stage_envelope_payload(&envelope);
         assert_eq!(decode_stage_envelope(&payload), Some(envelope));
+    }
+
+    #[test]
+    fn stage_envelope_round_trips_non_builtin_system_id_through_protocol_payload() {
+        let envelope = StageEnvelope {
+            hydrated: HydratedMemoryContext {
+                entries: vec![],
+                recent_window: vec![],
+                diagnostics: MemoryDiagnostics {
+                    system_id: "Lucid".to_owned(),
+                    fail_open: false,
+                    strict_mode_requested: false,
+                    strict_mode_active: false,
+                    degraded: false,
+                    derivation_error: None,
+                    retrieval_error: None,
+                    recent_window_count: 0,
+                    entry_count: 0,
+                },
+            },
+            retrieval_request: None,
+            diagnostics: vec![],
+        };
+
+        let payload = encode_stage_envelope_payload(&envelope);
+        let decoded = decode_stage_envelope(&payload).expect("decode stage envelope");
+        assert_eq!(decoded.hydrated.diagnostics.system_id, "lucid");
+    }
+
+    #[test]
+    fn compact_stage_family_is_reserved_but_not_in_builtin_slice_one_ordering() {
+        assert_eq!(
+            MemoryStageFamily::parse_id("compact"),
+            Some(MemoryStageFamily::Compact)
+        );
+        assert!(!builtin_pre_assembly_stage_families().contains(&MemoryStageFamily::Compact));
+        assert!(!builtin_post_turn_stage_families().contains(&MemoryStageFamily::Compact));
     }
 }
