@@ -548,7 +548,10 @@ pub(super) fn replace_turns(
     request: MemoryCoreRequest,
     config: &MemoryRuntimeConfig,
 ) -> Result<MemoryCoreOutcome, String> {
-    let payload = request.payload;
+    let payload = request
+        .payload
+        .as_object()
+        .ok_or_else(|| "memory.replace_turns payload must be an object".to_owned())?;
     let session_id = payload
         .get("session_id")
         .and_then(Value::as_str)
@@ -3300,6 +3303,20 @@ mod tests {
 
         let _ = fs::remove_file(&db_path);
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn replace_turns_requires_object_payload() {
+        let error = replace_turns(
+            MemoryCoreRequest {
+                operation: MEMORY_OP_REPLACE_TURNS.to_owned(),
+                payload: json!("not-an-object"),
+            },
+            &MemoryRuntimeConfig::default(),
+        )
+        .expect_err("replace_turns should reject non-object payloads");
+
+        assert_eq!(error, "memory.replace_turns payload must be an object");
     }
 
     #[test]

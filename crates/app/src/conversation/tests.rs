@@ -17480,6 +17480,31 @@ fn compact_window_skips_small_histories() {
 }
 
 #[test]
+fn compact_window_skips_recompacting_single_prior_summary() {
+    use super::compaction::{CompactPolicy, compact_window};
+
+    let turns = vec![
+        crate::memory::WindowTurn {
+            role: "user".into(),
+            content: "Compacted 4 earlier turns\nuser: ask 1".into(),
+            ts: Some(4),
+        },
+        crate::memory::WindowTurn {
+            role: "user".into(),
+            content: "recent ask".into(),
+            ts: Some(5),
+        },
+        crate::memory::WindowTurn {
+            role: "assistant".into(),
+            content: "recent reply".into(),
+            ts: Some(6),
+        },
+    ];
+
+    assert!(compact_window(&turns, CompactPolicy::new(2)).is_none());
+}
+
+#[test]
 fn compact_window_bounds_summary_content_and_prior_summaries() {
     use super::compaction::{CompactPolicy, compact_window};
 

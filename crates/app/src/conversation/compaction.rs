@@ -25,6 +25,9 @@ pub fn compact_window(turns: &[WindowTurn], policy: CompactPolicy) -> Option<Vec
 
     let split_at = turns.len() - preserve;
     let (older, recent) = turns.split_at(split_at);
+    if older.len() == 1 && older.first().is_some_and(is_compacted_summary_turn) {
+        return None;
+    }
 
     let summary = WindowTurn {
         role: "user".to_owned(),
@@ -57,6 +60,10 @@ fn render_summary(turns: &[WindowTurn]) -> String {
 
 fn render_summary_line(turn: &WindowTurn) -> String {
     format!("{}: {}", turn.role, summarize_turn_content(&turn.content))
+}
+
+fn is_compacted_summary_turn(turn: &WindowTurn) -> bool {
+    turn.content.trim_start().starts_with("Compacted ")
 }
 
 fn summarize_turn_content(content: &str) -> String {
