@@ -97,6 +97,7 @@ struct WebApiState {
     local_token: String,
     local_token_path: PathBuf,
     web_install_mode: &'static str,
+    exact_origin: Option<String>,
     static_root: Option<PathBuf>,
     turn_streams: Mutex<HashMap<String, mpsc::UnboundedReceiver<String>>>,
     debug_state: StdMutex<DebugConsoleRuntimeState>,
@@ -478,11 +479,25 @@ async fn run_web_serve(
     } else {
         "api_only"
     };
+    let address: SocketAddr = bind
+        .parse()
+        .map_err(|error| format!("invalid web bind address `{bind}`: {error}"))?;
+    if web_install_mode == "same_origin_static" && !address.ip().is_loopback() {
+        return Err(format!(
+            "same-origin static mode only supports loopback binds, got `{bind}`"
+        ));
+    }
+    let exact_origin = matches!(
+        address.ip(),
+        std::net::IpAddr::V4(_) | std::net::IpAddr::V6(_)
+    )
+    .then(|| format!("http://{address}"));
     let state = Arc::new(WebApiState {
         config_path: config_path.map(str::to_owned),
         local_token,
         local_token_path,
         web_install_mode,
+        exact_origin,
         static_root: resolved_static_root.clone(),
         turn_streams: Mutex::new(HashMap::new()),
         debug_state: StdMutex::new(DebugConsoleRuntimeState::default()),
@@ -544,14 +559,6 @@ async fn run_web_serve(
         .layer(middleware::from_fn(local_web_cors))
         .with_state(state);
 
-    let address: SocketAddr = bind
-        .parse()
-        .map_err(|error| format!("invalid web bind address `{bind}`: {error}"))?;
-    if web_install_mode == "same_origin_static" && !address.ip().is_loopback() {
-        return Err(format!(
-            "same-origin static mode only supports loopback binds, got `{bind}`"
-        ));
-    }
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .map_err(|error| format!("bind web api on {bind} failed: {error}"))?;
@@ -1783,9 +1790,12 @@ async fn run_chat_turn_stream(
         let sqlite_path = snapshot.config.memory.resolved_sqlite_path();
         mvp::memory::ensure_memory_db_ready(Some(sqlite_path), &snapshot.memory_config)
             .map_err(WebApiError::internal)?;
-        let kernel_ctx =
-            mvp::context::bootstrap_kernel_context("web-api", mvp::context::DEFAULT_TOKEN_TTL_S)
-                .map_err(WebApiError::internal)?;
+        let kernel_ctx = mvp::context::bootstrap_kernel_context_with_config(
+            "web-api",
+            mvp::context::DEFAULT_TOKEN_TTL_S,
+            &snapshot.config,
+        )
+        .map_err(WebApiError::internal)?;
         let mut turn_config = snapshot
             .config
             .reload_provider_runtime_state_from_path(snapshot.resolved_path.as_path())

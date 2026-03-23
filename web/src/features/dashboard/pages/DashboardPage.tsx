@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Panel } from "../../../components/surfaces/Panel";
 import { useWebConnection } from "../../../hooks/useWebConnection";
@@ -316,38 +315,6 @@ export default function DashboardPage() {
   ];
   const debugConsoleCommand =
     debugConsole?.command ?? "$ loongclaw web debug --readonly";
-
-  useEffect(() => {
-    providerForm.resetFromSource({
-      kind: activeProvider?.id ?? providers[0]?.id ?? "",
-      model: config?.model ?? "",
-      baseUrlOrEndpoint: config?.endpoint ?? "",
-      apiKeyConfigured: config?.apiKeyConfigured ?? false,
-    });
-  }, [
-    activeProvider?.id,
-    config?.apiKeyConfigured,
-    config?.endpoint,
-    config?.model,
-    providers,
-  ]);
-
-  useEffect(() => {
-    preferencesForm.resetFromSource({
-      personality: config?.personality || onboardingStatus?.personality || "calm_engineering",
-      memoryProfile:
-        config?.memoryProfile || onboardingStatus?.memoryProfile || "window_only",
-      promptAddendum: onboardingStatus?.promptAddendum || "",
-    });
-  }, [
-    config?.memoryProfile,
-    config?.personality,
-    onboardingStatus?.memoryProfile,
-    onboardingStatus?.personality,
-    onboardingStatus?.promptAddendum,
-  ]);
-
-
 
   return (
     <div className="page">

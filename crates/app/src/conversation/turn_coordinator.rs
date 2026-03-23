@@ -1081,6 +1081,7 @@ impl ProviderTurnContinuePhase {
         turn_loop_policy: &ProviderTurnLoopPolicy,
         turn_loop_state: &mut ProviderTurnLoopState,
         remaining_provider_rounds: usize,
+        acp_event_sink: Option<&dyn AcpTurnEventSink>,
         binding: ConversationRuntimeBinding<'_>,
     ) -> ResolvedProviderTurn {
         resolve_provider_turn_reply(
@@ -1093,6 +1094,7 @@ impl ProviderTurnContinuePhase {
             turn_loop_policy,
             turn_loop_state,
             remaining_provider_rounds,
+            acp_event_sink,
             binding,
             self.ingress.as_ref(),
         )
@@ -2119,7 +2121,7 @@ impl ConversationTurnCoordinator {
             user_input,
             &preparation,
             runtime
-                .request_turn(
+                .request_turn_with_event_sink(
                     config,
                     session_id,
                     preparation.turn_id.as_str(),
@@ -2130,6 +2132,7 @@ impl ConversationTurnCoordinator {
                 )
                 .await,
             error_mode,
+            acp_options.event_sink,
             binding,
             ingress,
         )
@@ -2382,6 +2385,7 @@ async fn resolve_provider_turn<R: ConversationRuntime + ?Sized>(
     preparation: &ProviderTurnPreparation,
     result: CliResult<ProviderTurn>,
     error_mode: ProviderErrorMode,
+    acp_event_sink: Option<&dyn AcpTurnEventSink>,
     binding: ConversationRuntimeBinding<'_>,
     ingress: Option<&ConversationIngressContext>,
 ) -> ResolvedProviderTurn {
@@ -2427,6 +2431,7 @@ async fn resolve_provider_turn<R: ConversationRuntime + ?Sized>(
                         .turn_loop
                         .max_discovery_followup_rounds
                         .max(1),
+                    acp_event_sink,
                     binding,
                 )
                 .await
@@ -2526,6 +2531,7 @@ async fn resolve_provider_turn_reply<R: ConversationRuntime + ?Sized>(
     turn_loop_policy: &ProviderTurnLoopPolicy,
     turn_loop_state: &mut ProviderTurnLoopState,
     remaining_provider_rounds: usize,
+    acp_event_sink: Option<&dyn AcpTurnEventSink>,
     binding: ConversationRuntimeBinding<'_>,
     ingress: Option<&ConversationIngressContext>,
 ) -> ResolvedProviderTurn {
@@ -2697,13 +2703,13 @@ async fn resolve_provider_turn_reply<R: ConversationRuntime + ?Sized>(
                     .await;
                     match decide_provider_turn_request_action(
                         runtime
-                            .request_turn(
+                            .request_turn_with_event_sink(
                                 &current_continue_phase.followup_config,
                                 session_id,
                                 followup_preparation.turn_id.as_str(),
                                 &followup_preparation.session.messages,
                                 &followup_tool_view,
-                                None,
+                                acp_event_sink,
                                 binding,
                             )
                             .await,
