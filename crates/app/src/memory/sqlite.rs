@@ -3309,6 +3309,7 @@ mod tests {
             "expected normalized bootstrap count to be recorded under the canonical path"
         );
 
+        drop(_cwd_guard);
         let _ = fs::remove_file(&db_path);
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -3362,6 +3363,7 @@ mod tests {
             "expected normalized bootstrap count to land on the canonical db path"
         );
 
+        drop(_cwd_guard);
         let _ = fs::remove_file(&db_path);
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -3461,6 +3463,7 @@ mod tests {
             "expected repeated same-path runtime lookups to reuse the existing cached sqlite runtime"
         );
 
+        drop(_cwd_guard);
         let _ = fs::remove_file(&db_path);
         let _ = fs::remove_dir_all(&tmp);
     }

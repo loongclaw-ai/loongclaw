@@ -1356,6 +1356,65 @@ fn run_channel_serve_cli_forwards_optional_arguments_to_runner() {
 }
 
 #[test]
+fn multi_channel_serve_cli_requires_explicit_cli_session() {
+    let error = Cli::try_parse_from(["loongclaw", "multi-channel-serve"])
+        .expect_err("missing --session should fail");
+    assert!(error.to_string().contains("--session <SESSION>"));
+}
+
+#[test]
+fn multi_channel_serve_cli_parses_account_selection_flags() {
+    let cli = Cli::try_parse_from([
+        "loongclaw",
+        "multi-channel-serve",
+        "--session",
+        "cli-supervisor",
+        "--telegram-account",
+        "bot_123456",
+        "--feishu-account",
+        "alerts",
+    ])
+    .expect("multi-channel-serve should parse");
+
+    match cli.command {
+        Some(Commands::MultiChannelServe {
+            session,
+            telegram_account,
+            feishu_account,
+            ..
+        }) => {
+            assert_eq!(session, "cli-supervisor");
+            assert_eq!(telegram_account.as_deref(), Some("bot_123456"));
+            assert_eq!(feishu_account.as_deref(), Some("alerts"));
+        }
+        other => panic!("unexpected parse result: {other:?}"),
+    }
+}
+
+#[test]
+fn multi_channel_serve_cli_help_mentions_session_and_account_flags() {
+    let mut command = Cli::command();
+    let multi_channel_serve = command
+        .find_subcommand_mut("multi-channel-serve")
+        .expect("multi-channel-serve subcommand should exist");
+    let mut rendered = Vec::new();
+    multi_channel_serve
+        .write_long_help(&mut rendered)
+        .expect("render multi-channel-serve help");
+    let help = String::from_utf8(rendered).expect("help should be utf-8");
+
+    assert!(help.contains("--session <SESSION>"), "help: {help}");
+    assert!(
+        help.contains("--telegram-account <TELEGRAM_ACCOUNT>"),
+        "help: {help}"
+    );
+    assert!(
+        help.contains("--feishu-account <FEISHU_ACCOUNT>"),
+        "help: {help}"
+    );
+}
+
+#[test]
 fn default_channel_send_target_kind_uses_command_family_send_metadata() {
     assert_eq!(
         default_channel_send_target_kind(ChannelSendCliSpec {

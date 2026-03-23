@@ -10,7 +10,10 @@ use std::{
     future::Future,
     path::PathBuf,
     pin::Pin,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 use std::{fmt, str::FromStr};
@@ -28,6 +31,12 @@ use serde::Serialize;
     feature = "channel-matrix"
 ))]
 use serde_json::Value;
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
+use tokio::sync::Notify;
 #[cfg(feature = "channel-telegram")]
 use tokio::time::sleep;
 
@@ -1135,6 +1144,52 @@ struct ChannelServeCommandSpec {
     feature = "channel-feishu",
     feature = "channel-matrix"
 ))]
+#[derive(Debug, Clone)]
+pub struct ChannelServeStopHandle {
+    requested: Arc<AtomicBool>,
+    stop: Arc<Notify>,
+}
+
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
+impl ChannelServeStopHandle {
+    pub fn new() -> Self {
+        Self {
+            requested: Arc::new(AtomicBool::new(false)),
+            stop: Arc::new(Notify::new()),
+        }
+    }
+
+    pub fn request_stop(&self) {
+        self.requested.store(true, Ordering::SeqCst);
+        self.stop.notify_waiters();
+    }
+
+    pub fn is_requested(&self) -> bool {
+        self.requested.load(Ordering::SeqCst)
+    }
+
+    async fn wait(&self) {
+        if self.is_requested() {
+            return;
+        }
+        let notified = self.stop.notified();
+        tokio::pin!(notified);
+        if self.is_requested() {
+            return;
+        }
+        notified.await;
+    }
+}
+
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 fn channel_runtime_now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1228,6 +1283,41 @@ where
     feature = "channel-feishu",
     feature = "channel-matrix"
 ))]
+async fn with_channel_serve_runtime_with_stop<F, Fut>(
+    spec: ChannelServeRuntimeSpec<'_>,
+    stop: ChannelServeStopHandle,
+    run: F,
+) -> CliResult<()>
+where
+    F: FnOnce(Arc<ChannelOperationRuntimeTracker>, ChannelServeStopHandle) -> Fut,
+    Fut: Future<Output = CliResult<()>>,
+{
+    with_channel_serve_runtime(spec, move |runtime| run(runtime, stop)).await
+}
+
+#[cfg(test)]
+async fn with_channel_serve_runtime_with_stop_in_dir<F, Fut>(
+    runtime_dir: &std::path::Path,
+    process_id: u32,
+    spec: ChannelServeRuntimeSpec<'_>,
+    stop: ChannelServeStopHandle,
+    run: F,
+) -> CliResult<()>
+where
+    F: FnOnce(Arc<ChannelOperationRuntimeTracker>, ChannelServeStopHandle) -> Fut,
+    Fut: Future<Output = CliResult<()>>,
+{
+    with_channel_serve_runtime_in_dir(runtime_dir, process_id, spec, move |runtime| {
+        run(runtime, stop)
+    })
+    .await
+}
+
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
 async fn run_channel_serve_command<R, V, F>(
     context: ChannelCommandContext<R>,
     spec: ChannelServeCommandSpec,
@@ -1243,6 +1333,38 @@ where
         Arc<ChannelOperationRuntimeTracker>,
     ) -> ChannelCommandFuture<'a>,
 {
+    run_channel_serve_command_with_stop(
+        context,
+        spec,
+        validate,
+        ChannelServeStopHandle::new(),
+        move |context, kernel_ctx, runtime, _stop| run(context, kernel_ctx, runtime),
+    )
+    .await
+}
+
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
+async fn run_channel_serve_command_with_stop<R, V, F>(
+    context: ChannelCommandContext<R>,
+    spec: ChannelServeCommandSpec,
+    validate: V,
+    stop: ChannelServeStopHandle,
+    run: F,
+) -> CliResult<()>
+where
+    R: ChannelResolvedRuntimeAccount,
+    V: FnOnce(&R) -> CliResult<()>,
+    F: for<'a> FnOnce(
+        &'a ChannelCommandContext<R>,
+        KernelContext,
+        Arc<ChannelOperationRuntimeTracker>,
+        ChannelServeStopHandle,
+    ) -> ChannelCommandFuture<'a>,
+{
     validate(&context.resolved)?;
     crate::runtime_env::initialize_runtime_environment(
         &context.config,
@@ -1256,20 +1378,133 @@ where
     let runtime_account_id = context.resolved.runtime_account_id().to_owned();
     let runtime_account_label = context.resolved.runtime_account_label().to_owned();
 
-    with_channel_serve_runtime(
+    with_channel_serve_runtime_with_stop(
         ChannelServeRuntimeSpec {
             platform: spec.family.runtime.platform,
             operation_id: spec.family.serve().id,
             account_id: runtime_account_id.as_str(),
             account_label: runtime_account_label.as_str(),
         },
-        move |runtime| async move {
+        stop,
+        move |runtime, stop| async move {
             context.emit_route_notice(spec.family.runtime.platform);
-            run(&context, kernel_ctx, runtime).await
+            run(&context, kernel_ctx, runtime, stop).await
         },
     )
     .await
 }
+
+#[cfg(feature = "channel-telegram")]
+#[allow(clippy::print_stdout)] // CLI startup banner
+async fn run_telegram_channel_with_context(
+    context: ChannelCommandContext<ResolvedTelegramChannelConfig>,
+    once: bool,
+    stop: ChannelServeStopHandle,
+) -> CliResult<()> {
+    validate_telegram_security_config(&context.resolved)?;
+    crate::runtime_env::initialize_runtime_environment(
+        &context.config,
+        Some(context.resolved_path.as_path()),
+    );
+    let kernel_ctx = bootstrap_kernel_context_with_config(
+        "channel-telegram",
+        DEFAULT_TOKEN_TTL_S,
+        &context.config,
+    )?;
+    let token = context
+        .resolved
+        .bot_token()
+        .ok_or_else(|| "telegram bot token missing (set telegram.bot_token or env)".to_owned())?;
+    let route = context.route.clone();
+    let resolved_path = context.resolved_path.clone();
+    let resolved = context.resolved.clone();
+    let batch_config = context.config.clone();
+    let batch_kernel_ctx = Arc::new(crate::KernelContext {
+        kernel: kernel_ctx.kernel.clone(),
+        token: kernel_ctx.token.clone(),
+    });
+    let runtime_account_id = resolved.account.id.clone();
+    let runtime_account_label = resolved.account.label.clone();
+
+    with_channel_serve_runtime_with_stop(
+        ChannelServeRuntimeSpec {
+            platform: ChannelPlatform::Telegram,
+            operation_id: CHANNEL_OPERATION_SERVE_ID,
+            account_id: runtime_account_id.as_str(),
+            account_label: runtime_account_label.as_str(),
+        },
+        stop,
+        move |runtime, stop| async move {
+            let mut adapter = telegram::TelegramAdapter::new(&resolved, token);
+            context.emit_route_notice(ChannelPlatform::Telegram);
+
+            println!(
+                "{} channel started (config={}, configured_account={}, account={}, selected_by_default={}, default_source={}, timeout={}s)",
+                adapter.name(),
+                resolved_path.display(),
+                resolved.configured_account_id,
+                resolved.account.label,
+                route.selected_by_default(),
+                route.default_account_source.as_str(),
+                resolved.polling_timeout_s
+            );
+
+            loop {
+                let batch = tokio::select! {
+                    _ = stop.wait() => break,
+                    batch = adapter.receive_batch() => batch?,
+                };
+                let config = batch_config.clone();
+                let kernel_ctx = batch_kernel_ctx.clone();
+                let had_messages = process_channel_batch(
+                    &mut adapter,
+                    batch,
+                    Some(runtime.as_ref()),
+                    |message| {
+                        let config = config.clone();
+                        let kernel_ctx = kernel_ctx.clone();
+                        let resolved_path = resolved_path.clone();
+                        Box::pin(async move {
+                            process_inbound_with_provider(
+                                &config,
+                                Some(resolved_path.as_path()),
+                                &message,
+                                Some(kernel_ctx.as_ref()),
+                            )
+                            .await
+                        })
+                    },
+                )
+                .await?;
+                if !had_messages && once {
+                    break;
+                }
+                if once {
+                    break;
+                }
+                tokio::select! {
+                    _ = stop.wait() => break,
+                    _ = sleep(Duration::from_millis(250)) => {}
+                }
+            }
+            Ok(())
+        },
+    )
+    .await
+}
+
+#[cfg(feature = "channel-telegram")]
+pub async fn run_telegram_channel_with_stop(
+    resolved_path: PathBuf,
+    config: LoongClawConfig,
+    once: bool,
+    account_id: Option<&str>,
+    stop: ChannelServeStopHandle,
+) -> CliResult<()> {
+    let context = build_telegram_command_context(resolved_path, config, account_id)?;
+    run_telegram_channel_with_context(context, once, stop).await
+}
+
 #[cfg(test)]
 async fn with_channel_serve_runtime_in_dir<T, F, Fut>(
     runtime_dir: &std::path::Path,
@@ -1323,84 +1558,7 @@ pub async fn run_telegram_channel(
     #[cfg(feature = "channel-telegram")]
     {
         let context = load_telegram_command_context(config_path, account_id)?;
-        validate_telegram_security_config(&context.resolved)?;
-        crate::runtime_env::initialize_runtime_environment(
-            &context.config,
-            Some(context.resolved_path.as_path()),
-        );
-        let kernel_ctx = bootstrap_kernel_context_with_config(
-            "channel-telegram",
-            DEFAULT_TOKEN_TTL_S,
-            &context.config,
-        )?;
-        let token = context.resolved.bot_token().ok_or_else(|| {
-            "telegram bot token missing (set telegram.bot_token or env)".to_owned()
-        })?;
-        let route = context.route.clone();
-        let resolved_path = context.resolved_path.clone();
-        let resolved = context.resolved.clone();
-        let batch_config = context.config.clone();
-        let batch_kernel_ctx = Arc::new(crate::KernelContext {
-            kernel: kernel_ctx.kernel.clone(),
-            token: kernel_ctx.token.clone(),
-        });
-        let runtime_account_id = resolved.account.id.clone();
-        let runtime_account_label = resolved.account.label.clone();
-
-        with_channel_serve_runtime(
-            ChannelServeRuntimeSpec {
-                platform: ChannelPlatform::Telegram,
-                operation_id: CHANNEL_OPERATION_SERVE_ID,
-                account_id: runtime_account_id.as_str(),
-                account_label: runtime_account_label.as_str(),
-            },
-            move |runtime| async move {
-                let mut adapter = telegram::TelegramAdapter::new(&resolved, token);
-                context.emit_route_notice(ChannelPlatform::Telegram);
-
-                println!(
-                    "{} channel started (config={}, configured_account={}, account={}, selected_by_default={}, default_source={}, timeout={}s)",
-                    adapter.name(),
-                    resolved_path.display(),
-                    resolved.configured_account_id,
-                    resolved.account.label,
-                    route.selected_by_default(),
-                    route.default_account_source.as_str(),
-                    resolved.polling_timeout_s
-                );
-
-                loop {
-                    let batch = adapter.receive_batch().await?;
-                    let config = batch_config.clone();
-                    let kernel_ctx = batch_kernel_ctx.clone();
-                    let had_messages =
-                        process_channel_batch(&mut adapter, batch, Some(runtime.as_ref()), |message| {
-                            let config = config.clone();
-                            let kernel_ctx = kernel_ctx.clone();
-                            let resolved_path = resolved_path.clone();
-                            Box::pin(async move {
-                                process_inbound_with_provider(
-                                    &config,
-                                    Some(resolved_path.as_path()),
-                                    &message,
-                                    Some(kernel_ctx.as_ref()),
-                                )
-                                .await
-                            })
-                        })
-                        .await?;
-                    if !had_messages && once {
-                        break;
-                    }
-                    if once {
-                        break;
-                    }
-                    sleep(Duration::from_millis(250)).await;
-                }
-                Ok(())
-            }
-        )
-        .await
+        run_telegram_channel_with_context(context, once, ChannelServeStopHandle::new()).await
     }
 }
 
@@ -1536,37 +1694,115 @@ pub async fn run_feishu_channel(
     #[cfg(feature = "channel-feishu")]
     {
         let context = load_feishu_command_context(config_path, account_id)?;
-        let bind_override = bind_override.map(str::to_owned);
-        let path_override = path_override.map(str::to_owned);
-        run_channel_serve_command(
+        run_feishu_channel_with_context(
             context,
-            ChannelServeCommandSpec {
-                family: FEISHU_COMMAND_FAMILY_DESCRIPTOR,
-            },
-            validate_feishu_security_config,
-            move |context, kernel_ctx, runtime| {
-                Box::pin(async move {
-                    let route = context.route.clone();
-                    let resolved_path = context.resolved_path.clone();
-                    let resolved = context.resolved.clone();
-                    let config = context.config.clone();
-                    feishu::run_feishu_channel(
-                        &config,
-                        &resolved,
-                        &resolved_path,
-                        route.selected_by_default(),
-                        route.default_account_source,
-                        bind_override.as_deref(),
-                        path_override.as_deref(),
-                        kernel_ctx,
-                        runtime,
-                    )
-                    .await
-                })
-            },
+            bind_override,
+            path_override,
+            ChannelServeStopHandle::new(),
         )
         .await
     }
+}
+
+#[cfg(feature = "channel-feishu")]
+async fn run_feishu_channel_with_context(
+    context: ChannelCommandContext<ResolvedFeishuChannelConfig>,
+    bind_override: Option<&str>,
+    path_override: Option<&str>,
+    stop: ChannelServeStopHandle,
+) -> CliResult<()> {
+    let bind_override = bind_override.map(str::to_owned);
+    let path_override = path_override.map(str::to_owned);
+    run_channel_serve_command_with_stop(
+        context,
+        ChannelServeCommandSpec {
+            family: FEISHU_COMMAND_FAMILY_DESCRIPTOR,
+        },
+        validate_feishu_security_config,
+        stop,
+        move |context, kernel_ctx, runtime, stop| {
+            Box::pin(async move {
+                let route = context.route.clone();
+                let resolved_path = context.resolved_path.clone();
+                let resolved = context.resolved.clone();
+                let config = context.config.clone();
+                feishu::run_feishu_channel(
+                    &config,
+                    &resolved,
+                    &resolved_path,
+                    route.selected_by_default(),
+                    route.default_account_source,
+                    bind_override.as_deref(),
+                    path_override.as_deref(),
+                    kernel_ctx,
+                    runtime,
+                    stop,
+                )
+                .await
+            })
+        },
+    )
+    .await
+}
+
+#[cfg(feature = "channel-feishu")]
+pub async fn run_feishu_channel_with_stop(
+    resolved_path: PathBuf,
+    config: LoongClawConfig,
+    account_id: Option<&str>,
+    bind_override: Option<&str>,
+    path_override: Option<&str>,
+    stop: ChannelServeStopHandle,
+) -> CliResult<()> {
+    let context = build_feishu_command_context(resolved_path, config, account_id)?;
+    run_feishu_channel_with_context(context, bind_override, path_override, stop).await
+}
+
+#[doc(hidden)]
+#[cfg(any(
+    feature = "channel-telegram",
+    feature = "channel-feishu",
+    feature = "channel-matrix"
+))]
+pub async fn run_channel_serve_runtime_probe_for_test(
+    platform: ChannelPlatform,
+    account_id: &str,
+    account_label: &str,
+    stop: ChannelServeStopHandle,
+    entered: Arc<Notify>,
+) -> CliResult<()> {
+    with_channel_serve_runtime_with_stop(
+        ChannelServeRuntimeSpec {
+            platform,
+            operation_id: CHANNEL_OPERATION_SERVE_ID,
+            account_id,
+            account_label,
+        },
+        stop,
+        move |_runtime, stop| async move {
+            entered.notify_one();
+            stop.wait().await;
+            Ok(())
+        },
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub fn load_channel_operation_runtime_for_account_from_dir_for_test(
+    runtime_dir: &std::path::Path,
+    platform: ChannelPlatform,
+    operation_id: &str,
+    account_id: &str,
+    now_ms: u64,
+) -> Option<ChannelOperationRuntime> {
+    runtime_state::load_channel_operation_runtime_for_account_from_dir(
+        runtime_dir,
+        platform,
+        operation_id,
+        account_id,
+        now_ms,
+    )
 }
 
 #[allow(clippy::print_stdout)] // CLI output
@@ -2981,6 +3217,76 @@ mod tests {
         .expect("serve runtime wrapper should succeed");
 
         assert_eq!(result, "ok");
+
+        let finished = runtime_state::load_channel_operation_runtime_for_account_from_dir(
+            runtime_dir.as_path(),
+            ChannelPlatform::Telegram,
+            "serve",
+            "bot_123456",
+            0,
+        )
+        .expect("runtime should remain readable after shutdown");
+        assert!(!finished.running);
+        assert_eq!(finished.pid, Some(9191));
+    }
+
+    #[cfg(any(
+        feature = "channel-telegram",
+        feature = "channel-feishu",
+        feature = "channel-matrix"
+    ))]
+    #[tokio::test]
+    async fn with_channel_serve_runtime_shuts_down_cleanly_after_cooperative_stop() {
+        let runtime_dir = temp_runtime_dir("serve-runtime-cooperative-stop");
+        let runtime_dir_for_wrapper = runtime_dir.clone();
+        let runtime_dir_for_body = runtime_dir.clone();
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let entered_for_body = entered.clone();
+        let stop = ChannelServeStopHandle::new();
+        let stop_for_body = stop.clone();
+        let operation = ChannelServeRuntimeSpec {
+            platform: ChannelPlatform::Telegram,
+            operation_id: CHANNEL_OPERATION_SERVE_ID,
+            account_id: "bot_123456",
+            account_label: "bot:123456",
+        };
+
+        let wrapper = tokio::spawn(async move {
+            with_channel_serve_runtime_with_stop_in_dir(
+                runtime_dir_for_wrapper.as_path(),
+                9191,
+                operation,
+                stop_for_body,
+                move |_runtime, stop| {
+                    let runtime_dir_for_body = runtime_dir_for_body.clone();
+                    async move {
+                        let live =
+                            runtime_state::load_channel_operation_runtime_for_account_from_dir(
+                                runtime_dir_for_body.as_path(),
+                                ChannelPlatform::Telegram,
+                                "serve",
+                                "bot_123456",
+                                0,
+                            )
+                            .expect("runtime should exist while serve body is running");
+                        assert!(live.running);
+                        assert_eq!(live.pid, Some(9191));
+                        entered_for_body.notify_one();
+                        stop.wait().await;
+                        Ok(())
+                    }
+                },
+            )
+            .await
+        });
+
+        entered.notified().await;
+        stop.request_stop();
+
+        wrapper
+            .await
+            .expect("cooperative stop wrapper join should succeed")
+            .expect("cooperative stop wrapper should succeed");
 
         let finished = runtime_state::load_channel_operation_runtime_for_account_from_dir(
             runtime_dir.as_path(),

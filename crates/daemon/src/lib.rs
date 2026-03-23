@@ -93,6 +93,7 @@ pub mod runtime_experiment_cli;
 pub mod runtime_restore_cli;
 pub mod skills_cli;
 pub mod source_presentation;
+pub mod supervisor;
 
 pub use loongclaw_spec::programmatic::{
     acquire_programmatic_circuit_slot, record_programmatic_circuit_outcome,
@@ -732,6 +733,17 @@ pub enum Commands {
         once: bool,
         #[arg(long)]
         account: Option<String>,
+    },
+    /// Run the multi-channel supervisor for coordinated Telegram and Feishu serving
+    MultiChannelServe {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        telegram_account: Option<String>,
+        #[arg(long)]
+        feishu_account: Option<String>,
     },
     /// Run the Feishu integration namespace
     Feishu {
@@ -3721,6 +3733,16 @@ pub fn run_matrix_serve_cli_impl(args: ChannelServeCliArgs<'_>) -> ChannelCliCom
         ))
         .await
     })
+}
+
+pub async fn run_multi_channel_serve_cli(
+    config_path: Option<&str>,
+    session: &str,
+    telegram_account: Option<&str>,
+    feishu_account: Option<&str>,
+) -> CliResult<()> {
+    supervisor::run_multi_channel_serve(config_path, session, telegram_account, feishu_account)
+        .await
 }
 
 pub fn parse_json_payload(raw: &str, context: &str) -> CliResult<Value> {
