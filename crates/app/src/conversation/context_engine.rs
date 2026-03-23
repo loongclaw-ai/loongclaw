@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 #[cfg(feature = "memory-sqlite")]
 use loongclaw_contracts::Capability;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::config::LoongClawConfig;
 use crate::{CliResult, KernelContext};
@@ -308,6 +308,13 @@ struct CompactionWindowSnapshot {
 }
 
 #[cfg(feature = "memory-sqlite")]
+impl CompactionWindowSnapshot {
+    fn is_complete_session_snapshot(&self) -> bool {
+        matches!(self.turn_count, Some(turn_count) if turn_count == self.turns.len())
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
 enum PersistMemoryWindowOutcome {
     Persisted,
     Conflict,
@@ -351,6 +358,10 @@ impl ConversationContextEngine for DefaultContextEngine {
                 }
 
                 let snapshot = load_memory_window_snapshot(config, session_id, kernel_ctx).await?;
+                // Fail closed when compaction cannot see the complete persisted session.
+                if !snapshot.is_complete_session_snapshot() {
+                    return Ok(());
+                }
                 let preserve_recent_turns = config
                     .conversation
                     .compact_preserve_recent_turns()
@@ -489,7 +500,16 @@ async fn load_memory_window_snapshot(
     session_id: &str,
     kernel_ctx: &KernelContext,
 ) -> CliResult<CompactionWindowSnapshot> {
-    let request = memory::build_window_request(session_id, config.memory.sliding_window);
+    const MAX_COMPACTION_WINDOW_TURNS: usize = 512;
+
+    let request = loongclaw_contracts::MemoryCoreRequest {
+        operation: memory::MEMORY_OP_WINDOW.to_owned(),
+        payload: json!({
+            "session_id": session_id,
+            "limit": MAX_COMPACTION_WINDOW_TURNS,
+            "allow_extended_limit": true,
+        }),
+    };
     let caps = BTreeSet::from([Capability::MemoryRead]);
     let outcome = kernel_ctx
         .kernel
@@ -510,6 +530,7 @@ async fn load_memory_window_snapshot(
         ));
     }
 
+    let _ = config;
     Ok(CompactionWindowSnapshot {
         turns: memory::decode_window_turns(&outcome.payload),
         turn_count: memory::decode_window_turn_count(&outcome.payload),

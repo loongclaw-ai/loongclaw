@@ -10545,6 +10545,50 @@ fn build_kernel_context_with_compaction_conflict(
     (ctx, invocations)
 }
 
+fn build_kernel_context_with_incomplete_compaction_snapshot(
+    audit: Arc<InMemoryAuditSink>,
+    window_turns: Value,
+    turn_count: usize,
+) -> (KernelContext, Arc<Mutex<Vec<MemoryCoreRequest>>>) {
+    let clock = Arc::new(FixedClock::new(1_700_000_000));
+    let mut kernel = LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock, audit);
+
+    let pack = VerticalPackManifest {
+        pack_id: "test-pack".to_owned(),
+        domain: "testing".to_owned(),
+        version: "0.1.0".to_owned(),
+        default_route: ExecutionRoute {
+            harness_kind: HarnessKind::EmbeddedPi,
+            adapter: None,
+        },
+        allowed_connectors: BTreeSet::new(),
+        granted_capabilities: BTreeSet::from([Capability::MemoryWrite, Capability::MemoryRead]),
+        metadata: BTreeMap::new(),
+    };
+    kernel.register_pack(pack).expect("register pack");
+
+    let invocations = Arc::new(Mutex::new(Vec::new()));
+    kernel.register_core_memory_adapter(IncompleteCompactionSnapshotMemoryAdapter {
+        invocations: invocations.clone(),
+        window_turns,
+        turn_count,
+    });
+    kernel
+        .set_default_core_memory_adapter("test-memory-incomplete-compaction-snapshot")
+        .expect("set default memory adapter");
+
+    let token = kernel
+        .issue_token("test-pack", "test-agent", 3600)
+        .expect("issue token");
+
+    let ctx = KernelContext {
+        kernel: Arc::new(kernel),
+        token,
+    };
+
+    (ctx, invocations)
+}
+
 #[cfg(feature = "memory-sqlite")]
 fn prepare_discovery_first_summary_test(
     db_scope: &str,
@@ -10821,6 +10865,51 @@ impl CoreMemoryAdapter for ConflictOnFirstReplaceMemoryAdapter {
                     }),
                 })
             }
+            _ => Ok(MemoryCoreOutcome {
+                status: "ok".to_owned(),
+                payload: json!({}),
+            }),
+        }
+    }
+}
+
+struct IncompleteCompactionSnapshotMemoryAdapter {
+    invocations: Arc<Mutex<Vec<MemoryCoreRequest>>>,
+    window_turns: Value,
+    turn_count: usize,
+}
+
+#[async_trait]
+impl CoreMemoryAdapter for IncompleteCompactionSnapshotMemoryAdapter {
+    fn name(&self) -> &str {
+        "test-memory-incomplete-compaction-snapshot"
+    }
+
+    async fn execute_core_memory(
+        &self,
+        request: MemoryCoreRequest,
+    ) -> Result<MemoryCoreOutcome, MemoryPlaneError> {
+        self.invocations
+            .lock()
+            .expect("invocations lock")
+            .push(request.clone());
+
+        match request.operation.as_str() {
+            crate::memory::MEMORY_OP_READ_CONTEXT => Ok(MemoryCoreOutcome {
+                status: "ok".to_owned(),
+                payload: json!({"entries": []}),
+            }),
+            crate::memory::MEMORY_OP_WINDOW => Ok(MemoryCoreOutcome {
+                status: "ok".to_owned(),
+                payload: json!({
+                    "turns": self.window_turns.clone(),
+                    "turn_count": self.turn_count,
+                }),
+            }),
+            crate::memory::MEMORY_OP_REPLACE_TURNS => Err(MemoryPlaneError::Execution(
+                "replace_turns should not run when the compaction snapshot is incomplete"
+                    .to_owned(),
+            )),
             _ => Ok(MemoryCoreOutcome {
                 status: "ok".to_owned(),
                 payload: json!({}),
@@ -17636,7 +17725,8 @@ async fn default_context_engine_compact_context_rewrites_persisted_window() {
 
 #[cfg(feature = "memory-sqlite")]
 #[tokio::test]
-async fn default_context_engine_compact_context_clamps_to_sliding_window() {
+async fn default_context_engine_compact_context_compacts_full_session_but_assembles_within_sliding_window()
+ {
     use super::context_engine::{ConversationContextEngine, DefaultContextEngine};
 
     let mut config = test_config();
@@ -17674,7 +17764,10 @@ async fn default_context_engine_compact_context_clamps_to_sliding_window() {
         .expect("window load should succeed");
     assert_eq!(turns.len(), 4);
     assert_eq!(turns[0].role, "user");
-    assert!(turns[0].content.contains("Compacted 1 earlier turns"));
+    assert!(turns[0].content.contains("Compacted 3 earlier turns"));
+    assert_eq!(turns[1].content, "reply 2");
+    assert_eq!(turns[2].content, "recent ask");
+    assert_eq!(turns[3].content, "recent reply");
 
     let messages = engine
         .assemble_messages(
@@ -17690,7 +17783,7 @@ async fn default_context_engine_compact_context_clamps_to_sliding_window() {
         messages[0]["content"]
             .as_str()
             .expect("summary content")
-            .contains("Compacted 1 earlier turns")
+            .contains("Compacted 3 earlier turns")
     );
     assert_eq!(
         messages[3]["content"]
@@ -17704,6 +17797,60 @@ async fn default_context_engine_compact_context_clamps_to_sliding_window() {
 
 #[cfg(feature = "memory-sqlite")]
 #[tokio::test]
+async fn default_context_engine_compact_context_rewrites_from_full_session_snapshot() {
+    use super::context_engine::{ConversationContextEngine, DefaultContextEngine};
+
+    let mut config = test_config();
+    let db_path =
+        unique_memory_sqlite_path("default-context-engine-compaction-full-session-snapshot");
+    let _ = std::fs::remove_file(&db_path);
+    config.memory.sqlite_path = db_path.clone();
+    config.memory.sliding_window = 4;
+    config.conversation.compact_preserve_recent_turns = 2;
+
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let kernel_ctx = test_kernel_context_with_memory(
+        "test-default-context-engine-compaction-full-session-snapshot",
+        &memory_config,
+    );
+    let session_id = "default-context-engine-compaction-full-session-snapshot";
+
+    for (role, content) in [
+        ("user", "turn 1"),
+        ("assistant", "turn 2"),
+        ("user", "turn 3"),
+        ("assistant", "turn 4"),
+        ("user", "turn 5"),
+        ("assistant", "turn 6"),
+        ("user", "turn 7"),
+        ("assistant", "turn 8"),
+        ("user", "turn 9"),
+        ("assistant", "turn 10"),
+    ] {
+        crate::memory::append_turn_direct(session_id, role, content, &memory_config)
+            .expect("seed turns should succeed");
+    }
+
+    let engine = DefaultContextEngine;
+    engine
+        .compact_context(&config, session_id, &[], &kernel_ctx)
+        .await
+        .expect("default engine compaction should succeed");
+
+    let turns = crate::memory::window_direct(session_id, 32, &memory_config)
+        .expect("window load should succeed");
+    assert_eq!(turns.len(), 3);
+    assert_eq!(turns[0].role, "user");
+    assert!(turns[0].content.contains("Compacted 8 earlier turns"));
+    assert!(turns[0].content.contains("turn 1"));
+    assert_eq!(turns[1].content, "turn 9");
+    assert_eq!(turns[2].content, "turn 10");
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
 async fn default_context_engine_compact_context_retries_conflict_and_preserves_concurrent_turn() {
     use super::context_engine::{ConversationContextEngine, DefaultContextEngine};
 
@@ -17711,7 +17858,7 @@ async fn default_context_engine_compact_context_retries_conflict_and_preserves_c
     let (kernel_ctx, invocations) = build_kernel_context_with_compaction_conflict(audit);
     let mut config = test_config();
     config.memory.sliding_window = 32;
-    config.conversation.compact_preserve_recent_turns = 2;
+    config.conversation.compact_preserve_recent_turns = 3;
 
     let engine = DefaultContextEngine;
     engine
@@ -17729,7 +17876,16 @@ async fn default_context_engine_compact_context_retries_conflict_and_preserves_c
         .iter()
         .filter(|request| request.operation == crate::memory::MEMORY_OP_REPLACE_TURNS)
         .collect::<Vec<_>>();
+    let window_requests = captured
+        .iter()
+        .filter(|request| request.operation == crate::memory::MEMORY_OP_WINDOW)
+        .collect::<Vec<_>>();
 
+    assert_eq!(window_requests.len(), 2);
+    for request in &window_requests {
+        assert_eq!(request.payload["allow_extended_limit"], json!(true));
+        assert_eq!(request.payload["limit"], json!(512));
+    }
     assert_eq!(replace_requests.len(), 2);
     assert_eq!(replace_requests[0].payload["expected_turn_count"], 6);
     assert_eq!(replace_requests[1].payload["expected_turn_count"], 7);
@@ -17740,6 +17896,70 @@ async fn default_context_engine_compact_context_retries_conflict_and_preserves_c
             .iter()
             .any(|turn| turn["content"] == "concurrent ask"),
         "retry should preserve the turn appended during the conflict window"
+    );
+    assert!(
+        replace_requests[1].payload["turns"]
+            .as_array()
+            .expect("replacement turns payload")
+            .iter()
+            .any(|turn| turn["content"] == "recent ask"),
+        "retry should preserve the most recent user turn as well as the concurrent append"
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn default_context_engine_compact_context_skips_incomplete_extended_snapshot() {
+    use super::context_engine::{ConversationContextEngine, DefaultContextEngine};
+
+    let window_turns = json!(
+        (1..=512)
+            .map(|turn| {
+                let role = if turn % 2 == 0 { "assistant" } else { "user" };
+                json!({
+                    "role": role,
+                    "content": format!("turn {turn}"),
+                    "ts": turn,
+                })
+            })
+            .collect::<Vec<_>>()
+    );
+    let audit = Arc::new(InMemoryAuditSink::default());
+    let (kernel_ctx, invocations) =
+        build_kernel_context_with_incomplete_compaction_snapshot(audit, window_turns, 513);
+    let mut config = test_config();
+    config.memory.sliding_window = 32;
+
+    let engine = DefaultContextEngine;
+    engine
+        .compact_context(
+            &config,
+            "default-context-engine-incomplete-compaction-snapshot",
+            &[],
+            &kernel_ctx,
+        )
+        .await
+        .expect("default engine should skip incomplete compaction snapshots");
+
+    let captured = invocations.lock().expect("invocations lock").clone();
+    let window_requests = captured
+        .iter()
+        .filter(|request| request.operation == crate::memory::MEMORY_OP_WINDOW)
+        .collect::<Vec<_>>();
+    let replace_requests = captured
+        .iter()
+        .filter(|request| request.operation == crate::memory::MEMORY_OP_REPLACE_TURNS)
+        .collect::<Vec<_>>();
+
+    assert_eq!(window_requests.len(), 1);
+    assert_eq!(
+        window_requests[0].payload["allow_extended_limit"],
+        json!(true)
+    );
+    assert_eq!(window_requests[0].payload["limit"], json!(512));
+    assert!(
+        replace_requests.is_empty(),
+        "compaction should fail closed instead of rewriting from an incomplete snapshot"
     );
 }
 
