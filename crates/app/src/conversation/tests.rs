@@ -17640,7 +17640,7 @@ fn compact_window_bounds_summary_content_and_prior_summaries() {
     let compacted = compact_window(&turns, CompactPolicy::new(2)).expect("should compact");
     let summary = &compacted[0].content;
 
-    assert!(summary.contains("[prior compacted summary]"));
+    assert!(summary.contains("history"));
     assert!(summary.contains("earlier turns omitted"));
     assert!(
         summary.len() < 512,
@@ -17649,6 +17649,114 @@ fn compact_window_bounds_summary_content_and_prior_summaries() {
     );
     assert_eq!(compacted[1].content, "recent ask");
     assert_eq!(compacted[2].content, "recent reply");
+}
+
+#[test]
+fn compact_window_retains_prior_summary_details_across_repeated_compaction() {
+    use super::compaction::{CompactPolicy, compact_window};
+
+    let prior_summary = "Compacted 1 earlier turns\nuser: For this test, remember these facts exactly: - codename: NIMBUS-17 - owner: Mina - budget: 47";
+    let turns = vec![
+        crate::memory::WindowTurn {
+            role: "user".into(),
+            content: prior_summary.into(),
+            ts: Some(1),
+        },
+        crate::memory::WindowTurn {
+            role: "assistant".into(),
+            content: "ack-1".into(),
+            ts: Some(2),
+        },
+        crate::memory::WindowTurn {
+            role: "user".into(),
+            content: "Add these facts too: - launch month: October - fallback code: RIVER-9".into(),
+            ts: Some(3),
+        },
+        crate::memory::WindowTurn {
+            role: "assistant".into(),
+            content: "ack-2".into(),
+            ts: Some(4),
+        },
+        crate::memory::WindowTurn {
+            role: "user".into(),
+            content: "recent ask".into(),
+            ts: Some(5),
+        },
+        crate::memory::WindowTurn {
+            role: "assistant".into(),
+            content: "recent reply".into(),
+            ts: Some(6),
+        },
+    ];
+
+    let compacted = compact_window(&turns, CompactPolicy::new(2)).expect("should compact");
+    let summary = &compacted[0].content;
+
+    assert!(summary.contains("NIMBUS-17"));
+    assert!(summary.contains("Mina"));
+    assert!(summary.contains("47"));
+    assert!(summary.contains("October"));
+    assert!(summary.contains("RIVER-9"));
+    assert!(
+        !summary.contains("[prior compacted summary]"),
+        "repeated compaction should retain prior summary details: {summary}"
+    );
+}
+
+#[test]
+fn compact_window_prioritizes_user_fact_turns_when_summary_budget_is_limited() {
+    use super::compaction::{CompactPolicy, compact_window};
+
+    let turns = vec![
+        crate::memory::WindowTurn {
+            role: "user".into(),
+            content: "codename: NIMBUS-17 owner: Mina budget: 47".into(),
+            ts: Some(1),
+        },
+        crate::memory::WindowTurn {
+            role: "assistant".into(),
+            content: "ack-1".into(),
+            ts: Some(2),
+        },
+        crate::memory::WindowTurn {
+            role: "user".into(),
+            content: "launch month: October fallback code: RIVER-9".into(),
+            ts: Some(3),
+        },
+        crate::memory::WindowTurn {
+            role: "assistant".into(),
+            content: "ack-2".into(),
+            ts: Some(4),
+        },
+        crate::memory::WindowTurn {
+            role: "user".into(),
+            content: "escalation contact: Owen".into(),
+            ts: Some(5),
+        },
+        crate::memory::WindowTurn {
+            role: "assistant".into(),
+            content: "ack-3".into(),
+            ts: Some(6),
+        },
+        crate::memory::WindowTurn {
+            role: "user".into(),
+            content: "recent ask".into(),
+            ts: Some(7),
+        },
+        crate::memory::WindowTurn {
+            role: "assistant".into(),
+            content: "recent reply".into(),
+            ts: Some(8),
+        },
+    ];
+
+    let compacted = compact_window(&turns, CompactPolicy::new(2)).expect("should compact");
+    let summary = &compacted[0].content;
+
+    assert!(summary.contains("NIMBUS-17"));
+    assert!(summary.contains("October"));
+    assert!(summary.contains("RIVER-9"));
+    assert!(summary.contains("Owen"));
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -17845,6 +17953,93 @@ async fn default_context_engine_compact_context_rewrites_from_full_session_snaps
     assert!(turns[0].content.contains("turn 1"));
     assert_eq!(turns[1].content, "turn 9");
     assert_eq!(turns[2].content, "turn 10");
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn default_context_engine_compact_context_summarizes_visible_history_not_checkpoint_noise() {
+    use super::context_engine::{ConversationContextEngine, DefaultContextEngine};
+
+    let mut config = test_config();
+    let db_path = unique_memory_sqlite_path("default-context-engine-compaction-visible-history");
+    let _ = std::fs::remove_file(&db_path);
+    config.memory.sqlite_path = db_path.clone();
+    config.memory.sliding_window = 32;
+    config.conversation.compact_preserve_recent_turns = 2;
+
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let kernel_ctx = test_kernel_context_with_memory(
+        "test-default-context-engine-compaction-visible-history",
+        &memory_config,
+    );
+    let session_id = "default-context-engine-compaction-visible-history";
+    let checkpoint_event = crate::memory::build_conversation_event_content(
+        "turn_checkpoint",
+        json!({
+            "stage": "finalized",
+            "checkpoint": {
+                "lane": {
+                    "lane": "safe",
+                    "result_kind": "final_reply",
+                },
+            },
+        }),
+    );
+
+    for (role, content) in [
+        (
+            "user",
+            "For this test, remember these facts exactly:\n- codename: NIMBUS-17\n- owner: Mina\n- budget: 47",
+        ),
+        ("assistant", "ack-1"),
+        ("assistant", checkpoint_event.as_str()),
+        (
+            "user",
+            "Add these facts too:\n- launch month: October\n- fallback code: RIVER-9",
+        ),
+        ("assistant", "ack-2"),
+        ("assistant", checkpoint_event.as_str()),
+        ("user", "recent ask"),
+        ("assistant", "recent reply"),
+    ] {
+        crate::memory::append_turn_direct(session_id, role, content, &memory_config)
+            .expect("seed turns should succeed");
+    }
+
+    let engine = DefaultContextEngine;
+    engine
+        .compact_context(&config, session_id, &[], &kernel_ctx)
+        .await
+        .expect("default engine compaction should succeed");
+
+    let messages = engine
+        .assemble_messages(
+            &config,
+            session_id,
+            false,
+            ConversationRuntimeBinding::kernel(&kernel_ctx),
+        )
+        .await
+        .expect("assemble messages should preserve visible history");
+    let summary = messages[0]["content"].as_str().expect("summary content");
+
+    assert!(summary.contains("NIMBUS-17"));
+    assert!(summary.contains("Mina"));
+    assert!(summary.contains("47"));
+    assert!(summary.contains("October"));
+    assert!(summary.contains("RIVER-9"));
+    assert!(
+        !summary.contains("turn_checkpoint"),
+        "summary should exclude internal checkpoint payloads: {summary}"
+    );
+    assert!(
+        !summary.contains("conversation_event"),
+        "summary should exclude internal event envelopes: {summary}"
+    );
+    assert_eq!(messages[1]["content"], json!("recent ask"));
+    assert_eq!(messages[2]["content"], json!("recent reply"));
 
     let _ = std::fs::remove_file(&db_path);
 }
