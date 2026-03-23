@@ -10795,6 +10795,59 @@ fn discovery_first_window_turns(payloads: &[String]) -> Value {
     )
 }
 
+fn staged_memory_envelope_payload_from_window_turns(window_turns: &Value) -> Value {
+    let recent_window: Vec<crate::memory::WindowTurn> = window_turns
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|turn| crate::memory::WindowTurn {
+            role: turn
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("assistant")
+                .to_owned(),
+            content: turn
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            ts: turn.get("ts").and_then(Value::as_i64),
+        })
+        .collect();
+    let entries = recent_window
+        .iter()
+        .map(|turn| crate::memory::MemoryContextEntry {
+            kind: crate::memory::MemoryContextKind::Turn,
+            role: turn.role.clone(),
+            content: turn.content.clone(),
+        })
+        .collect::<Vec<_>>();
+    let envelope = crate::memory::StageEnvelope {
+        hydrated: crate::memory::HydratedMemoryContext {
+            diagnostics: crate::memory::MemoryDiagnostics {
+                system_id: "builtin".to_owned(),
+                fail_open: true,
+                strict_mode_requested: false,
+                strict_mode_active: false,
+                degraded: false,
+                derivation_error: None,
+                retrieval_error: None,
+                recent_window_count: recent_window.len(),
+                entry_count: entries.len(),
+            },
+            entries,
+            recent_window,
+        },
+        retrieval_request: None,
+        diagnostics: vec![
+            crate::memory::StageDiagnostics::succeeded(crate::memory::MemoryStageFamily::Derive),
+            crate::memory::StageDiagnostics::succeeded(crate::memory::MemoryStageFamily::Retrieve),
+            crate::memory::StageDiagnostics::succeeded(crate::memory::MemoryStageFamily::Rank),
+        ],
+    };
+    crate::memory::encode_stage_envelope_payload(&envelope)
+}
+
 struct SharedTestMemoryAdapter {
     invocations: Arc<Mutex<Vec<MemoryCoreRequest>>>,
     window_turns: Value,
@@ -10810,7 +10863,9 @@ impl CoreMemoryAdapter for SharedTestMemoryAdapter {
         &self,
         request: MemoryCoreRequest,
     ) -> Result<MemoryCoreOutcome, MemoryPlaneError> {
-        let payload = if request.operation == crate::memory::MEMORY_OP_WINDOW {
+        let payload = if request.operation == crate::memory::MEMORY_OP_READ_STAGE_ENVELOPE {
+            staged_memory_envelope_payload_from_window_turns(&self.window_turns)
+        } else if request.operation == crate::memory::MEMORY_OP_WINDOW {
             json!({
                 "turns": self.window_turns.clone()
             })
@@ -10843,7 +10898,13 @@ impl CoreMemoryAdapter for SequencedTestMemoryAdapter {
         &self,
         request: MemoryCoreRequest,
     ) -> Result<MemoryCoreOutcome, MemoryPlaneError> {
-        let payload = if request.operation == crate::memory::MEMORY_OP_WINDOW {
+        let payload = if request.operation == crate::memory::MEMORY_OP_READ_STAGE_ENVELOPE {
+            let turns = {
+                let mut queued_turns = self.window_turns.lock().expect("window turns lock");
+                queued_turns.pop_front().unwrap_or_else(|| json!([]))
+            };
+            staged_memory_envelope_payload_from_window_turns(&turns)
+        } else if request.operation == crate::memory::MEMORY_OP_WINDOW {
             let turns = {
                 let mut queued_turns = self.window_turns.lock().expect("window turns lock");
                 queued_turns.pop_front().unwrap_or_else(|| json!([]))
@@ -10884,7 +10945,9 @@ impl CoreMemoryAdapter for FailingWindowMemoryAdapter {
             .lock()
             .expect("invocations lock")
             .push(request.clone());
-        if request.operation == crate::memory::MEMORY_OP_WINDOW {
+        if request.operation == crate::memory::MEMORY_OP_WINDOW
+            || request.operation == crate::memory::MEMORY_OP_READ_STAGE_ENVELOPE
+        {
             return Err(MemoryPlaneError::Execution(self.error.clone()));
         }
         Ok(MemoryCoreOutcome {
@@ -10913,7 +10976,9 @@ impl CoreMemoryAdapter for RawWindowPayloadMemoryAdapter {
             .lock()
             .expect("invocations lock")
             .push(request.clone());
-        if request.operation == crate::memory::MEMORY_OP_WINDOW {
+        if request.operation == crate::memory::MEMORY_OP_WINDOW
+            || request.operation == crate::memory::MEMORY_OP_READ_STAGE_ENVELOPE
+        {
             return Ok(MemoryCoreOutcome {
                 status: "ok".to_owned(),
                 payload: self.payload.clone(),
@@ -10992,12 +11057,11 @@ async fn build_messages_routes_memory_window_through_kernel_when_context_provide
 
     let captured = invocations.lock().expect("invocations lock");
     assert_eq!(captured.len(), 1);
-    assert_eq!(captured[0].operation, crate::memory::MEMORY_OP_WINDOW);
-    assert_eq!(captured[0].payload["session_id"], "session-k-window");
     assert_eq!(
-        captured[0].payload["limit"],
-        json!(config.memory.sliding_window)
+        captured[0].operation,
+        crate::memory::MEMORY_OP_READ_STAGE_ENVELOPE
     );
+    assert_eq!(captured[0].payload["session_id"], "session-k-window");
 
     let events = audit.snapshot();
     let has_memory_plane = events.iter().any(|event| {
