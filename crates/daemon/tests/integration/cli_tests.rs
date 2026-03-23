@@ -1297,6 +1297,47 @@ fn multi_channel_serve_cli_parses_account_selection_flags() {
 }
 
 #[test]
+fn multi_channel_serve_cli_help_mentions_session_and_account_flags() {
+    let mut command = Cli::command();
+    let multi_channel_serve = command
+        .find_subcommand_mut("multi-channel-serve")
+        .expect("multi-channel-serve subcommand should exist");
+    let mut rendered = Vec::new();
+    multi_channel_serve
+        .write_long_help(&mut rendered)
+        .expect("render multi-channel-serve help");
+    let help = String::from_utf8(rendered).expect("help should be utf-8");
+
+    assert!(help.contains("--session <SESSION>"), "help: {help}");
+    assert!(
+        help.contains("--telegram-account <TELEGRAM_ACCOUNT>"),
+        "help: {help}"
+    );
+    assert!(
+        help.contains("--feishu-account <FEISHU_ACCOUNT>"),
+        "help: {help}"
+    );
+}
+
+#[test]
+fn multi_channel_serve_cli_fails_closed_until_implemented() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build test runtime");
+    let error = runtime
+        .block_on(run_multi_channel_serve_cli(
+            None,
+            "cli-supervisor",
+            None,
+            None,
+        ))
+        .expect_err("multi-channel-serve should fail closed for now");
+
+    assert!(error.contains("not implemented yet"));
+}
+
+#[test]
 fn default_channel_send_target_kind_uses_command_family_send_metadata() {
     assert_eq!(
         default_channel_send_target_kind(ChannelSendCliSpec {

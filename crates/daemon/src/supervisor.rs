@@ -7,5 +7,5 @@ pub async fn run_multi_channel_serve(
     feishu_account: Option<&str>,
 ) -> CliResult<()> {
     let _ = (config_path, session, telegram_account, feishu_account);
-    Ok(())
+    Err("multi-channel-serve is not implemented yet".to_owned())
 }
