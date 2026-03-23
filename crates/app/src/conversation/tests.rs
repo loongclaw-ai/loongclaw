@@ -117,6 +117,19 @@ impl ConversationRuntime for TraitDefaultToolViewRuntime {
         Err("trait default tool view test should not request a provider turn".to_owned())
     }
 
+    async fn request_turn_streaming(
+        &self,
+        _config: &LoongClawConfig,
+        _session_id: &str,
+        _turn_id: &str,
+        _messages: &[Value],
+        _tool_view: &crate::tools::ToolView,
+        _binding: ConversationRuntimeBinding<'_>,
+        _on_token: crate::provider::StreamingTokenCallback,
+    ) -> CliResult<ProviderTurn> {
+        Err("trait default tool view test should not request a provider turn".to_owned())
+    }
+
     async fn persist_turn(
         &self,
         _session_id: &str,
@@ -1279,6 +1292,20 @@ impl ConversationRuntime for FakeRuntime {
         }
     }
 
+    async fn request_turn_streaming(
+        &self,
+        config: &LoongClawConfig,
+        session_id: &str,
+        turn_id: &str,
+        messages: &[Value],
+        tool_view: &crate::tools::ToolView,
+        binding: ConversationRuntimeBinding<'_>,
+        _on_token: crate::provider::StreamingTokenCallback,
+    ) -> CliResult<ProviderTurn> {
+        self.request_turn(config, session_id, turn_id, messages, tool_view, binding)
+            .await
+    }
+
     async fn persist_turn(
         &self,
         session_id: &str,
@@ -1386,9 +1413,18 @@ fn test_kernel_context_with_memory(
     agent_id: &str,
     memory_config: &MemoryRuntimeConfig,
 ) -> KernelContext {
+    test_kernel_context_with_memory_and_audit(agent_id, memory_config).0
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn test_kernel_context_with_memory_and_audit(
+    agent_id: &str,
+    memory_config: &MemoryRuntimeConfig,
+) -> (KernelContext, Arc<InMemoryAuditSink>) {
     let clock = Arc::new(FixedClock::new(1_700_000_000));
     let audit = Arc::new(InMemoryAuditSink::default());
-    let mut kernel = LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock, audit);
+    let mut kernel =
+        LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock, audit.clone());
 
     let pack = VerticalPackManifest {
         pack_id: "test-pack-memory".to_owned(),
@@ -1416,10 +1452,30 @@ fn test_kernel_context_with_memory(
         .issue_token("test-pack-memory", agent_id, 60)
         .expect("issue memory test token");
 
-    KernelContext {
-        kernel: Arc::new(kernel),
-        token,
-    }
+    (
+        KernelContext {
+            kernel: Arc::new(kernel),
+            token,
+        },
+        audit,
+    )
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn assert_kernel_memory_plane_invoked(audit: &Arc<InMemoryAuditSink>, context: &str) {
+    let has_memory_plane = audit.snapshot().iter().any(|event| {
+        matches!(
+            &event.kind,
+            loongclaw_kernel::AuditEventKind::PlaneInvoked {
+                plane: loongclaw_contracts::ExecutionPlane::Memory,
+                ..
+            }
+        )
+    });
+    assert!(
+        has_memory_plane,
+        "expected kernel memory-plane invocation for {context}"
+    );
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -2143,6 +2199,27 @@ async fn default_runtime_kernel_stage_hydration_still_applies_system_prompt_addi
         }),
         "expected staged hydration summary block to remain present after runtime middlewares"
     );
+    assert!(
+        assembled.artifacts.iter().any(|artifact| {
+            artifact.artifact_kind == ContextArtifactKind::RuntimeContract
+                && artifact.message_index < assembled.messages.len()
+        }),
+        "expected runtime-contract artifact descriptor on child-session staged path"
+    );
+    assert!(
+        assembled.artifacts.iter().any(|artifact| {
+            artifact.artifact_kind == ContextArtifactKind::Summary
+                && artifact.message_index < assembled.messages.len()
+        }),
+        "expected summary artifact descriptor on child-session staged path"
+    );
+    assert!(
+        assembled
+            .artifacts
+            .iter()
+            .all(|artifact| artifact.message_index < assembled.messages.len()),
+        "child-session staged-path artifact indices must point at emitted messages"
+    );
 }
 
 #[tokio::test]
@@ -2496,8 +2573,10 @@ async fn default_runtime_kernel_build_context_matches_builtin_summary_projection
     crate::memory::append_turn_direct(&session_id, "assistant", "turn 4", &runtime_config)
         .expect("append turn 4 should succeed");
 
-    let kernel_ctx =
-        test_kernel_context_with_memory("default-runtime-kernel-context-summary", &runtime_config);
+    let (kernel_ctx, audit) = test_kernel_context_with_memory_and_audit(
+        "default-runtime-kernel-context-summary",
+        &runtime_config,
+    );
     let assembled = runtime
         .build_context(
             &config,
@@ -2514,6 +2593,7 @@ async fn default_runtime_kernel_build_context_matches_builtin_summary_projection
         assembled.messages, provider_messages,
         "kernel-bound default runtime should match the builtin staged projection"
     );
+    assert_kernel_memory_plane_invoked(&audit, "default-runtime-kernel-context-summary");
 
     let _ = std::fs::remove_file(sqlite_path);
 }
@@ -2536,8 +2616,10 @@ async fn default_runtime_kernel_build_context_preserves_profile_projection() {
     crate::memory::append_turn_direct(&session_id, "assistant", "turn 1", &runtime_config)
         .expect("append turn should succeed");
 
-    let kernel_ctx =
-        test_kernel_context_with_memory("default-runtime-kernel-context-profile", &runtime_config);
+    let (kernel_ctx, audit) = test_kernel_context_with_memory_and_audit(
+        "default-runtime-kernel-context-profile",
+        &runtime_config,
+    );
     let assembled = runtime
         .build_context(
             &config,
@@ -2561,6 +2643,7 @@ async fn default_runtime_kernel_build_context_preserves_profile_projection() {
         }),
         "expected a profile artifact descriptor for the injected profile block"
     );
+    assert_kernel_memory_plane_invoked(&audit, "default-runtime-kernel-context-profile");
 
     let _ = std::fs::remove_file(sqlite_path);
 }
@@ -2586,7 +2669,7 @@ async fn default_runtime_kernel_build_context_emits_context_artifact_annotations
     crate::memory::append_turn_direct(&session_id, "user", "turn 3", &runtime_config)
         .expect("append turn 3 should succeed");
 
-    let kernel_ctx = test_kernel_context_with_memory(
+    let (kernel_ctx, audit) = test_kernel_context_with_memory_and_audit(
         "default-runtime-kernel-context-artifacts",
         &runtime_config,
     );
@@ -2644,6 +2727,7 @@ async fn default_runtime_kernel_build_context_emits_context_artifact_annotations
             .all(|artifact| artifact.streaming_policy == ToolOutputStreamingPolicy::BufferFull),
         "slice 1 artifacts should use buffered delivery"
     );
+    assert_kernel_memory_plane_invoked(&audit, "default-runtime-kernel-context-artifacts");
 
     let _ = std::fs::remove_file(sqlite_path);
 }
@@ -8453,6 +8537,8 @@ fn provider_hidden_tool_denial_does_not_leak_name() {
             );
         }
         other @ TurnResult::FinalText(_)
+        | other @ TurnResult::StreamingText(_)
+        | other @ TurnResult::StreamingDone(_)
         | other @ TurnResult::NeedsApproval(_)
         | other @ TurnResult::ToolError(_)
         | other @ TurnResult::ProviderError(_) => {
@@ -8597,6 +8683,8 @@ fn turn_engine_denies_known_tool_outside_restricted_view() {
             );
         }
         other @ TurnResult::FinalText(_)
+        | other @ TurnResult::StreamingText(_)
+        | other @ TurnResult::StreamingDone(_)
         | other @ TurnResult::NeedsApproval(_)
         | other @ TurnResult::ToolError(_)
         | other @ TurnResult::ProviderError(_) => {
@@ -8686,7 +8774,9 @@ async fn turn_engine_routes_app_tools_through_dispatcher() {
         other @ TurnResult::ToolDenied(_)
         | other @ TurnResult::NeedsApproval(_)
         | other @ TurnResult::ToolError(_)
-        | other @ TurnResult::ProviderError(_) => {
+        | other @ TurnResult::ProviderError(_)
+        | other @ TurnResult::StreamingText(_)
+        | other @ TurnResult::StreamingDone(_) => {
             panic!("expected FinalText, got: {other:?}")
         }
     }
@@ -8785,7 +8875,9 @@ async fn turn_engine_routes_direct_binding_to_app_dispatcher() {
         other @ TurnResult::NeedsApproval(_)
         | other @ TurnResult::ToolDenied(_)
         | other @ TurnResult::ToolError(_)
-        | other @ TurnResult::ProviderError(_) => {
+        | other @ TurnResult::ProviderError(_)
+        | other @ TurnResult::StreamingText(_)
+        | other @ TurnResult::StreamingDone(_) => {
             panic!("expected FinalText, got: {other:?}")
         }
     }
@@ -8903,6 +8995,8 @@ async fn turn_engine_fails_closed_before_governed_approval_for_later_app_intent(
             );
         }
         other @ TurnResult::FinalText(_)
+        | other @ TurnResult::StreamingText(_)
+        | other @ TurnResult::StreamingDone(_)
         | other @ TurnResult::ToolDenied(_)
         | other @ TurnResult::ToolError(_)
         | other @ TurnResult::ProviderError(_) => {
@@ -8996,6 +9090,8 @@ async fn turn_engine_fails_closed_before_kernel_binding_error_for_later_core_int
             assert_eq!(failure.reason.as_str(), "no_kernel_context");
         }
         other @ TurnResult::FinalText(_)
+        | other @ TurnResult::StreamingText(_)
+        | other @ TurnResult::StreamingDone(_)
         | other @ TurnResult::NeedsApproval(_)
         | other @ TurnResult::ToolError(_)
         | other @ TurnResult::ProviderError(_) => {
@@ -9136,7 +9232,9 @@ async fn turn_engine_parallel_safe_app_batch_executes_concurrently_in_source_ord
         other @ TurnResult::NeedsApproval(_)
         | other @ TurnResult::ToolDenied(_)
         | other @ TurnResult::ToolError(_)
-        | other @ TurnResult::ProviderError(_) => {
+        | other @ TurnResult::ProviderError(_)
+        | other @ TurnResult::StreamingText(_)
+        | other @ TurnResult::StreamingDone(_) => {
             panic!("expected FinalText, got: {other:?}")
         }
     }
@@ -9253,6 +9351,8 @@ async fn turn_engine_parallel_safe_app_batch_returns_failure_without_waiting_for
             );
         }
         other @ TurnResult::FinalText(_)
+        | other @ TurnResult::StreamingText(_)
+        | other @ TurnResult::StreamingDone(_)
         | other @ TurnResult::NeedsApproval(_)
         | other @ TurnResult::ToolDenied(_)
         | other @ TurnResult::ProviderError(_) => {
@@ -9457,7 +9557,9 @@ async fn turn_engine_mixed_batch_parallelizes_parallel_safe_segments_without_cro
         other @ TurnResult::NeedsApproval(_)
         | other @ TurnResult::ToolDenied(_)
         | other @ TurnResult::ToolError(_)
-        | other @ TurnResult::ProviderError(_) => {
+        | other @ TurnResult::ProviderError(_)
+        | other @ TurnResult::StreamingText(_)
+        | other @ TurnResult::StreamingDone(_) => {
             panic!("expected FinalText, got: {other:?}")
         }
     }
@@ -10233,7 +10335,9 @@ async fn turn_engine_keeps_external_skill_invoke_payloads_intact() {
         )
         .await;
     match result {
-        TurnResult::FinalText(text) => {
+        TurnResult::FinalText(text)
+        | TurnResult::StreamingText(text)
+        | TurnResult::StreamingDone(text) => {
             let line = text.lines().next().expect("tool result line should exist");
             let payload = line
                 .strip_prefix("[ok] ")
@@ -10369,7 +10473,9 @@ async fn turn_engine_injects_browser_scope_into_kernel_request() {
         .await;
 
     match result {
-        TurnResult::FinalText(text) => {
+        TurnResult::FinalText(text)
+        | TurnResult::StreamingText(text)
+        | TurnResult::StreamingDone(text) => {
             let line = text.lines().next().expect("tool result line should exist");
             let payload = line
                 .strip_prefix("[ok] ")
@@ -10846,6 +10952,7 @@ fn staged_memory_envelope_payload_from_window_turns(window_turns: &Value) -> Val
         ],
     };
     crate::memory::encode_stage_envelope_payload(&envelope)
+        .expect("test stage envelope payload should serialize")
 }
 
 struct SharedTestMemoryAdapter {
@@ -13662,7 +13769,9 @@ async fn handle_turn_with_runtime_child_session_injects_runtime_narrowing_into_k
         .await;
 
     match result {
-        TurnResult::FinalText(text) => {
+        TurnResult::FinalText(text)
+        | TurnResult::StreamingText(text)
+        | TurnResult::StreamingDone(text) => {
             let line = text.lines().next().expect("tool result line should exist");
             let payload = line
                 .strip_prefix("[ok] ")

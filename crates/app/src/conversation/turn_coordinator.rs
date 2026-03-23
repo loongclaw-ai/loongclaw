@@ -1167,6 +1167,7 @@ struct TurnLaneExecutionSnapshot {
 #[serde(rename_all = "snake_case")]
 enum TurnCheckpointResultKind {
     FinalText,
+    Streaming,
     NeedsApproval,
     ToolDenied,
     ToolError,
@@ -2838,6 +2839,9 @@ async fn resolve_provider_turn_reply<R: ConversationRuntime + ?Sized>(
 fn turn_checkpoint_result_kind(result: &TurnResult) -> TurnCheckpointResultKind {
     match result {
         TurnResult::FinalText(_) => TurnCheckpointResultKind::FinalText,
+        TurnResult::StreamingText(_) | TurnResult::StreamingDone(_) => {
+            TurnCheckpointResultKind::Streaming
+        }
         TurnResult::NeedsApproval(_) => TurnCheckpointResultKind::NeedsApproval,
         TurnResult::ToolDenied(_) => TurnCheckpointResultKind::ToolDenied,
         TurnResult::ToolError(_) => TurnCheckpointResultKind::ToolError,
@@ -6566,6 +6570,8 @@ async fn execute_single_tool_intent(
         .await
     {
         TurnResult::FinalText(output) => Ok(output),
+        TurnResult::StreamingText(text) => Ok(text),
+        TurnResult::StreamingDone(text) => Ok(text),
         TurnResult::NeedsApproval(requirement) => Err(PlanNodeError::policy_denied(
             format_approval_required_reply("", &requirement),
         )),
@@ -6723,7 +6729,11 @@ mod tests {
             max_active_children: 1,
             timeout_seconds: 60,
             allow_shell_in_child: false,
-            child_tool_allowlist: vec!["file.read".to_owned(), "file.write".to_owned()],
+            child_tool_allowlist: vec![
+                "file.read".to_owned(),
+                "file.write".to_owned(),
+                "file.edit".to_owned(),
+            ],
             runtime_narrowing: crate::tools::runtime_config::ToolRuntimeNarrowing::default(),
             kernel_bound: false,
         };
@@ -6835,7 +6845,11 @@ mod tests {
             max_active_children: 1,
             timeout_seconds: 60,
             allow_shell_in_child: false,
-            child_tool_allowlist: vec!["file.read".to_owned(), "file.write".to_owned()],
+            child_tool_allowlist: vec![
+                "file.read".to_owned(),
+                "file.write".to_owned(),
+                "file.edit".to_owned(),
+            ],
             runtime_narrowing: crate::tools::runtime_config::ToolRuntimeNarrowing::default(),
             kernel_bound: false,
         };

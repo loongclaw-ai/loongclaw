@@ -318,13 +318,15 @@ instability from true upstream unavailability.
 
 ## Configuration
 
-`loongclaw onboard` uses `provider.api_key` to reference provider credentials, so secrets stay
+`loongclaw onboard` uses `provider.api_key_env` to reference provider credentials, so secrets stay
 outside the config file:
 
 ```toml
-[provider]
+active_provider = "openai"
+
+[providers.openai]
 kind = "openai"
-api_key = "${PROVIDER_API_KEY}"
+api_key_env = "PROVIDER_API_KEY"
 ```
 
 Volcengine / ARK example:
@@ -334,15 +336,17 @@ export ARK_API_KEY=your-ark-api-key
 ```
 
 ```toml
-[provider]
+active_provider = "volcengine"
+
+[providers.volcengine]
 kind = "volcengine"
 model = "your-coding-plan-model-id"
-api_key = "${ARK_API_KEY}"
+api_key_env = "ARK_API_KEY"
 base_url = "https://ark.cn-beijing.volces.com"
 chat_completions_path = "/api/v3/chat/completions"
 ```
 
-Both `volcengine` and `volcengine_coding` use `api_key = "${ARK_API_KEY}"`. LoongClaw sends that value as `Authorization: Bearer <ARK_API_KEY>` on the OpenAI-compatible Volcengine path; AK/SK request signing is not used there.
+Both `volcengine` and `volcengine_coding` use `api_key_env = "ARK_API_KEY"`. LoongClaw resolves that environment variable and sends it as `Authorization: Bearer <ARK_API_KEY>` on the OpenAI-compatible Volcengine path; AK/SK request signing is not used there.
 
 Feishu channel example (webhook mode):
 
@@ -466,11 +470,40 @@ loongclaw migrate --mode plan_many --input ~/legacy-claws
 loongclaw migrate --mode apply_selected --input ~/legacy-claws \
   --source-id openclaw --output ~/.loongclaw/config.toml --force
 
+# Apply one selected source and bridge installable local external skills
+loongclaw migrate --mode apply_selected --input ~/legacy-claws \
+  --source-id openclaw --output ~/.loongclaw/config.toml \
+  --apply-external-skills-plan --force
+
 # Roll back the most recent migration
 loongclaw migrate --mode rollback_last_apply --output ~/.loongclaw/config.toml
 ```
 
-Deeper migration modes also exist, including `merge_profiles` for multi-source profile merging and `map_external_skills` for external-skills artifact mapping.
+Deeper migration modes also exist, including `merge_profiles` for multi-source profile merging and `map_external_skills` for external-skills artifact mapping. The bridge remains opt-in: prompt/profile import still works by default, while `--apply-external-skills-plan` adds installable local skill directories to the managed runtime without replacing unrelated managed skills.
+
+<a id="manage-external-skills"></a>
+## Manage External Skills
+
+LoongClaw's external-skills runtime is operator-visible now instead of staying hidden behind migration helpers.
+
+```bash
+# Inspect resolved managed, user, and project skills with eligibility + invocation metadata
+loongclaw skills list
+loongclaw skills info release-guard
+
+# Download a remote skill package under the external-skills policy boundary
+loongclaw skills fetch https://skills.sh/release-guard.tgz --approve-download
+
+# Download and sync a remote package into the managed runtime in one step
+loongclaw skills fetch https://skills.sh/release-guard.tgz \
+  --approve-download --install --replace
+```
+
+`loongclaw skills list` and `loongclaw skills info` surface per-skill metadata such as
+`invocation_policy`, required env or binaries, required runtime config gates, and declared tool
+restrictions. `loongclaw skills fetch --install --replace` gives operators a thin update path over
+the existing managed install lifecycle without bypassing the same runtime policy checks that govern
+downloads and installed skill execution.
 
 <a id="core-capabilities"></a>
 

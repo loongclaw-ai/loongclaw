@@ -1713,7 +1713,8 @@ mod tests {
     #[cfg(unix)]
     use std::path::{Path, PathBuf};
     #[cfg(unix)]
-    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
     use crate::config::{AcpBackendProfilesConfig, AcpConfig, AcpxBackendConfig, LoongClawConfig};

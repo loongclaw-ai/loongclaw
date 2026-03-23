@@ -178,8 +178,8 @@ pub fn decode_memory_context_entries(payload: &Value) -> Vec<MemoryContextEntry>
         .unwrap_or_default()
 }
 
-pub fn encode_stage_envelope_payload(envelope: &StageEnvelope) -> Value {
-    serde_json::to_value(StageEnvelopePayload::from(envelope)).unwrap_or(Value::Null)
+pub fn encode_stage_envelope_payload(envelope: &StageEnvelope) -> Result<Value, serde_json::Error> {
+    serde_json::to_value(StageEnvelopePayload::from(envelope))
 }
 
 pub fn decode_stage_envelope(payload: &Value) -> Option<StageEnvelope> {

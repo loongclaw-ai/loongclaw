@@ -54,13 +54,19 @@ pub(crate) fn read_stage_envelope(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "memory.read_stage_envelope requires payload.session_id".to_owned())?;
     let envelope = hydrate_stage_envelope(session_id, config)?;
-    let mut response_payload = encode_stage_envelope_payload(&envelope);
-
-    if let Some(map) = response_payload.as_object_mut() {
-        map.insert("adapter".to_owned(), json!("sqlite-core"));
-        map.insert("operation".to_owned(), json!(MEMORY_OP_READ_STAGE_ENVELOPE));
-        map.insert("session_id".to_owned(), json!(session_id));
-    }
+    let mut response_payload = encode_stage_envelope_payload(&envelope).map_err(|error| {
+        format!(
+            "memory.read_stage_envelope encode_stage_envelope_payload failed for session {session_id}: {error}"
+        )
+    })?;
+    let map = response_payload.as_object_mut().ok_or_else(|| {
+        format!(
+            "memory.read_stage_envelope encode_stage_envelope_payload failed for session {session_id}"
+        )
+    })?;
+    map.insert("adapter".to_owned(), json!("sqlite-core"));
+    map.insert("operation".to_owned(), json!(MEMORY_OP_READ_STAGE_ENVELOPE));
+    map.insert("session_id".to_owned(), json!(session_id));
 
     Ok(MemoryCoreOutcome {
         status: "ok".to_owned(),

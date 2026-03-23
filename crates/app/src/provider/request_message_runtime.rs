@@ -132,11 +132,33 @@ pub(crate) fn build_projected_context_for_session_in_view(
     #[cfg(not(feature = "memory-sqlite"))]
     {
         let _ = session_id;
+        let messages = build_base_messages_for_view(config, include_system_prompt, tool_view);
         Ok(ProjectedMessageContext {
-            messages: build_base_messages_for_view(config, include_system_prompt, tool_view),
-            artifacts: Vec::new(),
+            artifacts: build_base_context_artifacts(&messages),
+            messages,
         })
     }
+}
+
+fn build_base_context_artifacts(messages: &[Value]) -> Vec<ContextArtifactDescriptor> {
+    if messages.is_empty() {
+        return Vec::new();
+    }
+
+    vec![
+        ContextArtifactDescriptor {
+            message_index: 0,
+            artifact_kind: ContextArtifactKind::SystemPrompt,
+            maskable: false,
+            streaming_policy: ToolOutputStreamingPolicy::BufferFull,
+        },
+        ContextArtifactDescriptor {
+            message_index: 0,
+            artifact_kind: ContextArtifactKind::RuntimeContract,
+            maskable: false,
+            streaming_policy: ToolOutputStreamingPolicy::BufferFull,
+        },
+    ]
 }
 
 pub(crate) fn project_hydrated_memory_context_for_view(
@@ -146,22 +168,7 @@ pub(crate) fn project_hydrated_memory_context_for_view(
     #[cfg(feature = "memory-sqlite")] hydrated: &memory::HydratedMemoryContext,
 ) -> ProjectedMessageContext {
     let mut messages = build_base_messages_for_view(config, include_system_prompt, tool_view);
-    let mut artifacts = Vec::new();
-
-    if !messages.is_empty() {
-        artifacts.push(ContextArtifactDescriptor {
-            message_index: 0,
-            artifact_kind: ContextArtifactKind::SystemPrompt,
-            maskable: false,
-            streaming_policy: ToolOutputStreamingPolicy::BufferFull,
-        });
-        artifacts.push(ContextArtifactDescriptor {
-            message_index: 0,
-            artifact_kind: ContextArtifactKind::RuntimeContract,
-            maskable: false,
-            streaming_policy: ToolOutputStreamingPolicy::BufferFull,
-        });
-    }
+    let mut artifacts = build_base_context_artifacts(&messages);
 
     #[cfg(feature = "memory-sqlite")]
     append_hydrated_memory_messages(&mut messages, &mut artifacts, hydrated);
@@ -188,10 +195,10 @@ fn append_hydrated_memory_messages(
                 }));
                 artifacts.push(ContextArtifactDescriptor {
                     message_index,
-                    artifact_kind: match entry.kind {
-                        memory::MemoryContextKind::Profile => ContextArtifactKind::Profile,
-                        memory::MemoryContextKind::Summary => ContextArtifactKind::Summary,
-                        memory::MemoryContextKind::Turn => ContextArtifactKind::ConversationTurn,
+                    artifact_kind: if matches!(entry.kind, memory::MemoryContextKind::Profile) {
+                        ContextArtifactKind::Profile
+                    } else {
+                        ContextArtifactKind::Summary
                     },
                     maskable: false,
                     streaming_policy: ToolOutputStreamingPolicy::BufferFull,

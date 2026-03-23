@@ -203,7 +203,8 @@ mod tests {
             diagnostics: vec![StageDiagnostics::succeeded(MemoryStageFamily::Derive)],
         };
 
-        let payload = encode_stage_envelope_payload(&envelope);
+        let payload =
+            encode_stage_envelope_payload(&envelope).expect("stage envelope payload should encode");
         assert_eq!(decode_stage_envelope(&payload), Some(envelope));
     }
 
@@ -229,7 +230,8 @@ mod tests {
             diagnostics: vec![],
         };
 
-        let payload = encode_stage_envelope_payload(&envelope);
+        let payload =
+            encode_stage_envelope_payload(&envelope).expect("stage envelope payload should encode");
         let decoded = decode_stage_envelope(&payload).expect("decode stage envelope");
         assert_eq!(decoded.hydrated.diagnostics.system_id, "lucid");
     }
