@@ -230,8 +230,9 @@ if [ -f ~/.loongclaw/audit/events.jsonl ]; then tail -n 20 ~/.loongclaw/audit/ev
 当 provider 的模型探测在还没拿到任何 HTTP 状态码之前就失败时，`doctor` 现在还会为当前 `request/models` host 增加一条 provider route probe。这个探测会展示 host 和 port、DNS 解析结果、是否命中 fake-ip 风格地址，以及一个简短的 TCP 可达性检查，帮助你区分是本地代理 / TUN / fake-ip 环境不稳定，还是上游 provider 本身不可达。
 
 ## 我们正在推进
-
-1. **Web UI**
+<details>
+<summary><strong>1. Web UI</strong></summary>
+<br>
 
    我们目前正在构建 LoongClaw 第一版可实际使用的 Web UI。
 
@@ -244,6 +245,8 @@ if [ -f ~/.loongclaw/audit/events.jsonl ]; then tail -n 20 ~/.loongclaw/audit/ev
    这部分目前仍在持续迭代中，更适合被理解为一个正在成型的 MVP，而不是已经完全收口的正式产品界面。
 
    如果你愿意帮助我们继续打磨它，欢迎切换到 `web` 分支并在那里向我们反馈建议。
+   
+</details>
 
 ## 配置
 

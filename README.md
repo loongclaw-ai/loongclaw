@@ -318,7 +318,9 @@ instability from true upstream unavailability.
 
 ## We Are Currently Working On
 
-1. **Web UI**
+<details>
+<summary><strong>1. Web UI</strong></summary>
+<br>
 
    We are currently building the first usable LoongClaw Web UI.
 
@@ -331,6 +333,9 @@ instability from true upstream unavailability.
    This surface is still evolving and should be understood as an active MVP rather than a fully finished product interface.
 
    If you would like to help us continue improving it, please switch to the `web` branch and share feedback there.
+
+</details>
+
 
 ## Configuration
 
