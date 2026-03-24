@@ -51,7 +51,10 @@ impl RuntimeSelfContinuity {
 
     #[must_use]
     pub fn has_prompt_projection(&self) -> bool {
-        !self.runtime_self.is_empty() || self.resolved_identity.is_some()
+        let profile_projection = normalize_projection(self.session_profile_projection.as_deref());
+        !self.runtime_self.is_empty()
+            || self.resolved_identity.is_some()
+            || profile_projection.is_some()
     }
 }
 
@@ -200,6 +203,11 @@ pub(crate) fn render_runtime_self_continuity_section(
     if let Some(resolved_identity_section) = resolved_identity_section {
         sections.push(resolved_identity_section);
     }
+    let session_profile_projection =
+        normalize_projection(continuity.session_profile_projection.as_deref());
+    if let Some(session_profile_projection) = session_profile_projection {
+        sections.push(session_profile_projection);
+    }
 
     Some(sections.join("\n\n"))
 }
@@ -295,6 +303,28 @@ mod tests {
         assert_eq!(
             merged.runtime_self.tool_usage_policy,
             vec!["Search memory before guessing workspace facts.".to_owned()]
+        );
+    }
+
+    #[test]
+    fn render_runtime_self_continuity_section_renders_projection_only_continuity() {
+        let continuity = RuntimeSelfContinuity {
+            session_profile_projection: Some(
+                "## Session Profile\nDurable preferences and advisory session context carried into this session:\nOperator prefers concise technical summaries.".to_owned(),
+            ),
+            ..RuntimeSelfContinuity::default()
+        };
+
+        let rendered = render_runtime_self_continuity_section(&continuity, false)
+            .expect("projection-only continuity should render");
+
+        assert!(
+            rendered.contains("## Session Profile"),
+            "expected session profile section, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("Operator prefers concise technical summaries."),
+            "expected projected profile text, got: {rendered}"
         );
     }
 }

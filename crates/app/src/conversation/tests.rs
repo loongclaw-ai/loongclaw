@@ -64,6 +64,7 @@ struct FakeRuntime {
     turn_calls: Mutex<usize>,
     after_turn_calls: Mutex<Vec<(String, String, String, usize)>>,
     compact_calls: Mutex<Vec<(String, usize)>>,
+    compact_hook: Option<CompactHook>,
     persist_failure: Option<(String, String)>,
     prepare_subagent_spawn_result: Result<(), String>,
     on_subagent_ended_result: Result<(), String>,
@@ -74,6 +75,8 @@ enum FakeTurnResponse {
     Parsed(ProviderTurn),
     RawBody(Value),
 }
+
+type CompactHook = Arc<dyn Fn(&str, &[Value]) -> Result<(), String> + Send + Sync>;
 
 struct TraitDefaultToolViewRuntime;
 struct NoopTurnMiddleware {
@@ -739,6 +742,7 @@ impl FakeRuntime {
             turn_calls: Mutex::new(0),
             after_turn_calls: Mutex::new(Vec::new()),
             compact_calls: Mutex::new(Vec::new()),
+            compact_hook: None,
             persist_failure: None,
             prepare_subagent_spawn_result: Ok(()),
             on_subagent_ended_result: Ok(()),
@@ -774,6 +778,11 @@ impl FakeRuntime {
 
     fn with_compact_result(mut self, result: Result<(), String>) -> Self {
         self.compact_result = result;
+        self
+    }
+
+    fn with_compact_hook(mut self, compact_hook: CompactHook) -> Self {
+        self.compact_hook = Some(compact_hook);
         self
     }
 
@@ -1359,6 +1368,9 @@ impl ConversationRuntime for FakeRuntime {
         messages: &[Value],
         _kernel_ctx: &KernelContext,
     ) -> CliResult<()> {
+        if let Some(compact_hook) = self.compact_hook.as_ref() {
+            compact_hook(session_id, messages)?;
+        }
         self.compact_calls
             .lock()
             .expect("compact lock")
@@ -2505,6 +2517,14 @@ async fn default_runtime_build_context_rehydrates_runtime_self_continuity_when_l
         system_content.contains("Search durable workspace memory before guessing project facts."),
         "expected stored tool usage policy in system prompt, got: {system_content}"
     );
+    assert!(
+        system_content.contains("## Session Profile"),
+        "expected stored session profile in system prompt, got: {system_content}"
+    );
+    assert!(
+        system_content.contains("Operator prefers concise technical summaries."),
+        "expected stored session profile text in system prompt, got: {system_content}"
+    );
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -2607,12 +2627,73 @@ async fn default_runtime_build_context_prefers_live_identity_over_stored_runtime
         "expected live identity in system prompt, got: {system_content}"
     );
     assert!(
-        !system_content.contains("[runtime_self_continuity]"),
-        "stored continuity should not override or duplicate live identity, got: {system_content}"
+        system_content.contains("## Session Profile"),
+        "stored session profile should still rehydrate when the live profile lane is missing, got: {system_content}"
+    );
+    assert!(
+        system_content.contains("Operator prefers concise technical summaries."),
+        "stored session profile text should still rehydrate when the live profile lane is missing, got: {system_content}"
     );
     assert!(
         !system_content.contains("Stored continuity identity"),
         "stored continuity should not override live identity, got: {system_content}"
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn default_runtime_build_context_rehydrates_missing_session_profile_from_stored_runtime_self_continuity()
+ {
+    let runtime = DefaultConversationRuntime::default();
+    let session_id = unique_acp_test_id("default-runtime-context", "live-identity-stored-profile");
+    let sqlite_path = unique_memory_sqlite_path("live-identity-stored-profile");
+    let workspace_root = create_runtime_self_workspace(
+        "live-identity-stored-profile",
+        "# Identity\n\n- Name: Live workspace identity",
+    );
+    let mut config = test_config();
+
+    config.memory.sqlite_path = sqlite_path.clone();
+    config.tools.file_root = Some(workspace_root.display().to_string());
+
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = SessionRepository::new(&memory_config).expect("session repository");
+    let root_session = create_root_session_record(&session_id);
+    let stored_identity_text = "# Identity\n\n- Name: Stored continuity identity";
+
+    repo.create_session(root_session)
+        .expect("create root session");
+    append_runtime_self_continuity_refresh_event(&repo, &session_id, stored_identity_text);
+
+    let assembled = runtime
+        .build_context(
+            &config,
+            &session_id,
+            true,
+            ConversationRuntimeBinding::direct(),
+        )
+        .await
+        .expect("build context with live identity and stored profile");
+
+    let system_content = assembled.messages[0]["content"]
+        .as_str()
+        .expect("system prompt should be text");
+
+    assert!(
+        system_content.contains("Live workspace identity"),
+        "expected live identity in system prompt, got: {system_content}"
+    );
+    assert!(
+        system_content.contains("## Session Profile"),
+        "expected stored session profile to rehydrate, got: {system_content}"
+    );
+    assert!(
+        system_content.contains("Operator prefers concise technical summaries."),
+        "expected stored session profile text to rehydrate, got: {system_content}"
+    );
+    assert!(
+        !system_content.contains("Stored continuity identity"),
+        "stored identity should stay shadowed by live identity, got: {system_content}"
     );
 }
 
@@ -2672,10 +2753,6 @@ async fn handle_turn_with_runtime_records_runtime_self_continuity_before_compact
         "runtime-self-compaction",
         "# Identity\n\n- Name: Workspace continuity identity",
     );
-    let runtime = FakeRuntime::new(
-        vec![json!({"role": "system", "content": "sys"})],
-        Ok("I am Temporary Bob".to_owned()),
-    );
     let mut config = test_config();
 
     config.memory.sqlite_path = sqlite_path.clone();
@@ -2686,6 +2763,36 @@ async fn handle_turn_with_runtime_records_runtime_self_continuity_before_compact
     let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
     let repo = SessionRepository::new(&memory_config).expect("session repository");
     let root_session = create_root_session_record(&session_id);
+    let session_id_for_hook = session_id.clone();
+    let memory_config_for_hook = memory_config.clone();
+    let compact_hook: CompactHook = Arc::new(move |hook_session_id, _messages| {
+        let hook_repo =
+            SessionRepository::new(&memory_config_for_hook).map_err(|error| error.to_string())?;
+        let events = hook_repo
+            .list_recent_events(&session_id_for_hook, 20)
+            .map_err(|error| error.to_string())?;
+        let continuity_event = events
+            .iter()
+            .find(|event| event.event_kind == "runtime_self_continuity_refreshed");
+        let continuity_event = continuity_event.ok_or_else(|| {
+            format!(
+                "runtime self continuity event must exist before compaction for session {hook_session_id}"
+            )
+        })?;
+        let payload_text = continuity_event.payload_json.to_string();
+        let contains_identity = payload_text.contains("Workspace continuity identity");
+        if !contains_identity {
+            return Err(format!(
+                "runtime self continuity payload must be persisted before compaction for session {hook_session_id}"
+            ));
+        }
+        Ok(())
+    });
+    let runtime = FakeRuntime::new(
+        vec![json!({"role": "system", "content": "sys"})],
+        Ok("I am Temporary Bob".to_owned()),
+    )
+    .with_compact_hook(compact_hook);
 
     repo.create_session(root_session)
         .expect("create root session");
@@ -4617,11 +4724,40 @@ async fn handle_turn_with_runtime_flushes_durable_memory_before_compaction() {
     config.conversation.compact_trigger_estimated_tokens = Some(1);
 
     let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let workspace_root_for_hook = workspace_root.clone();
+    let compact_hook: CompactHook = Arc::new(move |session_id, _messages| {
+        let memory_dir = workspace_root_for_hook.join("memory");
+        let exported_paths = collect_markdown_file_paths(memory_dir.as_path());
+        let exported_path = exported_paths.first().ok_or_else(|| {
+            format!("expected durable memory export before compaction for session {session_id}")
+        })?;
+        let exported = std::fs::read_to_string(exported_path).map_err(|error| error.to_string())?;
+        let contains_intro = exported.contains("Advisory durable recall");
+        if !contains_intro {
+            return Err(format!(
+                "durable export must include advisory durable recall label before compaction for session {session_id}"
+            ));
+        }
+        let contains_identity = exported.contains("Resolved Runtime Identity");
+        if !contains_identity {
+            return Err(format!(
+                "durable export must include resolved identity before compaction for session {session_id}"
+            ));
+        }
+        let contains_turn_text = exported.contains("hello before compaction");
+        if !contains_turn_text {
+            return Err(format!(
+                "durable export must include the pre-compaction summary before compaction for session {session_id}"
+            ));
+        }
+        Ok(())
+    });
     let runtime = FakeRuntime::new(
         vec![json!({"role": "system", "content": "sys"})],
         Ok("assistant-reply".to_owned()),
     )
-    .with_durable_memory_config(memory_config.clone());
+    .with_durable_memory_config(memory_config.clone())
+    .with_compact_hook(compact_hook);
 
     let coordinator = ConversationTurnCoordinator::new();
     let kernel_ctx = test_kernel_context_with_memory("test-pre-compaction-flush", &memory_config);
@@ -6257,14 +6393,14 @@ async fn handle_turn_with_runtime_persists_fast_lane_tool_batch_event_for_mixed_
     assert_eq!(payload["sequential_segments"], 1);
 
     let segments = payload["segments"].as_array().expect("segments array");
-    let first_segment = &segments[0];
-    let second_segment = &segments[1];
-    let third_segment = &segments[2];
     assert_eq!(
         segments.len(),
         3,
         "expected contiguous mixed-batch segments"
     );
+    let first_segment = &segments[0];
+    let second_segment = &segments[1];
+    let third_segment = &segments[2];
     let first_segment_observed_wall_time_ms = first_segment["observed_wall_time_ms"]
         .as_u64()
         .expect("parallel segment wall time should exist");
