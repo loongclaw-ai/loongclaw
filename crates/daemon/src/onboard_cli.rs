@@ -12,14 +12,24 @@ use dialoguer::{Confirm, Error as DialoguerError, FuzzySelect, Input, Select};
 use loongclaw_app as mvp;
 use loongclaw_contracts::SecretRef;
 use loongclaw_spec::CliResult;
-use time::OffsetDateTime;
-use time::format_description::FormatItem;
-use time::macros::format_description;
 
 use crate::provider_credential_policy;
+use crate::onboard_finalize::{
+    ConfigWritePlan, build_onboarding_success_summary_with_memory, prepare_output_path_for_write,
+    render_onboarding_success_summary_lines, resolve_backup_path, rollback_onboard_write_failure,
+};
+#[cfg(test)]
+use crate::onboard_finalize::{
+    OnboardWriteRecovery, format_backup_timestamp_at, resolve_backup_path_at,
+};
+#[cfg(test)]
+use time::OffsetDateTime;
 
-const BACKUP_TIMESTAMP_FORMAT: &[FormatItem<'static>] =
-    format_description!("[year][month][day]-[hour][minute][second]");
+pub use crate::onboard_finalize::{
+    OnboardingAction, OnboardingActionKind, OnboardingCredentialSummary, OnboardingDomainOutcome,
+    OnboardingSuccessSummary, backup_existing_config, build_onboarding_success_summary,
+    render_onboarding_success_summary_with_width,
+};
 const ONBOARD_CLEAR_INPUT_TOKEN: &str = ":clear";
 const ONBOARD_CUSTOM_MODEL_OPTION_SLUG: &str = "__custom_model__";
 const ONBOARD_ESCAPE_CANCEL_HINT: &str = "- press Esc then Enter to cancel onboarding";
@@ -1077,19 +1087,6 @@ struct StartingConfigSelection {
     review_candidate: Option<ImportCandidate>,
 }
 
-#[derive(Debug, Clone)]
-struct ConfigWritePlan {
-    force: bool,
-    backup_path: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone)]
-struct OnboardWriteRecovery {
-    output_preexisted: bool,
-    backup_path: Option<PathBuf>,
-    keep_backup_on_success: bool,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OnboardShortcutKind {
     CurrentSetup,
@@ -1141,55 +1138,6 @@ impl OnboardShortcutKind {
 enum OnboardShortcutChoice {
     UseShortcut,
     AdjustSettings,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OnboardingSuccessSummary {
-    pub import_source: Option<String>,
-    pub config_path: String,
-    pub config_status: Option<String>,
-    pub provider: String,
-    pub saved_provider_profiles: Vec<String>,
-    pub model: String,
-    pub transport: String,
-    pub provider_endpoint: Option<String>,
-    pub credential: Option<OnboardingCredentialSummary>,
-    pub prompt_mode: String,
-    pub personality: Option<String>,
-    pub prompt_addendum: Option<String>,
-    pub memory_profile: String,
-    pub memory_path: Option<String>,
-    pub channels: Vec<String>,
-    pub domain_outcomes: Vec<OnboardingDomainOutcome>,
-    pub next_actions: Vec<OnboardingAction>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OnboardingCredentialSummary {
-    pub label: &'static str,
-    pub value: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OnboardingDomainOutcome {
-    pub kind: crate::migration::SetupDomainKind,
-    pub decision: crate::migration::types::PreviewDecision,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OnboardingActionKind {
-    Ask,
-    Chat,
-    Channel,
-    BrowserPreview,
-    Doctor,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OnboardingAction {
-    pub kind: OnboardingActionKind,
-    pub label: String,
-    pub command: String,
 }
 
 pub type ChannelImportReadiness = crate::migration::ChannelImportReadiness;
@@ -1440,7 +1388,11 @@ pub async fn run_onboard_cli_with_ui(
         )
     } else {
         let write_plan = resolve_write_plan(&output_path, &options, ui, context)?;
-        let write_recovery = prepare_output_path_for_write(&output_path, &write_plan, ui)?;
+        let write_recovery = prepare_output_path_for_write(&output_path, &write_plan)?;
+        if let Some(backup_path) = write_plan.backup_path.as_deref() {
+            let backup_message = format!("Backed up existing config to: {}", backup_path.display());
+            print_message(ui, backup_message)?;
+        }
         let path = match mvp::config::write(options.output.as_deref(), &config, write_plan.force) {
             Ok(path) => path,
             Err(error) => {
@@ -1492,7 +1444,9 @@ pub async fn run_onboard_cli_with_ui(
         memory_path_display.as_deref(),
         config_status.as_deref(),
     );
-    print_lines(ui, render_onboarding_success_summary(&success_summary))?;
+    let success_summary_lines =
+        render_onboarding_success_summary_lines(&success_summary, context.render_width, true);
+    print_lines(ui, success_summary_lines)?;
     Ok(())
 }
 
@@ -3793,283 +3747,6 @@ fn append_onboard_review_section(lines: &mut Vec<String>, title: &str, section_l
     lines.extend(section_lines);
 }
 
-pub fn build_onboarding_success_summary(
-    path: &Path,
-    config: &mvp::config::LoongClawConfig,
-    import_source: Option<&str>,
-) -> OnboardingSuccessSummary {
-    build_onboarding_success_summary_with_memory(path, config, import_source, None, None, None)
-}
-
-fn collect_onboarding_domain_outcomes(
-    review_candidate: Option<&crate::migration::ImportCandidate>,
-) -> Vec<OnboardingDomainOutcome> {
-    review_candidate
-        .into_iter()
-        .flat_map(|candidate| candidate.domains.iter())
-        .filter_map(|domain| {
-            domain.decision.map(|decision| OnboardingDomainOutcome {
-                kind: domain.kind,
-                decision,
-            })
-        })
-        .collect()
-}
-
-fn build_onboarding_success_summary_with_memory(
-    path: &Path,
-    config: &mvp::config::LoongClawConfig,
-    import_source: Option<&str>,
-    review_candidate: Option<&crate::migration::ImportCandidate>,
-    memory_path: Option<&str>,
-    config_status: Option<&str>,
-) -> OnboardingSuccessSummary {
-    let config_path = path.display().to_string();
-    let next_actions = crate::next_actions::collect_setup_next_actions(config, &config_path)
-        .into_iter()
-        .map(|action| OnboardingAction {
-            kind: match action.kind {
-                crate::next_actions::SetupNextActionKind::Ask => OnboardingActionKind::Ask,
-                crate::next_actions::SetupNextActionKind::Chat => OnboardingActionKind::Chat,
-                crate::next_actions::SetupNextActionKind::Channel => OnboardingActionKind::Channel,
-                crate::next_actions::SetupNextActionKind::BrowserPreview => {
-                    OnboardingActionKind::BrowserPreview
-                }
-                crate::next_actions::SetupNextActionKind::Doctor => OnboardingActionKind::Doctor,
-            },
-            label: action.label,
-            command: action.command,
-        })
-        .collect();
-
-    OnboardingSuccessSummary {
-        import_source: import_source.map(str::to_owned),
-        config_path,
-        config_status: config_status.map(str::to_owned),
-        provider: crate::provider_presentation::active_provider_label(config),
-        saved_provider_profiles: crate::provider_presentation::saved_provider_profile_ids(config),
-        model: config.provider.model.clone(),
-        transport: config.provider.transport_readiness().summary,
-        provider_endpoint: config.provider.region_endpoint_note(),
-        credential: summarize_provider_credential(&config.provider),
-        prompt_mode: summarize_prompt_mode(config),
-        personality: config
-            .cli
-            .uses_native_prompt_pack()
-            .then(|| prompt_personality_id(config.cli.resolved_personality()).to_owned()),
-        prompt_addendum: summarize_prompt_addendum(config),
-        memory_profile: memory_profile_id(config.memory.profile).to_owned(),
-        memory_path: memory_path.map(str::to_owned),
-        channels: enabled_channel_ids(config),
-        domain_outcomes: collect_onboarding_domain_outcomes(review_candidate),
-        next_actions,
-    }
-}
-
-fn summarize_prompt_mode(config: &mvp::config::LoongClawConfig) -> String {
-    if config.cli.uses_native_prompt_pack() {
-        "native prompt pack".to_owned()
-    } else {
-        "inline system prompt override".to_owned()
-    }
-}
-
-fn summarize_prompt_addendum(config: &mvp::config::LoongClawConfig) -> Option<String> {
-    config
-        .cli
-        .system_prompt_addendum
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-}
-
-fn render_onboarding_domain_outcome_lines(
-    outcomes: &[OnboardingDomainOutcome],
-    width: usize,
-) -> Vec<String> {
-    let mut grouped: Vec<(crate::migration::types::PreviewDecision, Vec<&'static str>)> =
-        Vec::new();
-    let mut sorted = outcomes.to_vec();
-    sorted.sort_by_key(|outcome| (outcome.decision.outcome_rank(), outcome.kind));
-    for outcome in sorted {
-        if let Some((_, labels)) = grouped
-            .iter_mut()
-            .find(|(decision, _)| *decision == outcome.decision)
-        {
-            labels.push(outcome.kind.label());
-        } else {
-            grouped.push((outcome.decision, vec![outcome.kind.label()]));
-        }
-    }
-    grouped
-        .into_iter()
-        .flat_map(|(decision, labels)| {
-            mvp::presentation::render_wrapped_csv_line(
-                &format!("- {}: ", decision.outcome_label()),
-                &labels,
-                width,
-            )
-        })
-        .collect()
-}
-
-fn render_onboarding_success_summary(summary: &OnboardingSuccessSummary) -> Vec<String> {
-    render_onboarding_success_summary_with_width_and_style(summary, detect_render_width(), true)
-}
-
-pub fn render_onboarding_success_summary_with_width(
-    summary: &OnboardingSuccessSummary,
-    width: usize,
-) -> Vec<String> {
-    render_onboarding_success_summary_with_width_and_style(summary, width, false)
-}
-
-fn render_onboarding_success_summary_with_width_and_style(
-    summary: &OnboardingSuccessSummary,
-    width: usize,
-    color_enabled: bool,
-) -> Vec<String> {
-    let mut lines = render_onboard_compact_header(width, "setup complete", color_enabled);
-    lines.push(String::new());
-    lines.push("onboarding complete".to_owned());
-    if !summary.next_actions.is_empty() {
-        let mut actions = summary.next_actions.iter();
-        if let Some(primary) = actions.next() {
-            if width < 56 {
-                lines.push("start here".to_owned());
-                lines.extend(mvp::presentation::render_wrapped_text_line(
-                    &format!("- {}: ", primary.label),
-                    &primary.command,
-                    width,
-                ));
-            } else {
-                lines.extend(mvp::presentation::render_wrapped_text_line(
-                    "start here: ",
-                    &primary.command,
-                    width,
-                ));
-            }
-        }
-
-        let secondary_actions = actions.collect::<Vec<_>>();
-        if !secondary_actions.is_empty() {
-            lines.push("also available".to_owned());
-            lines.extend(secondary_actions.into_iter().flat_map(|action| {
-                mvp::presentation::render_wrapped_text_line(
-                    &format!("- {}: ", action.label),
-                    &action.command,
-                    width,
-                )
-            }));
-        }
-    }
-
-    lines.push("saved setup".to_owned());
-    lines.extend(mvp::presentation::render_wrapped_text_line(
-        "- config: ",
-        &summary.config_path,
-        width,
-    ));
-    if let Some(config_status) = summary.config_status.as_deref() {
-        lines.extend(mvp::presentation::render_wrapped_text_line(
-            "- config status: ",
-            config_status,
-            width,
-        ));
-    }
-    if let Some(source) = summary.import_source.as_deref() {
-        lines.extend(mvp::presentation::render_wrapped_text_line(
-            "- starting point: ",
-            &onboard_starting_point_label(None, source),
-            width,
-        ));
-    }
-    lines.extend(
-        crate::provider_presentation::render_provider_profile_state_lines_from_parts(
-            &summary.provider,
-            &summary.saved_provider_profiles,
-            width,
-            Some("- provider: "),
-        ),
-    );
-    lines.extend(mvp::presentation::render_wrapped_text_line(
-        "- model: ",
-        &summary.model,
-        width,
-    ));
-    lines.extend(mvp::presentation::render_wrapped_text_line(
-        "- transport: ",
-        &summary.transport,
-        width,
-    ));
-    if let Some(provider_endpoint) = summary.provider_endpoint.as_deref() {
-        lines.extend(mvp::presentation::render_wrapped_text_line(
-            "- provider endpoint: ",
-            provider_endpoint,
-            width,
-        ));
-    }
-    if let Some(credential) = summary.credential.as_ref() {
-        lines.extend(mvp::presentation::render_wrapped_text_line(
-            &format!("- {}: ", credential.label),
-            &credential.value,
-            width,
-        ));
-    }
-    lines.extend(mvp::presentation::render_wrapped_text_line(
-        "- prompt mode: ",
-        &summary.prompt_mode,
-        width,
-    ));
-    if let Some(personality) = summary.personality.as_deref() {
-        lines.extend(mvp::presentation::render_wrapped_text_line(
-            "- personality: ",
-            personality,
-            width,
-        ));
-    }
-    if let Some(prompt_addendum) = summary.prompt_addendum.as_deref() {
-        lines.extend(mvp::presentation::render_wrapped_text_line(
-            "- prompt addendum: ",
-            prompt_addendum,
-            width,
-        ));
-    }
-    lines.extend(mvp::presentation::render_wrapped_text_line(
-        "- memory profile: ",
-        &summary.memory_profile,
-        width,
-    ));
-    if let Some(memory_path) = summary.memory_path.as_deref() {
-        lines.extend(mvp::presentation::render_wrapped_text_line(
-            "- sqlite memory: ",
-            memory_path,
-            width,
-        ));
-    }
-    if !summary.channels.is_empty() {
-        let channels = summary
-            .channels
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
-        lines.extend(mvp::presentation::render_wrapped_csv_line(
-            "- channels: ",
-            &channels,
-            width,
-        ));
-    }
-    if !summary.domain_outcomes.is_empty() {
-        lines.push("setup outcome".to_owned());
-        lines.extend(render_onboarding_domain_outcome_lines(
-            &summary.domain_outcomes,
-            width,
-        ));
-    }
-    lines
-}
-
 fn render_onboard_brand_header(width: usize, subtitle: &str, color_enabled: bool) -> Vec<String> {
     mvp::presentation::style_brand_lines_with_palette(
         &mvp::presentation::render_brand_header(
@@ -5703,7 +5380,25 @@ fn render_onboard_review_credential_line(provider: &mvp::config::ProviderConfig)
         .map(|credential| format!("- {}: {}", credential.label, credential.value))
 }
 
-fn summarize_provider_credential(
+pub(crate) fn summarize_prompt_mode(config: &mvp::config::LoongClawConfig) -> String {
+    if config.cli.uses_native_prompt_pack() {
+        return "native prompt pack".to_owned();
+    }
+
+    "inline system prompt override".to_owned()
+}
+
+pub(crate) fn summarize_prompt_addendum(config: &mvp::config::LoongClawConfig) -> Option<String> {
+    config
+        .cli
+        .system_prompt_addendum
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+pub(crate) fn summarize_provider_credential(
     provider: &mvp::config::ProviderConfig,
 ) -> Option<OnboardingCredentialSummary> {
     if secret_ref_has_inline_literal(provider.oauth_access_token.as_ref()) {
@@ -6131,142 +5826,6 @@ fn resolve_write_plan(
             "unexpected existing-config write selection key: {key}"
         )),
     }
-}
-
-fn prepare_output_path_for_write(
-    output_path: &Path,
-    plan: &ConfigWritePlan,
-    ui: &mut impl OnboardUi,
-) -> CliResult<OnboardWriteRecovery> {
-    let output_preexisted = output_path.exists();
-    let keep_backup_on_success = plan.backup_path.is_some();
-    let backup_path = if output_preexisted {
-        Some(
-            plan.backup_path
-                .clone()
-                .unwrap_or(resolve_rollback_backup_path(output_path)?),
-        )
-    } else {
-        None
-    };
-
-    if let Some(backup_path) = backup_path.as_deref() {
-        backup_existing_config(output_path, backup_path)?;
-    }
-    if let Some(backup_path) = plan.backup_path.as_deref() {
-        print_message(
-            ui,
-            format!("Backed up existing config to: {}", backup_path.display()),
-        )?;
-    }
-    Ok(OnboardWriteRecovery {
-        output_preexisted,
-        backup_path,
-        keep_backup_on_success,
-    })
-}
-
-pub fn backup_existing_config(output_path: &Path, backup_path: &Path) -> CliResult<()> {
-    fs::copy(output_path, backup_path)
-        .map_err(|error| format!("failed to backup config: {error}"))?;
-    Ok(())
-}
-
-impl OnboardWriteRecovery {
-    fn rollback(&self, output_path: &Path) -> CliResult<()> {
-        if self.output_preexisted {
-            let backup_path = self
-                .backup_path
-                .as_deref()
-                .ok_or_else(|| "missing rollback backup for existing config".to_owned())?;
-            fs::copy(backup_path, output_path).map_err(|error| {
-                format!(
-                    "failed to restore original config {} from backup {}: {error}",
-                    output_path.display(),
-                    backup_path.display(),
-                )
-            })?;
-            self.finish_success();
-            return Ok(());
-        }
-
-        if output_path.exists() {
-            fs::remove_file(output_path).map_err(|error| {
-                format!(
-                    "failed to remove partial config {} after onboarding failure: {error}",
-                    output_path.display()
-                )
-            })?;
-        }
-        self.finish_success();
-        Ok(())
-    }
-
-    fn finish_success(&self) {
-        if self.keep_backup_on_success {
-            return;
-        }
-        if let Some(backup_path) = self.backup_path.as_deref() {
-            let _ = fs::remove_file(backup_path);
-        }
-    }
-}
-
-fn rollback_onboard_write_failure(
-    output_path: &Path,
-    write_recovery: &OnboardWriteRecovery,
-    failure: impl Into<String>,
-) -> String {
-    let failure = failure.into();
-    match write_recovery.rollback(output_path) {
-        Ok(()) => failure,
-        Err(rollback_error) => {
-            format!("{failure}; additionally failed to restore original config: {rollback_error}")
-        }
-    }
-}
-
-fn resolve_backup_path(original: &Path) -> CliResult<PathBuf> {
-    let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
-    resolve_backup_path_at(original, now)
-}
-
-fn resolve_backup_path_at(original: &Path, timestamp: OffsetDateTime) -> CliResult<PathBuf> {
-    let parent = original.parent().unwrap_or(Path::new("."));
-    let file_stem = original
-        .file_stem()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_else(|| "config".to_owned());
-
-    let formatted_timestamp = format_backup_timestamp_at(timestamp)?;
-    Ok(parent.join(format!("{}.toml.bak-{}", file_stem, formatted_timestamp)))
-}
-
-fn resolve_rollback_backup_path(original: &Path) -> CliResult<PathBuf> {
-    let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
-    resolve_rollback_backup_path_at(original, now)
-}
-
-fn resolve_rollback_backup_path_at(
-    original: &Path,
-    timestamp: OffsetDateTime,
-) -> CliResult<PathBuf> {
-    let parent = original.parent().unwrap_or(Path::new("."));
-    let file_name = original
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_else(|| "config.toml".to_owned());
-
-    let formatted_timestamp = format_backup_timestamp_at(timestamp)?;
-    Ok(parent.join(format!(
-        ".{file_name}.onboard-rollback-{formatted_timestamp}"
-    )))
-}
-
-fn format_backup_timestamp_at(timestamp: OffsetDateTime) -> CliResult<String> {
-    timestamp
-        .format(BACKUP_TIMESTAMP_FORMAT)
-        .map_err(|error| format!("format backup timestamp failed: {error}"))
 }
 
 #[cfg(test)]
