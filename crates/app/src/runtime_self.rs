@@ -57,6 +57,10 @@ impl RuntimeSelfModel {
 }
 
 pub(crate) fn load_runtime_self_model(workspace_root: &Path) -> RuntimeSelfModel {
+    let Some(canonical_workspace_root) = canonical_workspace_root(workspace_root) else {
+        return RuntimeSelfModel::default();
+    };
+
     let candidate_roots = candidate_roots(workspace_root);
     let mut loaded_paths = BTreeSet::new();
     let mut model = RuntimeSelfModel::default();
@@ -64,7 +68,9 @@ pub(crate) fn load_runtime_self_model(workspace_root: &Path) -> RuntimeSelfModel
     for root in candidate_roots {
         for spec in RUNTIME_SELF_SOURCE_SPECS {
             let candidate_path = root.join(spec.relative_path);
-            let Some(content) = read_runtime_self_source(&candidate_path) else {
+            let Some(content) =
+                read_runtime_self_source(canonical_workspace_root.as_path(), &candidate_path)
+            else {
                 continue;
             };
 
@@ -117,14 +123,24 @@ fn candidate_roots(workspace_root: &Path) -> Vec<PathBuf> {
     roots
 }
 
-fn read_runtime_self_source(path: &Path) -> Option<String> {
-    let content = std::fs::read_to_string(path).ok()?;
+fn read_runtime_self_source(canonical_workspace_root: &Path, path: &Path) -> Option<String> {
+    let canonical_path = path.canonicalize().ok()?;
+    let is_within_workspace = canonical_path.starts_with(canonical_workspace_root);
+    if !is_within_workspace {
+        return None;
+    }
+
+    let content = std::fs::read_to_string(canonical_path).ok()?;
     let trimmed = content.trim();
     if trimmed.is_empty() {
         return None;
     }
 
     Some(trimmed.to_owned())
+}
+
+fn canonical_workspace_root(workspace_root: &Path) -> Option<PathBuf> {
+    workspace_root.canonicalize().ok()
 }
 
 fn normalized_path_key(path: &Path) -> String {
@@ -172,6 +188,11 @@ fn push_rendered_lane(sections: &mut Vec<String>, heading: &str, entries: &[Stri
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[cfg(unix)]
+    fn create_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
 
     #[test]
     fn load_runtime_self_model_reads_root_and_nested_workspace_sources() {
@@ -241,5 +262,53 @@ mod tests {
         let rendered = render_runtime_self_section(&model);
 
         assert_eq!(rendered, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_runtime_self_model_ignores_linked_agents_file_outside_workspace_root() {
+        let temp_dir = tempdir().expect("tempdir");
+        let sandbox_root = temp_dir.path();
+        let workspace_root = sandbox_root.join("workspace");
+        let outside_root = sandbox_root.join("outside");
+        let outside_agents_path = outside_root.join("AGENTS.md");
+        let linked_agents_path = workspace_root.join("AGENTS.md");
+
+        std::fs::create_dir_all(&workspace_root).expect("create workspace root");
+        std::fs::create_dir_all(&outside_root).expect("create outside root");
+        std::fs::write(&outside_agents_path, "outside standing instructions")
+            .expect("write outside agents");
+        create_symlink(&outside_agents_path, &linked_agents_path).expect("create agents symlink");
+
+        let model = load_runtime_self_model(workspace_root.as_path());
+
+        assert!(model.standing_instructions.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_runtime_self_model_ignores_linked_nested_workspace_outside_workspace_root() {
+        let temp_dir = tempdir().expect("tempdir");
+        let sandbox_root = temp_dir.path();
+        let workspace_root = sandbox_root.join("workspace");
+        let linked_nested_workspace_root = workspace_root.join("workspace");
+        let outside_root = sandbox_root.join("outside");
+        let outside_nested_workspace_root = outside_root.join("nested");
+        let outside_agents_path = outside_nested_workspace_root.join("AGENTS.md");
+
+        std::fs::create_dir_all(&workspace_root).expect("create workspace root");
+        std::fs::create_dir_all(&outside_nested_workspace_root)
+            .expect("create outside nested workspace");
+        std::fs::write(&outside_agents_path, "outside nested standing instructions")
+            .expect("write outside nested agents");
+        create_symlink(
+            &outside_nested_workspace_root,
+            &linked_nested_workspace_root,
+        )
+        .expect("create nested workspace symlink");
+
+        let model = load_runtime_self_model(workspace_root.as_path());
+
+        assert!(model.standing_instructions.is_empty());
     }
 }
