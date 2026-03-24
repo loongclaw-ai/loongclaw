@@ -20,7 +20,62 @@ pub const TOOL_LOOP_GUARD_PROMPT: &str = "Detected tool-loop behavior across rou
 const FILE_READ_FOLLOWUP_CONTENT_PREVIEW_CHARS: usize = 384;
 const SHELL_FOLLOWUP_STDIO_PREVIEW_CHARS: usize = 384;
 const SHELL_FOLLOWUP_STDIO_OMISSION_MARKER: &str = "\n[... omitted ...]\n";
+const THINK_OPEN_TAG: &str = "<think>";
+const THINK_CLOSE_TAG: &str = "</think>";
 
+/// Strips <think>...</think> tags from model response text to prevent
+/// internal reasoning chains from leaking to user-facing output.
+/// This handles both standard think tags and case-insensitive variants.
+fn strip_think_tags(text: &str) -> String {
+    let mut cleaned_text = String::with_capacity(text.len());
+    let mut cursor = 0;
+    let mut inside_think_block = false;
+
+    while cursor < text.len() {
+        let remaining_text = &text[cursor..];
+        let open_tag_length = think_tag_prefix_len(remaining_text, THINK_OPEN_TAG);
+
+        if let Some(tag_length) = open_tag_length {
+            inside_think_block = true;
+            cursor += tag_length;
+            continue;
+        }
+
+        let close_tag_length = think_tag_prefix_len(remaining_text, THINK_CLOSE_TAG);
+
+        if let Some(tag_length) = close_tag_length {
+            inside_think_block = false;
+            cursor += tag_length;
+            continue;
+        }
+
+        let mut remaining_chars = remaining_text.chars();
+        let Some(current_char) = remaining_chars.next() else {
+            break;
+        };
+        let current_char_length = current_char.len_utf8();
+
+        if !inside_think_block {
+            cleaned_text.push(current_char);
+        }
+
+        cursor += current_char_length;
+    }
+
+    cleaned_text
+}
+
+fn think_tag_prefix_len(input: &str, tag: &str) -> Option<usize> {
+    let tag_length = tag.len();
+    let input_prefix = input.get(..tag_length)?;
+    let matches_tag = input_prefix.eq_ignore_ascii_case(tag);
+
+    if !matches_tag {
+        return None;
+    }
+
+    Some(tag_length)
+}
 pub fn next_conversation_turn_id() -> String {
     static NEXT_CONVERSATION_TURN_SEQ: AtomicU64 = AtomicU64::new(1);
     let seq = NEXT_CONVERSATION_TURN_SEQ.fetch_add(1, Ordering::Relaxed);
@@ -1966,4 +2021,56 @@ mod tests {
         assert_eq!(reduced.as_ref(), tool_result);
         assert_eq!(reduced.as_ptr(), tool_result.as_ptr());
     }
+<<<<<<< HEAD
+=======
+
+    #[test]
+    fn strip_think_tags_removes_think_content() {
+        let input = "<think>Let me think about this...\nThe user wants to know the weather.\nI should check the forecast.</think>The weather today is sunny.";
+        let expected = "The weather today is sunny.";
+        assert_eq!(strip_think_tags(input), expected);
+    }
+
+    #[test]
+    fn strip_think_tags_handles_empty_tags() {
+        let input = "Hello <think></think>world";
+        assert_eq!(strip_think_tags(input), "Hello world");
+    }
+
+    #[test]
+    fn strip_think_tags_handles_multiple_tags() {
+        let input = "<think>First thought</think>Middle<think>Second thought</think>End";
+        assert_eq!(strip_think_tags(input), "MiddleEnd");
+    }
+
+    #[test]
+    fn strip_think_tags_handles_nested_content() {
+        let input = "<think>Think content with <tag> inside</think>Real response";
+        assert_eq!(strip_think_tags(input), "Real response");
+    }
+
+    #[test]
+    fn strip_think_tags_handles_nested_think_tags() {
+        let input = "<think>outer<think>inner</think>visible</think>done";
+        assert_eq!(strip_think_tags(input), "visibledone");
+    }
+
+    #[test]
+    fn strip_think_tags_case_insensitive() {
+        let input = "<ThInK>think content</tHiNk>Result";
+        assert_eq!(strip_think_tags(input), "Result");
+    }
+
+    #[test]
+    fn strip_think_tags_drops_unterminated_opening_tag() {
+        let input = "Answer<think>internal reasoning";
+        assert_eq!(strip_think_tags(input), "Answer");
+    }
+
+    #[test]
+    fn strip_think_tags_drops_stray_closing_tag() {
+        let input = "Answer</think>";
+        assert_eq!(strip_think_tags(input), "Answer");
+    }
+>>>>>>> e36c634f (fix(ci): unblock self continuity checks)
 }

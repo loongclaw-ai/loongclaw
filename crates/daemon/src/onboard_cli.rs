@@ -7291,7 +7291,7 @@ mod tests {
 
     #[test]
     fn provider_credential_check_adds_volcengine_auth_guidance_when_missing() {
-        let mut env = mvp::test_support::ScopedEnv::new();
+        let mut env = ScopedEnv::new();
         env.remove("ARK_API_KEY");
 
         let mut config = mvp::config::LoongClawConfig::default();
@@ -7300,8 +7300,6 @@ mod tests {
         config.provider.api_key_env = None;
         config.provider.oauth_access_token = None;
         config.provider.oauth_access_token_env = None;
-        let mut env = ScopedEnv::new();
-        env.remove("ARK_API_KEY");
 
         let check = provider_credential_check(&config);
 
