@@ -27,11 +27,24 @@ const SHELL_FOLLOWUP_STDIO_OMISSION_MARKER: &str = "\n[... omitted ...]\n";
 #[allow(clippy::expect_used)]
 fn strip_think_tags(text: &str) -> String {
     use regex::Regex;
-    static THINK_TAG_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    static BALANCED_THINK_TAG_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
         // Match <think> ... </think> tags (case-insensitive, multiline)
         Regex::new(r"(?is)<think>.*?</think>").expect("static regex should always compile")
     });
-    THINK_TAG_RE.replace_all(text, "").to_string()
+    static OPEN_THINK_TAG_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        // Match an unterminated <think> tag through end-of-string.
+        Regex::new(r"(?is)<think>.*$").expect("static regex should always compile")
+    });
+    static CLOSE_THINK_TAG_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        // Match any stray closing </think> tag.
+        Regex::new(r"(?i)</think>").expect("static regex should always compile")
+    });
+
+    let without_balanced_tags = BALANCED_THINK_TAG_RE.replace_all(text, "");
+    let without_open_tags = OPEN_THINK_TAG_RE.replace_all(&without_balanced_tags, "");
+    CLOSE_THINK_TAG_RE
+        .replace_all(&without_open_tags, "")
+        .to_string()
 }
 
 pub fn next_conversation_turn_id() -> String {
@@ -2008,7 +2021,7 @@ mod tests {
 
     #[test]
     fn strip_think_tags_handles_empty_tags() {
-        let input = "Hello world";
+        let input = "Hello <think></think>world";
         assert_eq!(strip_think_tags(input), "Hello world");
     }
 
@@ -2028,5 +2041,17 @@ mod tests {
     fn strip_think_tags_case_insensitive() {
         let input = "<ThInK>think content</tHiNk>Result";
         assert_eq!(strip_think_tags(input), "Result");
+    }
+
+    #[test]
+    fn strip_think_tags_drops_unterminated_opening_tag() {
+        let input = "Answer<think>internal reasoning";
+        assert_eq!(strip_think_tags(input), "Answer");
+    }
+
+    #[test]
+    fn strip_think_tags_drops_stray_closing_tag() {
+        let input = "Answer</think>";
+        assert_eq!(strip_think_tags(input), "Answer");
     }
 }
