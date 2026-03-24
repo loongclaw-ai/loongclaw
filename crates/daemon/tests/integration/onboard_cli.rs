@@ -4807,8 +4807,8 @@ fn onboarding_success_summary_derives_structured_actions() {
     );
     assert_eq!(summary.next_actions[0].label, "first answer");
     assert_eq!(summary.next_actions[1].label, "chat");
-    assert_eq!(summary.next_actions[2].label, "telegram");
-    assert_eq!(summary.next_actions[3].label, "feishu");
+    assert_eq!(summary.next_actions[2].label, "Telegram");
+    assert_eq!(summary.next_actions[3].label, "Feishu/Lark");
     assert_eq!(summary.next_actions[4].label, "enable browser preview");
 }
 
@@ -6233,7 +6233,7 @@ fn render_onboarding_success_summary_compacts_for_narrow_width() {
             .any(|line| line == "- chat: loongclaw chat --config")
             && lines
                 .iter()
-                .any(|line| line == "- telegram: loongclaw telegram-serve --config"),
+                .any(|line| line == "- Telegram: loongclaw telegram-serve --config"),
         "narrow renderer should keep secondary chat and channel actions visible after the primary ask example: {lines:#?}"
     );
 }
@@ -6621,14 +6621,12 @@ fn onboarding_success_summary_groups_secondary_channel_actions_after_primary_han
     );
     assert!(
         lines.iter().any(|line| line
-            == "- telegram: loongclaw telegram-serve --config '/tmp/loongclaw-config.toml'"),
+            == "- Telegram: loongclaw telegram-serve --config '/tmp/loongclaw-config.toml'"),
         "wide success summary should list telegram as a secondary action: {lines:#?}"
     );
     assert!(
-        lines
-            .iter()
-            .any(|line| line
-                == "- feishu: loongclaw feishu-serve --config '/tmp/loongclaw-config.toml'"),
+        lines.iter().any(|line| line
+            == "- Feishu/Lark: loongclaw feishu-serve --config '/tmp/loongclaw-config.toml'"),
         "wide success summary should list feishu as a secondary action: {lines:#?}"
     );
 }

@@ -1782,14 +1782,13 @@ fn select_doctor_first_turn_actions(
         action.kind == crate::next_actions::SetupNextActionKind::Chat
     });
     push_first_matching_action(&mut prioritized, &actions, |action| {
-        action.kind == crate::next_actions::SetupNextActionKind::BrowserPreview
-            && matches!(
-                action.browser_preview_phase,
-                Some(crate::next_actions::BrowserPreviewActionPhase::Ready)
-                    | Some(crate::next_actions::BrowserPreviewActionPhase::Unblock)
-                    | Some(crate::next_actions::BrowserPreviewActionPhase::Enable)
-                    | Some(crate::next_actions::BrowserPreviewActionPhase::InstallRuntime)
-            )
+        is_repair_priority_browser_preview_action(action)
+    });
+    push_first_matching_action(&mut prioritized, &actions, |action| {
+        is_channel_catalog_action(action)
+    });
+    push_first_matching_action(&mut prioritized, &actions, |action| {
+        is_general_browser_preview_action(action)
     });
 
     for action in actions {
@@ -1801,6 +1800,38 @@ fn select_doctor_first_turn_actions(
 
     prioritized.truncate(3);
     prioritized
+}
+
+fn is_channel_catalog_action(action: &crate::next_actions::SetupNextAction) -> bool {
+    let kind = &action.kind;
+    let channel_action_id = action.channel_action_id;
+    *kind == crate::next_actions::SetupNextActionKind::Channel
+        && channel_action_id == Some(crate::migration::channels::CHANNEL_CATALOG_ACTION_ID)
+}
+
+fn is_repair_priority_browser_preview_action(
+    action: &crate::next_actions::SetupNextAction,
+) -> bool {
+    let kind = &action.kind;
+    let phase = action.browser_preview_phase;
+    *kind == crate::next_actions::SetupNextActionKind::BrowserPreview
+        && matches!(
+            phase,
+            Some(crate::next_actions::BrowserPreviewActionPhase::Unblock)
+                | Some(crate::next_actions::BrowserPreviewActionPhase::InstallRuntime)
+        )
+}
+
+fn is_general_browser_preview_action(action: &crate::next_actions::SetupNextAction) -> bool {
+    let kind = &action.kind;
+    let phase = action.browser_preview_phase;
+    let is_browser_preview = *kind == crate::next_actions::SetupNextActionKind::BrowserPreview;
+    let is_general_phase = matches!(
+        phase,
+        Some(crate::next_actions::BrowserPreviewActionPhase::Ready)
+            | Some(crate::next_actions::BrowserPreviewActionPhase::Enable)
+    );
+    is_browser_preview && is_general_phase
 }
 
 fn push_first_matching_action<F>(
@@ -3570,9 +3601,15 @@ mod tests {
         );
         assert!(
             next_steps.iter().any(|step| {
+                step == "Open a channel: loongclaw channels --config '/tmp/loongclaw.toml'"
+            }),
+            "green doctor runs should surface the channel catalog when no service channel is enabled yet: {next_steps:#?}"
+        );
+        assert!(
+            !next_steps.iter().any(|step| {
                 step == "Optional browser preview: loongclaw skills enable-browser-preview --config '/tmp/loongclaw.toml'"
             }),
-            "green doctor runs should surface the optional browser preview with a single concrete command: {next_steps:#?}"
+            "green doctor runs should prioritize the channel catalog ahead of optional browser preview when no service channel is enabled yet: {next_steps:#?}"
         );
         assert!(
             !next_steps.iter().any(|step| {

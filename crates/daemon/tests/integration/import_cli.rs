@@ -626,7 +626,7 @@ fn import_cli_apply_summary_includes_registry_channel_actions() {
     assert!(
         lines.iter().any(|line| {
             line
-                == "also available: telegram · loongclaw telegram-serve --config '/tmp/loongclaw-config.toml'"
+                == "also available: Telegram · loongclaw telegram-serve --config '/tmp/loongclaw-config.toml'"
         }),
         "apply summary should continue surfacing registry-driven channel handoff commands after ask/chat: {lines:#?}"
     );
@@ -659,7 +659,7 @@ fn import_cli_apply_summary_shell_quotes_config_paths_with_single_quotes() {
     );
     assert!(
         rendered.contains(
-            "also available: telegram · loongclaw telegram-serve --config '/tmp/loongclaw'\"'\"'s config.toml'"
+            "also available: Telegram · loongclaw telegram-serve --config '/tmp/loongclaw'\"'\"'s config.toml'"
         ),
         "apply summary should shell-quote single quotes in channel handoff commands: {lines:#?}"
     );
