@@ -128,7 +128,11 @@ fn split_profile_note_blocks(profile_note: &str) -> Vec<String> {
         let starts_heading = trimmed_line.starts_with("## ");
         let has_current_block = !current_lines.is_empty();
 
-        if starts_heading && has_current_block {
+        let should_split = starts_heading
+            && has_current_block
+            && should_split_profile_note_block(&current_lines, trimmed_line);
+
+        if should_split {
             let block = finalize_profile_note_block(&current_lines);
             if let Some(block) = block {
                 blocks.push(block);
@@ -145,6 +149,20 @@ fn split_profile_note_blocks(profile_note: &str) -> Vec<String> {
     }
 
     blocks
+}
+
+fn should_split_profile_note_block(current_lines: &[String], next_heading: &str) -> bool {
+    let current_block = finalize_profile_note_block(current_lines);
+    let Some(current_block) = current_block else {
+        return false;
+    };
+
+    let current_is_identity_import = is_legacy_imported_identity_block(&current_block);
+    if !current_is_identity_import {
+        return true;
+    }
+
+    is_imported_profile_block_heading(next_heading)
 }
 
 fn finalize_profile_note_block(lines: &[String]) -> Option<String> {
@@ -169,6 +187,11 @@ fn is_legacy_imported_identity_block(block: &str) -> bool {
 
     let normalized_heading = heading.trim().to_ascii_lowercase();
     LEGACY_IMPORTED_IDENTITY_HEADINGS.contains(&normalized_heading.as_str())
+}
+
+fn is_imported_profile_block_heading(heading: &str) -> bool {
+    let normalized_heading = heading.trim().to_ascii_lowercase();
+    normalized_heading.starts_with("## imported ")
 }
 
 fn first_non_empty_line(block: &str) -> Option<&str> {
@@ -278,5 +301,21 @@ mod tests {
             render_session_profile_section(Some(profile_note)).expect("session profile section");
 
         assert!(rendered.contains("Operator prefers concise shell output."));
+    }
+
+    #[test]
+    fn legacy_identity_import_keeps_nested_headings_out_of_advisory_profile() {
+        let profile_note = "## Imported IDENTITY.md\n# Identity\n\n- Name: Legacy build copilot\n\n## Traits\n- careful\n- explicit\n\n## Imported External Skills Artifacts\n- kind=skills_catalog";
+
+        let resolved = resolve_runtime_identity(None, Some(profile_note))
+            .expect("resolved runtime identity");
+        let rendered =
+            render_session_profile_section(Some(profile_note)).expect("session profile section");
+
+        assert!(resolved.content.contains("## Traits"));
+        assert!(resolved.content.contains("- careful"));
+        assert!(!rendered.contains("## Traits"));
+        assert!(!rendered.contains("- careful"));
+        assert!(rendered.contains("Imported External Skills Artifacts"));
     }
 }

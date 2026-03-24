@@ -156,11 +156,17 @@ pub fn build_system_message(
     request_message_runtime::build_system_message(config, include_system_prompt)
 }
 
-pub(crate) fn build_base_messages(
+pub(crate) async fn build_base_messages_with_binding(
     config: &LoongClawConfig,
     include_system_prompt: bool,
+    binding: ProviderRuntimeBinding<'_>,
 ) -> Vec<Value> {
-    request_message_runtime::build_base_messages(config, include_system_prompt)
+    request_message_runtime::build_base_messages_with_binding(
+        config,
+        include_system_prompt,
+        binding,
+    )
+    .await
 }
 
 pub(crate) fn push_history_message(messages: &mut Vec<Value>, role: &str, content: &str) {

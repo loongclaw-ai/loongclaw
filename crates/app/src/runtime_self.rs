@@ -1,8 +1,13 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use loongclaw_contracts::ToolCoreRequest;
+use serde_json::json;
+
+use crate::tools;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RuntimeSelfLane {
+pub(crate) enum RuntimeSelfLane {
     StandingInstructions,
     SoulGuidance,
     IdentityContext,
@@ -46,49 +51,49 @@ pub(crate) struct RuntimeSelfModel {
     pub user_context: Vec<String>,
 }
 
-impl RuntimeSelfModel {
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.standing_instructions.is_empty()
-            && self.soul_guidance.is_empty()
-            && self.identity_context.is_empty()
-            && self.user_context.is_empty()
-    }
-}
-
+#[cfg(test)]
 pub(crate) fn load_runtime_self_model(workspace_root: &Path) -> RuntimeSelfModel {
-    let Some(canonical_workspace_root) = canonical_workspace_root(workspace_root) else {
-        return RuntimeSelfModel::default();
+    let tool_runtime_config = crate::tools::runtime_config::ToolRuntimeConfig {
+        file_root: Some(workspace_root.to_path_buf()),
+        ..crate::tools::runtime_config::ToolRuntimeConfig::default()
     };
 
-    let candidate_roots = candidate_roots(workspace_root);
+    load_runtime_self_model_with_config(workspace_root, &tool_runtime_config)
+}
+
+pub(crate) fn load_runtime_self_model_with_config(
+    workspace_root: &Path,
+    tool_runtime_config: &crate::tools::runtime_config::ToolRuntimeConfig,
+) -> RuntimeSelfModel {
+    let source_candidates = runtime_self_source_candidates(workspace_root);
     let mut loaded_paths = BTreeSet::new();
     let mut model = RuntimeSelfModel::default();
 
-    for root in candidate_roots {
-        for spec in RUNTIME_SELF_SOURCE_SPECS {
-            let candidate_path = root.join(spec.relative_path);
-            let Some(content) =
-                read_runtime_self_source(canonical_workspace_root.as_path(), &candidate_path)
-            else {
-                continue;
-            };
+    for (candidate_path, lane) in source_candidates {
+        let Some(content) =
+            read_runtime_self_source(workspace_root, &candidate_path, tool_runtime_config)
+        else {
+            continue;
+        };
 
-            let path_key = normalized_path_key(&candidate_path);
-            let inserted = loaded_paths.insert(path_key);
-            if !inserted {
-                continue;
-            }
-
-            append_runtime_self_content(&mut model, spec.lane, content);
+        let path_key = normalized_path_key(&candidate_path);
+        let inserted = loaded_paths.insert(path_key);
+        if !inserted {
+            continue;
         }
+
+        append_runtime_self_content(&mut model, lane, content);
     }
 
     model
 }
 
 pub(crate) fn render_runtime_self_section(model: &RuntimeSelfModel) -> Option<String> {
-    if model.is_empty() {
+    let has_renderable_content = !model.standing_instructions.is_empty()
+        || !model.soul_guidance.is_empty()
+        || !model.user_context.is_empty();
+
+    if !has_renderable_content {
         return None;
     }
 
@@ -106,26 +111,41 @@ pub(crate) fn render_runtime_self_section(model: &RuntimeSelfModel) -> Option<St
     Some(sections.join("\n\n"))
 }
 
-fn candidate_roots(workspace_root: &Path) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    roots.push(workspace_root.to_path_buf());
+pub(crate) fn runtime_self_source_candidates(
+    workspace_root: &Path,
+) -> Vec<(PathBuf, RuntimeSelfLane)> {
+    let candidate_roots = [
+        workspace_root.to_path_buf(),
+        workspace_root.join("workspace"),
+    ];
+    let mut source_candidates = Vec::new();
 
-    let nested_workspace_root = workspace_root.join("workspace");
-    if nested_workspace_root.is_dir() {
-        roots.push(nested_workspace_root);
+    for root in candidate_roots {
+        for spec in RUNTIME_SELF_SOURCE_SPECS {
+            let candidate_path = root.join(spec.relative_path);
+            source_candidates.push((candidate_path, spec.lane));
+        }
     }
 
-    roots
+    source_candidates
 }
 
-fn read_runtime_self_source(canonical_workspace_root: &Path, path: &Path) -> Option<String> {
-    let canonical_path = path.canonicalize().ok()?;
-    let is_within_workspace = canonical_path.starts_with(canonical_workspace_root);
-    if !is_within_workspace {
-        return None;
-    }
+fn read_runtime_self_source(
+    workspace_root: &Path,
+    path: &Path,
+    tool_runtime_config: &crate::tools::runtime_config::ToolRuntimeConfig,
+) -> Option<String> {
+    let request_path = request_path_from_workspace_root(workspace_root, path)?;
+    let request = ToolCoreRequest {
+        tool_name: "file.read".to_owned(),
+        payload: json!({
+            "path": request_path,
+        }),
+    };
 
-    let content = std::fs::read_to_string(canonical_path).ok()?;
+    let outcome = tools::execute_tool_core_with_config(request, tool_runtime_config).ok()?;
+    let payload_content = outcome.payload.get("content")?;
+    let content = payload_content.as_str()?;
     let trimmed = content.trim();
     if trimmed.is_empty() {
         return None;
@@ -134,16 +154,18 @@ fn read_runtime_self_source(canonical_workspace_root: &Path, path: &Path) -> Opt
     Some(trimmed.to_owned())
 }
 
-fn canonical_workspace_root(workspace_root: &Path) -> Option<PathBuf> {
-    workspace_root.canonicalize().ok()
+fn request_path_from_workspace_root(workspace_root: &Path, path: &Path) -> Option<String> {
+    let relative_path = path.strip_prefix(workspace_root).ok()?;
+    let request_path = relative_path.to_string_lossy().to_string();
+    Some(request_path)
 }
 
-fn normalized_path_key(path: &Path) -> String {
+pub(crate) fn normalized_path_key(path: &Path) -> String {
     let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     canonical_path.display().to_string()
 }
 
-fn append_runtime_self_content(
+pub(crate) fn append_runtime_self_content(
     model: &mut RuntimeSelfModel,
     lane: RuntimeSelfLane,
     content: String,
@@ -259,39 +281,49 @@ mod tests {
         assert_eq!(rendered, None);
     }
 
+    #[test]
+    fn render_runtime_self_section_returns_none_for_identity_only_model() {
+        let model = RuntimeSelfModel {
+            identity_context: vec!["# Identity\n\n- Name: Workspace helper".to_owned()],
+            ..RuntimeSelfModel::default()
+        };
+
+        let rendered = render_runtime_self_section(&model);
+
+        assert_eq!(rendered, None);
+    }
+
     #[cfg(unix)]
     #[test]
     fn load_runtime_self_model_ignores_linked_agents_file_outside_workspace_root() {
-        let temp_dir = tempdir().expect("tempdir");
-        let sandbox_root = temp_dir.path();
-        let workspace_root = sandbox_root.join("workspace");
-        let outside_root = sandbox_root.join("outside");
-        let outside_agents_path = outside_root.join("AGENTS.md");
+        let workspace_dir = tempdir().expect("workspace tempdir");
+        let outside_dir = tempdir().expect("outside tempdir");
+        let workspace_root = workspace_dir.path();
+        let outside_agents_path = outside_dir.path().join("AGENTS.md");
         let linked_agents_path = workspace_root.join("AGENTS.md");
 
-        std::fs::create_dir_all(&workspace_root).expect("create workspace root");
-        std::fs::create_dir_all(&outside_root).expect("create outside root");
         std::fs::write(&outside_agents_path, "outside standing instructions")
             .expect("write outside agents");
         create_symlink(&outside_agents_path, &linked_agents_path).expect("create agents symlink");
 
-        let model = load_runtime_self_model(workspace_root.as_path());
+        let model = load_runtime_self_model(workspace_root);
 
-        assert!(model.standing_instructions.is_empty());
+        assert!(
+            model.standing_instructions.is_empty(),
+            "linked file outside workspace root should be rejected"
+        );
     }
 
     #[cfg(unix)]
     #[test]
     fn load_runtime_self_model_ignores_linked_nested_workspace_outside_workspace_root() {
-        let temp_dir = tempdir().expect("tempdir");
-        let sandbox_root = temp_dir.path();
-        let workspace_root = sandbox_root.join("workspace");
+        let workspace_dir = tempdir().expect("workspace tempdir");
+        let outside_dir = tempdir().expect("outside tempdir");
+        let workspace_root = workspace_dir.path();
         let linked_nested_workspace_root = workspace_root.join("workspace");
-        let outside_root = sandbox_root.join("outside");
-        let outside_nested_workspace_root = outside_root.join("nested");
+        let outside_nested_workspace_root = outside_dir.path().join("nested");
         let outside_agents_path = outside_nested_workspace_root.join("AGENTS.md");
 
-        std::fs::create_dir_all(&workspace_root).expect("create workspace root");
         std::fs::create_dir_all(&outside_nested_workspace_root)
             .expect("create outside nested workspace");
         std::fs::write(&outside_agents_path, "outside nested standing instructions")
@@ -302,8 +334,11 @@ mod tests {
         )
         .expect("create nested workspace symlink");
 
-        let model = load_runtime_self_model(workspace_root.as_path());
+        let model = load_runtime_self_model(workspace_root);
 
-        assert!(model.standing_instructions.is_empty());
+        assert!(
+            model.standing_instructions.is_empty(),
+            "linked nested workspace outside workspace root should be rejected"
+        );
     }
 }
