@@ -2608,9 +2608,15 @@ fn validate_selected_provider_credential_env(
 fn render_configured_provider_credential_source_value(
     provider: &mvp::config::ProviderConfig,
 ) -> Option<String> {
-    let binding = provider_credential_policy::configured_provider_credential_env_binding(provider)?;
-    let env_name = binding.env_name;
-    provider_credential_policy::render_provider_credential_source_value(Some(env_name.as_str()))
+    let configured_oauth = provider.oauth_access_token_env.as_deref();
+    let rendered_oauth =
+        provider_credential_policy::render_provider_credential_source_value(configured_oauth);
+    if rendered_oauth.is_some() {
+        return rendered_oauth;
+    }
+
+    let configured_api_key = provider.api_key_env.as_deref();
+    provider_credential_policy::render_provider_credential_source_value(configured_api_key)
 }
 
 pub fn preferred_api_key_env_default(config: &mvp::config::LoongClawConfig) -> String {

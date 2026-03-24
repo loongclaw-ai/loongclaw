@@ -261,4 +261,11 @@ mod tests {
 
         assert_eq!(field, ProviderCredentialEnvField::OAuthAccessToken);
     }
+
+    #[test]
+    fn render_provider_credential_source_value_redacts_invalid_env_names() {
+        let rendered = render_provider_credential_source_value(Some("sk-live-direct-secret-value"));
+
+        assert_eq!(rendered.as_deref(), Some("environment variable"));
+    }
 }
