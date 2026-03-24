@@ -34,8 +34,12 @@ fn write_sample_feishu_config(dir: &std::path::Path) -> std::path::PathBuf {
     let mut config = mvp::config::LoongClawConfig::default();
     config.feishu.enabled = true;
     config.feishu.account_id = Some("feishu_main".to_owned());
-    config.feishu.app_id = Some("cli_a1b2c3".to_owned());
-    config.feishu.app_secret = Some("app-secret".to_owned());
+    config.feishu.app_id = Some(loongclaw_contracts::SecretRef::Inline(
+        "cli_a1b2c3".to_owned(),
+    ));
+    config.feishu.app_secret = Some(loongclaw_contracts::SecretRef::Inline(
+        "app-secret".to_owned(),
+    ));
     config.feishu_integration.sqlite_path = sqlite_path.display().to_string();
 
     mvp::config::write(config_path.to_str(), &config, true).expect("write sample feishu config");
@@ -57,8 +61,12 @@ fn write_sample_feishu_config_with_account_alias(
         configured_account_id.to_owned(),
         mvp::config::FeishuAccountConfig {
             account_id: Some(storage_account_id.to_owned()),
-            app_id: Some("cli_alias".to_owned()),
-            app_secret: Some("app-secret-alias".to_owned()),
+            app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                "cli_alias".to_owned(),
+            )),
+            app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                "app-secret-alias".to_owned(),
+            )),
             ..mvp::config::FeishuAccountConfig::default()
         },
     )]);
@@ -85,8 +93,12 @@ fn write_sample_feishu_config_with_account_alias_and_base_url(
         configured_account_id.to_owned(),
         mvp::config::FeishuAccountConfig {
             account_id: Some(storage_account_id.to_owned()),
-            app_id: Some("cli_alias".to_owned()),
-            app_secret: Some("app-secret-alias".to_owned()),
+            app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                "cli_alias".to_owned(),
+            )),
+            app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                "app-secret-alias".to_owned(),
+            )),
             base_url: Some(base_url.to_owned()),
             ..mvp::config::FeishuAccountConfig::default()
         },
@@ -109,8 +121,12 @@ fn write_sample_feishu_config_with_base_url(
     let mut config = mvp::config::LoongClawConfig::default();
     config.feishu.enabled = true;
     config.feishu.account_id = Some("feishu_main".to_owned());
-    config.feishu.app_id = Some("cli_a1b2c3".to_owned());
-    config.feishu.app_secret = Some("app-secret".to_owned());
+    config.feishu.app_id = Some(loongclaw_contracts::SecretRef::Inline(
+        "cli_a1b2c3".to_owned(),
+    ));
+    config.feishu.app_secret = Some(loongclaw_contracts::SecretRef::Inline(
+        "app-secret".to_owned(),
+    ));
     config.feishu.base_url = Some(base_url.to_owned());
     config.feishu_integration.sqlite_path = sqlite_path.display().to_string();
 
@@ -1783,8 +1799,12 @@ async fn feishu_whoami_reports_ambiguous_runtime_account_id_for_multiple_configu
             "work".to_owned(),
             mvp::config::FeishuAccountConfig {
                 account_id: Some("feishu_shared".to_owned()),
-                app_id: Some("cli_work".to_owned()),
-                app_secret: Some("app-secret-work".to_owned()),
+                app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                    "cli_work".to_owned(),
+                )),
+                app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                    "app-secret-work".to_owned(),
+                )),
                 ..mvp::config::FeishuAccountConfig::default()
             },
         ),
@@ -1792,8 +1812,12 @@ async fn feishu_whoami_reports_ambiguous_runtime_account_id_for_multiple_configu
             "alerts".to_owned(),
             mvp::config::FeishuAccountConfig {
                 account_id: Some("feishu_shared".to_owned()),
-                app_id: Some("cli_alerts".to_owned()),
-                app_secret: Some("app-secret-alerts".to_owned()),
+                app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                    "cli_alerts".to_owned(),
+                )),
+                app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                    "app-secret-alerts".to_owned(),
+                )),
                 ..mvp::config::FeishuAccountConfig::default()
             },
         ),

@@ -730,7 +730,9 @@ async fn non_interactive_onboard_rejects_unresolved_preflight_warnings() {
     config.provider.base_url = format!("http://{addr}");
     config.provider.model = "openai/gpt-5.1-codex".to_owned();
     config.provider.wire_api = mvp::config::ProviderWireApi::Responses;
-    config.provider.api_key = Some("test-openai-key".to_owned());
+    config.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
+        "test-openai-key".to_owned(),
+    ));
     mvp::config::write(Some(output.to_string_lossy().as_ref()), &config, true)
         .expect("write existing config");
 
@@ -915,7 +917,9 @@ async fn non_interactive_onboard_allows_explicit_model_probe_warning() {
     let mut config = mvp::config::LoongClawConfig::default();
     config.provider.base_url = format!("http://{addr}");
     config.provider.model = "openai/gpt-5.1-codex".to_owned();
-    config.provider.api_key = Some("test-openai-key".to_owned());
+    config.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
+        "test-openai-key".to_owned(),
+    ));
     mvp::config::write(Some(output.to_string_lossy().as_ref()), &config, true)
         .expect("write existing config");
 
@@ -957,7 +961,9 @@ async fn non_interactive_onboard_applies_reviewed_default_when_probe_fails() {
     config.provider.kind = mvp::config::ProviderKind::Deepseek;
     config.provider.base_url = format!("http://{addr}");
     config.provider.model = "auto".to_owned();
-    config.provider.api_key = Some("test-deepseek-key".to_owned());
+    config.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
+        "test-deepseek-key".to_owned(),
+    ));
     mvp::config::write(Some(output.to_string_lossy().as_ref()), &config, true)
         .expect("write existing config");
 
@@ -1003,7 +1009,9 @@ async fn non_interactive_api_key_env_override_clears_existing_oauth_credentials(
 
     let mut existing = mvp::config::LoongClawConfig::default();
     existing.provider.model = "openai/gpt-5.1-codex".to_owned();
-    existing.provider.oauth_access_token = Some("${OPENAI_CODEX_OAUTH_TOKEN}".to_owned());
+    existing.provider.oauth_access_token = Some(loongclaw_contracts::SecretRef::Inline(
+        "${OPENAI_CODEX_OAUTH_TOKEN}".to_owned(),
+    ));
     mvp::config::write(Some(output.to_string_lossy().as_ref()), &existing, true)
         .expect("write existing config with oauth credential");
 
@@ -1057,7 +1065,9 @@ async fn non_interactive_api_key_env_override_clears_existing_inline_api_key() {
 
     let mut existing = mvp::config::LoongClawConfig::default();
     existing.provider.model = "openai/gpt-5.1-codex".to_owned();
-    existing.provider.api_key = Some("inline-secret".to_owned());
+    existing.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
+        "inline-secret".to_owned(),
+    ));
     mvp::config::write(Some(output.to_string_lossy().as_ref()), &existing, true)
         .expect("write existing config with inline api key");
 
@@ -1106,7 +1116,9 @@ async fn non_interactive_api_key_env_clear_keeps_existing_inline_credential() {
 
     let mut existing = mvp::config::LoongClawConfig::default();
     existing.provider.model = "openai/gpt-5.1-codex".to_owned();
-    existing.provider.api_key = Some("inline-secret".to_owned());
+    existing.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
+        "inline-secret".to_owned(),
+    ));
     existing.provider.api_key_env = Some("OPENAI_API_KEY".to_owned());
     mvp::config::write(Some(output.to_string_lossy().as_ref()), &existing, true)
         .expect("write existing config with inline credential and env binding");
@@ -1133,7 +1145,11 @@ async fn non_interactive_api_key_env_clear_keeps_existing_inline_credential() {
     let (_, config) = mvp::config::load(Some(output.to_string_lossy().as_ref()))
         .expect("load written onboarding config");
     assert_eq!(
-        config.provider.api_key.as_deref(),
+        config
+            .provider
+            .api_key
+            .as_ref()
+            .and_then(|value| value.inline_literal_value()),
         Some("inline-secret"),
         "explicit clear token should preserve the existing inline provider credential"
     );
@@ -1149,7 +1165,9 @@ async fn non_interactive_system_prompt_clear_restores_builtin_prompt() {
 
     let mut existing = mvp::config::LoongClawConfig::default();
     existing.provider.model = "openai/gpt-5.1-codex".to_owned();
-    existing.provider.api_key = Some("inline-secret".to_owned());
+    existing.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
+        "inline-secret".to_owned(),
+    ));
     existing.cli.system_prompt = "custom review prompt".to_owned();
     mvp::config::write(Some(output.to_string_lossy().as_ref()), &existing, true)
         .expect("write existing config with custom system prompt");
@@ -1182,7 +1200,9 @@ async fn interactive_onboard_clear_token_keeps_inline_provider_credential() {
     let output_path = unique_temp_path("interactive-clear-inline-credential.toml");
     let mut existing = mvp::config::LoongClawConfig::default();
     existing.provider.model = "gpt-4.1".to_owned();
-    existing.provider.api_key = Some("inline-secret".to_owned());
+    existing.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
+        "inline-secret".to_owned(),
+    ));
     existing.provider.api_key_env = Some("OPENAI_API_KEY".to_owned());
     mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
 
@@ -1238,7 +1258,11 @@ async fn interactive_onboard_clear_token_keeps_inline_provider_credential() {
     let (_, config) =
         mvp::config::load(output_path.to_str()).expect("load interactive onboarding config");
     assert_eq!(
-        config.provider.api_key.as_deref(),
+        config
+            .provider
+            .api_key
+            .as_ref()
+            .and_then(|value| value.inline_literal_value()),
         Some("inline-secret"),
         "explicit :clear should keep the existing inline provider credential in the saved config: {transcript:#?}"
     );
@@ -1251,7 +1275,9 @@ async fn interactive_onboard_clear_token_restores_builtin_system_prompt() {
     let output_path = unique_temp_path("interactive-clear-system-prompt.toml");
     let mut existing = mvp::config::LoongClawConfig::default();
     existing.provider.model = "gpt-4.1".to_owned();
-    existing.provider.api_key = Some("inline-secret".to_owned());
+    existing.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
+        "inline-secret".to_owned(),
+    ));
     existing.cli.system_prompt = "custom review prompt".to_owned();
     mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
 
@@ -1515,7 +1541,9 @@ async fn onboard_restores_original_config_when_memory_bootstrap_fails_after_writ
     let mut config = mvp::config::LoongClawConfig::default();
     config.provider.base_url = format!("http://{addr}");
     config.provider.model = "openai/gpt-5.1-codex".to_owned();
-    config.provider.api_key = Some("test-openai-key".to_owned());
+    config.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
+        "test-openai-key".to_owned(),
+    ));
     config.memory.sqlite_path = invalid_sqlite_dir.display().to_string();
     mvp::config::write(Some(output.to_string_lossy().as_ref()), &config, true)
         .expect("write existing config");
@@ -1554,7 +1582,9 @@ async fn onboard_restores_original_config_when_memory_bootstrap_fails_after_writ
 #[test]
 fn provider_credential_check_accepts_inline_api_key() {
     let mut config = mvp::config::LoongClawConfig::default();
-    config.provider.api_key = Some("inline-secret".to_owned());
+    config.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
+        "inline-secret".to_owned(),
+    ));
     config.provider.api_key_env = None;
 
     let check = loongclaw_daemon::onboard_cli::provider_credential_check(&config);
@@ -1579,7 +1609,9 @@ fn provider_credential_check_mentions_active_profile_id_when_saved_profiles_exis
             provider: mvp::config::ProviderConfig {
                 kind: mvp::config::ProviderKind::VolcengineCoding,
                 model: "ark-code-latest".to_owned(),
-                api_key: Some("inline-secret".to_owned()),
+                api_key: Some(loongclaw_contracts::SecretRef::Inline(
+                    "inline-secret".to_owned(),
+                )),
                 base_url: "https://ark.cn-beijing.volces.com/api/coding/v3".to_owned(),
                 wire_api: mvp::config::ProviderWireApi::ChatCompletions,
                 chat_completions_path: "/chat/completions".to_owned(),
@@ -1610,7 +1642,9 @@ fn provider_credential_check_mentions_active_profile_id_when_saved_profiles_exis
 #[test]
 fn preferred_api_key_env_default_stays_blank_for_inline_credentials() {
     let mut config = mvp::config::LoongClawConfig::default();
-    config.provider.api_key = Some("inline-secret".to_owned());
+    config.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
+        "inline-secret".to_owned(),
+    ));
     config.provider.api_key_env = None;
 
     let value = loongclaw_daemon::onboard_cli::preferred_api_key_env_default(&config);
@@ -1742,14 +1776,24 @@ fn onboard_risk_screen_uses_brand_header_and_continue_cancel_options() {
 #[test]
 fn import_surfaces_include_ready_provider_and_channels() {
     let mut config = mvp::config::LoongClawConfig::default();
-    config.provider.api_key = Some("provider-secret".to_owned());
+    config.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
+        "provider-secret".to_owned(),
+    ));
     config.telegram.enabled = true;
-    config.telegram.bot_token = Some("123456:test-token".to_owned());
+    config.telegram.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+        "123456:test-token".to_owned(),
+    ));
     config.telegram.allowed_chat_ids = vec![42];
     config.feishu.enabled = true;
-    config.feishu.app_id = Some("cli_a1b2c3".to_owned());
-    config.feishu.app_secret = Some("feishu-secret".to_owned());
-    config.feishu.verification_token = Some("verify-token".to_owned());
+    config.feishu.app_id = Some(loongclaw_contracts::SecretRef::Inline(
+        "cli_a1b2c3".to_owned(),
+    ));
+    config.feishu.app_secret = Some(loongclaw_contracts::SecretRef::Inline(
+        "feishu-secret".to_owned(),
+    ));
+    config.feishu.verification_token = Some(loongclaw_contracts::SecretRef::Inline(
+        "verify-token".to_owned(),
+    ));
 
     let surfaces = loongclaw_daemon::onboard_cli::collect_import_surfaces(&config);
     assert!(
@@ -1795,11 +1839,19 @@ fn import_surfaces_mark_missing_channel_secret_for_review() {
 fn channel_preflight_checks_report_enabled_channels() {
     let mut config = mvp::config::LoongClawConfig::default();
     config.telegram.enabled = true;
-    config.telegram.bot_token = Some("123456:test-token".to_owned());
+    config.telegram.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+        "123456:test-token".to_owned(),
+    ));
     config.feishu.enabled = true;
-    config.feishu.app_id = Some("cli_a1b2c3".to_owned());
-    config.feishu.app_secret = Some("feishu-secret".to_owned());
-    config.feishu.verification_token = Some("verify-token".to_owned());
+    config.feishu.app_id = Some(loongclaw_contracts::SecretRef::Inline(
+        "cli_a1b2c3".to_owned(),
+    ));
+    config.feishu.app_secret = Some(loongclaw_contracts::SecretRef::Inline(
+        "feishu-secret".to_owned(),
+    ));
+    config.feishu.verification_token = Some(loongclaw_contracts::SecretRef::Inline(
+        "verify-token".to_owned(),
+    ));
 
     let checks = loongclaw_daemon::onboard_cli::collect_channel_preflight_checks(&config);
     assert!(
@@ -2059,7 +2111,9 @@ fn collect_import_candidates_prepend_recommended_plan_before_detected_sources() 
     let codex_path = unique_temp_path("codex-config.toml");
 
     let mut existing = mvp::config::LoongClawConfig::default();
-    existing.provider.api_key = Some("provider-secret".to_owned());
+    existing.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
+        "provider-secret".to_owned(),
+    ));
     let output_str = output_path
         .to_str()
         .expect("temp output path should be valid utf-8");
@@ -5143,9 +5197,13 @@ async fn onboard_current_setup_shortcut_flow_skips_detailed_edit_screens() {
     let output_path = unique_temp_path("current-shortcut-config.toml");
     let mut existing = mvp::config::LoongClawConfig::default();
     existing.provider.model = "gpt-4.1".to_owned();
-    existing.provider.api_key = Some("inline-secret".to_owned());
+    existing.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
+        "inline-secret".to_owned(),
+    ));
     existing.telegram.enabled = true;
-    existing.telegram.bot_token = Some("123456:test-token".to_owned());
+    existing.telegram.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+        "123456:test-token".to_owned(),
+    ));
     mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
 
     let transcript = run_scripted_onboard_flow(
@@ -5450,9 +5508,13 @@ async fn onboard_current_setup_adjustments_preserve_unchanged_domain_actions_in_
     let output_path = unique_temp_path("current-adjusted-review-config.toml");
     let mut existing = mvp::config::LoongClawConfig::default();
     existing.provider.model = "gpt-4.1".to_owned();
-    existing.provider.api_key = Some("inline-secret".to_owned());
+    existing.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
+        "inline-secret".to_owned(),
+    ));
     existing.telegram.enabled = true;
-    existing.telegram.bot_token = Some("123456:test-token".to_owned());
+    existing.telegram.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+        "123456:test-token".to_owned(),
+    ));
     mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
 
     let transcript = run_scripted_onboard_flow(
@@ -5551,7 +5613,9 @@ async fn onboard_current_setup_adjustments_capture_personality_and_memory_profil
     let output_path = unique_temp_path("current-adjusted-personality-memory-config.toml");
     let mut existing = mvp::config::LoongClawConfig::default();
     existing.provider.model = "gpt-4.1".to_owned();
-    existing.provider.api_key = Some("inline-secret".to_owned());
+    existing.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
+        "inline-secret".to_owned(),
+    ));
     mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
 
     let transcript = run_scripted_onboard_flow(
@@ -5750,7 +5814,9 @@ fn onboard_review_lines_include_starting_point_and_domain_preview() {
     config.provider.api_key_env = Some("OPENAI_API_KEY".to_owned());
     config.provider.model = "openai/gpt-5.1-codex".to_owned();
     config.telegram.enabled = true;
-    config.telegram.bot_token = Some("123456:test-token".to_owned());
+    config.telegram.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+        "123456:test-token".to_owned(),
+    ));
 
     let lines = loongclaw_daemon::onboard_cli::render_onboard_review_lines_with_guidance(
         &config,
@@ -6017,7 +6083,9 @@ fn onboard_review_lines_compact_on_narrow_width() {
     let mut config = mvp::config::LoongClawConfig::default();
     config.provider.api_key_env = Some("OPENAI_API_KEY".to_owned());
     config.telegram.enabled = true;
-    config.telegram.bot_token = Some("123456:test-token".to_owned());
+    config.telegram.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+        "123456:test-token".to_owned(),
+    ));
 
     let lines = loongclaw_daemon::onboard_cli::render_onboard_review_lines_with_guidance(
         &config,

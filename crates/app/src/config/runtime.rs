@@ -19,7 +19,7 @@ use super::{
     shared::{
         ConfigValidationIssue, ConfigValidationLocale, ConfigValidationSeverity,
         DEFAULT_CONFIG_FILE, default_loongclaw_home as shared_default_loongclaw_home, expand_path,
-        format_config_validation_issues, parse_explicit_env_reference,
+        format_config_validation_issues,
     },
     tools::{
         DEFAULT_WEB_SEARCH_PROVIDER, ExternalSkillsConfig, ToolConfig,
@@ -27,6 +27,7 @@ use super::{
         WEB_SEARCH_TAVILY_API_KEY_ENV,
     },
 };
+use crate::secrets::canonicalize_env_secret_reference;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConfigValidationDiagnostic {
@@ -981,31 +982,51 @@ fn canonicalize_provider_profile_for_encoding(profile: &mut ProviderProfileConfi
     );
 }
 
+fn canonicalize_channel_configs_for_encoding(config: &mut LoongClawConfig) {
+    canonicalize_telegram_channel_for_encoding(&mut config.telegram);
+    canonicalize_feishu_channel_for_encoding(&mut config.feishu);
+    canonicalize_matrix_channel_for_encoding(&mut config.matrix);
+}
+
+fn canonicalize_telegram_channel_for_encoding(config: &mut TelegramChannelConfig) {
+    canonicalize_env_secret_reference(&mut config.bot_token, &mut config.bot_token_env);
+    for account in config.accounts.values_mut() {
+        canonicalize_env_secret_reference(&mut account.bot_token, &mut account.bot_token_env);
+    }
+}
+
+fn canonicalize_feishu_channel_for_encoding(config: &mut FeishuChannelConfig) {
+    canonicalize_env_secret_reference(&mut config.app_id, &mut config.app_id_env);
+    canonicalize_env_secret_reference(&mut config.app_secret, &mut config.app_secret_env);
+    canonicalize_env_secret_reference(
+        &mut config.verification_token,
+        &mut config.verification_token_env,
+    );
+    canonicalize_env_secret_reference(&mut config.encrypt_key, &mut config.encrypt_key_env);
+
+    for account in config.accounts.values_mut() {
+        canonicalize_env_secret_reference(&mut account.app_id, &mut account.app_id_env);
+        canonicalize_env_secret_reference(&mut account.app_secret, &mut account.app_secret_env);
+        canonicalize_env_secret_reference(
+            &mut account.verification_token,
+            &mut account.verification_token_env,
+        );
+        canonicalize_env_secret_reference(&mut account.encrypt_key, &mut account.encrypt_key_env);
+    }
+}
+
+fn canonicalize_matrix_channel_for_encoding(config: &mut MatrixChannelConfig) {
+    canonicalize_env_secret_reference(&mut config.access_token, &mut config.access_token_env);
+    for account in config.accounts.values_mut() {
+        canonicalize_env_secret_reference(&mut account.access_token, &mut account.access_token_env);
+    }
+}
+
 fn canonicalize_provider_secret_env_reference(
-    inline_secret: &mut Option<String>,
+    inline_secret: &mut Option<loongclaw_contracts::SecretRef>,
     env_name: &mut Option<String>,
 ) {
-    let Some(explicit_env_name) = inline_secret
-        .as_deref()
-        .and_then(parse_explicit_env_reference)
-        .map(str::to_owned)
-    else {
-        return;
-    };
-    let configured_env_name = env_name.as_deref();
-    let configured_env_name = configured_env_name.map(str::trim);
-    let configured_env_name = configured_env_name.filter(|value| !value.is_empty());
-    match configured_env_name {
-        None => {
-            *env_name = Some(explicit_env_name);
-            *inline_secret = None;
-        }
-        Some(configured) if configured == explicit_env_name => {
-            *env_name = Some(explicit_env_name);
-            *inline_secret = None;
-        }
-        Some(_) => {}
-    }
+    canonicalize_env_secret_reference(inline_secret, env_name);
 }
 
 fn normalize_acp_agent_id(raw: &str) -> Option<String> {
@@ -1446,6 +1467,7 @@ impl LoongClawConfig {
             .last_provider
             .as_deref()
             .and_then(normalize_provider_profile_id);
+        canonicalize_channel_configs_for_encoding(&mut cloned);
         cloned
     }
 }
@@ -1725,6 +1747,7 @@ fn template_web_search_usage_comment() -> String {
 mod tests {
     use super::*;
     use crate::config::ProviderKind;
+    use loongclaw_contracts::SecretRef;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_config_path(prefix: &str) -> PathBuf {
@@ -2512,7 +2535,7 @@ model = "gpt-5"
         ];
 
         for inline_reference in inline_references {
-            config.provider.api_key = Some(inline_reference.to_owned());
+            config.provider.api_key = Some(SecretRef::Inline(inline_reference.to_owned()));
 
             write(Some(&path_string), &config, true).expect("config write should pass");
 
@@ -2536,7 +2559,7 @@ model = "gpt-5"
         let path = unique_config_path("loongclaw-config-runtime-trimmed-provider-env");
         let path_string = path.display().to_string();
         let mut config = LoongClawConfig::default();
-        config.provider.api_key = Some("${TEAM_OPENAI_KEY}".to_owned());
+        config.provider.api_key = Some(SecretRef::Inline("${TEAM_OPENAI_KEY}".to_owned()));
         config.provider.api_key_env = Some(" TEAM_OPENAI_KEY ".to_owned());
 
         write(Some(&path_string), &config, true).expect("config write should pass");

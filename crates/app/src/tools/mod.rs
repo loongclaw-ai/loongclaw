@@ -3652,8 +3652,12 @@ mod tests {
         config.feishu = Some(runtime_config::FeishuToolRuntimeConfig {
             channel: crate::config::FeishuChannelConfig {
                 enabled: true,
-                app_id: Some("cli_a1b2c3".to_owned()),
-                app_secret: Some("app-secret".to_owned()),
+                app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                    "cli_a1b2c3".to_owned(),
+                )),
+                app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                    "app-secret".to_owned(),
+                )),
                 ..crate::config::FeishuChannelConfig::default()
             },
             integration: crate::config::FeishuIntegrationConfig::default(),
@@ -4035,8 +4039,12 @@ mod tests {
         config.feishu = Some(runtime_config::FeishuToolRuntimeConfig {
             channel: crate::config::FeishuChannelConfig {
                 enabled: true,
-                app_id: Some("cli_a1b2c3".to_owned()),
-                app_secret: Some("app-secret".to_owned()),
+                app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                    "cli_a1b2c3".to_owned(),
+                )),
+                app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                    "app-secret".to_owned(),
+                )),
                 ..crate::config::FeishuChannelConfig::default()
             },
             integration: crate::config::FeishuIntegrationConfig::default(),
@@ -4067,8 +4075,12 @@ mod tests {
         config.feishu = Some(runtime_config::FeishuToolRuntimeConfig {
             channel: crate::config::FeishuChannelConfig {
                 enabled: true,
-                app_id: Some("cli_a1b2c3".to_owned()),
-                app_secret: Some("app-secret".to_owned()),
+                app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                    "cli_a1b2c3".to_owned(),
+                )),
+                app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                    "app-secret".to_owned(),
+                )),
                 ..crate::config::FeishuChannelConfig::default()
             },
             integration: crate::config::FeishuIntegrationConfig::default(),
@@ -4681,8 +4693,12 @@ mod tests {
                 channel: crate::config::FeishuChannelConfig {
                     enabled: true,
                     account_id: Some("feishu_main".to_owned()),
-                    app_id: Some("cli_a1b2c3".to_owned()),
-                    app_secret: Some("app-secret".to_owned()),
+                    app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                        "cli_a1b2c3".to_owned(),
+                    )),
+                    app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                        "app-secret".to_owned(),
+                    )),
                     base_url: Some(base_url),
                     ..crate::config::FeishuChannelConfig::default()
                 },
@@ -4820,8 +4836,12 @@ mod tests {
                 channel: crate::config::FeishuChannelConfig {
                     enabled: true,
                     account_id: Some("feishu_main".to_owned()),
-                    app_id: Some("cli_a1b2c3".to_owned()),
-                    app_secret: Some("app-secret".to_owned()),
+                    app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                        "cli_a1b2c3".to_owned(),
+                    )),
+                    app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                        "app-secret".to_owned(),
+                    )),
                     base_url: Some(base_url),
                     ..crate::config::FeishuChannelConfig::default()
                 },
@@ -6837,8 +6857,12 @@ mod tests {
                             "work".to_owned(),
                             crate::config::FeishuAccountConfig {
                                 account_id: Some("feishu_shared".to_owned()),
-                                app_id: Some("cli_work".to_owned()),
-                                app_secret: Some("app-secret-work".to_owned()),
+                                app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "cli_work".to_owned(),
+                                )),
+                                app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "app-secret-work".to_owned(),
+                                )),
                                 base_url: Some(base_url),
                                 ..crate::config::FeishuAccountConfig::default()
                             },
@@ -6847,8 +6871,12 @@ mod tests {
                             "alerts".to_owned(),
                             crate::config::FeishuAccountConfig {
                                 account_id: Some("feishu_shared".to_owned()),
-                                app_id: Some("cli_alerts".to_owned()),
-                                app_secret: Some("app-secret-alerts".to_owned()),
+                                app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "cli_alerts".to_owned(),
+                                )),
+                                app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "app-secret-alerts".to_owned(),
+                                )),
                                 base_url: Some("http://127.0.0.1:9".to_owned()),
                                 ..crate::config::FeishuAccountConfig::default()
                             },
@@ -7083,8 +7111,12 @@ mod tests {
                             "work".to_owned(),
                             crate::config::FeishuAccountConfig {
                                 account_id: Some("feishu_shared".to_owned()),
-                                app_id: Some("cli_work".to_owned()),
-                                app_secret: Some("app-secret-work".to_owned()),
+                                app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "cli_work".to_owned(),
+                                )),
+                                app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "app-secret-work".to_owned(),
+                                )),
                                 base_url: Some(base_url),
                                 ..crate::config::FeishuAccountConfig::default()
                             },
@@ -7093,8 +7125,12 @@ mod tests {
                             "alerts".to_owned(),
                             crate::config::FeishuAccountConfig {
                                 account_id: Some("feishu_shared".to_owned()),
-                                app_id: Some("cli_alerts".to_owned()),
-                                app_secret: Some("app-secret-alerts".to_owned()),
+                                app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "cli_alerts".to_owned(),
+                                )),
+                                app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "app-secret-alerts".to_owned(),
+                                )),
                                 base_url: Some("http://127.0.0.1:9".to_owned()),
                                 ..crate::config::FeishuAccountConfig::default()
                             },
@@ -7369,8 +7405,12 @@ mod tests {
                             "work".to_owned(),
                             crate::config::FeishuAccountConfig {
                                 account_id: Some("feishu_shared".to_owned()),
-                                app_id: Some("cli_work".to_owned()),
-                                app_secret: Some("app-secret-work".to_owned()),
+                                app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "cli_work".to_owned(),
+                                )),
+                                app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "app-secret-work".to_owned(),
+                                )),
                                 base_url: Some(base_url),
                                 ..crate::config::FeishuAccountConfig::default()
                             },
@@ -7379,8 +7419,12 @@ mod tests {
                             "alerts".to_owned(),
                             crate::config::FeishuAccountConfig {
                                 account_id: Some("feishu_shared".to_owned()),
-                                app_id: Some("cli_alerts".to_owned()),
-                                app_secret: Some("app-secret-alerts".to_owned()),
+                                app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "cli_alerts".to_owned(),
+                                )),
+                                app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "app-secret-alerts".to_owned(),
+                                )),
                                 base_url: Some("http://127.0.0.1:9".to_owned()),
                                 ..crate::config::FeishuAccountConfig::default()
                             },
@@ -7545,8 +7589,12 @@ mod tests {
                         "work".to_owned(),
                         crate::config::FeishuAccountConfig {
                             account_id: Some("feishu_shared".to_owned()),
-                            app_id: Some("cli_work".to_owned()),
-                            app_secret: Some("app-secret-work".to_owned()),
+                            app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                                "cli_work".to_owned(),
+                            )),
+                            app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                                "app-secret-work".to_owned(),
+                            )),
                             base_url: Some(base_url),
                             ..crate::config::FeishuAccountConfig::default()
                         },
@@ -7711,8 +7759,12 @@ mod tests {
                         "work".to_owned(),
                         crate::config::FeishuAccountConfig {
                             account_id: Some("feishu_shared".to_owned()),
-                            app_id: Some("cli_work".to_owned()),
-                            app_secret: Some("app-secret-work".to_owned()),
+                            app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                                "cli_work".to_owned(),
+                            )),
+                            app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                                "app-secret-work".to_owned(),
+                            )),
                             base_url: Some(base_url),
                             ..crate::config::FeishuAccountConfig::default()
                         },
@@ -7874,8 +7926,12 @@ mod tests {
                         "work".to_owned(),
                         crate::config::FeishuAccountConfig {
                             account_id: Some("feishu_shared".to_owned()),
-                            app_id: Some("cli_work".to_owned()),
-                            app_secret: Some("app-secret-work".to_owned()),
+                            app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                                "cli_work".to_owned(),
+                            )),
+                            app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                                "app-secret-work".to_owned(),
+                            )),
                             base_url: Some(base_url),
                             ..crate::config::FeishuAccountConfig::default()
                         },
@@ -7980,8 +8036,12 @@ mod tests {
                         "work".to_owned(),
                         crate::config::FeishuAccountConfig {
                             account_id: Some("feishu_shared".to_owned()),
-                            app_id: Some("cli_work".to_owned()),
-                            app_secret: Some("app-secret-work".to_owned()),
+                            app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                                "cli_work".to_owned(),
+                            )),
+                            app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                                "app-secret-work".to_owned(),
+                            )),
                             base_url: Some("http://127.0.0.1:9".to_owned()),
                             ..crate::config::FeishuAccountConfig::default()
                         },
@@ -8076,8 +8136,12 @@ mod tests {
                         "work".to_owned(),
                         crate::config::FeishuAccountConfig {
                             account_id: Some("feishu_shared".to_owned()),
-                            app_id: Some("cli_work".to_owned()),
-                            app_secret: Some("app-secret-work".to_owned()),
+                            app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                                "cli_work".to_owned(),
+                            )),
+                            app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                                "app-secret-work".to_owned(),
+                            )),
                             base_url: Some("http://127.0.0.1:9".to_owned()),
                             ..crate::config::FeishuAccountConfig::default()
                         },
@@ -8169,8 +8233,12 @@ mod tests {
                         "work".to_owned(),
                         crate::config::FeishuAccountConfig {
                             account_id: Some("feishu_shared".to_owned()),
-                            app_id: Some("cli_work".to_owned()),
-                            app_secret: Some("app-secret-work".to_owned()),
+                            app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                                "cli_work".to_owned(),
+                            )),
+                            app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                                "app-secret-work".to_owned(),
+                            )),
                             base_url: Some("http://127.0.0.1:9".to_owned()),
                             ..crate::config::FeishuAccountConfig::default()
                         },
@@ -8258,8 +8326,12 @@ mod tests {
                         "work".to_owned(),
                         crate::config::FeishuAccountConfig {
                             account_id: Some("feishu_shared".to_owned()),
-                            app_id: Some("cli_work".to_owned()),
-                            app_secret: Some("app-secret-work".to_owned()),
+                            app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                                "cli_work".to_owned(),
+                            )),
+                            app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                                "app-secret-work".to_owned(),
+                            )),
                             base_url: Some("http://127.0.0.1:9".to_owned()),
                             ..crate::config::FeishuAccountConfig::default()
                         },
@@ -8351,8 +8423,12 @@ mod tests {
                         "work".to_owned(),
                         crate::config::FeishuAccountConfig {
                             account_id: Some("feishu_shared".to_owned()),
-                            app_id: Some("cli_work".to_owned()),
-                            app_secret: Some("app-secret-work".to_owned()),
+                            app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                                "cli_work".to_owned(),
+                            )),
+                            app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                                "app-secret-work".to_owned(),
+                            )),
                             base_url: Some("http://127.0.0.1:9".to_owned()),
                             ..crate::config::FeishuAccountConfig::default()
                         },
@@ -8633,8 +8709,12 @@ mod tests {
                         "work".to_owned(),
                         crate::config::FeishuAccountConfig {
                             account_id: Some("feishu_secondary".to_owned()),
-                            app_id: Some("cli_secondary".to_owned()),
-                            app_secret: Some("app-secret-secondary".to_owned()),
+                            app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                                "cli_secondary".to_owned(),
+                            )),
+                            app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                                "app-secret-secondary".to_owned(),
+                            )),
                             base_url: Some(base_url),
                             ..crate::config::FeishuAccountConfig::default()
                         },
@@ -8716,8 +8796,12 @@ mod tests {
                         "work".to_owned(),
                         crate::config::FeishuAccountConfig {
                             account_id: Some("feishu_secondary".to_owned()),
-                            app_id: Some("cli_secondary".to_owned()),
-                            app_secret: Some("app-secret-secondary".to_owned()),
+                            app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                                "cli_secondary".to_owned(),
+                            )),
+                            app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                                "app-secret-secondary".to_owned(),
+                            )),
                             base_url: Some("http://127.0.0.1:9".to_owned()),
                             ..crate::config::FeishuAccountConfig::default()
                         },
@@ -9033,8 +9117,12 @@ mod tests {
                             "work".to_owned(),
                             crate::config::FeishuAccountConfig {
                                 account_id: Some("feishu_shared".to_owned()),
-                                app_id: Some("cli_work".to_owned()),
-                                app_secret: Some("app-secret-work".to_owned()),
+                                app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "cli_work".to_owned(),
+                                )),
+                                app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "app-secret-work".to_owned(),
+                                )),
                                 base_url: Some(base_url),
                                 ..crate::config::FeishuAccountConfig::default()
                             },
@@ -9043,8 +9131,12 @@ mod tests {
                             "alerts".to_owned(),
                             crate::config::FeishuAccountConfig {
                                 account_id: Some("feishu_shared".to_owned()),
-                                app_id: Some("cli_alerts".to_owned()),
-                                app_secret: Some("app-secret-alerts".to_owned()),
+                                app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "cli_alerts".to_owned(),
+                                )),
+                                app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "app-secret-alerts".to_owned(),
+                                )),
                                 base_url: Some("http://127.0.0.1:9".to_owned()),
                                 ..crate::config::FeishuAccountConfig::default()
                             },
@@ -9274,15 +9366,23 @@ mod tests {
                 channel: crate::config::FeishuChannelConfig {
                     enabled: true,
                     account_id: Some("feishu_primary".to_owned()),
-                    app_id: Some("cli_primary".to_owned()),
-                    app_secret: Some("app-secret-primary".to_owned()),
+                    app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                        "cli_primary".to_owned(),
+                    )),
+                    app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                        "app-secret-primary".to_owned(),
+                    )),
                     receive_id_type: "open_id".to_owned(),
                     accounts: BTreeMap::from([(
                         "work".to_owned(),
                         crate::config::FeishuAccountConfig {
                             account_id: Some("feishu_secondary".to_owned()),
-                            app_id: Some("cli_secondary".to_owned()),
-                            app_secret: Some("app-secret-secondary".to_owned()),
+                            app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                                "cli_secondary".to_owned(),
+                            )),
+                            app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                                "app-secret-secondary".to_owned(),
+                            )),
                             base_url: Some(base_url),
                             receive_id_type: Some("chat_id".to_owned()),
                             ..crate::config::FeishuAccountConfig::default()
@@ -9423,8 +9523,12 @@ mod tests {
                             "work".to_owned(),
                             crate::config::FeishuAccountConfig {
                                 account_id: Some("feishu_shared".to_owned()),
-                                app_id: Some("cli_work".to_owned()),
-                                app_secret: Some("app-secret-work".to_owned()),
+                                app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "cli_work".to_owned(),
+                                )),
+                                app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "app-secret-work".to_owned(),
+                                )),
                                 base_url: Some(base_url),
                                 receive_id_type: Some("chat_id".to_owned()),
                                 ..crate::config::FeishuAccountConfig::default()
@@ -9434,8 +9538,12 @@ mod tests {
                             "alerts".to_owned(),
                             crate::config::FeishuAccountConfig {
                                 account_id: Some("feishu_shared".to_owned()),
-                                app_id: Some("cli_alerts".to_owned()),
-                                app_secret: Some("app-secret-alerts".to_owned()),
+                                app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "cli_alerts".to_owned(),
+                                )),
+                                app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "app-secret-alerts".to_owned(),
+                                )),
                                 base_url: Some("http://127.0.0.1:9".to_owned()),
                                 receive_id_type: Some("open_id".to_owned()),
                                 ..crate::config::FeishuAccountConfig::default()
@@ -11166,8 +11274,12 @@ mod tests {
                             "work".to_owned(),
                             crate::config::FeishuAccountConfig {
                                 account_id: Some("feishu_shared".to_owned()),
-                                app_id: Some("cli_work".to_owned()),
-                                app_secret: Some("app-secret-work".to_owned()),
+                                app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "cli_work".to_owned(),
+                                )),
+                                app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "app-secret-work".to_owned(),
+                                )),
                                 base_url: Some(base_url),
                                 ..crate::config::FeishuAccountConfig::default()
                             },
@@ -11176,8 +11288,12 @@ mod tests {
                             "alerts".to_owned(),
                             crate::config::FeishuAccountConfig {
                                 account_id: Some("feishu_shared".to_owned()),
-                                app_id: Some("cli_alerts".to_owned()),
-                                app_secret: Some("app-secret-alerts".to_owned()),
+                                app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "cli_alerts".to_owned(),
+                                )),
+                                app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "app-secret-alerts".to_owned(),
+                                )),
                                 base_url: Some("http://127.0.0.1:9".to_owned()),
                                 ..crate::config::FeishuAccountConfig::default()
                             },
@@ -12107,8 +12223,12 @@ mod tests {
                             "work".to_owned(),
                             crate::config::FeishuAccountConfig {
                                 account_id: Some("feishu_shared".to_owned()),
-                                app_id: Some("cli_work".to_owned()),
-                                app_secret: Some("app-secret-work".to_owned()),
+                                app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "cli_work".to_owned(),
+                                )),
+                                app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "app-secret-work".to_owned(),
+                                )),
                                 base_url: Some("http://127.0.0.1:9".to_owned()),
                                 ..crate::config::FeishuAccountConfig::default()
                             },
@@ -12117,8 +12237,12 @@ mod tests {
                             "alerts".to_owned(),
                             crate::config::FeishuAccountConfig {
                                 account_id: Some("feishu_shared".to_owned()),
-                                app_id: Some("cli_alerts".to_owned()),
-                                app_secret: Some("app-secret-alerts".to_owned()),
+                                app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "cli_alerts".to_owned(),
+                                )),
+                                app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                                    "app-secret-alerts".to_owned(),
+                                )),
                                 base_url: Some("http://127.0.0.1:9".to_owned()),
                                 ..crate::config::FeishuAccountConfig::default()
                             },

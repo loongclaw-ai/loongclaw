@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use kernel::probe_jsonl_audit_journal_runtime_ready;
 use loongclaw_app as mvp;
+use loongclaw_contracts::SecretRef;
 use loongclaw_spec::CliResult;
 use serde_json::json;
 
@@ -920,17 +921,17 @@ fn feishu_integration_requested(config: &mvp::config::FeishuChannelConfig) -> bo
             .as_deref()
             .map(str::trim)
             .is_some_and(|value| !value.is_empty())
-        || config
-            .app_id
-            .as_deref()
-            .map(str::trim)
-            .is_some_and(|value| !value.is_empty())
-        || config
-            .app_secret
-            .as_deref()
-            .map(str::trim)
-            .is_some_and(|value| !value.is_empty())
+        || secret_ref_is_configured(config.app_id.as_ref())
+        || secret_ref_is_configured(config.app_secret.as_ref())
         || !config.accounts.is_empty()
+}
+
+fn secret_ref_is_configured(secret_ref: Option<&SecretRef>) -> bool {
+    let Some(secret_ref) = secret_ref else {
+        return false;
+    };
+
+    secret_ref.is_configured()
 }
 
 fn scoped_feishu_check_name(base_name: &str, configured_account_id: &str, scoped: bool) -> String {
@@ -1992,13 +1993,13 @@ mod tests {
     fn channel_doctor_checks_report_enabled_channels_from_registry() {
         let mut config = mvp::config::LoongClawConfig::default();
         config.telegram.enabled = true;
-        config.telegram.bot_token = Some("123456:test-token".to_owned());
+        config.telegram.bot_token = Some(SecretRef::Inline("123456:test-token".to_owned()));
         config.telegram.allowed_chat_ids = vec![123_i64];
         config.feishu.enabled = true;
-        config.feishu.app_id = Some("cli_a1b2c3".to_owned());
-        config.feishu.app_secret = Some("feishu-secret".to_owned());
+        config.feishu.app_id = Some(SecretRef::Inline("cli_a1b2c3".to_owned()));
+        config.feishu.app_secret = Some(SecretRef::Inline("feishu-secret".to_owned()));
         config.matrix.enabled = true;
-        config.matrix.access_token = Some("matrix-token".to_owned());
+        config.matrix.access_token = Some(SecretRef::Inline("matrix-token".to_owned()));
         config.matrix.base_url = Some("https://matrix.example.org".to_owned());
         config.matrix.allowed_room_ids = vec!["!ops:example.org".to_owned()];
         config.matrix.user_id = Some("@ops-bot:example.org".to_owned());
@@ -2576,8 +2577,8 @@ mod tests {
     fn check_feishu_integration_warns_when_user_grants_are_missing() {
         let mut config = mvp::config::LoongClawConfig::default();
         config.feishu.enabled = true;
-        config.feishu.app_id = Some("cli_a1b2c3".to_owned());
-        config.feishu.app_secret = Some("app-secret".to_owned());
+        config.feishu.app_id = Some(SecretRef::Inline("cli_a1b2c3".to_owned()));
+        config.feishu.app_secret = Some(SecretRef::Inline("app-secret".to_owned()));
         config.feishu_integration.sqlite_path = unique_temp_feishu_db("missing-grant");
         let mut fixes = Vec::new();
 
@@ -2604,8 +2605,8 @@ mod tests {
     fn check_feishu_integration_passes_when_ready_grant_exists() {
         let mut config = mvp::config::LoongClawConfig::default();
         config.feishu.enabled = true;
-        config.feishu.app_id = Some("cli_a1b2c3".to_owned());
-        config.feishu.app_secret = Some("app-secret".to_owned());
+        config.feishu.app_id = Some(SecretRef::Inline("cli_a1b2c3".to_owned()));
+        config.feishu.app_secret = Some(SecretRef::Inline("app-secret".to_owned()));
         config.feishu_integration.sqlite_path = unique_temp_feishu_db("ready-grant");
         let resolved = config
             .feishu

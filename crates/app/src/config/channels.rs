@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use loongclaw_contracts::SecretRef;
 use serde::{Deserialize, Serialize};
 
 use crate::CliResult;
@@ -11,8 +12,9 @@ use crate::prompt::{
 use super::runtime::LoongClawConfig;
 use super::shared::{
     ConfigValidationCode, ConfigValidationIssue, EnvPointerValidationHint,
-    read_secret_prefer_inline, validate_env_pointer_field,
+    validate_env_pointer_field,
 };
+use crate::secrets::resolve_secret_with_legacy_env;
 
 pub(crate) const TELEGRAM_BOT_TOKEN_ENV: &str = "TELEGRAM_BOT_TOKEN";
 pub(crate) const FEISHU_APP_ID_ENV: &str = "FEISHU_APP_ID";
@@ -227,7 +229,7 @@ pub struct TelegramChannelConfig {
     #[serde(default)]
     pub default_account: Option<String>,
     #[serde(default)]
-    pub bot_token: Option<String>,
+    pub bot_token: Option<SecretRef>,
     #[serde(default)]
     pub bot_token_env: Option<String>,
     #[serde(default = "default_telegram_base_url")]
@@ -338,7 +340,7 @@ pub struct TelegramAccountConfig {
     #[serde(default)]
     pub account_id: Option<String>,
     #[serde(default)]
-    pub bot_token: Option<String>,
+    pub bot_token: Option<SecretRef>,
     #[serde(default)]
     pub bot_token_env: Option<String>,
     #[serde(default)]
@@ -361,7 +363,7 @@ pub struct ResolvedTelegramChannelConfig {
     pub configured_account_label: String,
     pub account: ChannelAccountIdentity,
     pub enabled: bool,
-    pub bot_token: Option<String>,
+    pub bot_token: Option<SecretRef>,
     pub bot_token_env: Option<String>,
     pub base_url: String,
     pub polling_timeout_s: u64,
@@ -373,7 +375,7 @@ pub struct ResolvedTelegramChannelConfig {
 
 impl ResolvedTelegramChannelConfig {
     pub fn bot_token(&self) -> Option<String> {
-        read_secret_prefer_inline(self.bot_token.as_deref(), self.bot_token_env.as_deref())
+        resolve_secret_with_legacy_env(self.bot_token.as_ref(), self.bot_token_env.as_deref())
     }
 }
 
@@ -384,9 +386,9 @@ pub struct FeishuAccountConfig {
     #[serde(default)]
     pub account_id: Option<String>,
     #[serde(default)]
-    pub app_id: Option<String>,
+    pub app_id: Option<SecretRef>,
     #[serde(default)]
-    pub app_secret: Option<String>,
+    pub app_secret: Option<SecretRef>,
     #[serde(default)]
     pub app_id_env: Option<String>,
     #[serde(default)]
@@ -404,11 +406,11 @@ pub struct FeishuAccountConfig {
     #[serde(default)]
     pub webhook_path: Option<String>,
     #[serde(default)]
-    pub verification_token: Option<String>,
+    pub verification_token: Option<SecretRef>,
     #[serde(default)]
     pub verification_token_env: Option<String>,
     #[serde(default)]
-    pub encrypt_key: Option<String>,
+    pub encrypt_key: Option<SecretRef>,
     #[serde(default)]
     pub encrypt_key_env: Option<String>,
     #[serde(default)]
@@ -442,8 +444,8 @@ pub struct ResolvedFeishuChannelConfig {
     pub configured_account_label: String,
     pub account: ChannelAccountIdentity,
     pub enabled: bool,
-    pub app_id: Option<String>,
-    pub app_secret: Option<String>,
+    pub app_id: Option<SecretRef>,
+    pub app_secret: Option<SecretRef>,
     pub app_id_env: Option<String>,
     pub app_secret_env: Option<String>,
     pub domain: FeishuDomain,
@@ -452,9 +454,9 @@ pub struct ResolvedFeishuChannelConfig {
     pub receive_id_type: String,
     pub webhook_bind: String,
     pub webhook_path: String,
-    pub verification_token: Option<String>,
+    pub verification_token: Option<SecretRef>,
     pub verification_token_env: Option<String>,
-    pub encrypt_key: Option<String>,
+    pub encrypt_key: Option<SecretRef>,
     pub encrypt_key_env: Option<String>,
     pub allowed_chat_ids: Vec<String>,
     pub ignore_bot_messages: bool,
@@ -463,22 +465,22 @@ pub struct ResolvedFeishuChannelConfig {
 
 impl ResolvedFeishuChannelConfig {
     pub fn app_id(&self) -> Option<String> {
-        read_secret_prefer_inline(self.app_id.as_deref(), self.app_id_env.as_deref())
+        resolve_secret_with_legacy_env(self.app_id.as_ref(), self.app_id_env.as_deref())
     }
 
     pub fn app_secret(&self) -> Option<String> {
-        read_secret_prefer_inline(self.app_secret.as_deref(), self.app_secret_env.as_deref())
+        resolve_secret_with_legacy_env(self.app_secret.as_ref(), self.app_secret_env.as_deref())
     }
 
     pub fn verification_token(&self) -> Option<String> {
-        read_secret_prefer_inline(
-            self.verification_token.as_deref(),
+        resolve_secret_with_legacy_env(
+            self.verification_token.as_ref(),
             self.verification_token_env.as_deref(),
         )
     }
 
     pub fn encrypt_key(&self) -> Option<String> {
-        read_secret_prefer_inline(self.encrypt_key.as_deref(), self.encrypt_key_env.as_deref())
+        resolve_secret_with_legacy_env(self.encrypt_key.as_ref(), self.encrypt_key_env.as_deref())
     }
 
     pub fn resolved_base_url(&self) -> String {
@@ -500,7 +502,7 @@ pub struct MatrixAccountConfig {
     #[serde(default)]
     pub user_id: Option<String>,
     #[serde(default)]
-    pub access_token: Option<String>,
+    pub access_token: Option<SecretRef>,
     #[serde(default)]
     pub access_token_env: Option<String>,
     #[serde(default)]
@@ -522,7 +524,7 @@ pub struct ResolvedMatrixChannelConfig {
     pub account: ChannelAccountIdentity,
     pub enabled: bool,
     pub user_id: Option<String>,
-    pub access_token: Option<String>,
+    pub access_token: Option<SecretRef>,
     pub access_token_env: Option<String>,
     pub base_url: Option<String>,
     pub sync_timeout_s: u64,
@@ -533,10 +535,7 @@ pub struct ResolvedMatrixChannelConfig {
 
 impl ResolvedMatrixChannelConfig {
     pub fn access_token(&self) -> Option<String> {
-        read_secret_prefer_inline(
-            self.access_token.as_deref(),
-            self.access_token_env.as_deref(),
-        )
+        resolve_secret_with_legacy_env(self.access_token.as_ref(), self.access_token_env.as_deref())
     }
 
     pub fn resolved_base_url(&self) -> Option<String> {
@@ -557,9 +556,9 @@ pub struct FeishuChannelConfig {
     #[serde(default)]
     pub default_account: Option<String>,
     #[serde(default)]
-    pub app_id: Option<String>,
+    pub app_id: Option<SecretRef>,
     #[serde(default)]
-    pub app_secret: Option<String>,
+    pub app_secret: Option<SecretRef>,
     #[serde(default)]
     pub app_id_env: Option<String>,
     #[serde(default)]
@@ -577,11 +576,11 @@ pub struct FeishuChannelConfig {
     #[serde(default = "default_feishu_webhook_path")]
     pub webhook_path: String,
     #[serde(default)]
-    pub verification_token: Option<String>,
+    pub verification_token: Option<SecretRef>,
     #[serde(default)]
     pub verification_token_env: Option<String>,
     #[serde(default)]
-    pub encrypt_key: Option<String>,
+    pub encrypt_key: Option<SecretRef>,
     #[serde(default)]
     pub encrypt_key_env: Option<String>,
     #[serde(default)]
@@ -605,7 +604,7 @@ pub struct MatrixChannelConfig {
     #[serde(default)]
     pub user_id: Option<String>,
     #[serde(default)]
-    pub access_token: Option<String>,
+    pub access_token: Option<SecretRef>,
     #[serde(default)]
     pub access_token_env: Option<String>,
     #[serde(default)]
@@ -727,7 +726,7 @@ impl TelegramChannelConfig {
     }
 
     pub fn bot_token(&self) -> Option<String> {
-        read_secret_prefer_inline(self.bot_token.as_deref(), self.bot_token_env.as_deref())
+        resolve_secret_with_legacy_env(self.bot_token.as_ref(), self.bot_token_env.as_deref())
     }
 
     pub fn configured_account_ids(&self) -> Vec<String> {
@@ -989,22 +988,22 @@ impl FeishuChannelConfig {
     }
 
     pub fn app_id(&self) -> Option<String> {
-        read_secret_prefer_inline(self.app_id.as_deref(), self.app_id_env.as_deref())
+        resolve_secret_with_legacy_env(self.app_id.as_ref(), self.app_id_env.as_deref())
     }
 
     pub fn app_secret(&self) -> Option<String> {
-        read_secret_prefer_inline(self.app_secret.as_deref(), self.app_secret_env.as_deref())
+        resolve_secret_with_legacy_env(self.app_secret.as_ref(), self.app_secret_env.as_deref())
     }
 
     pub fn verification_token(&self) -> Option<String> {
-        read_secret_prefer_inline(
-            self.verification_token.as_deref(),
+        resolve_secret_with_legacy_env(
+            self.verification_token.as_ref(),
             self.verification_token_env.as_deref(),
         )
     }
 
     pub fn encrypt_key(&self) -> Option<String> {
-        read_secret_prefer_inline(self.encrypt_key.as_deref(), self.encrypt_key_env.as_deref())
+        resolve_secret_with_legacy_env(self.encrypt_key.as_ref(), self.encrypt_key_env.as_deref())
     }
 
     pub fn configured_account_ids(&self) -> Vec<String> {
@@ -1233,10 +1232,7 @@ impl MatrixChannelConfig {
     }
 
     pub fn access_token(&self) -> Option<String> {
-        read_secret_prefer_inline(
-            self.access_token.as_deref(),
-            self.access_token_env.as_deref(),
-        )
+        resolve_secret_with_legacy_env(self.access_token.as_ref(), self.access_token_env.as_deref())
     }
 
     pub fn configured_account_ids(&self) -> Vec<String> {
@@ -1859,7 +1855,9 @@ mod tests {
     #[test]
     fn telegram_account_identity_derives_from_bot_token_prefix() {
         let config = TelegramChannelConfig {
-            bot_token: Some("987654:token-value".to_owned()),
+            bot_token: Some(loongclaw_contracts::SecretRef::Inline(
+                "987654:token-value".to_owned(),
+            )),
             bot_token_env: None,
             ..TelegramChannelConfig::default()
         };
@@ -1886,7 +1884,9 @@ mod tests {
     #[test]
     fn feishu_account_identity_derives_from_domain_and_app_id() {
         let config = FeishuChannelConfig {
-            app_id: Some("cli_a1b2c3".to_owned()),
+            app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                "cli_a1b2c3".to_owned(),
+            )),
             app_id_env: None,
             domain: FeishuDomain::Lark,
             ..FeishuChannelConfig::default()

@@ -16,6 +16,7 @@ pub mod runtime_env;
 mod runtime_identity;
 mod runtime_self;
 mod runtime_self_continuity;
+mod secrets;
 pub mod session;
 pub mod tools;
 
@@ -32,3 +33,34 @@ pub mod test_support;
 pub use context::KernelContext;
 /// Result type for MVP CLI operations.
 pub type CliResult<T> = Result<T, String>;
+
+#[cfg(test)]
+mod secret_runtime_tests {
+    use std::fs;
+
+    use loongclaw_contracts::{SecretRef, SecretResolver};
+
+    use crate::test_support::unique_temp_dir;
+
+    #[test]
+    fn default_secret_resolver_reads_file_secret_and_trims_trailing_newline() {
+        let temp_dir = unique_temp_dir("secret-resolver-file");
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+        let secret_path = temp_dir.join("token.txt");
+        fs::write(&secret_path, "file-secret-value\n").expect("write secret file");
+
+        let resolver = crate::secrets::DefaultSecretResolver::default();
+        let secret = resolver
+            .resolve(&SecretRef::File {
+                file: secret_path.clone(),
+            })
+            .expect("file secret should resolve")
+            .expect("file secret should not be empty");
+
+        assert_eq!(secret.expose(), "file-secret-value");
+
+        fs::remove_file(&secret_path).ok();
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+}

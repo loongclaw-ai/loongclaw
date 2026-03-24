@@ -2039,6 +2039,8 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "toml",
+ "zeroize",
 ]
 
 [[package]]
@@ -2055,6 +2057,7 @@ dependencies = [
  "libc",
  "loongclaw-app",
  "loongclaw-bench",
+ "loongclaw-contracts",
  "loongclaw-kernel",
  "loongclaw-spec",
  "rand 0.9.2",

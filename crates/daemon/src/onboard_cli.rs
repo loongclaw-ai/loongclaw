@@ -10,6 +10,7 @@ use dialoguer::console::{Term, user_attended};
 use dialoguer::theme::ColorfulTheme;
 use dialoguer::{Confirm, Error as DialoguerError, FuzzySelect, Input, Select};
 use loongclaw_app as mvp;
+use loongclaw_contracts::SecretRef;
 use loongclaw_spec::CliResult;
 use time::OffsetDateTime;
 use time::format_description::FormatItem;
@@ -2485,11 +2486,7 @@ fn config_validation_failure_message(checks: &[OnboardCheck]) -> Option<String> 
 pub fn provider_credential_check(config: &mvp::config::LoongClawConfig) -> OnboardCheck {
     let provider = &config.provider;
     let provider_prefix = provider_check_detail_prefix(config);
-    let inline_oauth = provider
-        .oauth_access_token
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|value| !value.is_empty());
+    let inline_oauth = secret_ref_has_inline_literal(provider.oauth_access_token.as_ref());
     if inline_oauth {
         return OnboardCheck {
             name: "provider credentials",
@@ -2499,11 +2496,7 @@ pub fn provider_credential_check(config: &mvp::config::LoongClawConfig) -> Onboa
         };
     }
 
-    let inline_api_key = provider
-        .api_key
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|value| !value.is_empty());
+    let inline_api_key = secret_ref_has_inline_literal(provider.api_key.as_ref());
     if inline_api_key {
         return OnboardCheck {
             name: "provider credentials",
@@ -2697,16 +2690,8 @@ fn configured_provider_credential_env_binding(
 }
 
 fn provider_has_inline_credential(provider: &mvp::config::ProviderConfig) -> bool {
-    provider
-        .api_key
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|value| !value.is_empty())
-        || provider
-            .oauth_access_token
-            .as_deref()
-            .map(str::trim)
-            .is_some_and(|value| !value.is_empty())
+    secret_ref_has_inline_literal(provider.api_key.as_ref())
+        || secret_ref_has_inline_literal(provider.oauth_access_token.as_ref())
 }
 
 fn selected_provider_credential_env_field(
@@ -5892,12 +5877,7 @@ fn render_onboard_review_credential_line(provider: &mvp::config::ProviderConfig)
 fn summarize_provider_credential(
     provider: &mvp::config::ProviderConfig,
 ) -> Option<OnboardingCredentialSummary> {
-    if provider
-        .oauth_access_token
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|value| !value.is_empty())
-    {
+    if secret_ref_has_inline_literal(provider.oauth_access_token.as_ref()) {
         return Some(OnboardingCredentialSummary {
             label: "credential",
             value: "inline oauth token".to_owned(),
@@ -5909,12 +5889,7 @@ fn summarize_provider_credential(
             value: configured_env,
         });
     }
-    if provider
-        .api_key
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|value| !value.is_empty())
-    {
+    if secret_ref_has_inline_literal(provider.api_key.as_ref()) {
         return Some(OnboardingCredentialSummary {
             label: "credential",
             value: "inline api key".to_owned(),
@@ -6140,6 +6115,14 @@ fn resolve_onboard_shortcut_kind(
         return Some(OnboardShortcutKind::DetectedSetup);
     }
     None
+}
+
+fn secret_ref_has_inline_literal(secret_ref: Option<&SecretRef>) -> bool {
+    let Some(secret_ref) = secret_ref else {
+        return false;
+    };
+
+    secret_ref.inline_literal_value().is_some()
 }
 
 fn onboard_has_explicit_overrides(options: &OnboardCommandOptions) -> bool {
@@ -6883,7 +6866,7 @@ mod tests {
     async fn browser_companion_onboard_preflight_warns_when_enabled_without_command() {
         let _env_guard = BrowserCompanionEnvGuard::runtime_gate_closed();
         let mut config = mvp::config::LoongClawConfig::default();
-        config.provider.api_key = Some("inline-openai-key".to_owned());
+        config.provider.api_key = Some(SecretRef::Inline("inline-openai-key".to_owned()));
         config.tools.browser_companion.enabled = true;
 
         let checks = run_preflight_checks(&config, true).await;
@@ -6930,7 +6913,7 @@ mod tests {
         );
 
         let mut config = mvp::config::LoongClawConfig::default();
-        config.provider.api_key = Some("inline-openai-key".to_owned());
+        config.provider.api_key = Some(SecretRef::Inline("inline-openai-key".to_owned()));
         config.tools.browser_companion.enabled = true;
         config.tools.browser_companion.command = Some(script_path.display().to_string());
         config.tools.browser_companion.expected_version = Some("1.5.0".to_owned());
@@ -6958,7 +6941,7 @@ mod tests {
         );
 
         let mut config = mvp::config::LoongClawConfig::default();
-        config.provider.api_key = Some("inline-openai-key".to_owned());
+        config.provider.api_key = Some(SecretRef::Inline("inline-openai-key".to_owned()));
         config.tools.browser_companion.enabled = true;
         config.tools.browser_companion.command = Some(script_path.display().to_string());
         config.tools.browser_companion.expected_version = Some("1.5.0".to_owned());
@@ -7357,7 +7340,7 @@ mod tests {
     fn resolve_api_key_env_selection_accepts_explicit_clear_token_in_interactive_mode() {
         let mut config = mvp::config::LoongClawConfig::default();
         config.provider.kind = mvp::config::ProviderKind::Openai;
-        config.provider.api_key = Some("inline-secret".to_owned());
+        config.provider.api_key = Some(SecretRef::Inline("inline-secret".to_owned()));
         let mut ui = TestOnboardUi::with_inputs([":clear"]);
         let context = OnboardRuntimeContext::new_for_tests(80, None, std::iter::empty::<PathBuf>());
 
@@ -7511,7 +7494,7 @@ mod tests {
         let current = mvp::config::ProviderConfig {
             kind: mvp::config::ProviderKind::Openai,
             model: "gpt-4.1".to_owned(),
-            api_key: Some("inline-secret".to_owned()),
+            api_key: Some(SecretRef::Inline("inline-secret".to_owned())),
             ..mvp::config::ProviderConfig::default()
         };
 

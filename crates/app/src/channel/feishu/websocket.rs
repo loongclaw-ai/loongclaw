@@ -572,7 +572,9 @@ mod tests {
         let mut config = LoongClawConfig {
             provider: ProviderConfig {
                 base_url: provider_base_url.to_owned(),
-                api_key: Some("test-provider-key".to_owned()),
+                api_key: Some(loongclaw_contracts::SecretRef::Inline(
+                    "test-provider-key".to_owned(),
+                )),
                 model: "test-model".to_owned(),
                 ..ProviderConfig::default()
             },
@@ -581,8 +583,12 @@ mod tests {
         config.memory.sqlite_path = temp_dir.join("memory.sqlite3").display().to_string();
         config.feishu.enabled = true;
         config.feishu.account_id = Some("feishu_main".to_owned());
-        config.feishu.app_id = Some("cli_a1b2c3".to_owned());
-        config.feishu.app_secret = Some("secret-123".to_owned());
+        config.feishu.app_id = Some(loongclaw_contracts::SecretRef::Inline(
+            "cli_a1b2c3".to_owned(),
+        ));
+        config.feishu.app_secret = Some(loongclaw_contracts::SecretRef::Inline(
+            "secret-123".to_owned(),
+        ));
         config.feishu.base_url = Some(feishu_base_url.to_owned());
         config.feishu.mode = Some(FeishuChannelServeMode::Websocket);
         config.feishu.receive_id_type = "chat_id".to_owned();

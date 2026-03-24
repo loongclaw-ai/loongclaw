@@ -2758,7 +2758,9 @@ mod tests {
     fn telegram_status_reports_ready_when_token_and_allowlist_are_configured() {
         let mut config = LoongClawConfig::default();
         config.telegram.enabled = true;
-        config.telegram.bot_token = Some("123456:token".to_owned());
+        config.telegram.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+            "123456:token".to_owned(),
+        ));
         config.telegram.allowed_chat_ids = vec![123];
 
         let snapshots = channel_status_snapshots(&config);
@@ -2783,7 +2785,9 @@ mod tests {
     fn telegram_status_splits_direct_send_and_reply_loop_readiness() {
         let mut config = LoongClawConfig::default();
         config.telegram.enabled = true;
-        config.telegram.bot_token = Some("123456:token".to_owned());
+        config.telegram.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+            "123456:token".to_owned(),
+        ));
 
         let snapshots = channel_status_snapshots(&config);
         let telegram = snapshots
@@ -2819,8 +2823,10 @@ mod tests {
     fn feishu_status_splits_direct_send_and_webhook_readiness() {
         let mut config = LoongClawConfig::default();
         config.feishu.enabled = true;
-        config.feishu.app_id = Some("app-id".to_owned());
-        config.feishu.app_secret = Some("app-secret".to_owned());
+        config.feishu.app_id = Some(loongclaw_contracts::SecretRef::Inline("app-id".to_owned()));
+        config.feishu.app_secret = Some(loongclaw_contracts::SecretRef::Inline(
+            "app-secret".to_owned(),
+        ));
 
         let snapshots = channel_status_snapshots(&config);
         let feishu = snapshots
@@ -2864,7 +2870,9 @@ mod tests {
     fn matrix_status_requires_user_id_when_ignoring_self_messages() {
         let mut config = LoongClawConfig::default();
         config.matrix.enabled = true;
-        config.matrix.access_token = Some("matrix-token".to_owned());
+        config.matrix.access_token = Some(loongclaw_contracts::SecretRef::Inline(
+            "matrix-token".to_owned(),
+        ));
         config.matrix.base_url = Some("https://matrix.example.org".to_owned());
         config.matrix.allowed_room_ids = vec!["!ops:example.org".to_owned()];
         config.matrix.ignore_self_messages = true;
@@ -2889,8 +2897,10 @@ mod tests {
     fn feishu_websocket_status_uses_websocket_requirements() {
         let mut config = LoongClawConfig::default();
         config.feishu.enabled = true;
-        config.feishu.app_id = Some("app-id".to_owned());
-        config.feishu.app_secret = Some("app-secret".to_owned());
+        config.feishu.app_id = Some(loongclaw_contracts::SecretRef::Inline("app-id".to_owned()));
+        config.feishu.app_secret = Some(loongclaw_contracts::SecretRef::Inline(
+            "app-secret".to_owned(),
+        ));
         config.feishu.mode = Some(crate::config::FeishuChannelServeMode::Websocket);
         config.feishu.allowed_chat_ids = vec!["oc_123".to_owned()];
 
@@ -2940,11 +2950,15 @@ mod tests {
     fn channel_status_snapshots_merge_runtime_activity_for_serve_operations() {
         let mut config = LoongClawConfig::default();
         config.feishu.enabled = true;
-        config.feishu.app_id = Some("app-id".to_owned());
-        config.feishu.app_secret = Some("app-secret".to_owned());
+        config.feishu.app_id = Some(loongclaw_contracts::SecretRef::Inline("app-id".to_owned()));
+        config.feishu.app_secret = Some(loongclaw_contracts::SecretRef::Inline(
+            "app-secret".to_owned(),
+        ));
         config.feishu.allowed_chat_ids = vec!["oc_123".to_owned()];
-        config.feishu.verification_token = Some("token".to_owned());
-        config.feishu.encrypt_key = Some("encrypt".to_owned());
+        config.feishu.verification_token =
+            Some(loongclaw_contracts::SecretRef::Inline("token".to_owned()));
+        config.feishu.encrypt_key =
+            Some(loongclaw_contracts::SecretRef::Inline("encrypt".to_owned()));
 
         let runtime_dir = temp_runtime_dir("registry-runtime");
         let now = now_ms();
@@ -2980,7 +2994,9 @@ mod tests {
     fn channel_status_snapshots_report_resolved_account_identity_in_notes() {
         let mut config = LoongClawConfig::default();
         config.telegram.enabled = true;
-        config.telegram.bot_token = Some("123456:token".to_owned());
+        config.telegram.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+            "123456:token".to_owned(),
+        ));
         config.telegram.allowed_chat_ids = vec![123];
 
         let snapshots = channel_status_snapshots(&config);
@@ -3002,7 +3018,9 @@ mod tests {
     fn channel_status_snapshots_report_telegram_acp_bootstrap_mcp_servers_in_notes() {
         let mut config = LoongClawConfig::default();
         config.telegram.enabled = true;
-        config.telegram.bot_token = Some("123456:token".to_owned());
+        config.telegram.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+            "123456:token".to_owned(),
+        ));
         config.telegram.allowed_chat_ids = vec![123];
         config.telegram.acp.bootstrap_mcp_servers = vec!["filesystem".to_owned()];
         config.telegram.acp.working_directory = Some(" /workspace/telegram ".to_owned());
@@ -3033,11 +3051,17 @@ mod tests {
     fn channel_status_snapshots_report_feishu_acp_bootstrap_mcp_servers_in_notes() {
         let mut config = LoongClawConfig::default();
         config.feishu.enabled = true;
-        config.feishu.app_id = Some("cli_a1b2c3".to_owned());
-        config.feishu.app_secret = Some("app-secret".to_owned());
+        config.feishu.app_id = Some(loongclaw_contracts::SecretRef::Inline(
+            "cli_a1b2c3".to_owned(),
+        ));
+        config.feishu.app_secret = Some(loongclaw_contracts::SecretRef::Inline(
+            "app-secret".to_owned(),
+        ));
         config.feishu.allowed_chat_ids = vec!["oc_123".to_owned()];
-        config.feishu.verification_token = Some("token".to_owned());
-        config.feishu.encrypt_key = Some("encrypt".to_owned());
+        config.feishu.verification_token =
+            Some(loongclaw_contracts::SecretRef::Inline("token".to_owned()));
+        config.feishu.encrypt_key =
+            Some(loongclaw_contracts::SecretRef::Inline("encrypt".to_owned()));
         config.feishu.acp.bootstrap_mcp_servers = vec!["search".to_owned()];
         config.feishu.acp.working_directory = Some("/workspace/feishu".to_owned());
 
@@ -3067,11 +3091,17 @@ mod tests {
     fn channel_status_snapshots_attach_account_identity_to_runtime_view() {
         let mut config = LoongClawConfig::default();
         config.feishu.enabled = true;
-        config.feishu.app_id = Some("cli_a1b2c3".to_owned());
-        config.feishu.app_secret = Some("app-secret".to_owned());
+        config.feishu.app_id = Some(loongclaw_contracts::SecretRef::Inline(
+            "cli_a1b2c3".to_owned(),
+        ));
+        config.feishu.app_secret = Some(loongclaw_contracts::SecretRef::Inline(
+            "app-secret".to_owned(),
+        ));
         config.feishu.allowed_chat_ids = vec!["oc_123".to_owned()];
-        config.feishu.verification_token = Some("token".to_owned());
-        config.feishu.encrypt_key = Some("encrypt".to_owned());
+        config.feishu.verification_token =
+            Some(loongclaw_contracts::SecretRef::Inline("token".to_owned()));
+        config.feishu.encrypt_key =
+            Some(loongclaw_contracts::SecretRef::Inline("encrypt".to_owned()));
 
         let runtime_dir = temp_runtime_dir("registry-account-runtime");
         let now = now_ms();
@@ -3106,7 +3136,9 @@ mod tests {
     fn channel_status_snapshots_preserve_runtime_instance_counts() {
         let mut config = LoongClawConfig::default();
         config.telegram.enabled = true;
-        config.telegram.bot_token = Some("123456:token".to_owned());
+        config.telegram.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+            "123456:token".to_owned(),
+        ));
         config.telegram.allowed_chat_ids = vec![123];
 
         let runtime_dir = temp_runtime_dir("registry-duplicate-runtime");

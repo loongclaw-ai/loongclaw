@@ -137,7 +137,9 @@ fn write_runtime_snapshot_config(root: &Path) -> (PathBuf, mvp::config::LoongCla
             provider: mvp::config::ProviderConfig {
                 kind: mvp::config::ProviderKind::Deepseek,
                 model: "deepseek-chat".to_owned(),
-                api_key: Some("demo-token".to_owned()),
+                api_key: Some(loongclaw_contracts::SecretRef::Inline(
+                    "demo-token".to_owned(),
+                )),
                 ..Default::default()
             },
         },
@@ -272,7 +274,9 @@ fn runtime_snapshot_json_payload_marks_x_api_key_profiles_as_credential_resolved
             provider: mvp::config::ProviderConfig {
                 kind: mvp::config::ProviderKind::Anthropic,
                 model: "claude-3-7-sonnet".to_owned(),
-                api_key: Some("${RUNTIME_SNAPSHOT_ANTHROPIC_KEY}".to_owned()),
+                api_key: Some(loongclaw_contracts::SecretRef::Inline(
+                    "${RUNTIME_SNAPSHOT_ANTHROPIC_KEY}".to_owned(),
+                )),
                 ..Default::default()
             },
         },

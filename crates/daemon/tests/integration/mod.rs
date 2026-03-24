@@ -356,11 +356,17 @@ fn validation_summary_counts_error_and_warning_diagnostics_separately() {
 fn render_channel_surfaces_text_reports_aliases_and_operation_health() {
     let mut config = mvp::config::LoongClawConfig::default();
     config.telegram.enabled = true;
-    config.telegram.bot_token = Some("123456:telegram-token".to_owned());
+    config.telegram.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+        "123456:telegram-token".to_owned(),
+    ));
     config.telegram.allowed_chat_ids = vec![1001];
     config.feishu.enabled = true;
-    config.feishu.app_id = Some("cli_a1b2c3".to_owned());
-    config.feishu.app_secret = Some("app-secret".to_owned());
+    config.feishu.app_id = Some(loongclaw_contracts::SecretRef::Inline(
+        "cli_a1b2c3".to_owned(),
+    ));
+    config.feishu.app_secret = Some(loongclaw_contracts::SecretRef::Inline(
+        "app-secret".to_owned(),
+    ));
 
     let inventory = mvp::channel::channel_inventory(&config);
     let rendered = render_channel_surfaces_text("/tmp/loongclaw.toml", &inventory);

@@ -1424,7 +1424,9 @@ mod tests {
         let mut config = LoongClawConfig {
             provider: ProviderConfig {
                 base_url: provider_base_url.to_owned(),
-                api_key: Some("test-provider-key".to_owned()),
+                api_key: Some(loongclaw_contracts::SecretRef::Inline(
+                    "test-provider-key".to_owned(),
+                )),
                 model: "test-model".to_owned(),
                 ..ProviderConfig::default()
             },
@@ -1434,13 +1436,21 @@ mod tests {
         config.tools.file_root = Some(temp_dir.join("tool-root").display().to_string());
         config.feishu.enabled = true;
         config.feishu.account_id = Some("feishu_main".to_owned());
-        config.feishu.app_id = Some("cli_a1b2c3".to_owned());
-        config.feishu.app_secret = Some("secret-123".to_owned());
+        config.feishu.app_id = Some(loongclaw_contracts::SecretRef::Inline(
+            "cli_a1b2c3".to_owned(),
+        ));
+        config.feishu.app_secret = Some(loongclaw_contracts::SecretRef::Inline(
+            "secret-123".to_owned(),
+        ));
         config.feishu.base_url = Some(feishu_base_url.to_owned());
         config.feishu.receive_id_type = "chat_id".to_owned();
         config.feishu.allowed_chat_ids = vec!["oc_demo".to_owned()];
-        config.feishu.verification_token = Some("verify-token".to_owned());
-        config.feishu.encrypt_key = Some("encrypt-key".to_owned());
+        config.feishu.verification_token = Some(loongclaw_contracts::SecretRef::Inline(
+            "verify-token".to_owned(),
+        ));
+        config.feishu.encrypt_key = Some(loongclaw_contracts::SecretRef::Inline(
+            "encrypt-key".to_owned(),
+        ));
         config
     }
 

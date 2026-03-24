@@ -3,13 +3,15 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use loongclaw_contracts::ExecutionSecurityTier;
+use loongclaw_contracts::{ExecutionSecurityTier, SecretRef};
 use serde::{Deserialize, Serialize};
 
 use super::shell_policy_ext::ShellPolicyDefault;
 use crate::config::LoongClawConfig;
 #[cfg(feature = "feishu-integration")]
 use crate::config::{FeishuChannelConfig, FeishuIntegrationConfig};
+#[cfg(feature = "feishu-integration")]
+use crate::secrets::has_configured_secret_ref;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct BrowserRuntimeNarrowing {
@@ -799,11 +801,8 @@ fn has_enabled_feishu_runtime_credentials(config: &FeishuChannelConfig) -> bool 
         return false;
     }
 
-    has_secret_binding(config.app_id.as_deref(), config.app_id_env.as_deref())
-        && has_secret_binding(
-            config.app_secret.as_deref(),
-            config.app_secret_env.as_deref(),
-        )
+    has_secret_binding(config.app_id.as_ref(), config.app_id_env.as_deref())
+        && has_secret_binding(config.app_secret.as_ref(), config.app_secret_env.as_deref())
         || config
             .accounts
             .values()
@@ -812,11 +811,8 @@ fn has_enabled_feishu_runtime_credentials(config: &FeishuChannelConfig) -> bool 
 
 #[cfg(feature = "feishu-integration")]
 fn has_feishu_runtime_credentials(config: &FeishuChannelConfig) -> bool {
-    has_secret_binding(config.app_id.as_deref(), config.app_id_env.as_deref())
-        && has_secret_binding(
-            config.app_secret.as_deref(),
-            config.app_secret_env.as_deref(),
-        )
+    has_secret_binding(config.app_id.as_ref(), config.app_id_env.as_deref())
+        && has_secret_binding(config.app_secret.as_ref(), config.app_secret_env.as_deref())
         || config
             .accounts
             .values()
@@ -832,25 +828,25 @@ fn account_has_enabled_feishu_runtime_credentials(
 
 #[cfg(feature = "feishu-integration")]
 fn account_has_feishu_runtime_credentials(account: &crate::config::FeishuAccountConfig) -> bool {
-    has_secret_binding(account.app_id.as_deref(), account.app_id_env.as_deref())
+    has_secret_binding(account.app_id.as_ref(), account.app_id_env.as_deref())
         && has_secret_binding(
-            account.app_secret.as_deref(),
+            account.app_secret.as_ref(),
             account.app_secret_env.as_deref(),
         )
 }
 
 #[cfg(feature = "feishu-integration")]
-fn has_secret_binding(inline: Option<&str>, env_name: Option<&str>) -> bool {
-    inline
+fn has_secret_binding(secret_ref: Option<&SecretRef>, env_name: Option<&str>) -> bool {
+    if has_configured_secret_ref(secret_ref) {
+        return true;
+    }
+
+    env_name
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .is_some()
-        || env_name
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .and_then(|name| std::env::var(name).ok())
-            .map(|value| !value.trim().is_empty())
-            .unwrap_or(false)
+        .and_then(|name| std::env::var(name).ok())
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
 }
 
 static TOOL_RUNTIME_CONFIG: OnceLock<ToolRuntimeConfig> = OnceLock::new();
@@ -1836,8 +1832,12 @@ Treat these as enforced limits for this child session."
         let config = crate::config::LoongClawConfig {
             feishu: crate::config::FeishuChannelConfig {
                 enabled: false,
-                app_id: Some("cli_disabled_root".to_owned()),
-                app_secret: Some("disabled-root-secret".to_owned()),
+                app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                    "cli_disabled_root".to_owned(),
+                )),
+                app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                    "disabled-root-secret".to_owned(),
+                )),
                 ..crate::config::FeishuChannelConfig::default()
             },
             ..crate::config::LoongClawConfig::default()
@@ -1865,8 +1865,12 @@ Treat these as enforced limits for this child session."
                     "disabled_account".to_owned(),
                     crate::config::FeishuAccountConfig {
                         enabled: Some(false),
-                        app_id: Some("cli_disabled_account".to_owned()),
-                        app_secret: Some("disabled-account-secret".to_owned()),
+                        app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                            "cli_disabled_account".to_owned(),
+                        )),
+                        app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                            "disabled-account-secret".to_owned(),
+                        )),
                         ..crate::config::FeishuAccountConfig::default()
                     },
                 )]),

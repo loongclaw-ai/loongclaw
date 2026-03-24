@@ -18,6 +18,7 @@ use kernel::{
     Capability, ConnectorCommand, FixedClock, InMemoryAuditSink, TaskIntent, ToolCoreOutcome,
     ToolCoreRequest,
 };
+use loongclaw_contracts::SecretRef;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -1939,7 +1940,7 @@ fn normalize_runtime_snapshot_restore_provider_profile(
 }
 
 fn runtime_snapshot_redact_provider_secret_field(
-    raw: Option<&mut String>,
+    raw: Option<&mut SecretRef>,
     profile_id: &str,
     field_name: &str,
     warnings: &mut Vec<String>,
@@ -1947,7 +1948,7 @@ fn runtime_snapshot_redact_provider_secret_field(
     let Some(raw) = raw else {
         return false;
     };
-    if raw.trim().is_empty() || runtime_snapshot_is_env_reference_literal(raw) {
+    if raw.inline_literal_value().is_none() {
         return false;
     }
     warnings.push(format!(
@@ -1987,14 +1988,13 @@ fn runtime_snapshot_provider_header_is_safe_to_persist(
 }
 
 fn runtime_snapshot_migrate_provider_env_reference(
-    inline_secret: &mut Option<String>,
+    inline_secret: &mut Option<SecretRef>,
     env_name: &mut Option<String>,
 ) {
-    let Some(explicit_env_name) = inline_secret
-        .as_deref()
-        .and_then(runtime_snapshot_parse_env_reference)
-        .map(str::to_owned)
-    else {
+    let explicit_env_name = inline_secret
+        .as_ref()
+        .and_then(SecretRef::explicit_env_name);
+    let Some(explicit_env_name) = explicit_env_name else {
         return;
     };
     let configured_env_name = env_name.as_deref();
@@ -2230,9 +2230,11 @@ mod runtime_snapshot_restore_spec_tests {
             provider: mvp::config::ProviderConfig {
                 kind: mvp::config::ProviderKind::Openai,
                 model: "openai/gpt-5.1-codex".to_owned(),
-                api_key: Some("${INLINE_OPENAI_API_KEY}".to_owned()),
+                api_key: Some(SecretRef::Inline("${INLINE_OPENAI_API_KEY}".to_owned())),
                 api_key_env: Some("CONFIGURED_OPENAI_API_KEY".to_owned()),
-                oauth_access_token: Some("$INLINE_OPENAI_OAUTH_TOKEN".to_owned()),
+                oauth_access_token: Some(SecretRef::Inline(
+                    "$INLINE_OPENAI_OAUTH_TOKEN".to_owned(),
+                )),
                 oauth_access_token_env: Some("CONFIGURED_OPENAI_OAUTH_TOKEN".to_owned()),
                 ..Default::default()
             },

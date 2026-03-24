@@ -79,6 +79,10 @@ pub(crate) use tools::{
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use loongclaw_contracts::SecretRef;
+
     use super::*;
     use std::collections::BTreeSet;
 
@@ -645,8 +649,8 @@ mod tests {
     fn openai_codex_oauth_can_override_api_key_auth() {
         let config = ProviderConfig {
             kind: ProviderKind::Openai,
-            oauth_access_token: Some("oauth-token".to_owned()),
-            api_key: Some("api-key-should-not-win".to_owned()),
+            oauth_access_token: Some(SecretRef::Inline("oauth-token".to_owned())),
+            api_key: Some(SecretRef::Inline("api-key-should-not-win".to_owned())),
             ..ProviderConfig::default()
         };
         assert_eq!(
@@ -663,8 +667,8 @@ mod tests {
     fn volcengine_coding_plan_has_no_default_oauth_env_but_accepts_explicit_oauth_token() {
         let config = ProviderConfig {
             kind: ProviderKind::VolcengineCoding,
-            oauth_access_token: Some("vc-oauth-token".to_owned()),
-            api_key: Some("api-key-should-not-win".to_owned()),
+            oauth_access_token: Some(SecretRef::Inline("vc-oauth-token".to_owned())),
+            api_key: Some(SecretRef::Inline("api-key-should-not-win".to_owned())),
             ..ProviderConfig::default()
         };
         assert_eq!(config.default_oauth_access_token_env().as_deref(), None);
@@ -693,7 +697,7 @@ mod tests {
         for raw_api_key in &cases {
             let config = ProviderConfig {
                 kind: ProviderKind::Ollama,
-                api_key: Some(raw_api_key.clone()),
+                api_key: Some(SecretRef::Inline(raw_api_key.clone())),
                 api_key_env: None,
                 ..ProviderConfig::default()
             };
@@ -716,7 +720,9 @@ mod tests {
     fn provider_api_key_missing_explicit_env_reference_is_not_treated_as_literal() {
         let config = ProviderConfig {
             kind: ProviderKind::Ollama,
-            api_key: Some("${LOONGCLAW_TEST_MISSING_API_KEY}".to_owned()),
+            api_key: Some(SecretRef::Inline(
+                "${LOONGCLAW_TEST_MISSING_API_KEY}".to_owned(),
+            )),
             api_key_env: None,
             ..ProviderConfig::default()
         };
@@ -729,7 +735,9 @@ mod tests {
     fn provider_api_key_missing_explicit_env_reference_does_not_fall_back_to_legacy_env() {
         let config = ProviderConfig {
             kind: ProviderKind::Openai,
-            api_key: Some("${LOONGCLAW_TEST_MISSING_API_KEY}".to_owned()),
+            api_key: Some(SecretRef::Inline(
+                "${LOONGCLAW_TEST_MISSING_API_KEY}".to_owned(),
+            )),
             api_key_env: Some("PATH".to_owned()),
             ..ProviderConfig::default()
         };
@@ -756,6 +764,47 @@ mod tests {
         assert_eq!(config.api_key().as_deref(), Some(env_val));
 
         crate::process_env::remove_var(env_key);
+    }
+
+    #[test]
+    fn provider_api_key_supports_typed_env_secret_ref() {
+        let env_key = "LOONGCLAW_TEST_TYPED_SECRET_REF";
+        let env_val = "typed-secret-value";
+        crate::process_env::set_var(env_key, env_val);
+
+        let config = ProviderConfig {
+            kind: ProviderKind::Ollama,
+            api_key: Some(SecretRef::Env {
+                env: env_key.to_owned(),
+            }),
+            api_key_env: None,
+            ..ProviderConfig::default()
+        };
+
+        assert_eq!(config.api_key().as_deref(), Some(env_val));
+        assert_eq!(
+            config.authorization_header().as_deref(),
+            Some("Bearer typed-secret-value")
+        );
+
+        crate::process_env::remove_var(env_key);
+    }
+
+    #[test]
+    #[cfg(feature = "config-toml")]
+    fn provider_toml_parses_secret_ref_file_table() {
+        let raw = r#"
+[provider]
+api_key = { file = "/run/secrets/openai" }
+"#;
+        let parsed = toml::from_str::<LoongClawConfig>(raw).expect("secret table should parse");
+
+        assert_eq!(
+            parsed.provider.api_key,
+            Some(SecretRef::File {
+                file: PathBuf::from("/run/secrets/openai"),
+            })
+        );
     }
 
     #[test]
@@ -1336,7 +1385,9 @@ reasoning_extra_body_omit_model_hints = ["disable-thinking"]
     #[cfg(feature = "channel-telegram")]
     fn telegram_token_prefers_inline_secret() {
         let config = TelegramChannelConfig {
-            bot_token: Some("inline-token".to_owned()),
+            bot_token: Some(loongclaw_contracts::SecretRef::Inline(
+                "inline-token".to_owned(),
+            )),
             bot_token_env: Some("SHOULD_NOT_BE_READ".to_owned()),
             ..TelegramChannelConfig::default()
         };
@@ -1344,10 +1395,49 @@ reasoning_extra_body_omit_model_hints = ["disable-thinking"]
     }
 
     #[test]
+    #[cfg(feature = "channel-telegram")]
+    fn telegram_bot_token_supports_typed_env_secret_ref() {
+        let env_key = "LOONGCLAW_TEST_TELEGRAM_SECRET_REF";
+        let env_val = "123456789:telegram-secret";
+        crate::process_env::set_var(env_key, env_val);
+
+        let config = TelegramChannelConfig {
+            bot_token: Some(SecretRef::Env {
+                env: env_key.to_owned(),
+            }),
+            bot_token_env: None,
+            ..TelegramChannelConfig::default()
+        };
+
+        assert_eq!(config.bot_token().as_deref(), Some(env_val));
+
+        crate::process_env::remove_var(env_key);
+    }
+
+    #[test]
+    #[cfg(all(feature = "channel-telegram", feature = "config-toml"))]
+    fn telegram_toml_parses_secret_ref_file_table() {
+        let raw = r#"
+[telegram]
+bot_token = { file = "/run/secrets/telegram" }
+"#;
+        let parsed = toml::from_str::<LoongClawConfig>(raw).expect("secret table should parse");
+
+        assert_eq!(
+            parsed.telegram.bot_token,
+            Some(SecretRef::File {
+                file: PathBuf::from("/run/secrets/telegram"),
+            })
+        );
+    }
+
+    #[test]
     fn provider_api_key_candidates_support_delimited_key_pool() {
         let config = ProviderConfig {
             kind: ProviderKind::Ollama,
-            api_key: Some("key-a, key-b;key-c\nkey-d\r\nkey-e".to_owned()),
+            api_key: Some(SecretRef::Inline(
+                "key-a, key-b;key-c\nkey-d\r\nkey-e".to_owned(),
+            )),
             api_key_env: None,
             ..ProviderConfig::default()
         };

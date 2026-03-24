@@ -3003,8 +3003,12 @@ fn conversation_runtime_trait_default_tool_view_includes_runtime_discovered_feis
     let config = LoongClawConfig {
         feishu: crate::config::FeishuChannelConfig {
             enabled: true,
-            app_id: Some("test-feishu-app-id".to_owned()),
-            app_secret: Some("test-feishu-app-secret".to_owned()),
+            app_id: Some(loongclaw_contracts::SecretRef::Inline(
+                "test-feishu-app-id".to_owned(),
+            )),
+            app_secret: Some(loongclaw_contracts::SecretRef::Inline(
+                "test-feishu-app-secret".to_owned(),
+            )),
             ..crate::config::FeishuChannelConfig::default()
         },
         ..test_config()
@@ -14489,7 +14493,9 @@ async fn handle_turn_with_runtime_executes_sessions_send_via_default_dispatcher(
     config.memory.sqlite_path = db_path.display().to_string();
     config.tools.messages.enabled = true;
     config.telegram.enabled = true;
-    config.telegram.bot_token = Some("123456:telegram-test-token".to_owned());
+    config.telegram.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+        "123456:telegram-test-token".to_owned(),
+    ));
     config.telegram.bot_token_env = None;
     config.telegram.base_url = base_url;
     config.telegram.allowed_chat_ids = vec![123];
@@ -16936,7 +16942,9 @@ async fn handle_turn_with_runtime_safe_lane_executes_sessions_send_via_default_d
     config.conversation.safe_lane_plan_execution_enabled = true;
     config.tools.messages.enabled = true;
     config.telegram.enabled = true;
-    config.telegram.bot_token = Some("123456:telegram-test-token".to_owned());
+    config.telegram.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+        "123456:telegram-test-token".to_owned(),
+    ));
     config.telegram.bot_token_env = None;
     config.telegram.base_url = base_url;
     config.telegram.allowed_chat_ids = vec![123];

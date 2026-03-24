@@ -3200,9 +3200,13 @@ mod tests {
     fn feishu_security_validation_accepts_complete_configuration() {
         let mut config = LoongClawConfig::default();
         config.feishu.allowed_chat_ids = vec!["oc_123".to_owned()];
-        config.feishu.verification_token = Some("token-123".to_owned());
+        config.feishu.verification_token = Some(loongclaw_contracts::SecretRef::Inline(
+            "token-123".to_owned(),
+        ));
         config.feishu.verification_token_env = None;
-        config.feishu.encrypt_key = Some("encrypt-key-123".to_owned());
+        config.feishu.encrypt_key = Some(loongclaw_contracts::SecretRef::Inline(
+            "encrypt-key-123".to_owned(),
+        ));
         config.feishu.encrypt_key_env = None;
 
         let resolved = config
@@ -3422,7 +3426,9 @@ mod tests {
         let mut config = LoongClawConfig::default();
         config.matrix.allowed_room_ids = vec!["!ops:example.org".to_owned()];
         config.matrix.user_id = Some("@ops-bot:example.org".to_owned());
-        config.matrix.access_token = Some("matrix-token".to_owned());
+        config.matrix.access_token = Some(loongclaw_contracts::SecretRef::Inline(
+            "matrix-token".to_owned(),
+        ));
         config.matrix.base_url = Some("not a url".to_owned());
 
         let resolved = config
@@ -3439,7 +3445,9 @@ mod tests {
     fn matrix_security_validation_requires_user_id_when_ignoring_self_messages() {
         let mut config = LoongClawConfig::default();
         config.matrix.allowed_room_ids = vec!["!ops:example.org".to_owned()];
-        config.matrix.access_token = Some("matrix-token".to_owned());
+        config.matrix.access_token = Some(loongclaw_contracts::SecretRef::Inline(
+            "matrix-token".to_owned(),
+        ));
         config.matrix.base_url = Some("https://matrix.example.org".to_owned());
         config.matrix.ignore_self_messages = true;
 

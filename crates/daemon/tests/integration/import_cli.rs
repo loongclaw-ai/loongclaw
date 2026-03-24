@@ -992,8 +992,12 @@ fn import_cli_render_preview_keeps_provider_choice_transport_visible_on_wide_wid
 #[test]
 fn import_cli_json_preview_redacts_config_secrets() {
     let mut candidate = sample_import_candidate();
-    candidate.config.provider.api_key = Some("super-secret-provider-key".to_owned());
-    candidate.config.telegram.bot_token = Some("123456:telegram-secret".to_owned());
+    candidate.config.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
+        "super-secret-provider-key".to_owned(),
+    ));
+    candidate.config.telegram.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+        "123456:telegram-secret".to_owned(),
+    ));
 
     let payload = loongclaw_daemon::import_cli::render_import_preview_json(&[candidate])
         .expect("json preview should render");

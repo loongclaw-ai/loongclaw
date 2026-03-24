@@ -2,7 +2,7 @@ use super::*;
 use crate::KernelContext;
 use crate::config::{LoongClawConfig, ProviderConfig, ReasoningEffort};
 use crate::test_support::ScopedEnv;
-use loongclaw_contracts::{Capability, ExecutionRoute, HarnessKind};
+use loongclaw_contracts::{Capability, ExecutionRoute, HarnessKind, SecretRef};
 use loongclaw_kernel::{
     AuditEventKind, FixedClock, InMemoryAuditSink, LoongClawKernel, StaticPolicyEngine,
     VerticalPackManifest,
@@ -138,7 +138,7 @@ async fn provider_auth_ready_accepts_x_api_key_providers() {
     let config = LoongClawConfig {
         provider: ProviderConfig {
             kind: ProviderKind::Anthropic,
-            api_key: Some("anthropic-secret".to_owned()),
+            api_key: Some(SecretRef::Inline("anthropic-secret".to_owned())),
             ..ProviderConfig::default()
         },
         ..LoongClawConfig::default()
@@ -291,7 +291,7 @@ async fn fetch_available_models_enriches_volcengine_auth_failures_with_ark_guida
         kind: ProviderKind::VolcengineCoding,
         base_url: format!("http://{addr}"),
         model: "auto".to_owned(),
-        api_key: Some("bad-ark-key".to_owned()),
+        api_key: Some(SecretRef::Inline("bad-ark-key".to_owned())),
         api_key_env: None,
         ..ProviderConfig::default()
     });
@@ -472,8 +472,8 @@ fn test_config(provider: ProviderConfig) -> LoongClawConfig {
 fn resolve_provider_auth_profiles_prefers_oauth_then_api_key() {
     let provider = ProviderConfig {
         kind: ProviderKind::Ollama,
-        oauth_access_token: Some("oauth-token".to_owned()),
-        api_key: Some("api-key".to_owned()),
+        oauth_access_token: Some(SecretRef::Inline("oauth-token".to_owned())),
+        api_key: Some(SecretRef::Inline("api-key".to_owned())),
         api_key_env: None,
         oauth_access_token_env: None,
         ..ProviderConfig::default()
@@ -499,7 +499,9 @@ fn resolve_provider_auth_profiles_prefers_oauth_then_api_key() {
 fn resolve_provider_auth_profiles_expands_delimited_api_key_pool() {
     let provider = ProviderConfig {
         kind: ProviderKind::Ollama,
-        api_key: Some("api-key-a, api-key-b;api-key-c".to_owned()),
+        api_key: Some(SecretRef::Inline(
+            "api-key-a, api-key-b;api-key-c".to_owned(),
+        )),
         api_key_env: None,
         ..ProviderConfig::default()
     };
@@ -1172,7 +1174,7 @@ fn bedrock_completion_body_uses_converse_shape() {
 fn anthropic_headers_use_native_auth_and_version() {
     let provider = ProviderConfig {
         kind: ProviderKind::Anthropic,
-        api_key: Some("anthropic-test-key".to_owned()),
+        api_key: Some(SecretRef::Inline("anthropic-test-key".to_owned())),
         ..ProviderConfig::default()
     };
     let headers = transport::build_request_headers(&provider).expect("headers");
@@ -2174,7 +2176,7 @@ async fn responses_completion_falls_back_to_chat_completions_for_compatible_endp
         base_url: format!("http://{addr}"),
         model: "deepseek-chat".to_owned(),
         wire_api: crate::config::ProviderWireApi::Responses,
-        api_key: Some("deepseek-test-key".to_owned()),
+        api_key: Some(SecretRef::Inline("deepseek-test-key".to_owned())),
         ..ProviderConfig::default()
     });
 
@@ -2257,7 +2259,7 @@ async fn responses_turn_falls_back_to_chat_completions_for_compatible_endpoints(
         base_url: format!("http://{addr}"),
         model: "deepseek-chat".to_owned(),
         wire_api: crate::config::ProviderWireApi::Responses,
-        api_key: Some("deepseek-test-key".to_owned()),
+        api_key: Some(SecretRef::Inline("deepseek-test-key".to_owned())),
         ..ProviderConfig::default()
     });
 
@@ -2326,7 +2328,7 @@ async fn responses_turn_does_not_fallback_for_generic_gateway_failures() {
         base_url: format!("http://{addr}"),
         model: "deepseek-chat".to_owned(),
         wire_api: crate::config::ProviderWireApi::Responses,
-        api_key: Some("deepseek-test-key".to_owned()),
+        api_key: Some(SecretRef::Inline("deepseek-test-key".to_owned())),
         ..ProviderConfig::default()
     });
 

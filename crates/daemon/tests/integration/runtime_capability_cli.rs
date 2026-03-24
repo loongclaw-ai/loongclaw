@@ -49,7 +49,9 @@ fn write_runtime_capability_config(root: &Path) -> PathBuf {
             provider: mvp::config::ProviderConfig {
                 kind: mvp::config::ProviderKind::Deepseek,
                 model: "deepseek-chat".to_owned(),
-                api_key: Some("demo-token".to_owned()),
+                api_key: Some(loongclaw_contracts::SecretRef::Inline(
+                    "demo-token".to_owned(),
+                )),
                 ..Default::default()
             },
         },
