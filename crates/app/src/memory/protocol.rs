@@ -2,6 +2,8 @@ use loongclaw_contracts::MemoryCoreRequest;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::memory::runtime_config::MemoryRuntimeConfig;
+
 pub const MEMORY_OP_APPEND_TURN: &str = "append_turn";
 pub const MEMORY_OP_WINDOW: &str = "window";
 pub const MEMORY_OP_CLEAR_SESSION: &str = "clear_session";
@@ -51,11 +53,18 @@ pub fn build_window_request(session_id: &str, limit: usize) -> MemoryCoreRequest
     }
 }
 
-pub fn build_read_context_request(session_id: &str) -> MemoryCoreRequest {
+pub fn build_read_context_request(
+    session_id: &str,
+    config: &MemoryRuntimeConfig,
+) -> MemoryCoreRequest {
     MemoryCoreRequest {
         operation: MEMORY_OP_READ_CONTEXT.to_owned(),
         payload: json!({
             "session_id": session_id,
+            "profile": config.profile.as_str(),
+            "sliding_window": config.sliding_window,
+            "summary_max_chars": config.summary_max_chars,
+            "profile_note": config.profile_note,
         }),
     }
 }

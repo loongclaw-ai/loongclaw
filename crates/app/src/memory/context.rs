@@ -1,6 +1,7 @@
 use loongclaw_contracts::{MemoryCoreOutcome, MemoryCoreRequest};
 use serde_json::{Value, json};
 
+use crate::config::MemoryProfile;
 use crate::config::MemoryMode;
 use crate::runtime_identity;
 
@@ -26,7 +27,8 @@ pub(crate) fn read_context(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "memory.read_context requires payload.session_id".to_owned())?;
-    let entries = load_prompt_context(session_id, config)?;
+    let runtime_config = read_context_runtime_config(payload, config)?;
+    let entries = load_prompt_context(session_id, &runtime_config)?;
 
     Ok(MemoryCoreOutcome {
         status: "ok".to_owned(),
@@ -37,6 +39,83 @@ pub(crate) fn read_context(
             "entries": entries,
         }),
     })
+}
+
+fn read_context_runtime_config(
+    payload: &serde_json::Map<String, Value>,
+    config: &MemoryRuntimeConfig,
+) -> Result<MemoryRuntimeConfig, String> {
+    let mut runtime_config = config.clone();
+
+    if let Some(profile_value) = payload.get("profile") {
+        let profile_text = profile_value
+            .as_str()
+            .ok_or_else(|| "memory.read_context payload.profile must be a string".to_owned())?;
+        let profile = MemoryProfile::parse_id(profile_text).ok_or_else(|| {
+            format!(
+                "memory.read_context payload.profile `{profile_text}` is unsupported"
+            )
+        })?;
+        let mode = profile.mode();
+
+        runtime_config.profile = profile;
+        runtime_config.mode = mode;
+    }
+
+    if let Some(sliding_window_value) = payload.get("sliding_window") {
+        let sliding_window = sliding_window_value.as_u64().ok_or_else(|| {
+            "memory.read_context payload.sliding_window must be a positive integer".to_owned()
+        })?;
+        let sliding_window = usize::try_from(sliding_window).map_err(|_| {
+            "memory.read_context payload.sliding_window exceeds usize".to_owned()
+        })?;
+        if sliding_window == 0 {
+            return Err(
+                "memory.read_context payload.sliding_window must be at least 1".to_owned(),
+            );
+        }
+
+        runtime_config.sliding_window = sliding_window;
+    }
+
+    if let Some(summary_max_chars_value) = payload.get("summary_max_chars") {
+        let summary_max_chars = summary_max_chars_value.as_u64().ok_or_else(|| {
+            "memory.read_context payload.summary_max_chars must be a positive integer".to_owned()
+        })?;
+        let summary_max_chars = usize::try_from(summary_max_chars).map_err(|_| {
+            "memory.read_context payload.summary_max_chars exceeds usize".to_owned()
+        })?;
+        if summary_max_chars == 0 {
+            return Err(
+                "memory.read_context payload.summary_max_chars must be at least 1".to_owned(),
+            );
+        }
+
+        runtime_config.summary_max_chars = summary_max_chars;
+    }
+
+    if let Some(profile_note_value) = payload.get("profile_note") {
+        let profile_note = match profile_note_value {
+            Value::Null => None,
+            Value::String(value) => {
+                let trimmed_value = value.trim();
+                if trimmed_value.is_empty() {
+                    None
+                } else {
+                    Some(trimmed_value.to_owned())
+                }
+            }
+            _ => {
+                return Err(
+                    "memory.read_context payload.profile_note must be a string or null".to_owned(),
+                );
+            }
+        };
+
+        runtime_config.profile_note = profile_note;
+    }
+
+    Ok(runtime_config)
 }
 
 pub fn load_prompt_context(
