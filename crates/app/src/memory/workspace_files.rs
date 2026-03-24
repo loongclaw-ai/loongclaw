@@ -32,11 +32,18 @@ struct DailyLogCandidate {
 pub(crate) fn collect_workspace_memory_document_locations(
     workspace_root: &Path,
 ) -> Result<Vec<WorkspaceMemoryDocumentLocation>, String> {
+    let canonical_workspace_root = canonical_workspace_memory_root(workspace_root)?;
     let candidate_roots = runtime_self::candidate_workspace_roots(workspace_root);
-    let curated_documents =
-        collect_curated_memory_document_locations(workspace_root, candidate_roots.as_slice())?;
-    let daily_documents =
-        collect_daily_log_document_locations(workspace_root, candidate_roots.as_slice())?;
+    let curated_documents = collect_curated_memory_document_locations(
+        workspace_root,
+        canonical_workspace_root.as_path(),
+        candidate_roots.as_slice(),
+    )?;
+    let daily_documents = collect_daily_log_document_locations(
+        workspace_root,
+        canonical_workspace_root.as_path(),
+        candidate_roots.as_slice(),
+    )?;
 
     let mut documents = Vec::new();
     documents.extend(curated_documents);
@@ -47,6 +54,7 @@ pub(crate) fn collect_workspace_memory_document_locations(
 
 fn collect_curated_memory_document_locations(
     workspace_root: &Path,
+    canonical_workspace_root: &Path,
     candidate_roots: &[PathBuf],
 ) -> Result<Vec<WorkspaceMemoryDocumentLocation>, String> {
     let mut documents = Vec::new();
@@ -58,6 +66,7 @@ fn collect_curated_memory_document_locations(
             let candidate_path = root.join(relative_path);
             let maybe_document = collect_document_if_present(
                 workspace_root,
+                canonical_workspace_root,
                 candidate_path.as_path(),
                 WorkspaceMemoryDocumentKind::Curated,
                 None,
@@ -75,6 +84,7 @@ fn collect_curated_memory_document_locations(
 
 fn collect_daily_log_document_locations(
     workspace_root: &Path,
+    canonical_workspace_root: &Path,
     candidate_roots: &[PathBuf],
 ) -> Result<Vec<WorkspaceMemoryDocumentLocation>, String> {
     let mut candidates = Vec::new();
@@ -85,6 +95,12 @@ fn collect_daily_log_document_locations(
         if !memory_dir.is_dir() {
             continue;
         }
+
+        let Some(_canonical_memory_dir) =
+            resolve_workspace_memory_path(canonical_workspace_root, memory_dir.as_path())?
+        else {
+            continue;
+        };
 
         let read_dir = std::fs::read_dir(&memory_dir).map_err(|error| {
             format!(
@@ -104,14 +120,24 @@ fn collect_daily_log_document_locations(
                 continue;
             };
 
-            let path_key = normalized_path_key(path.as_path());
+            let Some(canonical_path) =
+                resolve_workspace_memory_path(canonical_workspace_root, path.as_path())?
+            else {
+                continue;
+            };
+
+            let path_key = canonical_path_key(canonical_path.as_path());
             let inserted = seen_paths.insert(path_key);
             if !inserted {
                 continue;
             }
 
             let label = workspace_memory_label(workspace_root, path.as_path());
-            let candidate = DailyLogCandidate { label, path, date };
+            let candidate = DailyLogCandidate {
+                label,
+                path: canonical_path,
+                date,
+            };
             candidates.push(candidate);
         }
     }
@@ -139,6 +165,7 @@ fn collect_daily_log_document_locations(
 
 fn collect_document_if_present(
     workspace_root: &Path,
+    canonical_workspace_root: &Path,
     path: &Path,
     kind: WorkspaceMemoryDocumentKind,
     date: Option<NaiveDate>,
@@ -148,7 +175,12 @@ fn collect_document_if_present(
         return Ok(None);
     }
 
-    let path_key = normalized_path_key(path);
+    let Some(canonical_path) = resolve_workspace_memory_path(canonical_workspace_root, path)?
+    else {
+        return Ok(None);
+    };
+
+    let path_key = canonical_path_key(canonical_path.as_path());
     let inserted = seen_paths.insert(path_key);
     if !inserted {
         return Ok(None);
@@ -157,7 +189,7 @@ fn collect_document_if_present(
     let label = workspace_memory_label(workspace_root, path);
     let document = WorkspaceMemoryDocumentLocation {
         label,
-        path: path.to_path_buf(),
+        path: canonical_path,
         kind,
         date,
     };
@@ -182,15 +214,46 @@ fn parse_daily_log_date(path: &Path) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(stem, "%Y-%m-%d").ok()
 }
 
-fn normalized_path_key(path: &Path) -> String {
-    let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    canonical_path.display().to_string()
+fn canonical_workspace_memory_root(workspace_root: &Path) -> Result<PathBuf, String> {
+    workspace_root.canonicalize().map_err(|error| {
+        format!(
+            "canonicalize workspace memory root {} failed: {error}",
+            workspace_root.display()
+        )
+    })
+}
+
+fn resolve_workspace_memory_path(
+    canonical_workspace_root: &Path,
+    path: &Path,
+) -> Result<Option<PathBuf>, String> {
+    let canonical_path = path.canonicalize().map_err(|error| {
+        format!(
+            "canonicalize workspace memory path {} failed: {error}",
+            path.display()
+        )
+    })?;
+    let is_within_workspace = canonical_path.starts_with(canonical_workspace_root);
+    if !is_within_workspace {
+        return Ok(None);
+    }
+
+    Ok(Some(canonical_path))
+}
+
+fn canonical_path_key(path: &Path) -> String {
+    path.display().to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[cfg(unix)]
+    fn create_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
 
     #[test]
     fn collect_workspace_memory_document_locations_prefers_newest_daily_logs_first() {
@@ -227,5 +290,52 @@ mod tests {
 
         assert_eq!(documents.len(), 1);
         assert_eq!(documents[0].label, "workspace/MEMORY.md");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_workspace_memory_document_locations_ignores_symlinked_memory_file_outside_workspace_root()
+     {
+        let temp_dir = tempdir().expect("tempdir");
+        let sandbox_root = temp_dir.path();
+        let workspace_root = sandbox_root.join("workspace");
+        let outside_root = sandbox_root.join("outside");
+        let outside_memory_path = outside_root.join("secret.md");
+        let linked_memory_path = workspace_root.join("MEMORY.md");
+
+        std::fs::create_dir_all(&workspace_root).expect("create workspace root");
+        std::fs::create_dir_all(&outside_root).expect("create outside root");
+        std::fs::write(&outside_memory_path, "outside durable recall secret")
+            .expect("write outside memory");
+        create_symlink(&outside_memory_path, &linked_memory_path).expect("create symlink");
+
+        let documents = collect_workspace_memory_document_locations(workspace_root.as_path())
+            .expect("collect workspace memory documents");
+
+        assert!(documents.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_workspace_memory_document_locations_ignores_symlinked_memory_directory_outside_workspace_root()
+     {
+        let temp_dir = tempdir().expect("tempdir");
+        let sandbox_root = temp_dir.path();
+        let workspace_root = sandbox_root.join("workspace");
+        let outside_root = sandbox_root.join("outside");
+        let outside_memory_dir = outside_root.join("logs");
+        let outside_daily_log_path = outside_memory_dir.join("2026-03-24.md");
+        let linked_memory_dir = workspace_root.join("memory");
+
+        std::fs::create_dir_all(&workspace_root).expect("create workspace root");
+        std::fs::create_dir_all(&outside_memory_dir).expect("create outside memory dir");
+        std::fs::write(&outside_daily_log_path, "outside durable recall daily log")
+            .expect("write outside daily log");
+        create_symlink(&outside_memory_dir, &linked_memory_dir).expect("create dir symlink");
+
+        let documents = collect_workspace_memory_document_locations(workspace_root.as_path())
+            .expect("collect workspace memory documents");
+
+        assert!(documents.is_empty());
     }
 }
