@@ -44,6 +44,31 @@ def normalize_repo_path(repo_path: str) -> str:
     return normalized_path
 
 
+def unsupported_glob_constructs(normalized_pattern: str) -> list[str]:
+    found_unsupported_characters: list[str] = []
+    extglob_tokens = ("@(", "+(", "*(", "?(", "!(")
+
+    for token in extglob_tokens:
+        if token not in normalized_pattern:
+            continue
+        found_unsupported_characters.append(token)
+
+    has_leading_negation = normalized_pattern.startswith("!")
+    has_negation_extglob = "!(" in normalized_pattern
+    if has_leading_negation and not has_negation_extglob:
+        found_unsupported_characters.append("leading !")
+
+    has_character_class = re.search(r"\[[^][]+\]", normalized_pattern) is not None
+    if has_character_class:
+        found_unsupported_characters.append("[]")
+
+    has_brace_expansion = re.search(r"\{[^{}]*,[^{}]*\}", normalized_pattern) is not None
+    if has_brace_expansion:
+        found_unsupported_characters.append("{,}")
+
+    return found_unsupported_characters
+
+
 def validate_supported_glob_pattern(pattern: str) -> str:
     normalized_pattern = normalize_repo_path(pattern)
 
@@ -53,12 +78,7 @@ def validate_supported_glob_pattern(pattern: str) -> str:
     if "//" in normalized_pattern:
         raise ValueError("empty path segments are not supported")
 
-    unsupported_characters = "[]{}!+@()"
-    found_unsupported_characters: list[str] = []
-    for character in unsupported_characters:
-        if character not in normalized_pattern:
-            continue
-        found_unsupported_characters.append(character)
+    found_unsupported_characters = unsupported_glob_constructs(normalized_pattern)
 
     if found_unsupported_characters:
         unsupported_summary = " ".join(found_unsupported_characters)
@@ -225,6 +245,9 @@ def semantic_regression_cases() -> list[dict]:
 
 def check_semantic_regression_cases(taxonomy: dict) -> list[str]:
     failures = check_semantic_matcher_support(taxonomy)
+    if failures:
+        return failures
+
     cases = semantic_regression_cases()
 
     for case in cases:
