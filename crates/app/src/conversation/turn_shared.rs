@@ -27,11 +27,10 @@ const SHELL_FOLLOWUP_STDIO_OMISSION_MARKER: &str = "\n[... omitted ...]\n";
 #[allow(clippy::expect_used)]
 fn strip_think_tags(text: &str) -> String {
     use regex::Regex;
-    static THINK_TAG_RE: std::sync::LazyLock<Regex> =
-        std::sync::LazyLock::new(|| {
-            // Match <think> ... </think> tags (case-insensitive, multiline)
-            Regex::new(r"(?is)<think>.*?</think>").expect("static regex should always compile")
-        });
+    static THINK_TAG_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        // Match <think> ... </think> tags (case-insensitive, multiline)
+        Regex::new(r"(?is)<think>.*?</think>").expect("static regex should always compile")
+    });
     THINK_TAG_RE.replace_all(text, "").to_string()
 }
 
@@ -258,10 +257,15 @@ impl<'a> ToolDrivenReplyKernel<'a> {
         match self.turn_result {
             TurnResult::FinalText(text)
             | TurnResult::StreamingText(text)
-            | TurnResult::StreamingDone(text) => Some(join_non_empty_lines(&[
-                self.assistant_preface,
-                text.as_str(),
-            ])),
+            | TurnResult::StreamingDone(text) => {
+                let trimmed_reply = text.trim();
+                let cleaned_reply = strip_think_tags(trimmed_reply);
+                let cleaned_reply = cleaned_reply.trim().to_owned();
+                Some(join_non_empty_lines(&[
+                    self.assistant_preface,
+                    cleaned_reply.as_str(),
+                ]))
+            }
             TurnResult::NeedsApproval(requirement) => Some(format_approval_required_reply(
                 self.assistant_preface,
                 requirement,
@@ -321,7 +325,7 @@ pub fn compose_assistant_reply(
         TurnResult::FinalText(text)
         | TurnResult::StreamingText(text)
         | TurnResult::StreamingDone(text) => {
-            let cleaned_text = strip_think_tags(&text.trim());
+            let cleaned_text = strip_think_tags(text.trim());
             if had_tool_intents {
                 join_non_empty_lines(&[assistant_preface, cleaned_text.as_str()])
             } else {
@@ -1074,6 +1078,19 @@ mod tests {
             Some(ToolDrivenFollowupPayload::ToolResult {
                 text: "tool output".to_owned(),
             })
+        );
+    }
+
+    #[test]
+    fn tool_driven_reply_kernel_strips_think_tags_from_raw_reply() {
+        let result = TurnResult::FinalText(
+            "<think>internal reasoning</think>\nvisible tool output".to_owned(),
+        );
+        let kernel = ToolDrivenReplyKernel::new("preface", true, &result);
+
+        assert_eq!(
+            kernel.raw_reply(),
+            Some("preface\nvisible tool output".to_owned())
         );
     }
 
@@ -2009,7 +2026,7 @@ mod tests {
 
     #[test]
     fn strip_think_tags_case_insensitive() {
-        let input = "<think>think content</think>Result";
+        let input = "<ThInK>think content</tHiNk>Result";
         assert_eq!(strip_think_tags(input), "Result");
     }
 }
