@@ -2344,7 +2344,9 @@ async fn maybe_compact_context<R: ConversationRuntime + ?Sized>(
         );
         match durable_flush_result {
             Ok(_) => {}
-            Err(_error) if config.conversation.compaction_fail_open() => {}
+            Err(_error) if config.conversation.compaction_fail_open() => {
+                return Ok(ContextCompactionOutcome::FailedOpen);
+            }
             Err(error) => {
                 return Err(format!(
                     "pre-compaction durable memory flush failed: {error}"
@@ -7468,6 +7470,77 @@ mod tests {
         assert_eq!(*compact_calls, 0);
 
         let _ = std::fs::remove_dir_all(&workspace_root);
+        let _ = std::fs::remove_file(&sqlite_path);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn maybe_compact_context_fails_open_when_durable_flush_cannot_write_workspace_export() {
+        let workspace_root_parent = unique_workspace_root("compaction-durable-flush-fail-open");
+        let workspace_root_file = workspace_root_parent.join("workspace-root-file");
+        let sqlite_path = unique_sqlite_path("compaction-durable-flush-fail-open");
+        let runtime = RecordingCompactRuntime::default();
+        let mut config = LoongClawConfig::default();
+
+        std::fs::create_dir_all(&workspace_root_parent).expect("create workspace root parent");
+        std::fs::write(
+            workspace_root_parent.join("AGENTS.md"),
+            "Keep continuity explicit.",
+        )
+        .expect("write AGENTS");
+        std::fs::write(&workspace_root_file, "not a workspace directory")
+            .expect("write workspace root file");
+        config.memory.sqlite_path = sqlite_path.display().to_string();
+        config.tools.file_root = Some(workspace_root_file.display().to_string());
+        config.memory.sliding_window = 1;
+        config.conversation.compact_min_messages = Some(1);
+        config.conversation.compact_trigger_estimated_tokens = Some(1);
+        config.conversation.compact_fail_open = true;
+
+        let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+        crate::memory::append_turn_direct(
+            "session-durable-flush-fail-open",
+            "user",
+            "remember the deployment cutoff",
+            &memory_config,
+        )
+        .expect("append user turn");
+        crate::memory::append_turn_direct(
+            "session-durable-flush-fail-open",
+            "assistant",
+            "deployment cutoff is tonight",
+            &memory_config,
+        )
+        .expect("append assistant turn");
+
+        let kernel_ctx = bootstrap_test_kernel_context("turn-coordinator-compaction", 3600)
+            .expect("bootstrap kernel context");
+        let binding = ConversationRuntimeBinding::from_optional_kernel_context(Some(&kernel_ctx));
+        let runtime_handle = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+        let messages = vec![
+            json!({"role": "system", "content": "sys"}),
+            json!({"role": "user", "content": "trigger compaction"}),
+        ];
+        let outcome = runtime_handle.block_on(maybe_compact_context(
+            &config,
+            &runtime,
+            "session-durable-flush-fail-open",
+            &messages,
+            Some(16),
+            binding,
+        ));
+
+        assert_eq!(
+            outcome.expect("compaction should fail open"),
+            ContextCompactionOutcome::FailedOpen
+        );
+        let compact_calls = runtime.compact_calls.lock().expect("compact lock");
+        assert_eq!(*compact_calls, 0);
+
+        let _ = std::fs::remove_dir_all(&workspace_root_parent);
         let _ = std::fs::remove_file(&sqlite_path);
     }
 

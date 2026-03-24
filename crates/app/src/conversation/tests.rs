@@ -2775,7 +2775,12 @@ async fn handle_turn_with_runtime_records_runtime_self_continuity_before_compact
     let memory_config_for_hook = memory_config.clone();
     let compact_hook: CompactHook = Arc::new(move |hook_session_id, _messages| {
         let hook_repo = SessionRepository::new(&memory_config_for_hook)?;
-        let events = hook_repo.list_recent_events(&session_id_for_hook, 20)?;
+        if hook_session_id != session_id_for_hook {
+            return Err(format!(
+                "compact hook invoked for unexpected session: expected {session_id_for_hook}, got {hook_session_id}"
+            ));
+        }
+        let events = hook_repo.list_recent_events(hook_session_id, 20)?;
         let continuity_event = events
             .iter()
             .find(|event| event.event_kind == "runtime_self_continuity_refreshed");
