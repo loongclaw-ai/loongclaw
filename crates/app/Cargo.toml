@@ -38,6 +38,9 @@ toml = { workspace = true, optional = true }
 reqwest.workspace = true
 scraper = { version = "0.26", optional = true }
 sha2.workspace = true
+hmac = "0.12"
+hex = "0.4"
+subtle = "2.6"
 flate2.workspace = true
 tar.workspace = true
 tokio.workspace = true

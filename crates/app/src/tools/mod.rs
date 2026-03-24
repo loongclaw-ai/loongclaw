@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 
 use crate::KernelContext;
 use crate::config::ToolConfig;
+use crate::crypto::timing_safe_eq;
 use crate::memory::runtime_config::MemoryRuntimeConfig;
 
 pub(crate) mod approval;
@@ -1388,7 +1389,7 @@ fn validate_tool_lease(
         return Err("invalid_tool_lease: malformed lease".to_owned());
     };
     let expected_signature = sign_tool_lease(encoded_claims);
-    if expected_signature != signature {
+    if !timing_safe_eq(expected_signature.as_bytes(), signature.as_bytes()) {
         return Err("invalid_tool_lease: signature mismatch".to_owned());
     }
     let claims_bytes = URL_SAFE_NO_PAD

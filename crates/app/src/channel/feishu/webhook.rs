@@ -27,6 +27,7 @@ use crate::channel::{
     process_inbound_with_provider, runtime_state::ChannelOperationRuntimeTracker,
 };
 use crate::config::{LoongClawConfig, ResolvedFeishuChannelConfig};
+use crate::crypto::timing_safe_eq;
 use crate::feishu::{FeishuClient, resources::cards};
 
 use super::adapter::FeishuAdapter;
@@ -838,7 +839,7 @@ fn verify_feishu_signature(
     hasher.update(raw_body.as_bytes());
     let expected = format!("{:x}", hasher.finalize());
 
-    if expected != signature {
+    if !timing_safe_eq(expected.as_bytes(), signature.as_bytes()) {
         return Err((
             StatusCode::UNAUTHORIZED,
             "unauthorized: feishu signature mismatch".to_owned(),
