@@ -144,7 +144,7 @@ pub(crate) fn read_stage_envelope(
                     Ok(Some(std::path::PathBuf::from(trimmed_path)))
                 }
             }
-            _ => Err(
+            Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_) => Err(
                 "memory.read_stage_envelope payload.workspace_root must be a string or null"
                     .to_owned(),
             ),

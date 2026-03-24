@@ -11973,7 +11973,10 @@ async fn build_messages_routes_memory_context_through_kernel_when_context_provid
         crate::memory::MEMORY_OP_READ_STAGE_ENVELOPE
     );
     assert_eq!(captured[0].payload["session_id"], "session-k-window");
-    assert_eq!(captured[0].payload["profile"], config.memory.profile.as_str());
+    assert_eq!(
+        captured[0].payload["profile"],
+        config.memory.profile.as_str()
+    );
     assert_eq!(
         captured[0].payload["sliding_window"],
         json!(config.memory.sliding_window)
