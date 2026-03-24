@@ -932,12 +932,12 @@ fn channel_registry_collects_serve_actions_for_enabled_channels() {
     );
 
     assert_eq!(actions.len(), 2);
-    assert_eq!(actions[0].label, "telegram");
+    assert_eq!(actions[0].label, "Telegram");
     assert_eq!(
         actions[0].command,
         "loongclaw telegram-serve --config '/tmp/loongclaw-config.toml'"
     );
-    assert_eq!(actions[1].label, "feishu");
+    assert_eq!(actions[1].label, "Feishu/Lark");
     assert_eq!(
         actions[1].command,
         "loongclaw feishu-serve --config '/tmp/loongclaw-config.toml'"

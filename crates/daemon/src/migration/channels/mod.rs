@@ -45,7 +45,7 @@ pub struct ChannelNextAction {
     pub command: String,
 }
 
-const CHANNEL_CATALOG_ACTION_ID: &str = "channel_catalog";
+pub(crate) const CHANNEL_CATALOG_ACTION_ID: &str = "channel_catalog";
 const CHANNEL_CATALOG_ACTION_LABEL: &str = "channels";
 
 struct ChannelAdapter {
@@ -223,7 +223,7 @@ fn collect_configured_runtime_channel_next_actions(
 
             Some(ChannelNextAction {
                 id: surface.catalog.id,
-                label: surface.catalog.id,
+                label: surface.catalog.label,
                 command: crate::cli_handoff::format_subcommand_with_config(
                     serve_operation.command,
                     config_path,
