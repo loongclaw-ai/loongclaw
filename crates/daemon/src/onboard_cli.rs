@@ -7297,6 +7297,11 @@ mod tests {
         config.provider.api_key_env = None;
         config.provider.oauth_access_token = None;
         config.provider.oauth_access_token_env = None;
+        let auth_env_names = config.provider.auth_hint_env_names();
+        let mut env = ScopedEnv::new();
+        for env_name in auth_env_names {
+            env.remove(env_name);
+        }
 
         let check = provider_credential_check(&config);
 
