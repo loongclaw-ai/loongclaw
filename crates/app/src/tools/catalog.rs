@@ -111,6 +111,8 @@ const ROUTINE_HIGH_GOVERNANCE_PROFILE: ToolGovernanceProfile = ToolGovernancePro
     approval_mode: ToolApprovalMode::PolicyDriven,
 };
 
+const FAIL_CLOSED_GOVERNANCE_PROFILE: ToolGovernanceProfile = ROUTINE_HIGH_GOVERNANCE_PROFILE;
+
 const TOPOLOGY_MUTATION_GOVERNANCE_PROFILE: ToolGovernanceProfile = ToolGovernanceProfile {
     scope: ToolGovernanceScope::TopologyMutation,
     risk_class: ToolRiskClass::High,
@@ -146,7 +148,7 @@ pub fn governance_profile_for_tool_name(tool_name: &str) -> ToolGovernanceProfil
     let catalog = tool_catalog();
     let descriptor = catalog.resolve(tool_name);
     let Some(descriptor) = descriptor else {
-        return ROUTINE_LOW_GOVERNANCE_PROFILE;
+        return FAIL_CLOSED_GOVERNANCE_PROFILE;
     };
     descriptor.governance_profile()
 }
@@ -469,7 +471,7 @@ pub fn tool_catalog() -> ToolCatalog {
             availability: ToolAvailability::Runtime,
             exposure: ToolExposureClass::Discoverable,
             visibility_gate: ToolVisibilityGate::Always,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
+            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
             provider_definition_builder: external_skills_policy_definition,
         },
         ToolDescriptor {
@@ -2914,9 +2916,18 @@ mod tests {
             ToolApprovalMode::PolicyDriven
         );
 
+        let external_skills_policy = governance_profile_for_tool_name("external_skills.policy");
+
+        assert_eq!(external_skills_policy.scope, ToolGovernanceScope::Routine);
+        assert_eq!(external_skills_policy.risk_class, ToolRiskClass::High);
+        assert_eq!(
+            external_skills_policy.approval_mode,
+            ToolApprovalMode::PolicyDriven
+        );
+
         let unknown_policy = governance_profile_for_tool_name("unknown.tool");
 
-        assert_eq!(unknown_policy, ROUTINE_LOW_GOVERNANCE_PROFILE);
+        assert_eq!(unknown_policy, FAIL_CLOSED_GOVERNANCE_PROFILE);
     }
 
     #[cfg(feature = "tool-browser")]
@@ -2927,6 +2938,50 @@ mod tests {
         assert_eq!(policy.scope, ToolGovernanceScope::Routine);
         assert_eq!(policy.risk_class, ToolRiskClass::High);
         assert_eq!(policy.approval_mode, ToolApprovalMode::PolicyDriven);
+    }
+
+    #[cfg(feature = "tool-shell")]
+    #[test]
+    fn governance_profile_resolves_alias_distinct_from_provider_name() {
+        let catalog = tool_catalog();
+        let descriptor = catalog
+            .descriptor("shell.exec")
+            .expect("shell.exec descriptor");
+        let expected_policy = governance_profile_for_descriptor(descriptor);
+        let alias_policy = governance_profile_for_tool_name("shell");
+
+        assert_ne!(descriptor.provider_name, "shell");
+        assert!(descriptor.aliases.contains(&"shell"));
+        assert_eq!(alias_policy, expected_policy);
+    }
+
+    #[test]
+    fn tool_catalog_lookup_tokens_are_globally_unambiguous() {
+        let catalog = tool_catalog();
+        let mut token_owners = std::collections::BTreeMap::new();
+
+        for descriptor in catalog.descriptors() {
+            let owner = descriptor.name;
+            let mut lookup_tokens = BTreeSet::new();
+
+            lookup_tokens.insert(descriptor.name);
+            lookup_tokens.insert(descriptor.provider_name);
+
+            for alias in descriptor.aliases {
+                lookup_tokens.insert(*alias);
+            }
+
+            for token in lookup_tokens {
+                let previous_owner = token_owners.insert(token, owner);
+
+                if let Some(previous_owner) = previous_owner {
+                    assert_eq!(
+                        previous_owner, owner,
+                        "lookup token `{token}` resolves to both `{previous_owner}` and `{owner}`"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
