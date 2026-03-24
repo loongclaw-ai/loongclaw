@@ -1849,6 +1849,7 @@ mod tests {
     static FEISHU_TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     use super::*;
+    use crate::test_support::ScopedEnv;
     use mvp::channel::{
         ChannelOperationHealth, ChannelOperationRuntime, ChannelOperationStatus,
         ChannelStatusSnapshot,
@@ -3085,6 +3086,11 @@ mod tests {
         config.provider.api_key_env = None;
         config.provider.oauth_access_token = None;
         config.provider.oauth_access_token_env = None;
+        let auth_env_names = config.provider.auth_hint_env_names();
+        let mut env = ScopedEnv::new();
+        for env_name in auth_env_names {
+            env.remove(env_name);
+        }
 
         let check = provider_credentials_doctor_check(&config, false);
 
