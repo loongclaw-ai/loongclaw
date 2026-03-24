@@ -10,7 +10,7 @@
 
 ---
 
-### Task 1: Add the failing tests for deterministic durable flush behavior
+## Task 1: Add the failing tests for deterministic durable flush behavior
 
 **Files:**
 - Modify: `crates/app/src/conversation/tests.rs`
@@ -35,9 +35,13 @@ cargo test -p loongclaw-app pre_compaction
 Expected:
 - at least one new test fails because no durable flush exists yet
 
-**Step 3: Commit the red state only after confirming failure locally**
+**Step 3: Reproduce the red state locally without committing it**
 
-Do not commit implementation code in this task.
+Run the failing case locally, capture the command and failure signal, and keep
+that state local while you debug. If you need scratch work, use a private WIP
+branch or an unpushed local commit. Do not commit or push a broken tree. Before
+any shared commit, rerun `cargo test --workspace --all-features` and bring the
+tree back to green.
 
 ### Task 2: Add helper plumbing for pre-compaction export
 
@@ -142,16 +146,18 @@ cargo test -p loongclaw-app --lib
 cargo clippy -p loongclaw-app --all-targets --all-features -- -D warnings
 ```
 
-**Step 4: Run workspace verification if the stacked base is still valid**
-
-Preferred:
+**Step 4: Run workspace verification**
 
 ```bash
 cargo test --workspace --locked
 cargo test --workspace --all-features --locked
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
-If plain `dev` remains blocked by unrelated open stacked prerequisites, rerun the same verification on the known-good stacked verification worktree and record that evidence explicitly.
+Expected:
+- workspace-level tests and lint pass on the final branch state
+- if an unrelated blocker appears, stop, investigate, and record the blocker
+  explicitly before claiming completion
 
 ### Task 6: Commit the implementation cleanly
 
