@@ -28,6 +28,11 @@ enum RuntimeSelfTruncationCause {
     TotalBudget,
 }
 
+struct TruncatedRuntimeSelfSourceContent {
+    rendered_content: String,
+    budgeted_chars: usize,
+}
+
 const RUNTIME_SELF_SOURCE_SPECS: &[RuntimeSelfSourceSpec] = &[
     RuntimeSelfSourceSpec {
         relative_path: "AGENTS.md",
@@ -95,17 +100,14 @@ pub(crate) fn load_runtime_self_model_with_config(
     let mut remaining_total_chars = tool_runtime_config.runtime_self.max_total_chars;
 
     for (candidate_path, lane) in source_candidates {
-        if remaining_total_chars == 0 {
-            break;
-        }
-
         let Some(content) =
             read_runtime_self_source(workspace_root, &candidate_path, tool_runtime_config)
         else {
             continue;
         };
 
-        ingest_runtime_self_source(
+        let budget_was_exhausted = remaining_total_chars == 0;
+        let appended_content = ingest_runtime_self_source(
             &mut model,
             &mut loaded_paths,
             &mut remaining_total_chars,
@@ -114,6 +116,10 @@ pub(crate) fn load_runtime_self_model_with_config(
             content.as_str(),
             tool_runtime_config,
         );
+
+        if budget_was_exhausted && appended_content {
+            break;
+        }
     }
 
     model
@@ -220,11 +226,11 @@ pub(crate) fn ingest_runtime_self_source(
     path: &Path,
     content: &str,
     tool_runtime_config: &crate::tools::runtime_config::ToolRuntimeConfig,
-) {
+) -> bool {
     let path_key = normalized_path_key(path);
     let inserted = loaded_paths.insert(path_key);
     if !inserted {
-        return;
+        return false;
     }
 
     let truncated_content = truncate_runtime_self_source_content(
@@ -234,12 +240,16 @@ pub(crate) fn ingest_runtime_self_source(
         tool_runtime_config,
     );
     let Some(truncated_content) = truncated_content else {
-        return;
+        return false;
     };
 
-    let stored_char_count = truncated_content.chars().count();
-    *remaining_total_chars = remaining_total_chars.saturating_sub(stored_char_count);
-    append_runtime_self_content(model, lane, truncated_content);
+    let budgeted_chars = truncated_content.budgeted_chars;
+    let rendered_content = truncated_content.rendered_content;
+
+    *remaining_total_chars = remaining_total_chars.saturating_sub(budgeted_chars);
+    append_runtime_self_content(model, lane, rendered_content);
+
+    true
 }
 
 pub(crate) fn append_runtime_self_content(
@@ -271,17 +281,33 @@ fn truncate_runtime_self_source_content(
     content: &str,
     remaining_total_chars: usize,
     tool_runtime_config: &crate::tools::runtime_config::ToolRuntimeConfig,
-) -> Option<String> {
+) -> Option<TruncatedRuntimeSelfSourceContent> {
+    if remaining_total_chars == 0 {
+        let source_label = runtime_self_source_label(path);
+        let rendered_content = runtime_self_truncation_notice_text(
+            source_label.as_str(),
+            RuntimeSelfTruncationCause::TotalBudget,
+        );
+        let budgeted_chars = 0;
+
+        return Some(TruncatedRuntimeSelfSourceContent {
+            rendered_content,
+            budgeted_chars,
+        });
+    }
+
     let runtime_self_policy = &tool_runtime_config.runtime_self;
     let max_source_chars = runtime_self_policy.max_source_chars;
     let effective_limit = max_source_chars.min(remaining_total_chars);
-    if effective_limit == 0 {
-        return None;
-    }
-
     let content_char_count = content.chars().count();
     if content_char_count <= effective_limit {
-        return Some(content.to_owned());
+        let rendered_content = content.to_owned();
+        let budgeted_chars = content_char_count;
+
+        return Some(TruncatedRuntimeSelfSourceContent {
+            rendered_content,
+            budgeted_chars,
+        });
     }
 
     let total_budget_is_tighter = remaining_total_chars < max_source_chars;
@@ -291,23 +317,36 @@ fn truncate_runtime_self_source_content(
         RuntimeSelfTruncationCause::SourceBudget
     };
     let source_label = runtime_self_source_label(path);
-    let truncation_notice = runtime_self_truncation_notice(source_label.as_str(), truncation_cause);
+    let truncation_notice =
+        runtime_self_truncation_notice_text(source_label.as_str(), truncation_cause);
     let notice_char_count = truncation_notice.chars().count();
+    let separator = "\n\n";
+    let separator_char_count = separator.chars().count();
+    let minimum_notice_limit = notice_char_count + separator_char_count + 1;
 
-    if effective_limit <= notice_char_count {
-        let fallback_content = take_runtime_self_prefix(content, effective_limit);
-        let trimmed_fallback = fallback_content.trim();
-        if trimmed_fallback.is_empty() {
-            return None;
-        }
+    if effective_limit < minimum_notice_limit {
+        let rendered_content = compact_runtime_self_truncation_notice(
+            source_label.as_str(),
+            truncation_cause,
+            effective_limit,
+        );
+        let budgeted_chars = effective_limit;
 
-        return Some(trimmed_fallback.to_owned());
+        return Some(TruncatedRuntimeSelfSourceContent {
+            rendered_content,
+            budgeted_chars,
+        });
     }
 
-    let prefix_limit = effective_limit - notice_char_count;
+    let prefix_limit = effective_limit - notice_char_count - separator_char_count;
     let content_prefix = take_runtime_self_prefix(content, prefix_limit);
-    let rendered_content = format!("{content_prefix}{truncation_notice}");
-    Some(rendered_content)
+    let rendered_content = format!("{content_prefix}{separator}{truncation_notice}");
+    let budgeted_chars = effective_limit;
+
+    Some(TruncatedRuntimeSelfSourceContent {
+        rendered_content,
+        budgeted_chars,
+    })
 }
 
 fn runtime_self_source_label(path: &Path) -> String {
@@ -317,7 +356,7 @@ fn runtime_self_source_label(path: &Path) -> String {
     file_name.to_owned()
 }
 
-fn runtime_self_truncation_notice(
+fn runtime_self_truncation_notice_text(
     source_label: &str,
     truncation_cause: RuntimeSelfTruncationCause,
 ) -> String {
@@ -326,7 +365,40 @@ fn runtime_self_truncation_notice(
         RuntimeSelfTruncationCause::TotalBudget => "remaining total budget",
     };
 
-    format!("\n\n[runtime self source truncated: {source_label} exceeded the {budget_label}]")
+    format!("[runtime self source truncated: {source_label} exceeded the {budget_label}]")
+}
+
+fn compact_runtime_self_truncation_notice(
+    source_label: &str,
+    truncation_cause: RuntimeSelfTruncationCause,
+    max_chars: usize,
+) -> String {
+    let detailed_notice = runtime_self_truncation_notice_text(source_label, truncation_cause);
+    if detailed_notice.chars().count() <= max_chars {
+        return detailed_notice;
+    }
+
+    let source_notice = format!("[runtime self truncated: {source_label}]");
+    if source_notice.chars().count() <= max_chars {
+        return source_notice;
+    }
+
+    let generic_notice = "[runtime self truncated]".to_owned();
+    if generic_notice.chars().count() <= max_chars {
+        return generic_notice;
+    }
+
+    let compact_notice = "[truncated]".to_owned();
+    if compact_notice.chars().count() <= max_chars {
+        return compact_notice;
+    }
+
+    let ellipsis = "...".to_owned();
+    if ellipsis.chars().count() <= max_chars {
+        return ellipsis;
+    }
+
+    ".".repeat(max_chars)
 }
 
 fn take_runtime_self_prefix(content: &str, max_chars: usize) -> String {
@@ -352,6 +424,24 @@ fn push_rendered_lane(sections: &mut Vec<String>, heading: &str, entries: &[Stri
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    fn runtime_self_tool_runtime_config(
+        workspace_root: &Path,
+        max_source_chars: usize,
+        max_total_chars: usize,
+    ) -> crate::tools::runtime_config::ToolRuntimeConfig {
+        let runtime_self_policy =
+            crate::tools::runtime_config::RuntimeSelfRuntimePolicy::from_limits(
+                max_source_chars,
+                max_total_chars,
+            );
+
+        crate::tools::runtime_config::ToolRuntimeConfig {
+            file_root: Some(workspace_root.to_path_buf()),
+            runtime_self: runtime_self_policy,
+            ..crate::tools::runtime_config::ToolRuntimeConfig::default()
+        }
+    }
 
     #[cfg(unix)]
     fn create_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
@@ -593,6 +683,55 @@ mod tests {
             !rendered_user_context.contains(nested_tail_marker),
             "later runtime-self sources should not bypass the total budget"
         );
+    }
+
+    #[test]
+    fn load_runtime_self_model_marks_fully_omitted_later_sources_after_exact_budget_fit() {
+        let temp_dir = tempdir().expect("tempdir");
+        let workspace_root = temp_dir.path();
+        let agents_path = workspace_root.join("AGENTS.md");
+        let user_path = workspace_root.join("USER.md");
+        let agents_text = "a".repeat(1_024);
+        let user_text = "later user context should still surface a truncation notice";
+        let total_budget = agents_text.chars().count();
+        let tool_runtime_config =
+            runtime_self_tool_runtime_config(workspace_root, 10_000, total_budget);
+
+        std::fs::write(&agents_path, &agents_text).expect("write AGENTS");
+        std::fs::write(&user_path, user_text).expect("write USER");
+
+        let model = load_runtime_self_model_with_config(workspace_root, &tool_runtime_config);
+        let rendered_user_context = model.user_context.join("\n\n");
+
+        assert_eq!(model.standing_instructions, vec![agents_text]);
+        assert!(rendered_user_context.contains("runtime self source truncated"));
+        assert!(rendered_user_context.contains("USER.md"));
+        assert!(rendered_user_context.contains("remaining total budget"));
+    }
+
+    #[test]
+    fn load_runtime_self_model_uses_compact_notice_when_remaining_budget_cannot_fit_full_notice() {
+        let temp_dir = tempdir().expect("tempdir");
+        let workspace_root = temp_dir.path();
+        let agents_path = workspace_root.join("AGENTS.md");
+        let user_path = workspace_root.join("USER.md");
+        let agents_text = "a".repeat(1_024);
+        let compact_budget = 24usize;
+        let raw_user_prefix = "later user context raw p";
+        let user_text =
+            "later user context raw prefix should not leak into compact truncation rendering";
+        let total_budget = agents_text.chars().count() + compact_budget;
+        let tool_runtime_config =
+            runtime_self_tool_runtime_config(workspace_root, 10_000, total_budget);
+
+        std::fs::write(&agents_path, &agents_text).expect("write AGENTS");
+        std::fs::write(&user_path, user_text).expect("write USER");
+
+        let model = load_runtime_self_model_with_config(workspace_root, &tool_runtime_config);
+        let rendered_user_context = model.user_context.join("\n\n");
+
+        assert!(rendered_user_context.contains("runtime self truncated"));
+        assert!(!rendered_user_context.contains(raw_user_prefix));
     }
 
     #[cfg(unix)]
