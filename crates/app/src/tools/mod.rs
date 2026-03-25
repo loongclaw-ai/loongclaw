@@ -38,6 +38,7 @@ mod kernel_adapter;
 #[cfg(feature = "tool-file")]
 mod memory_tools;
 pub(crate) mod messaging;
+mod payload;
 mod provider_switch;
 pub mod runtime_config;
 mod session;

@@ -9,6 +9,8 @@ use tokio::time::{Duration, Instant, sleep};
 use loongclaw_contracts::{ToolCoreOutcome, ToolCoreRequest};
 use serde_json::{Value, json};
 
+use super::payload::{optional_payload_limit, optional_payload_string, required_payload_string};
+
 use crate::config::{SessionVisibility, ToolConfig};
 #[cfg(feature = "memory-sqlite")]
 use crate::conversation::ConstrainedSubagentExecution;
@@ -420,7 +422,7 @@ fn execute_session_events(
     config: &MemoryRuntimeConfig,
     tool_config: &ToolConfig,
 ) -> Result<ToolCoreOutcome, String> {
-    let target_session_id = required_payload_string(&payload, "session_id")?;
+    let target_session_id = required_payload_string(&payload, "session_id", "session tool")?;
     let default_limit = tool_config.sessions.history_limit.min(50);
     let limit = optional_payload_limit(
         &payload,
@@ -464,7 +466,7 @@ fn execute_sessions_history(
     config: &MemoryRuntimeConfig,
     tool_config: &ToolConfig,
 ) -> Result<ToolCoreOutcome, String> {
-    let target_session_id = required_payload_string(&payload, "session_id")?;
+    let target_session_id = required_payload_string(&payload, "session_id", "session tool")?;
     let default_limit = tool_config.sessions.history_limit.min(50);
     let limit = optional_payload_limit(
         &payload,
@@ -2178,16 +2180,6 @@ fn ensure_visible(
     ))
 }
 
-fn required_payload_string(payload: &Value, field: &str) -> Result<String, String> {
-    payload
-        .get(field)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| format!("session tool requires payload.{field}"))
-}
-
 #[cfg(feature = "memory-sqlite")]
 fn normalize_required_session_id(session_id: &str) -> Result<String, String> {
     let trimmed = session_id.trim();
@@ -2238,14 +2230,6 @@ fn legacy_single_session_id(session_ids: &[String]) -> Result<&str, String> {
     session_ids.first().map(String::as_str).ok_or_else(|| {
         "session_tool_internal_error: legacy single request missing session id".to_owned()
     })
-}
-
-fn optional_payload_limit(payload: &Value, field: &str, default: usize, max: usize) -> usize {
-    payload
-        .get(field)
-        .and_then(Value::as_u64)
-        .map(|value| value.clamp(1, max as u64) as usize)
-        .unwrap_or(default)
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -2309,15 +2293,6 @@ fn optional_payload_session_kind(
         "delegate_child" => Ok(Some(SessionKind::DelegateChild)),
         _ => Err(format!("invalid session tool payload.{field}: `{raw}`")),
     }
-}
-
-fn optional_payload_string(payload: &Value, field: &str) -> Option<String> {
-    payload
-        .get(field)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
 }
 
 #[cfg(feature = "memory-sqlite")]
