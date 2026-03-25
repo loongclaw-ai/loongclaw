@@ -745,18 +745,24 @@ impl ToolConfig {
                 let mut vars = std::collections::BTreeMap::new();
                 vars.insert("tool_name".to_owned(), key.clone());
                 vars.insert("actual_value".to_owned(), value.to_string());
+                let env_tool_name: String = key
+                    .chars()
+                    .map(|ch| {
+                        if ch.is_ascii_alphanumeric() {
+                            ch.to_ascii_uppercase()
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect();
                 issues.push(super::shared::ConfigValidationIssue {
                     severity: super::shared::ConfigValidationSeverity::Error,
                     code: super::shared::ConfigValidationCode::NumericRange,
                     field_path: format!("tools.tool_execution.per_tool_timeout[\"{key}\"]"),
                     inline_field_path: format!("tools.tool_execution.per_tool_timeout[\"{key}\"]"),
-                    example_env_name: format!(
-                        "LOONGCLAW_TOOL_{}_TIMEOUT_SECONDS",
-                        key.to_uppercase()
-                    ),
+                    example_env_name: format!("LOONGCLAW_TOOL_{env_tool_name}_TIMEOUT_SECONDS"),
                     suggested_env_name: Some(format!(
-                        "LOONGCLAW_TOOL_{}_TIMEOUT_SECONDS",
-                        key.to_uppercase()
+                        "LOONGCLAW_TOOL_{env_tool_name}_TIMEOUT_SECONDS"
                     )),
                     extra_message_variables: vars,
                 });
