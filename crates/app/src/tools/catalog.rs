@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::sync::OnceLock;
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -365,7 +366,7 @@ impl ToolCatalog {
     }
 }
 
-pub fn tool_catalog() -> ToolCatalog {
+fn build_tool_catalog() -> ToolCatalog {
     let mut descriptors = vec![
         ToolDescriptor {
             name: "tool.search",
@@ -909,6 +910,12 @@ pub fn tool_catalog() -> ToolCatalog {
 
     descriptors.sort_by(|left, right| left.name.cmp(right.name));
     ToolCatalog { descriptors }
+}
+
+pub fn tool_catalog() -> &'static ToolCatalog {
+    static TOOL_CATALOG: OnceLock<ToolCatalog> = OnceLock::new();
+
+    TOOL_CATALOG.get_or_init(build_tool_catalog)
 }
 
 pub fn runtime_tool_view() -> ToolView {
