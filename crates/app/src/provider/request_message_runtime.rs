@@ -228,17 +228,14 @@ async fn load_runtime_self_model_with_binding(
     let mut remaining_total_chars = tool_runtime_config.runtime_self.max_total_chars;
 
     for (candidate_path, lane) in source_candidates {
-        if remaining_total_chars == 0 {
-            break;
-        }
-
         let Some(content) =
             read_runtime_self_source_via_kernel(workspace_root, &candidate_path, kernel_ctx).await
         else {
             continue;
         };
 
-        runtime_self::ingest_runtime_self_source(
+        let budget_was_exhausted = remaining_total_chars == 0;
+        let appended_content = runtime_self::ingest_runtime_self_source(
             &mut model,
             &mut loaded_paths,
             &mut remaining_total_chars,
@@ -247,6 +244,10 @@ async fn load_runtime_self_model_with_binding(
             content.as_str(),
             tool_runtime_config,
         );
+
+        if budget_was_exhausted && appended_content {
+            break;
+        }
     }
 
     model
@@ -535,6 +536,22 @@ mod tests {
     use crate::test_support::TurnTestHarness;
     use tempfile::tempdir;
 
+    fn runtime_self_system_content(messages: &[Value]) -> &str {
+        let runtime_self_message = messages
+            .iter()
+            .find(|message| {
+                message["role"] == "system"
+                    && message["content"]
+                        .as_str()
+                        .is_some_and(|content| content.contains("## Runtime Self Context"))
+            })
+            .expect("runtime self system message");
+
+        runtime_self_message["content"]
+            .as_str()
+            .expect("runtime self content")
+    }
+
     #[test]
     fn build_system_message_returns_none_when_disabled() {
         let config = LoongClawConfig::default();
@@ -580,6 +597,63 @@ mod tests {
             !has_tool_plane_event,
             "disabled system prompts should not trigger runtime-self tool reads"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn build_base_messages_with_binding_emits_total_budget_notice_for_omitted_later_sources()
+    {
+        let harness = TurnTestHarness::new();
+        let agents_path = harness.temp_dir.join("AGENTS.md");
+        let user_path = harness.temp_dir.join("USER.md");
+        let agents_text = "a".repeat(1_024);
+        let user_text = "later user context should still surface a truncation notice";
+        let total_budget = agents_text.chars().count();
+        let mut config = LoongClawConfig::default();
+
+        std::fs::write(&agents_path, &agents_text).expect("write AGENTS");
+        std::fs::write(&user_path, user_text).expect("write USER");
+
+        config.tools.file_root = Some(harness.temp_dir.display().to_string());
+        config.tools.runtime_self.max_source_chars = 10_000;
+        config.tools.runtime_self.max_total_chars = total_budget;
+
+        let binding = ProviderRuntimeBinding::kernel(&harness.kernel_ctx);
+        let messages = build_base_messages_with_binding(&config, true, binding).await;
+        let runtime_self_content = runtime_self_system_content(&messages);
+
+        assert!(runtime_self_content.contains(&agents_text));
+        assert!(runtime_self_content.contains("runtime self source truncated"));
+        assert!(runtime_self_content.contains("USER.md"));
+        assert!(runtime_self_content.contains("remaining total budget"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn build_base_messages_with_binding_uses_compact_notice_when_remaining_budget_is_tiny() {
+        let harness = TurnTestHarness::new();
+        let agents_path = harness.temp_dir.join("AGENTS.md");
+        let user_path = harness.temp_dir.join("USER.md");
+        let agents_text = "a".repeat(1_024);
+        let compact_budget = 24usize;
+        let raw_user_prefix = "later user context raw p";
+        let user_text =
+            "later user context raw prefix should not leak into compact truncation rendering";
+        let total_budget = agents_text.chars().count() + compact_budget;
+        let mut config = LoongClawConfig::default();
+
+        std::fs::write(&agents_path, &agents_text).expect("write AGENTS");
+        std::fs::write(&user_path, user_text).expect("write USER");
+
+        config.tools.file_root = Some(harness.temp_dir.display().to_string());
+        config.tools.runtime_self.max_source_chars = 10_000;
+        config.tools.runtime_self.max_total_chars = total_budget;
+
+        let binding = ProviderRuntimeBinding::kernel(&harness.kernel_ctx);
+        let messages = build_base_messages_with_binding(&config, true, binding).await;
+        let runtime_self_content = runtime_self_system_content(&messages);
+
+        assert!(runtime_self_content.contains(&agents_text));
+        assert!(runtime_self_content.contains("runtime self truncated"));
+        assert!(!runtime_self_content.contains(raw_user_prefix));
     }
 
     #[test]
@@ -1108,18 +1182,7 @@ mod tests {
         let messages = build_messages_for_session(&config, "runtime-self-budget-session", true)
             .expect("build messages");
 
-        let runtime_self_message = messages
-            .iter()
-            .find(|message| {
-                message["role"] == "system"
-                    && message["content"]
-                        .as_str()
-                        .is_some_and(|content| content.contains("## Runtime Self Context"))
-            })
-            .expect("runtime self system message");
-        let runtime_self_content = runtime_self_message["content"]
-            .as_str()
-            .expect("runtime self content");
+        let runtime_self_content = runtime_self_system_content(&messages);
 
         assert!(runtime_self_content.contains(prefix));
         assert!(runtime_self_content.contains("runtime self source truncated"));
