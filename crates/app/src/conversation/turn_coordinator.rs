@@ -3050,7 +3050,6 @@ async fn resolve_provider_turn_reply<R: ConversationRuntime + ?Sized>(
     let mut current_continue_phase = continue_phase.clone();
     let mut remaining_provider_rounds = remaining_provider_rounds.max(1);
     let mut provider_round_index = 0usize;
-    let kernel_ctx = binding.kernel_context();
 
     loop {
         let current_provider_round = provider_round_index.saturating_add(1);
@@ -3073,7 +3072,7 @@ async fn resolve_provider_turn_reply<R: ConversationRuntime + ?Sized>(
                         &current_preparation.session.messages,
                     ),
                 }),
-                kernel_ctx,
+                binding,
             )
             .await;
         }
@@ -3208,7 +3207,7 @@ async fn resolve_provider_turn_reply<R: ConversationRuntime + ?Sized>(
                             "followup_estimated_tokens": followup_request_estimated_tokens,
                             "followup_added_estimated_tokens": followup_added_estimated_tokens,
                         }),
-                        kernel_ctx,
+                        binding,
                     )
                     .await;
                     match decide_provider_turn_request_action(
@@ -3247,7 +3246,7 @@ async fn resolve_provider_turn_reply<R: ConversationRuntime + ?Sized>(
                                         .lane_execution
                                         .raw_tool_output_requested,
                                 }),
-                                kernel_ctx,
+                                binding,
                             )
                             .await;
                             if let Some(reply) = turn_loop_state
@@ -3294,7 +3293,7 @@ async fn resolve_provider_turn_reply<R: ConversationRuntime + ?Sized>(
                                         .lane_execution
                                         .raw_tool_output_requested,
                                 }),
-                                kernel_ctx,
+                                binding,
                             )
                             .await;
                             let checkpoint = current_continue_phase.checkpoint(
@@ -3502,11 +3501,10 @@ async fn emit_discovery_first_event<R: ConversationRuntime + ?Sized>(
     session_id: &str,
     event_name: &str,
     payload: Value,
-    kernel_ctx: Option<&KernelContext>,
+    binding: ConversationRuntimeBinding<'_>,
 ) {
-    let binding = ConversationRuntimeBinding::from_optional_kernel_context(kernel_ctx);
     let _ = persist_conversation_event(runtime, session_id, event_name, payload, binding).await;
-    if let Some(ctx) = kernel_ctx {
+    if let Some(ctx) = binding.kernel_context() {
         let _ = ctx.kernel.record_audit_event(
             Some(ctx.agent_id()),
             AuditEventKind::PlaneInvoked {
@@ -4509,8 +4507,20 @@ where
         descriptor: &crate::tools::ToolDescriptor,
         kernel_ctx: Option<&KernelContext>,
     ) -> Result<Option<super::turn_engine::ApprovalRequirement>, String> {
+        let binding = ConversationRuntimeBinding::from_optional_kernel_context(kernel_ctx);
+        self.maybe_require_approval_with_binding(session_context, intent, descriptor, binding)
+            .await
+    }
+
+    async fn maybe_require_approval_with_binding(
+        &self,
+        session_context: &SessionContext,
+        intent: &ToolIntent,
+        descriptor: &crate::tools::ToolDescriptor,
+        binding: ConversationRuntimeBinding<'_>,
+    ) -> Result<Option<super::turn_engine::ApprovalRequirement>, String> {
         self.fallback
-            .maybe_require_approval(session_context, intent, descriptor, kernel_ctx)
+            .maybe_require_approval_with_binding(session_context, intent, descriptor, binding)
             .await
     }
 
@@ -5851,7 +5861,7 @@ async fn evaluate_safe_lane_round(
         turn.tool_intents.as_slice(),
         session_context,
         app_dispatcher,
-        binding.kernel_context(),
+        binding,
         ingress,
         config.conversation.safe_lane_verify_output_non_empty,
         state.seed_tool_outputs.clone(),
@@ -7020,7 +7030,7 @@ struct SafeLanePlanNodeExecutor<'a> {
     tool_intents: &'a [ToolIntent],
     session_context: &'a SessionContext,
     app_dispatcher: &'a dyn AppToolDispatcher,
-    kernel_ctx: Option<&'a KernelContext>,
+    binding: ConversationRuntimeBinding<'a>,
     ingress: Option<&'a ConversationIngressContext>,
     verify_output_non_empty: bool,
     tool_outputs: Mutex<Vec<String>>,
@@ -7032,7 +7042,7 @@ impl<'a> SafeLanePlanNodeExecutor<'a> {
         tool_intents: &'a [ToolIntent],
         session_context: &'a SessionContext,
         app_dispatcher: &'a dyn AppToolDispatcher,
-        kernel_ctx: Option<&'a KernelContext>,
+        binding: ConversationRuntimeBinding<'a>,
         ingress: Option<&'a ConversationIngressContext>,
         verify_output_non_empty: bool,
         seed_tool_outputs: Vec<String>,
@@ -7042,7 +7052,7 @@ impl<'a> SafeLanePlanNodeExecutor<'a> {
             tool_intents,
             session_context,
             app_dispatcher,
-            kernel_ctx,
+            binding,
             ingress,
             verify_output_non_empty,
             tool_outputs: Mutex::new(seed_tool_outputs),
@@ -7071,7 +7081,7 @@ impl PlanNodeExecutor for SafeLanePlanNodeExecutor<'_> {
                     intent,
                     self.session_context,
                     self.app_dispatcher,
-                    self.kernel_ctx,
+                    self.binding,
                     self.ingress,
                     self.tool_result_payload_summary_limit_chars,
                 )
@@ -7115,7 +7125,7 @@ async fn execute_single_tool_intent(
     intent: &ToolIntent,
     session_context: &SessionContext,
     app_dispatcher: &dyn AppToolDispatcher,
-    kernel_ctx: Option<&KernelContext>,
+    binding: ConversationRuntimeBinding<'_>,
     ingress: Option<&ConversationIngressContext>,
     payload_summary_limit_chars: usize,
 ) -> Result<String, PlanNodeError> {
@@ -7127,13 +7137,7 @@ async fn execute_single_tool_intent(
     };
 
     match engine
-        .execute_turn_in_context(
-            &turn,
-            session_context,
-            app_dispatcher,
-            ConversationRuntimeBinding::from_optional_kernel_context(kernel_ctx),
-            ingress,
-        )
+        .execute_turn_in_context(&turn, session_context, app_dispatcher, binding, ingress)
         .await
     {
         TurnResult::FinalText(output) => Ok(output),
@@ -7171,6 +7175,43 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::Mutex as StdMutex;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn execute_single_tool_intent_direct_binding_reports_no_kernel_context() {
+        let (tool_name, args_json) = crate::tools::synthesize_test_provider_tool_call_with_scope(
+            "file.read",
+            json!({
+                "path": "README.md",
+            }),
+            Some("root-session"),
+            Some("turn-direct-core"),
+        );
+        let intent = ToolIntent {
+            tool_name,
+            args_json,
+            source: "provider_tool_call".to_owned(),
+            session_id: "root-session".to_owned(),
+            turn_id: "turn-direct-core".to_owned(),
+            tool_call_id: "call-direct-core".to_owned(),
+        };
+        let session_context = SessionContext::root_with_tool_view(
+            "root-session",
+            crate::tools::planned_root_tool_view(),
+        );
+        let error = execute_single_tool_intent(
+            &intent,
+            &session_context,
+            &crate::conversation::NoopAppToolDispatcher,
+            ConversationRuntimeBinding::direct(),
+            None,
+            2_048,
+        )
+        .await
+        .expect_err("direct core execution should fail closed without kernel context");
+
+        assert_eq!(error.kind, PlanNodeErrorKind::PolicyDenied);
+        assert_eq!(error.message, "no_kernel_context");
+    }
 
     fn unique_sqlite_path(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
