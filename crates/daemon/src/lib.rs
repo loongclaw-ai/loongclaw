@@ -858,11 +858,31 @@ fn parse_multi_channel_serve_channel_account(
 }
 
 fn supported_multi_channel_serve_channel_ids() -> Vec<&'static str> {
-    let supported_channels = mvp::config::service_channel_descriptors()
+    let supported_channels = mvp::channel::background_channel_runtime_descriptors()
         .into_iter()
-        .map(|descriptor| descriptor.id)
+        .map(|descriptor| descriptor.channel_id)
         .collect::<BTreeSet<_>>();
     supported_channels.into_iter().collect()
+}
+
+#[cfg(test)]
+mod multi_channel_serve_tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+
+    #[test]
+    fn supported_multi_channel_serve_channel_ids_follow_background_runtime_registry() {
+        let expected_ids = mvp::channel::background_channel_runtime_descriptors()
+            .into_iter()
+            .map(|descriptor| descriptor.channel_id)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let actual_ids = supported_multi_channel_serve_channel_ids();
+
+        assert_eq!(actual_ids, expected_ids);
+    }
 }
 
 fn resolved_default_entry_config_path() -> PathBuf {

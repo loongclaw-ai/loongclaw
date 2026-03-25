@@ -56,6 +56,7 @@ pub use runtime::{
     validate_file_with_locale, write, write_template,
 };
 pub(crate) use runtime::{normalize_dispatch_account_id, normalize_dispatch_channel_id};
+pub(crate) use shared::ConfigValidationIssue;
 #[allow(unused_imports)]
 pub use shared::{CLI_COMMAND_NAME, expand_path};
 #[allow(unused_imports)]

@@ -143,6 +143,31 @@ That means:
 This keeps runtime ownership aligned with the same source of truth that powers
 catalog, doctor, and inventory views.
 
+### 6.1 Internal SDK Owns Concrete Integration Wiring
+
+LoongClaw now uses an internal compile-time channel SDK at
+`crates/app/src/channel/sdk.rs` for channels that have real config, validation,
+or background runtime support.
+
+That SDK is intentionally smaller than a dynamic plugin system. It owns:
+
+- shared `ChannelDescriptor` metadata used by config and migration surfaces
+- config enablement and validation hooks for concrete channel integrations
+- background runtime eligibility checks for multi-channel supervisors
+- the runtime-backed registry descriptors that should participate in account
+  snapshots and runtime status views
+
+This means:
+
+- runtime-backed channels must be added through the SDK instead of daemon-local
+  registration tables
+- `cli` can stay SDK-managed without appearing in the channel catalog
+- planned or stub channels stay registry-only until there is real config or
+  runtime ownership to wire up
+
+The goal is to minimize future channel-integration edits without prematurely
+committing LoongClaw to a dynamic external plugin boundary.
+
 ### 7. High-Quality Stubs Are Valid Platform Entries
 
 A stub channel is still expected to be a first-class catalog entry.
@@ -183,14 +208,17 @@ When introducing a new real channel implementation:
 
 1. Add static operation descriptors with capability, availability, doctor, and
    requirement metadata.
-2. Add a registry descriptor with canonical id, aliases, transport, and runtime
-   builder.
+2. Add an SDK integration descriptor that wires shared config metadata,
+   validation, background enablement, and the runtime-backed registry
+   descriptor.
 3. Implement the runtime snapshot builder that produces
    `ChannelStatusSnapshot` values.
-4. Verify that `channel_catalog`, `channel_surfaces`, text rendering, and
+4. Verify that `channel_catalog`, `channel_surfaces`, text rendering,
    `doctor` all pick up the new metadata through shared inventory assembly.
-5. Add regression tests for registry lookup, JSON surfaces, text rendering, and
-   doctor behavior.
+5. Verify that config and multi-channel supervisor flows pick up the new channel
+   through the shared SDK instead of daemon-local registration edits.
+6. Add regression tests for registry lookup, JSON surfaces, text rendering,
+   config/service descriptor order, and doctor behavior.
 
 If the new channel uses an exclusive long-connection transport, the runtime
 contract should also make that exclusivity visible in operator status and send
@@ -223,6 +251,8 @@ The following patterns violate the contract:
   knows
 - adding per-channel supervisor hook fields when runtime-backed runner lookup
   can be keyed by canonical channel id instead
+- adding new daemon-local background registration tables for channels that are
+  already described by the SDK
 - hiding stub channels from catalog surfaces until runtime code exists
 - introducing runtime builders for channels that have no runtime state
 - modeling a shipped long-connection surface as webhook-style static metadata

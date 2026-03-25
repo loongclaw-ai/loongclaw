@@ -60,42 +60,6 @@ impl fmt::Display for BackgroundChannelSurface {
     }
 }
 
-struct BackgroundChannelRegistration {
-    runtime: mvp::channel::ChannelRuntimeCommandDescriptor,
-    is_enabled: fn(&mvp::config::LoongClawConfig, Option<&str>) -> CliResult<bool>,
-}
-
-const BACKGROUND_CHANNEL_REGISTRATIONS: [BackgroundChannelRegistration; 4] = [
-    BackgroundChannelRegistration {
-        runtime: mvp::channel::TELEGRAM_RUNTIME_COMMAND_DESCRIPTOR,
-        is_enabled: telegram_surface_is_enabled,
-    },
-    BackgroundChannelRegistration {
-        runtime: mvp::channel::FEISHU_RUNTIME_COMMAND_DESCRIPTOR,
-        is_enabled: feishu_surface_is_enabled,
-    },
-    BackgroundChannelRegistration {
-        runtime: mvp::channel::MATRIX_RUNTIME_COMMAND_DESCRIPTOR,
-        is_enabled: matrix_surface_is_enabled,
-    },
-    BackgroundChannelRegistration {
-        runtime: mvp::channel::WECOM_RUNTIME_COMMAND_DESCRIPTOR,
-        is_enabled: wecom_surface_is_enabled,
-    },
-];
-
-fn background_channel_registrations() -> &'static [BackgroundChannelRegistration] {
-    &BACKGROUND_CHANNEL_REGISTRATIONS
-}
-
-fn find_background_channel_registration(
-    channel_id: &str,
-) -> Option<&'static BackgroundChannelRegistration> {
-    background_channel_registrations()
-        .iter()
-        .find(|registration| registration.runtime.channel_id == channel_id)
-}
-
 fn collect_multi_channel_account_overrides(
     channel_accounts: &[MultiChannelServeChannelAccount],
 ) -> Result<BTreeMap<String, String>, String> {
@@ -244,16 +208,22 @@ impl SupervisorSpec {
         let account_overrides = collect_multi_channel_account_overrides(channel_accounts)?;
         let mut surfaces = Vec::new();
 
-        for registration in background_channel_registrations() {
+        let runtime_descriptors = mvp::channel::background_channel_runtime_descriptors();
+
+        for runtime_descriptor in runtime_descriptors {
             let selected_account_id = account_overrides
-                .get(registration.runtime.channel_id)
+                .get(runtime_descriptor.channel_id)
                 .map(String::as_str);
-            let surface_is_enabled = (registration.is_enabled)(config, selected_account_id)?;
+            let surface_is_enabled = mvp::channel::is_background_channel_surface_enabled(
+                runtime_descriptor.channel_id,
+                config,
+                selected_account_id,
+            )?;
             if !surface_is_enabled {
                 continue;
             }
 
-            let surface = BackgroundChannelSurface::new(registration.runtime, selected_account_id);
+            let surface = BackgroundChannelSurface::new(runtime_descriptor, selected_account_id);
             surfaces.push(surface);
         }
 
@@ -720,51 +690,6 @@ enum BackgroundTaskExit {
     },
 }
 
-fn telegram_surface_is_enabled(
-    config: &mvp::config::LoongClawConfig,
-    account_id: Option<&str>,
-) -> CliResult<bool> {
-    if !config.telegram.enabled {
-        return Ok(false);
-    }
-    Ok(config.telegram.resolve_account(account_id)?.enabled)
-}
-
-fn feishu_surface_is_enabled(
-    config: &mvp::config::LoongClawConfig,
-    account_id: Option<&str>,
-) -> CliResult<bool> {
-    if !config.feishu.enabled {
-        return Ok(false);
-    }
-    Ok(mvp::feishu::resolve_requested_feishu_account(
-        &config.feishu,
-        account_id,
-        "rerun with `--account <configured_account_id>` using one of those configured accounts",
-    )?
-    .enabled)
-}
-
-fn matrix_surface_is_enabled(
-    config: &mvp::config::LoongClawConfig,
-    account_id: Option<&str>,
-) -> CliResult<bool> {
-    if !config.matrix.enabled {
-        return Ok(false);
-    }
-    Ok(config.matrix.resolve_account(account_id)?.enabled)
-}
-
-fn wecom_surface_is_enabled(
-    config: &mvp::config::LoongClawConfig,
-    account_id: Option<&str>,
-) -> CliResult<bool> {
-    if !config.wecom.enabled {
-        return Ok(false);
-    }
-    Ok(config.wecom.resolve_account(account_id)?.enabled)
-}
-
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -817,21 +742,14 @@ pub async fn run_multi_channel_serve_with_hooks_for_test(
 
     for surface in &spec.surfaces {
         supervisor.mark_surface_running(surface, now_ms())?;
-        let channel_registration = find_background_channel_registration(surface.channel_id())
-            .ok_or_else(|| {
-                format!(
-                    "missing background channel registration for `{}`",
-                    surface.channel_id()
-                )
-            })?;
         let run_background_channel = hooks
             .background_channel_runners
-            .get(channel_registration.runtime.channel_id)
+            .get(surface.channel_id())
             .cloned()
             .ok_or_else(|| {
                 format!(
                     "missing background channel runner for `{}`",
-                    channel_registration.runtime.channel_id
+                    surface.channel_id()
                 )
             })?;
         let stop_handle = mvp::channel::ChannelServeStopHandle::new();

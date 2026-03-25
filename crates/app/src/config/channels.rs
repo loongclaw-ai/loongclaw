@@ -4,6 +4,8 @@ use loongclaw_contracts::SecretRef;
 use serde::{Deserialize, Serialize};
 
 use crate::CliResult;
+use crate::channel::sdk;
+pub use crate::channel::sdk::{ChannelDescriptor, ChannelRuntimeKind};
 use crate::prompt::{
     DEFAULT_PROMPT_PACK_ID, PromptPersonality, PromptRenderInput, render_default_system_prompt,
     render_system_prompt,
@@ -25,12 +27,6 @@ pub(crate) const MATRIX_ACCESS_TOKEN_ENV: &str = "MATRIX_ACCESS_TOKEN";
 pub(crate) const WECOM_BOT_ID_ENV: &str = "WECOM_BOT_ID";
 pub(crate) const WECOM_SECRET_ENV: &str = "WECOM_SECRET";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChannelRuntimeKind {
-    Interactive,
-    Service,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TelegramStreamingMode {
@@ -39,103 +35,12 @@ pub enum TelegramStreamingMode {
     Draft,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChannelDescriptor {
-    pub id: &'static str,
-    pub label: &'static str,
-    pub surface_label: &'static str,
-    pub runtime_kind: ChannelRuntimeKind,
-    pub serve_subcommand: Option<&'static str>,
-}
-
-#[derive(Clone, Copy)]
-struct ChannelCatalogEntry {
-    descriptor: &'static ChannelDescriptor,
-    is_enabled: fn(&LoongClawConfig) -> bool,
-    collect_validation_issues: fn(&LoongClawConfig) -> Vec<ConfigValidationIssue>,
-}
-
-const CLI_CHANNEL_DESCRIPTOR: ChannelDescriptor = ChannelDescriptor {
-    id: "cli",
-    label: "cli",
-    surface_label: "cli channel",
-    runtime_kind: ChannelRuntimeKind::Interactive,
-    serve_subcommand: None,
-};
-
-const TELEGRAM_CHANNEL_DESCRIPTOR: ChannelDescriptor = ChannelDescriptor {
-    id: "telegram",
-    label: "telegram",
-    surface_label: "telegram channel",
-    runtime_kind: ChannelRuntimeKind::Service,
-    serve_subcommand: Some("telegram-serve"),
-};
-
-const FEISHU_CHANNEL_DESCRIPTOR: ChannelDescriptor = ChannelDescriptor {
-    id: "feishu",
-    label: "feishu",
-    surface_label: "feishu channel",
-    runtime_kind: ChannelRuntimeKind::Service,
-    serve_subcommand: Some("feishu-serve"),
-};
-
-const MATRIX_CHANNEL_DESCRIPTOR: ChannelDescriptor = ChannelDescriptor {
-    id: "matrix",
-    label: "matrix",
-    surface_label: "matrix channel",
-    runtime_kind: ChannelRuntimeKind::Service,
-    serve_subcommand: Some("matrix-serve"),
-};
-
-const WECOM_CHANNEL_DESCRIPTOR: ChannelDescriptor = ChannelDescriptor {
-    id: "wecom",
-    label: "wecom",
-    surface_label: "wecom channel",
-    runtime_kind: ChannelRuntimeKind::Service,
-    serve_subcommand: Some("wecom-serve"),
-};
-
-const CHANNEL_CATALOG: [ChannelCatalogEntry; 5] = [
-    ChannelCatalogEntry {
-        descriptor: &CLI_CHANNEL_DESCRIPTOR,
-        is_enabled: cli_is_enabled,
-        collect_validation_issues: collect_cli_validation_issues,
-    },
-    ChannelCatalogEntry {
-        descriptor: &TELEGRAM_CHANNEL_DESCRIPTOR,
-        is_enabled: telegram_is_enabled,
-        collect_validation_issues: collect_telegram_validation_issues,
-    },
-    ChannelCatalogEntry {
-        descriptor: &FEISHU_CHANNEL_DESCRIPTOR,
-        is_enabled: feishu_is_enabled,
-        collect_validation_issues: collect_feishu_validation_issues,
-    },
-    ChannelCatalogEntry {
-        descriptor: &MATRIX_CHANNEL_DESCRIPTOR,
-        is_enabled: matrix_is_enabled,
-        collect_validation_issues: collect_matrix_validation_issues,
-    },
-    ChannelCatalogEntry {
-        descriptor: &WECOM_CHANNEL_DESCRIPTOR,
-        is_enabled: wecom_is_enabled,
-        collect_validation_issues: collect_wecom_validation_issues,
-    },
-];
-
 pub fn channel_descriptor(id: &str) -> Option<&'static ChannelDescriptor> {
-    CHANNEL_CATALOG
-        .iter()
-        .map(|channel| channel.descriptor)
-        .find(|descriptor| descriptor.id == id)
+    sdk::channel_descriptor(id)
 }
 
 pub fn service_channel_descriptors() -> Vec<&'static ChannelDescriptor> {
-    CHANNEL_CATALOG
-        .iter()
-        .map(|channel| channel.descriptor)
-        .filter(|descriptor| descriptor.runtime_kind == ChannelRuntimeKind::Service)
-        .collect()
+    sdk::service_channel_descriptors()
 }
 
 pub(super) fn enabled_channel_ids(config: &LoongClawConfig) -> Vec<String> {
@@ -150,63 +55,13 @@ fn enabled_channel_ids_for_runtime_kind(
     config: &LoongClawConfig,
     runtime_kind: Option<ChannelRuntimeKind>,
 ) -> Vec<String> {
-    CHANNEL_CATALOG
-        .iter()
-        .filter(|channel| {
-            (channel.is_enabled)(config)
-                && runtime_kind.is_none_or(|kind| channel.descriptor.runtime_kind == kind)
-        })
-        .map(|channel| channel.descriptor.id.to_owned())
-        .collect()
+    sdk::enabled_channel_ids(config, runtime_kind)
 }
 
 pub(super) fn collect_channel_validation_issues(
     config: &LoongClawConfig,
 ) -> Vec<ConfigValidationIssue> {
-    CHANNEL_CATALOG
-        .iter()
-        .flat_map(|channel| (channel.collect_validation_issues)(config))
-        .collect()
-}
-
-fn cli_is_enabled(config: &LoongClawConfig) -> bool {
-    config.cli.enabled
-}
-
-fn telegram_is_enabled(config: &LoongClawConfig) -> bool {
-    config.telegram.enabled
-}
-
-fn feishu_is_enabled(config: &LoongClawConfig) -> bool {
-    config.feishu.enabled
-}
-
-fn matrix_is_enabled(config: &LoongClawConfig) -> bool {
-    config.matrix.enabled
-}
-
-fn wecom_is_enabled(config: &LoongClawConfig) -> bool {
-    config.wecom.enabled
-}
-
-fn collect_cli_validation_issues(_config: &LoongClawConfig) -> Vec<ConfigValidationIssue> {
-    Vec::new()
-}
-
-fn collect_telegram_validation_issues(config: &LoongClawConfig) -> Vec<ConfigValidationIssue> {
-    config.telegram.validate()
-}
-
-fn collect_feishu_validation_issues(config: &LoongClawConfig) -> Vec<ConfigValidationIssue> {
-    config.feishu.validate()
-}
-
-fn collect_matrix_validation_issues(config: &LoongClawConfig) -> Vec<ConfigValidationIssue> {
-    config.matrix.validate()
-}
-
-fn collect_wecom_validation_issues(config: &LoongClawConfig) -> Vec<ConfigValidationIssue> {
-    config.wecom.validate()
+    sdk::collect_channel_validation_issues(config)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -812,7 +667,7 @@ impl Default for TelegramChannelConfig {
 }
 
 impl TelegramChannelConfig {
-    pub(super) fn validate(&self) -> Vec<ConfigValidationIssue> {
+    pub(crate) fn validate(&self) -> Vec<ConfigValidationIssue> {
         let mut issues = Vec::new();
         validate_channel_account_integrity(
             &mut issues,
@@ -1070,7 +925,7 @@ impl Default for WecomChannelConfig {
 }
 
 impl FeishuChannelConfig {
-    pub(super) fn validate(&self) -> Vec<ConfigValidationIssue> {
+    pub(crate) fn validate(&self) -> Vec<ConfigValidationIssue> {
         let mut issues = Vec::new();
         validate_channel_account_integrity(
             &mut issues,
@@ -1391,7 +1246,7 @@ impl FeishuChannelConfig {
 }
 
 impl MatrixChannelConfig {
-    pub(super) fn validate(&self) -> Vec<ConfigValidationIssue> {
+    pub(crate) fn validate(&self) -> Vec<ConfigValidationIssue> {
         let mut issues = Vec::new();
         validate_channel_account_integrity(
             &mut issues,
@@ -1577,7 +1432,7 @@ impl MatrixChannelConfig {
 }
 
 impl WecomChannelConfig {
-    pub(super) fn validate(&self) -> Vec<ConfigValidationIssue> {
+    pub(crate) fn validate(&self) -> Vec<ConfigValidationIssue> {
         let mut issues = Vec::new();
         validate_channel_account_integrity(
             &mut issues,

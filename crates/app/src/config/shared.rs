@@ -232,14 +232,14 @@ impl ConfigValidationCode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ConfigValidationIssue {
-    pub severity: ConfigValidationSeverity,
-    pub code: ConfigValidationCode,
-    pub field_path: String,
-    pub inline_field_path: String,
-    pub example_env_name: String,
-    pub suggested_env_name: Option<String>,
-    pub extra_message_variables: BTreeMap<String, String>,
+pub(crate) struct ConfigValidationIssue {
+    pub(super) severity: ConfigValidationSeverity,
+    pub(super) code: ConfigValidationCode,
+    pub(super) field_path: String,
+    pub(super) inline_field_path: String,
+    pub(super) example_env_name: String,
+    pub(super) suggested_env_name: Option<String>,
+    pub(super) extra_message_variables: BTreeMap<String, String>,
 }
 
 impl ConfigValidationIssue {

@@ -108,6 +108,7 @@ mod feishu;
 mod matrix;
 mod registry;
 mod runtime_state;
+pub(crate) mod sdk;
 #[cfg(feature = "channel-telegram")]
 mod telegram;
 #[cfg(feature = "channel-wecom")]
@@ -137,6 +138,7 @@ pub use registry::{
 };
 pub use runtime_state::ChannelOperationRuntime;
 use runtime_state::ChannelOperationRuntimeTracker;
+pub use sdk::{background_channel_runtime_descriptors, is_background_channel_surface_enabled};
 
 #[derive(Debug, Clone, Default)]
 pub struct ChannelDelivery {

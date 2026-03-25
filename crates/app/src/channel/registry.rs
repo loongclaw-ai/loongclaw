@@ -10,7 +10,9 @@ use crate::config::{
     WECOM_BOT_ID_ENV, WECOM_SECRET_ENV,
 };
 
-use super::{ChannelCatalogTargetKind, ChannelOperationRuntime, ChannelPlatform, runtime_state};
+use super::{
+    ChannelCatalogTargetKind, ChannelOperationRuntime, ChannelPlatform, runtime_state, sdk,
+};
 
 pub const CHANNEL_OPERATION_SEND_ID: &str = "send";
 pub const CHANNEL_OPERATION_SERVE_ID: &str = "serve";
@@ -362,22 +364,22 @@ pub struct ChannelSurface {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ChannelRuntimeDescriptor {
+pub(crate) struct ChannelRuntimeDescriptor {
     family: ChannelCommandFamilyDescriptor,
     snapshot_builder: ChannelSnapshotBuilder,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ChannelRegistryOperationDescriptor {
+pub(crate) struct ChannelRegistryOperationDescriptor {
     operation: ChannelCatalogOperation,
     doctor_checks: &'static [ChannelDoctorCheckSpec],
 }
 
-type ChannelSnapshotBuilder =
+pub(crate) type ChannelSnapshotBuilder =
     fn(&ChannelRegistryDescriptor, &LoongClawConfig, &Path, u64) -> Vec<ChannelStatusSnapshot>;
 
 #[derive(Debug, Clone, Copy)]
-struct ChannelRegistryDescriptor {
+pub(crate) struct ChannelRegistryDescriptor {
     id: &'static str,
     runtime: Option<ChannelRuntimeDescriptor>,
     selection_order: u16,
@@ -2954,7 +2956,7 @@ const WEBCHAT_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboar
     repair_command: None,
 };
 
-const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
+pub(crate) const TELEGRAM_CHANNEL_REGISTRY_DESCRIPTOR: ChannelRegistryDescriptor =
     ChannelRegistryDescriptor {
         id: "telegram",
         runtime: Some(ChannelRuntimeDescriptor {
@@ -2971,7 +2973,9 @@ const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
         transport: "telegram_bot_api_polling",
         onboarding: TELEGRAM_ONBOARDING_DESCRIPTOR,
         operations: TELEGRAM_OPERATIONS,
-    },
+    };
+
+pub(crate) const FEISHU_CHANNEL_REGISTRY_DESCRIPTOR: ChannelRegistryDescriptor =
     ChannelRegistryDescriptor {
         id: "feishu",
         runtime: Some(ChannelRuntimeDescriptor {
@@ -2988,7 +2992,9 @@ const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
         transport: "feishu_openapi_webhook_or_websocket",
         onboarding: FEISHU_ONBOARDING_DESCRIPTOR,
         operations: FEISHU_OPERATIONS,
-    },
+    };
+
+pub(crate) const MATRIX_CHANNEL_REGISTRY_DESCRIPTOR: ChannelRegistryDescriptor =
     ChannelRegistryDescriptor {
         id: "matrix",
         runtime: Some(ChannelRuntimeDescriptor {
@@ -3005,7 +3011,9 @@ const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
         transport: "matrix_client_server_sync",
         onboarding: MATRIX_ONBOARDING_DESCRIPTOR,
         operations: MATRIX_OPERATIONS,
-    },
+    };
+
+pub(crate) const WECOM_CHANNEL_REGISTRY_DESCRIPTOR: ChannelRegistryDescriptor =
     ChannelRegistryDescriptor {
         id: "wecom",
         runtime: Some(ChannelRuntimeDescriptor {
@@ -3022,7 +3030,13 @@ const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
         transport: "wecom_aibot_long_connection",
         onboarding: WECOM_ONBOARDING_DESCRIPTOR,
         operations: WECOM_OPERATIONS,
-    },
+    };
+
+const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
+    TELEGRAM_CHANNEL_REGISTRY_DESCRIPTOR,
+    FEISHU_CHANNEL_REGISTRY_DESCRIPTOR,
+    MATRIX_CHANNEL_REGISTRY_DESCRIPTOR,
+    WECOM_CHANNEL_REGISTRY_DESCRIPTOR,
     ChannelRegistryDescriptor {
         id: "discord",
         runtime: None,
@@ -3569,10 +3583,9 @@ fn channel_status_snapshots_with_now(
 }
 
 fn runtime_backed_channel_registry_descriptors() -> Vec<&'static ChannelRegistryDescriptor> {
-    sorted_channel_registry_descriptors()
-        .into_iter()
-        .filter(|descriptor| descriptor.runtime.is_some())
-        .collect()
+    let mut descriptors = sdk::runtime_backed_channel_registry_descriptors();
+    descriptors.sort_by_key(|descriptor| (descriptor.selection_order, descriptor.id));
+    descriptors
 }
 
 fn build_telegram_snapshots(
