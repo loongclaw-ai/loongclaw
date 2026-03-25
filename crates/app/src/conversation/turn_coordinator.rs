@@ -85,8 +85,8 @@ use super::turn_engine::{
     TurnValidation, effective_result_tool_name,
 };
 use super::turn_observer::{
-    ConversationTurnObserverHandle, ConversationTurnPhaseEvent, ConversationTurnToolEvent,
-    build_observer_streaming_token_callback,
+    ConversationTurnObserverHandle, ConversationTurnPhase, ConversationTurnPhaseEvent,
+    ConversationTurnToolEvent, build_observer_streaming_token_callback,
 };
 use super::turn_shared::{
     ProviderTurnRequestAction, ReplyPersistenceMode, ReplyResolutionMode, ToolDrivenFollowupKind,
@@ -2121,12 +2121,17 @@ impl ConversationTurnCoordinator {
         ingress: Option<&ConversationIngressContext>,
         observer: Option<ConversationTurnObserverHandle>,
     ) -> CliResult<String> {
-        let turn_result: CliResult<String> = async {
+        let turn_result: CliResult<(String, bool)> = async {
             let session_id = address.session_id.as_str();
-            match evaluate_acp_conversation_turn_entry_for_address(config, address, acp_options)? {
+            let preparing_event = ConversationTurnPhaseEvent::preparing();
+            observe_turn_phase(observer.as_ref(), preparing_event);
+
+            let acp_entry_decision =
+                evaluate_acp_conversation_turn_entry_for_address(config, address, acp_options)?;
+            match acp_entry_decision {
                 AcpConversationTurnEntryDecision::RejectExplicitWhenDisabled => {
                     let error = "ACP is disabled by policy (`acp.enabled=false`)".to_owned();
-                    return match error_mode {
+                    let turn_result = match error_mode {
                         ProviderErrorMode::Propagate => Err(error),
                         ProviderErrorMode::InlineMessage => {
                             let synthetic = format_provider_error_reply(&error);
@@ -2142,9 +2147,11 @@ impl ConversationTurnCoordinator {
                             Ok(synthetic)
                         }
                     };
+                    let reply = turn_result?;
+                    return Ok((reply, true));
                 }
                 AcpConversationTurnEntryDecision::RouteViaAcp => {
-                    return self
+                    let reply = self
                         .handle_turn_via_acp(
                             config,
                             address,
@@ -2154,12 +2161,11 @@ impl ConversationTurnCoordinator {
                             acp_options,
                             binding,
                         )
-                        .await;
+                        .await?;
+                    return Ok((reply, true));
                 }
                 AcpConversationTurnEntryDecision::StayOnProvider => {}
             }
-
-            observe_turn_phase(observer.as_ref(), ConversationTurnPhaseEvent::preparing());
 
             if let Some(kernel_ctx) = binding.kernel_context() {
                 runtime.bootstrap(config, session_id, kernel_ctx).await?;
@@ -2233,14 +2239,22 @@ impl ConversationTurnCoordinator {
                 observer.as_ref(),
             )
             .await
+            .map(|reply| (reply, false))
         }
         .await;
 
-        if turn_result.is_err() {
-            observe_turn_phase(observer.as_ref(), ConversationTurnPhaseEvent::failed());
+        match turn_result {
+            Ok((reply, true)) => {
+                observe_non_provider_turn_terminal_success_phases(observer.as_ref());
+                Ok(reply)
+            }
+            Ok((reply, false)) => Ok(reply),
+            Err(error) => {
+                let failed_event = ConversationTurnPhaseEvent::failed();
+                observe_turn_phase(observer.as_ref(), failed_event);
+                Err(error)
+            }
         }
-
-        turn_result
     }
 
     fn reload_followup_provider_config_after_tool_turn(
@@ -2636,6 +2650,30 @@ fn observe_turn_phase(
     };
 
     observer.on_phase(event);
+}
+
+fn observe_non_provider_turn_terminal_success_phases(
+    observer: Option<&ConversationTurnObserverHandle>,
+) {
+    let finalizing_event = ConversationTurnPhaseEvent {
+        phase: ConversationTurnPhase::FinalizingReply,
+        provider_round: None,
+        lane: None,
+        tool_call_count: 0,
+        message_count: None,
+        estimated_tokens: None,
+    };
+    observe_turn_phase(observer, finalizing_event);
+
+    let completed_event = ConversationTurnPhaseEvent {
+        phase: ConversationTurnPhase::Completed,
+        provider_round: None,
+        lane: None,
+        tool_call_count: 0,
+        message_count: None,
+        estimated_tokens: None,
+    };
+    observe_turn_phase(observer, completed_event);
 }
 
 fn observe_provider_turn_tool_batch_started(
@@ -7415,6 +7453,69 @@ mod tests {
         assert_eq!(token_events.len(), 1);
         assert_eq!(token_events[0].event_type, "text_delta");
         assert_eq!(token_events[0].delta.text.as_deref(), Some("draft"));
+    }
+
+    #[tokio::test]
+    async fn handle_turn_with_observer_emits_lifecycle_for_explicit_acp_inline_message() {
+        let config = LoongClawConfig::default();
+        let runtime = ObserverStreamingRuntime::default();
+        let observer = Arc::new(RecordingTurnObserver::default());
+        let observer_handle: ConversationTurnObserverHandle = observer.clone();
+        let acp_options = AcpConversationTurnOptions::explicit();
+        let address = ConversationSessionAddress::from_session_id("observer-session");
+        let reply = ConversationTurnCoordinator::new()
+            .handle_turn_with_runtime_and_address_and_acp_options_and_ingress_and_observer(
+                &config,
+                &address,
+                "say hello",
+                ProviderErrorMode::InlineMessage,
+                &runtime,
+                &acp_options,
+                ConversationRuntimeBinding::direct(),
+                None,
+                Some(observer_handle),
+            )
+            .await
+            .expect("ACP inline reply should succeed");
+
+        let expected_reply =
+            format_provider_error_reply("ACP is disabled by policy (`acp.enabled=false`)");
+        assert_eq!(reply, expected_reply);
+
+        let phase_events = observer
+            .phase_events
+            .lock()
+            .expect("phase event lock should not be poisoned");
+        let phase_names = phase_events
+            .iter()
+            .map(|event| event.phase)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            phase_names,
+            vec![
+                ConversationTurnPhase::Preparing,
+                ConversationTurnPhase::FinalizingReply,
+                ConversationTurnPhase::Completed,
+            ]
+        );
+
+        let tool_events = observer
+            .tool_events
+            .lock()
+            .expect("tool event lock should not be poisoned");
+        assert!(tool_events.is_empty());
+
+        let token_events = observer
+            .token_events
+            .lock()
+            .expect("token event lock should not be poisoned");
+        assert!(token_events.is_empty());
+
+        let streaming_calls = runtime
+            .streaming_calls
+            .lock()
+            .expect("streaming call lock should not be poisoned");
+        assert_eq!(*streaming_calls, 0);
     }
 
     #[test]

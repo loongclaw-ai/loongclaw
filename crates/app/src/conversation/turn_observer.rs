@@ -358,4 +358,24 @@ mod tests {
         assert!(tool_call.name.is_none());
         assert!(tool_call.id.is_none());
     }
+
+    #[test]
+    fn map_streaming_callback_data_to_token_event_keeps_tool_call_start_shape() {
+        let data = crate::provider::StreamingCallbackData::ToolCallStart {
+            index: 1,
+            name: "search".to_owned(),
+            id: "call_123".to_owned(),
+        };
+        let event = map_streaming_callback_data_to_token_event(data);
+        let tool_call = event
+            .delta
+            .tool_call
+            .expect("tool call delta should be present");
+
+        assert_eq!(event.event_type, "tool_call_start");
+        assert_eq!(event.index, Some(1));
+        assert_eq!(tool_call.name.as_deref(), Some("search"));
+        assert_eq!(tool_call.id.as_deref(), Some("call_123"));
+        assert!(tool_call.args.is_none());
+    }
 }
