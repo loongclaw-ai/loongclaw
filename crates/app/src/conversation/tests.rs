@@ -11158,7 +11158,7 @@ async fn turn_engine_injects_browser_scope_into_kernel_request() {
             adapter: None,
         },
         allowed_connectors: BTreeSet::new(),
-        granted_capabilities: BTreeSet::from([Capability::InvokeTool]),
+        granted_capabilities: BTreeSet::from([Capability::InvokeTool, Capability::NetworkEgress]),
         metadata: BTreeMap::new(),
     };
     kernel.register_pack(pack).expect("register pack");
@@ -14716,7 +14716,7 @@ async fn handle_turn_with_runtime_child_session_injects_runtime_narrowing_into_k
             adapter: None,
         },
         allowed_connectors: BTreeSet::new(),
-        granted_capabilities: BTreeSet::from([Capability::InvokeTool]),
+        granted_capabilities: BTreeSet::from([Capability::InvokeTool, Capability::NetworkEgress]),
         metadata: BTreeMap::new(),
     };
     kernel.register_pack(pack).expect("register pack");
