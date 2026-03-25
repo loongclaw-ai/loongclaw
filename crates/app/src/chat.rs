@@ -21,6 +21,8 @@ use crate::acp::{
 use crate::context::{DEFAULT_TOKEN_TTL_S, bootstrap_kernel_context_with_config};
 
 use super::config::{self, ConversationConfig, LoongClawConfig};
+#[cfg(test)]
+use super::conversation::TurnCheckpointTailRepairRuntimeProbe;
 use super::conversation::{
     ConversationRuntimeBinding, ConversationSessionAddress, ConversationTurnCoordinator,
     ProviderErrorMode, resolve_context_engine_selection,
@@ -35,7 +37,7 @@ use super::conversation::{
     TurnCheckpointDiagnostics, TurnCheckpointEventSummary, TurnCheckpointFailureStep,
     TurnCheckpointProgressStatus, TurnCheckpointRecoveryAction, TurnCheckpointRecoveryAssessment,
     TurnCheckpointSessionState, TurnCheckpointStage, TurnCheckpointTailRepairOutcome,
-    TurnCheckpointTailRepairReason, TurnCheckpointTailRepairRuntimeProbe,
+    TurnCheckpointTailRepairReason, TurnCheckpointTailRepairStatus,
 };
 #[cfg(feature = "memory-sqlite")]
 use super::conversation::{load_fast_lane_tool_batch_event_summary, load_safe_lane_event_summary};
@@ -44,8 +46,8 @@ use super::memory;
 #[cfg(feature = "memory-sqlite")]
 use super::memory::runtime_config::MemoryRuntimeConfig;
 use super::tui_surface::{
-    TuiActionSpec, TuiCalloutTone, TuiHeaderStyle, TuiKeyValueSpec, TuiMessageSpec, TuiScreenSpec,
-    TuiSectionSpec, render_tui_message_spec, render_tui_screen_spec,
+    TuiActionSpec, TuiCalloutTone, TuiChoiceSpec, TuiHeaderStyle, TuiKeyValueSpec, TuiMessageSpec,
+    TuiScreenSpec, TuiSectionSpec, render_tui_message_spec, render_tui_screen_spec,
 };
 
 pub const DEFAULT_FIRST_PROMPT: &str = "Summarize this repository and suggest the best next step.";
@@ -241,17 +243,19 @@ pub async fn run_cli_chat(
 
     if !config_exists {
         let onboard_hint = format_onboard_command_hint(config_path, &resolved_config_path);
-        println!("Welcome to LoongClaw!");
-        println!();
-        println!("No configuration found. Would you like to run the setup wizard now? [Y/n]");
+        let render_width = detect_cli_chat_render_width();
+        let rendered_lines =
+            render_cli_chat_missing_config_lines_with_width(&onboard_hint, render_width);
+
+        print_rendered_cli_chat_lines(&rendered_lines);
 
         let mut input = String::new();
         let read = io::stdin()
             .read_line(&mut input)
             .map_err(|e| format!("read stdin failed: {e}"))?;
-        let input = input.trim().to_ascii_lowercase();
+        let should_run_onboard = should_run_missing_config_onboard(read, &input);
 
-        if read > 0 && matches!(input.as_str(), "y" | "yes") {
+        if should_run_onboard {
             let mut onboard = build_onboard_command(config_path, &resolved_config_path)?;
 
             let exit_status = onboard
@@ -264,7 +268,12 @@ pub async fn run_cli_chat(
                 return Err(format!("onboard exited with code {:?}", exit_status.code()));
             }
         } else {
-            println!("You can run '{onboard_hint}' later to get started.");
+            let rendered_lines = render_cli_chat_missing_config_decline_lines_with_width(
+                &onboard_hint,
+                render_width,
+            );
+
+            print_rendered_cli_chat_lines(&rendered_lines);
         }
         return Ok(());
     }
@@ -464,6 +473,9 @@ fn resolve_cli_session_id(
 #[allow(clippy::print_stdout)] // CLI output
 async fn print_turn_checkpoint_startup_health(runtime: &CliTurnRuntime) {
     #[cfg(feature = "memory-sqlite")]
+    let render_width = detect_cli_chat_render_width();
+
+    #[cfg(feature = "memory-sqlite")]
     match runtime
         .turn_coordinator
         .load_turn_checkpoint_diagnostics(
@@ -474,23 +486,22 @@ async fn print_turn_checkpoint_startup_health(runtime: &CliTurnRuntime) {
         .await
     {
         Ok(diagnostics) => {
-            if let Some(health) =
-                format_turn_checkpoint_startup_health(&runtime.session_id, &diagnostics)
-            {
-                println!("{health}");
-                if let Some(probe) = diagnostics.runtime_probe() {
-                    println!(
-                        "{}",
-                        format_turn_checkpoint_runtime_probe(&runtime.session_id, probe)
-                    );
-                }
+            if let Some(rendered_lines) = render_turn_checkpoint_startup_health_lines_with_width(
+                &runtime.session_id,
+                &diagnostics,
+                render_width,
+            ) {
+                print_rendered_cli_chat_lines(&rendered_lines);
             }
         }
         Err(error) => {
-            println!(
-                "turn_checkpoint_health session={} state=unavailable error={error}",
-                runtime.session_id
+            let rendered_lines = render_turn_checkpoint_health_error_lines_with_width(
+                &runtime.session_id,
+                &error,
+                render_width,
             );
+
+            print_rendered_cli_chat_lines(&rendered_lines);
         }
     }
 }
@@ -700,6 +711,103 @@ fn build_cli_chat_startup_summary(
 fn render_cli_chat_startup_lines(summary: &CliChatStartupSummary) -> Vec<String> {
     let render_width = detect_cli_chat_render_width();
     render_cli_chat_startup_lines_with_width(summary, render_width)
+}
+
+fn should_run_missing_config_onboard(read: usize, input: &str) -> bool {
+    if read == 0 {
+        return false;
+    }
+
+    let normalized_input = input.trim().to_ascii_lowercase();
+
+    if normalized_input.is_empty() {
+        return true;
+    }
+
+    matches!(normalized_input.as_str(), "y" | "yes")
+}
+
+fn render_cli_chat_missing_config_lines_with_width(
+    onboard_hint: &str,
+    width: usize,
+) -> Vec<String> {
+    let screen_spec = build_cli_chat_missing_config_screen_spec(onboard_hint);
+    render_tui_screen_spec(&screen_spec, width, false)
+}
+
+fn build_cli_chat_missing_config_screen_spec(onboard_hint: &str) -> TuiScreenSpec {
+    let intro_lines = vec![
+        "Welcome to LoongClaw!".to_owned(),
+        "No configuration found for interactive chat.".to_owned(),
+    ];
+    let sections = vec![TuiSectionSpec::ActionGroup {
+        title: Some("setup command".to_owned()),
+        inline_title_when_wide: true,
+        items: vec![TuiActionSpec {
+            label: "start setup".to_owned(),
+            command: onboard_hint.to_owned(),
+        }],
+    }];
+    let choices = vec![
+        TuiChoiceSpec {
+            key: "y".to_owned(),
+            label: "run setup wizard".to_owned(),
+            detail_lines: vec!["Create a config now and return to interactive chat.".to_owned()],
+            recommended: true,
+        },
+        TuiChoiceSpec {
+            key: "n".to_owned(),
+            label: "skip for now".to_owned(),
+            detail_lines: vec!["Exit chat now and keep the setup command for later.".to_owned()],
+            recommended: false,
+        },
+    ];
+    let footer_lines = vec!["Press Enter to accept y.".to_owned()];
+
+    TuiScreenSpec {
+        header_style: TuiHeaderStyle::Compact,
+        subtitle: Some("interactive chat".to_owned()),
+        title: Some("setup required".to_owned()),
+        progress_line: None,
+        intro_lines,
+        sections,
+        choices,
+        footer_lines,
+    }
+}
+
+fn render_cli_chat_missing_config_decline_lines_with_width(
+    onboard_hint: &str,
+    width: usize,
+) -> Vec<String> {
+    let message_spec = build_cli_chat_missing_config_decline_message_spec(onboard_hint);
+    render_tui_message_spec(&message_spec, width)
+}
+
+fn build_cli_chat_missing_config_decline_message_spec(onboard_hint: &str) -> TuiMessageSpec {
+    let setup_hint = format!("You can run '{onboard_hint}' later to get started.");
+    let sections = vec![
+        TuiSectionSpec::Callout {
+            tone: TuiCalloutTone::Info,
+            title: Some("setup skipped".to_owned()),
+            lines: vec![setup_hint],
+        },
+        TuiSectionSpec::ActionGroup {
+            title: Some("start later".to_owned()),
+            inline_title_when_wide: true,
+            items: vec![TuiActionSpec {
+                label: "setup command".to_owned(),
+                command: onboard_hint.to_owned(),
+            }],
+        },
+    ];
+
+    TuiMessageSpec {
+        role: "chat".to_owned(),
+        caption: Some("setup required".to_owned()),
+        sections,
+        footer_lines: Vec::new(),
+    }
 }
 
 fn render_cli_chat_startup_lines_with_width(
@@ -1210,7 +1318,14 @@ async fn print_history(
     #[cfg(not(feature = "memory-sqlite"))]
     {
         let _ = (session_id, limit, binding);
-        println!("history unavailable: memory-sqlite feature disabled");
+        let render_width = detect_cli_chat_render_width();
+        let rendered_lines = render_cli_chat_feature_unavailable_lines_with_width(
+            "history",
+            "history unavailable: memory-sqlite feature disabled",
+            render_width,
+        );
+
+        print_rendered_cli_chat_lines(&rendered_lines);
         Ok(())
     }
 }
@@ -1377,31 +1492,30 @@ async fn print_fast_lane_summary(
 ) -> CliResult<()> {
     #[cfg(feature = "memory-sqlite")]
     {
-        println!(
-            "{}",
-            load_fast_lane_summary_output(session_id, limit, binding, memory_config).await?
-        );
+        let summary =
+            load_fast_lane_tool_batch_event_summary(session_id, limit, binding, memory_config)
+                .await?;
+        let render_width = detect_cli_chat_render_width();
+        let rendered_lines =
+            render_fast_lane_summary_lines_with_width(session_id, limit, &summary, render_width);
+
+        print_rendered_cli_chat_lines(&rendered_lines);
         Ok(())
     }
 
     #[cfg(not(feature = "memory-sqlite"))]
     {
         let _ = (session_id, limit, binding);
-        println!("fast-lane summary unavailable: memory-sqlite feature disabled");
+        let render_width = detect_cli_chat_render_width();
+        let rendered_lines = render_cli_chat_feature_unavailable_lines_with_width(
+            "fast-lane",
+            "fast-lane summary unavailable: memory-sqlite feature disabled",
+            render_width,
+        );
+
+        print_rendered_cli_chat_lines(&rendered_lines);
         Ok(())
     }
-}
-
-#[cfg(feature = "memory-sqlite")]
-async fn load_fast_lane_summary_output(
-    session_id: &str,
-    limit: usize,
-    binding: ConversationRuntimeBinding<'_>,
-    memory_config: &MemoryRuntimeConfig,
-) -> CliResult<String> {
-    let summary =
-        load_fast_lane_tool_batch_event_summary(session_id, limit, binding, memory_config).await?;
-    Ok(format_fast_lane_summary(session_id, limit, &summary))
 }
 
 #[allow(clippy::print_stdout)] // CLI output
@@ -1414,43 +1528,34 @@ async fn print_safe_lane_summary(
 ) -> CliResult<()> {
     #[cfg(feature = "memory-sqlite")]
     {
-        println!(
-            "{}",
-            load_safe_lane_summary_output(
-                session_id,
-                limit,
-                conversation_config,
-                binding,
-                memory_config,
-            )
-            .await?
+        let summary =
+            load_safe_lane_event_summary(session_id, limit, binding, memory_config).await?;
+        let render_width = detect_cli_chat_render_width();
+        let rendered_lines = render_safe_lane_summary_lines_with_width(
+            session_id,
+            limit,
+            conversation_config,
+            &summary,
+            render_width,
         );
+
+        print_rendered_cli_chat_lines(&rendered_lines);
         Ok(())
     }
 
     #[cfg(not(feature = "memory-sqlite"))]
     {
         let _ = (session_id, limit, conversation_config, binding);
-        println!("safe-lane summary unavailable: memory-sqlite feature disabled");
+        let render_width = detect_cli_chat_render_width();
+        let rendered_lines = render_cli_chat_feature_unavailable_lines_with_width(
+            "safe-lane",
+            "safe-lane summary unavailable: memory-sqlite feature disabled",
+            render_width,
+        );
+
+        print_rendered_cli_chat_lines(&rendered_lines);
         Ok(())
     }
-}
-
-#[cfg(feature = "memory-sqlite")]
-async fn load_safe_lane_summary_output(
-    session_id: &str,
-    limit: usize,
-    conversation_config: &ConversationConfig,
-    binding: ConversationRuntimeBinding<'_>,
-    memory_config: &MemoryRuntimeConfig,
-) -> CliResult<String> {
-    let summary = load_safe_lane_event_summary(session_id, limit, binding, memory_config).await?;
-    Ok(format_safe_lane_summary(
-        session_id,
-        limit,
-        conversation_config,
-        &summary,
-    ))
 }
 
 #[allow(clippy::print_stdout)] // CLI output
@@ -1464,44 +1569,34 @@ async fn print_turn_checkpoint_summary(
 ) -> CliResult<()> {
     #[cfg(feature = "memory-sqlite")]
     {
-        println!(
-            "{}",
-            load_turn_checkpoint_summary_output(
-                turn_coordinator,
-                config,
-                session_id,
-                limit,
-                binding,
-            )
-            .await?
+        let diagnostics = turn_coordinator
+            .load_turn_checkpoint_diagnostics_with_limit(config, session_id, limit, binding)
+            .await?;
+        let render_width = detect_cli_chat_render_width();
+        let rendered_lines = render_turn_checkpoint_summary_lines_with_width(
+            session_id,
+            limit,
+            &diagnostics,
+            render_width,
         );
+
+        print_rendered_cli_chat_lines(&rendered_lines);
         Ok(())
     }
 
     #[cfg(not(feature = "memory-sqlite"))]
     {
         let _ = (turn_coordinator, config, session_id, limit, binding);
-        println!("turn checkpoint summary unavailable: memory-sqlite feature disabled");
+        let render_width = detect_cli_chat_render_width();
+        let rendered_lines = render_cli_chat_feature_unavailable_lines_with_width(
+            "checkpoint",
+            "turn checkpoint summary unavailable: memory-sqlite feature disabled",
+            render_width,
+        );
+
+        print_rendered_cli_chat_lines(&rendered_lines);
         Ok(())
     }
-}
-
-#[cfg(feature = "memory-sqlite")]
-async fn load_turn_checkpoint_summary_output(
-    turn_coordinator: &ConversationTurnCoordinator,
-    config: &LoongClawConfig,
-    session_id: &str,
-    limit: usize,
-    binding: ConversationRuntimeBinding<'_>,
-) -> CliResult<String> {
-    let diagnostics = turn_coordinator
-        .load_turn_checkpoint_diagnostics_with_limit(config, session_id, limit, binding)
-        .await?;
-    Ok(format_turn_checkpoint_summary_output(
-        session_id,
-        limit,
-        &diagnostics,
-    ))
 }
 
 #[allow(clippy::print_stdout)] // CLI output
@@ -1513,33 +1608,1060 @@ async fn print_turn_checkpoint_repair(
 ) -> CliResult<()> {
     #[cfg(feature = "memory-sqlite")]
     {
-        println!(
-            "{}",
-            load_turn_checkpoint_repair_output(turn_coordinator, config, session_id, binding)
-                .await?
-        );
+        let outcome = turn_coordinator
+            .repair_turn_checkpoint_tail(config, session_id, binding)
+            .await?;
+        let render_width = detect_cli_chat_render_width();
+        let rendered_lines =
+            render_turn_checkpoint_repair_lines_with_width(session_id, &outcome, render_width);
+
+        print_rendered_cli_chat_lines(&rendered_lines);
         Ok(())
     }
 
     #[cfg(not(feature = "memory-sqlite"))]
     {
         let _ = (turn_coordinator, config, session_id, binding);
-        println!("turn checkpoint repair unavailable: memory-sqlite feature disabled");
+        let render_width = detect_cli_chat_render_width();
+        let rendered_lines = render_cli_chat_feature_unavailable_lines_with_width(
+            "repair",
+            "turn checkpoint repair unavailable: memory-sqlite feature disabled",
+            render_width,
+        );
+
+        print_rendered_cli_chat_lines(&rendered_lines);
         Ok(())
     }
 }
 
-#[cfg(feature = "memory-sqlite")]
-async fn load_turn_checkpoint_repair_output(
+#[cfg(not(feature = "memory-sqlite"))]
+fn render_cli_chat_feature_unavailable_lines_with_width(
+    role: &str,
+    detail: &str,
+    width: usize,
+) -> Vec<String> {
+    let message_spec = build_cli_chat_feature_unavailable_message_spec(role, detail);
+    render_tui_message_spec(&message_spec, width)
+}
+
+#[cfg(not(feature = "memory-sqlite"))]
+fn build_cli_chat_feature_unavailable_message_spec(role: &str, detail: &str) -> TuiMessageSpec {
+    let sections = vec![TuiSectionSpec::Callout {
+        tone: TuiCalloutTone::Warning,
+        title: Some("feature unavailable".to_owned()),
+        lines: vec![detail.to_owned()],
+    }];
+
+    TuiMessageSpec {
+        role: role.to_owned(),
+        caption: Some("unavailable".to_owned()),
+        sections,
+        footer_lines: Vec::new(),
+    }
+}
+
+fn tui_plain_item(key: &str, value: String) -> TuiKeyValueSpec {
+    let key = key.to_owned();
+
+    TuiKeyValueSpec::Plain { key, value }
+}
+
+fn tui_csv_item(key: &str, values: Vec<String>) -> TuiKeyValueSpec {
+    let key = key.to_owned();
+
+    TuiKeyValueSpec::Csv { key, values }
+}
+
+fn csv_values_or_dash(values: Vec<String>) -> Vec<String> {
+    if values.is_empty() {
+        return vec!["-".to_owned()];
+    }
+
+    values
+}
+
+fn collect_rollup_values(counts: &std::collections::BTreeMap<String, u32>) -> Vec<String> {
+    counts
+        .iter()
+        .map(|(key, value)| format!("{key}:{value}"))
+        .collect()
+}
+
+fn bool_yes_no_value(value: bool) -> String {
+    if value {
+        return "yes".to_owned();
+    }
+
+    "no".to_owned()
+}
+
+fn recovery_callout_tone(recovery_needed: bool) -> TuiCalloutTone {
+    if recovery_needed {
+        return TuiCalloutTone::Warning;
+    }
+
+    TuiCalloutTone::Success
+}
+
+fn safe_lane_health_tone(severity: &str) -> TuiCalloutTone {
+    if severity == "critical" || severity == "warn" {
+        return TuiCalloutTone::Warning;
+    }
+
+    if severity == "ok" {
+        return TuiCalloutTone::Success;
+    }
+
+    TuiCalloutTone::Info
+}
+
+#[cfg(any(test, feature = "memory-sqlite"))]
+fn render_turn_checkpoint_health_error_lines_with_width(
+    session_id: &str,
+    error: &str,
+    width: usize,
+) -> Vec<String> {
+    let message_spec = build_turn_checkpoint_health_error_message_spec(session_id, error);
+    render_tui_message_spec(&message_spec, width)
+}
+
+#[cfg(any(test, feature = "memory-sqlite"))]
+fn build_turn_checkpoint_health_error_message_spec(
+    session_id: &str,
+    error: &str,
+) -> TuiMessageSpec {
+    let caption = format!("session={session_id}");
+    let sections = vec![
+        TuiSectionSpec::KeyValues {
+            title: Some("durability status".to_owned()),
+            items: vec![
+                tui_plain_item("state", "unavailable".to_owned()),
+                tui_plain_item("session", session_id.to_owned()),
+            ],
+        },
+        TuiSectionSpec::Callout {
+            tone: TuiCalloutTone::Warning,
+            title: Some("durability unavailable".to_owned()),
+            lines: vec![format!("error: {error}")],
+        },
+    ];
+
+    TuiMessageSpec {
+        role: "checkpoint".to_owned(),
+        caption: Some(caption),
+        sections,
+        footer_lines: Vec::new(),
+    }
+}
+
+#[cfg(any(test, feature = "memory-sqlite"))]
+fn render_turn_checkpoint_startup_health_lines_with_width(
+    session_id: &str,
+    diagnostics: &TurnCheckpointDiagnostics,
+    width: usize,
+) -> Option<Vec<String>> {
+    let message_spec = build_turn_checkpoint_startup_health_message_spec(session_id, diagnostics)?;
+    let rendered_lines = render_tui_message_spec(&message_spec, width);
+
+    Some(rendered_lines)
+}
+
+#[cfg(any(test, feature = "memory-sqlite"))]
+fn build_turn_checkpoint_startup_health_message_spec(
+    session_id: &str,
+    diagnostics: &TurnCheckpointDiagnostics,
+) -> Option<TuiMessageSpec> {
+    let summary = diagnostics.summary();
+    if !summary.checkpoint_durable {
+        return None;
+    }
+
+    let render_labels = TurnCheckpointSummaryRenderLabels::from_summary(summary);
+    let durability_labels = TurnCheckpointDurabilityRenderLabels::from_summary(summary);
+    let recovery_labels =
+        TurnCheckpointRecoveryRenderLabels::from_assessment(diagnostics.recovery());
+    let failure_step = format_turn_checkpoint_failure_step(summary.latest_failure_step);
+    let recovery_needed = bool_yes_no_value(summary.requires_recovery);
+    let reply_durable = bool_yes_no_value(summary.reply_durable);
+    let checkpoint_durable = bool_yes_no_value(summary.checkpoint_durable);
+    let recovery_tone = recovery_callout_tone(summary.requires_recovery);
+    let caption = format!("session={session_id}");
+    let recovery_reason = recovery_labels.reason.to_owned();
+
+    let mut sections = vec![
+        TuiSectionSpec::KeyValues {
+            title: Some("durability status".to_owned()),
+            items: vec![
+                tui_plain_item("state", render_labels.session_state.to_owned()),
+                tui_plain_item("durability", durability_labels.durability.to_owned()),
+                tui_plain_item("reply durable", reply_durable),
+                tui_plain_item("checkpoint durable", checkpoint_durable),
+            ],
+        },
+        TuiSectionSpec::Callout {
+            tone: recovery_tone,
+            title: Some("recovery".to_owned()),
+            lines: vec![
+                format!("recovery needed: {recovery_needed}"),
+                format!("action: {}", recovery_labels.action),
+                format!("source: {}", recovery_labels.source),
+                format!("reason: {recovery_reason}"),
+            ],
+        },
+        TuiSectionSpec::KeyValues {
+            title: Some("latest turn".to_owned()),
+            items: vec![
+                tui_plain_item("stage", render_labels.stage.to_owned()),
+                tui_plain_item("after turn", render_labels.after_turn.to_owned()),
+                tui_plain_item("compaction", render_labels.compaction.to_owned()),
+                tui_plain_item("lane", render_labels.lane.to_owned()),
+                tui_plain_item("result kind", render_labels.result_kind.to_owned()),
+                tui_plain_item(
+                    "persistence mode",
+                    render_labels.persistence_mode.to_owned(),
+                ),
+                tui_plain_item("identity", render_labels.identity.to_owned()),
+                tui_plain_item("failure step", failure_step.to_owned()),
+            ],
+        },
+    ];
+
+    if render_labels.safe_lane_route_decision != "-"
+        || render_labels.safe_lane_route_reason != "-"
+        || render_labels.safe_lane_route_source != "-"
+    {
+        sections.push(TuiSectionSpec::KeyValues {
+            title: Some("safe-lane route".to_owned()),
+            items: vec![
+                tui_plain_item(
+                    "decision",
+                    render_labels.safe_lane_route_decision.to_owned(),
+                ),
+                tui_plain_item("reason", render_labels.safe_lane_route_reason.to_owned()),
+                tui_plain_item("source", render_labels.safe_lane_route_source.to_owned()),
+            ],
+        });
+    }
+
+    if let Some(probe) = diagnostics.runtime_probe() {
+        let probe_lines = vec![
+            format!("action: {}", probe.action().as_str()),
+            format!("source: {}", probe.source().as_str()),
+            format!("reason: {}", probe.reason().as_str()),
+        ];
+
+        sections.push(TuiSectionSpec::Callout {
+            tone: TuiCalloutTone::Info,
+            title: Some("runtime probe".to_owned()),
+            lines: probe_lines,
+        });
+    }
+
+    Some(TuiMessageSpec {
+        role: "checkpoint".to_owned(),
+        caption: Some(caption),
+        sections,
+        footer_lines: Vec::new(),
+    })
+}
+
+#[cfg(any(test, feature = "memory-sqlite"))]
+fn render_fast_lane_summary_lines_with_width(
+    session_id: &str,
+    limit: usize,
+    summary: &FastLaneToolBatchEventSummary,
+    width: usize,
+) -> Vec<String> {
+    let message_spec = build_fast_lane_summary_message_spec(session_id, limit, summary);
+    render_tui_message_spec(&message_spec, width)
+}
+
+#[cfg(any(test, feature = "memory-sqlite"))]
+fn build_fast_lane_summary_message_spec(
+    session_id: &str,
+    limit: usize,
+    summary: &FastLaneToolBatchEventSummary,
+) -> TuiMessageSpec {
+    let parallel_safe_ratio = format_ratio(
+        summary.total_parallel_safe_intents_seen,
+        summary.total_intents_seen,
+    );
+    let serial_only_ratio = format_ratio(
+        summary.total_serial_only_intents_seen,
+        summary.total_intents_seen,
+    );
+    let configured_max_in_flight_avg = format_average(
+        summary.parallel_execution_max_in_flight_sum,
+        summary.parallel_execution_max_in_flight_samples,
+    );
+    let observed_peak_in_flight_avg = format_average(
+        summary.observed_peak_in_flight_sum,
+        summary.observed_peak_in_flight_samples,
+    );
+    let observed_wall_time_ms_avg = format_average(
+        summary.observed_wall_time_ms_sum,
+        summary.observed_wall_time_ms_samples,
+    );
+    let scheduling_class_values = collect_rollup_values(&summary.scheduling_class_counts);
+    let execution_mode_values = collect_rollup_values(&summary.execution_mode_counts);
+    let rollup_scheduling_classes = csv_values_or_dash(scheduling_class_values);
+    let rollup_execution_modes = csv_values_or_dash(execution_mode_values);
+    let latest_segment_lines = build_fast_lane_segment_lines(&summary.latest_segments);
+    let caption = format!("session={session_id} limit={limit}");
+    let sections = vec![
+        TuiSectionSpec::KeyValues {
+            title: Some("events".to_owned()),
+            items: vec![
+                tui_plain_item("batch events", summary.batch_events.to_string()),
+                tui_plain_item(
+                    "schema version",
+                    format_fast_lane_summary_optional(summary.latest_schema_version),
+                ),
+            ],
+        },
+        TuiSectionSpec::KeyValues {
+            title: Some("batch mix".to_owned()),
+            items: vec![
+                tui_plain_item(
+                    "parallel enabled",
+                    summary.parallel_execution_enabled_batches.to_string(),
+                ),
+                tui_plain_item("parallel only", summary.parallel_only_batches.to_string()),
+                tui_plain_item("mixed", summary.mixed_execution_batches.to_string()),
+                tui_plain_item(
+                    "sequential only",
+                    summary.sequential_only_batches.to_string(),
+                ),
+                tui_plain_item(
+                    "without segments",
+                    summary.batches_without_segments.to_string(),
+                ),
+            ],
+        },
+        TuiSectionSpec::KeyValues {
+            title: Some("intent mix".to_owned()),
+            items: vec![
+                tui_plain_item("total intents", summary.total_intents_seen.to_string()),
+                tui_plain_item(
+                    "parallel-safe intents",
+                    summary.total_parallel_safe_intents_seen.to_string(),
+                ),
+                tui_plain_item(
+                    "serial-only intents",
+                    summary.total_serial_only_intents_seen.to_string(),
+                ),
+                tui_plain_item("parallel-safe ratio", parallel_safe_ratio),
+                tui_plain_item("serial-only ratio", serial_only_ratio),
+                tui_plain_item(
+                    "parallel segments",
+                    summary.total_parallel_segments_seen.to_string(),
+                ),
+                tui_plain_item(
+                    "sequential segments",
+                    summary.total_sequential_segments_seen.to_string(),
+                ),
+            ],
+        },
+        TuiSectionSpec::KeyValues {
+            title: Some("execution".to_owned()),
+            items: vec![
+                tui_plain_item("configured max in flight avg", configured_max_in_flight_avg),
+                tui_plain_item(
+                    "configured max in flight max",
+                    format_fast_lane_summary_optional(summary.parallel_execution_max_in_flight_max),
+                ),
+                tui_plain_item(
+                    "configured max in flight samples",
+                    summary.parallel_execution_max_in_flight_samples.to_string(),
+                ),
+                tui_plain_item("observed peak avg", observed_peak_in_flight_avg),
+                tui_plain_item(
+                    "observed peak max",
+                    format_fast_lane_summary_optional(summary.observed_peak_in_flight_max),
+                ),
+                tui_plain_item(
+                    "observed peak samples",
+                    summary.observed_peak_in_flight_samples.to_string(),
+                ),
+                tui_plain_item("wall time avg", observed_wall_time_ms_avg),
+                tui_plain_item(
+                    "wall time max",
+                    format_fast_lane_summary_optional(summary.observed_wall_time_ms_max),
+                ),
+                tui_plain_item(
+                    "wall time samples",
+                    summary.observed_wall_time_ms_samples.to_string(),
+                ),
+                tui_plain_item(
+                    "degraded parallel segments",
+                    summary.degraded_parallel_segments.to_string(),
+                ),
+            ],
+        },
+        TuiSectionSpec::KeyValues {
+            title: Some("latest batch".to_owned()),
+            items: vec![
+                tui_plain_item(
+                    "total intents",
+                    format_fast_lane_summary_optional(summary.latest_total_intents),
+                ),
+                tui_plain_item(
+                    "parallel enabled",
+                    format_fast_lane_summary_optional(summary.latest_parallel_execution_enabled),
+                ),
+                tui_plain_item(
+                    "max in flight",
+                    format_fast_lane_summary_optional(
+                        summary.latest_parallel_execution_max_in_flight,
+                    ),
+                ),
+                tui_plain_item(
+                    "observed peak",
+                    format_fast_lane_summary_optional(summary.latest_observed_peak_in_flight),
+                ),
+                tui_plain_item(
+                    "wall time ms",
+                    format_fast_lane_summary_optional(summary.latest_observed_wall_time_ms),
+                ),
+                tui_plain_item(
+                    "parallel-safe intents",
+                    format_fast_lane_summary_optional(summary.latest_parallel_safe_intents),
+                ),
+                tui_plain_item(
+                    "serial-only intents",
+                    format_fast_lane_summary_optional(summary.latest_serial_only_intents),
+                ),
+                tui_plain_item(
+                    "parallel segments",
+                    format_fast_lane_summary_optional(summary.latest_parallel_segments),
+                ),
+                tui_plain_item(
+                    "sequential segments",
+                    format_fast_lane_summary_optional(summary.latest_sequential_segments),
+                ),
+            ],
+        },
+        TuiSectionSpec::KeyValues {
+            title: Some("rollups".to_owned()),
+            items: vec![
+                tui_csv_item("scheduling classes", rollup_scheduling_classes),
+                tui_csv_item("execution modes", rollup_execution_modes),
+            ],
+        },
+        TuiSectionSpec::Narrative {
+            title: Some("latest segments".to_owned()),
+            lines: latest_segment_lines,
+        },
+    ];
+
+    TuiMessageSpec {
+        role: "fast-lane".to_owned(),
+        caption: Some(caption),
+        sections,
+        footer_lines: Vec::new(),
+    }
+}
+
+#[cfg(any(test, feature = "memory-sqlite"))]
+fn build_fast_lane_segment_lines(segments: &[FastLaneToolBatchSegmentSnapshot]) -> Vec<String> {
+    if segments.is_empty() {
+        return vec!["- no segment snapshot recorded".to_owned()];
+    }
+
+    let mut lines = Vec::new();
+
+    for segment in segments {
+        let peak_in_flight = format_fast_lane_summary_optional(segment.observed_peak_in_flight);
+        let wall_time_ms = format_fast_lane_summary_optional(segment.observed_wall_time_ms);
+        let line = format!(
+            "- segment {}: class={} mode={} intents={} peak={} wall_ms={}",
+            segment.segment_index,
+            segment.scheduling_class,
+            segment.execution_mode,
+            segment.intent_count,
+            peak_in_flight,
+            wall_time_ms,
+        );
+
+        lines.push(line);
+    }
+
+    lines
+}
+
+#[cfg(test)]
+async fn load_fast_lane_summary_output(
+    session_id: &str,
+    limit: usize,
+    binding: ConversationRuntimeBinding<'_>,
+    memory_config: &MemoryRuntimeConfig,
+) -> CliResult<String> {
+    let summary =
+        load_fast_lane_tool_batch_event_summary(session_id, limit, binding, memory_config).await?;
+
+    Ok(format_fast_lane_summary(session_id, limit, &summary))
+}
+
+#[cfg(any(test, feature = "memory-sqlite"))]
+fn render_safe_lane_summary_lines_with_width(
+    session_id: &str,
+    limit: usize,
+    conversation_config: &ConversationConfig,
+    summary: &SafeLaneEventSummary,
+    width: usize,
+) -> Vec<String> {
+    let message_spec =
+        build_safe_lane_summary_message_spec(session_id, limit, conversation_config, summary);
+    render_tui_message_spec(&message_spec, width)
+}
+
+#[cfg(any(test, feature = "memory-sqlite"))]
+fn build_safe_lane_summary_message_spec(
+    session_id: &str,
+    limit: usize,
+    conversation_config: &ConversationConfig,
+    summary: &SafeLaneEventSummary,
+) -> TuiMessageSpec {
+    let final_status = match summary.final_status {
+        Some(SafeLaneFinalStatus::Succeeded) => "succeeded",
+        Some(SafeLaneFinalStatus::Failed) => "failed",
+        None => "unknown",
+    };
+    let final_failure_code = summary.final_failure_code.as_deref().unwrap_or("-");
+    let final_route_decision = summary.final_route_decision.as_deref().unwrap_or("-");
+    let final_route_reason = summary.final_route_reason.as_deref().unwrap_or("-");
+    let metrics = summary.latest_metrics.as_ref();
+    let rounds_started = metrics
+        .map(|value| value.rounds_started as f64)
+        .unwrap_or(summary.round_started_events as f64);
+    let replan_rate = if rounds_started > 0.0 {
+        summary.replan_triggered_events as f64 / rounds_started
+    } else {
+        0.0
+    };
+    let verify_failure_rate = if rounds_started > 0.0 {
+        summary.verify_failed_events as f64 / rounds_started
+    } else {
+        0.0
+    };
+    let governor_trend_failure_ewma =
+        format_milli_ratio(summary.session_governor_latest_trend_failure_ewma_milli);
+    let governor_trend_backpressure_ewma =
+        format_milli_ratio(summary.session_governor_latest_trend_backpressure_ewma_milli);
+    let latest_tool_truncation_ratio = format_milli_ratio(
+        summary
+            .latest_tool_output
+            .as_ref()
+            .map(|snapshot| snapshot.truncation_ratio_milli),
+    );
+    let aggregate_tool_truncation_ratio_milli = summary
+        .tool_output_aggregate_truncation_ratio_milli
+        .or_else(|| {
+            if summary.tool_output_result_lines_total == 0 {
+                return None;
+            }
+
+            let truncated_lines = summary.tool_output_truncated_result_lines_total;
+            let total_lines = summary.tool_output_result_lines_total;
+            let ratio_milli = truncated_lines
+                .saturating_mul(1000)
+                .saturating_div(total_lines)
+                .min(u32::MAX as u64) as u32;
+
+            Some(ratio_milli)
+        });
+    let aggregate_tool_truncation_ratio =
+        aggregate_tool_truncation_ratio_milli.map(|milli| (milli as f64) / 1000.0);
+    let aggregate_tool_truncation_ratio_text = aggregate_tool_truncation_ratio
+        .map(|value| format!("{value:.3}"))
+        .unwrap_or_else(|| "-".to_owned());
+    let health_signal = derive_safe_lane_health_signal(
+        conversation_config,
+        summary,
+        replan_rate,
+        verify_failure_rate,
+        aggregate_tool_truncation_ratio,
+    );
+    let health_flags = if health_signal.flags.is_empty() {
+        "none".to_owned()
+    } else {
+        health_signal.flags.join(", ")
+    };
+    let latest_health_event_severity = summary
+        .latest_health_signal
+        .as_ref()
+        .map(|snapshot| snapshot.severity.as_str())
+        .unwrap_or("-");
+    let latest_health_event_flags = summary
+        .latest_health_signal
+        .as_ref()
+        .map(|snapshot| {
+            if snapshot.flags.is_empty() {
+                return "none".to_owned();
+            }
+
+            snapshot.flags.join(", ")
+        })
+        .unwrap_or_else(|| "-".to_owned());
+    let route_decision_values = collect_rollup_values(&summary.route_decision_counts);
+    let route_reason_values = collect_rollup_values(&summary.route_reason_counts);
+    let failure_code_values = collect_rollup_values(&summary.failure_code_counts);
+    let rollup_route_decisions = csv_values_or_dash(route_decision_values);
+    let rollup_route_reasons = csv_values_or_dash(route_reason_values);
+    let rollup_failure_codes = csv_values_or_dash(failure_code_values);
+    let health_tone = safe_lane_health_tone(health_signal.severity);
+    let latest_metrics_section = match metrics {
+        Some(metrics) => TuiSectionSpec::KeyValues {
+            title: Some("latest metrics".to_owned()),
+            items: vec![
+                tui_plain_item("rounds started", metrics.rounds_started.to_string()),
+                tui_plain_item("rounds succeeded", metrics.rounds_succeeded.to_string()),
+                tui_plain_item("rounds failed", metrics.rounds_failed.to_string()),
+                tui_plain_item("verify failures", metrics.verify_failures.to_string()),
+                tui_plain_item("replans triggered", metrics.replans_triggered.to_string()),
+                tui_plain_item("attempts used", metrics.total_attempts_used.to_string()),
+            ],
+        },
+        None => TuiSectionSpec::KeyValues {
+            title: Some("latest metrics".to_owned()),
+            items: vec![tui_plain_item("status", "unavailable".to_owned())],
+        },
+    };
+    let caption = format!("session={session_id} limit={limit}");
+    let sections = vec![
+        TuiSectionSpec::KeyValues {
+            title: Some("terminal status".to_owned()),
+            items: vec![
+                tui_plain_item("status", final_status.to_owned()),
+                tui_plain_item("failure code", final_failure_code.to_owned()),
+                tui_plain_item("route decision", final_route_decision.to_owned()),
+                tui_plain_item("route reason", final_route_reason.to_owned()),
+            ],
+        },
+        TuiSectionSpec::KeyValues {
+            title: Some("events".to_owned()),
+            items: vec![
+                tui_plain_item("lane selected", summary.lane_selected_events.to_string()),
+                tui_plain_item("round started", summary.round_started_events.to_string()),
+                tui_plain_item(
+                    "round succeeded",
+                    summary.round_completed_succeeded_events.to_string(),
+                ),
+                tui_plain_item(
+                    "round failed",
+                    summary.round_completed_failed_events.to_string(),
+                ),
+                tui_plain_item("verify failed", summary.verify_failed_events.to_string()),
+                tui_plain_item(
+                    "verify policy adjusted",
+                    summary.verify_policy_adjusted_events.to_string(),
+                ),
+                tui_plain_item(
+                    "replan triggered",
+                    summary.replan_triggered_events.to_string(),
+                ),
+                tui_plain_item("final status", summary.final_status_events.to_string()),
+            ],
+        },
+        TuiSectionSpec::KeyValues {
+            title: Some("rates".to_owned()),
+            items: vec![
+                tui_plain_item("replan per round", format!("{replan_rate:.3}")),
+                tui_plain_item("verify fail per round", format!("{verify_failure_rate:.3}")),
+            ],
+        },
+        TuiSectionSpec::KeyValues {
+            title: Some("governor".to_owned()),
+            items: vec![
+                tui_plain_item(
+                    "engaged events",
+                    summary.session_governor_engaged_events.to_string(),
+                ),
+                tui_plain_item(
+                    "force no replan",
+                    summary.session_governor_force_no_replan_events.to_string(),
+                ),
+                tui_plain_item(
+                    "failed threshold triggers",
+                    summary
+                        .session_governor_failed_threshold_triggered_events
+                        .to_string(),
+                ),
+                tui_plain_item(
+                    "backpressure threshold triggers",
+                    summary
+                        .session_governor_backpressure_threshold_triggered_events
+                        .to_string(),
+                ),
+                tui_plain_item(
+                    "trend threshold triggers",
+                    summary
+                        .session_governor_trend_threshold_triggered_events
+                        .to_string(),
+                ),
+                tui_plain_item(
+                    "recovery threshold triggers",
+                    summary
+                        .session_governor_recovery_threshold_triggered_events
+                        .to_string(),
+                ),
+                tui_plain_item(
+                    "metric snapshots",
+                    summary.session_governor_metrics_snapshots_seen.to_string(),
+                ),
+                tui_plain_item(
+                    "trend samples",
+                    format_fast_lane_summary_optional(
+                        summary.session_governor_latest_trend_samples,
+                    ),
+                ),
+                tui_plain_item(
+                    "trend min samples",
+                    format_fast_lane_summary_optional(
+                        summary.session_governor_latest_trend_min_samples,
+                    ),
+                ),
+                tui_plain_item("trend failure ewma", governor_trend_failure_ewma),
+                tui_plain_item("trend backpressure ewma", governor_trend_backpressure_ewma),
+                tui_plain_item(
+                    "recovery success streak",
+                    format_fast_lane_summary_optional(
+                        summary.session_governor_latest_recovery_success_streak,
+                    ),
+                ),
+                tui_plain_item(
+                    "recovery streak threshold",
+                    format_fast_lane_summary_optional(
+                        summary.session_governor_latest_recovery_success_streak_threshold,
+                    ),
+                ),
+            ],
+        },
+        TuiSectionSpec::KeyValues {
+            title: Some("tool output".to_owned()),
+            items: vec![
+                tui_plain_item("snapshots", summary.tool_output_snapshots_seen.to_string()),
+                tui_plain_item(
+                    "truncated events",
+                    summary.tool_output_truncated_events.to_string(),
+                ),
+                tui_plain_item(
+                    "result lines total",
+                    summary.tool_output_result_lines_total.to_string(),
+                ),
+                tui_plain_item(
+                    "truncated result lines",
+                    summary.tool_output_truncated_result_lines_total.to_string(),
+                ),
+                tui_plain_item("latest truncation ratio", latest_tool_truncation_ratio),
+                tui_plain_item(
+                    "aggregate truncation ratio",
+                    aggregate_tool_truncation_ratio_text,
+                ),
+                tui_plain_item(
+                    "aggregate truncation ratio milli",
+                    format_fast_lane_summary_optional(aggregate_tool_truncation_ratio_milli),
+                ),
+                tui_plain_item(
+                    "truncation verify failed",
+                    summary
+                        .tool_output_truncation_verify_failed_events
+                        .to_string(),
+                ),
+                tui_plain_item(
+                    "truncation replan",
+                    summary.tool_output_truncation_replan_events.to_string(),
+                ),
+                tui_plain_item(
+                    "truncation final failure",
+                    summary
+                        .tool_output_truncation_final_failure_events
+                        .to_string(),
+                ),
+            ],
+        },
+        TuiSectionSpec::Callout {
+            tone: health_tone,
+            title: Some("health".to_owned()),
+            lines: vec![
+                format!("severity: {}", health_signal.severity),
+                format!("flags: {health_flags}"),
+            ],
+        },
+        TuiSectionSpec::KeyValues {
+            title: Some("health events".to_owned()),
+            items: vec![
+                tui_plain_item(
+                    "snapshots",
+                    summary.health_signal_snapshots_seen.to_string(),
+                ),
+                tui_plain_item("warn events", summary.health_signal_warn_events.to_string()),
+                tui_plain_item(
+                    "critical events",
+                    summary.health_signal_critical_events.to_string(),
+                ),
+                tui_plain_item("latest severity", latest_health_event_severity.to_owned()),
+                tui_plain_item("latest flags", latest_health_event_flags),
+            ],
+        },
+        latest_metrics_section,
+        TuiSectionSpec::KeyValues {
+            title: Some("rollups".to_owned()),
+            items: vec![
+                tui_csv_item("route decisions", rollup_route_decisions),
+                tui_csv_item("route reasons", rollup_route_reasons),
+                tui_csv_item("failure codes", rollup_failure_codes),
+            ],
+        },
+    ];
+
+    TuiMessageSpec {
+        role: "safe-lane".to_owned(),
+        caption: Some(caption),
+        sections,
+        footer_lines: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+async fn load_safe_lane_summary_output(
+    session_id: &str,
+    limit: usize,
+    conversation_config: &ConversationConfig,
+    binding: ConversationRuntimeBinding<'_>,
+    memory_config: &MemoryRuntimeConfig,
+) -> CliResult<String> {
+    let summary = load_safe_lane_event_summary(session_id, limit, binding, memory_config).await?;
+
+    Ok(format_safe_lane_summary(
+        session_id,
+        limit,
+        conversation_config,
+        &summary,
+    ))
+}
+
+#[cfg(any(test, feature = "memory-sqlite"))]
+fn render_turn_checkpoint_summary_lines_with_width(
+    session_id: &str,
+    limit: usize,
+    diagnostics: &TurnCheckpointDiagnostics,
+    width: usize,
+) -> Vec<String> {
+    let message_spec = build_turn_checkpoint_summary_message_spec(session_id, limit, diagnostics);
+    render_tui_message_spec(&message_spec, width)
+}
+
+#[cfg(any(test, feature = "memory-sqlite"))]
+fn build_turn_checkpoint_summary_message_spec(
+    session_id: &str,
+    limit: usize,
+    diagnostics: &TurnCheckpointDiagnostics,
+) -> TuiMessageSpec {
+    let summary = diagnostics.summary();
+    let render_labels = TurnCheckpointSummaryRenderLabels::from_summary(summary);
+    let durability_labels = TurnCheckpointDurabilityRenderLabels::from_summary(summary);
+    let recovery_labels =
+        TurnCheckpointRecoveryRenderLabels::from_assessment(diagnostics.recovery());
+    let failure_step = format_turn_checkpoint_failure_step(summary.latest_failure_step);
+    let failure_error = summary.latest_failure_error.as_deref().unwrap_or("-");
+    let reply_durable = bool_yes_no_value(summary.reply_durable);
+    let checkpoint_durable = bool_yes_no_value(summary.checkpoint_durable);
+    let recovery_needed = bool_yes_no_value(summary.requires_recovery);
+    let recovery_tone = recovery_callout_tone(summary.requires_recovery);
+    let stage_rollup_values = collect_rollup_values(&summary.stage_counts);
+    let stage_rollups = csv_values_or_dash(stage_rollup_values);
+    let caption = format!("session={session_id} limit={limit}");
+    let mut sections = vec![
+        TuiSectionSpec::KeyValues {
+            title: Some("summary".to_owned()),
+            items: vec![
+                tui_plain_item("checkpoints", summary.checkpoint_events.to_string()),
+                tui_plain_item("state", render_labels.session_state.to_owned()),
+                tui_plain_item("durability", durability_labels.durability.to_owned()),
+                tui_plain_item("reply durable", reply_durable),
+                tui_plain_item("checkpoint durable", checkpoint_durable),
+                tui_plain_item("requires recovery", recovery_needed),
+            ],
+        },
+        TuiSectionSpec::Callout {
+            tone: recovery_tone,
+            title: Some("recovery".to_owned()),
+            lines: vec![
+                format!("action: {}", recovery_labels.action),
+                format!("source: {}", recovery_labels.source),
+                format!("reason: {}", recovery_labels.reason),
+            ],
+        },
+        TuiSectionSpec::KeyValues {
+            title: Some("latest checkpoint".to_owned()),
+            items: vec![
+                tui_plain_item("stage", render_labels.stage.to_owned()),
+                tui_plain_item("after turn", render_labels.after_turn.to_owned()),
+                tui_plain_item("compaction", render_labels.compaction.to_owned()),
+                tui_plain_item("lane", render_labels.lane.to_owned()),
+                tui_plain_item("result kind", render_labels.result_kind.to_owned()),
+                tui_plain_item(
+                    "persistence mode",
+                    render_labels.persistence_mode.to_owned(),
+                ),
+                tui_plain_item("identity", render_labels.identity.to_owned()),
+                tui_plain_item("failure step", failure_step.to_owned()),
+                tui_plain_item("failure error", failure_error.to_owned()),
+            ],
+        },
+        TuiSectionSpec::KeyValues {
+            title: Some("events".to_owned()),
+            items: vec![
+                tui_plain_item("post persist", summary.post_persist_events.to_string()),
+                tui_plain_item("finalized", summary.finalized_events.to_string()),
+                tui_plain_item(
+                    "finalization failed",
+                    summary.finalization_failed_events.to_string(),
+                ),
+                tui_plain_item(
+                    "schema version",
+                    format_fast_lane_summary_optional(summary.latest_schema_version),
+                ),
+            ],
+        },
+        TuiSectionSpec::KeyValues {
+            title: Some("rollups".to_owned()),
+            items: vec![tui_csv_item("stages", stage_rollups)],
+        },
+    ];
+
+    if render_labels.safe_lane_route_decision != "-"
+        || render_labels.safe_lane_route_reason != "-"
+        || render_labels.safe_lane_route_source != "-"
+    {
+        sections.insert(
+            3,
+            TuiSectionSpec::KeyValues {
+                title: Some("safe-lane route".to_owned()),
+                items: vec![
+                    tui_plain_item(
+                        "decision",
+                        render_labels.safe_lane_route_decision.to_owned(),
+                    ),
+                    tui_plain_item("reason", render_labels.safe_lane_route_reason.to_owned()),
+                    tui_plain_item("source", render_labels.safe_lane_route_source.to_owned()),
+                ],
+            },
+        );
+    }
+
+    if let Some(probe) = diagnostics.runtime_probe() {
+        let probe_lines = vec![
+            format!("action: {}", probe.action().as_str()),
+            format!("source: {}", probe.source().as_str()),
+            format!("reason: {}", probe.reason().as_str()),
+        ];
+
+        sections.push(TuiSectionSpec::Callout {
+            tone: TuiCalloutTone::Info,
+            title: Some("runtime probe".to_owned()),
+            lines: probe_lines,
+        });
+    }
+
+    TuiMessageSpec {
+        role: "checkpoint".to_owned(),
+        caption: Some(caption),
+        sections,
+        footer_lines: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+async fn load_turn_checkpoint_summary_output(
     turn_coordinator: &ConversationTurnCoordinator,
     config: &LoongClawConfig,
     session_id: &str,
+    limit: usize,
     binding: ConversationRuntimeBinding<'_>,
 ) -> CliResult<String> {
-    let outcome = turn_coordinator
-        .repair_turn_checkpoint_tail(config, session_id, binding)
+    let diagnostics = turn_coordinator
+        .load_turn_checkpoint_diagnostics_with_limit(config, session_id, limit, binding)
         .await?;
-    Ok(format_turn_checkpoint_repair(session_id, &outcome))
+
+    Ok(format_turn_checkpoint_summary_output(
+        session_id,
+        limit,
+        &diagnostics,
+    ))
+}
+
+#[cfg(any(test, feature = "memory-sqlite"))]
+fn render_turn_checkpoint_repair_lines_with_width(
+    session_id: &str,
+    outcome: &TurnCheckpointTailRepairOutcome,
+    width: usize,
+) -> Vec<String> {
+    let message_spec = build_turn_checkpoint_repair_message_spec(session_id, outcome);
+    render_tui_message_spec(&message_spec, width)
+}
+
+#[cfg(any(test, feature = "memory-sqlite"))]
+fn build_turn_checkpoint_repair_message_spec(
+    session_id: &str,
+    outcome: &TurnCheckpointTailRepairOutcome,
+) -> TuiMessageSpec {
+    let after_turn = outcome.after_turn_status().unwrap_or("-");
+    let compaction = outcome.compaction_status().unwrap_or("-");
+    let source = outcome.source().map(|value| value.as_str()).unwrap_or("-");
+    let status = outcome.status();
+    let (callout_tone, callout_lines) = match status {
+        TurnCheckpointTailRepairStatus::Repaired => (
+            TuiCalloutTone::Success,
+            vec!["Repair completed and durable checkpoint state was updated.".to_owned()],
+        ),
+        TurnCheckpointTailRepairStatus::ManualRequired => (
+            TuiCalloutTone::Warning,
+            vec!["Manual inspection is still required before replaying the session.".to_owned()],
+        ),
+        TurnCheckpointTailRepairStatus::NotNeeded => (
+            TuiCalloutTone::Success,
+            vec!["No repair action was required for the latest durable checkpoint.".to_owned()],
+        ),
+        TurnCheckpointTailRepairStatus::NoCheckpoint => (
+            TuiCalloutTone::Info,
+            vec!["No durable checkpoint was available to repair.".to_owned()],
+        ),
+    };
+    let caption = format!("session={session_id}");
+    let sections = vec![
+        TuiSectionSpec::KeyValues {
+            title: Some("repair status".to_owned()),
+            items: vec![
+                tui_plain_item("status", status.as_str().to_owned()),
+                tui_plain_item("action", outcome.action().as_str().to_owned()),
+                tui_plain_item("source", source.to_owned()),
+                tui_plain_item("reason", outcome.reason().as_str().to_owned()),
+            ],
+        },
+        TuiSectionSpec::KeyValues {
+            title: Some("checkpoint state".to_owned()),
+            items: vec![
+                tui_plain_item("session state", outcome.session_state().as_str().to_owned()),
+                tui_plain_item("checkpoints", outcome.checkpoint_events().to_string()),
+                tui_plain_item("after turn", after_turn.to_owned()),
+                tui_plain_item("compaction", compaction.to_owned()),
+            ],
+        },
+        TuiSectionSpec::Callout {
+            tone: callout_tone,
+            title: Some("repair result".to_owned()),
+            lines: callout_lines,
+        },
+    ];
+
+    TuiMessageSpec {
+        role: "repair".to_owned(),
+        caption: Some(caption),
+        sections,
+        footer_lines: Vec::new(),
+    }
 }
 
 #[cfg(any(test, feature = "memory-sqlite"))]
@@ -1552,7 +2674,7 @@ where
         .unwrap_or_else(|| "-".to_owned())
 }
 
-#[cfg(any(test, feature = "memory-sqlite"))]
+#[cfg(test)]
 fn format_fast_lane_segments(segments: &[FastLaneToolBatchSegmentSnapshot]) -> String {
     if segments.is_empty() {
         return "-".to_owned();
@@ -1585,7 +2707,7 @@ fn format_fast_lane_segments(segments: &[FastLaneToolBatchSegmentSnapshot]) -> S
         .join(",")
 }
 
-#[cfg(any(test, feature = "memory-sqlite"))]
+#[cfg(test)]
 fn format_fast_lane_summary(
     session_id: &str,
     limit: usize,
@@ -1680,7 +2802,7 @@ fn format_fast_lane_summary(
     .join("\n")
 }
 
-#[cfg(any(test, feature = "memory-sqlite"))]
+#[cfg(test)]
 fn format_safe_lane_summary(
     session_id: &str,
     limit: usize,
@@ -1961,6 +3083,7 @@ impl TurnCheckpointRecoveryRenderLabels {
         }
     }
 
+    #[cfg(test)]
     fn from_outcome(outcome: &TurnCheckpointTailRepairOutcome) -> Self {
         Self {
             action: outcome.action().as_str(),
@@ -1969,6 +3092,7 @@ impl TurnCheckpointRecoveryRenderLabels {
         }
     }
 
+    #[cfg(test)]
     fn from_probe(probe: &TurnCheckpointTailRepairRuntimeProbe) -> Self {
         Self {
             action: probe.action().as_str(),
@@ -2043,7 +3167,7 @@ impl TurnCheckpointDurabilityRenderLabels {
     }
 }
 
-#[cfg(any(test, feature = "memory-sqlite"))]
+#[cfg(test)]
 fn format_turn_checkpoint_summary(
     session_id: &str,
     limit: usize,
@@ -2095,7 +3219,7 @@ fn format_turn_checkpoint_summary(
     lines.join("\n")
 }
 
-#[cfg(any(test, feature = "memory-sqlite"))]
+#[cfg(test)]
 fn format_turn_checkpoint_summary_output(
     session_id: &str,
     limit: usize,
@@ -2109,7 +3233,7 @@ fn format_turn_checkpoint_summary_output(
     rendered
 }
 
-#[cfg(any(test, feature = "memory-sqlite"))]
+#[cfg(test)]
 fn format_turn_checkpoint_startup_health(
     session_id: &str,
     diagnostics: &TurnCheckpointDiagnostics,
@@ -2147,7 +3271,7 @@ fn format_turn_checkpoint_startup_health(
     ))
 }
 
-#[cfg(any(test, feature = "memory-sqlite"))]
+#[cfg(test)]
 fn format_turn_checkpoint_repair(
     session_id: &str,
     outcome: &TurnCheckpointTailRepairOutcome,
@@ -2166,7 +3290,7 @@ fn format_turn_checkpoint_repair(
     )
 }
 
-#[cfg(any(test, feature = "memory-sqlite"))]
+#[cfg(test)]
 fn format_turn_checkpoint_runtime_probe(
     session_id: &str,
     probe: &TurnCheckpointTailRepairRuntimeProbe,
@@ -2235,7 +3359,7 @@ struct SafeLaneHealthSignal {
     flags: Vec<String>,
 }
 
-#[cfg(any(test, feature = "memory-sqlite"))]
+#[cfg(test)]
 fn format_rollup_counts(counts: &std::collections::BTreeMap<String, u32>) -> String {
     if counts.is_empty() {
         return "-".to_owned();
@@ -3245,6 +4369,298 @@ mod tests {
                 .iter()
                 .any(|line| line == "- working directory: /workspace/project"),
             "chat startup should still surface the working directory override: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn should_run_missing_config_onboard_uses_default_yes_and_respects_decline() {
+        assert!(should_run_missing_config_onboard(1, "\n"));
+        assert!(should_run_missing_config_onboard(1, "yes\n"));
+        assert!(!should_run_missing_config_onboard(1, "n\n"));
+        assert!(!should_run_missing_config_onboard(0, ""));
+    }
+
+    #[test]
+    fn render_cli_chat_missing_config_lines_wrap_setup_prompt_in_surface() {
+        let command = "loongclaw onboard --output /tmp/loongclaw.toml";
+        let lines = render_cli_chat_missing_config_lines_with_width(command, 80);
+
+        assert!(
+            lines
+                .first()
+                .is_some_and(|line| line.starts_with("LOONGCLAW")),
+            "missing-config setup prompt should keep the shared compact header: {lines:#?}"
+        );
+        assert!(
+            lines.iter().any(|line| line == "setup required"),
+            "missing-config setup prompt should promote the title into the shared screen surface: {lines:#?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "setup command: loongclaw onboard --output /tmp/loongclaw.toml"),
+            "missing-config setup prompt should surface the setup command block: {lines:#?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "y) run setup wizard (recommended)"),
+            "missing-config setup prompt should show the default acceptance choice explicitly: {lines:#?}"
+        );
+        assert!(
+            lines.iter().any(|line| line == "Press Enter to accept y."),
+            "missing-config setup prompt should explain the default-enter behavior: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn render_turn_checkpoint_startup_health_lines_surface_recovery_and_probe() {
+        let summary = TurnCheckpointEventSummary {
+            checkpoint_events: 1,
+            latest_stage: Some(TurnCheckpointStage::PostPersist),
+            latest_after_turn: Some(TurnCheckpointProgressStatus::Pending),
+            latest_compaction: Some(TurnCheckpointProgressStatus::Pending),
+            latest_lane: Some("safe".to_owned()),
+            latest_result_kind: Some("tool_error".to_owned()),
+            latest_persistence_mode: Some("success".to_owned()),
+            latest_safe_lane_terminal_route: Some(
+                crate::conversation::SafeLaneTerminalRouteSnapshot {
+                    decision: crate::conversation::SafeLaneFailureRouteDecision::Terminal,
+                    reason: crate::conversation::SafeLaneFailureRouteReason::BackpressureAttemptsExhausted,
+                    source: crate::conversation::SafeLaneFailureRouteSource::BackpressureGuard,
+                },
+            ),
+            latest_identity_present: Some(true),
+            session_state: TurnCheckpointSessionState::PendingFinalization,
+            checkpoint_durable: true,
+            requires_recovery: true,
+            reply_durable: true,
+            ..TurnCheckpointEventSummary::default()
+        };
+        let probe = TurnCheckpointTailRepairRuntimeProbe::new(
+            TurnCheckpointRecoveryAction::InspectManually,
+            crate::conversation::TurnCheckpointTailRepairSource::Runtime,
+            crate::conversation::TurnCheckpointTailRepairReason::CheckpointPreparationFingerprintMismatch,
+        );
+        let diagnostics = test_turn_checkpoint_diagnostics(summary, Some(probe));
+        let lines = render_turn_checkpoint_startup_health_lines_with_width(
+            "session-health",
+            &diagnostics,
+            80,
+        )
+        .expect("startup health surface");
+
+        assert_eq!(lines[0], "checkpoint: session=session-health");
+        assert!(
+            lines.iter().any(|line| line == "durability status"),
+            "startup health should group durability facts under a shared key-value section: {lines:#?}"
+        );
+        assert!(
+            lines.iter().any(|line| line == "attention: recovery"),
+            "startup health should surface pending recovery as a warning callout: {lines:#?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "- action: inspect_manually"),
+            "startup health should preserve the concrete recovery action in the callout: {lines:#?}"
+        );
+        assert!(
+            lines.iter().any(|line| line == "note: runtime probe"),
+            "startup health should surface runtime probe context as a secondary structured callout: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn render_fast_lane_summary_lines_surface_aggregates_and_segments() {
+        let mut summary = FastLaneToolBatchEventSummary {
+            batch_events: 2,
+            total_intents_seen: 4,
+            total_parallel_safe_intents_seen: 3,
+            total_serial_only_intents_seen: 1,
+            total_parallel_segments_seen: 2,
+            total_sequential_segments_seen: 1,
+            parallel_execution_max_in_flight_samples: 1,
+            parallel_execution_max_in_flight_sum: 4,
+            observed_peak_in_flight_samples: 1,
+            observed_peak_in_flight_sum: 3,
+            observed_wall_time_ms_samples: 1,
+            observed_wall_time_ms_sum: 120,
+            latest_schema_version: Some(3),
+            latest_total_intents: Some(2),
+            latest_parallel_execution_enabled: Some(true),
+            latest_parallel_execution_max_in_flight: Some(4),
+            latest_observed_peak_in_flight: Some(3),
+            latest_observed_wall_time_ms: Some(120),
+            latest_parallel_safe_intents: Some(2),
+            latest_serial_only_intents: Some(0),
+            latest_parallel_segments: Some(1),
+            latest_sequential_segments: Some(0),
+            latest_segments: vec![FastLaneToolBatchSegmentSnapshot {
+                segment_index: 0,
+                scheduling_class: "parallel_safe".to_owned(),
+                execution_mode: "parallel".to_owned(),
+                intent_count: 2,
+                observed_peak_in_flight: Some(3),
+                observed_wall_time_ms: Some(120),
+            }],
+            ..FastLaneToolBatchEventSummary::default()
+        };
+        summary
+            .scheduling_class_counts
+            .insert("parallel_safe".to_owned(), 2);
+        summary
+            .execution_mode_counts
+            .insert("parallel".to_owned(), 2);
+
+        let lines = render_fast_lane_summary_lines_with_width("session-fast", 64, &summary, 80);
+
+        assert_eq!(lines[0], "fast-lane: session=session-fast limit=64");
+        assert!(
+            lines.iter().any(|line| line == "intent mix"),
+            "fast-lane summary should promote aggregate intent counters into a titled section: {lines:#?}"
+        );
+        assert!(
+            lines.iter().any(|line| line == "latest segments"),
+            "fast-lane summary should keep the latest segment narrative visible: {lines:#?}"
+        );
+        assert!(
+            lines.iter().any(|line| {
+                line == "- segment 0: class=parallel_safe mode=parallel intents=2 peak=3 wall_ms=120"
+            }),
+            "fast-lane summary should render latest segment details as readable surface lines: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn render_safe_lane_summary_lines_surface_health_and_rollups() {
+        let config = ConversationConfig::default();
+        let mut summary = SafeLaneEventSummary {
+            lane_selected_events: 1,
+            round_started_events: 2,
+            round_completed_succeeded_events: 1,
+            round_completed_failed_events: 1,
+            verify_failed_events: 1,
+            replan_triggered_events: 1,
+            final_status_events: 1,
+            final_status: Some(SafeLaneFinalStatus::Failed),
+            final_failure_code: Some("safe_lane_plan_verify_failed".to_owned()),
+            final_route_decision: Some("terminal".to_owned()),
+            final_route_reason: Some("session_governor_no_replan".to_owned()),
+            latest_metrics: Some(crate::conversation::SafeLaneMetricsSnapshot {
+                rounds_started: 2,
+                rounds_succeeded: 1,
+                rounds_failed: 1,
+                verify_failures: 1,
+                replans_triggered: 1,
+                total_attempts_used: 3,
+            }),
+            tool_output_snapshots_seen: 2,
+            tool_output_truncated_events: 1,
+            tool_output_result_lines_total: 3,
+            tool_output_truncated_result_lines_total: 1,
+            tool_output_aggregate_truncation_ratio_milli: Some(333),
+            ..SafeLaneEventSummary::default()
+        };
+        summary
+            .route_decision_counts
+            .insert("terminal".to_owned(), 1);
+        summary
+            .route_reason_counts
+            .insert("session_governor_no_replan".to_owned(), 1);
+        summary
+            .failure_code_counts
+            .insert("safe_lane_plan_verify_failed".to_owned(), 1);
+
+        let lines =
+            render_safe_lane_summary_lines_with_width("session-safe", 32, &config, &summary, 80);
+
+        assert_eq!(lines[0], "safe-lane: session=session-safe limit=32");
+        assert!(
+            lines.iter().any(|line| line == "attention: health"),
+            "safe-lane summary should surface warning health as a structured callout: {lines:#?}"
+        );
+        assert!(
+            lines.iter().any(|line| line == "- severity: critical"),
+            "safe-lane health callout should preserve the derived severity: {lines:#?}"
+        );
+        assert!(
+            lines.iter().any(|line| line == "rollups"),
+            "safe-lane summary should keep the route and failure rollups in a dedicated section: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn render_turn_checkpoint_summary_lines_surface_runtime_probe() {
+        let summary = TurnCheckpointEventSummary {
+            checkpoint_events: 2,
+            post_persist_events: 1,
+            finalized_events: 1,
+            latest_stage: Some(TurnCheckpointStage::FinalizationFailed),
+            latest_after_turn: Some(TurnCheckpointProgressStatus::Completed),
+            latest_compaction: Some(TurnCheckpointProgressStatus::Failed),
+            latest_lane: Some("fast".to_owned()),
+            latest_result_kind: Some("final_text".to_owned()),
+            latest_persistence_mode: Some("success".to_owned()),
+            latest_identity_present: Some(true),
+            session_state: TurnCheckpointSessionState::FinalizationFailed,
+            checkpoint_durable: true,
+            requires_recovery: true,
+            reply_durable: true,
+            ..TurnCheckpointEventSummary::default()
+        };
+        let probe = TurnCheckpointTailRepairRuntimeProbe::new(
+            TurnCheckpointRecoveryAction::InspectManually,
+            crate::conversation::TurnCheckpointTailRepairSource::Runtime,
+            crate::conversation::TurnCheckpointTailRepairReason::CheckpointPreparationFingerprintMismatch,
+        );
+        let diagnostics = test_turn_checkpoint_diagnostics(summary, Some(probe));
+        let lines = render_turn_checkpoint_summary_lines_with_width(
+            "session-summary",
+            64,
+            &diagnostics,
+            80,
+        );
+
+        assert_eq!(lines[0], "checkpoint: session=session-summary limit=64");
+        assert!(
+            lines.iter().any(|line| line == "summary"),
+            "turn checkpoint summary should group the latest durability state in a titled section: {lines:#?}"
+        );
+        assert!(
+            lines.iter().any(|line| line == "note: runtime probe"),
+            "turn checkpoint summary should append runtime probe context as a structured callout: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn render_turn_checkpoint_repair_lines_surface_manual_result() {
+        let summary = TurnCheckpointEventSummary {
+            checkpoint_events: 1,
+            latest_stage: Some(TurnCheckpointStage::PostPersist),
+            session_state: TurnCheckpointSessionState::PendingFinalization,
+            checkpoint_durable: true,
+            requires_recovery: true,
+            reply_durable: true,
+            ..TurnCheckpointEventSummary::default()
+        };
+        let outcome = crate::conversation::TurnCheckpointTailRepairOutcome::from_summary(
+            crate::conversation::TurnCheckpointTailRepairStatus::ManualRequired,
+            TurnCheckpointRecoveryAction::InspectManually,
+            Some(crate::conversation::TurnCheckpointTailRepairSource::Summary),
+            crate::conversation::TurnCheckpointTailRepairReason::CheckpointIdentityMissing,
+            &summary,
+        );
+        let lines = render_turn_checkpoint_repair_lines_with_width("session-repair", &outcome, 80);
+
+        assert_eq!(lines[0], "repair: session=session-repair");
+        assert!(
+            lines.iter().any(|line| line == "repair status"),
+            "turn checkpoint repair should group repair facts in a structured key-value section: {lines:#?}"
+        );
+        assert!(
+            lines.iter().any(|line| line == "attention: repair result"),
+            "manual repair outcomes should surface a warning callout: {lines:#?}"
         );
     }
 
