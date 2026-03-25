@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     contracts::Capability,
-    plugin::{PluginDescriptor, PluginManifest, PluginScanReport, PluginSourceKind},
+    plugin::{PluginDescriptor, PluginManifest, PluginScanReport, PluginSetup, PluginSourceKind},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -57,6 +57,7 @@ pub struct PluginIR {
     pub source_kind: PluginSourceKind,
     pub package_root: String,
     pub package_manifest_path: Option<String>,
+    pub setup: Option<PluginSetup>,
     pub runtime: PluginRuntimeProfile,
 }
 
@@ -180,6 +181,7 @@ impl PluginTranslator {
             source_kind: descriptor.source_kind,
             package_root: descriptor.package_root.clone(),
             package_manifest_path: descriptor.package_manifest_path.clone(),
+            setup: descriptor.manifest.setup.clone(),
             runtime,
         }
     }
@@ -396,7 +398,7 @@ fn bootstrap_hint(ir: &PluginIR) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugin::{PluginManifest, PluginSourceKind};
+    use crate::plugin::{PluginManifest, PluginSetup, PluginSetupMode, PluginSourceKind};
 
     fn descriptor(language: &str, metadata: BTreeMap<String, String>) -> PluginDescriptor {
         let source_kind = if language == "manifest" {
@@ -434,6 +436,16 @@ mod tests {
                 input_examples: Vec::new(),
                 output_examples: Vec::new(),
                 defer_loading: false,
+                setup: Some(PluginSetup {
+                    mode: PluginSetupMode::MetadataOnly,
+                    surface: Some("web_search".to_owned()),
+                    required_env_vars: vec!["TAVILY_API_KEY".to_owned()],
+                    recommended_env_vars: vec!["TEAM_TAVILY_KEY".to_owned()],
+                    required_config_keys: vec!["tools.web_search.default_provider".to_owned()],
+                    default_env_var: Some("TAVILY_API_KEY".to_owned()),
+                    docs_urls: vec!["https://docs.example.com/tavily".to_owned()],
+                    remediation: Some("set a Tavily credential before enabling search".to_owned()),
+                }),
             },
         }
     }
@@ -493,6 +505,10 @@ mod tests {
         assert_eq!(ir.runtime.adapter_family, "http-adapter");
         assert_eq!(ir.source_kind, PluginSourceKind::PackageManifest);
         assert_eq!(ir.package_root, "/tmp");
+        assert_eq!(
+            ir.setup.as_ref().and_then(|setup| setup.surface.as_deref()),
+            Some("web_search")
+        );
         assert_eq!(
             ir.package_manifest_path,
             Some("/tmp/loongclaw.plugin.json".to_owned())

@@ -13,9 +13,9 @@ use kernel::{
     CodebaseAwarenessSnapshot, ConnectorCommand, InMemoryAuditSink, IntegrationCatalog,
     LoongClawKernel, MemoryCoreRequest, MemoryExtensionRequest, PluginAbsorbReport,
     PluginActivationPlan, PluginActivationStatus, PluginBootstrapExecutor, PluginBridgeKind,
-    PluginDescriptor, PluginScanReport, PluginScanner, PluginTranslationReport, PluginTranslator,
-    ProvisionPlan, RuntimeCoreRequest, RuntimeExtensionRequest, StaticPolicyEngine, SystemClock,
-    TaskIntent, ToolCoreRequest, ToolExtensionRequest,
+    PluginDescriptor, PluginScanReport, PluginScanner, PluginSetup, PluginTranslationReport,
+    PluginTranslator, ProvisionPlan, RuntimeCoreRequest, RuntimeExtensionRequest,
+    StaticPolicyEngine, SystemClock, TaskIntent, ToolCoreRequest, ToolExtensionRequest,
 };
 use serde_json::{Value, json};
 
@@ -924,6 +924,8 @@ fn enrich_scan_report_with_translation(
                 .metadata
                 .entry("defer_loading".to_owned())
                 .or_insert_with(|| descriptor.manifest.defer_loading.to_string());
+            let setup = descriptor.manifest.setup.clone();
+            insert_plugin_setup_metadata(&mut descriptor.manifest.metadata, setup.as_ref());
             if let Some(summary) = descriptor.manifest.summary.clone() {
                 descriptor
                     .manifest
@@ -1031,6 +1033,77 @@ fn stamp_plugin_provenance_metadata(descriptor: &mut PluginDescriptor) {
     }
 }
 
+fn insert_plugin_setup_metadata(
+    metadata: &mut BTreeMap<String, String>,
+    setup: Option<&PluginSetup>,
+) {
+    let Some(setup) = setup else {
+        return;
+    };
+
+    metadata
+        .entry("plugin_setup_mode".to_owned())
+        .or_insert_with(|| setup.mode.as_str().to_owned());
+
+    if let Some(surface) = setup.surface.clone() {
+        metadata
+            .entry("plugin_setup_surface".to_owned())
+            .or_insert(surface);
+    }
+
+    insert_plugin_setup_string_list_metadata(
+        metadata,
+        "plugin_setup_required_env_vars_json",
+        &setup.required_env_vars,
+    );
+    insert_plugin_setup_string_list_metadata(
+        metadata,
+        "plugin_setup_recommended_env_vars_json",
+        &setup.recommended_env_vars,
+    );
+    insert_plugin_setup_string_list_metadata(
+        metadata,
+        "plugin_setup_required_config_keys_json",
+        &setup.required_config_keys,
+    );
+
+    if let Some(default_env_var) = setup.default_env_var.clone() {
+        metadata
+            .entry("plugin_setup_default_env_var".to_owned())
+            .or_insert(default_env_var);
+    }
+
+    insert_plugin_setup_string_list_metadata(
+        metadata,
+        "plugin_setup_docs_urls_json",
+        &setup.docs_urls,
+    );
+
+    if let Some(remediation) = setup.remediation.clone() {
+        metadata
+            .entry("plugin_setup_remediation".to_owned())
+            .or_insert(remediation);
+    }
+}
+
+fn insert_plugin_setup_string_list_metadata(
+    metadata: &mut BTreeMap<String, String>,
+    key: &str,
+    values: &[String],
+) {
+    let is_empty = values.is_empty();
+
+    if is_empty {
+        return;
+    }
+
+    let serialized = serde_json::to_string(values);
+    let Ok(serialized) = serialized else {
+        return;
+    };
+
+    metadata.entry(key.to_owned()).or_insert(serialized);
+}
 fn fnv1a64_hex(bytes: &[u8]) -> String {
     const OFFSET_BASIS: u64 = 0xcbf29ce484222325;
     const PRIME: u64 = 0x100000001b3;
@@ -1502,7 +1575,8 @@ mod plugin_metadata_tests {
     use super::*;
     use kernel::{
         Capability, PluginBridgeKind, PluginDescriptor, PluginIR, PluginManifest,
-        PluginRuntimeProfile, PluginScanReport, PluginSourceKind, PluginTranslationReport,
+        PluginRuntimeProfile, PluginScanReport, PluginSetup, PluginSetupMode, PluginSourceKind,
+        PluginTranslationReport,
     };
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -1539,6 +1613,16 @@ mod plugin_metadata_tests {
                 input_examples: Vec::new(),
                 output_examples: Vec::new(),
                 defer_loading: false,
+                setup: Some(PluginSetup {
+                    mode: PluginSetupMode::MetadataOnly,
+                    surface: Some("web_search".to_owned()),
+                    required_env_vars: vec!["TAVILY_API_KEY".to_owned()],
+                    recommended_env_vars: vec!["TEAM_TAVILY_KEY".to_owned()],
+                    required_config_keys: vec!["tools.web_search.default_provider".to_owned()],
+                    default_env_var: Some("TAVILY_API_KEY".to_owned()),
+                    docs_urls: vec!["https://docs.example.com/tavily".to_owned()],
+                    remediation: Some("set a Tavily credential before enabling search".to_owned()),
+                }),
             },
         }
     }
@@ -1559,6 +1643,7 @@ mod plugin_metadata_tests {
                 source_kind: descriptor.source_kind,
                 package_root: descriptor.package_root.clone(),
                 package_manifest_path: descriptor.package_manifest_path.clone(),
+                setup: descriptor.manifest.setup.clone(),
                 runtime: PluginRuntimeProfile {
                     source_language: descriptor.language.clone(),
                     bridge_kind: PluginBridgeKind::HttpJson,
@@ -1570,7 +1655,7 @@ mod plugin_metadata_tests {
     }
 
     #[test]
-    fn enrich_scan_report_adds_package_manifest_provenance_metadata() {
+    fn enrich_scan_report_adds_package_manifest_provenance_and_setup_metadata() {
         let descriptor = test_descriptor(PluginSourceKind::PackageManifest);
         let report = PluginScanReport {
             scanned_files: 1,
@@ -1596,6 +1681,26 @@ mod plugin_metadata_tests {
                 .map(String::as_str),
             Some("/tmp/pkg/loongclaw.plugin.json")
         );
+        assert_eq!(
+            metadata.get("plugin_setup_mode").map(String::as_str),
+            Some("metadata_only")
+        );
+        assert_eq!(
+            metadata.get("plugin_setup_surface").map(String::as_str),
+            Some("web_search")
+        );
+        assert_eq!(
+            metadata
+                .get("plugin_setup_default_env_var")
+                .map(String::as_str),
+            Some("TAVILY_API_KEY")
+        );
+        assert_eq!(
+            metadata
+                .get("plugin_setup_required_env_vars_json")
+                .map(String::as_str),
+            Some("[\"TAVILY_API_KEY\"]")
+        );
     }
 
     #[test]
@@ -1618,6 +1723,10 @@ mod plugin_metadata_tests {
         assert_eq!(
             metadata.get("plugin_package_root").map(String::as_str),
             Some("/tmp/pkg")
+        );
+        assert_eq!(
+            metadata.get("plugin_setup_mode").map(String::as_str),
+            Some("metadata_only")
         );
         assert!(
             !metadata.contains_key("plugin_package_manifest_path"),

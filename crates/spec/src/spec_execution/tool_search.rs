@@ -49,6 +49,20 @@ pub(super) fn execute_tool_search(
         let input_examples = metadata_examples(&provider.metadata, "input_examples_json");
         let output_examples = metadata_examples(&provider.metadata, "output_examples_json");
         let deferred = metadata_bool(&provider.metadata, "defer_loading").unwrap_or(false);
+        let setup_mode = provider.metadata.get("plugin_setup_mode").cloned();
+        let setup_surface = provider.metadata.get("plugin_setup_surface").cloned();
+        let setup_required_env_vars =
+            metadata_strings(&provider.metadata, "plugin_setup_required_env_vars_json");
+        let setup_recommended_env_vars =
+            metadata_strings(&provider.metadata, "plugin_setup_recommended_env_vars_json");
+        let setup_required_config_keys =
+            metadata_strings(&provider.metadata, "plugin_setup_required_config_keys_json");
+        let setup_default_env_var = provider
+            .metadata
+            .get("plugin_setup_default_env_var")
+            .cloned();
+        let setup_docs_urls = metadata_strings(&provider.metadata, "plugin_setup_docs_urls_json");
+        let setup_remediation = provider.metadata.get("plugin_setup_remediation").cloned();
         let mut adapter_family = provider.metadata.get("adapter_family").cloned();
         let mut entrypoint_hint = provider
             .metadata
@@ -88,6 +102,14 @@ pub(super) fn execute_tool_search(
                 adapter_family,
                 entrypoint_hint,
                 source_language,
+                setup_mode,
+                setup_surface,
+                setup_required_env_vars,
+                setup_recommended_env_vars,
+                setup_required_config_keys,
+                setup_default_env_var,
+                setup_docs_urls,
+                setup_remediation,
                 summary,
                 tags,
                 input_examples,
@@ -126,6 +148,42 @@ pub(super) fn execute_tool_search(
                     adapter_family: adapter_family.clone(),
                     entrypoint_hint: entrypoint_hint.clone(),
                     source_language: source_language.clone(),
+                    setup_mode: manifest
+                        .setup
+                        .as_ref()
+                        .map(|setup| setup.mode.as_str().to_owned()),
+                    setup_surface: manifest
+                        .setup
+                        .as_ref()
+                        .and_then(|setup| setup.surface.clone()),
+                    setup_required_env_vars: manifest
+                        .setup
+                        .as_ref()
+                        .map(|setup| setup.required_env_vars.clone())
+                        .unwrap_or_default(),
+                    setup_recommended_env_vars: manifest
+                        .setup
+                        .as_ref()
+                        .map(|setup| setup.recommended_env_vars.clone())
+                        .unwrap_or_default(),
+                    setup_required_config_keys: manifest
+                        .setup
+                        .as_ref()
+                        .map(|setup| setup.required_config_keys.clone())
+                        .unwrap_or_default(),
+                    setup_default_env_var: manifest
+                        .setup
+                        .as_ref()
+                        .and_then(|setup| setup.default_env_var.clone()),
+                    setup_docs_urls: manifest
+                        .setup
+                        .as_ref()
+                        .map(|setup| setup.docs_urls.clone())
+                        .unwrap_or_default(),
+                    setup_remediation: manifest
+                        .setup
+                        .as_ref()
+                        .and_then(|setup| setup.remediation.clone()),
                     summary: manifest.summary.clone(),
                     tags: manifest.tags.clone(),
                     input_examples: manifest.input_examples.clone(),
@@ -160,6 +218,58 @@ pub(super) fn execute_tool_search(
             }
             if entry.source_language.is_none() {
                 entry.source_language = source_language.clone();
+            }
+            if entry.setup_mode.is_none() {
+                entry.setup_mode = manifest
+                    .setup
+                    .as_ref()
+                    .map(|setup| setup.mode.as_str().to_owned());
+            }
+            if entry.setup_surface.is_none() {
+                entry.setup_surface = manifest
+                    .setup
+                    .as_ref()
+                    .and_then(|setup| setup.surface.clone());
+            }
+            if entry.setup_required_env_vars.is_empty() {
+                entry.setup_required_env_vars = manifest
+                    .setup
+                    .as_ref()
+                    .map(|setup| setup.required_env_vars.clone())
+                    .unwrap_or_default();
+            }
+            if entry.setup_recommended_env_vars.is_empty() {
+                entry.setup_recommended_env_vars = manifest
+                    .setup
+                    .as_ref()
+                    .map(|setup| setup.recommended_env_vars.clone())
+                    .unwrap_or_default();
+            }
+            if entry.setup_required_config_keys.is_empty() {
+                entry.setup_required_config_keys = manifest
+                    .setup
+                    .as_ref()
+                    .map(|setup| setup.required_config_keys.clone())
+                    .unwrap_or_default();
+            }
+            if entry.setup_default_env_var.is_none() {
+                entry.setup_default_env_var = manifest
+                    .setup
+                    .as_ref()
+                    .and_then(|setup| setup.default_env_var.clone());
+            }
+            if entry.setup_docs_urls.is_empty() {
+                entry.setup_docs_urls = manifest
+                    .setup
+                    .as_ref()
+                    .map(|setup| setup.docs_urls.clone())
+                    .unwrap_or_default();
+            }
+            if entry.setup_remediation.is_none() {
+                entry.setup_remediation = manifest
+                    .setup
+                    .as_ref()
+                    .and_then(|setup| setup.remediation.clone());
             }
             if entry.input_examples.is_empty() {
                 entry.input_examples = manifest.input_examples.clone();
@@ -224,6 +334,14 @@ pub(super) fn execute_tool_search(
             adapter_family: entry.adapter_family,
             entrypoint_hint: entry.entrypoint_hint,
             source_language: entry.source_language,
+            setup_mode: entry.setup_mode,
+            setup_surface: entry.setup_surface,
+            setup_required_env_vars: entry.setup_required_env_vars,
+            setup_recommended_env_vars: entry.setup_recommended_env_vars,
+            setup_required_config_keys: entry.setup_required_config_keys,
+            setup_default_env_var: entry.setup_default_env_var,
+            setup_docs_urls: entry.setup_docs_urls,
+            setup_remediation: entry.setup_remediation,
             score,
             deferred: entry.deferred,
             loaded: entry.loaded,
@@ -266,6 +384,13 @@ fn metadata_examples(metadata: &BTreeMap<String, String>, key: &str) -> Vec<Valu
     metadata
         .get(key)
         .and_then(|raw| serde_json::from_str::<Vec<Value>>(raw).ok())
+        .unwrap_or_default()
+}
+
+fn metadata_strings(metadata: &BTreeMap<String, String>, key: &str) -> Vec<String> {
+    metadata
+        .get(key)
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(raw).ok())
         .unwrap_or_default()
 }
 
@@ -327,10 +452,50 @@ fn tool_search_score(entry: &ToolSearchEntry, query: &str, tokens: &[String]) ->
         .as_deref()
         .unwrap_or_default()
         .to_ascii_lowercase();
+    let setup_mode = entry
+        .setup_mode
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let setup_surface = entry
+        .setup_surface
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let setup_default_env_var = entry
+        .setup_default_env_var
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let setup_remediation = entry
+        .setup_remediation
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     let tags: Vec<String> = entry
         .tags
         .iter()
         .map(|tag| tag.to_ascii_lowercase())
+        .collect();
+    let setup_required_env_vars: Vec<String> = entry
+        .setup_required_env_vars
+        .iter()
+        .map(|value| value.to_ascii_lowercase())
+        .collect();
+    let setup_recommended_env_vars: Vec<String> = entry
+        .setup_recommended_env_vars
+        .iter()
+        .map(|value| value.to_ascii_lowercase())
+        .collect();
+    let setup_required_config_keys: Vec<String> = entry
+        .setup_required_config_keys
+        .iter()
+        .map(|value| value.to_ascii_lowercase())
+        .collect();
+    let setup_docs_urls: Vec<String> = entry
+        .setup_docs_urls
+        .iter()
+        .map(|value| value.to_ascii_lowercase())
         .collect();
 
     let mut score = 0_u32;
@@ -371,14 +536,59 @@ fn tool_search_score(entry: &ToolSearchEntry, query: &str, tokens: &[String]) ->
     if source_language.contains(query) {
         score = score.saturating_add(10);
     }
+    if setup_mode.contains(query) {
+        score = score.saturating_add(12);
+    }
+    if setup_surface.contains(query) {
+        score = score.saturating_add(18);
+    }
+    if setup_default_env_var.contains(query) {
+        score = score.saturating_add(20);
+    }
+    if setup_remediation.contains(query) {
+        score = score.saturating_add(10);
+    }
+    if setup_docs_urls.iter().any(|value| value.contains(query)) {
+        score = score.saturating_add(8);
+    }
     if tags.iter().any(|tag| tag == query) {
         score = score.saturating_add(45);
     } else if tags.iter().any(|tag| tag.contains(query)) {
         score = score.saturating_add(25);
     }
+    if setup_required_env_vars.iter().any(|value| value == query) {
+        score = score.saturating_add(40);
+    } else if setup_required_env_vars
+        .iter()
+        .any(|value| value.contains(query))
+    {
+        score = score.saturating_add(24);
+    }
+    if setup_recommended_env_vars
+        .iter()
+        .any(|value| value == query)
+    {
+        score = score.saturating_add(28);
+    } else if setup_recommended_env_vars
+        .iter()
+        .any(|value| value.contains(query))
+    {
+        score = score.saturating_add(16);
+    }
+    if setup_required_config_keys
+        .iter()
+        .any(|value| value == query)
+    {
+        score = score.saturating_add(32);
+    } else if setup_required_config_keys
+        .iter()
+        .any(|value| value.contains(query))
+    {
+        score = score.saturating_add(18);
+    }
 
     let haystack = format!(
-        "{} {} {} {} {} {} {} {} {} {} {} {}",
+        "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
         connector,
         provider,
         tool_id,
@@ -390,7 +600,15 @@ fn tool_search_score(entry: &ToolSearchEntry, query: &str, tokens: &[String]) ->
         adapter_family,
         entrypoint_hint,
         source_language,
-        tags.join(" ")
+        setup_mode,
+        setup_surface,
+        setup_default_env_var,
+        setup_remediation,
+        tags.join(" "),
+        setup_required_env_vars.join(" "),
+        setup_recommended_env_vars.join(" "),
+        setup_required_config_keys.join(" "),
+        setup_docs_urls.join(" ")
     );
     for token in tokens {
         if haystack.contains(token) {
@@ -411,7 +629,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
-    fn execute_tool_search_surfaces_plugin_provenance_metadata() {
+    fn execute_tool_search_surfaces_plugin_provenance_and_setup_metadata() {
         let mut catalog = IntegrationCatalog::new();
         let provider = ProviderConfig {
             provider_id: "tavily".to_owned(),
@@ -432,12 +650,38 @@ mod tests {
                     "plugin_package_manifest_path".to_owned(),
                     "/tmp/tavily/loongclaw.plugin.json".to_owned(),
                 ),
+                ("plugin_setup_mode".to_owned(), "metadata_only".to_owned()),
+                ("plugin_setup_surface".to_owned(), "web_search".to_owned()),
+                (
+                    "plugin_setup_required_env_vars_json".to_owned(),
+                    "[\"TAVILY_API_KEY\"]".to_owned(),
+                ),
+                (
+                    "plugin_setup_recommended_env_vars_json".to_owned(),
+                    "[\"TEAM_TAVILY_KEY\"]".to_owned(),
+                ),
+                (
+                    "plugin_setup_required_config_keys_json".to_owned(),
+                    "[\"tools.web_search.default_provider\"]".to_owned(),
+                ),
+                (
+                    "plugin_setup_default_env_var".to_owned(),
+                    "TAVILY_API_KEY".to_owned(),
+                ),
+                (
+                    "plugin_setup_docs_urls_json".to_owned(),
+                    "[\"https://docs.example.com/tavily\"]".to_owned(),
+                ),
+                (
+                    "plugin_setup_remediation".to_owned(),
+                    "set a Tavily credential before enabling search".to_owned(),
+                ),
                 ("bridge_kind".to_owned(), "http_json".to_owned()),
             ]),
         };
         catalog.upsert_provider(provider);
 
-        let results = execute_tool_search(&catalog, &[], &[], "tavily", 10, true, false);
+        let results = execute_tool_search(&catalog, &[], &[], "TAVILY_API_KEY", 10, true, false);
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].source_kind.as_deref(), Some("package_manifest"));
@@ -445,6 +689,16 @@ mod tests {
         assert_eq!(
             results[0].package_manifest_path.as_deref(),
             Some("/tmp/tavily/loongclaw.plugin.json")
+        );
+        assert_eq!(results[0].setup_mode.as_deref(), Some("metadata_only"));
+        assert_eq!(results[0].setup_surface.as_deref(), Some("web_search"));
+        assert_eq!(
+            results[0].setup_default_env_var.as_deref(),
+            Some("TAVILY_API_KEY")
+        );
+        assert_eq!(
+            results[0].setup_required_env_vars,
+            vec!["TAVILY_API_KEY".to_owned()]
         );
     }
 }
