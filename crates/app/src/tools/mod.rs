@@ -471,6 +471,9 @@ fn required_capabilities_for_tool_name_and_payload(
     payload: &Value,
 ) -> BTreeSet<Capability> {
     let mut caps = BTreeSet::from([Capability::InvokeTool]);
+    if tool_requires_network_egress(tool_name) {
+        caps.insert(Capability::NetworkEgress);
+    }
     match tool_name {
         "tool.invoke" => {
             let Some((invoked_tool_name, invoked_payload)) =
@@ -530,6 +533,13 @@ fn claw_migrate_mode_requires_write(payload: &Value) -> bool {
             .filter(|value| !value.is_empty())
             .unwrap_or("plan"),
         "apply" | "apply_selected" | "rollback_last_apply"
+    )
+}
+
+fn tool_requires_network_egress(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "web.fetch" | "web.search" | "browser.open" | "browser.click"
     )
 }
 
@@ -2456,6 +2466,51 @@ mod tests {
             BTreeSet::from([Capability::InvokeTool, Capability::FilesystemRead])
         );
 
+        let direct_web_fetch = ToolCoreRequest {
+            tool_name: "web.fetch".to_owned(),
+            payload: json!({"url": "https://example.com"}),
+        };
+        assert_eq!(
+            required_capabilities_for_request(&direct_web_fetch),
+            BTreeSet::from([Capability::InvokeTool, Capability::NetworkEgress])
+        );
+
+        let direct_web_search = ToolCoreRequest {
+            tool_name: "web.search".to_owned(),
+            payload: json!({"query": "loongclaw"}),
+        };
+        assert_eq!(
+            required_capabilities_for_request(&direct_web_search),
+            BTreeSet::from([Capability::InvokeTool, Capability::NetworkEgress])
+        );
+
+        let direct_browser_open = ToolCoreRequest {
+            tool_name: "browser.open".to_owned(),
+            payload: json!({"url": "https://example.com"}),
+        };
+        assert_eq!(
+            required_capabilities_for_request(&direct_browser_open),
+            BTreeSet::from([Capability::InvokeTool, Capability::NetworkEgress])
+        );
+
+        let direct_browser_extract = ToolCoreRequest {
+            tool_name: "browser.extract".to_owned(),
+            payload: json!({"mode": "page_text"}),
+        };
+        assert_eq!(
+            required_capabilities_for_request(&direct_browser_extract),
+            BTreeSet::from([Capability::InvokeTool])
+        );
+
+        let direct_browser_click = ToolCoreRequest {
+            tool_name: "browser.click".to_owned(),
+            payload: json!({"id": 1}),
+        };
+        assert_eq!(
+            required_capabilities_for_request(&direct_browser_click),
+            BTreeSet::from([Capability::InvokeTool, Capability::NetworkEgress])
+        );
+
         let invoked_file_read = ToolCoreRequest {
             tool_name: "tool.invoke".to_owned(),
             payload: json!({
@@ -2480,6 +2535,19 @@ mod tests {
         assert_eq!(
             required_capabilities_for_request(&invoked_memory_search),
             BTreeSet::from([Capability::InvokeTool, Capability::FilesystemRead])
+        );
+
+        let invoked_web_fetch = ToolCoreRequest {
+            tool_name: "tool.invoke".to_owned(),
+            payload: json!({
+                "tool_id": "web.fetch",
+                "lease": "unused",
+                "arguments": {"url": "https://example.com"}
+            }),
+        };
+        assert_eq!(
+            required_capabilities_for_request(&invoked_web_fetch),
+            BTreeSet::from([Capability::InvokeTool, Capability::NetworkEgress])
         );
 
         let invoked_claw_plan = ToolCoreRequest {
@@ -13809,7 +13877,10 @@ mod tests {
                 adapter: None,
             },
             allowed_connectors: BTreeSet::new(),
-            granted_capabilities: BTreeSet::from([Capability::InvokeTool]),
+            granted_capabilities: BTreeSet::from([
+                Capability::InvokeTool,
+                Capability::NetworkEgress,
+            ]),
             metadata: BTreeMap::new(),
         };
         kernel.register_pack(pack).expect("register pack");
@@ -13856,7 +13927,10 @@ mod tests {
                 adapter: None,
             },
             allowed_connectors: BTreeSet::new(),
-            granted_capabilities: BTreeSet::from([Capability::InvokeTool]),
+            granted_capabilities: BTreeSet::from([
+                Capability::InvokeTool,
+                Capability::NetworkEgress,
+            ]),
             metadata: BTreeMap::new(),
         };
         kernel.register_pack(pack).expect("register pack");
@@ -13924,5 +13998,131 @@ mod tests {
             err.contains("denied") || err.contains("capability") || err.contains("Capability"),
             "error should mention denial or capability, got: {err}"
         );
+    }
+
+    #[cfg(feature = "tool-webfetch")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn web_fetch_through_kernel_requires_network_egress_capability() {
+        use kernel_adapter::MvpToolAdapter;
+
+        let audit = Arc::new(InMemoryAuditSink::default());
+        let clock = Arc::new(FixedClock::new(1_700_000_000));
+        let mut kernel = LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock, audit);
+
+        let pack = VerticalPackManifest {
+            pack_id: "test-pack".to_owned(),
+            domain: "testing".to_owned(),
+            version: "0.1.0".to_owned(),
+            default_route: ExecutionRoute {
+                harness_kind: HarnessKind::EmbeddedPi,
+                adapter: None,
+            },
+            allowed_connectors: BTreeSet::new(),
+            granted_capabilities: BTreeSet::from([
+                Capability::InvokeTool,
+                Capability::NetworkEgress,
+            ]),
+            metadata: BTreeMap::new(),
+        };
+        kernel.register_pack(pack).expect("register pack");
+
+        let mut config = runtime_config::ToolRuntimeConfig::default();
+        config.web_fetch.enabled = true;
+        kernel.register_core_tool_adapter(MvpToolAdapter::with_config(config));
+        kernel
+            .set_default_core_tool_adapter("mvp-tools")
+            .expect("set default");
+
+        let mut token = kernel
+            .issue_token("test-pack", "test-agent", 3600)
+            .expect("issue token");
+        let removed_network_egress = token
+            .allowed_capabilities
+            .remove(&Capability::NetworkEgress);
+        assert!(
+            removed_network_egress,
+            "issued token should include network egress before we remove it for the test"
+        );
+
+        let ctx = KernelContext {
+            kernel: Arc::new(kernel),
+            token,
+        };
+        let request = ToolCoreRequest {
+            tool_name: "web.fetch".to_owned(),
+            payload: json!({"url": "https://example.com"}),
+        };
+
+        let error = execute_kernel_tool_request(&ctx, request, false)
+            .await
+            .expect_err("web.fetch should fail closed without network egress capability");
+
+        assert!(matches!(
+            error,
+            loongclaw_kernel::KernelError::Policy(
+                loongclaw_kernel::PolicyError::MissingCapability { capability, .. }
+            ) if capability == Capability::NetworkEgress
+        ));
+    }
+
+    #[cfg(feature = "tool-webfetch")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn web_fetch_through_kernel_exposes_network_egress_to_policy_extensions() {
+        use kernel_adapter::MvpToolAdapter;
+
+        let audit = Arc::new(InMemoryAuditSink::default());
+        let clock = Arc::new(FixedClock::new(1_700_000_000));
+        let mut kernel = LoongClawKernel::with_runtime(StaticPolicyEngine::default(), clock, audit);
+
+        let pack = VerticalPackManifest {
+            pack_id: "test-pack".to_owned(),
+            domain: "testing".to_owned(),
+            version: "0.1.0".to_owned(),
+            default_route: ExecutionRoute {
+                harness_kind: HarnessKind::EmbeddedPi,
+                adapter: None,
+            },
+            allowed_connectors: BTreeSet::new(),
+            granted_capabilities: BTreeSet::from([
+                Capability::InvokeTool,
+                Capability::NetworkEgress,
+            ]),
+            metadata: BTreeMap::new(),
+        };
+        kernel.register_pack(pack).expect("register pack");
+        kernel.register_policy_extension(
+            loongclaw_kernel::test_support::NoNetworkEgressPolicyExtension,
+        );
+
+        let mut config = runtime_config::ToolRuntimeConfig::default();
+        config.web_fetch.enabled = true;
+        kernel.register_core_tool_adapter(MvpToolAdapter::with_config(config));
+        kernel
+            .set_default_core_tool_adapter("mvp-tools")
+            .expect("set default");
+
+        let token = kernel
+            .issue_token("test-pack", "test-agent", 3600)
+            .expect("issue token");
+
+        let ctx = KernelContext {
+            kernel: Arc::new(kernel),
+            token,
+        };
+        let request = ToolCoreRequest {
+            tool_name: "web.fetch".to_owned(),
+            payload: json!({"url": "https://example.com"}),
+        };
+
+        let error = execute_kernel_tool_request(&ctx, request, false)
+            .await
+            .expect_err("policy extension should block web.fetch network egress");
+
+        assert!(matches!(
+            error,
+            loongclaw_kernel::KernelError::Policy(
+                loongclaw_kernel::PolicyError::ExtensionDenied { ref extension, .. }
+            ) if extension == "no-network-egress"
+        ));
     }
 }
