@@ -617,6 +617,7 @@ mod tests {
                 input_examples: Vec::new(),
                 output_examples: Vec::new(),
                 defer_loading: false,
+                setup: None,
             },
         }
     }

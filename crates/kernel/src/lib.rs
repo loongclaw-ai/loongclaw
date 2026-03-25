@@ -58,7 +58,7 @@ pub use memory::{
 pub use pack::VerticalPackManifest;
 pub use plugin::{
     PluginAbsorbReport, PluginDescriptor, PluginManifest, PluginScanReport, PluginScanner,
-    PluginSourceKind,
+    PluginSetup, PluginSetupMode, PluginSourceKind,
 };
 pub use plugin_ir::{
     BridgeSupportMatrix, PluginActivationCandidate, PluginActivationPlan, PluginActivationStatus,

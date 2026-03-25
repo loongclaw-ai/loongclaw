@@ -16,6 +16,69 @@ use crate::{
 
 const PACKAGE_MANIFEST_FILE_NAME: &str = "loongclaw.plugin.json";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginSetupMode {
+    #[default]
+    MetadataOnly,
+    GovernedEntry,
+}
+
+impl PluginSetupMode {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MetadataOnly => "metadata_only",
+            Self::GovernedEntry => "governed_entry",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PluginSetup {
+    #[serde(default)]
+    pub mode: PluginSetupMode,
+    #[serde(default)]
+    pub surface: Option<String>,
+    #[serde(default)]
+    pub required_env_vars: Vec<String>,
+    #[serde(default)]
+    pub recommended_env_vars: Vec<String>,
+    #[serde(default)]
+    pub required_config_keys: Vec<String>,
+    #[serde(default)]
+    pub default_env_var: Option<String>,
+    #[serde(default)]
+    pub docs_urls: Vec<String>,
+    #[serde(default)]
+    pub remediation: Option<String>,
+}
+
+impl PluginSetup {
+    #[must_use]
+    pub fn normalized(self) -> Self {
+        let mode = self.mode;
+        let surface = normalize_optional_manifest_string(self.surface);
+        let required_env_vars = normalize_manifest_string_list(self.required_env_vars);
+        let recommended_env_vars = normalize_manifest_string_list(self.recommended_env_vars);
+        let required_config_keys = normalize_manifest_string_list(self.required_config_keys);
+        let default_env_var = normalize_optional_manifest_string(self.default_env_var);
+        let docs_urls = normalize_manifest_string_list(self.docs_urls);
+        let remediation = normalize_optional_manifest_string(self.remediation);
+
+        Self {
+            mode,
+            surface,
+            required_env_vars,
+            recommended_env_vars,
+            required_config_keys,
+            default_env_var,
+            docs_urls,
+            remediation,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginManifest {
     pub plugin_id: String,
@@ -35,6 +98,8 @@ pub struct PluginManifest {
     pub output_examples: Vec<Value>,
     #[serde(default)]
     pub defer_loading: bool,
+    #[serde(default)]
+    pub setup: Option<PluginSetup>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -407,7 +472,9 @@ fn parse_package_manifest_file(path: &Path) -> Result<PluginManifest, Integratio
         }
     }
 
-    Ok(document.manifest)
+    let normalized_manifest = normalize_plugin_manifest(document.manifest);
+
+    Ok(normalized_manifest)
 }
 
 fn parse_source_manifest_descriptor(
@@ -636,6 +703,12 @@ fn first_manifest_conflict(
         return output_examples_conflict;
     }
 
+    let setup_conflict =
+        compare_manifest_value("setup", &package_manifest.setup, &source_manifest.setup);
+    if setup_conflict.is_some() {
+        return setup_conflict;
+    }
+
     compare_manifest_value(
         "defer_loading",
         &package_manifest.defer_loading,
@@ -716,7 +789,9 @@ fn parse_manifest_block(
         }
     })?;
 
-    Ok(Some(manifest))
+    let normalized_manifest = normalize_plugin_manifest(manifest);
+
+    Ok(Some(normalized_manifest))
 }
 
 fn clean_manifest_line(line: &str) -> String {
@@ -727,6 +802,49 @@ fn clean_manifest_line(line: &str) -> String {
         }
     }
     trimmed.to_owned()
+}
+
+fn normalize_plugin_manifest(mut manifest: PluginManifest) -> PluginManifest {
+    let normalized_setup = manifest.setup.take().map(PluginSetup::normalized);
+    manifest.setup = normalized_setup;
+    manifest
+}
+
+fn normalize_optional_manifest_string(raw: Option<String>) -> Option<String> {
+    let value = raw?;
+    let trimmed = value.trim();
+
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    Some(trimmed.to_owned())
+}
+
+fn normalize_manifest_string_list(values: Vec<String>) -> Vec<String> {
+    let mut normalized_values = Vec::new();
+
+    for value in values {
+        let trimmed = value.trim();
+        let is_empty = trimmed.is_empty();
+
+        if is_empty {
+            continue;
+        }
+
+        let candidate = trimmed.to_owned();
+        let is_duplicate = normalized_values
+            .iter()
+            .any(|existing| existing == &candidate);
+
+        if is_duplicate {
+            continue;
+        }
+
+        normalized_values.push(candidate);
+    }
+
+    normalized_values
 }
 
 fn detect_language(path: &Path) -> String {
@@ -869,7 +987,17 @@ mod tests {
     "adapter_family": "web-search"
   },
   "summary": "Manifest-discovered Tavily package",
-  "tags": ["search", "provider"]
+  "tags": ["search", "provider"],
+  "setup": {
+    "mode": "metadata_only",
+    "surface": " web_search ",
+    "required_env_vars": ["TAVILY_API_KEY", " ", "TAVILY_API_KEY"],
+    "recommended_env_vars": ["TEAM_TAVILY_KEY"],
+    "required_config_keys": ["tools.web_search.default_provider"],
+    "default_env_var": " TAVILY_API_KEY ",
+    "docs_urls": ["https://docs.example.com/tavily", "https://docs.example.com/tavily"],
+    "remediation": " set a Tavily credential before enabling search "
+  }
 }
 "#,
         )
@@ -907,6 +1035,19 @@ mod tests {
         assert_eq!(
             report.descriptors[0].package_manifest_path,
             Some(manifest_file.display().to_string())
+        );
+        assert_eq!(
+            report.descriptors[0].manifest.setup,
+            Some(PluginSetup {
+                mode: PluginSetupMode::MetadataOnly,
+                surface: Some("web_search".to_owned()),
+                required_env_vars: vec!["TAVILY_API_KEY".to_owned()],
+                recommended_env_vars: vec!["TEAM_TAVILY_KEY".to_owned()],
+                required_config_keys: vec!["tools.web_search.default_provider".to_owned()],
+                default_env_var: Some("TAVILY_API_KEY".to_owned()),
+                docs_urls: vec!["https://docs.example.com/tavily".to_owned()],
+                remediation: Some("set a Tavily credential before enabling search".to_owned()),
+            })
         );
     }
 
@@ -1145,7 +1286,12 @@ mod tests {
 #   "channel_id": "source-channel",
 #   "endpoint": "https://source.example/invoke",
 #   "capabilities": ["InvokeConnector"],
-#   "metadata": {"bridge_kind":"process_stdio"}
+#   "metadata": {"bridge_kind":"process_stdio"},
+#   "setup": {
+#     "surface": "channel",
+#     "required_env_vars": ["SOURCE_TOKEN"],
+#     "default_env_var": "SOURCE_TOKEN"
+#   }
 # }
 # LOONGCLAW_PLUGIN_END
 "#,
@@ -1177,6 +1323,19 @@ mod tests {
             report.descriptors[0].manifest.provider_id,
             "source-provider"
         );
+        assert_eq!(
+            report.descriptors[0].manifest.setup,
+            Some(PluginSetup {
+                mode: PluginSetupMode::MetadataOnly,
+                surface: Some("channel".to_owned()),
+                required_env_vars: vec!["SOURCE_TOKEN".to_owned()],
+                recommended_env_vars: Vec::new(),
+                required_config_keys: Vec::new(),
+                default_env_var: Some("SOURCE_TOKEN".to_owned()),
+                docs_urls: Vec::new(),
+                remediation: None,
+            })
+        );
     }
 
     #[test]
@@ -1206,6 +1365,7 @@ mod tests {
                     input_examples: Vec::new(),
                     output_examples: Vec::new(),
                     defer_loading: false,
+                    setup: None,
                 },
             }],
         };
@@ -1272,6 +1432,7 @@ mod tests {
                         input_examples: Vec::new(),
                         output_examples: Vec::new(),
                         defer_loading: false,
+                        setup: None,
                     },
                 },
                 PluginDescriptor {
@@ -1293,6 +1454,7 @@ mod tests {
                         input_examples: Vec::new(),
                         output_examples: Vec::new(),
                         defer_loading: false,
+                        setup: None,
                     },
                 },
             ],
