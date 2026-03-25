@@ -451,6 +451,18 @@ mod tests {
     }
 
     #[test]
+    fn translator_defaults_manifest_descriptor_with_endpoint_to_http_json() {
+        let descriptor = descriptor("manifest", BTreeMap::new());
+
+        let translator = PluginTranslator::new();
+        let ir = translator.translate_descriptor(&descriptor);
+
+        assert_eq!(ir.runtime.source_language, "manifest");
+        assert_eq!(ir.runtime.bridge_kind, PluginBridgeKind::HttpJson);
+        assert_eq!(ir.runtime.adapter_family, "http-adapter");
+    }
+
+    #[test]
     fn translator_accepts_acpx_runtime_alias() {
         let descriptor = descriptor(
             "js",
