@@ -2696,27 +2696,28 @@ mod tests {
     #[test]
     fn session_mutation_tools_are_disabled_by_default() {
         let config = isolated_memory_config("session-mutation-disabled");
-        let expected_error =
-            "app_tool_disabled: session mutation tool `session_archive` is disabled by config";
+        for tool_name in ["session_archive", "session_cancel", "session_recover"] {
+            let error = execute_session_tool_with_config(
+                ToolCoreRequest {
+                    tool_name: tool_name.to_owned(),
+                    payload: json!({
+                        "session_id": "child-session"
+                    }),
+                },
+                "root-session",
+                &config,
+            )
+            .expect_err("session mutation tools should require explicit opt-in");
+            let expected_error = format!(
+                "app_tool_disabled: session mutation tool `{tool_name}` is disabled by config"
+            );
+            let matches_expected_error = error.contains(expected_error.as_str());
 
-        let error = execute_session_tool_with_config(
-            ToolCoreRequest {
-                tool_name: "session_archive".to_owned(),
-                payload: json!({
-                    "session_id": "child-session"
-                }),
-            },
-            "root-session",
-            &config,
-        )
-        .expect_err("session mutation tools should require explicit opt-in");
-
-        let matches_expected_error = error.contains(expected_error);
-
-        assert!(
-            matches_expected_error,
-            "expected mutation gating error, got: {error}"
-        );
+            assert!(
+                matches_expected_error,
+                "expected mutation gating error for {tool_name}, got: {error}"
+            );
+        }
     }
 
     #[test]
