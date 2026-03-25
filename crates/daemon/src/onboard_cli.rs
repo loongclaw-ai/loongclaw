@@ -2720,6 +2720,7 @@ fn render_web_search_provider_selection_screen_lines_with_style(
             "Enter",
             format!("use {recommended_provider_label}").as_str(),
         )],
+        true,
         color_enabled,
     )
 }
@@ -3819,14 +3820,14 @@ fn render_single_detected_setup_preview_screen_lines_with_style(
     {
         intro_lines.push(reason_line);
     }
-    intro_lines.extend(crate::migration::render::render_candidate_preview_lines(
-        &migration_candidate_for_onboard_display(candidate),
-        width,
-    ));
-    intro_lines.extend(crate::migration::render::render_provider_selection_lines(
-        &provider_selection,
-        width,
-    ));
+    let preview_candidate = migration_candidate_for_onboard_display(candidate);
+    let preview_lines =
+        crate::migration::render::candidate_preview_display_lines(&preview_candidate);
+    intro_lines.extend(preview_lines);
+
+    let provider_selection_lines =
+        crate::migration::render::provider_selection_display_lines(&provider_selection);
+    intro_lines.extend(provider_selection_lines);
 
     render_onboard_choice_screen(
         OnboardHeaderStyle::Compact,
@@ -3839,6 +3840,7 @@ fn render_single_detected_setup_preview_screen_lines_with_style(
         vec![
             crate::onboard_presentation::single_detected_starting_point_preview_footer().to_owned(),
         ],
+        false,
         color_enabled,
     )
 }
@@ -4057,7 +4059,6 @@ fn render_onboard_review_lines_with_guidance_and_style(
         workspace_guidance,
         selected_candidate,
         flow_style,
-        width,
     );
 
     render_onboard_screen_spec(&spec, width, color_enabled)
@@ -4069,17 +4070,15 @@ fn build_onboard_review_screen_spec(
     workspace_guidance: &[crate::migration::WorkspaceGuidanceCandidate],
     selected_candidate: Option<&ImportCandidate>,
     flow_style: ReviewFlowStyle,
-    width: usize,
 ) -> TuiScreenSpec {
     let mut sections = Vec::new();
 
     if let Some(source) = import_source {
         let starting_point_label = onboard_starting_point_label(None, source);
-        let starting_point_lines = mvp::presentation::render_wrapped_text_line(
+        let starting_point_lines = vec![onboard_display_line(
             "- starting point: ",
             &starting_point_label,
-            width,
-        );
+        )];
         let starting_point_section = TuiSectionSpec::Narrative {
             title: Some("starting point".to_owned()),
             lines: starting_point_lines,
@@ -4088,7 +4087,7 @@ fn build_onboard_review_screen_spec(
         sections.push(starting_point_section);
     }
 
-    let configuration_lines = render_onboard_review_digest_lines(config, width);
+    let configuration_lines = build_onboard_review_digest_display_lines(config);
     let configuration_section = TuiSectionSpec::Narrative {
         title: Some("configuration".to_owned()),
         lines: configuration_lines,
@@ -4102,7 +4101,7 @@ fn build_onboard_review_screen_spec(
         selected_candidate,
     );
     let draft_source_lines =
-        crate::migration::render::render_candidate_preview_lines(&review_candidate, width);
+        crate::migration::render::candidate_preview_display_lines(&review_candidate);
     let draft_source_section = TuiSectionSpec::Narrative {
         title: Some("draft source".to_owned()),
         lines: draft_source_lines,
@@ -4335,6 +4334,7 @@ fn render_onboard_choice_screen(
     intro_lines: Vec<String>,
     options: Vec<OnboardScreenOption>,
     footer_lines: Vec<String>,
+    show_escape_cancel_hint: bool,
     color_enabled: bool,
 ) -> Vec<String> {
     let spec = build_onboard_choice_screen_spec(
@@ -4345,6 +4345,7 @@ fn render_onboard_choice_screen(
         intro_lines,
         options,
         footer_lines,
+        show_escape_cancel_hint,
     );
 
     render_onboard_screen_spec(&spec, width, color_enabled)
@@ -4399,8 +4400,7 @@ fn render_onboard_shortcut_screen_lines_with_style(
     width: usize,
     color_enabled: bool,
 ) -> Vec<String> {
-    let spec =
-        build_onboard_shortcut_screen_spec(shortcut_kind, config, import_source, width, true);
+    let spec = build_onboard_shortcut_screen_spec(shortcut_kind, config, import_source, true);
     render_onboard_screen_spec(&spec, width, color_enabled)
 }
 
@@ -4411,8 +4411,7 @@ fn render_onboard_shortcut_header_lines_with_style(
     width: usize,
     color_enabled: bool,
 ) -> Vec<String> {
-    let spec =
-        build_onboard_shortcut_screen_spec(shortcut_kind, config, import_source, width, false);
+    let spec = build_onboard_shortcut_screen_spec(shortcut_kind, config, import_source, false);
     render_onboard_screen_spec(&spec, width, color_enabled)
 }
 
@@ -4483,20 +4482,17 @@ fn build_onboard_shortcut_screen_spec(
     shortcut_kind: OnboardShortcutKind,
     config: &mvp::config::LoongClawConfig,
     import_source: Option<&str>,
-    width: usize,
     include_choices: bool,
 ) -> TuiScreenSpec {
     let mut snapshot_lines = Vec::new();
     if let Some(source) = import_source {
         let starting_point_label = onboard_starting_point_label(None, source);
-        let starting_point_lines = mvp::presentation::render_wrapped_text_line(
+        snapshot_lines.push(onboard_display_line(
             "- starting point: ",
             &starting_point_label,
-            width,
-        );
-        snapshot_lines.extend(starting_point_lines);
+        ));
     }
-    snapshot_lines.extend(render_onboard_review_digest_lines(config, width));
+    snapshot_lines.extend(build_onboard_review_digest_display_lines(config));
     let snapshot_title = if import_source.is_some() {
         "detected starting point snapshot"
     } else {
@@ -4611,11 +4607,16 @@ fn build_onboard_choice_screen_spec(
     intro_lines: Vec<String>,
     options: Vec<OnboardScreenOption>,
     footer_lines: Vec<String>,
+    show_escape_cancel_hint: bool,
 ) -> TuiScreenSpec {
     let resolved_subtitle = screen_subtitle(subtitle);
     let resolved_progress_line =
         step.map(|(step, guided_prompt_path)| step.progress_line(guided_prompt_path));
-    let resolved_footer_lines = append_escape_cancel_hint(footer_lines);
+    let resolved_footer_lines = if show_escape_cancel_hint {
+        append_escape_cancel_hint(footer_lines)
+    } else {
+        footer_lines
+    };
     let resolved_choices = tui_choices_from_screen_options(&options);
 
     TuiScreenSpec {
@@ -5050,6 +5051,7 @@ fn render_starting_point_selection_screen_lines_with_style(
         vec![crate::onboard_presentation::starting_point_selection_hint().to_owned()],
         options,
         footer_lines,
+        true,
         color_enabled,
     )
 }
@@ -5068,6 +5070,7 @@ fn render_starting_point_selection_header_lines_with_style(
         vec![crate::onboard_presentation::starting_point_selection_hint().to_owned()],
         Vec::new(),
         Vec::new(),
+        true,
         color_enabled,
     )
 }
@@ -5131,6 +5134,7 @@ fn render_provider_selection_screen_lines_with_style(
             crate::migration::guidance_lines(plan, width),
             render_provider_selection_default_choice_footer_line(plan),
         ),
+        true,
         color_enabled,
     )
 }
@@ -5149,6 +5153,7 @@ fn render_provider_selection_header_lines(
         provider_selection_intro_lines(plan),
         vec![],
         vec![],
+        true,
         true,
     )
 }
@@ -5558,6 +5563,7 @@ fn render_personality_selection_screen_lines_with_style(
             prompt_personality_id(default_personality),
             "the current personality",
         )],
+        true,
         color_enabled,
     )
 }
@@ -5581,6 +5587,7 @@ fn render_personality_selection_header_lines(
         )],
         vec![],
         vec![],
+        true,
         true,
     )
 }
@@ -5671,6 +5678,7 @@ fn render_memory_profile_selection_screen_lines_with_style(
             memory_profile_id(default_profile),
             "the current memory profile",
         )],
+        true,
         color_enabled,
     )
 }
@@ -5692,6 +5700,7 @@ fn render_memory_profile_selection_header_lines(
         )],
         vec![],
         vec![],
+        true,
         true,
     )
 }
@@ -5720,6 +5729,7 @@ fn render_existing_config_write_screen_lines_with_style(
             "b",
             "create backup and replace",
         )],
+        true,
         color_enabled,
     )
 }
@@ -5741,77 +5751,71 @@ fn render_existing_config_write_header_lines_with_style(
         ],
         Vec::new(),
         Vec::new(),
+        true,
         color_enabled,
     )
 }
 
-fn render_onboard_review_digest_lines(
-    config: &mvp::config::LoongClawConfig,
-    width: usize,
-) -> Vec<String> {
-    let mut lines = crate::provider_presentation::render_provider_profile_state_lines(
+fn onboard_display_line(prefix: &str, value: &str) -> String {
+    format!("{prefix}{value}")
+}
+
+fn build_onboard_review_digest_display_lines(config: &mvp::config::LoongClawConfig) -> Vec<String> {
+    let mut lines = crate::provider_presentation::provider_profile_state_display_lines(
         config,
-        width,
         Some("- provider: "),
     );
-    lines.extend(mvp::presentation::render_wrapped_text_line(
-        "- model: ",
-        &config.provider.model,
-        width,
-    ));
-    lines.extend(mvp::presentation::render_wrapped_text_line(
+    lines.push(onboard_display_line("- model: ", &config.provider.model));
+    lines.push(onboard_display_line(
         "- transport: ",
         &config.provider.transport_readiness().summary,
-        width,
     ));
+
     if let Some(provider_endpoint) = config.provider.region_endpoint_note() {
-        lines.extend(mvp::presentation::render_wrapped_text_line(
+        lines.push(onboard_display_line(
             "- provider endpoint: ",
             &provider_endpoint,
-            width,
         ));
     }
 
     if let Some(credential_line) = render_onboard_review_credential_line(&config.provider) {
         lines.push(credential_line);
     }
-    lines.extend(mvp::presentation::render_wrapped_text_line(
-        "- prompt mode: ",
-        &summarize_prompt_mode(config),
-        width,
-    ));
+
+    let prompt_mode = summarize_prompt_mode(config);
+    lines.push(onboard_display_line("- prompt mode: ", &prompt_mode));
+
     if config.cli.uses_native_prompt_pack() {
-        lines.extend(mvp::presentation::render_wrapped_text_line(
+        lines.push(onboard_display_line(
             "- personality: ",
             prompt_personality_id(config.cli.resolved_personality()),
-            width,
         ));
+
         if let Some(prompt_addendum) = summarize_prompt_addendum(config) {
-            lines.extend(mvp::presentation::render_wrapped_text_line(
+            lines.push(onboard_display_line(
                 "- prompt addendum: ",
                 &prompt_addendum,
-                width,
             ));
         }
     }
-    lines.extend(mvp::presentation::render_wrapped_text_line(
+
+    lines.push(onboard_display_line(
         "- memory profile: ",
         memory_profile_id(config.memory.profile),
-        width,
     ));
-    lines.extend(mvp::presentation::render_wrapped_text_line(
-        "- web search: ",
-        &web_search_provider_display_name(config.tools.web_search.default_provider.as_str()),
-        width,
-    ));
+
+    let web_search_provider =
+        web_search_provider_display_name(config.tools.web_search.default_provider.as_str());
+    lines.push(onboard_display_line("- web search: ", &web_search_provider));
+
     if let Some(web_search_credential) = summarize_web_search_provider_credential(
         config,
         config.tools.web_search.default_provider.as_str(),
     ) {
-        lines.extend(mvp::presentation::render_wrapped_text_line(
-            &format!("- {}: ", web_search_credential.label),
+        let credential_prefix = format!("- {}: ", web_search_credential.label);
+        lines.push(onboard_display_line(
+            &credential_prefix,
             &web_search_credential.value,
-            width,
         ));
     }
 
@@ -5820,14 +5824,9 @@ fn render_onboard_review_digest_lines(
         .filter(|channel| channel != "cli")
         .collect::<Vec<_>>();
     if !enabled_channels.is_empty() {
-        let channels = enabled_channels
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
-        lines.extend(mvp::presentation::render_wrapped_csv_line(
+        lines.push(onboard_display_line(
             "- channels: ",
-            &channels,
-            width,
+            &enabled_channels.join(", "),
         ));
     }
 
@@ -6035,11 +6034,7 @@ fn onboard_starting_point_label(
 }
 
 fn detect_render_width() -> usize {
-    env::var("COLUMNS")
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .filter(|width| *width > 0)
-        .unwrap_or(80)
+    mvp::presentation::detect_render_width()
 }
 
 fn enabled_channel_ids(config: &mvp::config::LoongClawConfig) -> Vec<String> {

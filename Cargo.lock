@@ -2001,6 +2001,7 @@ dependencies = [
  "base64",
  "cbc",
  "chrono",
+ "console",
  "flate2",
  "futures-util",
  "hex",
