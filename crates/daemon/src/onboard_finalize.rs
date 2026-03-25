@@ -537,20 +537,19 @@ fn build_onboarding_saved_setup_items(summary: &OnboardingSuccessSummary) -> Vec
         value: summary.memory_profile.clone(),
     });
 
-    lines.extend(mvp::presentation::render_wrapped_text_line(
-        "- web search: ",
-        &summary.web_search_provider,
-        width,
-    ));
+    let web_search_provider = summary.web_search_provider.clone();
+    items.push(TuiKeyValueSpec::Plain {
+        key: "web search".to_owned(),
+        value: web_search_provider,
+    });
 
     if let Some(web_search_credential) = summary.web_search_credential.as_ref() {
-        let prefix = format!("- {}: ", web_search_credential.label);
-
-        lines.extend(mvp::presentation::render_wrapped_text_line(
-            &prefix,
-            &web_search_credential.value,
-            width,
-        ));
+        let credential_label = web_search_credential.label.to_owned();
+        let credential_value = web_search_credential.value.clone();
+        items.push(TuiKeyValueSpec::Plain {
+            key: credential_label,
+            value: credential_value,
+        });
     }
 
     if let Some(memory_path) = summary.memory_path.as_deref() {
