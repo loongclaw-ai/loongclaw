@@ -496,7 +496,8 @@ fn execute_approval_request_status(
     config: &MemoryRuntimeConfig,
     tool_config: &ToolConfig,
 ) -> Result<ToolCoreOutcome, String> {
-    let approval_request_id = required_payload_string(&payload, "approval_request_id", "approval tool")?;
+    let approval_request_id =
+        required_payload_string(&payload, "approval_request_id", "approval tool")?;
     let repo = SessionRepository::new(config)?;
     let request = repo
         .load_approval_request(&approval_request_id)?
@@ -806,8 +807,16 @@ fn parse_approval_request_resolve_request(
     payload: &Value,
 ) -> Result<ApprovalRequestResolveRequest, String> {
     Ok(ApprovalRequestResolveRequest {
-        approval_request_id: required_payload_string(payload, "approval_request_id", "approval tool")?,
-        decision: parse_approval_decision(&required_payload_string(payload, "decision", "approval tool")?)?,
+        approval_request_id: required_payload_string(
+            payload,
+            "approval_request_id",
+            "approval tool",
+        )?,
+        decision: parse_approval_decision(&required_payload_string(
+            payload,
+            "decision",
+            "approval tool",
+        )?)?,
     })
 }
 
