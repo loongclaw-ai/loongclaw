@@ -285,7 +285,7 @@ pub async fn request_turn_streaming(
     .await
 }
 
-pub fn supports_turn_streaming_events(config: &LoongClawConfig) -> bool {
+pub(crate) fn supports_turn_streaming_events(config: &LoongClawConfig) -> bool {
     let runtime_contract = provider_runtime_contract(&config.provider);
     runtime_contract.supports_turn_streaming_events()
 }
