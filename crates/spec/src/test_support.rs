@@ -28,6 +28,7 @@ pub fn make_runner_spec(operation: OperationSpec) -> RunnerSpec {
         bootstrap: None,
         auto_provision: None,
         hotfixes: Vec::new(),
+        plugin_setup_readiness: None,
         operation,
     }
 }

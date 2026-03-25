@@ -16,10 +16,10 @@ use kernel::{
     HarnessOutcome, HarnessRequest, IntegrationCatalog, IntegrationHotfix, MemoryCoreOutcome,
     MemoryCoreRequest, MemoryExtensionAdapter, MemoryExtensionOutcome, MemoryExtensionRequest,
     PluginAbsorbReport, PluginActivationPlan, PluginBridgeKind, PluginScanReport,
-    PluginTranslationReport, ProvisionPlan, RuntimeCoreOutcome, RuntimeCoreRequest,
-    RuntimeExtensionAdapter, RuntimeExtensionOutcome, RuntimeExtensionRequest, ToolCoreOutcome,
-    ToolCoreRequest, ToolExtensionAdapter, ToolExtensionOutcome, ToolExtensionRequest,
-    VerticalPackManifest,
+    PluginSetupReadinessContext, PluginTranslationReport, ProvisionPlan, RuntimeCoreOutcome,
+    RuntimeCoreRequest, RuntimeExtensionAdapter, RuntimeExtensionOutcome, RuntimeExtensionRequest,
+    ToolCoreOutcome, ToolCoreRequest, ToolExtensionAdapter, ToolExtensionOutcome,
+    ToolExtensionRequest, VerticalPackManifest,
 };
 use loongclaw_contracts::ExecutionSecurityTier;
 use loongclaw_protocol::{
@@ -530,6 +530,8 @@ pub struct RunnerSpec {
     pub auto_provision: Option<AutoProvisionSpec>,
     #[serde(default)]
     pub hotfixes: Vec<HotfixSpec>,
+    #[serde(default)]
+    pub plugin_setup_readiness: Option<PluginSetupReadinessSpec>,
     pub operation: OperationSpec,
 }
 
@@ -680,6 +682,63 @@ pub struct SelfAwarenessSpec {
     pub immutable_core_paths: Vec<String>,
     #[serde(default)]
     pub mutable_extension_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginSetupReadinessSpec {
+    #[serde(default = "default_true")]
+    pub inherit_process_env: bool,
+    #[serde(default)]
+    pub available_env_vars: Vec<String>,
+    #[serde(default)]
+    pub configured_keys: Vec<String>,
+    #[serde(default)]
+    pub config_keys_verified: bool,
+}
+
+impl Default for PluginSetupReadinessSpec {
+    fn default() -> Self {
+        Self {
+            inherit_process_env: true,
+            available_env_vars: Vec::new(),
+            configured_keys: Vec::new(),
+            config_keys_verified: false,
+        }
+    }
+}
+
+impl PluginSetupReadinessSpec {
+    #[must_use]
+    pub fn to_context(&self) -> PluginSetupReadinessContext {
+        let mut context = if self.inherit_process_env {
+            PluginSetupReadinessContext::from_process_env()
+        } else {
+            PluginSetupReadinessContext::default()
+        };
+
+        for raw_env_var in &self.available_env_vars {
+            let env_var = raw_env_var.trim();
+            let env_var_is_empty = env_var.is_empty();
+            if env_var_is_empty {
+                continue;
+            }
+
+            context.available_env_vars.insert(env_var.to_owned());
+        }
+
+        for raw_key in &self.configured_keys {
+            let configured_key = raw_key.trim();
+            let configured_key_is_empty = configured_key.is_empty();
+            if configured_key_is_empty {
+                continue;
+            }
+
+            context.configured_keys.insert(configured_key.to_owned());
+        }
+
+        context.config_keys_verified = self.config_keys_verified;
+        context
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1059,6 +1118,7 @@ impl RunnerSpec {
                 required_capabilities: BTreeSet::from([Capability::InvokeConnector]),
             }),
             hotfixes: Vec::new(),
+            plugin_setup_readiness: Some(PluginSetupReadinessSpec::default()),
             operation: OperationSpec::RuntimeExtension {
                 action: "start-session".to_owned(),
                 required_capabilities: BTreeSet::from([Capability::ObserveTelemetry]),

@@ -76,7 +76,7 @@ pub async fn execute_spec_with_native_tool_executor(
     let mut plugin_bootstrap_reports = Vec::new();
     let mut plugin_bootstrap_queue = Vec::new();
     let mut plugin_absorb_reports = Vec::new();
-    let plugin_setup_readiness_context = default_plugin_setup_readiness_context();
+    let plugin_setup_readiness_context = resolve_plugin_setup_readiness_context(spec);
     let security_scan_policy = match security_scan_policy(spec) {
         Ok(policy) => policy,
         Err(error) => {
@@ -859,8 +859,13 @@ fn bootstrap_policy(spec: &RunnerSpec) -> Option<BootstrapPolicy> {
     Some(policy)
 }
 
-fn default_plugin_setup_readiness_context() -> PluginSetupReadinessContext {
-    PluginSetupReadinessContext::from_process_env()
+fn resolve_plugin_setup_readiness_context(spec: &RunnerSpec) -> PluginSetupReadinessContext {
+    let readiness_spec = spec.plugin_setup_readiness.as_ref();
+    let Some(readiness_spec) = readiness_spec else {
+        return PluginSetupReadinessContext::from_process_env();
+    };
+
+    readiness_spec.to_context()
 }
 
 fn filter_scan_report_by_activation(
@@ -1559,6 +1564,7 @@ fn apply_default_selection(
 mod bootstrap_policy_tests {
     use super::*;
     use crate::spec_runtime::BootstrapSpec;
+    use std::collections::BTreeSet;
 
     #[test]
     fn bootstrap_policy_maps_distinct_acp_bridge_and_runtime_flags() {
@@ -1579,6 +1585,46 @@ mod bootstrap_policy_tests {
         let policy = bootstrap_policy(&spec).expect("bootstrap policy should resolve");
         assert!(policy.allow_acp_bridge_auto_apply);
         assert!(!policy.allow_acp_runtime_auto_apply);
+    }
+
+    #[test]
+    fn resolve_plugin_setup_readiness_context_uses_explicit_verified_keys() {
+        let mut spec = RunnerSpec::template();
+        spec.plugin_setup_readiness = Some(PluginSetupReadinessSpec {
+            inherit_process_env: false,
+            available_env_vars: vec![
+                " TAVILY_API_KEY ".to_owned(),
+                String::new(),
+                "TAVILY_API_KEY".to_owned(),
+            ],
+            configured_keys: vec![
+                " tools.web_search.default_provider ".to_owned(),
+                String::new(),
+                "tools.web_search.default_provider".to_owned(),
+            ],
+            config_keys_verified: true,
+        });
+
+        let context = resolve_plugin_setup_readiness_context(&spec);
+
+        assert_eq!(
+            context.available_env_vars,
+            BTreeSet::from(["TAVILY_API_KEY".to_owned()])
+        );
+        assert_eq!(
+            context.configured_keys,
+            BTreeSet::from(["tools.web_search.default_provider".to_owned()])
+        );
+        assert!(context.config_keys_verified);
+    }
+
+    #[test]
+    fn resolve_plugin_setup_readiness_context_falls_back_to_process_env_when_omitted() {
+        let spec = RunnerSpec::template();
+        let context = resolve_plugin_setup_readiness_context(&spec);
+
+        assert!(!context.config_keys_verified);
+        assert!(context.configured_keys.is_empty());
     }
 }
 
