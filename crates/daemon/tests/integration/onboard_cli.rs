@@ -3780,7 +3780,7 @@ fn onboard_current_setup_shortcut_is_disabled_by_web_search_provider_option() {
 #[test]
 fn onboard_detected_setup_shortcut_screen_summarizes_starting_point_and_choices() {
     let mut config = mvp::config::LoongClawConfig::default();
-    config.provider.model = "gpt-5.4".to_owned();
+    config.provider.model = "gpt-5.2".to_owned();
     config.telegram.enabled = true;
 
     let lines = loongclaw_daemon::onboard_cli::render_continue_detected_setup_screen_lines(
@@ -3807,7 +3807,7 @@ fn onboard_detected_setup_shortcut_screen_summarizes_starting_point_and_choices(
         "detected-setup shortcut should summarize the active provider with the guided display name: {lines:#?}"
     );
     assert!(
-        lines.iter().any(|line| line.contains("- model: gpt-5.4")),
+        lines.iter().any(|line| line.contains("- model: gpt-5.2")),
         "detected-setup shortcut should summarize the active model: {lines:#?}"
     );
     assert!(
@@ -4208,6 +4208,13 @@ fn onboard_single_detected_setup_preview_screen_uses_compact_follow_up_layout() 
             .iter()
             .any(|line| line.contains("good fit: reuse Codex config as your starting point")),
         "single detected-setup preview should explain why this detected starting point is being carried forward: {lines:#?}"
+    );
+    assert!(
+        lines.iter().all(|line| {
+            let normalized = line.to_ascii_lowercase();
+            !(normalized.contains("esc") && normalized.contains("cancel"))
+        }),
+        "single detected-setup preview should not advertise an escape cancel path that the flow never reads: {lines:#?}"
     );
 }
 

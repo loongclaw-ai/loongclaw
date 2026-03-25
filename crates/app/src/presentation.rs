@@ -1,4 +1,7 @@
 use std::borrow::Cow;
+use std::env;
+
+use console::Term;
 
 const WIDE_BANNER_MIN_WIDTH: usize = 80;
 const SPLIT_BANNER_MIN_WIDTH: usize = 46;
@@ -231,6 +234,42 @@ pub fn style_brand_lines_with_palette(
         .iter()
         .map(|line| style_brand_line(line, color_enabled, palette))
         .collect()
+}
+
+pub fn detect_render_width() -> usize {
+    let terminal_width = probe_terminal_width();
+    let columns = env::var("COLUMNS").ok();
+
+    resolve_render_width(terminal_width, columns.as_deref())
+}
+
+fn probe_terminal_width() -> Option<usize> {
+    let stdout_width = terminal_width_from_term(&Term::stdout());
+    if stdout_width.is_some() {
+        return stdout_width;
+    }
+
+    terminal_width_from_term(&Term::stderr())
+}
+
+fn terminal_width_from_term(term: &Term) -> Option<usize> {
+    let (_rows, columns) = term.size_checked()?;
+    let width = usize::from(columns);
+    (width > 0).then_some(width)
+}
+
+fn resolve_render_width(terminal_width: Option<usize>, columns: Option<&str>) -> usize {
+    if let Some(width) = terminal_width.filter(|width| *width > 0) {
+        return width;
+    }
+
+    parse_columns_width(columns).unwrap_or(80)
+}
+
+fn parse_columns_width(columns: Option<&str>) -> Option<usize> {
+    columns
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|width| *width > 0)
 }
 
 pub fn render_wrapped_text_line(prefix: &str, value: &str, width: usize) -> Vec<String> {
@@ -770,6 +809,60 @@ mod tests {
                 "    hydration path",
             ]
         );
+    }
+
+    #[test]
+    fn presentation_normalizes_markdown_plus_bullets() {
+        let lines = render_wrapped_display_line(
+            "+ workspace guidance: AGENTS.md, CLAUDE.md, and local policy",
+            42,
+        );
+
+        assert_eq!(
+            lines,
+            vec![
+                "- workspace guidance: AGENTS.md,",
+                "  CLAUDE.md, and local policy",
+            ]
+        );
+    }
+
+    #[test]
+    fn presentation_wraps_display_line_with_numeric_paren_prefix() {
+        let lines = render_wrapped_display_line(
+            "12) validate the current runtime before changing the prompt hydration path",
+            36,
+        );
+
+        assert_eq!(
+            lines,
+            vec![
+                "12) validate the current runtime",
+                "    before changing the prompt",
+                "    hydration path",
+            ]
+        );
+    }
+
+    #[test]
+    fn presentation_detect_render_width_prefers_live_terminal_width() {
+        let width = resolve_render_width(Some(96), Some("42"));
+
+        assert_eq!(width, 96);
+    }
+
+    #[test]
+    fn presentation_detect_render_width_uses_columns_fallback() {
+        let width = resolve_render_width(None, Some("72"));
+
+        assert_eq!(width, 72);
+    }
+
+    #[test]
+    fn presentation_detect_render_width_defaults_when_no_signal_exists() {
+        let width = resolve_render_width(None, Some("0"));
+
+        assert_eq!(width, 80);
     }
 
     #[test]

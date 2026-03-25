@@ -1,6 +1,5 @@
 #[cfg(feature = "memory-sqlite")]
 use std::collections::BTreeSet;
-use std::env;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -819,11 +818,7 @@ fn render_cli_chat_startup_lines_with_width(
 }
 
 fn detect_cli_chat_render_width() -> usize {
-    env::var("COLUMNS")
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .filter(|width| *width > 0)
-        .unwrap_or(80)
+    crate::presentation::detect_render_width()
 }
 
 #[allow(clippy::print_stdout)] // CLI output
@@ -1065,7 +1060,7 @@ fn parse_cli_chat_markdown_sections(text: &str) -> Vec<TuiSectionSpec> {
         }
 
         if let Some(language) = parse_markdown_fence_language(trimmed_end) {
-            push_callout_section(&mut sections, &mut callout_lines);
+            push_callout_section(&mut sections, &mut pending_title, &mut callout_lines);
             push_narrative_section(&mut sections, &mut pending_title, &mut narrative_lines);
             code_title = pending_title.take();
             code_language = language;
@@ -1074,8 +1069,9 @@ fn parse_cli_chat_markdown_sections(text: &str) -> Vec<TuiSectionSpec> {
         }
 
         if let Some(heading_text) = parse_markdown_heading(trimmed_end) {
-            push_callout_section(&mut sections, &mut callout_lines);
+            push_callout_section(&mut sections, &mut pending_title, &mut callout_lines);
             push_narrative_section(&mut sections, &mut pending_title, &mut narrative_lines);
+            push_standalone_title_section(&mut sections, &mut pending_title);
             pending_title = Some(heading_text.to_owned());
             continue;
         }
@@ -1087,7 +1083,7 @@ fn parse_cli_chat_markdown_sections(text: &str) -> Vec<TuiSectionSpec> {
         }
 
         if !callout_lines.is_empty() {
-            push_callout_section(&mut sections, &mut callout_lines);
+            push_callout_section(&mut sections, &mut pending_title, &mut callout_lines);
         }
 
         let normalized_line = normalize_markdown_display_line(trimmed_end);
@@ -1109,8 +1105,9 @@ fn parse_cli_chat_markdown_sections(text: &str) -> Vec<TuiSectionSpec> {
         );
     }
 
-    push_callout_section(&mut sections, &mut callout_lines);
+    push_callout_section(&mut sections, &mut pending_title, &mut callout_lines);
     push_narrative_section(&mut sections, &mut pending_title, &mut narrative_lines);
+    push_standalone_title_section(&mut sections, &mut pending_title);
 
     if sections.is_empty() {
         sections.push(TuiSectionSpec::Narrative {
@@ -1137,16 +1134,38 @@ fn push_narrative_section(
     sections.push(TuiSectionSpec::Narrative { title, lines });
 }
 
-fn push_callout_section(sections: &mut Vec<TuiSectionSpec>, callout_lines: &mut Vec<String>) {
+fn push_standalone_title_section(
+    sections: &mut Vec<TuiSectionSpec>,
+    pending_title: &mut Option<String>,
+) {
+    let Some(title) = pending_title.take() else {
+        return;
+    };
+
+    sections.push(TuiSectionSpec::Narrative {
+        title: Some(title),
+        lines: Vec::new(),
+    });
+}
+
+fn push_callout_section(
+    sections: &mut Vec<TuiSectionSpec>,
+    pending_title: &mut Option<String>,
+    callout_lines: &mut Vec<String>,
+) {
     trim_blank_line_edges(callout_lines);
     if callout_lines.is_empty() {
         return;
     }
 
     let lines = std::mem::take(callout_lines);
+    let title = pending_title
+        .take()
+        .or_else(|| Some("quoted context".to_owned()));
+
     sections.push(TuiSectionSpec::Callout {
         tone: TuiCalloutTone::Info,
-        title: Some("quoted context".to_owned()),
+        title,
         lines,
     });
 }
@@ -1200,19 +1219,50 @@ fn parse_markdown_heading(line: &str) -> Option<&str> {
         .take_while(|character| *character == '#')
         .count();
 
-    if marker_count == 0 {
+    if marker_count == 0 || marker_count > 6 {
         return None;
     }
 
     let heading_text = trimmed.get(marker_count..)?;
-    let normalized_text = heading_text.trim();
-    let normalized_text = normalized_text.trim_end_matches('#').trim();
+    let separator = heading_text.chars().next()?;
+    if separator != ' ' && separator != '\t' {
+        return None;
+    }
+
+    let heading_text = heading_text.trim_start_matches([' ', '\t']);
+    let normalized_text = trim_markdown_heading_closing_sequence(heading_text).trim();
 
     if normalized_text.is_empty() {
         return None;
     }
 
     Some(normalized_text)
+}
+
+fn trim_markdown_heading_closing_sequence(text: &str) -> &str {
+    let trimmed_end = text.trim_end_matches([' ', '\t']);
+    let trailing_hash_count = trimmed_end
+        .chars()
+        .rev()
+        .take_while(|character| *character == '#')
+        .count();
+
+    if trailing_hash_count == 0 {
+        return trimmed_end;
+    }
+
+    let content_end = trimmed_end.len().saturating_sub(trailing_hash_count);
+    let content = trimmed_end.get(..content_end).unwrap_or(trimmed_end);
+    let ends_with_heading_space = content
+        .chars()
+        .last()
+        .is_some_and(|character| character == ' ' || character == '\t');
+
+    if !ends_with_heading_space {
+        return trimmed_end;
+    }
+
+    content.trim_end_matches([' ', '\t'])
 }
 
 fn parse_markdown_quote_line(line: &str) -> Option<String> {
@@ -4750,6 +4800,41 @@ println!(\"{value}\");
                 .any(|line| line == "    let value = input.trim();"),
             "preformatted sections should keep code indentation intact: {lines:#?}"
         );
+    }
+
+    #[test]
+    fn render_cli_chat_assistant_lines_preserve_heading_before_quotes_and_at_eof() {
+        let assistant_text = "\
+## Risks
+> keep credentials in env vars
+
+## Next";
+        let lines = render_cli_chat_assistant_lines_with_width(assistant_text, 72);
+
+        assert!(
+            lines.iter().any(|line| line == "note: Risks"),
+            "headings should stay attached to quoted sections instead of falling back to a generic title: {lines:#?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "- keep credentials in env vars"),
+            "quoted content should stay visible after preserving the heading: {lines:#?}"
+        );
+        assert!(
+            lines.iter().any(|line| line == "Next"),
+            "a trailing heading should still render even when it has no body lines yet: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn parse_markdown_heading_follows_commonmark_atx_rules() {
+        assert_eq!(parse_markdown_heading("## Plan"), Some("Plan"));
+        assert_eq!(parse_markdown_heading("### Plan ###"), Some("Plan"));
+        assert_eq!(parse_markdown_heading("## C#"), Some("C#"));
+        assert_eq!(parse_markdown_heading("#NoSpace"), None);
+        assert_eq!(parse_markdown_heading("#!/bin/bash"), None);
+        assert_eq!(parse_markdown_heading("####### too many"), None);
     }
 
     #[test]

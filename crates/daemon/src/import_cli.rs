@@ -566,11 +566,7 @@ pub fn render_import_preview_json(candidates: &[ImportCandidate]) -> CliResult<S
 }
 
 fn detect_render_width() -> usize {
-    std::env::var("COLUMNS")
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .filter(|width| *width > 0)
-        .unwrap_or(80)
+    mvp::presentation::detect_render_width()
 }
 
 pub fn select_apply_candidate_index(candidates: &[ImportCandidate]) -> CliResult<usize> {
