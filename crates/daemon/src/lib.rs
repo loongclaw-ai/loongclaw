@@ -836,13 +836,22 @@ fn parse_multi_channel_serve_channel_account(
         ));
     }
 
-    let supported_channels = supported_multi_channel_serve_channel_ids().join(", ");
+    let supported_channel_ids = supported_multi_channel_serve_channel_ids();
+    let supported_channels = supported_channel_ids.join(", ");
     let runtime_descriptor = mvp::channel::resolve_channel_runtime_command_descriptor(channel_token)
         .ok_or_else(|| {
             format!(
                 "unsupported multi-channel service channel `{channel_token}` (expected one of: {supported_channels})"
             )
         })?;
+    let runtime_is_supported = supported_channel_ids
+        .iter()
+        .any(|supported_channel_id| *supported_channel_id == runtime_descriptor.channel_id);
+    if !runtime_is_supported {
+        return Err(format!(
+            "unsupported multi-channel service channel `{channel_token}` (expected one of: {supported_channels})"
+        ));
+    }
 
     let account_token = raw_account_id.trim();
     if account_token.is_empty() {
@@ -882,6 +891,15 @@ mod multi_channel_serve_tests {
         let actual_ids = supported_multi_channel_serve_channel_ids();
 
         assert_eq!(actual_ids, expected_ids);
+    }
+
+    #[cfg(not(feature = "channel-matrix"))]
+    #[test]
+    fn parse_multi_channel_serve_channel_account_rejects_compiled_out_matrix_runtime() {
+        let error = parse_multi_channel_serve_channel_account("matrix=bridge-sync")
+            .expect_err("compiled-out matrix runtime should be rejected");
+
+        assert!(error.contains("unsupported multi-channel service channel `matrix`"));
     }
 }
 

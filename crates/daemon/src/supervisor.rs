@@ -602,35 +602,6 @@ impl SupervisorRuntimeHooks {
                 })
             },
         );
-        let matrix_runner: BackgroundChannelRunner = Arc::new(
-            |request: BackgroundChannelRunnerRequest| -> BoxedSupervisorFuture {
-                Box::pin(async move {
-                    mvp::channel::run_matrix_channel_with_stop(
-                        request.resolved_path,
-                        request.config,
-                        false,
-                        request.account_id.as_deref(),
-                        request.stop,
-                        request.initialize_runtime_environment,
-                    )
-                    .await
-                })
-            },
-        );
-        let wecom_runner: BackgroundChannelRunner = Arc::new(
-            |request: BackgroundChannelRunnerRequest| -> BoxedSupervisorFuture {
-                Box::pin(async move {
-                    mvp::channel::run_wecom_channel_with_stop(
-                        request.resolved_path,
-                        request.config,
-                        request.account_id.as_deref(),
-                        request.stop,
-                        request.initialize_runtime_environment,
-                    )
-                    .await
-                })
-            },
-        );
 
         let mut runners = BackgroundChannelRunnerRegistry::new();
         runners.insert(
@@ -641,14 +612,49 @@ impl SupervisorRuntimeHooks {
             mvp::channel::FEISHU_RUNTIME_COMMAND_DESCRIPTOR.channel_id,
             feishu_runner,
         );
-        runners.insert(
-            mvp::channel::MATRIX_RUNTIME_COMMAND_DESCRIPTOR.channel_id,
-            matrix_runner,
-        );
-        runners.insert(
-            mvp::channel::WECOM_RUNTIME_COMMAND_DESCRIPTOR.channel_id,
-            wecom_runner,
-        );
+        #[cfg(feature = "channel-matrix")]
+        {
+            let matrix_runner: BackgroundChannelRunner = Arc::new(
+                |request: BackgroundChannelRunnerRequest| -> BoxedSupervisorFuture {
+                    Box::pin(async move {
+                        mvp::channel::run_matrix_channel_with_stop(
+                            request.resolved_path,
+                            request.config,
+                            false,
+                            request.account_id.as_deref(),
+                            request.stop,
+                            request.initialize_runtime_environment,
+                        )
+                        .await
+                    })
+                },
+            );
+            runners.insert(
+                mvp::channel::MATRIX_RUNTIME_COMMAND_DESCRIPTOR.channel_id,
+                matrix_runner,
+            );
+        }
+        #[cfg(feature = "channel-wecom")]
+        {
+            let wecom_runner: BackgroundChannelRunner = Arc::new(
+                |request: BackgroundChannelRunnerRequest| -> BoxedSupervisorFuture {
+                    Box::pin(async move {
+                        mvp::channel::run_wecom_channel_with_stop(
+                            request.resolved_path,
+                            request.config,
+                            request.account_id.as_deref(),
+                            request.stop,
+                            request.initialize_runtime_environment,
+                        )
+                        .await
+                    })
+                },
+            );
+            runners.insert(
+                mvp::channel::WECOM_RUNTIME_COMMAND_DESCRIPTOR.channel_id,
+                wecom_runner,
+            );
+        }
         runners
     }
 

@@ -6,12 +6,22 @@ use crate::{
 use super::registry::{
     ChannelRegistryDescriptor, ChannelRuntimeCommandDescriptor,
     FEISHU_CATALOG_COMMAND_FAMILY_DESCRIPTOR, FEISHU_CHANNEL_REGISTRY_DESCRIPTOR,
-    FEISHU_RUNTIME_COMMAND_DESCRIPTOR, MATRIX_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
-    MATRIX_CHANNEL_REGISTRY_DESCRIPTOR, MATRIX_RUNTIME_COMMAND_DESCRIPTOR,
+    MATRIX_CATALOG_COMMAND_FAMILY_DESCRIPTOR, MATRIX_CHANNEL_REGISTRY_DESCRIPTOR,
     TELEGRAM_CATALOG_COMMAND_FAMILY_DESCRIPTOR, TELEGRAM_CHANNEL_REGISTRY_DESCRIPTOR,
-    TELEGRAM_RUNTIME_COMMAND_DESCRIPTOR, WECOM_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
-    WECOM_CHANNEL_REGISTRY_DESCRIPTOR, WECOM_RUNTIME_COMMAND_DESCRIPTOR,
+    WECOM_CATALOG_COMMAND_FAMILY_DESCRIPTOR, WECOM_CHANNEL_REGISTRY_DESCRIPTOR,
 };
+
+#[cfg(feature = "channel-feishu")]
+use super::registry::FEISHU_RUNTIME_COMMAND_DESCRIPTOR;
+
+#[cfg(feature = "channel-matrix")]
+use super::registry::MATRIX_RUNTIME_COMMAND_DESCRIPTOR;
+
+#[cfg(feature = "channel-telegram")]
+use super::registry::TELEGRAM_RUNTIME_COMMAND_DESCRIPTOR;
+
+#[cfg(feature = "channel-wecom")]
+use super::registry::WECOM_RUNTIME_COMMAND_DESCRIPTOR;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChannelRuntimeKind {
@@ -91,37 +101,65 @@ const CLI_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegration
     background_surface_is_enabled: None,
 };
 
+#[cfg(feature = "channel-telegram")]
+const TELEGRAM_BACKGROUND_RUNTIME: Option<ChannelRuntimeCommandDescriptor> =
+    Some(TELEGRAM_RUNTIME_COMMAND_DESCRIPTOR);
+
+#[cfg(not(feature = "channel-telegram"))]
+const TELEGRAM_BACKGROUND_RUNTIME: Option<ChannelRuntimeCommandDescriptor> = None;
+
 const TELEGRAM_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
     descriptor: &TELEGRAM_CHANNEL_DESCRIPTOR,
     registry_descriptor: Some(&TELEGRAM_CHANNEL_REGISTRY_DESCRIPTOR),
-    background_runtime: Some(TELEGRAM_RUNTIME_COMMAND_DESCRIPTOR),
+    background_runtime: TELEGRAM_BACKGROUND_RUNTIME,
     is_enabled: telegram_channel_is_enabled,
     collect_validation_issues: collect_telegram_channel_validation_issues,
     background_surface_is_enabled: Some(telegram_background_surface_is_enabled),
 };
 
+#[cfg(feature = "channel-feishu")]
+const FEISHU_BACKGROUND_RUNTIME: Option<ChannelRuntimeCommandDescriptor> =
+    Some(FEISHU_RUNTIME_COMMAND_DESCRIPTOR);
+
+#[cfg(not(feature = "channel-feishu"))]
+const FEISHU_BACKGROUND_RUNTIME: Option<ChannelRuntimeCommandDescriptor> = None;
+
 const FEISHU_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
     descriptor: &FEISHU_CHANNEL_DESCRIPTOR,
     registry_descriptor: Some(&FEISHU_CHANNEL_REGISTRY_DESCRIPTOR),
-    background_runtime: Some(FEISHU_RUNTIME_COMMAND_DESCRIPTOR),
+    background_runtime: FEISHU_BACKGROUND_RUNTIME,
     is_enabled: feishu_channel_is_enabled,
     collect_validation_issues: collect_feishu_channel_validation_issues,
     background_surface_is_enabled: Some(feishu_background_surface_is_enabled),
 };
 
+#[cfg(feature = "channel-matrix")]
+const MATRIX_BACKGROUND_RUNTIME: Option<ChannelRuntimeCommandDescriptor> =
+    Some(MATRIX_RUNTIME_COMMAND_DESCRIPTOR);
+
+#[cfg(not(feature = "channel-matrix"))]
+const MATRIX_BACKGROUND_RUNTIME: Option<ChannelRuntimeCommandDescriptor> = None;
+
 const MATRIX_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
     descriptor: &MATRIX_CHANNEL_DESCRIPTOR,
     registry_descriptor: Some(&MATRIX_CHANNEL_REGISTRY_DESCRIPTOR),
-    background_runtime: Some(MATRIX_RUNTIME_COMMAND_DESCRIPTOR),
+    background_runtime: MATRIX_BACKGROUND_RUNTIME,
     is_enabled: matrix_channel_is_enabled,
     collect_validation_issues: collect_matrix_channel_validation_issues,
     background_surface_is_enabled: Some(matrix_background_surface_is_enabled),
 };
 
+#[cfg(feature = "channel-wecom")]
+const WECOM_BACKGROUND_RUNTIME: Option<ChannelRuntimeCommandDescriptor> =
+    Some(WECOM_RUNTIME_COMMAND_DESCRIPTOR);
+
+#[cfg(not(feature = "channel-wecom"))]
+const WECOM_BACKGROUND_RUNTIME: Option<ChannelRuntimeCommandDescriptor> = None;
+
 const WECOM_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
     descriptor: &WECOM_CHANNEL_DESCRIPTOR,
     registry_descriptor: Some(&WECOM_CHANNEL_REGISTRY_DESCRIPTOR),
-    background_runtime: Some(WECOM_RUNTIME_COMMAND_DESCRIPTOR),
+    background_runtime: WECOM_BACKGROUND_RUNTIME,
     is_enabled: wecom_channel_is_enabled,
     collect_validation_issues: collect_wecom_channel_validation_issues,
     background_surface_is_enabled: Some(wecom_background_surface_is_enabled),
