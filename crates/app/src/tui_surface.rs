@@ -190,13 +190,11 @@ fn render_header(
     let brand_lines = match style {
         TuiHeaderStyle::Brand => crate::presentation::render_brand_header(
             width,
-            subtitle,
             &crate::presentation::BuildVersionInfo::current(),
             subtitle,
         ),
         TuiHeaderStyle::Compact => crate::presentation::render_compact_brand_header(
             width,
-            subtitle,
             &crate::presentation::BuildVersionInfo::current(),
             subtitle,
         ),
