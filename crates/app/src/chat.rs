@@ -1,5 +1,6 @@
 #[cfg(feature = "memory-sqlite")]
 use std::collections::BTreeSet;
+use std::env;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -42,6 +43,10 @@ use super::conversation::{load_fast_lane_tool_batch_event_summary, load_safe_lan
 use super::memory;
 #[cfg(feature = "memory-sqlite")]
 use super::memory::runtime_config::MemoryRuntimeConfig;
+use super::tui_surface::{
+    TuiActionSpec, TuiCalloutTone, TuiHeaderStyle, TuiKeyValueSpec, TuiMessageSpec, TuiScreenSpec,
+    TuiSectionSpec, render_tui_message_spec, render_tui_screen_spec,
+};
 
 pub const DEFAULT_FIRST_PROMPT: &str = "Summarize this repository and suggest the best next step.";
 const TEST_ONBOARD_EXECUTABLE_ENV: &str = "LOONGCLAW_TEST_ONBOARD_EXECUTABLE";
@@ -297,7 +302,10 @@ pub async fn run_cli_chat(
             CliChatLoopControl::Continue => continue,
             CliChatLoopControl::Exit => break,
             CliChatLoopControl::AssistantText(assistant_text) => {
-                println!("loongclaw> {assistant_text}");
+                let render_width = detect_cli_chat_render_width();
+                let rendered_lines =
+                    render_cli_chat_assistant_lines_with_width(&assistant_text, render_width);
+                print_rendered_cli_chat_lines(&rendered_lines);
             }
         }
     }
@@ -520,7 +528,10 @@ async fn run_concurrent_cli_host_loop(
             CliChatLoopControl::Continue => continue,
             CliChatLoopControl::Exit => break,
             CliChatLoopControl::AssistantText(assistant_text) => {
-                println!("loongclaw> {assistant_text}");
+                let render_width = detect_cli_chat_render_width();
+                let rendered_lines =
+                    render_cli_chat_assistant_lines_with_width(&assistant_text, render_width);
+                print_rendered_cli_chat_lines(&rendered_lines);
             }
         }
     }
@@ -687,35 +698,94 @@ fn build_cli_chat_startup_summary(
 }
 
 fn render_cli_chat_startup_lines(summary: &CliChatStartupSummary) -> Vec<String> {
-    let mut lines = vec![
-        "loongclaw chat ready".to_owned(),
-        "start here".to_owned(),
-        format!("- first prompt: {DEFAULT_FIRST_PROMPT}"),
-        "- type your request, or use /help for commands".to_owned(),
-        "session details".to_owned(),
-        format!("- session: {}", summary.session_id),
-        format!("- config: {}", summary.config_path),
-        format!("- memory: {}", summary.memory_label),
-        "runtime details".to_owned(),
-    ];
+    let render_width = detect_cli_chat_render_width();
+    render_cli_chat_startup_lines_with_width(summary, render_width)
+}
 
+fn render_cli_chat_startup_lines_with_width(
+    summary: &CliChatStartupSummary,
+    width: usize,
+) -> Vec<String> {
+    let screen_spec = build_cli_chat_startup_screen_spec(summary);
+    render_tui_screen_spec(&screen_spec, width, false)
+}
+
+fn detect_cli_chat_render_width() -> usize {
+    env::var("COLUMNS")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|width| *width > 0)
+        .unwrap_or(80)
+}
+
+#[allow(clippy::print_stdout)] // CLI output
+fn print_rendered_cli_chat_lines(lines: &[String]) {
+    for line in lines {
+        println!("{line}");
+    }
+}
+
+fn build_cli_chat_startup_screen_spec(summary: &CliChatStartupSummary) -> TuiScreenSpec {
     let allowed_channels = if summary.allowed_channels.is_empty() {
         "-".to_owned()
     } else {
         summary.allowed_channels.join(",")
     };
-    lines.push(format!(
-        "- context engine: {} ({})",
-        summary.context_engine_id, summary.context_engine_source
-    ));
-    lines.push(format!(
-        "- acp: enabled={} dispatch_enabled={} routing={} backend={} ({}) allowed_channels={allowed_channels}",
+    let runtime_line = format!(
+        "ACP enabled={} dispatch_enabled={} routing={} backend={} ({}) allowed_channels={allowed_channels}",
         summary.acp_enabled,
         summary.dispatch_enabled,
         summary.conversation_routing,
         summary.acp_backend_id,
         summary.acp_backend_source,
-    ));
+    );
+    let mut sections = vec![
+        TuiSectionSpec::ActionGroup {
+            title: Some("start here".to_owned()),
+            inline_title_when_wide: true,
+            items: vec![TuiActionSpec {
+                label: "first prompt".to_owned(),
+                command: DEFAULT_FIRST_PROMPT.to_owned(),
+            }],
+        },
+        TuiSectionSpec::Narrative {
+            title: None,
+            lines: vec!["- type your request, or use /help for commands".to_owned()],
+        },
+        TuiSectionSpec::KeyValues {
+            title: Some("session details".to_owned()),
+            items: vec![
+                TuiKeyValueSpec::Plain {
+                    key: "session".to_owned(),
+                    value: summary.session_id.clone(),
+                },
+                TuiKeyValueSpec::Plain {
+                    key: "config".to_owned(),
+                    value: summary.config_path.clone(),
+                },
+                TuiKeyValueSpec::Plain {
+                    key: "memory".to_owned(),
+                    value: summary.memory_label.clone(),
+                },
+            ],
+        },
+        TuiSectionSpec::KeyValues {
+            title: Some("runtime details".to_owned()),
+            items: vec![
+                TuiKeyValueSpec::Plain {
+                    key: "context engine".to_owned(),
+                    value: format!(
+                        "{} ({})",
+                        summary.context_engine_id, summary.context_engine_source
+                    ),
+                },
+                TuiKeyValueSpec::Plain {
+                    key: "acp".to_owned(),
+                    value: runtime_line,
+                },
+            ],
+        },
+    ];
 
     if summary.explicit_acp_request
         || summary.event_stream_enabled
@@ -728,13 +798,340 @@ fn render_cli_chat_startup_lines(summary: &CliChatStartupSummary) -> Vec<String>
             summary.bootstrap_mcp_servers.join(",")
         };
         let cwd_label = summary.working_directory.as_deref().unwrap_or("-");
-        lines.push(format!(
-            "- acp overrides: explicit={} event_stream={} bootstrap_mcp_servers={bootstrap_label} cwd={cwd_label}",
-            summary.explicit_acp_request, summary.event_stream_enabled,
-        ));
+        let override_lines = vec![
+            format!("explicit request: {}", summary.explicit_acp_request),
+            format!("event stream: {}", summary.event_stream_enabled),
+            format!("bootstrap MCP servers: {bootstrap_label}"),
+            format!("working directory: {cwd_label}"),
+        ];
+        sections.push(TuiSectionSpec::Callout {
+            tone: TuiCalloutTone::Info,
+            title: Some("acp overrides".to_owned()),
+            lines: override_lines,
+        });
     }
 
-    lines
+    TuiScreenSpec {
+        header_style: TuiHeaderStyle::Compact,
+        subtitle: Some("interactive chat".to_owned()),
+        title: Some("chat ready".to_owned()),
+        progress_line: None,
+        intro_lines: Vec::new(),
+        sections,
+        choices: Vec::new(),
+        footer_lines: Vec::new(),
+    }
+}
+
+fn render_cli_chat_help_lines_with_width(width: usize) -> Vec<String> {
+    let message_spec = build_cli_chat_help_message_spec();
+    render_tui_message_spec(&message_spec, width)
+}
+
+fn build_cli_chat_help_message_spec() -> TuiMessageSpec {
+    let command_items = vec![
+        TuiKeyValueSpec::Plain {
+            key: "/help".to_owned(),
+            value: "show chat commands".to_owned(),
+        },
+        TuiKeyValueSpec::Plain {
+            key: "/history".to_owned(),
+            value: "print the current session sliding window".to_owned(),
+        },
+        TuiKeyValueSpec::Plain {
+            key: "/fast_lane_summary [limit]".to_owned(),
+            value: "summarize fast-lane batch execution events".to_owned(),
+        },
+        TuiKeyValueSpec::Plain {
+            key: "/safe_lane_summary [limit]".to_owned(),
+            value: "summarize safe-lane runtime events".to_owned(),
+        },
+        TuiKeyValueSpec::Plain {
+            key: "/turn_checkpoint_summary [limit]".to_owned(),
+            value: "summarize durable turn finalization state".to_owned(),
+        },
+        TuiKeyValueSpec::Plain {
+            key: "/turn_checkpoint_repair".to_owned(),
+            value: "repair durable turn finalization tail when safe".to_owned(),
+        },
+        TuiKeyValueSpec::Plain {
+            key: "/exit".to_owned(),
+            value: "quit chat".to_owned(),
+        },
+    ];
+    let note_lines = vec![
+        "Type any non-command text to send a normal assistant turn.".to_owned(),
+        "Use /history to inspect the active memory window when a reply feels off.".to_owned(),
+    ];
+
+    TuiMessageSpec {
+        role: "chat".to_owned(),
+        caption: Some("commands".to_owned()),
+        sections: vec![
+            TuiSectionSpec::KeyValues {
+                title: Some("slash commands".to_owned()),
+                items: command_items,
+            },
+            TuiSectionSpec::Callout {
+                tone: TuiCalloutTone::Info,
+                title: Some("usage notes".to_owned()),
+                lines: note_lines,
+            },
+        ],
+        footer_lines: Vec::new(),
+    }
+}
+
+fn render_cli_chat_history_lines_with_width(
+    session_id: &str,
+    limit: usize,
+    history_lines: &[String],
+    width: usize,
+) -> Vec<String> {
+    let message_spec = build_cli_chat_history_message_spec(session_id, limit, history_lines);
+    render_tui_message_spec(&message_spec, width)
+}
+
+fn build_cli_chat_history_message_spec(
+    session_id: &str,
+    limit: usize,
+    history_lines: &[String],
+) -> TuiMessageSpec {
+    let caption = format!("session={session_id} limit={limit}");
+    let history_section = TuiSectionSpec::Narrative {
+        title: Some("sliding window".to_owned()),
+        lines: history_lines.to_vec(),
+    };
+
+    TuiMessageSpec {
+        role: "history".to_owned(),
+        caption: Some(caption),
+        sections: vec![history_section],
+        footer_lines: Vec::new(),
+    }
+}
+
+fn render_cli_chat_assistant_lines_with_width(assistant_text: &str, width: usize) -> Vec<String> {
+    let message_spec = build_cli_chat_assistant_message_spec(assistant_text);
+    render_tui_message_spec(&message_spec, width)
+}
+
+fn build_cli_chat_assistant_message_spec(assistant_text: &str) -> TuiMessageSpec {
+    let sections = parse_cli_chat_markdown_sections(assistant_text);
+
+    TuiMessageSpec {
+        role: "loongclaw".to_owned(),
+        caption: Some("reply".to_owned()),
+        sections,
+        footer_lines: Vec::new(),
+    }
+}
+
+fn parse_cli_chat_markdown_sections(text: &str) -> Vec<TuiSectionSpec> {
+    let mut sections = Vec::new();
+    let mut pending_title = None;
+    let mut narrative_lines = Vec::new();
+    let mut callout_lines = Vec::new();
+    let mut code_title = None;
+    let mut code_language = None;
+    let mut code_lines = Vec::new();
+    let mut inside_code_block = false;
+
+    for raw_line in text.lines() {
+        let trimmed_end = raw_line.trim_end();
+
+        if inside_code_block {
+            if is_markdown_fence_close(trimmed_end) {
+                push_preformatted_section(
+                    &mut sections,
+                    &mut code_title,
+                    &mut code_language,
+                    &mut code_lines,
+                );
+                inside_code_block = false;
+                continue;
+            }
+
+            code_lines.push(trimmed_end.to_owned());
+            continue;
+        }
+
+        if let Some(language) = parse_markdown_fence_language(trimmed_end) {
+            push_callout_section(&mut sections, &mut callout_lines);
+            push_narrative_section(&mut sections, &mut pending_title, &mut narrative_lines);
+            code_title = pending_title.take();
+            code_language = language;
+            inside_code_block = true;
+            continue;
+        }
+
+        if let Some(heading_text) = parse_markdown_heading(trimmed_end) {
+            push_callout_section(&mut sections, &mut callout_lines);
+            push_narrative_section(&mut sections, &mut pending_title, &mut narrative_lines);
+            pending_title = Some(heading_text.to_owned());
+            continue;
+        }
+
+        if let Some(callout_line) = parse_markdown_quote_line(trimmed_end) {
+            push_narrative_section(&mut sections, &mut pending_title, &mut narrative_lines);
+            callout_lines.push(callout_line);
+            continue;
+        }
+
+        if !callout_lines.is_empty() {
+            push_callout_section(&mut sections, &mut callout_lines);
+        }
+
+        let normalized_line = normalize_markdown_display_line(trimmed_end);
+        let is_blank_line = normalized_line.trim().is_empty();
+
+        if is_blank_line && narrative_lines.is_empty() {
+            continue;
+        }
+
+        narrative_lines.push(normalized_line);
+    }
+
+    if inside_code_block {
+        push_preformatted_section(
+            &mut sections,
+            &mut code_title,
+            &mut code_language,
+            &mut code_lines,
+        );
+    }
+
+    push_callout_section(&mut sections, &mut callout_lines);
+    push_narrative_section(&mut sections, &mut pending_title, &mut narrative_lines);
+
+    if sections.is_empty() {
+        sections.push(TuiSectionSpec::Narrative {
+            title: None,
+            lines: vec!["(empty reply)".to_owned()],
+        });
+    }
+
+    sections
+}
+
+fn push_narrative_section(
+    sections: &mut Vec<TuiSectionSpec>,
+    pending_title: &mut Option<String>,
+    narrative_lines: &mut Vec<String>,
+) {
+    trim_blank_line_edges(narrative_lines);
+    if narrative_lines.is_empty() {
+        return;
+    }
+
+    let title = pending_title.take();
+    let lines = std::mem::take(narrative_lines);
+    sections.push(TuiSectionSpec::Narrative { title, lines });
+}
+
+fn push_callout_section(sections: &mut Vec<TuiSectionSpec>, callout_lines: &mut Vec<String>) {
+    trim_blank_line_edges(callout_lines);
+    if callout_lines.is_empty() {
+        return;
+    }
+
+    let lines = std::mem::take(callout_lines);
+    sections.push(TuiSectionSpec::Callout {
+        tone: TuiCalloutTone::Info,
+        title: Some("quoted context".to_owned()),
+        lines,
+    });
+}
+
+fn push_preformatted_section(
+    sections: &mut Vec<TuiSectionSpec>,
+    code_title: &mut Option<String>,
+    code_language: &mut Option<String>,
+    code_lines: &mut Vec<String>,
+) {
+    let title = code_title.take();
+    let language = code_language.take();
+    let lines = std::mem::take(code_lines);
+    sections.push(TuiSectionSpec::Preformatted {
+        title,
+        language,
+        lines,
+    });
+}
+
+fn trim_blank_line_edges(lines: &mut Vec<String>) {
+    while lines.first().is_some_and(|line| line.trim().is_empty()) {
+        lines.remove(0);
+    }
+
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
+    }
+}
+
+fn is_markdown_fence_close(line: &str) -> bool {
+    line.trim() == "```"
+}
+
+fn parse_markdown_fence_language(line: &str) -> Option<Option<String>> {
+    let trimmed = line.trim();
+    let raw_language = trimmed.strip_prefix("```")?;
+    let language = raw_language.trim();
+
+    if language.is_empty() {
+        return Some(None);
+    }
+
+    Some(Some(language.to_owned()))
+}
+
+fn parse_markdown_heading(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    let marker_count = trimmed
+        .chars()
+        .take_while(|character| *character == '#')
+        .count();
+
+    if marker_count == 0 {
+        return None;
+    }
+
+    let heading_text = trimmed.get(marker_count..)?;
+    let normalized_text = heading_text.trim();
+    let normalized_text = normalized_text.trim_end_matches('#').trim();
+
+    if normalized_text.is_empty() {
+        return None;
+    }
+
+    Some(normalized_text)
+}
+
+fn parse_markdown_quote_line(line: &str) -> Option<String> {
+    let trimmed_start = line.trim_start();
+    let quote_body = trimmed_start.strip_prefix('>')?;
+    let normalized_text = quote_body.trim_start();
+    Some(normalized_text.to_owned())
+}
+
+fn normalize_markdown_display_line(line: &str) -> String {
+    let trimmed_end = line.trim_end();
+    let leading_space_count = trimmed_end
+        .chars()
+        .take_while(|character| character.is_ascii_whitespace())
+        .count();
+    let indent = trimmed_end.get(..leading_space_count).unwrap_or("");
+    let trimmed_start = trimmed_end.get(leading_space_count..).unwrap_or("");
+
+    if let Some(rest) = trimmed_start.strip_prefix("* ") {
+        return format!("{indent}- {rest}");
+    }
+
+    if let Some(rest) = trimmed_start.strip_prefix("+ ") {
+        return format!("{indent}- {rest}");
+    }
+
+    trimmed_end.to_owned()
 }
 
 async fn run_cli_turn(
@@ -784,13 +1181,9 @@ fn is_exit_command(config: &LoongClawConfig, input: &str) -> bool {
 
 #[allow(clippy::print_stdout)] // CLI output
 fn print_help() {
-    println!("/help    show this help");
-    println!("/history print current session sliding window");
-    println!("/fast_lane_summary [limit]  summarize fast-lane batch execution events");
-    println!("/safe_lane_summary [limit]  summarize safe-lane runtime events");
-    println!("/turn_checkpoint_summary [limit]  summarize durable turn finalization state");
-    println!("/turn_checkpoint_repair  repair durable turn finalization tail when safe");
-    println!("/exit    quit chat");
+    let render_width = detect_cli_chat_render_width();
+    let rendered_lines = render_cli_chat_help_lines_with_width(render_width);
+    print_rendered_cli_chat_lines(&rendered_lines);
 }
 
 #[allow(clippy::print_stdout)] // CLI output
@@ -802,9 +1195,15 @@ async fn print_history(
 ) -> CliResult<()> {
     #[cfg(feature = "memory-sqlite")]
     {
-        for line in load_history_lines(session_id, limit, binding, memory_config).await? {
-            println!("{line}");
-        }
+        let history_lines = load_history_lines(session_id, limit, binding, memory_config).await?;
+        let render_width = detect_cli_chat_render_width();
+        let rendered_lines = render_cli_chat_history_lines_with_width(
+            session_id,
+            limit,
+            &history_lines,
+            render_width,
+        );
+        print_rendered_cli_chat_lines(&rendered_lines);
         Ok(())
     }
 
@@ -2755,34 +3154,38 @@ mod tests {
 
     #[test]
     fn render_cli_chat_startup_lines_prioritize_first_turn_guidance() {
-        let lines = render_cli_chat_startup_lines(&CliChatStartupSummary {
-            config_path: "/tmp/loongclaw.toml".to_owned(),
-            memory_label: "/tmp/loongclaw.db".to_owned(),
-            session_id: "default".to_owned(),
-            context_engine_id: "threaded".to_owned(),
-            context_engine_source: "config".to_owned(),
-            acp_enabled: true,
-            dispatch_enabled: true,
-            conversation_routing: "automatic".to_owned(),
-            allowed_channels: vec!["cli".to_owned()],
-            acp_backend_id: "builtin".to_owned(),
-            acp_backend_source: "default".to_owned(),
-            explicit_acp_request: false,
-            event_stream_enabled: false,
-            bootstrap_mcp_servers: Vec::new(),
-            working_directory: None,
-        });
+        let lines = render_cli_chat_startup_lines_with_width(
+            &CliChatStartupSummary {
+                config_path: "/tmp/loongclaw.toml".to_owned(),
+                memory_label: "/tmp/loongclaw.db".to_owned(),
+                session_id: "default".to_owned(),
+                context_engine_id: "threaded".to_owned(),
+                context_engine_source: "config".to_owned(),
+                acp_enabled: true,
+                dispatch_enabled: true,
+                conversation_routing: "automatic".to_owned(),
+                allowed_channels: vec!["cli".to_owned()],
+                acp_backend_id: "builtin".to_owned(),
+                acp_backend_source: "default".to_owned(),
+                explicit_acp_request: false,
+                event_stream_enabled: false,
+                bootstrap_mcp_servers: Vec::new(),
+                working_directory: None,
+            },
+            80,
+        );
 
-        assert_eq!(lines[0], "loongclaw chat ready");
         assert!(
-            lines.iter().any(|line| line == "start here"),
-            "chat startup should lead with a dedicated first-action heading: {lines:#?}"
+            lines
+                .first()
+                .is_some_and(|line| line.starts_with("LOONGCLAW")),
+            "chat startup should now use the shared compact brand header: {lines:#?}"
         );
         assert!(
             lines.iter().any(|line| {
-                line == "- first prompt: Summarize this repository and suggest the best next step."
+                line == "start here: Summarize this repository and suggest the best next step."
             }),
-            "chat startup should suggest a concrete first prompt: {lines:#?}"
+            "chat startup should render the first prompt through the structured action group: {lines:#?}"
         );
         assert!(
             lines
@@ -2792,7 +3195,7 @@ mod tests {
         );
         assert!(
             lines.iter().any(|line| line == "session details"),
-            "chat startup should tuck session/config facts into a secondary section: {lines:#?}"
+            "chat startup should keep session/config facts in a structured key-value section: {lines:#?}"
         );
         assert!(
             lines.iter().any(|line| line == "runtime details"),
@@ -2806,30 +3209,130 @@ mod tests {
 
     #[test]
     fn render_cli_chat_startup_lines_surface_explicit_acp_overrides() {
-        let lines = render_cli_chat_startup_lines(&CliChatStartupSummary {
-            config_path: "/tmp/loongclaw.toml".to_owned(),
-            memory_label: "/tmp/loongclaw.db".to_owned(),
-            session_id: "thread-42".to_owned(),
-            context_engine_id: "threaded".to_owned(),
-            context_engine_source: "env".to_owned(),
-            acp_enabled: true,
-            dispatch_enabled: true,
-            conversation_routing: "manual".to_owned(),
-            allowed_channels: vec!["cli".to_owned(), "telegram".to_owned()],
-            acp_backend_id: "jsonrpc".to_owned(),
-            acp_backend_source: "config".to_owned(),
-            explicit_acp_request: true,
-            event_stream_enabled: true,
-            bootstrap_mcp_servers: vec!["filesystem".to_owned()],
-            working_directory: Some("/workspace/project".to_owned()),
-        });
+        let lines = render_cli_chat_startup_lines_with_width(
+            &CliChatStartupSummary {
+                config_path: "/tmp/loongclaw.toml".to_owned(),
+                memory_label: "/tmp/loongclaw.db".to_owned(),
+                session_id: "thread-42".to_owned(),
+                context_engine_id: "threaded".to_owned(),
+                context_engine_source: "env".to_owned(),
+                acp_enabled: true,
+                dispatch_enabled: true,
+                conversation_routing: "manual".to_owned(),
+                allowed_channels: vec!["cli".to_owned(), "telegram".to_owned()],
+                acp_backend_id: "jsonrpc".to_owned(),
+                acp_backend_source: "config".to_owned(),
+                explicit_acp_request: true,
+                event_stream_enabled: true,
+                bootstrap_mcp_servers: vec!["filesystem".to_owned()],
+                working_directory: Some("/workspace/project".to_owned()),
+            },
+            80,
+        );
 
         assert!(
-            lines.iter().any(|line| {
-                line
-                    == "- acp overrides: explicit=true event_stream=true bootstrap_mcp_servers=filesystem cwd=/workspace/project"
-            }),
-            "chat startup should surface ACP override knobs only when they matter: {lines:#?}"
+            lines.iter().any(|line| { line == "note: acp overrides" }),
+            "chat startup should group ACP overrides under a dedicated callout heading: {lines:#?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "- bootstrap MCP servers: filesystem"),
+            "chat startup should still surface the bootstrap MCP override details: {lines:#?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "- working directory: /workspace/project"),
+            "chat startup should still surface the working directory override: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn render_cli_chat_help_lines_promotes_commands_to_surface() {
+        let lines = render_cli_chat_help_lines_with_width(72);
+
+        assert_eq!(lines[0], "chat: commands");
+        assert!(
+            lines.iter().any(|line| line == "slash commands"),
+            "help output should keep a dedicated slash-command section: {lines:#?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "- /history: print the current session sliding window"),
+            "help output should render slash commands as readable key-value rows: {lines:#?}"
+        );
+        assert!(
+            lines.iter().any(|line| line == "note: usage notes"),
+            "help output should preserve operator guidance as a callout: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn render_cli_chat_history_lines_wrap_history_in_surface() {
+        let history_lines = vec![
+            "user: summarize the current repo".to_owned(),
+            "assistant: start with the daemon crate".to_owned(),
+        ];
+        let lines = render_cli_chat_history_lines_with_width("session-7", 24, &history_lines, 72);
+
+        assert_eq!(lines[0], "history: session=session-7 limit=24");
+        assert!(
+            lines.iter().any(|line| line == "sliding window"),
+            "history output should keep a dedicated window section: {lines:#?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "user: summarize the current repo"),
+            "history output should still surface the original transcript entries: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn render_cli_chat_assistant_lines_promotes_markdown_to_structured_sections() {
+        let assistant_text = "\
+## Plan
+
+- inspect the active config
+* compare runtime state
+> reuse current provider settings when safe
+
+```rust
+let value = input.trim();
+println!(\"{value}\");
+```";
+        let lines = render_cli_chat_assistant_lines_with_width(assistant_text, 72);
+
+        assert_eq!(lines[0], "loongclaw: reply");
+        assert!(
+            lines.iter().any(|line| line == "Plan"),
+            "markdown headings should become section titles: {lines:#?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "- inspect the active config"),
+            "markdown list items should remain visible in the narrative block: {lines:#?}"
+        );
+        assert!(
+            lines.iter().any(|line| line == "- compare runtime state"),
+            "markdown star bullets should normalize into wrapped display bullets: {lines:#?}"
+        );
+        assert!(
+            lines.iter().any(|line| line == "note: quoted context"),
+            "markdown blockquotes should render as structured callouts: {lines:#?}"
+        );
+        assert!(
+            lines.iter().any(|line| line == "code [rust]"),
+            "markdown fences should render as preformatted sections: {lines:#?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "    let value = input.trim();"),
+            "preformatted sections should keep code indentation intact: {lines:#?}"
         );
     }
 

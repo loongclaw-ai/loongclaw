@@ -266,19 +266,19 @@ pub fn render_wrapped_display_line(line: &str, width: usize) -> Vec<String> {
     let indent = &line[..indent_width];
     let trimmed = &line[indent_width..];
 
-    if let Some(rest) = trimmed.strip_prefix("- ") {
+    if let Some((prefix, continuation_prefix, rest)) = parse_display_list_item(indent, trimmed) {
         if let Some((label, value)) = rest.split_once(": ") {
             return render_wrapped_labeled_display_line(
-                &format!("{indent}- "),
-                &format!("{indent}  "),
+                &prefix,
+                &continuation_prefix,
                 label,
                 value,
                 width,
             );
         }
         return render_wrapped_text_line_with_continuation(
-            &format!("{indent}- "),
-            &format!("{indent}  "),
+            &prefix,
+            &continuation_prefix,
             rest,
             width,
         );
@@ -295,6 +295,54 @@ pub fn render_wrapped_display_line(line: &str, width: usize) -> Vec<String> {
     }
 
     render_wrapped_text_line_with_continuation(indent, indent, trimmed, width)
+}
+
+fn parse_display_list_item<'a>(
+    indent: &str,
+    trimmed: &'a str,
+) -> Option<(String, String, &'a str)> {
+    if let Some(rest) = trimmed.strip_prefix("- ") {
+        return Some((format!("{indent}- "), format!("{indent}  "), rest));
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("* ") {
+        return Some((format!("{indent}- "), format!("{indent}  "), rest));
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("+ ") {
+        return Some((format!("{indent}- "), format!("{indent}  "), rest));
+    }
+
+    let marker_length = parse_ordered_list_marker_length(trimmed)?;
+    let marker = &trimmed[..marker_length];
+    let rest = &trimmed[marker_length..];
+    let continuation_padding = " ".repeat(marker.chars().count());
+    let prefix = format!("{indent}{marker}");
+    let continuation_prefix = format!("{indent}{continuation_padding}");
+
+    Some((prefix, continuation_prefix, rest))
+}
+
+fn parse_ordered_list_marker_length(trimmed: &str) -> Option<usize> {
+    let digit_count = trimmed
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .count();
+    if digit_count == 0 {
+        return None;
+    }
+
+    let marker = trimmed.as_bytes().get(digit_count).copied()?;
+    if marker != b'.' && marker != b')' {
+        return None;
+    }
+
+    let separator = trimmed.as_bytes().get(digit_count + 1).copied()?;
+    if separator != b' ' {
+        return None;
+    }
+
+    Some(digit_count + 2)
 }
 
 fn render_wrapped_labeled_display_line(
@@ -687,6 +735,39 @@ mod tests {
             vec![
                 "- workspace guidance: AGENTS.md,",
                 "  CLAUDE.md, and local policy",
+            ]
+        );
+    }
+
+    #[test]
+    fn presentation_normalizes_markdown_star_bullets() {
+        let lines = render_wrapped_display_line(
+            "* workspace guidance: AGENTS.md, CLAUDE.md, and local policy",
+            42,
+        );
+
+        assert_eq!(
+            lines,
+            vec![
+                "- workspace guidance: AGENTS.md,",
+                "  CLAUDE.md, and local policy",
+            ]
+        );
+    }
+
+    #[test]
+    fn presentation_wraps_display_line_with_ordered_list_prefix() {
+        let lines = render_wrapped_display_line(
+            "12. validate the current runtime before changing the prompt hydration path",
+            36,
+        );
+
+        assert_eq!(
+            lines,
+            vec![
+                "12. validate the current runtime",
+                "    before changing the prompt",
+                "    hydration path",
             ]
         );
     }

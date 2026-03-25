@@ -4,7 +4,7 @@ use std::path::Path;
 use loongclaw_app as mvp;
 use loongclaw_contracts::SecretRef;
 
-use crate::tui_surface::{
+use mvp::tui_surface::{
     TuiChecklistItemSpec, TuiChecklistStatus, TuiChoiceSpec, TuiHeaderStyle, TuiScreenSpec,
     TuiSectionSpec, render_onboard_screen_spec,
 };

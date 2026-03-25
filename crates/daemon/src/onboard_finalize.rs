@@ -7,7 +7,7 @@ use time::OffsetDateTime;
 use time::format_description::FormatItem;
 use time::macros::format_description;
 
-use crate::tui_surface::{
+use mvp::tui_surface::{
     TuiActionSpec, TuiHeaderStyle, TuiKeyValueSpec, TuiScreenSpec, TuiSectionSpec,
     render_onboard_screen_spec,
 };

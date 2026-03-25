@@ -1,62 +1,61 @@
-use loongclaw_app as mvp;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum TuiHeaderStyle {
+pub enum TuiHeaderStyle {
     Brand,
     Compact,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum TuiCalloutTone {
+pub enum TuiCalloutTone {
     Info,
     Success,
     Warning,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct TuiChoiceSpec {
-    pub(crate) key: String,
-    pub(crate) label: String,
+pub struct TuiChoiceSpec {
+    pub key: String,
+    pub label: String,
     #[serde(default)]
-    pub(crate) detail_lines: Vec<String>,
+    pub detail_lines: Vec<String>,
     #[serde(default)]
-    pub(crate) recommended: bool,
+    pub recommended: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum TuiKeyValueSpec {
+pub enum TuiKeyValueSpec {
     Plain { key: String, value: String },
     Csv { key: String, values: Vec<String> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct TuiActionSpec {
-    pub(crate) label: String,
-    pub(crate) command: String,
+pub struct TuiActionSpec {
+    pub label: String,
+    pub command: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum TuiChecklistStatus {
+pub enum TuiChecklistStatus {
     Pass,
     Warn,
     Fail,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct TuiChecklistItemSpec {
-    pub(crate) status: TuiChecklistStatus,
-    pub(crate) label: String,
-    pub(crate) detail: String,
+pub struct TuiChecklistItemSpec {
+    pub status: TuiChecklistStatus,
+    pub label: String,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum TuiSectionSpec {
+pub enum TuiSectionSpec {
     Narrative {
         title: Option<String>,
         #[serde(default)]
@@ -85,25 +84,43 @@ pub(crate) enum TuiSectionSpec {
         #[serde(default)]
         lines: Vec<String>,
     },
+    Preformatted {
+        title: Option<String>,
+        language: Option<String>,
+        #[serde(default)]
+        lines: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct TuiScreenSpec {
-    pub(crate) header_style: TuiHeaderStyle,
-    pub(crate) subtitle: Option<String>,
-    pub(crate) title: Option<String>,
-    pub(crate) progress_line: Option<String>,
+pub struct TuiScreenSpec {
+    pub header_style: TuiHeaderStyle,
+    pub subtitle: Option<String>,
+    pub title: Option<String>,
+    pub progress_line: Option<String>,
     #[serde(default)]
-    pub(crate) intro_lines: Vec<String>,
+    pub intro_lines: Vec<String>,
     #[serde(default)]
-    pub(crate) sections: Vec<TuiSectionSpec>,
+    pub sections: Vec<TuiSectionSpec>,
     #[serde(default)]
-    pub(crate) choices: Vec<TuiChoiceSpec>,
+    pub choices: Vec<TuiChoiceSpec>,
     #[serde(default)]
-    pub(crate) footer_lines: Vec<String>,
+    pub footer_lines: Vec<String>,
 }
 
-pub(crate) fn render_onboard_screen_spec(
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TuiMessageSpec {
+    pub role: String,
+    pub caption: Option<String>,
+    #[serde(default)]
+    pub sections: Vec<TuiSectionSpec>,
+    #[serde(default)]
+    pub footer_lines: Vec<String>,
+}
+
+const INLINE_ACTION_GROUP_WIDTH: usize = 56;
+
+pub fn render_tui_screen_spec(
     spec: &TuiScreenSpec,
     width: usize,
     color_enabled: bool,
@@ -141,7 +158,28 @@ pub(crate) fn render_onboard_screen_spec(
     lines
 }
 
-const INLINE_ACTION_GROUP_WIDTH: usize = 56;
+pub fn render_onboard_screen_spec(
+    spec: &TuiScreenSpec,
+    width: usize,
+    color_enabled: bool,
+) -> Vec<String> {
+    render_tui_screen_spec(spec, width, color_enabled)
+}
+
+pub fn render_tui_message_spec(spec: &TuiMessageSpec, width: usize) -> Vec<String> {
+    let mut lines = vec![render_message_heading(spec)];
+
+    for section in &spec.sections {
+        append_section_lines(&mut lines, section, width);
+    }
+
+    if !spec.footer_lines.is_empty() {
+        lines.push(String::new());
+        lines.extend(render_wrapped_display_lines(&spec.footer_lines, width));
+    }
+
+    lines
+}
 
 fn render_header(
     style: TuiHeaderStyle,
@@ -150,23 +188,41 @@ fn render_header(
     color_enabled: bool,
 ) -> Vec<String> {
     let brand_lines = match style {
-        TuiHeaderStyle::Brand => mvp::presentation::render_brand_header(
+        TuiHeaderStyle::Brand => crate::presentation::render_brand_header(
             width,
-            &mvp::presentation::BuildVersionInfo::current(),
+            subtitle,
+            &crate::presentation::BuildVersionInfo::current(),
             subtitle,
         ),
-        TuiHeaderStyle::Compact => mvp::presentation::render_compact_brand_header(
+        TuiHeaderStyle::Compact => crate::presentation::render_compact_brand_header(
             width,
-            &mvp::presentation::BuildVersionInfo::current(),
+            subtitle,
+            &crate::presentation::BuildVersionInfo::current(),
             subtitle,
         ),
     };
 
-    mvp::presentation::style_brand_lines_with_palette(
+    crate::presentation::style_brand_lines_with_palette(
         &brand_lines,
         color_enabled,
-        mvp::presentation::ONBOARD_BRAND_PALETTE,
+        crate::presentation::ONBOARD_BRAND_PALETTE,
     )
+}
+
+fn render_message_heading(spec: &TuiMessageSpec) -> String {
+    let trimmed_role = spec.role.trim();
+    let trimmed_caption = spec.caption.as_deref().map(str::trim).unwrap_or("");
+    let role = if trimmed_role.is_empty() {
+        "message"
+    } else {
+        trimmed_role
+    };
+
+    if trimmed_caption.is_empty() {
+        return role.to_owned();
+    }
+
+    format!("{role}: {trimmed_caption}")
 }
 
 fn append_section_lines(lines: &mut Vec<String>, section: &TuiSectionSpec, width: usize) {
@@ -205,6 +261,11 @@ fn append_section_lines(lines: &mut Vec<String>, section: &TuiSectionSpec, width
             title,
             lines: content,
         } => render_callout_lines(*tone, title.as_deref(), content, width),
+        TuiSectionSpec::Preformatted {
+            title,
+            language,
+            lines: content,
+        } => render_preformatted_lines(title.as_deref(), language.as_deref(), content),
     };
 
     if section_lines.is_empty() {
@@ -218,11 +279,11 @@ fn append_section_lines(lines: &mut Vec<String>, section: &TuiSectionSpec, width
 fn render_key_value_item_lines(item: &TuiKeyValueSpec, width: usize) -> Vec<String> {
     match item {
         TuiKeyValueSpec::Plain { key, value } => {
-            mvp::presentation::render_wrapped_text_line(&format!("- {key}: "), value, width)
+            crate::presentation::render_wrapped_text_line(&format!("- {key}: "), value, width)
         }
         TuiKeyValueSpec::Csv { key, values } => {
             let values = values.iter().map(String::as_str).collect::<Vec<_>>();
-            mvp::presentation::render_wrapped_csv_line(&format!("- {key}: "), &values, width)
+            crate::presentation::render_wrapped_csv_line(&format!("- {key}: "), &values, width)
         }
     }
 }
@@ -240,7 +301,7 @@ fn render_action_group_lines(
         && items.len() == 1
         && let (Some(title), Some(item)) = (title, items.first())
     {
-        return mvp::presentation::render_wrapped_text_line(
+        return crate::presentation::render_wrapped_text_line(
             &format!("{title}: "),
             &item.command,
             width,
@@ -253,7 +314,7 @@ fn render_action_group_lines(
     }
 
     for item in items {
-        rendered.extend(mvp::presentation::render_wrapped_text_line(
+        rendered.extend(crate::presentation::render_wrapped_text_line(
             &format!("- {}: ", item.label),
             &item.command,
             width,
@@ -282,7 +343,7 @@ fn render_checklist_lines(
                 checklist_status_marker(item.status),
                 item.label
             ));
-            lines.extend(mvp::presentation::render_wrapped_text_line(
+            lines.extend(crate::presentation::render_wrapped_text_line(
                 "  ",
                 &item.detail,
                 width,
@@ -341,7 +402,7 @@ fn render_callout_lines(
 
     let mut rendered = vec![heading];
     for line in lines {
-        rendered.extend(mvp::presentation::render_wrapped_text_line(
+        rendered.extend(crate::presentation::render_wrapped_text_line(
             "- ", line, width,
         ));
     }
@@ -356,6 +417,44 @@ fn tone_label(tone: TuiCalloutTone) -> &'static str {
     }
 }
 
+fn render_preformatted_lines(
+    title: Option<&str>,
+    language: Option<&str>,
+    lines: &[String],
+) -> Vec<String> {
+    let trimmed_title = title.map(str::trim).filter(|value| !value.is_empty());
+    let trimmed_language = language.map(str::trim).filter(|value| !value.is_empty());
+    let mut rendered = Vec::new();
+
+    if let Some(heading) = build_preformatted_heading(trimmed_title, trimmed_language) {
+        rendered.push(heading);
+    }
+
+    if lines.is_empty() {
+        rendered.push("    ".to_owned());
+        return rendered;
+    }
+
+    for line in lines {
+        if line.is_empty() {
+            rendered.push(String::new());
+            continue;
+        }
+        rendered.push(format!("    {line}"));
+    }
+
+    rendered
+}
+
+fn build_preformatted_heading(title: Option<&str>, language: Option<&str>) -> Option<String> {
+    match (title, language) {
+        (Some(title), Some(language)) => Some(format!("{title} [{language}]")),
+        (Some(title), None) => Some(title.to_owned()),
+        (None, Some(language)) => Some(format!("code [{language}]")),
+        (None, None) => Some("code".to_owned()),
+    }
+}
+
 fn render_wrapped_display_lines<I, S>(display_lines: I, width: usize) -> Vec<String>
 where
     I: IntoIterator<Item = S>,
@@ -363,7 +462,7 @@ where
 {
     display_lines
         .into_iter()
-        .flat_map(|line| mvp::presentation::render_wrapped_display_line(line.as_ref(), width))
+        .flat_map(|line| crate::presentation::render_wrapped_display_line(line.as_ref(), width))
         .collect()
 }
 
@@ -379,7 +478,7 @@ fn render_choice_lines(choices: &[TuiChoiceSpec], width: usize) -> Vec<String> {
         let prefix = format!("{}) ", choice.key);
         let continuation = " ".repeat(prefix.chars().count());
         lines.extend(
-            mvp::presentation::render_wrapped_text_line_with_continuation(
+            crate::presentation::render_wrapped_text_line_with_continuation(
                 &prefix,
                 &continuation,
                 &format!("{}{}", choice.label, suffix),
@@ -440,6 +539,11 @@ mod tests {
                         detail: "catalog probe failed".to_owned(),
                     }],
                 },
+                TuiSectionSpec::Preformatted {
+                    title: Some("example".to_owned()),
+                    language: Some("toml".to_owned()),
+                    lines: vec!["model = \"gpt-5\"".to_owned()],
+                },
             ],
             choices: vec![TuiChoiceSpec {
                 key: "1".to_owned(),
@@ -456,6 +560,7 @@ mod tests {
         assert_eq!(encoded["sections"][1]["items"][0]["kind"], "plain");
         assert_eq!(encoded["sections"][2]["kind"], "action_group");
         assert_eq!(encoded["sections"][3]["kind"], "checklist");
+        assert_eq!(encoded["sections"][4]["kind"], "preformatted");
         assert_eq!(encoded["choices"][0]["label"], "Continue");
     }
 
@@ -491,7 +596,7 @@ mod tests {
             footer_lines: vec!["press Enter to use default 1, continue".to_owned()],
         };
 
-        let lines = render_onboard_screen_spec(&spec, 80, false);
+        let lines = render_tui_screen_spec(&spec, 80, false);
 
         assert!(
             lines
@@ -512,16 +617,60 @@ mod tests {
             "single primary actions should render inline on wide terminals: {lines:#?}"
         );
         assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("1) Continue (recommended)")),
-            "choice list should stay visible: {lines:#?}"
+            lines.iter().any(|line| line == "1) Continue (recommended)"),
+            "choices should remain visible after callouts and actions: {lines:#?}"
         );
         assert!(
             lines
                 .iter()
                 .any(|line| line == "press Enter to use default 1, continue"),
-            "footer guidance should remain visible: {lines:#?}"
+            "footer guidance should remain visible after structured sections: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn message_renderer_preserves_preformatted_blocks() {
+        let spec = TuiMessageSpec {
+            role: "assistant".to_owned(),
+            caption: Some("reply".to_owned()),
+            sections: vec![
+                TuiSectionSpec::Narrative {
+                    title: Some("plan".to_owned()),
+                    lines: vec!["- inspect current config".to_owned()],
+                },
+                TuiSectionSpec::Preformatted {
+                    title: Some("patch".to_owned()),
+                    language: Some("rust".to_owned()),
+                    lines: vec![
+                        "let value = input.trim();".to_owned(),
+                        String::new(),
+                        "println!(\"{value}\");".to_owned(),
+                    ],
+                },
+            ],
+            footer_lines: vec!["end of reply".to_owned()],
+        };
+
+        let lines = render_tui_message_spec(&spec, 72);
+
+        assert_eq!(lines[0], "assistant: reply");
+        assert!(
+            lines.iter().any(|line| line == "plan"),
+            "message sections should keep their narrative title: {lines:#?}"
+        );
+        assert!(
+            lines.iter().any(|line| line == "patch [rust]"),
+            "preformatted sections should surface a code heading: {lines:#?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "    let value = input.trim();"),
+            "preformatted sections should keep raw line indentation: {lines:#?}"
+        );
+        assert!(
+            lines.iter().any(|line| line == "end of reply"),
+            "message footers should remain visible: {lines:#?}"
         );
     }
 }

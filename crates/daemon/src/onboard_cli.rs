@@ -33,7 +33,7 @@ use crate::onboard_preflight::{
     run_preflight_checks,
 };
 use crate::provider_credential_policy;
-use crate::tui_surface::{
+use mvp::tui_surface::{
     TuiCalloutTone, TuiChoiceSpec, TuiHeaderStyle, TuiScreenSpec, TuiSectionSpec,
     render_onboard_screen_spec,
 };

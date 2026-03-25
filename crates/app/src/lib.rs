@@ -20,6 +20,7 @@ mod runtime_self_continuity;
 mod secrets;
 pub mod session;
 pub mod tools;
+pub mod tui_surface;
 
 mod process_env;
 #[allow(
