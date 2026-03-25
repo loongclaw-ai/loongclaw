@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 
-use kernel::{IntegrationCatalog, PluginBridgeKind, PluginScanReport, PluginTranslationReport};
+use kernel::{
+    IntegrationCatalog, PluginBridgeKind, PluginScanReport, PluginSetupReadinessContext,
+    PluginTranslationReport, evaluate_plugin_setup_readiness,
+};
 use serde_json::Value;
 
 use super::descriptor_bridge_kind;
@@ -10,6 +13,7 @@ pub(super) fn execute_tool_search(
     integration_catalog: &IntegrationCatalog,
     plugin_scan_reports: &[PluginScanReport],
     plugin_translation_reports: &[PluginTranslationReport],
+    setup_context: &PluginSetupReadinessContext,
     query: &str,
     limit: usize,
     include_deferred: bool,
@@ -63,6 +67,7 @@ pub(super) fn execute_tool_search(
             .cloned();
         let setup_docs_urls = metadata_strings(&provider.metadata, "plugin_setup_docs_urls_json");
         let setup_remediation = provider.metadata.get("plugin_setup_remediation").cloned();
+        let setup_declared = metadata_has_setup_metadata(&provider.metadata);
         let mut adapter_family = provider.metadata.get("adapter_family").cloned();
         let mut entrypoint_hint = provider
             .metadata
@@ -102,6 +107,7 @@ pub(super) fn execute_tool_search(
                 adapter_family,
                 entrypoint_hint,
                 source_language,
+                setup_declared,
                 setup_mode,
                 setup_surface,
                 setup_required_env_vars,
@@ -148,6 +154,7 @@ pub(super) fn execute_tool_search(
                     adapter_family: adapter_family.clone(),
                     entrypoint_hint: entrypoint_hint.clone(),
                     source_language: source_language.clone(),
+                    setup_declared: manifest.setup.is_some(),
                     setup_mode: manifest
                         .setup
                         .as_ref()
@@ -218,6 +225,9 @@ pub(super) fn execute_tool_search(
             }
             if entry.source_language.is_none() {
                 entry.source_language = source_language.clone();
+            }
+            if manifest.setup.is_some() {
+                entry.setup_declared = true;
             }
             if entry.setup_mode.is_none() {
                 entry.setup_mode = manifest
@@ -321,42 +331,61 @@ pub(super) fn execute_tool_search(
     ranked
         .into_iter()
         .take(capped_limit)
-        .map(|(score, entry)| ToolSearchResult {
-            tool_id: entry.tool_id,
-            plugin_id: entry.plugin_id,
-            connector_name: entry.connector_name,
-            provider_id: entry.provider_id,
-            source_path: entry.source_path,
-            source_kind: entry.source_kind,
-            package_root: entry.package_root,
-            package_manifest_path: entry.package_manifest_path,
-            bridge_kind: entry.bridge_kind.as_str().to_owned(),
-            adapter_family: entry.adapter_family,
-            entrypoint_hint: entry.entrypoint_hint,
-            source_language: entry.source_language,
-            setup_mode: entry.setup_mode,
-            setup_surface: entry.setup_surface,
-            setup_required_env_vars: entry.setup_required_env_vars,
-            setup_recommended_env_vars: entry.setup_recommended_env_vars,
-            setup_required_config_keys: entry.setup_required_config_keys,
-            setup_default_env_var: entry.setup_default_env_var,
-            setup_docs_urls: entry.setup_docs_urls,
-            setup_remediation: entry.setup_remediation,
-            score,
-            deferred: entry.deferred,
-            loaded: entry.loaded,
-            summary: entry.summary,
-            tags: entry.tags,
-            input_examples: if include_examples {
-                entry.input_examples
+        .map(|(score, entry)| {
+            let setup_readiness = evaluate_plugin_setup_readiness(
+                entry.setup_declared,
+                &entry.setup_required_env_vars,
+                &entry.setup_required_config_keys,
+                setup_context,
+            );
+            let setup_ready = setup_readiness.ready;
+            let setup_readiness_reason = if setup_ready {
+                None
             } else {
-                Vec::new()
-            },
-            output_examples: if include_examples {
-                entry.output_examples
-            } else {
-                Vec::new()
-            },
+                Some(setup_readiness.reason)
+            };
+
+            ToolSearchResult {
+                tool_id: entry.tool_id,
+                plugin_id: entry.plugin_id,
+                connector_name: entry.connector_name,
+                provider_id: entry.provider_id,
+                source_path: entry.source_path,
+                source_kind: entry.source_kind,
+                package_root: entry.package_root,
+                package_manifest_path: entry.package_manifest_path,
+                bridge_kind: entry.bridge_kind.as_str().to_owned(),
+                adapter_family: entry.adapter_family,
+                entrypoint_hint: entry.entrypoint_hint,
+                source_language: entry.source_language,
+                setup_ready,
+                setup_readiness_reason,
+                setup_mode: entry.setup_mode,
+                setup_surface: entry.setup_surface,
+                setup_required_env_vars: entry.setup_required_env_vars,
+                setup_missing_required_env_vars: setup_readiness.missing_required_env_vars,
+                setup_recommended_env_vars: entry.setup_recommended_env_vars,
+                setup_required_config_keys: entry.setup_required_config_keys,
+                setup_missing_required_config_keys: setup_readiness.missing_required_config_keys,
+                setup_default_env_var: entry.setup_default_env_var,
+                setup_docs_urls: entry.setup_docs_urls,
+                setup_remediation: entry.setup_remediation,
+                score,
+                deferred: entry.deferred,
+                loaded: entry.loaded,
+                summary: entry.summary,
+                tags: entry.tags,
+                input_examples: if include_examples {
+                    entry.input_examples
+                } else {
+                    Vec::new()
+                },
+                output_examples: if include_examples {
+                    entry.output_examples
+                } else {
+                    Vec::new()
+                },
+            }
         })
         .collect()
 }
@@ -402,6 +431,21 @@ fn metadata_bool(metadata: &BTreeMap<String, String>, key: &str) -> Option<bool>
             "false" | "0" | "no" | "n" | "off" => Some(false),
             _ => None,
         })
+}
+
+fn metadata_has_setup_metadata(metadata: &BTreeMap<String, String>) -> bool {
+    [
+        "plugin_setup_mode",
+        "plugin_setup_surface",
+        "plugin_setup_required_env_vars_json",
+        "plugin_setup_recommended_env_vars_json",
+        "plugin_setup_required_config_keys_json",
+        "plugin_setup_default_env_var",
+        "plugin_setup_docs_urls_json",
+        "plugin_setup_remediation",
+    ]
+    .iter()
+    .any(|key| metadata.contains_key(*key))
 }
 
 fn tool_search_score(entry: &ToolSearchEntry, query: &str, tokens: &[String]) -> u32 {
@@ -625,11 +669,11 @@ fn tool_search_score(entry: &ToolSearchEntry, query: &str, tokens: &[String]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kernel::{IntegrationCatalog, ProviderConfig};
+    use kernel::{IntegrationCatalog, PluginSetupReadinessContext, ProviderConfig};
     use std::collections::BTreeMap;
 
     #[test]
-    fn execute_tool_search_surfaces_plugin_provenance_and_setup_metadata() {
+    fn execute_tool_search_surfaces_plugin_provenance_setup_and_readiness_metadata() {
         let mut catalog = IntegrationCatalog::new();
         let provider = ProviderConfig {
             provider_id: "tavily".to_owned(),
@@ -680,8 +724,18 @@ mod tests {
             ]),
         };
         catalog.upsert_provider(provider);
+        let setup_context = PluginSetupReadinessContext::default();
 
-        let results = execute_tool_search(&catalog, &[], &[], "TAVILY_API_KEY", 10, true, false);
+        let results = execute_tool_search(
+            &catalog,
+            &[],
+            &[],
+            &setup_context,
+            "TAVILY_API_KEY",
+            10,
+            true,
+            false,
+        );
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].source_kind.as_deref(), Some("package_manifest"));
@@ -699,6 +753,20 @@ mod tests {
         assert_eq!(
             results[0].setup_required_env_vars,
             vec!["TAVILY_API_KEY".to_owned()]
+        );
+        assert!(!results[0].setup_ready);
+        assert_eq!(
+            results[0].setup_missing_required_env_vars,
+            vec!["TAVILY_API_KEY".to_owned()]
+        );
+        assert_eq!(
+            results[0].setup_missing_required_config_keys,
+            vec!["tools.web_search.default_provider".to_owned()]
+        );
+        assert!(
+            results[0].setup_readiness_reason.as_deref().is_some_and(
+                |reason| reason.contains("required config key(s) have not been verified")
+            )
         );
     }
 }

@@ -181,6 +181,7 @@ mod tests {
         PluginActivationPlan {
             total_plugins: 2,
             ready_plugins: 2,
+            pending_plugins: 0,
             blocked_plugins: 0,
             candidates: vec![
                 PluginActivationCandidate {
@@ -192,6 +193,8 @@ mod tests {
                     bridge_kind: PluginBridgeKind::HttpJson,
                     adapter_family: "http-adapter".to_owned(),
                     status: PluginActivationStatus::Ready,
+                    missing_required_env_vars: Vec::new(),
+                    missing_required_config_keys: Vec::new(),
                     reason: "ready".to_owned(),
                     bootstrap_hint: "register http".to_owned(),
                 },
@@ -204,6 +207,8 @@ mod tests {
                     bridge_kind: PluginBridgeKind::NativeFfi,
                     adapter_family: "rust-ffi-adapter".to_owned(),
                     status: PluginActivationStatus::Ready,
+                    missing_required_env_vars: Vec::new(),
+                    missing_required_config_keys: Vec::new(),
                     reason: "ready".to_owned(),
                     bootstrap_hint: "load ffi".to_owned(),
                 },
@@ -264,6 +269,7 @@ mod tests {
         let plan = PluginActivationPlan {
             total_plugins: 2,
             ready_plugins: 2,
+            pending_plugins: 0,
             blocked_plugins: 0,
             candidates: vec![
                 PluginActivationCandidate {
@@ -275,6 +281,8 @@ mod tests {
                     bridge_kind: PluginBridgeKind::AcpBridge,
                     adapter_family: "acp-bridge-adapter".to_owned(),
                     status: PluginActivationStatus::Ready,
+                    missing_required_env_vars: Vec::new(),
+                    missing_required_config_keys: Vec::new(),
                     reason: "ready".to_owned(),
                     bootstrap_hint: "register acp bridge".to_owned(),
                 },
@@ -287,6 +295,8 @@ mod tests {
                     bridge_kind: PluginBridgeKind::AcpRuntime,
                     adapter_family: "acp-runtime-adapter".to_owned(),
                     status: PluginActivationStatus::Ready,
+                    missing_required_env_vars: Vec::new(),
+                    missing_required_config_keys: Vec::new(),
                     reason: "ready".to_owned(),
                     bootstrap_hint: "register acp runtime".to_owned(),
                 },

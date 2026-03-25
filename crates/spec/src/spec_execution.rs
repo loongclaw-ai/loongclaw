@@ -13,9 +13,10 @@ use kernel::{
     CodebaseAwarenessSnapshot, ConnectorCommand, InMemoryAuditSink, IntegrationCatalog,
     LoongClawKernel, MemoryCoreRequest, MemoryExtensionRequest, PluginAbsorbReport,
     PluginActivationPlan, PluginActivationStatus, PluginBootstrapExecutor, PluginBridgeKind,
-    PluginDescriptor, PluginScanReport, PluginScanner, PluginSetup, PluginTranslationReport,
-    PluginTranslator, ProvisionPlan, RuntimeCoreRequest, RuntimeExtensionRequest,
-    StaticPolicyEngine, SystemClock, TaskIntent, ToolCoreRequest, ToolExtensionRequest,
+    PluginDescriptor, PluginScanReport, PluginScanner, PluginSetup, PluginSetupReadinessContext,
+    PluginTranslationReport, PluginTranslator, ProvisionPlan, RuntimeCoreRequest,
+    RuntimeExtensionRequest, StaticPolicyEngine, SystemClock, TaskIntent, ToolCoreRequest,
+    ToolExtensionRequest,
 };
 use serde_json::{Value, json};
 
@@ -75,6 +76,7 @@ pub async fn execute_spec_with_native_tool_executor(
     let mut plugin_bootstrap_reports = Vec::new();
     let mut plugin_bootstrap_queue = Vec::new();
     let mut plugin_absorb_reports = Vec::new();
+    let plugin_setup_readiness_context = default_plugin_setup_readiness_context();
     let security_scan_policy = match security_scan_policy(spec) {
         Ok(policy) => policy,
         Err(error) => {
@@ -210,7 +212,11 @@ pub async fn execute_spec_with_native_tool_executor(
                 }
             };
             let translation = translator.translate_scan_report(&report);
-            let activation = translator.plan_activation(&translation, &bridge_matrix);
+            let activation = translator.plan_activation(
+                &translation,
+                &bridge_matrix,
+                &plugin_setup_readiness_context,
+            );
 
             if enforce_bridge_support && activation.has_blockers() {
                 blocked_reason = Some(format!(
@@ -511,6 +517,7 @@ pub async fn execute_spec_with_native_tool_executor(
         &integration_catalog,
         &plugin_scan_reports,
         &plugin_translation_reports,
+        &plugin_setup_readiness_context,
         &spec.operation,
     )
     .await
@@ -850,6 +857,10 @@ fn bootstrap_policy(spec: &RunnerSpec) -> Option<BootstrapPolicy> {
         policy.max_tasks = value.max(1);
     }
     Some(policy)
+}
+
+fn default_plugin_setup_readiness_context() -> PluginSetupReadinessContext {
+    PluginSetupReadinessContext::from_process_env()
 }
 
 fn filter_scan_report_by_activation(
@@ -1195,6 +1206,7 @@ async fn execute_spec_operation(
     integration_catalog: &IntegrationCatalog,
     plugin_scan_reports: &[PluginScanReport],
     plugin_translation_reports: &[PluginTranslationReport],
+    plugin_setup_readiness_context: &PluginSetupReadinessContext,
     operation: &OperationSpec,
 ) -> CliResult<(&'static str, Value)> {
     match operation {
@@ -1459,6 +1471,7 @@ async fn execute_spec_operation(
                 integration_catalog,
                 plugin_scan_reports,
                 plugin_translation_reports,
+                plugin_setup_readiness_context,
                 query,
                 *limit,
                 *include_deferred,

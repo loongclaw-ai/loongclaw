@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    env,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -61,6 +64,94 @@ pub struct PluginIR {
     pub runtime: PluginRuntimeProfile,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PluginSetupReadinessContext {
+    pub available_env_vars: BTreeSet<String>,
+    pub configured_keys: BTreeSet<String>,
+    pub config_keys_verified: bool,
+}
+
+impl PluginSetupReadinessContext {
+    #[must_use]
+    pub fn from_process_env() -> Self {
+        let mut available_env_vars = BTreeSet::new();
+
+        for (raw_name, raw_value) in env::vars_os() {
+            let value_is_empty = raw_value.is_empty();
+            if value_is_empty {
+                continue;
+            }
+
+            let env_name = raw_name.to_string_lossy().trim().to_owned();
+            let env_name_is_empty = env_name.is_empty();
+            if env_name_is_empty {
+                continue;
+            }
+
+            available_env_vars.insert(env_name);
+        }
+
+        Self {
+            available_env_vars,
+            configured_keys: BTreeSet::new(),
+            config_keys_verified: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginSetupReadiness {
+    pub ready: bool,
+    pub reason: String,
+    pub missing_required_env_vars: Vec<String>,
+    pub missing_required_config_keys: Vec<String>,
+}
+
+#[must_use]
+pub fn evaluate_plugin_setup_readiness(
+    has_declared_setup: bool,
+    required_env_vars: &[String],
+    required_config_keys: &[String],
+    context: &PluginSetupReadinessContext,
+) -> PluginSetupReadiness {
+    if !has_declared_setup {
+        return PluginSetupReadiness {
+            ready: true,
+            reason: "plugin does not declare setup requirements".to_owned(),
+            missing_required_env_vars: Vec::new(),
+            missing_required_config_keys: Vec::new(),
+        };
+    }
+
+    let missing_required_env_vars = collect_missing_required_env_vars(required_env_vars, context);
+    let missing_required_config_keys =
+        collect_missing_required_config_keys(required_config_keys, context);
+    let has_missing_required_env_vars = !missing_required_env_vars.is_empty();
+    let has_missing_required_config_keys = !missing_required_config_keys.is_empty();
+
+    if !has_missing_required_env_vars && !has_missing_required_config_keys {
+        return PluginSetupReadiness {
+            ready: true,
+            reason: "declared setup requirements are satisfied".to_owned(),
+            missing_required_env_vars,
+            missing_required_config_keys,
+        };
+    }
+
+    let reason = build_plugin_setup_pending_reason(
+        &missing_required_env_vars,
+        &missing_required_config_keys,
+        context.config_keys_verified,
+    );
+
+    PluginSetupReadiness {
+        ready: false,
+        reason,
+        missing_required_env_vars,
+        missing_required_config_keys,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PluginTranslationReport {
     pub translated_plugins: usize,
@@ -72,6 +163,7 @@ pub struct PluginTranslationReport {
 #[serde(rename_all = "snake_case")]
 pub enum PluginActivationStatus {
     Ready,
+    PendingSetup,
     BlockedUnsupportedBridge,
     BlockedUnsupportedAdapterFamily,
 }
@@ -86,6 +178,8 @@ pub struct PluginActivationCandidate {
     pub bridge_kind: PluginBridgeKind,
     pub adapter_family: String,
     pub status: PluginActivationStatus,
+    pub missing_required_env_vars: Vec<String>,
+    pub missing_required_config_keys: Vec<String>,
     pub reason: String,
     pub bootstrap_hint: String,
 }
@@ -94,6 +188,7 @@ pub struct PluginActivationCandidate {
 pub struct PluginActivationPlan {
     pub total_plugins: usize,
     pub ready_plugins: usize,
+    pub pending_plugins: usize,
     pub blocked_plugins: usize,
     pub candidates: Vec<PluginActivationCandidate>,
 }
@@ -191,11 +286,26 @@ impl PluginTranslator {
         &self,
         translation: &PluginTranslationReport,
         matrix: &BridgeSupportMatrix,
+        setup_context: &PluginSetupReadinessContext,
     ) -> PluginActivationPlan {
         let mut plan = PluginActivationPlan::default();
 
         for ir in &translation.entries {
             plan.total_plugins = plan.total_plugins.saturating_add(1);
+            let setup = ir.setup.as_ref();
+            let has_declared_setup = setup.is_some();
+            let required_env_vars = setup
+                .map(|value| value.required_env_vars.clone())
+                .unwrap_or_default();
+            let required_config_keys = setup
+                .map(|value| value.required_config_keys.clone())
+                .unwrap_or_default();
+            let setup_readiness = evaluate_plugin_setup_readiness(
+                has_declared_setup,
+                &required_env_vars,
+                &required_config_keys,
+                setup_context,
+            );
 
             let (status, reason) = if !matrix.is_bridge_supported(ir.runtime.bridge_kind) {
                 (
@@ -213,16 +323,25 @@ impl PluginTranslator {
                         ir.runtime.adapter_family
                     ),
                 )
+            } else if !setup_readiness.ready {
+                (
+                    PluginActivationStatus::PendingSetup,
+                    setup_readiness.reason.clone(),
+                )
             } else {
                 (
                     PluginActivationStatus::Ready,
-                    "plugin runtime profile is supported by current runtime matrix".to_owned(),
+                    "plugin runtime profile is supported and declared setup requirements are satisfied"
+                        .to_owned(),
                 )
             };
 
             match status {
                 PluginActivationStatus::Ready => {
                     plan.ready_plugins = plan.ready_plugins.saturating_add(1)
+                }
+                PluginActivationStatus::PendingSetup => {
+                    plan.pending_plugins = plan.pending_plugins.saturating_add(1)
                 }
                 PluginActivationStatus::BlockedUnsupportedBridge
                 | PluginActivationStatus::BlockedUnsupportedAdapterFamily => {
@@ -239,6 +358,8 @@ impl PluginTranslator {
                 bridge_kind: ir.runtime.bridge_kind,
                 adapter_family: ir.runtime.adapter_family.clone(),
                 status,
+                missing_required_env_vars: setup_readiness.missing_required_env_vars,
+                missing_required_config_keys: setup_readiness.missing_required_config_keys,
                 reason,
                 bootstrap_hint: bootstrap_hint(ir),
             });
@@ -246,6 +367,75 @@ impl PluginTranslator {
 
         plan
     }
+}
+
+fn collect_missing_required_env_vars(
+    required_env_vars: &[String],
+    context: &PluginSetupReadinessContext,
+) -> Vec<String> {
+    let mut missing_required_env_vars = Vec::new();
+
+    for required_env_var in required_env_vars {
+        let env_var_is_available = context.available_env_vars.contains(required_env_var);
+        if env_var_is_available {
+            continue;
+        }
+
+        missing_required_env_vars.push(required_env_var.clone());
+    }
+
+    missing_required_env_vars
+}
+
+fn collect_missing_required_config_keys(
+    required_config_keys: &[String],
+    context: &PluginSetupReadinessContext,
+) -> Vec<String> {
+    if !context.config_keys_verified {
+        return required_config_keys.to_vec();
+    }
+
+    let mut missing_required_config_keys = Vec::new();
+
+    for required_config_key in required_config_keys {
+        let config_key_is_available = context.configured_keys.contains(required_config_key);
+        if config_key_is_available {
+            continue;
+        }
+
+        missing_required_config_keys.push(required_config_key.clone());
+    }
+
+    missing_required_config_keys
+}
+
+fn build_plugin_setup_pending_reason(
+    missing_required_env_vars: &[String],
+    missing_required_config_keys: &[String],
+    config_keys_verified: bool,
+) -> String {
+    let mut segments = Vec::new();
+
+    let has_missing_required_env_vars = !missing_required_env_vars.is_empty();
+    if has_missing_required_env_vars {
+        let required_env_vars = missing_required_env_vars.join(", ");
+        let env_segment = format!("missing required env var(s): {required_env_vars}");
+        segments.push(env_segment);
+    }
+
+    let has_missing_required_config_keys = !missing_required_config_keys.is_empty();
+    if has_missing_required_config_keys {
+        let required_config_keys = missing_required_config_keys.join(", ");
+        let config_segment = if config_keys_verified {
+            format!("missing required config key(s): {required_config_keys}")
+        } else {
+            format!("required config key(s) have not been verified: {required_config_keys}")
+        };
+        segments.push(config_segment);
+    }
+
+    let detail = segments.join("; ");
+    format!("plugin setup is incomplete ({detail})")
 }
 
 fn infer_runtime_profile(language: &str, manifest: &PluginManifest) -> PluginRuntimeProfile {
@@ -562,10 +752,12 @@ mod tests {
             supported_bridges: BTreeSet::from([PluginBridgeKind::HttpJson]),
             supported_adapter_families: BTreeSet::new(),
         };
-        let plan = translator.plan_activation(&translation, &matrix);
+        let setup_context = PluginSetupReadinessContext::default();
+        let plan = translator.plan_activation(&translation, &matrix, &setup_context);
 
         assert_eq!(plan.total_plugins, 1);
         assert_eq!(plan.ready_plugins, 0);
+        assert_eq!(plan.pending_plugins, 0);
         assert_eq!(plan.blocked_plugins, 1);
         assert_eq!(
             plan.candidates[0].source_kind,
@@ -599,14 +791,84 @@ mod tests {
             supported_bridges: BTreeSet::from([PluginBridgeKind::ProcessStdio]),
             supported_adapter_families: BTreeSet::from(["rust-stdio-adapter".to_owned()]),
         };
-        let plan = translator.plan_activation(&translation, &matrix);
+        let setup_context = PluginSetupReadinessContext::default();
+        let plan = translator.plan_activation(&translation, &matrix, &setup_context);
 
         assert_eq!(plan.total_plugins, 1);
         assert_eq!(plan.ready_plugins, 0);
+        assert_eq!(plan.pending_plugins, 0);
         assert_eq!(plan.blocked_plugins, 1);
         assert!(matches!(
             plan.candidates[0].status,
             PluginActivationStatus::BlockedUnsupportedAdapterFamily
         ));
+    }
+
+    #[test]
+    fn activation_plan_marks_plugin_pending_when_required_setup_is_missing() {
+        let descriptor = descriptor("manifest", BTreeMap::new());
+        let translator = PluginTranslator::new();
+        let translation = translator.translate_scan_report(&PluginScanReport {
+            scanned_files: 1,
+            matched_plugins: 1,
+            descriptors: vec![descriptor],
+        });
+
+        let matrix = BridgeSupportMatrix {
+            supported_bridges: BTreeSet::from([PluginBridgeKind::HttpJson]),
+            supported_adapter_families: BTreeSet::new(),
+        };
+        let setup_context = PluginSetupReadinessContext::default();
+        let plan = translator.plan_activation(&translation, &matrix, &setup_context);
+
+        assert_eq!(plan.total_plugins, 1);
+        assert_eq!(plan.ready_plugins, 0);
+        assert_eq!(plan.pending_plugins, 1);
+        assert_eq!(plan.blocked_plugins, 0);
+        assert!(matches!(
+            plan.candidates[0].status,
+            PluginActivationStatus::PendingSetup
+        ));
+        assert_eq!(
+            plan.candidates[0].missing_required_env_vars,
+            vec!["TAVILY_API_KEY".to_owned()]
+        );
+        assert_eq!(
+            plan.candidates[0].missing_required_config_keys,
+            vec!["tools.web_search.default_provider".to_owned()]
+        );
+    }
+
+    #[test]
+    fn activation_plan_marks_plugin_ready_when_required_setup_is_satisfied() {
+        let descriptor = descriptor("manifest", BTreeMap::new());
+        let translator = PluginTranslator::new();
+        let translation = translator.translate_scan_report(&PluginScanReport {
+            scanned_files: 1,
+            matched_plugins: 1,
+            descriptors: vec![descriptor],
+        });
+
+        let matrix = BridgeSupportMatrix {
+            supported_bridges: BTreeSet::from([PluginBridgeKind::HttpJson]),
+            supported_adapter_families: BTreeSet::new(),
+        };
+        let setup_context = PluginSetupReadinessContext {
+            available_env_vars: BTreeSet::from(["TAVILY_API_KEY".to_owned()]),
+            configured_keys: BTreeSet::from(["tools.web_search.default_provider".to_owned()]),
+            config_keys_verified: true,
+        };
+        let plan = translator.plan_activation(&translation, &matrix, &setup_context);
+
+        assert_eq!(plan.total_plugins, 1);
+        assert_eq!(plan.ready_plugins, 1);
+        assert_eq!(plan.pending_plugins, 0);
+        assert_eq!(plan.blocked_plugins, 0);
+        assert!(matches!(
+            plan.candidates[0].status,
+            PluginActivationStatus::Ready
+        ));
+        assert!(plan.candidates[0].missing_required_env_vars.is_empty());
+        assert!(plan.candidates[0].missing_required_config_keys.is_empty());
     }
 }
