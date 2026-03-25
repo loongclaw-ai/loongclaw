@@ -14,6 +14,8 @@ use crate::{
     pack::VerticalPackManifest,
 };
 
+const PACKAGE_MANIFEST_FILE_NAME: &str = "loongclaw.plugin.json";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginManifest {
     pub plugin_id: String,
@@ -79,25 +81,23 @@ impl PluginScanner {
         let mut files = Vec::new();
         collect_files(root, &mut files)?;
         files.sort();
+        report.scanned_files = files.len();
 
-        for path in files {
-            report.scanned_files = report.scanned_files.saturating_add(1);
-            let bytes = fs::read(&path).map_err(|error| IntegrationError::PluginFileRead {
-                path: path.display().to_string(),
-                reason: error.to_string(),
-            })?;
-            let content = match String::from_utf8(bytes) {
-                Ok(content) => content,
-                Err(_) => continue,
-            };
+        let package_manifest_descriptors = collect_package_manifest_descriptors(&files)?;
+        let package_roots = collect_package_roots(&package_manifest_descriptors);
 
-            if let Some(manifest) = parse_manifest_block(&content, &path)? {
-                report.matched_plugins = report.matched_plugins.saturating_add(1);
-                report.descriptors.push(PluginDescriptor {
-                    path: path.display().to_string(),
-                    language: detect_language(&path),
-                    manifest,
-                });
+        for path in &files {
+            if let Some(descriptor) = package_manifest_descriptors.get(path) {
+                push_descriptor(&mut report, descriptor.clone());
+                continue;
+            }
+
+            if path_is_covered_by_package_manifest(path, &package_roots) {
+                continue;
+            }
+
+            if let Some(descriptor) = parse_source_manifest_descriptor(path)? {
+                push_descriptor(&mut report, descriptor);
             }
         }
 
@@ -234,6 +234,14 @@ impl PluginScanner {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct PackageManifestDocument {
+    #[serde(flatten)]
+    manifest: PluginManifest,
+    #[serde(default)]
+    version: Option<String>,
+}
+
 fn collect_files(path: &Path, acc: &mut Vec<PathBuf>) -> Result<(), IntegrationError> {
     let metadata = fs::metadata(path).map_err(|error| IntegrationError::PluginFileRead {
         path: path.display().to_string(),
@@ -264,6 +272,133 @@ fn collect_files(path: &Path, acc: &mut Vec<PathBuf>) -> Result<(), IntegrationE
         }
     }
     Ok(())
+}
+
+fn collect_package_manifest_descriptors(
+    files: &[PathBuf],
+) -> Result<BTreeMap<PathBuf, PluginDescriptor>, IntegrationError> {
+    let mut descriptors = BTreeMap::new();
+
+    for path in files {
+        if !is_package_manifest_file(path) {
+            continue;
+        }
+
+        let descriptor = parse_package_manifest_descriptor(path)?;
+        descriptors.insert(path.clone(), descriptor);
+    }
+
+    Ok(descriptors)
+}
+
+fn collect_package_roots(descriptors: &BTreeMap<PathBuf, PluginDescriptor>) -> BTreeSet<PathBuf> {
+    let mut package_roots = BTreeSet::new();
+
+    for path in descriptors.keys() {
+        let Some(parent) = path.parent() else {
+            continue;
+        };
+
+        let package_root = parent.to_path_buf();
+        package_roots.insert(package_root);
+    }
+
+    package_roots
+}
+
+fn push_descriptor(report: &mut PluginScanReport, descriptor: PluginDescriptor) {
+    report.matched_plugins = report.matched_plugins.saturating_add(1);
+    report.descriptors.push(descriptor);
+}
+
+fn parse_package_manifest_descriptor(path: &Path) -> Result<PluginDescriptor, IntegrationError> {
+    let manifest = parse_package_manifest_file(path)?;
+    let descriptor = PluginDescriptor {
+        path: path.display().to_string(),
+        language: detect_language(path),
+        manifest,
+    };
+
+    Ok(descriptor)
+}
+
+fn parse_package_manifest_file(path: &Path) -> Result<PluginManifest, IntegrationError> {
+    let bytes = fs::read(path).map_err(|error| IntegrationError::PluginFileRead {
+        path: path.display().to_string(),
+        reason: error.to_string(),
+    })?;
+
+    let content =
+        String::from_utf8(bytes).map_err(|error| IntegrationError::PluginManifestParse {
+            path: path.display().to_string(),
+            reason: error.to_string(),
+        })?;
+
+    let mut document: PackageManifestDocument =
+        serde_json::from_str(content.trim()).map_err(|error| {
+            IntegrationError::PluginManifestParse {
+                path: path.display().to_string(),
+                reason: error.to_string(),
+            }
+        })?;
+
+    let version = document.version.take();
+
+    if let Some(version) = version {
+        let metadata_has_version = document.manifest.metadata.contains_key("version");
+
+        if !metadata_has_version {
+            document
+                .manifest
+                .metadata
+                .insert("version".to_owned(), version);
+        }
+    }
+
+    Ok(document.manifest)
+}
+
+fn parse_source_manifest_descriptor(
+    path: &Path,
+) -> Result<Option<PluginDescriptor>, IntegrationError> {
+    let bytes = fs::read(path).map_err(|error| IntegrationError::PluginFileRead {
+        path: path.display().to_string(),
+        reason: error.to_string(),
+    })?;
+
+    let content = match String::from_utf8(bytes) {
+        Ok(content) => content,
+        Err(_) => return Ok(None),
+    };
+
+    let Some(manifest) = parse_manifest_block(&content, path)? else {
+        return Ok(None);
+    };
+
+    let descriptor = PluginDescriptor {
+        path: path.display().to_string(),
+        language: detect_language(path),
+        manifest,
+    };
+
+    Ok(Some(descriptor))
+}
+
+fn is_package_manifest_file(path: &Path) -> bool {
+    let file_name = path.file_name();
+    let file_name = file_name.and_then(|value| value.to_str());
+
+    matches!(file_name, Some(PACKAGE_MANIFEST_FILE_NAME))
+}
+
+fn path_is_covered_by_package_manifest(path: &Path, package_roots: &BTreeSet<PathBuf>) -> bool {
+    for package_root in package_roots {
+        if path.starts_with(package_root) {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn should_skip_dir(path: &Path) -> bool {
@@ -319,6 +454,10 @@ fn clean_manifest_line(line: &str) -> String {
 }
 
 fn detect_language(path: &Path) -> String {
+    if is_package_manifest_file(path) {
+        return "manifest".to_owned();
+    }
+
     path.extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.to_lowercase())
@@ -410,6 +549,161 @@ mod tests {
                 .descriptors
                 .iter()
                 .any(|descriptor| descriptor.manifest.provider_id == "slack")
+        );
+    }
+
+    #[test]
+    fn scanner_finds_package_manifest_file() {
+        let root = unique_tmp_dir("loongclaw-plugin-package-manifest");
+        fs::create_dir_all(&root).expect("create temp root");
+
+        let manifest_file = root.join(PACKAGE_MANIFEST_FILE_NAME);
+        fs::write(
+            &manifest_file,
+            r#"
+{
+  "api_version": "v1alpha1",
+  "plugin_id": "tavily-search",
+  "version": "0.3.0",
+  "provider_id": "tavily",
+  "connector_name": "tavily-http",
+  "endpoint": "https://api.tavily.com/search",
+  "capabilities": ["InvokeConnector"],
+  "metadata": {
+    "bridge_kind": "http_json",
+    "adapter_family": "web-search"
+  },
+  "summary": "Manifest-discovered Tavily package",
+  "tags": ["search", "provider"]
+}
+"#,
+        )
+        .expect("write package manifest");
+
+        let scanner = PluginScanner::new();
+        let report = scanner.scan_path(&root).expect("scan should succeed");
+
+        assert_eq!(report.scanned_files, 1);
+        assert_eq!(report.matched_plugins, 1);
+        assert_eq!(report.descriptors.len(), 1);
+        assert_eq!(
+            report.descriptors[0].path,
+            manifest_file.display().to_string()
+        );
+        assert_eq!(report.descriptors[0].language, "manifest");
+        assert_eq!(report.descriptors[0].manifest.plugin_id, "tavily-search");
+        assert_eq!(report.descriptors[0].manifest.provider_id, "tavily");
+        assert_eq!(
+            report.descriptors[0]
+                .manifest
+                .metadata
+                .get("version")
+                .map(String::as_str),
+            Some("0.3.0")
+        );
+    }
+
+    #[test]
+    fn scanner_prefers_package_manifest_over_embedded_source_manifest() {
+        let root = unique_tmp_dir("loongclaw-plugin-precedence");
+        let package_root = root.join("pkg");
+        fs::create_dir_all(&package_root).expect("create temp root");
+
+        let manifest_file = package_root.join(PACKAGE_MANIFEST_FILE_NAME);
+        fs::write(
+            &manifest_file,
+            r#"
+{
+  "plugin_id": "package-plugin",
+  "provider_id": "package-provider",
+  "connector_name": "package-connector",
+  "channel_id": "package-channel",
+  "endpoint": "https://package.example/invoke",
+  "capabilities": ["InvokeConnector"],
+  "metadata": {
+    "bridge_kind": "http_json"
+  }
+}
+"#,
+        )
+        .expect("write package manifest");
+
+        let source_file = package_root.join("plugin.py");
+        fs::write(
+            &source_file,
+            r#"
+# LOONGCLAW_PLUGIN_START
+# {
+#   "plugin_id": "source-plugin",
+#   "provider_id": "source-provider",
+#   "connector_name": "source-connector",
+#   "channel_id": "source-channel",
+#   "endpoint": "https://source.example/invoke",
+#   "capabilities": ["InvokeConnector"],
+#   "metadata": {"bridge_kind":"process_stdio"}
+# }
+# LOONGCLAW_PLUGIN_END
+"#,
+        )
+        .expect("write source plugin");
+
+        let scanner = PluginScanner::new();
+        let report = scanner.scan_path(&root).expect("scan should succeed");
+
+        assert_eq!(report.scanned_files, 2);
+        assert_eq!(report.matched_plugins, 1);
+        assert_eq!(report.descriptors.len(), 1);
+        assert_eq!(
+            report.descriptors[0].path,
+            manifest_file.display().to_string()
+        );
+        assert_eq!(report.descriptors[0].manifest.plugin_id, "package-plugin");
+        assert_eq!(
+            report.descriptors[0].manifest.provider_id,
+            "package-provider"
+        );
+    }
+
+    #[test]
+    fn scanner_falls_back_to_embedded_source_manifest_without_package_manifest() {
+        let root = unique_tmp_dir("loongclaw-plugin-source-fallback");
+        let package_root = root.join("pkg");
+        fs::create_dir_all(&package_root).expect("create temp root");
+
+        let source_file = package_root.join("plugin.py");
+        fs::write(
+            &source_file,
+            r#"
+# LOONGCLAW_PLUGIN_START
+# {
+#   "plugin_id": "source-plugin",
+#   "provider_id": "source-provider",
+#   "connector_name": "source-connector",
+#   "channel_id": "source-channel",
+#   "endpoint": "https://source.example/invoke",
+#   "capabilities": ["InvokeConnector"],
+#   "metadata": {"bridge_kind":"process_stdio"}
+# }
+# LOONGCLAW_PLUGIN_END
+"#,
+        )
+        .expect("write source plugin");
+
+        let scanner = PluginScanner::new();
+        let report = scanner.scan_path(&root).expect("scan should succeed");
+
+        assert_eq!(report.scanned_files, 1);
+        assert_eq!(report.matched_plugins, 1);
+        assert_eq!(report.descriptors.len(), 1);
+        assert_eq!(
+            report.descriptors[0].path,
+            source_file.display().to_string()
+        );
+        assert_eq!(report.descriptors[0].language, "py");
+        assert_eq!(report.descriptors[0].manifest.plugin_id, "source-plugin");
+        assert_eq!(
+            report.descriptors[0].manifest.provider_id,
+            "source-provider"
         );
     }
 
