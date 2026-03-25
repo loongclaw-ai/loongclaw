@@ -2317,7 +2317,7 @@ mod tests {
         let mut config = mvp::config::LoongClawConfig::default();
         config.provider.kind = mvp::config::ProviderKind::Minimax;
         config.provider.model = "auto".to_owned();
-        config.provider.preferred_models = vec!["MiniMax-M1".to_owned()];
+        config.provider.preferred_models = vec!["MiniMax-M2.5".to_owned()];
 
         let check = provider_model_probe_failure_check(
             &config,
@@ -2331,7 +2331,7 @@ mod tests {
             "doctor should only advertise fallback continuation for explicitly configured preferred models: {check:#?}"
         );
         assert!(
-            check.detail.contains("MiniMax-M1"),
+            check.detail.contains("MiniMax-M2.5"),
             "doctor warning should surface the fallback candidate to keep remediation concrete: {check:#?}"
         );
     }

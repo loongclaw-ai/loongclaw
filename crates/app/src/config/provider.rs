@@ -2416,7 +2416,7 @@ impl ProviderKind {
         if matches!(self, ProviderKind::Deepseek) {
             Some("deepseek-chat")
         } else if matches!(self, ProviderKind::Minimax) {
-            Some("MiniMax-M2.5")
+            Some("MiniMax-M2.7")
         } else {
             None
         }
@@ -3760,7 +3760,7 @@ api_key_env = "OPENAI_API_KEY"
         );
         assert_eq!(
             ProviderKind::Minimax.recommended_onboarding_model(),
-            Some("MiniMax-M2.5")
+            Some("MiniMax-M2.7")
         );
         assert_eq!(
             ProviderKind::KimiCoding.recommended_onboarding_model(),

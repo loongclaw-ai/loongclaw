@@ -6585,9 +6585,9 @@ mod tests {
         config.provider.kind = mvp::config::ProviderKind::Minimax;
         config.provider.model = "auto".to_owned();
         config.provider.preferred_models = vec![
-            "MiniMax-M1".to_owned(),
-            "MiniMax-M1".to_owned(),
-            "MiniMax-Text-01".to_owned(),
+            "MiniMax-M2.5".to_owned(),
+            "MiniMax-M2.5".to_owned(),
+            "MiniMax-M2.7-highspeed".to_owned(),
         ];
 
         let check = provider_model_probe_failure_check(
@@ -6602,7 +6602,7 @@ mod tests {
             "onboarding should only advertise fallback continuation for explicitly configured preferred models: {check:#?}"
         );
         assert!(
-            check.detail.contains("MiniMax-M1"),
+            check.detail.contains("MiniMax-M2.5"),
             "onboard warning should surface the first fallback model to keep the first-run path actionable: {check:#?}"
         );
     }
@@ -6707,7 +6707,7 @@ mod tests {
         let mut config = mvp::config::LoongClawConfig::default();
         config.provider.kind = mvp::config::ProviderKind::Minimax;
         config.provider.model = "auto".to_owned();
-        config.provider.preferred_models = vec!["MiniMax-M1".to_owned()];
+        config.provider.preferred_models = vec!["MiniMax-M2.5".to_owned()];
         let check = provider_model_probe_failure_check(
             &config,
             "provider rejected the model list".to_owned(),
@@ -7938,7 +7938,7 @@ mod tests {
         .expect("resolve model selection");
 
         assert!(
-            selected == "MiniMax-M2.5",
+            selected == "MiniMax-M2.7",
             "interactive onboarding should prefill the provider-recommended explicit model for MiniMax instead of leaving the operator on hidden runtime fallbacks: {selected:?}"
         );
     }
@@ -7976,7 +7976,7 @@ mod tests {
         .expect("resolve model selection");
 
         assert!(
-            selected == "MiniMax-M2.5",
+            selected == "MiniMax-M2.7",
             "non-interactive onboarding should use the reviewed provider default for MiniMax instead of carrying auto into preflight: {selected:?}"
         );
     }
@@ -9028,15 +9028,15 @@ mod tests {
         let mut config = mvp::config::LoongClawConfig::default();
         config.provider.kind = mvp::config::ProviderKind::Minimax;
         config.provider.model = "auto".to_owned();
-        config.provider.preferred_models = vec!["MiniMax-M1".to_owned()];
+        config.provider.preferred_models = vec!["MiniMax-M2.5".to_owned()];
 
-        let lines = render_model_selection_screen_lines_with_default(&config, "MiniMax-M2.5", 80);
+        let lines = render_model_selection_screen_lines_with_default(&config, "MiniMax-M2.7", 80);
         let rendered = lines.join("\n");
 
         assert!(
             rendered.contains("type `auto`")
                 && rendered.contains("configured preferred fallbacks first")
-                && rendered.contains("MiniMax-M1"),
+                && rendered.contains("MiniMax-M2.5"),
             "explicit prefill flows should tell users to type `auto` when they want configured fallback behavior: {lines:#?}"
         );
         assert!(
