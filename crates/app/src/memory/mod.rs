@@ -41,9 +41,10 @@ pub use context::load_prompt_context;
 pub(crate) use durable_flush::flush_pre_compaction_durable_memory;
 pub(crate) use durable_recall::load_durable_recall_entries;
 pub use kernel_adapter::MvpMemoryAdapter;
+pub(crate) use orchestrator::run_compact_stage;
 pub use orchestrator::{
     BuiltinMemoryOrchestrator, HydratedMemoryContext, MemoryDiagnostics, hydrate_memory_context,
-    hydrate_memory_context_with_workspace_root, hydrate_stage_envelope, run_compact_stage,
+    hydrate_memory_context_with_workspace_root, hydrate_stage_envelope,
 };
 #[cfg(test)]
 pub use orchestrator::{MemoryOrchestratorTestFaults, ScopedMemoryOrchestratorTestFaults};
