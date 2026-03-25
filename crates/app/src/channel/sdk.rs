@@ -240,6 +240,14 @@ pub fn is_background_channel_surface_enabled(
 }
 
 fn find_channel_integration(id: &str) -> Option<&'static ChannelIntegrationDescriptor> {
+    let exact_integration = CHANNEL_INTEGRATIONS
+        .iter()
+        .find(|integration| integration.descriptor.id == id);
+
+    if let Some(integration) = exact_integration {
+        return Some(integration);
+    }
+
     let normalized_id = super::registry::normalize_channel_catalog_id(id)?;
 
     CHANNEL_INTEGRATIONS
