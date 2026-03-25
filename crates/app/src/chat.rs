@@ -1443,7 +1443,7 @@ fn cli_chat_live_surface_detail(snapshot: &CliChatLiveSurfaceSnapshot) -> String
         }
         ConversationTurnPhase::RequestingProvider => {
             let provider_round = snapshot.provider_round.unwrap_or(1);
-            format!("Requesting provider round {provider_round} and collecting live deltas.")
+            format!("Requesting provider round {provider_round} and waiting for the reply.")
         }
         ConversationTurnPhase::RunningTools => {
             let lane_label = snapshot
@@ -1543,7 +1543,7 @@ fn cli_chat_live_model_detail(snapshot: &CliChatLiveSurfaceSnapshot) -> String {
         ConversationTurnPhase::RequestingProvider
         | ConversationTurnPhase::RequestingFollowupProvider => {
             let provider_round = snapshot.provider_round.unwrap_or(1);
-            format!("streaming provider round {provider_round}")
+            format!("provider round {provider_round} in progress")
         }
         ConversationTurnPhase::RunningTools
         | ConversationTurnPhase::FinalizingReply
@@ -5573,9 +5573,16 @@ println!(\"{value}\");
         );
         assert!(
             lines.iter().any(|line| {
-                line.starts_with("[WARN] call model") && line.contains("streaming provider round 1")
+                line.starts_with("[WARN] call model")
+                    && line.contains("provider round 1 in progress")
             }),
             "live surface should keep the model step actively highlighted: {lines:#?}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains("streaming provider round 1")),
+            "live surface should avoid claiming streaming when the snapshot does not encode that capability: {lines:#?}"
         );
         assert!(
             lines.iter().any(|line| line == "draft preview"),
