@@ -1051,7 +1051,10 @@ fn canonicalize_provider_secret_env_reference(
         return;
     }
 
-    if inline_secret.is_some() {
+    if inline_secret
+        .as_ref()
+        .is_some_and(loongclaw_contracts::SecretRef::is_configured)
+    {
         *env_name = None;
         return;
     }
@@ -2673,6 +2676,26 @@ model = "gpt-5"
         assert!(!raw.contains("secret_env = \" WECOM_SECRET \""));
         assert!(!raw.contains("bot_id = \"${WECOM_BOT_ID}\""));
         assert!(!raw.contains("secret = \"${WECOM_SECRET}\""));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    #[cfg(feature = "config-toml")]
+    fn write_preserves_provider_env_binding_when_inline_secret_is_blank() {
+        let path = unique_config_path("loongclaw-config-runtime-blank-inline-provider-env");
+        let path_string = path.display().to_string();
+        let mut config = LoongClawConfig::default();
+        config.provider.api_key = Some(SecretRef::Inline("   ".to_owned()));
+        config.provider.api_key_env = Some("TEAM_OPENAI_KEY".to_owned());
+
+        write(Some(&path_string), &config, true).expect("config write should pass");
+
+        let raw = fs::read_to_string(&path).expect("read written config");
+        assert!(raw.contains("api_key"));
+        assert!(raw.contains("env = \"TEAM_OPENAI_KEY\""));
+        assert!(!raw.contains("api_key = \"   \""));
+        assert!(!raw.contains("api_key_env = \"TEAM_OPENAI_KEY\""));
 
         let _ = fs::remove_file(path);
     }

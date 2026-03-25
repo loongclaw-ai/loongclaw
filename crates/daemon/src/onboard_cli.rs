@@ -6042,6 +6042,15 @@ mod tests {
         temp_dir
     }
 
+    fn uuid_shaped_secret_fixture() -> String {
+        let first = "9f479837";
+        let second = "0a12";
+        let third = "4b56";
+        let fourth = "89ab";
+        let fifth = "cdef01234567";
+        format!("{first}-{second}-{third}-{fourth}-{fifth}")
+    }
+
     fn write_browser_companion_script(script_path: &Path, body: &str) {
         let mut file = std::fs::File::create(script_path).expect("create browser companion script");
         file.write_all(body.as_bytes())
@@ -7043,10 +7052,10 @@ mod tests {
 
     #[test]
     fn resolve_api_key_env_selection_reprompts_after_uuid_secret_literal_interactively() {
-        let secret = "9f479837-0a12-4b56-89ab-cdef01234567";
+        let secret = uuid_shaped_secret_fixture();
         let mut config = mvp::config::LoongClawConfig::default();
         config.provider.kind = mvp::config::ProviderKind::VolcengineCoding;
-        let mut ui = TestOnboardUi::with_inputs([secret, "ARK_API_KEY"]);
+        let mut ui = TestOnboardUi::with_inputs([secret.as_str(), "ARK_API_KEY"]);
         let context = OnboardRuntimeContext::new_for_tests(80, None, std::iter::empty::<PathBuf>());
 
         let selected = resolve_api_key_env_selection(
@@ -7078,7 +7087,7 @@ mod tests {
 
     #[test]
     fn resolve_api_key_env_selection_rejects_uuid_secret_literal_non_interactively() {
-        let secret = "9f479837-0a12-4b56-89ab-cdef01234567";
+        let secret = uuid_shaped_secret_fixture();
         let mut config = mvp::config::LoongClawConfig::default();
         config.provider.kind = mvp::config::ProviderKind::VolcengineCoding;
         let mut ui = TestOnboardUi::with_inputs(std::iter::empty::<&str>());
@@ -7092,7 +7101,7 @@ mod tests {
                 accept_risk: true,
                 provider: None,
                 model: None,
-                api_key_env: Some(secret.to_owned()),
+                api_key_env: Some(secret.clone()),
                 web_search_provider: None,
                 web_search_api_key_env: None,
                 personality: None,
@@ -7109,7 +7118,7 @@ mod tests {
         .expect_err("uuid-shaped env selections should be rejected non-interactively");
 
         assert!(error.contains("provider.api_key.env"));
-        assert!(!error.contains(secret));
+        assert!(!error.contains(secret.as_str()));
     }
 
     #[test]

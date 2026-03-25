@@ -1257,7 +1257,7 @@ fn ensure_provider_env_binding(
     if configured.is_some() {
         return false;
     }
-    if provider_credential_policy::provider_has_inline_credential(provider) {
+    if provider_has_non_env_credential(provider) {
         return false;
     }
 
@@ -1272,6 +1272,19 @@ fn ensure_provider_env_binding(
 
     fixes.push(format!("{label}={default_key}"));
     true
+}
+
+fn provider_has_non_env_credential(provider: &mvp::config::ProviderConfig) -> bool {
+    provider_secret_ref_is_non_env_credential(provider.api_key.as_ref())
+        || provider_secret_ref_is_non_env_credential(provider.oauth_access_token.as_ref())
+}
+
+fn provider_secret_ref_is_non_env_credential(secret_ref: Option<&SecretRef>) -> bool {
+    let Some(secret_ref) = secret_ref else {
+        return false;
+    };
+
+    secret_ref.is_configured() && secret_ref.explicit_env_name().is_none()
 }
 
 fn provider_transport_doctor_check(provider: &mvp::config::ProviderConfig) -> DoctorCheck {
@@ -2212,6 +2225,33 @@ mod tests {
             ))
         );
         assert_eq!(config.provider.api_key_env, None);
+        assert!(fixes.is_empty());
+    }
+
+    #[test]
+    fn provider_env_fix_does_not_overwrite_file_backed_api_key() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        let credential_path = PathBuf::from("/tmp/openai-api-key.txt");
+        config.provider.api_key = Some(loongclaw_contracts::SecretRef::File {
+            file: credential_path.clone(),
+        });
+        config.provider.api_key_env = None;
+        config.provider.oauth_access_token = None;
+        config.provider.oauth_access_token_env = None;
+
+        let mut fixes = Vec::new();
+        let changed = maybe_apply_provider_env_fix(&mut config, true, &mut fixes);
+
+        assert!(!changed);
+        assert_eq!(
+            config.provider.api_key,
+            Some(loongclaw_contracts::SecretRef::File {
+                file: credential_path,
+            })
+        );
+        assert_eq!(config.provider.oauth_access_token, None);
+        assert_eq!(config.provider.api_key_env, None);
+        assert_eq!(config.provider.oauth_access_token_env, None);
         assert!(fixes.is_empty());
     }
 

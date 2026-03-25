@@ -2056,7 +2056,7 @@ fn runtime_snapshot_migrate_provider_env_reference(
         return;
     }
 
-    if inline_secret.is_some() {
+    if inline_secret.as_ref().is_some_and(SecretRef::is_configured) {
         *env_name = None;
         return;
     }
@@ -2371,6 +2371,45 @@ mod runtime_snapshot_restore_spec_tests {
             profile.provider.oauth_access_token,
             Some(SecretRef::Env {
                 env: "INLINE_OPENAI_OAUTH_TOKEN".to_owned(),
+            })
+        );
+        assert_eq!(profile.provider.oauth_access_token_env, None);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn runtime_snapshot_restore_normalization_treats_blank_inline_secret_as_absent() {
+        let mut warnings = Vec::new();
+        let mut profile = mvp::config::ProviderProfileConfig {
+            default_for_kind: true,
+            provider: mvp::config::ProviderConfig {
+                kind: mvp::config::ProviderKind::Openai,
+                model: "openai/gpt-5.1-codex".to_owned(),
+                api_key: Some(SecretRef::Inline("   ".to_owned())),
+                api_key_env: Some("OPENAI_API_KEY".to_owned()),
+                oauth_access_token: Some(SecretRef::Inline("   ".to_owned())),
+                oauth_access_token_env: Some("OPENAI_CODEX_OAUTH_TOKEN".to_owned()),
+                ..Default::default()
+            },
+        };
+
+        normalize_runtime_snapshot_restore_provider_profile(
+            "openai-main",
+            &mut profile,
+            &mut warnings,
+        );
+
+        assert_eq!(
+            profile.provider.api_key,
+            Some(SecretRef::Env {
+                env: "OPENAI_API_KEY".to_owned(),
+            })
+        );
+        assert_eq!(profile.provider.api_key_env, None);
+        assert_eq!(
+            profile.provider.oauth_access_token,
+            Some(SecretRef::Env {
+                env: "OPENAI_CODEX_OAUTH_TOKEN".to_owned(),
             })
         );
         assert_eq!(profile.provider.oauth_access_token_env, None);
