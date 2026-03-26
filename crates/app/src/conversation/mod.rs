@@ -15,6 +15,7 @@ mod session_address;
 mod session_history;
 mod subagent;
 mod turn_budget;
+mod turn_checkpoint;
 mod turn_coordinator;
 pub mod turn_engine;
 mod turn_loop;
@@ -80,13 +81,13 @@ pub use subagent::{
     ConstrainedSubagentExecution, ConstrainedSubagentMode, ConstrainedSubagentTerminalReason,
 };
 pub use turn_budget::SafeLaneFailureRouteReason;
-pub use turn_coordinator::ConversationTurnCoordinator;
-pub(crate) use turn_coordinator::{TurnCheckpointDiagnostics, TurnCheckpointRecoveryAssessment};
-pub use turn_coordinator::{
+pub(crate) use turn_checkpoint::{TurnCheckpointDiagnostics, TurnCheckpointRecoveryAssessment};
+pub use turn_checkpoint::{
     TurnCheckpointTailRepairOutcome, TurnCheckpointTailRepairReason,
     TurnCheckpointTailRepairRuntimeProbe, TurnCheckpointTailRepairSource,
     TurnCheckpointTailRepairStatus,
 };
+pub use turn_coordinator::ConversationTurnCoordinator;
 pub use turn_engine::{
     AppToolDispatcher, DefaultAppToolDispatcher, NoopAppToolDispatcher, ProviderTurn, ToolDecision,
     ToolIntent, ToolOutcome, TurnEngine, TurnFailure, TurnFailureKind, TurnResult,
