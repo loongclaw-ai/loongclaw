@@ -2271,6 +2271,7 @@ async fn resolve_web_search_provider_selection(
     context: &OnboardRuntimeContext,
 ) -> CliResult<String> {
     let recommendation = resolve_web_search_provider_recommendation(options, config).await?;
+    let recommended_provider = recommendation.provider;
     let default_provider =
         resolve_effective_web_search_default_provider(options, config, &recommendation);
 
@@ -2280,15 +2281,18 @@ async fn resolve_web_search_provider_selection(
 
     let ordered_providers = recommendation.ordered_providers.as_slice();
     let screen_options =
-        build_web_search_provider_screen_options(config, ordered_providers, default_provider);
+        build_web_search_provider_screen_options(config, ordered_providers, recommended_provider);
     let select_options = select_options_from_screen_options(&screen_options);
-    let default_idx = screen_options.iter().position(|option| option.recommended);
+    let default_idx = screen_options
+        .iter()
+        .position(|option| option.key == default_provider);
 
     print_lines(
         ui,
         render_web_search_provider_selection_screen_lines_with_style(
             config,
             &recommendation,
+            default_provider,
             guided_prompt_path,
             context.render_width,
             true,
@@ -2401,7 +2405,24 @@ fn resolve_effective_web_search_default_provider(
     recommendation: &WebSearchProviderRecommendation,
 ) -> &'static str {
     if !options.non_interactive {
-        return recommendation.provider;
+        let current_provider = current_web_search_provider(config);
+        match recommendation.source {
+            WebSearchProviderRecommendationSource::ExplicitCli => {
+                return recommendation.provider;
+            }
+            WebSearchProviderRecommendationSource::ExplicitEnv => {
+                return recommendation.provider;
+            }
+            WebSearchProviderRecommendationSource::Configured => {
+                return current_provider;
+            }
+            WebSearchProviderRecommendationSource::DetectedCredential => {
+                return current_provider;
+            }
+            WebSearchProviderRecommendationSource::DetectedSignals => {
+                return current_provider;
+            }
+        }
     }
 
     match recommendation.source {
@@ -2431,6 +2452,23 @@ fn resolve_effective_web_search_default_provider(
     mvp::config::WEB_SEARCH_PROVIDER_DUCKDUCKGO
 }
 
+fn configured_default_web_search_provider(
+    config: &mvp::config::LoongClawConfig,
+) -> Option<&'static str> {
+    let configured_provider = config.tools.web_search.default_provider.as_str();
+    if configured_provider == mvp::config::DEFAULT_WEB_SEARCH_PROVIDER {
+        return None;
+    }
+
+    mvp::config::normalize_web_search_provider(configured_provider)
+}
+
+fn current_web_search_provider(config: &mvp::config::LoongClawConfig) -> &'static str {
+    let configured_provider = config.tools.web_search.default_provider.as_str();
+    let normalized_provider = mvp::config::normalize_web_search_provider(configured_provider);
+    normalized_provider.unwrap_or(mvp::config::DEFAULT_WEB_SEARCH_PROVIDER)
+}
+
 fn build_web_search_provider_recommendation(
     provider: &'static str,
     reason: String,
@@ -2453,11 +2491,7 @@ async fn resolve_web_search_provider_recommendation(
         return Ok(explicit_recommendation);
     }
 
-    if onboard_web_search_is_user_configured(config)
-        && let Some(configured_provider) = mvp::config::normalize_web_search_provider(
-            config.tools.web_search.default_provider.as_str(),
-        )
-    {
+    if let Some(configured_provider) = configured_default_web_search_provider(config) {
         let reason =
             "reusing the configured web search provider from the current starting point".to_owned();
         let source = WebSearchProviderRecommendationSource::Configured;
@@ -2474,10 +2508,6 @@ async fn resolve_web_search_provider_recommendation(
 
     let signals = detect_web_search_environment_signals().await;
     Ok(recommend_web_search_provider_from_signals(signals))
-}
-
-fn onboard_web_search_is_user_configured(config: &mvp::config::LoongClawConfig) -> bool {
-    config.tools.web_search != mvp::config::WebSearchToolConfig::default()
 }
 
 fn explicit_web_search_provider_override(
@@ -2789,6 +2819,7 @@ fn build_web_search_provider_screen_options(
 fn render_web_search_provider_selection_screen_lines_with_style(
     config: &mvp::config::LoongClawConfig,
     recommendation: &WebSearchProviderRecommendation,
+    default_provider: &str,
     guided_prompt_path: GuidedPromptPath,
     width: usize,
     color_enabled: bool,
@@ -2798,17 +2829,20 @@ fn render_web_search_provider_selection_screen_lines_with_style(
     let recommendation_order = render_web_search_provider_recommendation_order(
         recommendation.ordered_providers.as_slice(),
     );
-    let current_provider = mvp::config::normalize_web_search_provider(
-        config.tools.web_search.default_provider.as_str(),
-    )
-    .unwrap_or(mvp::config::DEFAULT_WEB_SEARCH_PROVIDER);
+    let current_provider = current_web_search_provider(config);
     let current_provider_label = web_search_provider_display_name(current_provider);
     let recommended_provider_label = web_search_provider_display_name(recommended_provider);
+    let default_provider_label = web_search_provider_display_name(default_provider);
     let options = build_web_search_provider_screen_options(
         config,
         recommendation.ordered_providers.as_slice(),
         recommended_provider,
     );
+    let default_footer_description = if default_provider == current_provider {
+        format!("keep {current_provider_label}")
+    } else {
+        format!("use {default_provider_label}")
+    };
 
     render_onboard_choice_screen(
         OnboardHeaderStyle::Compact,
@@ -2824,9 +2858,9 @@ fn render_web_search_provider_selection_screen_lines_with_style(
             "- this is a recommendation only; you can still choose any provider below".to_owned(),
         ],
         options,
-        vec![render_default_enter_choice_footer_line(format!(
-            "use {recommended_provider_label}"
-        ))],
+        vec![render_default_enter_choice_footer_line(
+            default_footer_description.as_str(),
+        )],
         true,
         color_enabled,
     )
@@ -7601,6 +7635,88 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolve_web_search_provider_recommendation_detects_unique_ready_credential_without_explicit_default_provider()
+     {
+        let options = OnboardCommandOptions {
+            output: None,
+            force: false,
+            non_interactive: false,
+            accept_risk: true,
+            provider: None,
+            model: None,
+            api_key_env: None,
+            web_search_provider: None,
+            web_search_api_key_env: None,
+            personality: None,
+            memory_profile: None,
+            system_prompt: None,
+            skip_model_probe: false,
+        };
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.tools.web_search.tavily_api_key = Some("${TAVILY_API_KEY}".to_owned());
+
+        let mut env = ScopedEnv::new();
+        env.set("TAVILY_API_KEY", "tavily-test-token");
+
+        let recommendation = resolve_web_search_provider_recommendation(&options, &config)
+            .await
+            .expect("resolve recommendation");
+
+        assert_eq!(
+            recommendation.provider,
+            mvp::config::WEB_SEARCH_PROVIDER_TAVILY
+        );
+        assert_eq!(
+            recommendation.source,
+            WebSearchProviderRecommendationSource::DetectedCredential
+        );
+        assert_eq!(
+            recommendation.ordered_providers.first().copied(),
+            Some(mvp::config::WEB_SEARCH_PROVIDER_TAVILY)
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolve_web_search_provider_recommendation_keeps_explicitly_configured_default_provider()
+     {
+        let options = OnboardCommandOptions {
+            output: None,
+            force: false,
+            non_interactive: false,
+            accept_risk: true,
+            provider: None,
+            model: None,
+            api_key_env: None,
+            web_search_provider: None,
+            web_search_api_key_env: None,
+            personality: None,
+            memory_profile: None,
+            system_prompt: None,
+            skip_model_probe: false,
+        };
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.tools.web_search.default_provider =
+            mvp::config::WEB_SEARCH_PROVIDER_TAVILY.to_owned();
+
+        let recommendation = resolve_web_search_provider_recommendation(&options, &config)
+            .await
+            .expect("resolve recommendation");
+
+        assert_eq!(
+            recommendation.provider,
+            mvp::config::WEB_SEARCH_PROVIDER_TAVILY
+        );
+        assert_eq!(
+            recommendation.source,
+            WebSearchProviderRecommendationSource::Configured
+        );
+        assert_eq!(
+            recommendation.ordered_providers.first().copied(),
+            Some(mvp::config::WEB_SEARCH_PROVIDER_TAVILY)
+        );
+    }
+
     #[test]
     fn recommend_web_search_provider_from_available_credentials_returns_none_when_multiple_ready() {
         let mut config = mvp::config::LoongClawConfig::default();
@@ -7657,6 +7773,51 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolve_web_search_provider_selection_keeps_current_provider_on_blank_interactive_input_when_recommendation_differs()
+     {
+        let options = OnboardCommandOptions {
+            output: None,
+            force: false,
+            non_interactive: false,
+            accept_risk: true,
+            provider: None,
+            model: None,
+            api_key_env: None,
+            web_search_provider: None,
+            web_search_api_key_env: None,
+            personality: None,
+            memory_profile: None,
+            system_prompt: None,
+            skip_model_probe: false,
+        };
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.tools.web_search.tavily_api_key = Some("${TAVILY_API_KEY}".to_owned());
+
+        let mut env = ScopedEnv::new();
+        env.set("TAVILY_API_KEY", "tavily-test-token");
+
+        let mut ui = TestOnboardUi::with_inputs([""]);
+        let render_width = 80;
+        let temp_dirs = std::iter::empty::<PathBuf>();
+        let context = OnboardRuntimeContext::new_for_tests(render_width, None, temp_dirs);
+        let selected = resolve_web_search_provider_selection(
+            &options,
+            &config,
+            GuidedPromptPath::NativePromptPack,
+            &mut ui,
+            &context,
+        )
+        .await
+        .expect("blank interactive input should keep the current web search provider");
+
+        assert_eq!(
+            selected,
+            mvp::config::WEB_SEARCH_PROVIDER_DUCKDUCKGO,
+            "interactive enter should preserve the current provider even when another provider is recommended"
+        );
+    }
+
     #[test]
     fn resolve_effective_web_search_default_provider_keeps_explicit_non_interactive_provider() {
         let options = OnboardCommandOptions {
@@ -7688,6 +7849,41 @@ mod tests {
             selected,
             mvp::config::WEB_SEARCH_PROVIDER_TAVILY,
             "non-interactive onboarding should keep an explicit web-search provider choice instead of silently falling back"
+        );
+    }
+
+    #[test]
+    fn resolve_effective_web_search_default_provider_keeps_current_interactive_provider_for_detected_recommendations()
+     {
+        let options = OnboardCommandOptions {
+            output: None,
+            force: false,
+            non_interactive: false,
+            accept_risk: true,
+            provider: None,
+            model: None,
+            api_key_env: None,
+            web_search_provider: None,
+            web_search_api_key_env: None,
+            personality: None,
+            memory_profile: None,
+            system_prompt: None,
+            skip_model_probe: false,
+        };
+        let config = mvp::config::LoongClawConfig::default();
+        let recommendation = build_web_search_provider_recommendation(
+            mvp::config::WEB_SEARCH_PROVIDER_TAVILY,
+            "domestic locale or timezone was detected".to_owned(),
+            WebSearchProviderRecommendationSource::DetectedSignals,
+        );
+
+        let selected =
+            resolve_effective_web_search_default_provider(&options, &config, &recommendation);
+
+        assert_eq!(
+            selected,
+            mvp::config::WEB_SEARCH_PROVIDER_DUCKDUCKGO,
+            "interactive onboarding should keep the current draft provider on enter even when a different provider is recommended"
         );
     }
 
@@ -7855,6 +8051,7 @@ mod tests {
         let lines = render_web_search_provider_selection_screen_lines_with_style(
             &config,
             &recommendation,
+            mvp::config::WEB_SEARCH_PROVIDER_DUCKDUCKGO,
             GuidedPromptPath::NativePromptPack,
             80,
             false,
@@ -7873,8 +8070,10 @@ mod tests {
             "the onboarding screen should make it explicit that the recommendation does not remove user choice: {lines:#?}"
         );
         assert!(
-            lines.iter().any(|line| line == "press Enter to use Tavily"),
-            "the web search selection footer should describe the Enter behavior directly instead of rendering an awkward default token: {lines:#?}"
+            lines
+                .iter()
+                .any(|line| line == "press Enter to keep DuckDuckGo"),
+            "the web search selection footer should describe the actual Enter default instead of the recommendation: {lines:#?}"
         );
         assert!(
             lines.iter().all(|line| !line.contains("default Enter")),
