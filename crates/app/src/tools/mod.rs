@@ -3963,7 +3963,10 @@ mod tests {
         assert_eq!(entry.required_fields, vec!["url".to_owned()]);
         assert_eq!(
             entry.required_field_groups,
-            vec![vec!["content".to_owned()], vec!["content_path".to_owned()]]
+            vec![
+                vec!["url".to_owned(), "content".to_owned()],
+                vec!["url".to_owned(), "content_path".to_owned()],
+            ]
         );
     }
 
