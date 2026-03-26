@@ -2824,10 +2824,9 @@ fn render_web_search_provider_selection_screen_lines_with_style(
             "- this is a recommendation only; you can still choose any provider below".to_owned(),
         ],
         options,
-        vec![render_default_choice_footer_line(
-            "Enter",
-            format!("use {recommended_provider_label}").as_str(),
-        )],
+        vec![render_default_enter_choice_footer_line(format!(
+            "use {recommended_provider_label}"
+        ))],
         true,
         color_enabled,
     )
@@ -4280,6 +4279,10 @@ pub(crate) fn render_onboard_option_lines(
 
 pub(crate) fn render_default_choice_footer_line(key: &str, description: &str) -> String {
     format!("press Enter to use default {key}, {description}")
+}
+
+fn render_default_enter_choice_footer_line(description: impl AsRef<str>) -> String {
+    format!("press Enter to {}", description.as_ref())
 }
 
 fn render_prompt_with_default_text(label: &str, default: &str) -> String {
@@ -7868,6 +7871,14 @@ mod tests {
                 line.contains("recommendation only") && line.contains("choose any provider")
             }),
             "the onboarding screen should make it explicit that the recommendation does not remove user choice: {lines:#?}"
+        );
+        assert!(
+            lines.iter().any(|line| line == "press Enter to use Tavily"),
+            "the web search selection footer should describe the Enter behavior directly instead of rendering an awkward default token: {lines:#?}"
+        );
+        assert!(
+            lines.iter().all(|line| !line.contains("default Enter")),
+            "the web search selection footer should not render the literal phrase 'default Enter': {lines:#?}"
         );
     }
 
