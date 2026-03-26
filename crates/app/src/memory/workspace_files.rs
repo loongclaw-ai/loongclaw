@@ -200,7 +200,14 @@ fn collect_document_if_present(
 pub(crate) fn workspace_memory_label(workspace_root: &Path, path: &Path) -> String {
     let relative_path = path.strip_prefix(workspace_root).ok();
     let display_path = relative_path.unwrap_or(path);
-    display_path.display().to_string().replace('\\', "/")
+    let raw_label = display_path.display().to_string();
+
+    if cfg!(windows) {
+        let normalized_label = raw_label.replace('\\', "/");
+        return normalized_label;
+    }
+
+    raw_label
 }
 
 fn parse_daily_log_date(path: &Path) -> Option<NaiveDate> {
@@ -290,6 +297,23 @@ mod tests {
 
         assert_eq!(documents.len(), 1);
         assert_eq!(documents[0].label, "workspace/MEMORY.md");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_memory_label_preserves_backslashes_in_unix_file_names() {
+        let temp_dir = tempdir().expect("tempdir");
+        let workspace_root = temp_dir.path();
+        let memory_dir = workspace_root.join("memory");
+        let file_name = "2026-03-26\\notes.md";
+        let daily_log_path = memory_dir.join(file_name);
+
+        std::fs::create_dir_all(&memory_dir).expect("create memory dir");
+        std::fs::write(&daily_log_path, "notes").expect("write daily log");
+
+        let label = workspace_memory_label(workspace_root, daily_log_path.as_path());
+
+        assert_eq!(label, format!("memory/{file_name}"));
     }
 
     #[cfg(unix)]
