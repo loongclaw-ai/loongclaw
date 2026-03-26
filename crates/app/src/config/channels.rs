@@ -738,11 +738,11 @@ pub struct WebhookAccountConfig {
     pub account_id: Option<String>,
     #[serde(default)]
     pub endpoint_url: Option<SecretRef>,
-    #[serde(default = "default_webhook_endpoint_url_env")]
+    #[serde(default)]
     pub endpoint_url_env: Option<String>,
     #[serde(default)]
     pub auth_token: Option<SecretRef>,
-    #[serde(default = "default_webhook_auth_token_env")]
+    #[serde(default)]
     pub auth_token_env: Option<String>,
     #[serde(default)]
     pub auth_header_name: Option<String>,
@@ -756,7 +756,7 @@ pub struct WebhookAccountConfig {
     pub public_base_url: Option<String>,
     #[serde(default)]
     pub signing_secret: Option<SecretRef>,
-    #[serde(default = "default_webhook_signing_secret_env")]
+    #[serde(default)]
     pub signing_secret_env: Option<String>,
 }
 
@@ -7626,6 +7626,39 @@ mod tests {
         assert_eq!(backup.auth_token_prefix, "Token ");
         assert_eq!(backup.payload_format, WebhookPayloadFormat::JsonText);
         assert_eq!(backup.payload_text_field, "backup_message");
+    }
+
+    #[test]
+    fn webhook_account_without_env_overrides_inherits_top_level_env_names() {
+        let config_value = json!({
+            "enabled": true,
+            "endpoint_url_env": "ACME_WEBHOOK_ENDPOINT",
+            "auth_token_env": "ACME_WEBHOOK_AUTH_TOKEN",
+            "signing_secret_env": "ACME_WEBHOOK_SIGNING_SECRET",
+            "default_account": "Ops",
+            "accounts": {
+                "Ops": {}
+            }
+        });
+        let config: WebhookChannelConfig =
+            serde_json::from_value(config_value).expect("deserialize webhook multi-account config");
+
+        let resolved = config
+            .resolve_account(None)
+            .expect("resolve default webhook account");
+
+        assert_eq!(
+            resolved.endpoint_url_env.as_deref(),
+            Some("ACME_WEBHOOK_ENDPOINT")
+        );
+        assert_eq!(
+            resolved.auth_token_env.as_deref(),
+            Some("ACME_WEBHOOK_AUTH_TOKEN")
+        );
+        assert_eq!(
+            resolved.signing_secret_env.as_deref(),
+            Some("ACME_WEBHOOK_SIGNING_SECRET")
+        );
     }
 
     #[test]

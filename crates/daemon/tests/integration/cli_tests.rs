@@ -1483,6 +1483,33 @@ fn webhook_send_cli_accepts_config_backed_endpoint_without_target() {
 }
 
 #[test]
+fn webhook_send_cli_accepts_explicit_endpoint_target_override() {
+    let cli = try_parse_cli([
+        "loongclaw",
+        channel_send_command("webhook"),
+        "--target",
+        "https://example.test/webhook",
+        "--text",
+        "hello webhook",
+    ])
+    .expect("webhook send CLI should parse with an explicit endpoint override");
+
+    match cli.command {
+        Some(Commands::WebhookSend {
+            target,
+            target_kind,
+            text,
+            ..
+        }) => {
+            assert_eq!(target.as_deref(), Some("https://example.test/webhook"));
+            assert_eq!(target_kind, channel_default_send_target_kind("webhook"));
+            assert_eq!(text, "hello webhook");
+        }
+        other => panic!("unexpected command parse result: {other:?}"),
+    }
+}
+
+#[test]
 fn webhook_send_cli_rejects_non_endpoint_target_kind() {
     let error = try_parse_cli([
         "loongclaw",

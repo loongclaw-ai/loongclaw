@@ -6,7 +6,10 @@ use crate::{
     config::{ResolvedWebhookChannelConfig, WebhookPayloadFormat},
 };
 
-use super::ChannelOutboundTargetKind;
+use super::{
+    ChannelOutboundTargetKind,
+    http::{build_outbound_http_client, response_body_detail},
+};
 
 const WEBHOOK_JSON_CONTENT_TYPE: &str = "application/json";
 const WEBHOOK_TEXT_CONTENT_TYPE: &str = "text/plain; charset=utf-8";
@@ -28,7 +31,7 @@ pub(super) async fn run_webhook_send(
     let request_body = build_webhook_request_body(resolved, text)?;
     let auth_header = build_webhook_auth_header(resolved)?;
 
-    let client = reqwest::Client::new();
+    let client = build_outbound_http_client("webhook send")?;
     let mut request = client
         .post(request_url)
         .header(CONTENT_TYPE, request_body.content_type)
@@ -130,7 +133,20 @@ fn build_webhook_json_payload(
 fn build_webhook_auth_header(
     resolved: &ResolvedWebhookChannelConfig,
 ) -> CliResult<Option<(HeaderName, HeaderValue)>> {
-    let Some(auth_token) = resolved.auth_token() else {
+    let auth_token = resolved.auth_token();
+    let auth_token = auth_token.as_deref();
+    let auth_header_name = resolved.auth_header_name.as_str();
+    let auth_token_prefix = resolved.auth_token_prefix.as_str();
+
+    build_webhook_auth_header_from_parts(auth_token, auth_header_name, auth_token_prefix)
+}
+
+pub(crate) fn build_webhook_auth_header_from_parts(
+    auth_token: Option<&str>,
+    auth_header_name: &str,
+    auth_token_prefix: &str,
+) -> CliResult<Option<(HeaderName, HeaderValue)>> {
+    let Some(auth_token) = auth_token else {
         return Ok(None);
     };
 
@@ -139,14 +155,14 @@ fn build_webhook_auth_header(
         return Err("webhook auth_token is empty".to_owned());
     }
 
-    let header_name_raw = resolved.auth_header_name.trim();
+    let header_name_raw = auth_header_name.trim();
     if header_name_raw.is_empty() {
         return Err("webhook auth_header_name is empty".to_owned());
     }
 
     let header_name = HeaderName::from_bytes(header_name_raw.as_bytes())
         .map_err(|error| format!("webhook auth_header_name is invalid: {error}"))?;
-    let header_value_raw = format!("{}{}", resolved.auth_token_prefix, trimmed_token);
+    let header_value_raw = format!("{auth_token_prefix}{trimmed_token}");
     let header_value = HeaderValue::from_str(header_value_raw.as_str())
         .map_err(|error| format!("webhook auth header value is invalid: {error}"))?;
 
@@ -163,12 +179,7 @@ async fn ensure_webhook_success(response: reqwest::Response) -> CliResult<()> {
         .text()
         .await
         .map_err(|error| format!("read webhook error response failed: {error}"))?;
-    let trimmed_body = body.trim();
-    let detail = if trimmed_body.is_empty() {
-        "empty response body".to_owned()
-    } else {
-        trimmed_body.to_owned()
-    };
+    let detail = response_body_detail(body.as_str());
 
     Err(format!(
         "webhook send failed with status {}: {detail}",
@@ -230,6 +241,34 @@ mod tests {
 
         assert!(
             error.contains("webhook auth_header_name is invalid"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn build_webhook_auth_header_rejects_invalid_header_value() {
+        let mut resolved = test_resolved_webhook_config(WebhookPayloadFormat::JsonText);
+        let auth_token =
+            serde_json::from_value(serde_json::json!("token-123")).expect("deserialize auth token");
+        resolved.auth_token = Some(auth_token);
+        resolved.auth_token_prefix = "Bearer\n".to_owned();
+
+        let error =
+            build_webhook_auth_header(&resolved).expect_err("invalid header value should fail");
+
+        assert!(
+            error.contains("webhook auth header value is invalid"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn build_webhook_auth_header_from_parts_rejects_blank_auth_token() {
+        let error = build_webhook_auth_header_from_parts(Some("   "), "Authorization", "Bearer ")
+            .expect_err("blank auth token should fail");
+
+        assert!(
+            error.contains("webhook auth_token is empty"),
             "unexpected error: {error}"
         );
     }
