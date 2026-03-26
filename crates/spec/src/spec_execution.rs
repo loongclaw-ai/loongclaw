@@ -807,13 +807,15 @@ where
 
     for (raw_name, raw_value) in env_vars {
         let name = raw_name.to_string_lossy().into_owned();
-        let name_is_blank = name.trim().is_empty();
+        let trimmed_name = name.trim();
+        let name_is_blank = trimmed_name.is_empty();
         if name_is_blank {
             continue;
         }
 
-        let value = raw_value.to_string_lossy();
-        let value_is_blank = value.trim().is_empty();
+        let value = raw_value.to_string_lossy().into_owned();
+        let trimmed_value = value.trim();
+        let value_is_blank = trimmed_value.is_empty();
         if value_is_blank {
             continue;
         }
@@ -1670,15 +1672,17 @@ mod setup_readiness_context_tests {
         );
     }
 
-    #[test]
-    fn collect_verified_env_var_names_preserves_non_blank_original_names() {
-        let env_vars = vec![(OsString::from(" TAVILY_API_KEY"), OsString::from("secret"))];
+    fn collect_verified_env_var_names_preserves_non_blank_name_spelling() {
+        let env_vars = vec![
+            (OsString::from(" TAVILY_API_KEY"), OsString::from("secret")),
+            (OsString::from("TAVILY_API_KEY "), OsString::from("secret")),
+        ];
 
         let verified_env_vars = collect_verified_env_var_names(env_vars);
 
         assert_eq!(
             verified_env_vars,
-            BTreeSet::from([" TAVILY_API_KEY".to_owned()])
+            BTreeSet::from([" TAVILY_API_KEY".to_owned(), "TAVILY_API_KEY ".to_owned(),])
         );
     }
 

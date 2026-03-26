@@ -1149,6 +1149,8 @@ async fn execute_spec_skips_blocked_plugins_when_bridge_enforcement_is_disabled(
 async fn execute_spec_surfaces_setup_incomplete_plugins_without_marking_them_ready() {
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    let _env_guard = MigrationEnvironmentGuard::set(&[("TAVILY_API_KEY", None)]);
+
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock should be monotonic")
