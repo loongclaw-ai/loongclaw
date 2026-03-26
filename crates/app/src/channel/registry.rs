@@ -4449,6 +4449,20 @@ fn redact_endpoint_status_url(raw: Option<String>) -> Option<String> {
     let raw = raw?;
     let parsed = reqwest::Url::parse(raw.as_str()).ok()?;
     let mut redacted = parsed;
+    let _ = redacted.set_username("");
+    let _ = redacted.set_password(None);
+    redacted.set_query(None);
+    redacted.set_fragment(None);
+    Some(redacted.to_string())
+}
+
+fn redact_generic_webhook_status_url(raw: Option<String>) -> Option<String> {
+    let raw = raw?;
+    let parsed = reqwest::Url::parse(raw.as_str()).ok()?;
+    let mut redacted = parsed;
+    let _ = redacted.set_username("");
+    let _ = redacted.set_password(None);
+    redacted.set_path("/");
     redacted.set_query(None);
     redacted.set_fragment(None);
     Some(redacted.to_string())
@@ -4857,17 +4871,13 @@ fn build_webhook_snapshot_for_account(
     }
 
     let auth_token = resolved.auth_token();
-    if auth_token.is_some() {
-        let auth_header_name = resolved.auth_header_name.trim();
-        if auth_header_name.is_empty() {
-            send_issues.push("auth_header_name is empty".to_owned());
-        } else {
-            let header_name_parse =
-                reqwest::header::HeaderName::from_bytes(auth_header_name.as_bytes());
-            if let Err(error) = header_name_parse {
-                send_issues.push(format!("auth_header_name is invalid: {error}"));
-            }
-        }
+    let auth_validation = super::webhook::build_webhook_auth_header_from_parts(
+        auth_token.as_deref(),
+        resolved.auth_header_name.as_str(),
+        resolved.auth_token_prefix.as_str(),
+    );
+    if let Err(error) = auth_validation {
+        send_issues.push(error);
     }
 
     let payload_text_field = resolved.payload_text_field.trim();
@@ -4946,7 +4956,7 @@ fn build_webhook_snapshot_for_account(
         transport: descriptor.transport,
         compiled,
         enabled: resolved.enabled,
-        api_base_url: redact_endpoint_status_url(endpoint_url),
+        api_base_url: redact_generic_webhook_status_url(endpoint_url),
         notes,
         operations: vec![send_operation, serve_operation],
     }
@@ -8582,6 +8592,57 @@ mod tests {
         assert_eq!(
             synology_chat.api_base_url.as_deref(),
             Some("https://chat.example.test/webapi/entry.cgi")
+        );
+    }
+
+    #[test]
+    fn channel_status_snapshots_redact_generic_webhook_path_segments() {
+        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+            "webhook": {
+                "enabled": true,
+                "endpoint_url": "https://hooks.example.test/customer/secret-token/send?trace=secret"
+            }
+        }))
+        .expect("deserialize generic webhook config");
+
+        let webhook = channel_status_snapshots(&config)
+            .into_iter()
+            .find(|snapshot| snapshot.id == "webhook")
+            .expect("generic webhook snapshot");
+
+        assert_eq!(
+            webhook.api_base_url.as_deref(),
+            Some("https://hooks.example.test/")
+        );
+    }
+
+    #[test]
+    fn webhook_status_snapshot_rejects_invalid_auth_header_values() {
+        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+            "webhook": {
+                "enabled": true,
+                "endpoint_url": "https://hooks.example.test/send",
+                "auth_token": "token-123",
+                "auth_token_prefix": "Bearer\n"
+            }
+        }))
+        .expect("deserialize generic webhook config");
+
+        let webhook = channel_status_snapshots(&config)
+            .into_iter()
+            .find(|snapshot| snapshot.id == "webhook")
+            .expect("generic webhook snapshot");
+        let send = webhook
+            .operation(CHANNEL_OPERATION_SEND_ID)
+            .expect("webhook send operation");
+
+        assert_eq!(send.health, ChannelOperationHealth::Misconfigured);
+        assert!(
+            send.issues
+                .iter()
+                .any(|issue| issue.contains("auth header value is invalid")),
+            "unexpected issues: {:?}",
+            send.issues
         );
     }
 
