@@ -14,22 +14,32 @@ pub use audit::{AuditConfig, AuditMode};
 pub use channels::{
     ChannelAcpConfig, ChannelDefaultAccountSelection, ChannelDefaultAccountSelectionSource,
     ChannelDescriptor, ChannelResolvedAccountRoute, ChannelRuntimeKind, CliChannelConfig,
-    DiscordAccountConfig, DiscordChannelConfig, FeishuAccountConfig, FeishuChannelConfig,
-    FeishuChannelServeMode, FeishuDomain, MatrixAccountConfig, MatrixChannelConfig,
-    ResolvedDiscordChannelConfig, ResolvedFeishuChannelConfig, ResolvedMatrixChannelConfig,
-    ResolvedSignalChannelConfig, ResolvedSlackChannelConfig, ResolvedTelegramChannelConfig,
-    ResolvedWecomChannelConfig, ResolvedWhatsappChannelConfig, SignalAccountConfig,
-    SignalChannelConfig, SlackAccountConfig, SlackChannelConfig, TelegramAccountConfig,
-    TelegramChannelConfig, TelegramStreamingMode, WecomAccountConfig, WecomChannelConfig,
-    WhatsappAccountConfig, WhatsappChannelConfig, channel_descriptor, service_channel_descriptors,
+    DingtalkAccountConfig, DingtalkChannelConfig, DiscordAccountConfig, DiscordChannelConfig,
+    FeishuAccountConfig, FeishuChannelConfig, FeishuChannelServeMode, FeishuDomain,
+    GoogleChatAccountConfig, GoogleChatChannelConfig, LineAccountConfig, LineChannelConfig,
+    MatrixAccountConfig, MatrixChannelConfig, MattermostAccountConfig, MattermostChannelConfig,
+    NextcloudTalkAccountConfig, NextcloudTalkChannelConfig, ResolvedDingtalkChannelConfig,
+    ResolvedDiscordChannelConfig, ResolvedFeishuChannelConfig, ResolvedGoogleChatChannelConfig,
+    ResolvedLineChannelConfig, ResolvedMatrixChannelConfig, ResolvedMattermostChannelConfig,
+    ResolvedNextcloudTalkChannelConfig, ResolvedSignalChannelConfig, ResolvedSlackChannelConfig,
+    ResolvedSynologyChatChannelConfig, ResolvedTelegramChannelConfig, ResolvedWecomChannelConfig,
+    ResolvedWhatsappChannelConfig, SignalAccountConfig, SignalChannelConfig, SlackAccountConfig,
+    SlackChannelConfig, SynologyChatAccountConfig, SynologyChatChannelConfig,
+    TelegramAccountConfig, TelegramChannelConfig, TelegramStreamingMode, WecomAccountConfig,
+    WecomChannelConfig, WhatsappAccountConfig, WhatsappChannelConfig, channel_descriptor,
+    service_channel_descriptors,
 };
 #[allow(unused_imports)]
 pub(crate) use channels::{
-    DISCORD_BOT_TOKEN_ENV, FEISHU_APP_ID_ENV, FEISHU_APP_SECRET_ENV, FEISHU_ENCRYPT_KEY_ENV,
-    FEISHU_VERIFICATION_TOKEN_ENV, MATRIX_ACCESS_TOKEN_ENV, SIGNAL_ACCOUNT_ENV,
-    SIGNAL_SERVICE_URL_ENV, SLACK_BOT_TOKEN_ENV, TELEGRAM_BOT_TOKEN_ENV, WECOM_BOT_ID_ENV,
-    WECOM_SECRET_ENV, WHATSAPP_ACCESS_TOKEN_ENV, WHATSAPP_APP_SECRET_ENV,
-    WHATSAPP_PHONE_NUMBER_ID_ENV, WHATSAPP_VERIFY_TOKEN_ENV, normalize_channel_account_id,
+    DINGTALK_SECRET_ENV, DINGTALK_WEBHOOK_URL_ENV, DISCORD_BOT_TOKEN_ENV, FEISHU_APP_ID_ENV,
+    FEISHU_APP_SECRET_ENV, FEISHU_ENCRYPT_KEY_ENV, FEISHU_VERIFICATION_TOKEN_ENV,
+    GOOGLE_CHAT_WEBHOOK_URL_ENV, LINE_CHANNEL_ACCESS_TOKEN_ENV, LINE_CHANNEL_SECRET_ENV,
+    MATRIX_ACCESS_TOKEN_ENV, MATTERMOST_BOT_TOKEN_ENV, MATTERMOST_SERVER_URL_ENV,
+    NEXTCLOUD_TALK_SERVER_URL_ENV, NEXTCLOUD_TALK_SHARED_SECRET_ENV, SIGNAL_ACCOUNT_ENV,
+    SIGNAL_SERVICE_URL_ENV, SLACK_BOT_TOKEN_ENV, SYNOLOGY_CHAT_INCOMING_URL_ENV,
+    SYNOLOGY_CHAT_TOKEN_ENV, TELEGRAM_BOT_TOKEN_ENV, WECOM_BOT_ID_ENV, WECOM_SECRET_ENV,
+    WHATSAPP_ACCESS_TOKEN_ENV, WHATSAPP_APP_SECRET_ENV, WHATSAPP_PHONE_NUMBER_ID_ENV,
+    WHATSAPP_VERIFY_TOKEN_ENV, normalize_channel_account_id,
 };
 #[allow(unused_imports)]
 pub use conversation::{ConversationConfig, ConversationTurnLoopConfig};
@@ -150,17 +160,54 @@ mod tests {
         assert_eq!(slack.runtime_kind, ChannelRuntimeKind::Service);
         assert_eq!(slack.serve_subcommand, None);
 
+        let line = channel_descriptor("line").expect("line descriptor");
+        assert_eq!(line.id, "line");
+        assert_eq!(line.surface_label, "line channel");
+        assert_eq!(line.runtime_kind, ChannelRuntimeKind::Service);
+        assert_eq!(line.serve_subcommand, None);
+
+        let dingtalk = channel_descriptor("dingtalk").expect("dingtalk descriptor");
+        assert_eq!(dingtalk.id, "dingtalk");
+        assert_eq!(dingtalk.surface_label, "dingtalk channel");
+        assert_eq!(dingtalk.runtime_kind, ChannelRuntimeKind::Service);
+        assert_eq!(dingtalk.serve_subcommand, None);
+
         let whatsapp = channel_descriptor("whatsapp").expect("whatsapp descriptor");
         assert_eq!(whatsapp.id, "whatsapp");
         assert_eq!(whatsapp.surface_label, "whatsapp channel");
         assert_eq!(whatsapp.runtime_kind, ChannelRuntimeKind::Service);
         assert_eq!(whatsapp.serve_subcommand, None);
 
+        let google_chat = channel_descriptor("google-chat").expect("google chat descriptor");
+        assert_eq!(google_chat.id, "google-chat");
+        assert_eq!(google_chat.surface_label, "google chat channel");
+        assert_eq!(google_chat.runtime_kind, ChannelRuntimeKind::Service);
+        assert_eq!(google_chat.serve_subcommand, None);
+
         let signal = channel_descriptor("signal").expect("signal descriptor");
         assert_eq!(signal.id, "signal");
         assert_eq!(signal.surface_label, "signal channel");
         assert_eq!(signal.runtime_kind, ChannelRuntimeKind::Service);
         assert_eq!(signal.serve_subcommand, None);
+
+        let mattermost = channel_descriptor("mattermost").expect("mattermost descriptor");
+        assert_eq!(mattermost.id, "mattermost");
+        assert_eq!(mattermost.surface_label, "mattermost channel");
+        assert_eq!(mattermost.runtime_kind, ChannelRuntimeKind::Service);
+        assert_eq!(mattermost.serve_subcommand, None);
+
+        let nextcloud_talk =
+            channel_descriptor("nextcloud-talk").expect("nextcloud talk descriptor");
+        assert_eq!(nextcloud_talk.id, "nextcloud-talk");
+        assert_eq!(nextcloud_talk.surface_label, "nextcloud talk channel");
+        assert_eq!(nextcloud_talk.runtime_kind, ChannelRuntimeKind::Service);
+        assert_eq!(nextcloud_talk.serve_subcommand, None);
+
+        let synology_chat = channel_descriptor("synology-chat").expect("synology chat descriptor");
+        assert_eq!(synology_chat.id, "synology-chat");
+        assert_eq!(synology_chat.surface_label, "synology chat channel");
+        assert_eq!(synology_chat.runtime_kind, ChannelRuntimeKind::Service);
+        assert_eq!(synology_chat.serve_subcommand, None);
 
         assert!(channel_descriptor("unknown").is_none());
     }
@@ -177,20 +224,52 @@ mod tests {
         config.wecom.enabled = true;
         config.discord.enabled = true;
         config.slack.enabled = true;
+        config.line.enabled = true;
+        config.dingtalk.enabled = true;
         config.whatsapp.enabled = true;
+        config.google_chat.enabled = true;
         config.signal.enabled = true;
+        config.mattermost.enabled = true;
+        config.nextcloud_talk.enabled = true;
+        config.synology_chat.enabled = true;
 
         assert_eq!(
             config.enabled_channel_ids(),
             vec![
-                "cli", "telegram", "feishu", "matrix", "wecom", "discord", "slack", "whatsapp",
+                "cli",
+                "telegram",
+                "feishu",
+                "matrix",
+                "wecom",
+                "discord",
+                "slack",
+                "line",
+                "dingtalk",
+                "whatsapp",
+                "google-chat",
                 "signal",
+                "mattermost",
+                "nextcloud-talk",
+                "synology-chat",
             ]
         );
         assert_eq!(
             config.enabled_service_channel_ids(),
             vec![
-                "telegram", "feishu", "matrix", "wecom", "discord", "slack", "whatsapp", "signal",
+                "telegram",
+                "feishu",
+                "matrix",
+                "wecom",
+                "discord",
+                "slack",
+                "line",
+                "dingtalk",
+                "whatsapp",
+                "google-chat",
+                "signal",
+                "mattermost",
+                "nextcloud-talk",
+                "synology-chat",
             ]
         );
 
@@ -201,7 +280,20 @@ mod tests {
         assert_eq!(
             service_ids,
             vec![
-                "telegram", "feishu", "matrix", "wecom", "discord", "slack", "whatsapp", "signal",
+                "telegram",
+                "feishu",
+                "matrix",
+                "wecom",
+                "discord",
+                "slack",
+                "line",
+                "dingtalk",
+                "whatsapp",
+                "google-chat",
+                "signal",
+                "mattermost",
+                "nextcloud-talk",
+                "synology-chat",
             ]
         );
     }
@@ -224,7 +316,20 @@ mod tests {
         assert_eq!(
             service_ids,
             vec![
-                "telegram", "feishu", "matrix", "wecom", "discord", "slack", "whatsapp", "signal",
+                "telegram",
+                "feishu",
+                "matrix",
+                "wecom",
+                "discord",
+                "slack",
+                "line",
+                "dingtalk",
+                "whatsapp",
+                "google-chat",
+                "signal",
+                "mattermost",
+                "nextcloud-talk",
+                "synology-chat",
             ]
         );
     }

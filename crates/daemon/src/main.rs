@@ -399,7 +399,7 @@ async fn main() {
                 ChannelSendCliArgs {
                     config_path: config.as_deref(),
                     account: account.as_deref(),
-                    target: &target,
+                    target: Some(target.as_str()),
                     target_kind,
                     text: &text,
                     as_card: false,
@@ -495,7 +495,7 @@ async fn main() {
                 ChannelSendCliArgs {
                     config_path: config.as_deref(),
                     account: account.as_deref(),
-                    target: &target,
+                    target: Some(target.as_str()),
                     target_kind,
                     text: &text,
                     as_card: false,
@@ -532,7 +532,7 @@ async fn main() {
                 ChannelSendCliArgs {
                     config_path: config.as_deref(),
                     account: account.as_deref(),
-                    target: &target,
+                    target: Some(target.as_str()),
                     target_kind,
                     text: &text,
                     as_card: false,
@@ -565,7 +565,27 @@ async fn main() {
                 ChannelSendCliArgs {
                     config_path: config.as_deref(),
                     account: account.as_deref(),
-                    target: &target,
+                    target: Some(target.as_str()),
+                    target_kind,
+                    text: &text,
+                    as_card: false,
+                },
+            )
+            .await
+        }
+        Commands::DingtalkSend {
+            config,
+            account,
+            target,
+            target_kind,
+            text,
+        } => {
+            run_channel_send_cli(
+                DINGTALK_SEND_CLI_SPEC,
+                ChannelSendCliArgs {
+                    config_path: config.as_deref(),
+                    account: account.as_deref(),
+                    target: target.as_deref(),
                     target_kind,
                     text: &text,
                     as_card: false,
@@ -585,7 +605,27 @@ async fn main() {
                 ChannelSendCliArgs {
                     config_path: config.as_deref(),
                     account: account.as_deref(),
-                    target: &target,
+                    target: Some(target.as_str()),
+                    target_kind,
+                    text: &text,
+                    as_card: false,
+                },
+            )
+            .await
+        }
+        Commands::LineSend {
+            config,
+            account,
+            target,
+            target_kind,
+            text,
+        } => {
+            run_channel_send_cli(
+                LINE_SEND_CLI_SPEC,
+                ChannelSendCliArgs {
+                    config_path: config.as_deref(),
+                    account: account.as_deref(),
+                    target: Some(target.as_str()),
                     target_kind,
                     text: &text,
                     as_card: false,
@@ -605,7 +645,27 @@ async fn main() {
                 ChannelSendCliArgs {
                     config_path: config.as_deref(),
                     account: account.as_deref(),
-                    target: &target,
+                    target: Some(target.as_str()),
+                    target_kind,
+                    text: &text,
+                    as_card: false,
+                },
+            )
+            .await
+        }
+        Commands::GoogleChatSend {
+            config,
+            account,
+            target,
+            target_kind,
+            text,
+        } => {
+            run_channel_send_cli(
+                GOOGLE_CHAT_SEND_CLI_SPEC,
+                ChannelSendCliArgs {
+                    config_path: config.as_deref(),
+                    account: account.as_deref(),
+                    target: target.as_deref(),
                     target_kind,
                     text: &text,
                     as_card: false,
@@ -625,7 +685,67 @@ async fn main() {
                 ChannelSendCliArgs {
                     config_path: config.as_deref(),
                     account: account.as_deref(),
-                    target: &target,
+                    target: Some(target.as_str()),
+                    target_kind,
+                    text: &text,
+                    as_card: false,
+                },
+            )
+            .await
+        }
+        Commands::MattermostSend {
+            config,
+            account,
+            target,
+            target_kind,
+            text,
+        } => {
+            run_channel_send_cli(
+                MATTERMOST_SEND_CLI_SPEC,
+                ChannelSendCliArgs {
+                    config_path: config.as_deref(),
+                    account: account.as_deref(),
+                    target: Some(target.as_str()),
+                    target_kind,
+                    text: &text,
+                    as_card: false,
+                },
+            )
+            .await
+        }
+        Commands::NextcloudTalkSend {
+            config,
+            account,
+            target,
+            target_kind,
+            text,
+        } => {
+            run_channel_send_cli(
+                NEXTCLOUD_TALK_SEND_CLI_SPEC,
+                ChannelSendCliArgs {
+                    config_path: config.as_deref(),
+                    account: account.as_deref(),
+                    target: Some(target.as_str()),
+                    target_kind,
+                    text: &text,
+                    as_card: false,
+                },
+            )
+            .await
+        }
+        Commands::SynologyChatSend {
+            config,
+            account,
+            target,
+            target_kind,
+            text,
+        } => {
+            run_channel_send_cli(
+                SYNOLOGY_CHAT_SEND_CLI_SPEC,
+                ChannelSendCliArgs {
+                    config_path: config.as_deref(),
+                    account: account.as_deref(),
+                    target: target.as_deref(),
                     target_kind,
                     text: &text,
                     as_card: false,

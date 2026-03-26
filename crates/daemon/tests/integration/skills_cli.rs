@@ -114,7 +114,7 @@ impl Drop for SkillsCliCurrentDirGuard<'_> {
 
 #[test]
 fn skills_install_cli_parses_global_flags_after_subcommand() {
-    let cli = Cli::try_parse_from([
+    let cli = try_parse_cli([
         "loongclaw",
         "skills",
         "install",
@@ -165,7 +165,7 @@ fn skills_install_cli_parses_global_flags_after_subcommand() {
 
 #[test]
 fn skills_install_bundled_cli_parses_global_flags_after_subcommand() {
-    let cli = Cli::try_parse_from([
+    let cli = try_parse_cli([
         "loongclaw",
         "skills",
         "install-bundled",
@@ -213,7 +213,7 @@ fn skills_install_bundled_cli_parses_global_flags_after_subcommand() {
 
 #[test]
 fn skills_enable_browser_preview_cli_parses_global_flags_after_subcommand() {
-    let cli = Cli::try_parse_from([
+    let cli = try_parse_cli([
         "loongclaw",
         "skills",
         "enable-browser-preview",
@@ -254,7 +254,7 @@ fn skills_enable_browser_preview_cli_parses_global_flags_after_subcommand() {
 
 #[test]
 fn skills_policy_set_cli_parses_domain_and_approval_flags() {
-    let cli = Cli::try_parse_from([
+    let cli = try_parse_cli([
         "loongclaw",
         "skills",
         "policy",
@@ -320,7 +320,7 @@ fn skills_policy_set_cli_parses_domain_and_approval_flags() {
 
 #[test]
 fn skills_fetch_cli_parses_install_flags_after_subcommand() {
-    let cli = Cli::try_parse_from([
+    let cli = try_parse_cli([
         "loongclaw",
         "skills",
         "fetch",

@@ -73,6 +73,12 @@ state is even considered. That includes config keys and environment-pointer
 paths such as Telegram bot tokens, Feishu webhook secrets, or WeCom AIBot
 credentials.
 
+Send and serve requirements must be modeled independently when a channel uses
+different outbound and inbound transports. For example, Synology Chat outgoing
+webhook sends only need an incoming webhook URL, while a future serve surface
+would additionally need outbound webhook verification and allowlist metadata.
+Do not collapse those requirements into one merged channel-wide checklist.
+
 Target-kind metadata exists to describe the operator contract for each command
 without pretending every surface routes through a conversation id. Some planned
 surfaces need `address` or `endpoint` targets even before a runtime adapter
@@ -129,6 +135,12 @@ That means the registry should cleanly separate:
 This lets LoongClaw expose shipped send-only integrations without inventing fake
 runtime ownership, while still exposing future channels early without
 pretending they already have concrete config or runtime support.
+
+Current examples of shipped config-backed outbound surfaces include Discord,
+Slack, LINE, DingTalk, WhatsApp, Google Chat, Signal, Mattermost, Nextcloud
+Talk, and Synology Chat. They all publish snapshot builders, readiness checks,
+and send command metadata without pretending they already own a long-running
+serve runtime.
 
 ### 6. Runtime Owners Must Bind Through Runtime Registries
 
@@ -245,9 +257,12 @@ background runtime:
 5. Mark shipped operations as `implemented` and unshipped runtime operations as
    `stub` or `unsupported`, depending on whether the capability is planned or
    impossible in the current architecture.
-6. Verify that `channel_catalog`, `channel_surfaces`, text rendering, and
+6. Split send and serve requirement metadata when the inbound contract needs
+   extra secrets, callback validation, or allowlists that the outbound send
+   path does not require.
+7. Verify that `channel_catalog`, `channel_surfaces`, text rendering, and
    `doctor` all pick up the new metadata through shared inventory assembly.
-7. Add regression tests for registry lookup, JSON surfaces, text rendering,
+8. Add regression tests for registry lookup, JSON surfaces, text rendering,
    and config/service descriptor order.
 
 ### Adding A New Stub Channel

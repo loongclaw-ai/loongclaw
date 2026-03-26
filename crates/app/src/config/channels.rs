@@ -20,11 +20,22 @@ use crate::secrets::resolve_secret_with_legacy_env;
 
 pub(crate) const TELEGRAM_BOT_TOKEN_ENV: &str = "TELEGRAM_BOT_TOKEN";
 pub(crate) const DISCORD_BOT_TOKEN_ENV: &str = "DISCORD_BOT_TOKEN";
+pub(crate) const DINGTALK_WEBHOOK_URL_ENV: &str = "DINGTALK_WEBHOOK_URL";
+pub(crate) const DINGTALK_SECRET_ENV: &str = "DINGTALK_SECRET";
 pub(crate) const FEISHU_APP_ID_ENV: &str = "FEISHU_APP_ID";
 pub(crate) const FEISHU_APP_SECRET_ENV: &str = "FEISHU_APP_SECRET";
 pub(crate) const FEISHU_VERIFICATION_TOKEN_ENV: &str = "FEISHU_VERIFICATION_TOKEN";
 pub(crate) const FEISHU_ENCRYPT_KEY_ENV: &str = "FEISHU_ENCRYPT_KEY";
+pub(crate) const GOOGLE_CHAT_WEBHOOK_URL_ENV: &str = "GOOGLE_CHAT_WEBHOOK_URL";
+pub(crate) const LINE_CHANNEL_ACCESS_TOKEN_ENV: &str = "LINE_CHANNEL_ACCESS_TOKEN";
+pub(crate) const LINE_CHANNEL_SECRET_ENV: &str = "LINE_CHANNEL_SECRET";
 pub(crate) const MATRIX_ACCESS_TOKEN_ENV: &str = "MATRIX_ACCESS_TOKEN";
+pub(crate) const MATTERMOST_SERVER_URL_ENV: &str = "MATTERMOST_SERVER_URL";
+pub(crate) const MATTERMOST_BOT_TOKEN_ENV: &str = "MATTERMOST_BOT_TOKEN";
+pub(crate) const NEXTCLOUD_TALK_SERVER_URL_ENV: &str = "NEXTCLOUD_TALK_SERVER_URL";
+pub(crate) const NEXTCLOUD_TALK_SHARED_SECRET_ENV: &str = "NEXTCLOUD_TALK_SHARED_SECRET";
+pub(crate) const SYNOLOGY_CHAT_TOKEN_ENV: &str = "SYNOLOGY_CHAT_TOKEN";
+pub(crate) const SYNOLOGY_CHAT_INCOMING_URL_ENV: &str = "SYNOLOGY_CHAT_INCOMING_URL";
 pub(crate) const SIGNAL_SERVICE_URL_ENV: &str = "SIGNAL_SERVICE_URL";
 pub(crate) const SIGNAL_ACCOUNT_ENV: &str = "SIGNAL_ACCOUNT";
 pub(crate) const SLACK_BOT_TOKEN_ENV: &str = "SLACK_BOT_TOKEN";
@@ -600,6 +611,100 @@ pub struct WecomChannelConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LineAccountConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub channel_access_token: Option<SecretRef>,
+    #[serde(default)]
+    pub channel_access_token_env: Option<String>,
+    #[serde(default)]
+    pub channel_secret: Option<SecretRef>,
+    #[serde(default)]
+    pub channel_secret_env: Option<String>,
+    #[serde(default)]
+    pub api_base_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedLineChannelConfig {
+    pub configured_account_id: String,
+    pub configured_account_label: String,
+    pub account: ChannelAccountIdentity,
+    pub enabled: bool,
+    pub channel_access_token: Option<SecretRef>,
+    pub channel_access_token_env: Option<String>,
+    pub channel_secret: Option<SecretRef>,
+    pub channel_secret_env: Option<String>,
+    pub api_base_url: Option<String>,
+}
+
+impl ResolvedLineChannelConfig {
+    pub fn channel_access_token(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(
+            self.channel_access_token.as_ref(),
+            self.channel_access_token_env.as_deref(),
+        )
+    }
+
+    pub fn channel_secret(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(
+            self.channel_secret.as_ref(),
+            self.channel_secret_env.as_deref(),
+        )
+    }
+
+    pub fn resolved_api_base_url(&self) -> String {
+        self.api_base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(default_line_api_base_url)
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DingtalkAccountConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub webhook_url: Option<SecretRef>,
+    #[serde(default)]
+    pub webhook_url_env: Option<String>,
+    #[serde(default)]
+    pub secret: Option<SecretRef>,
+    #[serde(default)]
+    pub secret_env: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedDingtalkChannelConfig {
+    pub configured_account_id: String,
+    pub configured_account_label: String,
+    pub account: ChannelAccountIdentity,
+    pub enabled: bool,
+    pub webhook_url: Option<SecretRef>,
+    pub webhook_url_env: Option<String>,
+    pub secret: Option<SecretRef>,
+    pub secret_env: Option<String>,
+}
+
+impl ResolvedDingtalkChannelConfig {
+    pub fn webhook_url(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(self.webhook_url.as_ref(), self.webhook_url_env.as_deref())
+    }
+
+    pub fn secret(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(self.secret.as_ref(), self.secret_env.as_deref())
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DiscordAccountConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
@@ -676,6 +781,154 @@ impl ResolvedSlackChannelConfig {
             .filter(|value| !value.is_empty())
             .map(str::to_owned)
             .unwrap_or_else(default_slack_api_base_url)
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GoogleChatAccountConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub webhook_url: Option<SecretRef>,
+    #[serde(default)]
+    pub webhook_url_env: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedGoogleChatChannelConfig {
+    pub configured_account_id: String,
+    pub configured_account_label: String,
+    pub account: ChannelAccountIdentity,
+    pub enabled: bool,
+    pub webhook_url: Option<SecretRef>,
+    pub webhook_url_env: Option<String>,
+}
+
+impl ResolvedGoogleChatChannelConfig {
+    pub fn webhook_url(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(self.webhook_url.as_ref(), self.webhook_url_env.as_deref())
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MattermostAccountConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub server_url: Option<String>,
+    #[serde(default)]
+    pub server_url_env: Option<String>,
+    #[serde(default)]
+    pub bot_token: Option<SecretRef>,
+    #[serde(default)]
+    pub bot_token_env: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedMattermostChannelConfig {
+    pub configured_account_id: String,
+    pub configured_account_label: String,
+    pub account: ChannelAccountIdentity,
+    pub enabled: bool,
+    pub server_url: Option<String>,
+    pub server_url_env: Option<String>,
+    pub bot_token: Option<SecretRef>,
+    pub bot_token_env: Option<String>,
+}
+
+impl ResolvedMattermostChannelConfig {
+    pub fn server_url(&self) -> Option<String> {
+        resolve_string_with_legacy_env(self.server_url.as_deref(), self.server_url_env.as_deref())
+    }
+
+    pub fn bot_token(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(self.bot_token.as_ref(), self.bot_token_env.as_deref())
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NextcloudTalkAccountConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub server_url: Option<String>,
+    #[serde(default)]
+    pub server_url_env: Option<String>,
+    #[serde(default)]
+    pub shared_secret: Option<SecretRef>,
+    #[serde(default)]
+    pub shared_secret_env: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedNextcloudTalkChannelConfig {
+    pub configured_account_id: String,
+    pub configured_account_label: String,
+    pub account: ChannelAccountIdentity,
+    pub enabled: bool,
+    pub server_url: Option<String>,
+    pub server_url_env: Option<String>,
+    pub shared_secret: Option<SecretRef>,
+    pub shared_secret_env: Option<String>,
+}
+
+impl ResolvedNextcloudTalkChannelConfig {
+    pub fn server_url(&self) -> Option<String> {
+        resolve_string_with_legacy_env(self.server_url.as_deref(), self.server_url_env.as_deref())
+    }
+
+    pub fn shared_secret(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(
+            self.shared_secret.as_ref(),
+            self.shared_secret_env.as_deref(),
+        )
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SynologyChatAccountConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub token: Option<SecretRef>,
+    #[serde(default)]
+    pub token_env: Option<String>,
+    #[serde(default)]
+    pub incoming_url: Option<SecretRef>,
+    #[serde(default)]
+    pub incoming_url_env: Option<String>,
+    #[serde(default)]
+    pub allowed_user_ids: Option<Vec<u64>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedSynologyChatChannelConfig {
+    pub configured_account_id: String,
+    pub configured_account_label: String,
+    pub account: ChannelAccountIdentity,
+    pub enabled: bool,
+    pub token: Option<SecretRef>,
+    pub token_env: Option<String>,
+    pub incoming_url: Option<SecretRef>,
+    pub incoming_url_env: Option<String>,
+    pub allowed_user_ids: Vec<u64>,
+}
+
+impl ResolvedSynologyChatChannelConfig {
+    pub fn token(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(self.token.as_ref(), self.token_env.as_deref())
+    }
+
+    pub fn incoming_url(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(self.incoming_url.as_ref(), self.incoming_url_env.as_deref())
     }
 }
 
@@ -819,6 +1072,50 @@ pub struct DiscordChannelConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
+pub struct LineChannelConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub default_account: Option<String>,
+    #[serde(default)]
+    pub channel_access_token: Option<SecretRef>,
+    #[serde(default)]
+    pub channel_access_token_env: Option<String>,
+    #[serde(default)]
+    pub channel_secret: Option<SecretRef>,
+    #[serde(default)]
+    pub channel_secret_env: Option<String>,
+    #[serde(default)]
+    pub api_base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub accounts: BTreeMap<String, LineAccountConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct DingtalkChannelConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub default_account: Option<String>,
+    #[serde(default)]
+    pub webhook_url: Option<SecretRef>,
+    #[serde(default)]
+    pub webhook_url_env: Option<String>,
+    #[serde(default)]
+    pub secret: Option<SecretRef>,
+    #[serde(default)]
+    pub secret_env: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub accounts: BTreeMap<String, DingtalkAccountConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
 pub struct SlackChannelConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -834,6 +1131,88 @@ pub struct SlackChannelConfig {
     pub api_base_url: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub accounts: BTreeMap<String, SlackAccountConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct GoogleChatChannelConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub default_account: Option<String>,
+    #[serde(default)]
+    pub webhook_url: Option<SecretRef>,
+    #[serde(default)]
+    pub webhook_url_env: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub accounts: BTreeMap<String, GoogleChatAccountConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct MattermostChannelConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub default_account: Option<String>,
+    #[serde(default)]
+    pub server_url: Option<String>,
+    #[serde(default)]
+    pub server_url_env: Option<String>,
+    #[serde(default)]
+    pub bot_token: Option<SecretRef>,
+    #[serde(default)]
+    pub bot_token_env: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub accounts: BTreeMap<String, MattermostAccountConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct NextcloudTalkChannelConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub default_account: Option<String>,
+    #[serde(default)]
+    pub server_url: Option<String>,
+    #[serde(default)]
+    pub server_url_env: Option<String>,
+    #[serde(default)]
+    pub shared_secret: Option<SecretRef>,
+    #[serde(default)]
+    pub shared_secret_env: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub accounts: BTreeMap<String, NextcloudTalkAccountConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SynologyChatChannelConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub default_account: Option<String>,
+    #[serde(default)]
+    pub token: Option<SecretRef>,
+    #[serde(default)]
+    pub token_env: Option<String>,
+    #[serde(default)]
+    pub incoming_url: Option<SecretRef>,
+    #[serde(default)]
+    pub incoming_url_env: Option<String>,
+    #[serde(default)]
+    pub allowed_user_ids: Vec<u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub accounts: BTreeMap<String, SynologyChatAccountConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1235,6 +1614,37 @@ impl Default for DiscordChannelConfig {
     }
 }
 
+impl Default for LineChannelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            account_id: None,
+            default_account: None,
+            channel_access_token: None,
+            channel_access_token_env: Some(LINE_CHANNEL_ACCESS_TOKEN_ENV.to_owned()),
+            channel_secret: None,
+            channel_secret_env: Some(LINE_CHANNEL_SECRET_ENV.to_owned()),
+            api_base_url: Some(default_line_api_base_url()),
+            accounts: BTreeMap::new(),
+        }
+    }
+}
+
+impl Default for DingtalkChannelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            account_id: None,
+            default_account: None,
+            webhook_url: None,
+            webhook_url_env: Some(DINGTALK_WEBHOOK_URL_ENV.to_owned()),
+            secret: None,
+            secret_env: Some(DINGTALK_SECRET_ENV.to_owned()),
+            accounts: BTreeMap::new(),
+        }
+    }
+}
+
 impl Default for SlackChannelConfig {
     fn default() -> Self {
         Self {
@@ -1244,6 +1654,65 @@ impl Default for SlackChannelConfig {
             bot_token: None,
             bot_token_env: Some(SLACK_BOT_TOKEN_ENV.to_owned()),
             api_base_url: None,
+            accounts: BTreeMap::new(),
+        }
+    }
+}
+
+impl Default for GoogleChatChannelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            account_id: None,
+            default_account: None,
+            webhook_url: None,
+            webhook_url_env: Some(GOOGLE_CHAT_WEBHOOK_URL_ENV.to_owned()),
+            accounts: BTreeMap::new(),
+        }
+    }
+}
+
+impl Default for MattermostChannelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            account_id: None,
+            default_account: None,
+            server_url: None,
+            server_url_env: Some(MATTERMOST_SERVER_URL_ENV.to_owned()),
+            bot_token: None,
+            bot_token_env: Some(MATTERMOST_BOT_TOKEN_ENV.to_owned()),
+            accounts: BTreeMap::new(),
+        }
+    }
+}
+
+impl Default for NextcloudTalkChannelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            account_id: None,
+            default_account: None,
+            server_url: None,
+            server_url_env: Some(NEXTCLOUD_TALK_SERVER_URL_ENV.to_owned()),
+            shared_secret: None,
+            shared_secret_env: Some(NEXTCLOUD_TALK_SHARED_SECRET_ENV.to_owned()),
+            accounts: BTreeMap::new(),
+        }
+    }
+}
+
+impl Default for SynologyChatChannelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            account_id: None,
+            default_account: None,
+            token: None,
+            token_env: Some(SYNOLOGY_CHAT_TOKEN_ENV.to_owned()),
+            incoming_url: None,
+            incoming_url_env: Some(SYNOLOGY_CHAT_INCOMING_URL_ENV.to_owned()),
+            allowed_user_ids: Vec::new(),
             accounts: BTreeMap::new(),
         }
     }
@@ -2015,6 +2484,397 @@ impl WecomChannelConfig {
     }
 }
 
+impl LineChannelConfig {
+    pub(crate) fn validate(&self) -> Vec<ConfigValidationIssue> {
+        let mut issues = Vec::new();
+        validate_channel_account_integrity(
+            &mut issues,
+            "line",
+            self.default_account.as_deref(),
+            self.accounts.keys(),
+        );
+        validate_line_env_pointer(
+            &mut issues,
+            "line.channel_access_token_env",
+            self.channel_access_token_env.as_deref(),
+            "line.channel_access_token",
+        );
+        validate_line_secret_ref_env_pointer(
+            &mut issues,
+            "line.channel_access_token",
+            self.channel_access_token.as_ref(),
+        );
+        validate_line_env_pointer(
+            &mut issues,
+            "line.channel_secret_env",
+            self.channel_secret_env.as_deref(),
+            "line.channel_secret",
+        );
+        validate_line_secret_ref_env_pointer(
+            &mut issues,
+            "line.channel_secret",
+            self.channel_secret.as_ref(),
+        );
+        for (raw_account_id, account) in &self.accounts {
+            let account_id = normalize_channel_account_id(raw_account_id);
+            let access_token_field_path =
+                format!("line.accounts.{account_id}.channel_access_token");
+            let access_token_env_field_path = format!("{access_token_field_path}_env");
+            validate_line_env_pointer(
+                &mut issues,
+                access_token_env_field_path.as_str(),
+                account.channel_access_token_env.as_deref(),
+                access_token_field_path.as_str(),
+            );
+            validate_line_secret_ref_env_pointer(
+                &mut issues,
+                access_token_field_path.as_str(),
+                account.channel_access_token.as_ref(),
+            );
+            let channel_secret_field_path = format!("line.accounts.{account_id}.channel_secret");
+            let channel_secret_env_field_path = format!("{channel_secret_field_path}_env");
+            validate_line_env_pointer(
+                &mut issues,
+                channel_secret_env_field_path.as_str(),
+                account.channel_secret_env.as_deref(),
+                channel_secret_field_path.as_str(),
+            );
+            validate_line_secret_ref_env_pointer(
+                &mut issues,
+                channel_secret_field_path.as_str(),
+                account.channel_secret.as_ref(),
+            );
+        }
+        issues
+    }
+
+    pub fn channel_access_token(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(
+            self.channel_access_token.as_ref(),
+            self.channel_access_token_env.as_deref(),
+        )
+    }
+
+    pub fn channel_secret(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(
+            self.channel_secret.as_ref(),
+            self.channel_secret_env.as_deref(),
+        )
+    }
+
+    pub fn configured_account_ids(&self) -> Vec<String> {
+        let ids = configured_account_ids(self.accounts.keys());
+        if ids.is_empty() {
+            return vec![self.default_configured_account_id()];
+        }
+        ids
+    }
+
+    pub fn default_configured_account_selection(&self) -> ChannelDefaultAccountSelection {
+        resolve_default_configured_account_selection(
+            self.accounts.keys(),
+            self.default_account.as_deref(),
+            self.resolved_account_identity().id.as_str(),
+        )
+    }
+
+    pub fn default_configured_account_id(&self) -> String {
+        self.default_configured_account_selection().id
+    }
+
+    pub fn resolved_account_route(
+        &self,
+        requested_account_id: Option<&str>,
+        selected_configured_account_id: &str,
+    ) -> ChannelResolvedAccountRoute {
+        resolve_channel_account_route(
+            self.accounts.keys(),
+            self.default_account.as_deref(),
+            self.resolved_account_identity().id.as_str(),
+            requested_account_id,
+            selected_configured_account_id,
+        )
+    }
+
+    pub fn resolve_account(
+        &self,
+        requested_account_id: Option<&str>,
+    ) -> CliResult<ResolvedLineChannelConfig> {
+        let configured = self.resolve_configured_account_selection(requested_account_id)?;
+        let account_override = configured
+            .account_key
+            .as_deref()
+            .and_then(|key| self.accounts.get(key));
+
+        let merged = LineChannelConfig {
+            enabled: self.enabled
+                && account_override
+                    .and_then(|account| account.enabled)
+                    .unwrap_or(true),
+            account_id: account_override
+                .and_then(|account| account.account_id.clone())
+                .or_else(|| self.account_id.clone()),
+            default_account: None,
+            channel_access_token: account_override
+                .and_then(|account| account.channel_access_token.clone())
+                .or_else(|| self.channel_access_token.clone()),
+            channel_access_token_env: account_override
+                .and_then(|account| account.channel_access_token_env.clone())
+                .or_else(|| self.channel_access_token_env.clone()),
+            channel_secret: account_override
+                .and_then(|account| account.channel_secret.clone())
+                .or_else(|| self.channel_secret.clone()),
+            channel_secret_env: account_override
+                .and_then(|account| account.channel_secret_env.clone())
+                .or_else(|| self.channel_secret_env.clone()),
+            api_base_url: account_override
+                .and_then(|account| account.api_base_url.clone())
+                .or_else(|| self.api_base_url.clone()),
+            accounts: BTreeMap::new(),
+        };
+        let account = merged.resolved_account_identity();
+
+        Ok(ResolvedLineChannelConfig {
+            configured_account_id: configured.id,
+            configured_account_label: configured.label,
+            account,
+            enabled: merged.enabled,
+            channel_access_token: merged.channel_access_token,
+            channel_access_token_env: merged.channel_access_token_env,
+            channel_secret: merged.channel_secret,
+            channel_secret_env: merged.channel_secret_env,
+            api_base_url: merged.api_base_url,
+        })
+    }
+
+    pub fn resolve_account_for_session_account_id(
+        &self,
+        session_account_id: Option<&str>,
+    ) -> CliResult<ResolvedLineChannelConfig> {
+        resolve_account_for_session_account_id(
+            session_account_id,
+            || self.resolve_account(session_account_id),
+            || self.configured_account_ids(),
+            |configured_id| self.resolve_account(Some(configured_id)),
+            |resolved| resolved.account.id.as_str(),
+        )
+    }
+
+    pub fn resolved_account_identity(&self) -> ChannelAccountIdentity {
+        if let Some((id, label)) = resolve_configured_account_identity(self.account_id.as_deref()) {
+            return ChannelAccountIdentity {
+                id,
+                label,
+                source: ChannelAccountIdentitySource::Configured,
+            };
+        }
+
+        default_channel_account_identity()
+    }
+
+    fn resolve_configured_account_selection(
+        &self,
+        requested_account_id: Option<&str>,
+    ) -> CliResult<ResolvedConfiguredAccount> {
+        resolve_configured_account_selection(
+            self.accounts.keys(),
+            requested_account_id,
+            self.default_account.as_deref(),
+            self.resolved_account_identity().id.as_str(),
+        )
+    }
+}
+
+impl DingtalkChannelConfig {
+    pub(crate) fn validate(&self) -> Vec<ConfigValidationIssue> {
+        let mut issues = Vec::new();
+        validate_channel_account_integrity(
+            &mut issues,
+            "dingtalk",
+            self.default_account.as_deref(),
+            self.accounts.keys(),
+        );
+        validate_dingtalk_env_pointer(
+            &mut issues,
+            "dingtalk.webhook_url_env",
+            self.webhook_url_env.as_deref(),
+            "dingtalk.webhook_url",
+        );
+        validate_dingtalk_secret_ref_env_pointer(
+            &mut issues,
+            "dingtalk.webhook_url",
+            self.webhook_url.as_ref(),
+        );
+        validate_dingtalk_env_pointer(
+            &mut issues,
+            "dingtalk.secret_env",
+            self.secret_env.as_deref(),
+            "dingtalk.secret",
+        );
+        validate_dingtalk_secret_ref_env_pointer(
+            &mut issues,
+            "dingtalk.secret",
+            self.secret.as_ref(),
+        );
+        for (raw_account_id, account) in &self.accounts {
+            let account_id = normalize_channel_account_id(raw_account_id);
+            let webhook_url_field_path = format!("dingtalk.accounts.{account_id}.webhook_url");
+            let webhook_url_env_field_path = format!("{webhook_url_field_path}_env");
+            validate_dingtalk_env_pointer(
+                &mut issues,
+                webhook_url_env_field_path.as_str(),
+                account.webhook_url_env.as_deref(),
+                webhook_url_field_path.as_str(),
+            );
+            validate_dingtalk_secret_ref_env_pointer(
+                &mut issues,
+                webhook_url_field_path.as_str(),
+                account.webhook_url.as_ref(),
+            );
+            let secret_field_path = format!("dingtalk.accounts.{account_id}.secret");
+            let secret_env_field_path = format!("{secret_field_path}_env");
+            validate_dingtalk_env_pointer(
+                &mut issues,
+                secret_env_field_path.as_str(),
+                account.secret_env.as_deref(),
+                secret_field_path.as_str(),
+            );
+            validate_dingtalk_secret_ref_env_pointer(
+                &mut issues,
+                secret_field_path.as_str(),
+                account.secret.as_ref(),
+            );
+        }
+        issues
+    }
+
+    pub fn webhook_url(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(self.webhook_url.as_ref(), self.webhook_url_env.as_deref())
+    }
+
+    pub fn secret(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(self.secret.as_ref(), self.secret_env.as_deref())
+    }
+
+    pub fn configured_account_ids(&self) -> Vec<String> {
+        let ids = configured_account_ids(self.accounts.keys());
+        if ids.is_empty() {
+            return vec![self.default_configured_account_id()];
+        }
+        ids
+    }
+
+    pub fn default_configured_account_selection(&self) -> ChannelDefaultAccountSelection {
+        resolve_default_configured_account_selection(
+            self.accounts.keys(),
+            self.default_account.as_deref(),
+            self.resolved_account_identity().id.as_str(),
+        )
+    }
+
+    pub fn default_configured_account_id(&self) -> String {
+        self.default_configured_account_selection().id
+    }
+
+    pub fn resolved_account_route(
+        &self,
+        requested_account_id: Option<&str>,
+        selected_configured_account_id: &str,
+    ) -> ChannelResolvedAccountRoute {
+        resolve_channel_account_route(
+            self.accounts.keys(),
+            self.default_account.as_deref(),
+            self.resolved_account_identity().id.as_str(),
+            requested_account_id,
+            selected_configured_account_id,
+        )
+    }
+
+    pub fn resolve_account(
+        &self,
+        requested_account_id: Option<&str>,
+    ) -> CliResult<ResolvedDingtalkChannelConfig> {
+        let configured = self.resolve_configured_account_selection(requested_account_id)?;
+        let account_override = configured
+            .account_key
+            .as_deref()
+            .and_then(|key| self.accounts.get(key));
+
+        let merged = DingtalkChannelConfig {
+            enabled: self.enabled
+                && account_override
+                    .and_then(|account| account.enabled)
+                    .unwrap_or(true),
+            account_id: account_override
+                .and_then(|account| account.account_id.clone())
+                .or_else(|| self.account_id.clone()),
+            default_account: None,
+            webhook_url: account_override
+                .and_then(|account| account.webhook_url.clone())
+                .or_else(|| self.webhook_url.clone()),
+            webhook_url_env: account_override
+                .and_then(|account| account.webhook_url_env.clone())
+                .or_else(|| self.webhook_url_env.clone()),
+            secret: account_override
+                .and_then(|account| account.secret.clone())
+                .or_else(|| self.secret.clone()),
+            secret_env: account_override
+                .and_then(|account| account.secret_env.clone())
+                .or_else(|| self.secret_env.clone()),
+            accounts: BTreeMap::new(),
+        };
+        let account = merged.resolved_account_identity();
+
+        Ok(ResolvedDingtalkChannelConfig {
+            configured_account_id: configured.id,
+            configured_account_label: configured.label,
+            account,
+            enabled: merged.enabled,
+            webhook_url: merged.webhook_url,
+            webhook_url_env: merged.webhook_url_env,
+            secret: merged.secret,
+            secret_env: merged.secret_env,
+        })
+    }
+
+    pub fn resolve_account_for_session_account_id(
+        &self,
+        session_account_id: Option<&str>,
+    ) -> CliResult<ResolvedDingtalkChannelConfig> {
+        resolve_account_for_session_account_id(
+            session_account_id,
+            || self.resolve_account(session_account_id),
+            || self.configured_account_ids(),
+            |configured_id| self.resolve_account(Some(configured_id)),
+            |resolved| resolved.account.id.as_str(),
+        )
+    }
+
+    pub fn resolved_account_identity(&self) -> ChannelAccountIdentity {
+        if let Some((id, label)) = resolve_configured_account_identity(self.account_id.as_deref()) {
+            return ChannelAccountIdentity {
+                id,
+                label,
+                source: ChannelAccountIdentitySource::Configured,
+            };
+        }
+
+        default_channel_account_identity()
+    }
+
+    fn resolve_configured_account_selection(
+        &self,
+        requested_account_id: Option<&str>,
+    ) -> CliResult<ResolvedConfiguredAccount> {
+        resolve_configured_account_selection(
+            self.accounts.keys(),
+            requested_account_id,
+            self.default_account.as_deref(),
+            self.resolved_account_identity().id.as_str(),
+        )
+    }
+}
+
 impl DiscordChannelConfig {
     pub(crate) fn validate(&self) -> Vec<ConfigValidationIssue> {
         let mut issues = Vec::new();
@@ -2297,6 +3157,722 @@ impl SlackChannelConfig {
         &self,
         session_account_id: Option<&str>,
     ) -> CliResult<ResolvedSlackChannelConfig> {
+        resolve_account_for_session_account_id(
+            session_account_id,
+            || self.resolve_account(session_account_id),
+            || self.configured_account_ids(),
+            |configured_id| self.resolve_account(Some(configured_id)),
+            |resolved| resolved.account.id.as_str(),
+        )
+    }
+
+    pub fn resolved_account_identity(&self) -> ChannelAccountIdentity {
+        if let Some((id, label)) = resolve_configured_account_identity(self.account_id.as_deref()) {
+            return ChannelAccountIdentity {
+                id,
+                label,
+                source: ChannelAccountIdentitySource::Configured,
+            };
+        }
+
+        default_channel_account_identity()
+    }
+
+    fn resolve_configured_account_selection(
+        &self,
+        requested_account_id: Option<&str>,
+    ) -> CliResult<ResolvedConfiguredAccount> {
+        resolve_configured_account_selection(
+            self.accounts.keys(),
+            requested_account_id,
+            self.default_account.as_deref(),
+            self.resolved_account_identity().id.as_str(),
+        )
+    }
+}
+
+impl GoogleChatChannelConfig {
+    pub(crate) fn validate(&self) -> Vec<ConfigValidationIssue> {
+        let mut issues = Vec::new();
+        validate_channel_account_integrity(
+            &mut issues,
+            "google_chat",
+            self.default_account.as_deref(),
+            self.accounts.keys(),
+        );
+        validate_google_chat_env_pointer(
+            &mut issues,
+            "google_chat.webhook_url_env",
+            self.webhook_url_env.as_deref(),
+            "google_chat.webhook_url",
+        );
+        validate_google_chat_secret_ref_env_pointer(
+            &mut issues,
+            "google_chat.webhook_url",
+            self.webhook_url.as_ref(),
+        );
+        for (raw_account_id, account) in &self.accounts {
+            let account_id = normalize_channel_account_id(raw_account_id);
+            let webhook_url_field_path = format!("google_chat.accounts.{account_id}.webhook_url");
+            let webhook_url_env_field_path = format!("{webhook_url_field_path}_env");
+            validate_google_chat_env_pointer(
+                &mut issues,
+                webhook_url_env_field_path.as_str(),
+                account.webhook_url_env.as_deref(),
+                webhook_url_field_path.as_str(),
+            );
+            validate_google_chat_secret_ref_env_pointer(
+                &mut issues,
+                webhook_url_field_path.as_str(),
+                account.webhook_url.as_ref(),
+            );
+        }
+        issues
+    }
+
+    pub fn webhook_url(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(self.webhook_url.as_ref(), self.webhook_url_env.as_deref())
+    }
+
+    pub fn configured_account_ids(&self) -> Vec<String> {
+        let ids = configured_account_ids(self.accounts.keys());
+        if ids.is_empty() {
+            return vec![self.default_configured_account_id()];
+        }
+        ids
+    }
+
+    pub fn default_configured_account_selection(&self) -> ChannelDefaultAccountSelection {
+        resolve_default_configured_account_selection(
+            self.accounts.keys(),
+            self.default_account.as_deref(),
+            self.resolved_account_identity().id.as_str(),
+        )
+    }
+
+    pub fn default_configured_account_id(&self) -> String {
+        self.default_configured_account_selection().id
+    }
+
+    pub fn resolved_account_route(
+        &self,
+        requested_account_id: Option<&str>,
+        selected_configured_account_id: &str,
+    ) -> ChannelResolvedAccountRoute {
+        resolve_channel_account_route(
+            self.accounts.keys(),
+            self.default_account.as_deref(),
+            self.resolved_account_identity().id.as_str(),
+            requested_account_id,
+            selected_configured_account_id,
+        )
+    }
+
+    pub fn resolve_account(
+        &self,
+        requested_account_id: Option<&str>,
+    ) -> CliResult<ResolvedGoogleChatChannelConfig> {
+        let configured = self.resolve_configured_account_selection(requested_account_id)?;
+        let account_override = configured
+            .account_key
+            .as_deref()
+            .and_then(|key| self.accounts.get(key));
+
+        let merged = GoogleChatChannelConfig {
+            enabled: self.enabled
+                && account_override
+                    .and_then(|account| account.enabled)
+                    .unwrap_or(true),
+            account_id: account_override
+                .and_then(|account| account.account_id.clone())
+                .or_else(|| self.account_id.clone()),
+            default_account: None,
+            webhook_url: account_override
+                .and_then(|account| account.webhook_url.clone())
+                .or_else(|| self.webhook_url.clone()),
+            webhook_url_env: account_override
+                .and_then(|account| account.webhook_url_env.clone())
+                .or_else(|| self.webhook_url_env.clone()),
+            accounts: BTreeMap::new(),
+        };
+        let account = merged.resolved_account_identity();
+
+        Ok(ResolvedGoogleChatChannelConfig {
+            configured_account_id: configured.id,
+            configured_account_label: configured.label,
+            account,
+            enabled: merged.enabled,
+            webhook_url: merged.webhook_url,
+            webhook_url_env: merged.webhook_url_env,
+        })
+    }
+
+    pub fn resolve_account_for_session_account_id(
+        &self,
+        session_account_id: Option<&str>,
+    ) -> CliResult<ResolvedGoogleChatChannelConfig> {
+        resolve_account_for_session_account_id(
+            session_account_id,
+            || self.resolve_account(session_account_id),
+            || self.configured_account_ids(),
+            |configured_id| self.resolve_account(Some(configured_id)),
+            |resolved| resolved.account.id.as_str(),
+        )
+    }
+
+    pub fn resolved_account_identity(&self) -> ChannelAccountIdentity {
+        if let Some((id, label)) = resolve_configured_account_identity(self.account_id.as_deref()) {
+            return ChannelAccountIdentity {
+                id,
+                label,
+                source: ChannelAccountIdentitySource::Configured,
+            };
+        }
+
+        default_channel_account_identity()
+    }
+
+    fn resolve_configured_account_selection(
+        &self,
+        requested_account_id: Option<&str>,
+    ) -> CliResult<ResolvedConfiguredAccount> {
+        resolve_configured_account_selection(
+            self.accounts.keys(),
+            requested_account_id,
+            self.default_account.as_deref(),
+            self.resolved_account_identity().id.as_str(),
+        )
+    }
+}
+
+impl MattermostChannelConfig {
+    pub(crate) fn validate(&self) -> Vec<ConfigValidationIssue> {
+        let mut issues = Vec::new();
+        validate_channel_account_integrity(
+            &mut issues,
+            "mattermost",
+            self.default_account.as_deref(),
+            self.accounts.keys(),
+        );
+        validate_mattermost_env_pointer(
+            &mut issues,
+            "mattermost.server_url_env",
+            self.server_url_env.as_deref(),
+            "mattermost.server_url",
+        );
+        validate_mattermost_env_pointer(
+            &mut issues,
+            "mattermost.bot_token_env",
+            self.bot_token_env.as_deref(),
+            "mattermost.bot_token",
+        );
+        validate_mattermost_secret_ref_env_pointer(
+            &mut issues,
+            "mattermost.bot_token",
+            self.bot_token.as_ref(),
+        );
+        for (raw_account_id, account) in &self.accounts {
+            let account_id = normalize_channel_account_id(raw_account_id);
+            let server_url_field_path = format!("mattermost.accounts.{account_id}.server_url");
+            let server_url_env_field_path = format!("{server_url_field_path}_env");
+            validate_mattermost_env_pointer(
+                &mut issues,
+                server_url_env_field_path.as_str(),
+                account.server_url_env.as_deref(),
+                server_url_field_path.as_str(),
+            );
+            let bot_token_field_path = format!("mattermost.accounts.{account_id}.bot_token");
+            let bot_token_env_field_path = format!("{bot_token_field_path}_env");
+            validate_mattermost_env_pointer(
+                &mut issues,
+                bot_token_env_field_path.as_str(),
+                account.bot_token_env.as_deref(),
+                bot_token_field_path.as_str(),
+            );
+            validate_mattermost_secret_ref_env_pointer(
+                &mut issues,
+                bot_token_field_path.as_str(),
+                account.bot_token.as_ref(),
+            );
+        }
+        issues
+    }
+
+    pub fn server_url(&self) -> Option<String> {
+        resolve_string_with_legacy_env(self.server_url.as_deref(), self.server_url_env.as_deref())
+    }
+
+    pub fn bot_token(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(self.bot_token.as_ref(), self.bot_token_env.as_deref())
+    }
+
+    pub fn configured_account_ids(&self) -> Vec<String> {
+        let ids = configured_account_ids(self.accounts.keys());
+        if ids.is_empty() {
+            return vec![self.default_configured_account_id()];
+        }
+        ids
+    }
+
+    pub fn default_configured_account_selection(&self) -> ChannelDefaultAccountSelection {
+        resolve_default_configured_account_selection(
+            self.accounts.keys(),
+            self.default_account.as_deref(),
+            self.resolved_account_identity().id.as_str(),
+        )
+    }
+
+    pub fn default_configured_account_id(&self) -> String {
+        self.default_configured_account_selection().id
+    }
+
+    pub fn resolved_account_route(
+        &self,
+        requested_account_id: Option<&str>,
+        selected_configured_account_id: &str,
+    ) -> ChannelResolvedAccountRoute {
+        resolve_channel_account_route(
+            self.accounts.keys(),
+            self.default_account.as_deref(),
+            self.resolved_account_identity().id.as_str(),
+            requested_account_id,
+            selected_configured_account_id,
+        )
+    }
+
+    pub fn resolve_account(
+        &self,
+        requested_account_id: Option<&str>,
+    ) -> CliResult<ResolvedMattermostChannelConfig> {
+        let configured = self.resolve_configured_account_selection(requested_account_id)?;
+        let account_override = configured
+            .account_key
+            .as_deref()
+            .and_then(|key| self.accounts.get(key));
+
+        let merged = MattermostChannelConfig {
+            enabled: self.enabled
+                && account_override
+                    .and_then(|account| account.enabled)
+                    .unwrap_or(true),
+            account_id: account_override
+                .and_then(|account| account.account_id.clone())
+                .or_else(|| self.account_id.clone()),
+            default_account: None,
+            server_url: account_override
+                .and_then(|account| account.server_url.clone())
+                .or_else(|| self.server_url.clone()),
+            server_url_env: account_override
+                .and_then(|account| account.server_url_env.clone())
+                .or_else(|| self.server_url_env.clone()),
+            bot_token: account_override
+                .and_then(|account| account.bot_token.clone())
+                .or_else(|| self.bot_token.clone()),
+            bot_token_env: account_override
+                .and_then(|account| account.bot_token_env.clone())
+                .or_else(|| self.bot_token_env.clone()),
+            accounts: BTreeMap::new(),
+        };
+        let account = merged.resolved_account_identity();
+
+        Ok(ResolvedMattermostChannelConfig {
+            configured_account_id: configured.id,
+            configured_account_label: configured.label,
+            account,
+            enabled: merged.enabled,
+            server_url: merged.server_url,
+            server_url_env: merged.server_url_env,
+            bot_token: merged.bot_token,
+            bot_token_env: merged.bot_token_env,
+        })
+    }
+
+    pub fn resolve_account_for_session_account_id(
+        &self,
+        session_account_id: Option<&str>,
+    ) -> CliResult<ResolvedMattermostChannelConfig> {
+        resolve_account_for_session_account_id(
+            session_account_id,
+            || self.resolve_account(session_account_id),
+            || self.configured_account_ids(),
+            |configured_id| self.resolve_account(Some(configured_id)),
+            |resolved| resolved.account.id.as_str(),
+        )
+    }
+
+    pub fn resolved_account_identity(&self) -> ChannelAccountIdentity {
+        if let Some((id, label)) = resolve_configured_account_identity(self.account_id.as_deref()) {
+            return ChannelAccountIdentity {
+                id,
+                label,
+                source: ChannelAccountIdentitySource::Configured,
+            };
+        }
+
+        default_channel_account_identity()
+    }
+
+    fn resolve_configured_account_selection(
+        &self,
+        requested_account_id: Option<&str>,
+    ) -> CliResult<ResolvedConfiguredAccount> {
+        resolve_configured_account_selection(
+            self.accounts.keys(),
+            requested_account_id,
+            self.default_account.as_deref(),
+            self.resolved_account_identity().id.as_str(),
+        )
+    }
+}
+
+impl NextcloudTalkChannelConfig {
+    pub(crate) fn validate(&self) -> Vec<ConfigValidationIssue> {
+        let mut issues = Vec::new();
+        validate_channel_account_integrity(
+            &mut issues,
+            "nextcloud_talk",
+            self.default_account.as_deref(),
+            self.accounts.keys(),
+        );
+        validate_nextcloud_talk_env_pointer(
+            &mut issues,
+            "nextcloud_talk.server_url_env",
+            self.server_url_env.as_deref(),
+            "nextcloud_talk.server_url",
+        );
+        validate_nextcloud_talk_env_pointer(
+            &mut issues,
+            "nextcloud_talk.shared_secret_env",
+            self.shared_secret_env.as_deref(),
+            "nextcloud_talk.shared_secret",
+        );
+        validate_nextcloud_talk_secret_ref_env_pointer(
+            &mut issues,
+            "nextcloud_talk.shared_secret",
+            self.shared_secret.as_ref(),
+        );
+        for (raw_account_id, account) in &self.accounts {
+            let account_id = normalize_channel_account_id(raw_account_id);
+            let server_url_field_path = format!("nextcloud_talk.accounts.{account_id}.server_url");
+            let server_url_env_field_path = format!("{server_url_field_path}_env");
+            validate_nextcloud_talk_env_pointer(
+                &mut issues,
+                server_url_env_field_path.as_str(),
+                account.server_url_env.as_deref(),
+                server_url_field_path.as_str(),
+            );
+
+            let shared_secret_field_path =
+                format!("nextcloud_talk.accounts.{account_id}.shared_secret");
+            let shared_secret_env_field_path = format!("{shared_secret_field_path}_env");
+            validate_nextcloud_talk_env_pointer(
+                &mut issues,
+                shared_secret_env_field_path.as_str(),
+                account.shared_secret_env.as_deref(),
+                shared_secret_field_path.as_str(),
+            );
+            validate_nextcloud_talk_secret_ref_env_pointer(
+                &mut issues,
+                shared_secret_field_path.as_str(),
+                account.shared_secret.as_ref(),
+            );
+        }
+        issues
+    }
+
+    pub fn server_url(&self) -> Option<String> {
+        resolve_string_with_legacy_env(self.server_url.as_deref(), self.server_url_env.as_deref())
+    }
+
+    pub fn shared_secret(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(
+            self.shared_secret.as_ref(),
+            self.shared_secret_env.as_deref(),
+        )
+    }
+
+    pub fn configured_account_ids(&self) -> Vec<String> {
+        let ids = configured_account_ids(self.accounts.keys());
+        if ids.is_empty() {
+            return vec![self.default_configured_account_id()];
+        }
+        ids
+    }
+
+    pub fn default_configured_account_selection(&self) -> ChannelDefaultAccountSelection {
+        resolve_default_configured_account_selection(
+            self.accounts.keys(),
+            self.default_account.as_deref(),
+            self.resolved_account_identity().id.as_str(),
+        )
+    }
+
+    pub fn default_configured_account_id(&self) -> String {
+        self.default_configured_account_selection().id
+    }
+
+    pub fn resolved_account_route(
+        &self,
+        requested_account_id: Option<&str>,
+        selected_configured_account_id: &str,
+    ) -> ChannelResolvedAccountRoute {
+        resolve_channel_account_route(
+            self.accounts.keys(),
+            self.default_account.as_deref(),
+            self.resolved_account_identity().id.as_str(),
+            requested_account_id,
+            selected_configured_account_id,
+        )
+    }
+
+    pub fn resolve_account(
+        &self,
+        requested_account_id: Option<&str>,
+    ) -> CliResult<ResolvedNextcloudTalkChannelConfig> {
+        let configured = self.resolve_configured_account_selection(requested_account_id)?;
+        let account_override = configured
+            .account_key
+            .as_deref()
+            .and_then(|key| self.accounts.get(key));
+
+        let merged = NextcloudTalkChannelConfig {
+            enabled: self.enabled
+                && account_override
+                    .and_then(|account| account.enabled)
+                    .unwrap_or(true),
+            account_id: account_override
+                .and_then(|account| account.account_id.clone())
+                .or_else(|| self.account_id.clone()),
+            default_account: None,
+            server_url: account_override
+                .and_then(|account| account.server_url.clone())
+                .or_else(|| self.server_url.clone()),
+            server_url_env: account_override
+                .and_then(|account| account.server_url_env.clone())
+                .or_else(|| self.server_url_env.clone()),
+            shared_secret: account_override
+                .and_then(|account| account.shared_secret.clone())
+                .or_else(|| self.shared_secret.clone()),
+            shared_secret_env: account_override
+                .and_then(|account| account.shared_secret_env.clone())
+                .or_else(|| self.shared_secret_env.clone()),
+            accounts: BTreeMap::new(),
+        };
+        let account = merged.resolved_account_identity();
+
+        Ok(ResolvedNextcloudTalkChannelConfig {
+            configured_account_id: configured.id,
+            configured_account_label: configured.label,
+            account,
+            enabled: merged.enabled,
+            server_url: merged.server_url,
+            server_url_env: merged.server_url_env,
+            shared_secret: merged.shared_secret,
+            shared_secret_env: merged.shared_secret_env,
+        })
+    }
+
+    pub fn resolve_account_for_session_account_id(
+        &self,
+        session_account_id: Option<&str>,
+    ) -> CliResult<ResolvedNextcloudTalkChannelConfig> {
+        resolve_account_for_session_account_id(
+            session_account_id,
+            || self.resolve_account(session_account_id),
+            || self.configured_account_ids(),
+            |configured_id| self.resolve_account(Some(configured_id)),
+            |resolved| resolved.account.id.as_str(),
+        )
+    }
+
+    pub fn resolved_account_identity(&self) -> ChannelAccountIdentity {
+        if let Some((id, label)) = resolve_configured_account_identity(self.account_id.as_deref()) {
+            return ChannelAccountIdentity {
+                id,
+                label,
+                source: ChannelAccountIdentitySource::Configured,
+            };
+        }
+
+        default_channel_account_identity()
+    }
+
+    fn resolve_configured_account_selection(
+        &self,
+        requested_account_id: Option<&str>,
+    ) -> CliResult<ResolvedConfiguredAccount> {
+        resolve_configured_account_selection(
+            self.accounts.keys(),
+            requested_account_id,
+            self.default_account.as_deref(),
+            self.resolved_account_identity().id.as_str(),
+        )
+    }
+}
+
+impl SynologyChatChannelConfig {
+    pub(crate) fn validate(&self) -> Vec<ConfigValidationIssue> {
+        let mut issues = Vec::new();
+        validate_channel_account_integrity(
+            &mut issues,
+            "synology_chat",
+            self.default_account.as_deref(),
+            self.accounts.keys(),
+        );
+        validate_synology_chat_env_pointer(
+            &mut issues,
+            "synology_chat.token_env",
+            self.token_env.as_deref(),
+            "synology_chat.token",
+        );
+        validate_synology_chat_secret_ref_env_pointer(
+            &mut issues,
+            "synology_chat.token",
+            self.token.as_ref(),
+        );
+        validate_synology_chat_env_pointer(
+            &mut issues,
+            "synology_chat.incoming_url_env",
+            self.incoming_url_env.as_deref(),
+            "synology_chat.incoming_url",
+        );
+        validate_synology_chat_secret_ref_env_pointer(
+            &mut issues,
+            "synology_chat.incoming_url",
+            self.incoming_url.as_ref(),
+        );
+        for (raw_account_id, account) in &self.accounts {
+            let account_id = normalize_channel_account_id(raw_account_id);
+
+            let token_field_path = format!("synology_chat.accounts.{account_id}.token");
+            let token_env_field_path = format!("{token_field_path}_env");
+            validate_synology_chat_env_pointer(
+                &mut issues,
+                token_env_field_path.as_str(),
+                account.token_env.as_deref(),
+                token_field_path.as_str(),
+            );
+            validate_synology_chat_secret_ref_env_pointer(
+                &mut issues,
+                token_field_path.as_str(),
+                account.token.as_ref(),
+            );
+
+            let incoming_url_field_path =
+                format!("synology_chat.accounts.{account_id}.incoming_url");
+            let incoming_url_env_field_path = format!("{incoming_url_field_path}_env");
+            validate_synology_chat_env_pointer(
+                &mut issues,
+                incoming_url_env_field_path.as_str(),
+                account.incoming_url_env.as_deref(),
+                incoming_url_field_path.as_str(),
+            );
+            validate_synology_chat_secret_ref_env_pointer(
+                &mut issues,
+                incoming_url_field_path.as_str(),
+                account.incoming_url.as_ref(),
+            );
+        }
+        issues
+    }
+
+    pub fn token(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(self.token.as_ref(), self.token_env.as_deref())
+    }
+
+    pub fn incoming_url(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(self.incoming_url.as_ref(), self.incoming_url_env.as_deref())
+    }
+
+    pub fn configured_account_ids(&self) -> Vec<String> {
+        let ids = configured_account_ids(self.accounts.keys());
+        if ids.is_empty() {
+            return vec![self.default_configured_account_id()];
+        }
+        ids
+    }
+
+    pub fn default_configured_account_selection(&self) -> ChannelDefaultAccountSelection {
+        resolve_default_configured_account_selection(
+            self.accounts.keys(),
+            self.default_account.as_deref(),
+            self.resolved_account_identity().id.as_str(),
+        )
+    }
+
+    pub fn default_configured_account_id(&self) -> String {
+        self.default_configured_account_selection().id
+    }
+
+    pub fn resolved_account_route(
+        &self,
+        requested_account_id: Option<&str>,
+        selected_configured_account_id: &str,
+    ) -> ChannelResolvedAccountRoute {
+        resolve_channel_account_route(
+            self.accounts.keys(),
+            self.default_account.as_deref(),
+            self.resolved_account_identity().id.as_str(),
+            requested_account_id,
+            selected_configured_account_id,
+        )
+    }
+
+    pub fn resolve_account(
+        &self,
+        requested_account_id: Option<&str>,
+    ) -> CliResult<ResolvedSynologyChatChannelConfig> {
+        let configured = self.resolve_configured_account_selection(requested_account_id)?;
+        let account_override = configured
+            .account_key
+            .as_deref()
+            .and_then(|key| self.accounts.get(key));
+
+        let merged = SynologyChatChannelConfig {
+            enabled: self.enabled
+                && account_override
+                    .and_then(|account| account.enabled)
+                    .unwrap_or(true),
+            account_id: account_override
+                .and_then(|account| account.account_id.clone())
+                .or_else(|| self.account_id.clone()),
+            default_account: None,
+            token: account_override
+                .and_then(|account| account.token.clone())
+                .or_else(|| self.token.clone()),
+            token_env: account_override
+                .and_then(|account| account.token_env.clone())
+                .or_else(|| self.token_env.clone()),
+            incoming_url: account_override
+                .and_then(|account| account.incoming_url.clone())
+                .or_else(|| self.incoming_url.clone()),
+            incoming_url_env: account_override
+                .and_then(|account| account.incoming_url_env.clone())
+                .or_else(|| self.incoming_url_env.clone()),
+            allowed_user_ids: account_override
+                .and_then(|account| account.allowed_user_ids.clone())
+                .unwrap_or_else(|| self.allowed_user_ids.clone()),
+            accounts: BTreeMap::new(),
+        };
+        let account = merged.resolved_account_identity();
+
+        Ok(ResolvedSynologyChatChannelConfig {
+            configured_account_id: configured.id,
+            configured_account_label: configured.label,
+            account,
+            enabled: merged.enabled,
+            token: merged.token,
+            token_env: merged.token_env,
+            incoming_url: merged.incoming_url,
+            incoming_url_env: merged.incoming_url_env,
+            allowed_user_ids: merged.allowed_user_ids,
+        })
+    }
+
+    pub fn resolve_account_for_session_account_id(
+        &self,
+        session_account_id: Option<&str>,
+    ) -> CliResult<ResolvedSynologyChatChannelConfig> {
         resolve_account_for_session_account_id(
             session_account_id,
             || self.resolve_account(session_account_id),
@@ -2849,6 +4425,10 @@ fn default_discord_bot_token_env() -> Option<String> {
     Some(DISCORD_BOT_TOKEN_ENV.to_owned())
 }
 
+fn default_line_api_base_url() -> String {
+    "https://api.line.me/v2/bot".to_owned()
+}
+
 fn default_signal_service_url() -> String {
     "http://127.0.0.1:8080".to_owned()
 }
@@ -3187,6 +4767,100 @@ fn validate_discord_env_pointer(
     }
 }
 
+fn validate_line_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    env_key: Option<&str>,
+    inline_field_path: &str,
+) {
+    let example_env_name = if field_path.ends_with("channel_secret_env") {
+        LINE_CHANNEL_SECRET_ENV
+    } else {
+        LINE_CHANNEL_ACCESS_TOKEN_ENV
+    };
+    if let Err(issue) = validate_env_pointer_field(
+        field_path,
+        env_key,
+        EnvPointerValidationHint {
+            inline_field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_line_secret_ref_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    secret_ref: Option<&SecretRef>,
+) {
+    let example_env_name = if field_path.ends_with("channel_secret") {
+        LINE_CHANNEL_SECRET_ENV
+    } else {
+        LINE_CHANNEL_ACCESS_TOKEN_ENV
+    };
+    if let Err(issue) = validate_secret_ref_env_pointer_field(
+        field_path,
+        secret_ref,
+        EnvPointerValidationHint {
+            inline_field_path: field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_dingtalk_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    env_key: Option<&str>,
+    inline_field_path: &str,
+) {
+    let example_env_name = if field_path.ends_with("secret_env") {
+        DINGTALK_SECRET_ENV
+    } else {
+        DINGTALK_WEBHOOK_URL_ENV
+    };
+    if let Err(issue) = validate_env_pointer_field(
+        field_path,
+        env_key,
+        EnvPointerValidationHint {
+            inline_field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_dingtalk_secret_ref_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    secret_ref: Option<&SecretRef>,
+) {
+    let example_env_name = if field_path.ends_with("secret") {
+        DINGTALK_SECRET_ENV
+    } else {
+        DINGTALK_WEBHOOK_URL_ENV
+    };
+    if let Err(issue) = validate_secret_ref_env_pointer_field(
+        field_path,
+        secret_ref,
+        EnvPointerValidationHint {
+            inline_field_path: field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
 fn validate_discord_secret_ref_env_pointer(
     issues: &mut Vec<ConfigValidationIssue>,
     field_path: &str,
@@ -3198,6 +4872,132 @@ fn validate_discord_secret_ref_env_pointer(
         EnvPointerValidationHint {
             inline_field_path: field_path,
             example_env_name: DISCORD_BOT_TOKEN_ENV,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_google_chat_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    env_key: Option<&str>,
+    inline_field_path: &str,
+) {
+    if let Err(issue) = validate_env_pointer_field(
+        field_path,
+        env_key,
+        EnvPointerValidationHint {
+            inline_field_path,
+            example_env_name: GOOGLE_CHAT_WEBHOOK_URL_ENV,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_google_chat_secret_ref_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    secret_ref: Option<&SecretRef>,
+) {
+    if let Err(issue) = validate_secret_ref_env_pointer_field(
+        field_path,
+        secret_ref,
+        EnvPointerValidationHint {
+            inline_field_path: field_path,
+            example_env_name: GOOGLE_CHAT_WEBHOOK_URL_ENV,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_nextcloud_talk_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    env_key: Option<&str>,
+    inline_field_path: &str,
+) {
+    let example_env_name = if field_path.ends_with("shared_secret_env") {
+        NEXTCLOUD_TALK_SHARED_SECRET_ENV
+    } else {
+        NEXTCLOUD_TALK_SERVER_URL_ENV
+    };
+    if let Err(issue) = validate_env_pointer_field(
+        field_path,
+        env_key,
+        EnvPointerValidationHint {
+            inline_field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_nextcloud_talk_secret_ref_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    secret_ref: Option<&SecretRef>,
+) {
+    if let Err(issue) = validate_secret_ref_env_pointer_field(
+        field_path,
+        secret_ref,
+        EnvPointerValidationHint {
+            inline_field_path: field_path,
+            example_env_name: NEXTCLOUD_TALK_SHARED_SECRET_ENV,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_synology_chat_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    env_key: Option<&str>,
+    inline_field_path: &str,
+) {
+    let example_env_name = if field_path.ends_with("incoming_url_env") {
+        SYNOLOGY_CHAT_INCOMING_URL_ENV
+    } else {
+        SYNOLOGY_CHAT_TOKEN_ENV
+    };
+    if let Err(issue) = validate_env_pointer_field(
+        field_path,
+        env_key,
+        EnvPointerValidationHint {
+            inline_field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_synology_chat_secret_ref_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    secret_ref: Option<&SecretRef>,
+) {
+    let example_env_name = if field_path.ends_with("incoming_url") {
+        SYNOLOGY_CHAT_INCOMING_URL_ENV
+    } else {
+        SYNOLOGY_CHAT_TOKEN_ENV
+    };
+    if let Err(issue) = validate_secret_ref_env_pointer_field(
+        field_path,
+        secret_ref,
+        EnvPointerValidationHint {
+            inline_field_path: field_path,
+            example_env_name,
             detect_telegram_token_shape: false,
         },
     ) {
@@ -3222,6 +5022,48 @@ fn validate_signal_env_pointer(
         EnvPointerValidationHint {
             inline_field_path,
             example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_mattermost_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    env_key: Option<&str>,
+    inline_field_path: &str,
+) {
+    let example_env_name = if field_path.ends_with("server_url_env") {
+        MATTERMOST_SERVER_URL_ENV
+    } else {
+        MATTERMOST_BOT_TOKEN_ENV
+    };
+    if let Err(issue) = validate_env_pointer_field(
+        field_path,
+        env_key,
+        EnvPointerValidationHint {
+            inline_field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_mattermost_secret_ref_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    secret_ref: Option<&SecretRef>,
+) {
+    if let Err(issue) = validate_secret_ref_env_pointer_field(
+        field_path,
+        secret_ref,
+        EnvPointerValidationHint {
+            inline_field_path: field_path,
+            example_env_name: MATTERMOST_BOT_TOKEN_ENV,
             detect_telegram_token_shape: false,
         },
     ) {
@@ -4241,6 +6083,562 @@ mod tests {
             resolved.acp.resolved_working_directory(),
             Some(std::path::PathBuf::from("/workspace/work-bot"))
         );
+    }
+
+    #[test]
+    fn line_resolves_account_credentials_from_env_pointers() {
+        let mut env = crate::test_support::ScopedEnv::new();
+        env.set("TEST_LINE_CHANNEL_ACCESS_TOKEN", "line-access-token");
+        env.set("TEST_LINE_CHANNEL_SECRET", "line-channel-secret");
+
+        let config_value = json!({
+            "enabled": true,
+            "account_id": "Line-Primary",
+            "channel_access_token_env": "TEST_LINE_CHANNEL_ACCESS_TOKEN",
+            "channel_secret_env": "TEST_LINE_CHANNEL_SECRET"
+        });
+        let config: LineChannelConfig =
+            serde_json::from_value(config_value).expect("deserialize line config");
+
+        let resolved = config
+            .resolve_account(None)
+            .expect("resolve default line account");
+        let channel_access_token = resolved.channel_access_token();
+        let channel_secret = resolved.channel_secret();
+
+        assert_eq!(resolved.configured_account_id, "line-primary");
+        assert_eq!(resolved.account.id, "line-primary");
+        assert_eq!(resolved.account.label, "Line-Primary");
+        assert_eq!(channel_access_token.as_deref(), Some("line-access-token"));
+        assert_eq!(channel_secret.as_deref(), Some("line-channel-secret"));
+        assert_eq!(
+            resolved.resolved_api_base_url(),
+            "https://api.line.me/v2/bot"
+        );
+    }
+
+    #[test]
+    fn line_multi_account_resolution_merges_base_and_account_overrides() {
+        let config_value = json!({
+            "enabled": true,
+            "account_id": "Line-Shared",
+            "channel_access_token": "base-line-token",
+            "default_account": "Marketing",
+            "accounts": {
+                "Marketing": {
+                    "account_id": "Line-Marketing",
+                    "channel_access_token": "marketing-line-token"
+                },
+                "Backup": {
+                    "enabled": false,
+                    "channel_secret": "backup-secret",
+                    "api_base_url": "https://line.example.test/v2/bot"
+                }
+            }
+        });
+        let config: LineChannelConfig =
+            serde_json::from_value(config_value).expect("deserialize line multi-account config");
+
+        assert_eq!(config.configured_account_ids(), vec!["backup", "marketing"]);
+        assert_eq!(config.default_configured_account_id(), "marketing");
+
+        let marketing = config
+            .resolve_account(None)
+            .expect("resolve default line account");
+        let marketing_channel_access_token = marketing.channel_access_token();
+
+        assert_eq!(marketing.configured_account_id, "marketing");
+        assert_eq!(marketing.account.id, "line-marketing");
+        assert_eq!(marketing.account.label, "Line-Marketing");
+        assert_eq!(
+            marketing_channel_access_token.as_deref(),
+            Some("marketing-line-token")
+        );
+        assert_eq!(marketing.channel_secret(), None);
+        assert_eq!(
+            marketing.resolved_api_base_url(),
+            "https://api.line.me/v2/bot"
+        );
+
+        let backup = config
+            .resolve_account(Some("Backup"))
+            .expect("resolve explicit line account");
+        let backup_channel_access_token = backup.channel_access_token();
+        let backup_channel_secret = backup.channel_secret();
+
+        assert_eq!(backup.configured_account_id, "backup");
+        assert!(!backup.enabled);
+        assert_eq!(backup.account.id, "line-shared");
+        assert_eq!(backup.account.label, "Line-Shared");
+        assert_eq!(
+            backup_channel_access_token.as_deref(),
+            Some("base-line-token")
+        );
+        assert_eq!(backup_channel_secret.as_deref(), Some("backup-secret"));
+        assert_eq!(
+            backup.resolved_api_base_url(),
+            "https://line.example.test/v2/bot"
+        );
+    }
+
+    #[test]
+    fn dingtalk_resolves_webhook_url_and_secret_from_env_pointers() {
+        let mut env = crate::test_support::ScopedEnv::new();
+        env.set(
+            "TEST_DINGTALK_WEBHOOK_URL",
+            "https://oapi.dingtalk.com/robot/send?access_token=test-token",
+        );
+        env.set("TEST_DINGTALK_SECRET", "ding-secret");
+
+        let config_value = json!({
+            "enabled": true,
+            "account_id": "DingTalk-Primary",
+            "webhook_url_env": "TEST_DINGTALK_WEBHOOK_URL",
+            "secret_env": "TEST_DINGTALK_SECRET"
+        });
+        let config: DingtalkChannelConfig =
+            serde_json::from_value(config_value).expect("deserialize dingtalk config");
+
+        let resolved = config
+            .resolve_account(None)
+            .expect("resolve default dingtalk account");
+        let webhook_url = resolved.webhook_url();
+        let secret = resolved.secret();
+
+        assert_eq!(resolved.configured_account_id, "dingtalk-primary");
+        assert_eq!(resolved.account.id, "dingtalk-primary");
+        assert_eq!(resolved.account.label, "DingTalk-Primary");
+        assert_eq!(
+            webhook_url.as_deref(),
+            Some("https://oapi.dingtalk.com/robot/send?access_token=test-token")
+        );
+        assert_eq!(secret.as_deref(), Some("ding-secret"));
+    }
+
+    #[test]
+    fn dingtalk_multi_account_resolution_merges_base_and_account_overrides() {
+        let config_value = json!({
+            "enabled": true,
+            "account_id": "DingTalk-Shared",
+            "webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=base-token",
+            "secret": "base-secret",
+            "default_account": "Ops",
+            "accounts": {
+                "Ops": {
+                    "account_id": "DingTalk-Ops",
+                    "webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=ops-token"
+                },
+                "Backup": {
+                    "enabled": false,
+                    "secret": "backup-secret"
+                }
+            }
+        });
+        let config: DingtalkChannelConfig = serde_json::from_value(config_value)
+            .expect("deserialize dingtalk multi-account config");
+
+        assert_eq!(config.configured_account_ids(), vec!["backup", "ops"]);
+        assert_eq!(config.default_configured_account_id(), "ops");
+
+        let ops = config
+            .resolve_account(None)
+            .expect("resolve default dingtalk account");
+        let ops_webhook_url = ops.webhook_url();
+        let ops_secret = ops.secret();
+
+        assert_eq!(ops.configured_account_id, "ops");
+        assert_eq!(ops.account.id, "dingtalk-ops");
+        assert_eq!(ops.account.label, "DingTalk-Ops");
+        assert_eq!(
+            ops_webhook_url.as_deref(),
+            Some("https://oapi.dingtalk.com/robot/send?access_token=ops-token")
+        );
+        assert_eq!(ops_secret.as_deref(), Some("base-secret"));
+
+        let backup = config
+            .resolve_account(Some("Backup"))
+            .expect("resolve explicit dingtalk account");
+        let backup_webhook_url = backup.webhook_url();
+        let backup_secret = backup.secret();
+
+        assert_eq!(backup.configured_account_id, "backup");
+        assert!(!backup.enabled);
+        assert_eq!(backup.account.id, "dingtalk-shared");
+        assert_eq!(backup.account.label, "DingTalk-Shared");
+        assert_eq!(
+            backup_webhook_url.as_deref(),
+            Some("https://oapi.dingtalk.com/robot/send?access_token=base-token")
+        );
+        assert_eq!(backup_secret.as_deref(), Some("backup-secret"));
+    }
+
+    #[test]
+    fn google_chat_resolves_webhook_url_from_env_pointers() {
+        let mut env = crate::test_support::ScopedEnv::new();
+        env.set(
+            "TEST_GOOGLE_CHAT_WEBHOOK_URL",
+            "https://chat.googleapis.com/v1/spaces/AAAA/messages?key=test-key&token=test-token",
+        );
+
+        let config_value = json!({
+            "enabled": true,
+            "account_id": "Google-Chat-Primary",
+            "webhook_url_env": "TEST_GOOGLE_CHAT_WEBHOOK_URL"
+        });
+        let config: GoogleChatChannelConfig =
+            serde_json::from_value(config_value).expect("deserialize google chat config");
+
+        let resolved = config
+            .resolve_account(None)
+            .expect("resolve default google chat account");
+        let webhook_url = resolved.webhook_url();
+
+        assert_eq!(resolved.configured_account_id, "google-chat-primary");
+        assert_eq!(resolved.account.id, "google-chat-primary");
+        assert_eq!(resolved.account.label, "Google-Chat-Primary");
+        assert_eq!(
+            webhook_url.as_deref(),
+            Some(
+                "https://chat.googleapis.com/v1/spaces/AAAA/messages?key=test-key&token=test-token"
+            )
+        );
+    }
+
+    #[test]
+    fn google_chat_multi_account_resolution_merges_base_and_account_overrides() {
+        let config_value = json!({
+            "enabled": true,
+            "account_id": "Google-Chat-Shared",
+            "webhook_url": "https://chat.googleapis.com/v1/spaces/AAAA/messages?key=base-key&token=base-token",
+            "default_account": "Announcements",
+            "accounts": {
+                "Announcements": {
+                    "account_id": "Google-Chat-Announcements",
+                    "webhook_url": "https://chat.googleapis.com/v1/spaces/BBBB/messages?key=ann-key&token=ann-token"
+                },
+                "Backup": {
+                    "enabled": false
+                }
+            }
+        });
+        let config: GoogleChatChannelConfig = serde_json::from_value(config_value)
+            .expect("deserialize google chat multi-account config");
+
+        assert_eq!(
+            config.configured_account_ids(),
+            vec!["announcements", "backup"]
+        );
+        assert_eq!(config.default_configured_account_id(), "announcements");
+
+        let announcements = config
+            .resolve_account(None)
+            .expect("resolve default google chat account");
+        let announcements_webhook_url = announcements.webhook_url();
+
+        assert_eq!(announcements.configured_account_id, "announcements");
+        assert_eq!(announcements.account.id, "google-chat-announcements");
+        assert_eq!(announcements.account.label, "Google-Chat-Announcements");
+        assert_eq!(
+            announcements_webhook_url.as_deref(),
+            Some("https://chat.googleapis.com/v1/spaces/BBBB/messages?key=ann-key&token=ann-token")
+        );
+
+        let backup = config
+            .resolve_account(Some("Backup"))
+            .expect("resolve explicit google chat account");
+        let backup_webhook_url = backup.webhook_url();
+
+        assert_eq!(backup.configured_account_id, "backup");
+        assert!(!backup.enabled);
+        assert_eq!(backup.account.id, "google-chat-shared");
+        assert_eq!(backup.account.label, "Google-Chat-Shared");
+        assert_eq!(
+            backup_webhook_url.as_deref(),
+            Some(
+                "https://chat.googleapis.com/v1/spaces/AAAA/messages?key=base-key&token=base-token"
+            )
+        );
+    }
+
+    #[test]
+    fn nextcloud_talk_resolves_server_url_and_shared_secret_from_env_pointers() {
+        let mut env = crate::test_support::ScopedEnv::new();
+        env.set(
+            "TEST_NEXTCLOUD_TALK_SERVER_URL",
+            "https://cloud.example.test",
+        );
+        env.set(
+            "TEST_NEXTCLOUD_TALK_SHARED_SECRET",
+            "nextcloud-shared-secret",
+        );
+
+        let config_value = json!({
+            "enabled": true,
+            "account_id": "Nextcloud-Primary",
+            "server_url_env": "TEST_NEXTCLOUD_TALK_SERVER_URL",
+            "shared_secret_env": "TEST_NEXTCLOUD_TALK_SHARED_SECRET"
+        });
+        let config: NextcloudTalkChannelConfig =
+            serde_json::from_value(config_value).expect("deserialize nextcloud talk config");
+
+        let resolved = config
+            .resolve_account(None)
+            .expect("resolve default nextcloud talk account");
+        let server_url = resolved.server_url();
+        let shared_secret = resolved.shared_secret();
+
+        assert_eq!(resolved.configured_account_id, "nextcloud-primary");
+        assert_eq!(resolved.account.id, "nextcloud-primary");
+        assert_eq!(resolved.account.label, "Nextcloud-Primary");
+        assert_eq!(server_url.as_deref(), Some("https://cloud.example.test"));
+        assert_eq!(shared_secret.as_deref(), Some("nextcloud-shared-secret"));
+    }
+
+    #[test]
+    fn nextcloud_talk_multi_account_resolution_merges_base_and_account_overrides() {
+        let config_value = json!({
+            "enabled": true,
+            "account_id": "Nextcloud-Shared",
+            "server_url": "https://cloud.example.test",
+            "shared_secret": "base-shared-secret",
+            "default_account": "Ops",
+            "accounts": {
+                "Ops": {
+                    "account_id": "Nextcloud-Ops",
+                    "server_url": "https://ops.example.test"
+                },
+                "Backup": {
+                    "enabled": false,
+                    "shared_secret": "backup-shared-secret"
+                }
+            }
+        });
+        let config: NextcloudTalkChannelConfig = serde_json::from_value(config_value)
+            .expect("deserialize nextcloud talk multi-account config");
+
+        assert_eq!(config.configured_account_ids(), vec!["backup", "ops"]);
+        assert_eq!(config.default_configured_account_id(), "ops");
+
+        let ops = config
+            .resolve_account(None)
+            .expect("resolve default nextcloud talk account");
+        let ops_server_url = ops.server_url();
+        let ops_shared_secret = ops.shared_secret();
+
+        assert_eq!(ops.configured_account_id, "ops");
+        assert_eq!(ops.account.id, "nextcloud-ops");
+        assert_eq!(ops.account.label, "Nextcloud-Ops");
+        assert_eq!(ops_server_url.as_deref(), Some("https://ops.example.test"));
+        assert_eq!(ops_shared_secret.as_deref(), Some("base-shared-secret"));
+
+        let backup = config
+            .resolve_account(Some("Backup"))
+            .expect("resolve explicit nextcloud talk account");
+        let backup_server_url = backup.server_url();
+        let backup_shared_secret = backup.shared_secret();
+
+        assert_eq!(backup.configured_account_id, "backup");
+        assert!(!backup.enabled);
+        assert_eq!(backup.account.id, "nextcloud-shared");
+        assert_eq!(backup.account.label, "Nextcloud-Shared");
+        assert_eq!(
+            backup_server_url.as_deref(),
+            Some("https://cloud.example.test")
+        );
+        assert_eq!(
+            backup_shared_secret.as_deref(),
+            Some("backup-shared-secret")
+        );
+    }
+
+    #[test]
+    fn synology_chat_resolves_token_and_incoming_url_from_env_pointers() {
+        let mut env = crate::test_support::ScopedEnv::new();
+        env.set("TEST_SYNOLOGY_CHAT_TOKEN", "synology-outgoing-token");
+        env.set(
+            "TEST_SYNOLOGY_CHAT_INCOMING_URL",
+            "https://chat.example.test/webapi/entry.cgi?api=SYNO.Chat.External&method=incoming&version=2&token=secret-token",
+        );
+
+        let config_value = json!({
+            "enabled": true,
+            "account_id": "Synology-Ops",
+            "token_env": "TEST_SYNOLOGY_CHAT_TOKEN",
+            "incoming_url_env": "TEST_SYNOLOGY_CHAT_INCOMING_URL",
+            "allowed_user_ids": [42]
+        });
+        let config: SynologyChatChannelConfig =
+            serde_json::from_value(config_value).expect("deserialize synology chat config");
+
+        let resolved = config
+            .resolve_account(None)
+            .expect("resolve default synology chat account");
+        let token = resolved.token();
+        let incoming_url = resolved.incoming_url();
+
+        assert_eq!(resolved.configured_account_id, "synology-ops");
+        assert_eq!(resolved.account.id, "synology-ops");
+        assert_eq!(resolved.account.label, "Synology-Ops");
+        assert_eq!(token.as_deref(), Some("synology-outgoing-token"));
+        assert_eq!(
+            incoming_url.as_deref(),
+            Some(
+                "https://chat.example.test/webapi/entry.cgi?api=SYNO.Chat.External&method=incoming&version=2&token=secret-token"
+            )
+        );
+        assert_eq!(resolved.allowed_user_ids, vec![42]);
+    }
+
+    #[test]
+    fn synology_chat_multi_account_resolution_merges_base_and_account_overrides() {
+        let config_value = json!({
+            "enabled": true,
+            "account_id": "Synology-Shared",
+            "token": "base-synology-token",
+            "incoming_url": "https://chat.example.test/webapi/entry.cgi?token=base-token",
+            "allowed_user_ids": [1, 2],
+            "default_account": "Ops",
+            "accounts": {
+                "Ops": {
+                    "account_id": "Synology-Ops",
+                    "incoming_url": "https://ops.example.test/webapi/entry.cgi?token=ops-token"
+                },
+                "Backup": {
+                    "enabled": false,
+                    "token": "backup-synology-token",
+                    "allowed_user_ids": [9]
+                }
+            }
+        });
+        let config: SynologyChatChannelConfig = serde_json::from_value(config_value)
+            .expect("deserialize synology chat multi-account config");
+
+        assert_eq!(config.configured_account_ids(), vec!["backup", "ops"]);
+        assert_eq!(config.default_configured_account_id(), "ops");
+
+        let ops = config
+            .resolve_account(None)
+            .expect("resolve default synology chat account");
+        let ops_token = ops.token();
+        let ops_incoming_url = ops.incoming_url();
+
+        assert_eq!(ops.configured_account_id, "ops");
+        assert_eq!(ops.account.id, "synology-ops");
+        assert_eq!(ops.account.label, "Synology-Ops");
+        assert_eq!(ops_token.as_deref(), Some("base-synology-token"));
+        assert_eq!(
+            ops_incoming_url.as_deref(),
+            Some("https://ops.example.test/webapi/entry.cgi?token=ops-token")
+        );
+        assert_eq!(ops.allowed_user_ids, vec![1, 2]);
+
+        let backup = config
+            .resolve_account(Some("Backup"))
+            .expect("resolve explicit synology chat account");
+        let backup_token = backup.token();
+        let backup_incoming_url = backup.incoming_url();
+
+        assert_eq!(backup.configured_account_id, "backup");
+        assert!(!backup.enabled);
+        assert_eq!(backup.account.id, "synology-shared");
+        assert_eq!(backup.account.label, "Synology-Shared");
+        assert_eq!(backup_token.as_deref(), Some("backup-synology-token"));
+        assert_eq!(
+            backup_incoming_url.as_deref(),
+            Some("https://chat.example.test/webapi/entry.cgi?token=base-token")
+        );
+        assert_eq!(backup.allowed_user_ids, vec![9]);
+    }
+
+    #[test]
+    fn mattermost_resolves_server_url_and_bot_token_from_env_pointers() {
+        let mut env = crate::test_support::ScopedEnv::new();
+        env.set(
+            "TEST_MATTERMOST_SERVER_URL",
+            "https://mattermost.example.test",
+        );
+        env.set("TEST_MATTERMOST_BOT_TOKEN", "mattermost-token");
+
+        let config_value = json!({
+            "enabled": true,
+            "account_id": "Mattermost-Ops",
+            "server_url_env": "TEST_MATTERMOST_SERVER_URL",
+            "bot_token_env": "TEST_MATTERMOST_BOT_TOKEN"
+        });
+        let config: MattermostChannelConfig =
+            serde_json::from_value(config_value).expect("deserialize mattermost config");
+
+        let resolved = config
+            .resolve_account(None)
+            .expect("resolve default mattermost account");
+        let server_url = resolved.server_url();
+        let bot_token = resolved.bot_token();
+
+        assert_eq!(resolved.configured_account_id, "mattermost-ops");
+        assert_eq!(resolved.account.id, "mattermost-ops");
+        assert_eq!(resolved.account.label, "Mattermost-Ops");
+        assert_eq!(
+            server_url.as_deref(),
+            Some("https://mattermost.example.test")
+        );
+        assert_eq!(bot_token.as_deref(), Some("mattermost-token"));
+    }
+
+    #[test]
+    fn mattermost_multi_account_resolution_merges_base_and_account_overrides() {
+        let config_value = json!({
+            "enabled": true,
+            "account_id": "Mattermost-Shared",
+            "server_url": "https://mattermost.example.test",
+            "bot_token": "base-mattermost-token",
+            "default_account": "Ops",
+            "accounts": {
+                "Ops": {
+                    "account_id": "Mattermost-Ops",
+                    "bot_token": "ops-mattermost-token"
+                },
+                "Backup": {
+                    "enabled": false,
+                    "server_url": "https://backup-mattermost.example.test"
+                }
+            }
+        });
+        let config: MattermostChannelConfig = serde_json::from_value(config_value)
+            .expect("deserialize mattermost multi-account config");
+
+        assert_eq!(config.configured_account_ids(), vec!["backup", "ops"]);
+        assert_eq!(config.default_configured_account_id(), "ops");
+
+        let ops = config
+            .resolve_account(None)
+            .expect("resolve default mattermost account");
+        let ops_server_url = ops.server_url();
+        let ops_bot_token = ops.bot_token();
+
+        assert_eq!(ops.configured_account_id, "ops");
+        assert_eq!(ops.account.id, "mattermost-ops");
+        assert_eq!(ops.account.label, "Mattermost-Ops");
+        assert_eq!(
+            ops_server_url.as_deref(),
+            Some("https://mattermost.example.test")
+        );
+        assert_eq!(ops_bot_token.as_deref(), Some("ops-mattermost-token"));
+
+        let backup = config
+            .resolve_account(Some("Backup"))
+            .expect("resolve explicit mattermost account");
+        let backup_server_url = backup.server_url();
+        let backup_bot_token = backup.bot_token();
+
+        assert_eq!(backup.configured_account_id, "backup");
+        assert!(!backup.enabled);
+        assert_eq!(backup.account.id, "mattermost-shared");
+        assert_eq!(backup.account.label, "Mattermost-Shared");
+        assert_eq!(
+            backup_server_url.as_deref(),
+            Some("https://backup-mattermost.example.test")
+        );
+        assert_eq!(backup_bot_token.as_deref(), Some("base-mattermost-token"));
     }
 
     #[test]

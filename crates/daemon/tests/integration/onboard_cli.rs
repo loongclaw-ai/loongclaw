@@ -7374,9 +7374,27 @@ fn build_channel_onboarding_follow_up_lines_reports_manual_and_planned_channels(
             && line.contains("blurb=\"Shipped Discord outbound message surface")
     }));
     assert!(lines.iter().any(|line| {
+        line.contains("LINE [line]")
+            && line.contains("selection_order=60")
+            && line.contains("selection_label=\"consumer messaging bot\"")
+            && line.contains("strategy=manual_config")
+            && line.contains("repair_command=\"loongclaw doctor --fix\"")
+            && line.contains("status_command=\"loongclaw doctor\"")
+            && line.contains("blurb=\"Shipped LINE Messaging API outbound surface")
+    }));
+    assert!(lines.iter().any(|line| {
         line.contains("Webhook [webhook]")
             && line.contains("selection_order=110")
             && line.contains("selection_label=\"generic http integration\"")
             && line.contains("strategy=planned")
+    }));
+    assert!(lines.iter().any(|line| {
+        line.contains("Mattermost [mattermost]")
+            && line.contains("selection_order=150")
+            && line.contains("selection_label=\"self-hosted workspace bot\"")
+            && line.contains("strategy=manual_config")
+            && line.contains("repair_command=\"loongclaw doctor --fix\"")
+            && line.contains("status_command=\"loongclaw doctor\"")
+            && line.contains("blurb=\"Shipped Mattermost outbound surface")
     }));
 }

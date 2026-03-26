@@ -134,7 +134,7 @@ pub type ChannelCliCommandFuture<'a> = Pin<Box<dyn Future<Output = CliResult<()>
 pub struct ChannelSendCliArgs<'a> {
     pub config_path: Option<&'a str>,
     pub account: Option<&'a str>,
-    pub target: &'a str,
+    pub target: Option<&'a str>,
     pub target_kind: mvp::channel::ChannelOutboundTargetKind,
     pub text: &'a str,
     pub as_card: bool,
@@ -806,6 +806,23 @@ pub enum Commands {
         #[arg(long)]
         text: String,
     },
+    /// Send one DingTalk custom robot webhook message
+    DingtalkSend {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long = "target")]
+        target: Option<String>,
+        #[arg(
+            long,
+            default_value_t = default_dingtalk_send_target_kind(),
+            value_parser = parse_dingtalk_send_target_kind
+        )]
+        target_kind: mvp::channel::ChannelOutboundTargetKind,
+        #[arg(long)]
+        text: String,
+    },
     /// Send one Slack channel message
     SlackSend {
         #[arg(long)]
@@ -818,6 +835,23 @@ pub enum Commands {
             long,
             default_value_t = default_slack_send_target_kind(),
             value_parser = parse_slack_send_target_kind
+        )]
+        target_kind: mvp::channel::ChannelOutboundTargetKind,
+        #[arg(long)]
+        text: String,
+    },
+    /// Send one LINE push message
+    LineSend {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long = "target")]
+        target: String,
+        #[arg(
+            long,
+            default_value_t = default_line_send_target_kind(),
+            value_parser = parse_line_send_target_kind
         )]
         target_kind: mvp::channel::ChannelOutboundTargetKind,
         #[arg(long)]
@@ -840,6 +874,23 @@ pub enum Commands {
         #[arg(long)]
         text: String,
     },
+    /// Send one Google Chat incoming webhook message
+    GoogleChatSend {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long = "target")]
+        target: Option<String>,
+        #[arg(
+            long,
+            default_value_t = default_google_chat_send_target_kind(),
+            value_parser = parse_google_chat_send_target_kind
+        )]
+        target_kind: mvp::channel::ChannelOutboundTargetKind,
+        #[arg(long)]
+        text: String,
+    },
     /// Send one Signal direct message
     SignalSend {
         #[arg(long)]
@@ -852,6 +903,57 @@ pub enum Commands {
             long,
             default_value_t = default_signal_send_target_kind(),
             value_parser = parse_signal_send_target_kind
+        )]
+        target_kind: mvp::channel::ChannelOutboundTargetKind,
+        #[arg(long)]
+        text: String,
+    },
+    /// Send one Mattermost channel post
+    MattermostSend {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long = "target")]
+        target: String,
+        #[arg(
+            long,
+            default_value_t = default_mattermost_send_target_kind(),
+            value_parser = parse_mattermost_send_target_kind
+        )]
+        target_kind: mvp::channel::ChannelOutboundTargetKind,
+        #[arg(long)]
+        text: String,
+    },
+    /// Send one Nextcloud Talk bot room message
+    NextcloudTalkSend {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long = "target")]
+        target: String,
+        #[arg(
+            long,
+            default_value_t = default_nextcloud_talk_send_target_kind(),
+            value_parser = parse_nextcloud_talk_send_target_kind
+        )]
+        target_kind: mvp::channel::ChannelOutboundTargetKind,
+        #[arg(long)]
+        text: String,
+    },
+    /// Send one Synology Chat incoming webhook message
+    SynologyChatSend {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long = "target")]
+        target: Option<String>,
+        #[arg(
+            long,
+            default_value_t = default_synology_chat_send_target_kind(),
+            value_parser = parse_synology_chat_send_target_kind
         )]
         target_kind: mvp::channel::ChannelOutboundTargetKind,
         #[arg(long)]
@@ -3900,9 +4002,19 @@ pub const DISCORD_SEND_CLI_SPEC: ChannelSendCliSpec = ChannelSendCliSpec {
     run: run_discord_send_cli_impl,
 };
 
+pub const DINGTALK_SEND_CLI_SPEC: ChannelSendCliSpec = ChannelSendCliSpec {
+    family: mvp::channel::DINGTALK_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    run: run_dingtalk_send_cli_impl,
+};
+
 pub const SLACK_SEND_CLI_SPEC: ChannelSendCliSpec = ChannelSendCliSpec {
     family: mvp::channel::SLACK_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
     run: run_slack_send_cli_impl,
+};
+
+pub const LINE_SEND_CLI_SPEC: ChannelSendCliSpec = ChannelSendCliSpec {
+    family: mvp::channel::LINE_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    run: run_line_send_cli_impl,
 };
 
 pub const WHATSAPP_SEND_CLI_SPEC: ChannelSendCliSpec = ChannelSendCliSpec {
@@ -3910,9 +4022,29 @@ pub const WHATSAPP_SEND_CLI_SPEC: ChannelSendCliSpec = ChannelSendCliSpec {
     run: run_whatsapp_send_cli_impl,
 };
 
+pub const GOOGLE_CHAT_SEND_CLI_SPEC: ChannelSendCliSpec = ChannelSendCliSpec {
+    family: mvp::channel::GOOGLE_CHAT_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    run: run_google_chat_send_cli_impl,
+};
+
 pub const SIGNAL_SEND_CLI_SPEC: ChannelSendCliSpec = ChannelSendCliSpec {
     family: mvp::channel::SIGNAL_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
     run: run_signal_send_cli_impl,
+};
+
+pub const MATTERMOST_SEND_CLI_SPEC: ChannelSendCliSpec = ChannelSendCliSpec {
+    family: mvp::channel::MATTERMOST_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    run: run_mattermost_send_cli_impl,
+};
+
+pub const NEXTCLOUD_TALK_SEND_CLI_SPEC: ChannelSendCliSpec = ChannelSendCliSpec {
+    family: mvp::channel::NEXTCLOUD_TALK_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    run: run_nextcloud_talk_send_cli_impl,
+};
+
+pub const SYNOLOGY_CHAT_SEND_CLI_SPEC: ChannelSendCliSpec = ChannelSendCliSpec {
+    family: mvp::channel::SYNOLOGY_CHAT_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    run: run_synology_chat_send_cli_impl,
 };
 
 pub const TELEGRAM_SERVE_CLI_SPEC: ChannelServeCliSpec = ChannelServeCliSpec {
@@ -3954,10 +4086,11 @@ pub async fn run_channel_serve_cli(
 pub fn run_telegram_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliCommandFuture<'_> {
     Box::pin(async move {
         let _ = args.as_card;
+        let target = args.target.unwrap_or_default();
         mvp::channel::run_telegram_send(
             args.config_path,
             args.account,
-            args.target,
+            target,
             args.target_kind,
             args.text,
         )
@@ -3967,11 +4100,12 @@ pub fn run_telegram_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliCom
 
 pub fn run_feishu_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliCommandFuture<'_> {
     Box::pin(async move {
+        let target = args.target.unwrap_or_default();
         mvp::channel::run_feishu_send(
             args.config_path,
             args.account,
             &mvp::channel::FeishuChannelSendRequest {
-                receive_id: args.target.to_owned(),
+                receive_id: target.to_owned(),
                 receive_id_type: Some(args.target_kind.as_str().to_owned()),
                 text: Some(args.text.to_owned()),
                 post_json: None,
@@ -3991,10 +4125,11 @@ pub fn run_feishu_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliComma
 pub fn run_matrix_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliCommandFuture<'_> {
     Box::pin(async move {
         let _ = args.as_card;
+        let target = args.target.unwrap_or_default();
         mvp::channel::run_matrix_send(
             args.config_path,
             args.account,
-            args.target,
+            target,
             args.target_kind,
             args.text,
         )
@@ -4005,10 +4140,11 @@ pub fn run_matrix_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliComma
 pub fn run_wecom_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliCommandFuture<'_> {
     Box::pin(async move {
         let _ = args.as_card;
+        let target = args.target.unwrap_or_default();
         mvp::channel::run_wecom_send(
             args.config_path,
             args.account,
-            args.target,
+            target,
             args.target_kind,
             args.text,
         )
@@ -4019,7 +4155,22 @@ pub fn run_wecom_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliComman
 pub fn run_discord_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliCommandFuture<'_> {
     Box::pin(async move {
         let _ = args.as_card;
+        let target = args.target.unwrap_or_default();
         mvp::channel::run_discord_send(
+            args.config_path,
+            args.account,
+            target,
+            args.target_kind,
+            args.text,
+        )
+        .await
+    })
+}
+
+pub fn run_dingtalk_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliCommandFuture<'_> {
+    Box::pin(async move {
+        let _ = args.as_card;
+        mvp::channel::run_dingtalk_send(
             args.config_path,
             args.account,
             args.target,
@@ -4033,10 +4184,26 @@ pub fn run_discord_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliComm
 pub fn run_slack_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliCommandFuture<'_> {
     Box::pin(async move {
         let _ = args.as_card;
+        let target = args.target.unwrap_or_default();
         mvp::channel::run_slack_send(
             args.config_path,
             args.account,
-            args.target,
+            target,
+            args.target_kind,
+            args.text,
+        )
+        .await
+    })
+}
+
+pub fn run_line_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliCommandFuture<'_> {
+    Box::pin(async move {
+        let _ = args.as_card;
+        let target = args.target.unwrap_or_default();
+        mvp::channel::run_line_send(
+            args.config_path,
+            args.account,
+            target,
             args.target_kind,
             args.text,
         )
@@ -4047,7 +4214,70 @@ pub fn run_slack_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliComman
 pub fn run_whatsapp_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliCommandFuture<'_> {
     Box::pin(async move {
         let _ = args.as_card;
+        let target = args.target.unwrap_or_default();
         mvp::channel::run_whatsapp_send(
+            args.config_path,
+            args.account,
+            target,
+            args.target_kind,
+            args.text,
+        )
+        .await
+    })
+}
+
+pub fn run_google_chat_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliCommandFuture<'_> {
+    Box::pin(async move {
+        let _ = args.as_card;
+        mvp::channel::run_google_chat_send(
+            args.config_path,
+            args.account,
+            args.target,
+            args.target_kind,
+            args.text,
+        )
+        .await
+    })
+}
+
+pub fn run_mattermost_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliCommandFuture<'_> {
+    Box::pin(async move {
+        let _ = args.as_card;
+        let target = args.target.unwrap_or_default();
+        mvp::channel::run_mattermost_send(
+            args.config_path,
+            args.account,
+            target,
+            args.target_kind,
+            args.text,
+        )
+        .await
+    })
+}
+
+pub fn run_nextcloud_talk_send_cli_impl(
+    args: ChannelSendCliArgs<'_>,
+) -> ChannelCliCommandFuture<'_> {
+    Box::pin(async move {
+        let _ = args.as_card;
+        let target = args.target.unwrap_or_default();
+        mvp::channel::run_nextcloud_talk_send(
+            args.config_path,
+            args.account,
+            target,
+            args.target_kind,
+            args.text,
+        )
+        .await
+    })
+}
+
+pub fn run_synology_chat_send_cli_impl(
+    args: ChannelSendCliArgs<'_>,
+) -> ChannelCliCommandFuture<'_> {
+    Box::pin(async move {
+        let _ = args.as_card;
+        mvp::channel::run_synology_chat_send(
             args.config_path,
             args.account,
             args.target,
@@ -4061,10 +4291,11 @@ pub fn run_whatsapp_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliCom
 pub fn run_signal_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliCommandFuture<'_> {
     Box::pin(async move {
         let _ = args.as_card;
+        let target = args.target.unwrap_or_default();
         mvp::channel::run_signal_send(
             args.config_path,
             args.account,
-            args.target,
+            target,
             args.target_kind,
             args.text,
         )
@@ -4163,6 +4394,16 @@ pub fn parse_discord_send_target_kind(
     parse_channel_send_target_kind(DISCORD_SEND_CLI_SPEC, raw)
 }
 
+pub fn default_dingtalk_send_target_kind() -> mvp::channel::ChannelOutboundTargetKind {
+    default_channel_send_target_kind(DINGTALK_SEND_CLI_SPEC)
+}
+
+pub fn parse_dingtalk_send_target_kind(
+    raw: &str,
+) -> Result<mvp::channel::ChannelOutboundTargetKind, String> {
+    parse_channel_send_target_kind(DINGTALK_SEND_CLI_SPEC, raw)
+}
+
 pub fn default_slack_send_target_kind() -> mvp::channel::ChannelOutboundTargetKind {
     default_channel_send_target_kind(SLACK_SEND_CLI_SPEC)
 }
@@ -4171,6 +4412,16 @@ pub fn parse_slack_send_target_kind(
     raw: &str,
 ) -> Result<mvp::channel::ChannelOutboundTargetKind, String> {
     parse_channel_send_target_kind(SLACK_SEND_CLI_SPEC, raw)
+}
+
+pub fn default_line_send_target_kind() -> mvp::channel::ChannelOutboundTargetKind {
+    default_channel_send_target_kind(LINE_SEND_CLI_SPEC)
+}
+
+pub fn parse_line_send_target_kind(
+    raw: &str,
+) -> Result<mvp::channel::ChannelOutboundTargetKind, String> {
+    parse_channel_send_target_kind(LINE_SEND_CLI_SPEC, raw)
 }
 
 pub fn default_whatsapp_send_target_kind() -> mvp::channel::ChannelOutboundTargetKind {
@@ -4183,6 +4434,16 @@ pub fn parse_whatsapp_send_target_kind(
     parse_channel_send_target_kind(WHATSAPP_SEND_CLI_SPEC, raw)
 }
 
+pub fn default_google_chat_send_target_kind() -> mvp::channel::ChannelOutboundTargetKind {
+    default_channel_send_target_kind(GOOGLE_CHAT_SEND_CLI_SPEC)
+}
+
+pub fn parse_google_chat_send_target_kind(
+    raw: &str,
+) -> Result<mvp::channel::ChannelOutboundTargetKind, String> {
+    parse_channel_send_target_kind(GOOGLE_CHAT_SEND_CLI_SPEC, raw)
+}
+
 pub fn default_signal_send_target_kind() -> mvp::channel::ChannelOutboundTargetKind {
     default_channel_send_target_kind(SIGNAL_SEND_CLI_SPEC)
 }
@@ -4191,6 +4452,36 @@ pub fn parse_signal_send_target_kind(
     raw: &str,
 ) -> Result<mvp::channel::ChannelOutboundTargetKind, String> {
     parse_channel_send_target_kind(SIGNAL_SEND_CLI_SPEC, raw)
+}
+
+pub fn default_mattermost_send_target_kind() -> mvp::channel::ChannelOutboundTargetKind {
+    default_channel_send_target_kind(MATTERMOST_SEND_CLI_SPEC)
+}
+
+pub fn parse_mattermost_send_target_kind(
+    raw: &str,
+) -> Result<mvp::channel::ChannelOutboundTargetKind, String> {
+    parse_channel_send_target_kind(MATTERMOST_SEND_CLI_SPEC, raw)
+}
+
+pub fn default_nextcloud_talk_send_target_kind() -> mvp::channel::ChannelOutboundTargetKind {
+    default_channel_send_target_kind(NEXTCLOUD_TALK_SEND_CLI_SPEC)
+}
+
+pub fn parse_nextcloud_talk_send_target_kind(
+    raw: &str,
+) -> Result<mvp::channel::ChannelOutboundTargetKind, String> {
+    parse_channel_send_target_kind(NEXTCLOUD_TALK_SEND_CLI_SPEC, raw)
+}
+
+pub fn default_synology_chat_send_target_kind() -> mvp::channel::ChannelOutboundTargetKind {
+    default_channel_send_target_kind(SYNOLOGY_CHAT_SEND_CLI_SPEC)
+}
+
+pub fn parse_synology_chat_send_target_kind(
+    raw: &str,
+) -> Result<mvp::channel::ChannelOutboundTargetKind, String> {
+    parse_channel_send_target_kind(SYNOLOGY_CHAT_SEND_CLI_SPEC, raw)
 }
 
 pub fn run_feishu_serve_cli_impl(args: ChannelServeCliArgs<'_>) -> ChannelCliCommandFuture<'_> {
