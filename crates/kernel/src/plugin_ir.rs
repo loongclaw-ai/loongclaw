@@ -86,17 +86,6 @@ impl Default for PluginSetupReadiness {
     }
 }
 
-fn env_var_names_match(verified_name: &str, required_name: &str) -> bool {
-    #[cfg(windows)]
-    {
-        verified_name.eq_ignore_ascii_case(required_name)
-    }
-    #[cfg(not(windows))]
-    {
-        verified_name == required_name
-    }
-}
-
 /// Evaluates manifest-declared setup requirements against verified runtime context.
 pub fn evaluate_plugin_setup_requirements(
     required_env_vars: &[String],
@@ -105,10 +94,8 @@ pub fn evaluate_plugin_setup_requirements(
 ) -> PluginSetupReadiness {
     let mut missing_required_env_vars = Vec::new();
     for required_env_var in required_env_vars {
-        let env_var_is_verified = context
-            .verified_env_vars
-            .iter()
-            .any(|verified_env_var| env_var_names_match(verified_env_var, required_env_var));
+        let env_var_is_verified =
+            verified_env_var_names_contain(&context.verified_env_vars, required_env_var);
         if !env_var_is_verified {
             missing_required_env_vars.push(required_env_var.clone());
         }
@@ -133,6 +120,24 @@ pub fn evaluate_plugin_setup_requirements(
     }
 }
 
+fn verified_env_var_names_contain(
+    verified_env_vars: &BTreeSet<String>,
+    required_env_var: &str,
+) -> bool {
+    #[cfg(windows)]
+    {
+        let required_env_var = required_env_var;
+        verified_env_vars
+            .iter()
+            .any(|verified_env_var| verified_env_var.eq_ignore_ascii_case(required_env_var))
+    }
+
+    #[cfg(not(windows))]
+    {
+        verified_env_vars.contains(required_env_var)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PluginTranslationReport {
     pub translated_plugins: usize,
@@ -140,16 +145,16 @@ pub struct PluginTranslationReport {
     pub entries: Vec<PluginIR>,
 }
 
-/// Contract-facing activation status for manifest-backed plugin planning.
+/// Serialized activation outcomes are additive.
 ///
-/// Compatibility note: this enum is additive over time. Consumers that decode
-/// serialized activation payloads should handle newly introduced variants
-/// conservatively.
+/// Consumers that deserialize persisted or remote payloads should tolerate newer
+/// snake_case variants and treat unknown values as forward-compatible contract
+/// growth rather than a malformed payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PluginActivationStatus {
     Ready,
-    /// The runtime can host the plugin, but required setup is still missing.
+    /// The runtime surface is supported, but declared setup requirements are not.
     SetupIncomplete,
     BlockedUnsupportedBridge,
     BlockedUnsupportedAdapterFamily,
@@ -844,6 +849,92 @@ mod tests {
             plan.candidates[0].status,
             PluginActivationStatus::Ready
         ));
+        assert!(plan.candidates[0].missing_required_env_vars.is_empty());
+        assert!(plan.candidates[0].missing_required_config_keys.is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn activation_plan_matches_verified_env_vars_case_insensitively_on_windows() {
+        let descriptor = descriptor("manifest", BTreeMap::new());
+        let translator = PluginTranslator::new();
+        let translation = translator.translate_scan_report(&PluginScanReport {
+            scanned_files: 1,
+            matched_plugins: 1,
+            descriptors: vec![descriptor],
+        });
+
+        let matrix = BridgeSupportMatrix {
+            supported_bridges: BTreeSet::from([PluginBridgeKind::HttpJson]),
+            supported_adapter_families: BTreeSet::new(),
+        };
+        let setup_readiness_context = PluginSetupReadinessContext {
+            verified_env_vars: BTreeSet::from(["tavily_api_key".to_owned()]),
+            verified_config_keys: BTreeSet::from(["tools.web_search.default_provider".to_owned()]),
+        };
+        let plan = translator.plan_activation(&translation, &matrix, &setup_readiness_context);
+
+        assert!(matches!(
+            plan.candidates[0].status,
+            PluginActivationStatus::Ready
+        ));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn activation_plan_keeps_verified_env_vars_case_sensitive_off_windows() {
+        let descriptor = descriptor("manifest", BTreeMap::new());
+        let translator = PluginTranslator::new();
+        let translation = translator.translate_scan_report(&PluginScanReport {
+            scanned_files: 1,
+            matched_plugins: 1,
+            descriptors: vec![descriptor],
+        });
+
+        let matrix = BridgeSupportMatrix {
+            supported_bridges: BTreeSet::from([PluginBridgeKind::HttpJson]),
+            supported_adapter_families: BTreeSet::new(),
+        };
+        let setup_readiness_context = PluginSetupReadinessContext {
+            verified_env_vars: BTreeSet::from(["tavily_api_key".to_owned()]),
+            verified_config_keys: BTreeSet::from(["tools.web_search.default_provider".to_owned()]),
+        };
+        let plan = translator.plan_activation(&translation, &matrix, &setup_readiness_context);
+
+        assert!(matches!(
+            plan.candidates[0].status,
+            PluginActivationStatus::SetupIncomplete
+        ));
+    }
+
+    #[test]
+    fn activation_plan_deserializes_old_payload_without_new_readiness_fields() {
+        let raw = r#"
+{
+  "total_plugins": 1,
+  "ready_plugins": 0,
+  "blocked_plugins": 1,
+  "candidates": [
+    {
+      "plugin_id": "legacy-plugin",
+      "source_path": "/tmp/legacy-plugin.py",
+      "source_kind": "embedded_source",
+      "package_root": "/tmp",
+      "package_manifest_path": null,
+      "bridge_kind": "http_json",
+      "adapter_family": "web-search",
+      "status": "blocked_unsupported_bridge",
+      "reason": "legacy payload",
+      "bootstrap_hint": "skip"
+    }
+  ]
+}
+"#;
+
+        let plan: PluginActivationPlan =
+            serde_json::from_str(raw).expect("legacy activation payload should deserialize");
+
+        assert_eq!(plan.setup_incomplete_plugins, 0);
         assert!(plan.candidates[0].missing_required_env_vars.is_empty());
         assert!(plan.candidates[0].missing_required_config_keys.is_empty());
     }
