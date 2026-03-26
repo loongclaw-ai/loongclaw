@@ -234,13 +234,15 @@ if [ -f ~/.loongclaw/audit/events.jsonl ]; then tail -n 20 ~/.loongclaw/audit/ev
 <summary><strong>1. Web UI</strong></summary>
 <br>
 
-   我们目前正在构建 LoongClaw 第一版可实际使用的 Web UI。
+   我们目前正在构建 LoongClaw 第一版可实际使用的本地 Web UI。
 
    它是一个可选的安装内容，当前范围包括：
 
    - chat
    - dashboard
    - onboarding
+
+   第一阶段的产品形态会保持为默认同源、默认本地使用。
 
    这部分目前仍在持续迭代中，更适合被理解为一个正在成型的 MVP，而不是一个完整的正式产品界面。
 

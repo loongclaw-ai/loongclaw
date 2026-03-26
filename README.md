@@ -322,13 +322,15 @@ instability from true upstream unavailability.
 <summary><strong>1. Web UI</strong></summary>
 <br>
 
-   We are currently building the first usable LoongClaw Web UI.
+   We are currently building the first usable local LoongClaw Web UI.
 
    It is an optional install surface, and the current scope includes:
 
    - chat
    - dashboard
    - onboarding
+
+   The initial product mode stays same-origin and local by default.
 
    This surface is still evolving and should be understood as an active MVP rather than a fully finished product interface.
 
