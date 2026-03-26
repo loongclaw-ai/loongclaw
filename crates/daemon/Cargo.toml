@@ -49,6 +49,7 @@ libc = "0.2"
 
 [dependencies]
 clap.workspace = true
+dunce = "1"
 clap_complete = "4.5"
 dialoguer.workspace = true
 kernel = { package = "loongclaw-kernel", path = "../kernel" }
@@ -75,6 +76,7 @@ path = "src/main.rs"
 
 [dev-dependencies]
 axum.workspace = true
+dunce = "1"
 loongclaw-spec = { path = "../spec", features = ["test-hooks"] }
 sha2.workspace = true
 wat = "1"

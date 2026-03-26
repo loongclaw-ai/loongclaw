@@ -17,7 +17,8 @@ fn unique_temp_dir(prefix: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("clock should be after epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!("{prefix}-{nanos}"))
+    let base = dunce::canonicalize(std::env::temp_dir()).unwrap_or_else(|_| std::env::temp_dir());
+    base.join(format!("{prefix}-{nanos}"))
 }
 
 fn write_runtime_capability_config(root: &Path) -> PathBuf {

@@ -39,7 +39,8 @@ fn unique_temp_dir(label: &str) -> PathBuf {
         .expect("system time before unix epoch")
         .as_nanos();
     let counter = IMPORT_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
+    let base = dunce::canonicalize(std::env::temp_dir()).unwrap_or_else(|_| std::env::temp_dir());
+    base.join(format!(
         "loongclaw-import-{label}-{}-{nanos}-{counter}",
         std::process::id(),
     ))
