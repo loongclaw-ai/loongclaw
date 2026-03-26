@@ -2501,8 +2501,7 @@ fn project_discovery_probe_roots(
     let Some(project_root) = project_discovery_root(config) else {
         return Vec::new();
     };
-    let project_root =
-        dunce::canonicalize(&project_root).unwrap_or_else(|_| project_root.clone());
+    let project_root = dunce::canonicalize(&project_root).unwrap_or_else(|_| project_root.clone());
 
     let mut roots = Vec::new();
     if let Ok(current_dir) = std::env::current_dir() {
