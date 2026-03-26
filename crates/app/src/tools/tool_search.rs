@@ -866,11 +866,6 @@ const SEARCH_CONCEPT_DEFINITIONS: &[SearchConceptDefinition] = &[
 ];
 
 impl SearchSignalSet {
-    fn from_fragment(fragment: &str) -> Self {
-        let fragments = vec![fragment.to_owned()];
-        Self::from_fragments(&fragments)
-    }
-
     fn from_fragments(fragments: &[String]) -> Self {
         let mut normalized_fragments = Vec::new();
         let mut tokens = BTreeSet::new();
@@ -953,7 +948,7 @@ impl SearchDocument {
 
 impl SearchQuery {
     fn new(raw_query: &str) -> Self {
-        let signal = SearchSignalSet::from_fragment(raw_query);
+        let signal = search_query_signal_set(raw_query);
         let (mut concepts, mut categories) = extract_concepts_and_categories(&signal);
         apply_structural_query_hints(raw_query, &mut concepts, &mut categories);
 
@@ -963,6 +958,34 @@ impl SearchQuery {
             categories,
         }
     }
+}
+
+fn search_query_signal_set(raw_query: &str) -> SearchSignalSet {
+    let cleaned_tokens = raw_query
+        .split_whitespace()
+        .map(trim_structural_token)
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    let single_token_query = cleaned_tokens.len() == 1;
+    let mut fragments = Vec::new();
+
+    for token in cleaned_tokens {
+        let has_path_separator = token.contains('/') || token.contains('\\');
+        let ambiguous_single_dot_token = token_is_ambiguous_single_dot_token(token);
+        let host_like_path_token = has_path_separator && token_has_host_like_prefix(token);
+        let url_like_token = token_looks_like_url(token);
+        let skip_token = url_like_token
+            || host_like_path_token
+            || (single_token_query && ambiguous_single_dot_token);
+
+        if skip_token {
+            continue;
+        }
+
+        fragments.push(token.to_owned());
+    }
+
+    SearchSignalSet::from_fragments(&fragments)
 }
 
 pub(super) fn searchable_entry_from_descriptor(descriptor: &ToolDescriptor) -> SearchableToolEntry {
@@ -1103,6 +1126,7 @@ pub(super) fn schema_required_fields(parameters: &Value) -> Vec<String> {
 }
 
 pub(super) fn schema_required_field_groups(parameters: &Value) -> Vec<Vec<String>> {
+    let root_required_fields = schema_required_fields(parameters);
     let mut groups = Vec::new();
 
     for key in ["anyOf", "oneOf"] {
@@ -1111,27 +1135,43 @@ pub(super) fn schema_required_field_groups(parameters: &Value) -> Vec<Vec<String
         };
 
         for schema in options {
-            let Some(required_array) = schema.get("required").and_then(Value::as_array) else {
-                continue;
-            };
+            let branch_required_fields = schema_required_fields(schema);
+            let merged_required_fields = merge_required_field_group(
+                root_required_fields.as_slice(),
+                branch_required_fields.as_slice(),
+            );
+            let duplicate_group = groups.iter().any(|group| group == &merged_required_fields);
 
-            let required = required_array
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>();
-
-            if required.is_empty() {
+            if duplicate_group {
                 continue;
             }
 
-            groups.push(required);
+            groups.push(merged_required_fields);
         }
     }
 
     groups
+}
+
+fn merge_required_field_group(
+    root_required_fields: &[String],
+    branch_required_fields: &[String],
+) -> Vec<String> {
+    let mut merged_required_fields = root_required_fields.to_vec();
+
+    for field_name in branch_required_fields {
+        let already_present = merged_required_fields
+            .iter()
+            .any(|existing_name| existing_name == field_name);
+
+        if already_present {
+            continue;
+        }
+
+        merged_required_fields.push(field_name.clone());
+    }
+
+    merged_required_fields
 }
 
 pub(super) fn default_required_field_groups(
@@ -1694,8 +1734,10 @@ fn query_looks_like_url(raw_query: &str) -> bool {
             continue;
         }
 
+        let has_path_separator = cleaned.contains('/') || cleaned.contains('\\');
+        let host_like_path = has_path_separator && token_has_host_like_prefix(cleaned);
         let looks_like_url = token_looks_like_url(cleaned);
-        if looks_like_url {
+        if looks_like_url || host_like_path {
             return true;
         }
     }
@@ -1708,13 +1750,21 @@ fn token_looks_like_url(token: &str) -> bool {
 }
 
 fn query_looks_like_file_reference(raw_query: &str) -> bool {
-    for token in raw_query.split_whitespace() {
-        let cleaned = trim_structural_token(token);
-        if cleaned.is_empty() {
+    let cleaned_tokens = raw_query
+        .split_whitespace()
+        .map(trim_structural_token)
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    let single_token_query = cleaned_tokens.len() == 1;
+
+    for token in cleaned_tokens {
+        let ambiguous_single_dot_token = token_is_ambiguous_single_dot_token(token);
+
+        if single_token_query && ambiguous_single_dot_token {
             continue;
         }
 
-        let looks_like_file_reference = token_looks_like_file_reference(cleaned);
+        let looks_like_file_reference = token_looks_like_file_reference(token);
         if looks_like_file_reference {
             return true;
         }
@@ -1730,12 +1780,31 @@ fn token_looks_like_file_reference(token: &str) -> bool {
 
     let has_path_separator = token.contains('/') || token.contains('\\');
     if has_path_separator {
+        let host_like_prefix = token_has_host_like_prefix(token);
+
+        if host_like_prefix {
+            return false;
+        }
+
         return true;
     }
 
     let Some((stem, extension)) = token.rsplit_once('.') else {
         return false;
     };
+
+    let single_dot_count = token.chars().filter(|character| *character == '.').count();
+    let has_single_dot = single_dot_count == 1;
+    if has_single_dot {
+        let stem_has_alpha = stem.chars().any(|character| character.is_alphabetic());
+        let extension_length = extension.chars().count();
+        let extension_length_valid = (2..=4).contains(&extension_length);
+        let extension_characters_valid = extension
+            .chars()
+            .all(|character| character.is_ascii_alphabetic());
+
+        return stem_has_alpha && extension_length_valid && extension_characters_valid;
+    }
 
     let stem_valid = stem
         .chars()
@@ -1751,6 +1820,56 @@ fn token_looks_like_file_reference(token: &str) -> bool {
         .all(|character| character.is_alphanumeric());
 
     extension_length_valid && extension_characters_valid
+}
+
+fn token_has_host_like_prefix(token: &str) -> bool {
+    let host_candidate = token.split(['/', '\\']).next().unwrap_or(token);
+    let normalized_candidate = host_candidate.to_ascii_lowercase();
+    let Some((stem, extension)) = normalized_candidate.rsplit_once('.') else {
+        return false;
+    };
+    let extension_length = extension.chars().count();
+    let extension_length_valid = (2..=4).contains(&extension_length);
+    let extension_characters_valid = extension
+        .chars()
+        .all(|character| character.is_ascii_lowercase());
+    let stem_has_alpha = stem
+        .chars()
+        .any(|character| character.is_ascii_alphabetic());
+    let stem_characters_valid = stem.chars().all(|character| {
+        character.is_ascii_lowercase()
+            || character.is_ascii_digit()
+            || character == '-'
+            || character == '.'
+    });
+
+    stem_has_alpha && extension_length_valid && extension_characters_valid && stem_characters_valid
+}
+
+fn token_is_ambiguous_single_dot_token(token: &str) -> bool {
+    let has_path_separator = token.contains('/') || token.contains('\\');
+    if has_path_separator {
+        return false;
+    }
+
+    let Some((stem, extension)) = token.rsplit_once('.') else {
+        return false;
+    };
+    let single_dot_count = token.chars().filter(|character| *character == '.').count();
+    let has_single_dot = single_dot_count == 1;
+
+    if !has_single_dot {
+        return false;
+    }
+
+    let stem_has_alpha = stem.chars().any(|character| character.is_alphabetic());
+    let extension_length = extension.chars().count();
+    let extension_length_valid = (2..=4).contains(&extension_length);
+    let extension_characters_valid = extension
+        .chars()
+        .all(|character| character.is_ascii_alphabetic());
+
+    stem_has_alpha && extension_length_valid && extension_characters_valid
 }
 
 fn trim_structural_token(token: &str) -> &str {
@@ -1923,7 +2042,8 @@ mod tests {
 
     #[test]
     fn multilingual_concepts_extract_from_non_latin_queries() {
-        let signal = SearchSignalSet::from_fragment("تثبيت مهارة");
+        let fragments = vec!["تثبيت مهارة".to_owned()];
+        let signal = SearchSignalSet::from_fragments(&fragments);
         let (concepts, categories) = extract_concepts_and_categories(&signal);
 
         assert!(concepts.contains("install"));
@@ -1937,5 +2057,56 @@ mod tests {
         let query = SearchQuery::new("read note.md");
         assert!(query.concepts.contains("file"));
         assert!(query.categories.contains("workspace"));
+    }
+
+    #[test]
+    fn schema_required_field_groups_merge_root_and_branch_requirements() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["url"],
+            "properties": {
+                "url": {"type": "string"},
+                "content": {"type": "string"},
+                "content_path": {"type": "string"}
+            },
+            "anyOf": [
+                {"required": ["content"]},
+                {}
+            ]
+        });
+        let required_field_groups = schema_required_field_groups(&schema);
+
+        assert_eq!(
+            required_field_groups,
+            vec![
+                vec!["url".to_owned(), "content".to_owned()],
+                vec!["url".to_owned()],
+            ]
+        );
+    }
+
+    #[test]
+    fn structural_query_hints_do_not_treat_lone_domains_as_files() {
+        let query = SearchQuery::new("example.com");
+
+        assert!(!query.concepts.contains("file"));
+        assert!(!query.categories.contains("workspace"));
+    }
+
+    #[test]
+    fn structural_query_hints_do_not_treat_domain_paths_as_files() {
+        let query = SearchQuery::new("example.com/path");
+
+        assert!(!query.concepts.contains("file"));
+        assert!(!query.categories.contains("workspace"));
+    }
+
+    #[test]
+    fn structural_query_hints_do_not_treat_version_tokens_as_files() {
+        let version_query = SearchQuery::new("gpt-4.1");
+        let numeric_query = SearchQuery::new("3.14");
+
+        assert!(!version_query.concepts.contains("file"));
+        assert!(!numeric_query.concepts.contains("file"));
     }
 }
