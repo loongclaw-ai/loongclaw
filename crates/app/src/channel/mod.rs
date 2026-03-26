@@ -3,10 +3,16 @@ use std::time::Duration;
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-discord",
+    feature = "channel-dingtalk",
     feature = "channel-feishu",
+    feature = "channel-google-chat",
+    feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-mattermost",
+    feature = "channel-nextcloud-talk",
     feature = "channel-signal",
     feature = "channel-slack",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp"
 ))]
@@ -61,10 +67,16 @@ use crate::CliResult;
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-discord",
+    feature = "channel-dingtalk",
     feature = "channel-feishu",
+    feature = "channel-google-chat",
+    feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-mattermost",
+    feature = "channel-nextcloud-talk",
     feature = "channel-signal",
     feature = "channel-slack",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp"
 ))]
@@ -72,10 +84,16 @@ use crate::KernelContext;
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-discord",
+    feature = "channel-dingtalk",
     feature = "channel-feishu",
+    feature = "channel-google-chat",
+    feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-mattermost",
+    feature = "channel-nextcloud-talk",
     feature = "channel-signal",
     feature = "channel-slack",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp"
 ))]
@@ -83,25 +101,43 @@ use crate::acp::{AcpConversationTurnOptions, AcpTurnProvenance};
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-discord",
+    feature = "channel-dingtalk",
     feature = "channel-feishu",
+    feature = "channel-google-chat",
+    feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-mattermost",
+    feature = "channel-nextcloud-talk",
     feature = "channel-signal",
     feature = "channel-slack",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp"
 ))]
 use crate::context::{DEFAULT_TOKEN_TTL_S, bootstrap_kernel_context_with_config};
 
+#[cfg(feature = "channel-dingtalk")]
+use super::config::ResolvedDingtalkChannelConfig;
 #[cfg(feature = "channel-discord")]
 use super::config::ResolvedDiscordChannelConfig;
 #[cfg(feature = "channel-feishu")]
 use super::config::ResolvedFeishuChannelConfig;
+#[cfg(feature = "channel-google-chat")]
+use super::config::ResolvedGoogleChatChannelConfig;
+#[cfg(feature = "channel-line")]
+use super::config::ResolvedLineChannelConfig;
 #[cfg(feature = "channel-matrix")]
 use super::config::ResolvedMatrixChannelConfig;
+#[cfg(feature = "channel-mattermost")]
+use super::config::ResolvedMattermostChannelConfig;
+#[cfg(feature = "channel-nextcloud-talk")]
+use super::config::ResolvedNextcloudTalkChannelConfig;
 #[cfg(feature = "channel-signal")]
 use super::config::ResolvedSignalChannelConfig;
 #[cfg(feature = "channel-slack")]
 use super::config::ResolvedSlackChannelConfig;
+#[cfg(feature = "channel-synology-chat")]
+use super::config::ResolvedSynologyChatChannelConfig;
 #[cfg(feature = "channel-telegram")]
 use super::config::ResolvedTelegramChannelConfig;
 #[cfg(feature = "channel-wecom")]
@@ -111,10 +147,16 @@ use super::config::ResolvedWhatsappChannelConfig;
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-discord",
+    feature = "channel-dingtalk",
     feature = "channel-feishu",
+    feature = "channel-google-chat",
+    feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-mattermost",
+    feature = "channel-nextcloud-talk",
     feature = "channel-signal",
     feature = "channel-slack",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp"
 ))]
@@ -140,12 +182,22 @@ use super::conversation::{
 ))]
 use super::conversation::{ConversationTurnCoordinator, ProviderErrorMode};
 
+#[cfg(feature = "channel-dingtalk")]
+mod dingtalk;
 #[cfg(feature = "channel-discord")]
 mod discord;
 #[cfg(feature = "channel-feishu")]
 mod feishu;
+#[cfg(feature = "channel-google-chat")]
+mod google_chat;
+#[cfg(feature = "channel-line")]
+mod line;
 #[cfg(feature = "channel-matrix")]
 mod matrix;
+#[cfg(feature = "channel-mattermost")]
+mod mattermost;
+#[cfg(feature = "channel-nextcloud-talk")]
+mod nextcloud_talk;
 mod registry;
 mod runtime_state;
 pub(crate) mod sdk;
@@ -153,6 +205,8 @@ pub(crate) mod sdk;
 mod signal;
 #[cfg(feature = "channel-slack")]
 mod slack;
+#[cfg(feature = "channel-synology-chat")]
+mod synology_chat;
 #[cfg(feature = "channel-telegram")]
 mod telegram;
 #[cfg(any(
@@ -175,11 +229,14 @@ pub use registry::{
     ChannelDoctorCheckTrigger, ChannelDoctorOperationSpec, ChannelInventory,
     ChannelOnboardingDescriptor, ChannelOnboardingStrategy, ChannelOperationDescriptor,
     ChannelOperationHealth, ChannelOperationStatus, ChannelRuntimeCommandDescriptor,
-    ChannelStatusSnapshot, ChannelSurface, DISCORD_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
-    FEISHU_CATALOG_COMMAND_FAMILY_DESCRIPTOR, FEISHU_COMMAND_FAMILY_DESCRIPTOR,
-    FEISHU_RUNTIME_COMMAND_DESCRIPTOR, MATRIX_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
-    MATRIX_COMMAND_FAMILY_DESCRIPTOR, MATRIX_RUNTIME_COMMAND_DESCRIPTOR,
-    SIGNAL_CATALOG_COMMAND_FAMILY_DESCRIPTOR, SLACK_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    ChannelStatusSnapshot, ChannelSurface, DINGTALK_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    DISCORD_CATALOG_COMMAND_FAMILY_DESCRIPTOR, FEISHU_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    FEISHU_COMMAND_FAMILY_DESCRIPTOR, FEISHU_RUNTIME_COMMAND_DESCRIPTOR,
+    GOOGLE_CHAT_CATALOG_COMMAND_FAMILY_DESCRIPTOR, LINE_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    MATRIX_CATALOG_COMMAND_FAMILY_DESCRIPTOR, MATRIX_COMMAND_FAMILY_DESCRIPTOR,
+    MATRIX_RUNTIME_COMMAND_DESCRIPTOR, MATTERMOST_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    NEXTCLOUD_TALK_CATALOG_COMMAND_FAMILY_DESCRIPTOR, SIGNAL_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    SLACK_CATALOG_COMMAND_FAMILY_DESCRIPTOR, SYNOLOGY_CHAT_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
     TELEGRAM_CATALOG_COMMAND_FAMILY_DESCRIPTOR, TELEGRAM_COMMAND_FAMILY_DESCRIPTOR,
     TELEGRAM_RUNTIME_COMMAND_DESCRIPTOR, WECOM_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
     WECOM_COMMAND_FAMILY_DESCRIPTOR, WECOM_RUNTIME_COMMAND_DESCRIPTOR,
@@ -719,10 +776,16 @@ type ChannelProcessFuture = Pin<Box<dyn Future<Output = CliResult<String>> + Sen
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-discord",
+    feature = "channel-dingtalk",
     feature = "channel-feishu",
+    feature = "channel-google-chat",
+    feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-mattermost",
+    feature = "channel-nextcloud-talk",
     feature = "channel-signal",
     feature = "channel-slack",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp"
 ))]
@@ -1080,10 +1143,16 @@ where
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-discord",
+    feature = "channel-dingtalk",
     feature = "channel-feishu",
+    feature = "channel-google-chat",
+    feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-mattermost",
+    feature = "channel-nextcloud-talk",
     feature = "channel-signal",
     feature = "channel-slack",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp"
 ))]
@@ -1098,8 +1167,13 @@ struct ChannelCommandContext<R> {
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-discord",
+    feature = "channel-dingtalk",
     feature = "channel-feishu",
+    feature = "channel-google-chat",
+    feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-mattermost",
+    feature = "channel-nextcloud-talk",
     feature = "channel-signal",
     feature = "channel-slack",
     feature = "channel-wecom",
@@ -1174,10 +1248,16 @@ impl ChannelResolvedRuntimeAccount for ResolvedWecomChannelConfig {
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-discord",
+    feature = "channel-dingtalk",
     feature = "channel-feishu",
+    feature = "channel-google-chat",
+    feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-mattermost",
+    feature = "channel-nextcloud-talk",
     feature = "channel-signal",
     feature = "channel-slack",
+    feature = "channel-synology-chat",
     feature = "channel-wecom",
     feature = "channel-whatsapp"
 ))]
@@ -1205,6 +1285,55 @@ where
     Ok(())
 }
 
+#[cfg(any(feature = "channel-dingtalk", feature = "channel-google-chat"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EndpointBackedSendTargetSource {
+    CliTarget,
+    ConfiguredEndpoint,
+}
+
+#[cfg(any(feature = "channel-dingtalk", feature = "channel-google-chat"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EndpointBackedSendTarget {
+    endpoint_url: String,
+    source: EndpointBackedSendTargetSource,
+}
+
+#[cfg(any(feature = "channel-dingtalk", feature = "channel-google-chat"))]
+fn resolve_endpoint_backed_send_target(
+    channel_id: &str,
+    cli_target: Option<&str>,
+    configured_endpoint_url: Option<String>,
+    config_field_path: &str,
+) -> CliResult<EndpointBackedSendTarget> {
+    let cli_target = cli_target
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    if let Some(endpoint_url) = cli_target {
+        return Ok(EndpointBackedSendTarget {
+            endpoint_url,
+            source: EndpointBackedSendTargetSource::CliTarget,
+        });
+    }
+
+    let configured_endpoint_url = configured_endpoint_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    if let Some(endpoint_url) = configured_endpoint_url {
+        return Ok(EndpointBackedSendTarget {
+            endpoint_url,
+            source: EndpointBackedSendTargetSource::ConfiguredEndpoint,
+        });
+    }
+
+    Err(format!(
+        "{channel_id} send requires `--target` or a configured endpoint in `{config_field_path}`"
+    ))
+}
+
 #[cfg(feature = "channel-discord")]
 fn load_discord_command_context(
     config_path: Option<&str>,
@@ -1227,6 +1356,39 @@ fn build_discord_command_context(
     if !resolved.enabled {
         return Err(format!(
             "discord account `{}` is disabled by configuration",
+            resolved.configured_account_id
+        ));
+    }
+    Ok(ChannelCommandContext {
+        resolved_path,
+        config,
+        resolved,
+        route,
+    })
+}
+
+#[cfg(feature = "channel-dingtalk")]
+fn load_dingtalk_command_context(
+    config_path: Option<&str>,
+    account_id: Option<&str>,
+) -> CliResult<ChannelCommandContext<ResolvedDingtalkChannelConfig>> {
+    let (resolved_path, config) = super::config::load(config_path)?;
+    build_dingtalk_command_context(resolved_path, config, account_id)
+}
+
+#[cfg(feature = "channel-dingtalk")]
+fn build_dingtalk_command_context(
+    resolved_path: PathBuf,
+    config: LoongClawConfig,
+    account_id: Option<&str>,
+) -> CliResult<ChannelCommandContext<ResolvedDingtalkChannelConfig>> {
+    let resolved = config.dingtalk.resolve_account(account_id)?;
+    let route = config
+        .dingtalk
+        .resolved_account_route(account_id, resolved.configured_account_id.as_str());
+    if !resolved.enabled {
+        return Err(format!(
+            "dingtalk account `{}` is disabled by configuration",
             resolved.configured_account_id
         ));
     }
@@ -1440,6 +1602,39 @@ fn build_slack_command_context(
     })
 }
 
+#[cfg(feature = "channel-line")]
+fn load_line_command_context(
+    config_path: Option<&str>,
+    account_id: Option<&str>,
+) -> CliResult<ChannelCommandContext<ResolvedLineChannelConfig>> {
+    let (resolved_path, config) = super::config::load(config_path)?;
+    build_line_command_context(resolved_path, config, account_id)
+}
+
+#[cfg(feature = "channel-line")]
+fn build_line_command_context(
+    resolved_path: PathBuf,
+    config: LoongClawConfig,
+    account_id: Option<&str>,
+) -> CliResult<ChannelCommandContext<ResolvedLineChannelConfig>> {
+    let resolved = config.line.resolve_account(account_id)?;
+    let route = config
+        .line
+        .resolved_account_route(account_id, resolved.configured_account_id.as_str());
+    if !resolved.enabled {
+        return Err(format!(
+            "line account `{}` is disabled by configuration",
+            resolved.configured_account_id
+        ));
+    }
+    Ok(ChannelCommandContext {
+        resolved_path,
+        config,
+        resolved,
+        route,
+    })
+}
+
 #[cfg(feature = "channel-whatsapp")]
 fn load_whatsapp_command_context(
     config_path: Option<&str>,
@@ -1473,11 +1668,148 @@ fn build_whatsapp_command_context(
     })
 }
 
+#[cfg(feature = "channel-google-chat")]
+fn load_google_chat_command_context(
+    config_path: Option<&str>,
+    account_id: Option<&str>,
+) -> CliResult<ChannelCommandContext<ResolvedGoogleChatChannelConfig>> {
+    let (resolved_path, config) = super::config::load(config_path)?;
+    build_google_chat_command_context(resolved_path, config, account_id)
+}
+
+#[cfg(feature = "channel-google-chat")]
+fn build_google_chat_command_context(
+    resolved_path: PathBuf,
+    config: LoongClawConfig,
+    account_id: Option<&str>,
+) -> CliResult<ChannelCommandContext<ResolvedGoogleChatChannelConfig>> {
+    let resolved = config.google_chat.resolve_account(account_id)?;
+    let route = config
+        .google_chat
+        .resolved_account_route(account_id, resolved.configured_account_id.as_str());
+    if !resolved.enabled {
+        return Err(format!(
+            "google_chat account `{}` is disabled by configuration",
+            resolved.configured_account_id
+        ));
+    }
+    Ok(ChannelCommandContext {
+        resolved_path,
+        config,
+        resolved,
+        route,
+    })
+}
+
+#[cfg(feature = "channel-mattermost")]
+fn load_mattermost_command_context(
+    config_path: Option<&str>,
+    account_id: Option<&str>,
+) -> CliResult<ChannelCommandContext<ResolvedMattermostChannelConfig>> {
+    let (resolved_path, config) = super::config::load(config_path)?;
+    build_mattermost_command_context(resolved_path, config, account_id)
+}
+
+#[cfg(feature = "channel-mattermost")]
+fn build_mattermost_command_context(
+    resolved_path: PathBuf,
+    config: LoongClawConfig,
+    account_id: Option<&str>,
+) -> CliResult<ChannelCommandContext<ResolvedMattermostChannelConfig>> {
+    let resolved = config.mattermost.resolve_account(account_id)?;
+    let route = config
+        .mattermost
+        .resolved_account_route(account_id, resolved.configured_account_id.as_str());
+    if !resolved.enabled {
+        return Err(format!(
+            "mattermost account `{}` is disabled by configuration",
+            resolved.configured_account_id
+        ));
+    }
+    Ok(ChannelCommandContext {
+        resolved_path,
+        config,
+        resolved,
+        route,
+    })
+}
+
+#[cfg(feature = "channel-nextcloud-talk")]
+fn load_nextcloud_talk_command_context(
+    config_path: Option<&str>,
+    account_id: Option<&str>,
+) -> CliResult<ChannelCommandContext<ResolvedNextcloudTalkChannelConfig>> {
+    let (resolved_path, config) = super::config::load(config_path)?;
+    build_nextcloud_talk_command_context(resolved_path, config, account_id)
+}
+
+#[cfg(feature = "channel-nextcloud-talk")]
+fn build_nextcloud_talk_command_context(
+    resolved_path: PathBuf,
+    config: LoongClawConfig,
+    account_id: Option<&str>,
+) -> CliResult<ChannelCommandContext<ResolvedNextcloudTalkChannelConfig>> {
+    let resolved = config.nextcloud_talk.resolve_account(account_id)?;
+    let route = config
+        .nextcloud_talk
+        .resolved_account_route(account_id, resolved.configured_account_id.as_str());
+    if !resolved.enabled {
+        return Err(format!(
+            "nextcloud_talk account `{}` is disabled by configuration",
+            resolved.configured_account_id
+        ));
+    }
+    Ok(ChannelCommandContext {
+        resolved_path,
+        config,
+        resolved,
+        route,
+    })
+}
+
+#[cfg(feature = "channel-synology-chat")]
+fn load_synology_chat_command_context(
+    config_path: Option<&str>,
+    account_id: Option<&str>,
+) -> CliResult<ChannelCommandContext<ResolvedSynologyChatChannelConfig>> {
+    let (resolved_path, config) = super::config::load(config_path)?;
+    build_synology_chat_command_context(resolved_path, config, account_id)
+}
+
+#[cfg(feature = "channel-synology-chat")]
+fn build_synology_chat_command_context(
+    resolved_path: PathBuf,
+    config: LoongClawConfig,
+    account_id: Option<&str>,
+) -> CliResult<ChannelCommandContext<ResolvedSynologyChatChannelConfig>> {
+    let resolved = config.synology_chat.resolve_account(account_id)?;
+    let route = config
+        .synology_chat
+        .resolved_account_route(account_id, resolved.configured_account_id.as_str());
+    if !resolved.enabled {
+        return Err(format!(
+            "synology_chat account `{}` is disabled by configuration",
+            resolved.configured_account_id
+        ));
+    }
+    Ok(ChannelCommandContext {
+        resolved_path,
+        config,
+        resolved,
+        route,
+    })
+}
+
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-discord",
+    feature = "channel-dingtalk",
     feature = "channel-feishu",
+    feature = "channel-google-chat",
+    feature = "channel-line",
     feature = "channel-matrix",
+    feature = "channel-mattermost",
+    feature = "channel-nextcloud-talk",
     feature = "channel-signal",
     feature = "channel-slack",
     feature = "channel-wecom",
@@ -2065,6 +2397,125 @@ pub async fn run_slack_send(
 }
 
 #[allow(clippy::print_stdout)] // CLI output
+pub async fn run_line_send(
+    config_path: Option<&str>,
+    account_id: Option<&str>,
+    target: &str,
+    target_kind: ChannelOutboundTargetKind,
+    text: &str,
+) -> CliResult<()> {
+    if !cfg!(feature = "channel-line") {
+        return Err("line channel is disabled (enable feature `channel-line`)".to_owned());
+    }
+
+    #[cfg(not(feature = "channel-line"))]
+    {
+        let _ = (config_path, account_id, target, target_kind, text);
+        return Err("line channel is disabled (enable feature `channel-line`)".to_owned());
+    }
+
+    #[cfg(feature = "channel-line")]
+    {
+        let context = load_line_command_context(config_path, account_id)?;
+        let target = target.to_owned();
+        let text = text.to_owned();
+        run_channel_send_command(
+            context,
+            ChannelSendCommandSpec { channel_id: "line" },
+            |context| {
+                Box::pin(async move {
+                    line::run_line_send(
+                        &context.resolved,
+                        target_kind,
+                        target.as_str(),
+                        text.as_str(),
+                    )
+                    .await
+                })
+            },
+            |context| {
+                format!(
+                    "line message sent (config={}, configured_account={}, account={}, selected_by_default={}, default_source={}, target_kind={})",
+                    context.resolved_path.display(),
+                    context.resolved.configured_account_id,
+                    context.resolved.account.label,
+                    context.route.selected_by_default(),
+                    context.route.default_account_source.as_str(),
+                    target_kind
+                )
+            },
+        )
+        .await
+    }
+}
+
+#[allow(clippy::print_stdout)] // CLI output
+pub async fn run_dingtalk_send(
+    config_path: Option<&str>,
+    account_id: Option<&str>,
+    target: Option<&str>,
+    target_kind: ChannelOutboundTargetKind,
+    text: &str,
+) -> CliResult<()> {
+    if !cfg!(feature = "channel-dingtalk") {
+        return Err("dingtalk channel is disabled (enable feature `channel-dingtalk`)".to_owned());
+    }
+
+    #[cfg(not(feature = "channel-dingtalk"))]
+    {
+        let _ = (config_path, account_id, target, target_kind, text);
+        return Err("dingtalk channel is disabled (enable feature `channel-dingtalk`)".to_owned());
+    }
+
+    #[cfg(feature = "channel-dingtalk")]
+    {
+        let context = load_dingtalk_command_context(config_path, account_id)?;
+        let send_target = resolve_endpoint_backed_send_target(
+            "dingtalk",
+            target,
+            context.resolved.webhook_url(),
+            "dingtalk.webhook_url",
+        )?;
+        let endpoint_url = send_target.endpoint_url;
+        let target_source = match send_target.source {
+            EndpointBackedSendTargetSource::CliTarget => "cli_target",
+            EndpointBackedSendTargetSource::ConfiguredEndpoint => "configured_endpoint",
+        };
+        let text = text.to_owned();
+        run_channel_send_command(
+            context,
+            ChannelSendCommandSpec {
+                channel_id: "dingtalk",
+            },
+            |context| {
+                Box::pin(async move {
+                    dingtalk::run_dingtalk_send(
+                        &context.resolved,
+                        target_kind,
+                        endpoint_url.as_str(),
+                        text.as_str(),
+                    )
+                    .await
+                })
+            },
+            |context| {
+                format!(
+                    "dingtalk message sent (config={}, configured_account={}, account={}, selected_by_default={}, default_source={}, target_kind={}, target_source={})",
+                    context.resolved_path.display(),
+                    context.resolved.configured_account_id,
+                    context.resolved.account.label,
+                    context.route.selected_by_default(),
+                    context.route.default_account_source.as_str(),
+                    target_kind,
+                    target_source
+                )
+            },
+        )
+        .await
+    }
+}
+
+#[allow(clippy::print_stdout)] // CLI output
 pub async fn run_whatsapp_send(
     config_path: Option<&str>,
     account_id: Option<&str>,
@@ -2112,6 +2563,260 @@ pub async fn run_whatsapp_send(
                     context.route.selected_by_default(),
                     context.route.default_account_source.as_str(),
                     target_kind
+                )
+            },
+        )
+        .await
+    }
+}
+
+#[allow(clippy::print_stdout)] // CLI output
+pub async fn run_google_chat_send(
+    config_path: Option<&str>,
+    account_id: Option<&str>,
+    target: Option<&str>,
+    target_kind: ChannelOutboundTargetKind,
+    text: &str,
+) -> CliResult<()> {
+    if !cfg!(feature = "channel-google-chat") {
+        return Err(
+            "google chat channel is disabled (enable feature `channel-google-chat`)".to_owned(),
+        );
+    }
+
+    #[cfg(not(feature = "channel-google-chat"))]
+    {
+        let _ = (config_path, account_id, target, target_kind, text);
+        return Err(
+            "google chat channel is disabled (enable feature `channel-google-chat`)".to_owned(),
+        );
+    }
+
+    #[cfg(feature = "channel-google-chat")]
+    {
+        let context = load_google_chat_command_context(config_path, account_id)?;
+        let send_target = resolve_endpoint_backed_send_target(
+            "google-chat",
+            target,
+            context.resolved.webhook_url(),
+            "google_chat.webhook_url",
+        )?;
+        let endpoint_url = send_target.endpoint_url;
+        let target_source = match send_target.source {
+            EndpointBackedSendTargetSource::CliTarget => "cli_target",
+            EndpointBackedSendTargetSource::ConfiguredEndpoint => "configured_endpoint",
+        };
+        let text = text.to_owned();
+        run_channel_send_command(
+            context,
+            ChannelSendCommandSpec {
+                channel_id: "google-chat",
+            },
+            |context| {
+                Box::pin(async move {
+                    google_chat::run_google_chat_send(
+                        &context.resolved,
+                        target_kind,
+                        endpoint_url.as_str(),
+                        text.as_str(),
+                    )
+                    .await
+                })
+            },
+            |context| {
+                format!(
+                    "google chat message sent (config={}, configured_account={}, account={}, selected_by_default={}, default_source={}, target_kind={}, target_source={})",
+                    context.resolved_path.display(),
+                    context.resolved.configured_account_id,
+                    context.resolved.account.label,
+                    context.route.selected_by_default(),
+                    context.route.default_account_source.as_str(),
+                    target_kind,
+                    target_source
+                )
+            },
+        )
+        .await
+    }
+}
+
+#[allow(clippy::print_stdout)] // CLI output
+pub async fn run_mattermost_send(
+    config_path: Option<&str>,
+    account_id: Option<&str>,
+    target: &str,
+    target_kind: ChannelOutboundTargetKind,
+    text: &str,
+) -> CliResult<()> {
+    if !cfg!(feature = "channel-mattermost") {
+        return Err(
+            "mattermost channel is disabled (enable feature `channel-mattermost`)".to_owned(),
+        );
+    }
+
+    #[cfg(not(feature = "channel-mattermost"))]
+    {
+        let _ = (config_path, account_id, target, target_kind, text);
+        return Err(
+            "mattermost channel is disabled (enable feature `channel-mattermost`)".to_owned(),
+        );
+    }
+
+    #[cfg(feature = "channel-mattermost")]
+    {
+        let context = load_mattermost_command_context(config_path, account_id)?;
+        let target = target.to_owned();
+        let text = text.to_owned();
+        run_channel_send_command(
+            context,
+            ChannelSendCommandSpec {
+                channel_id: "mattermost",
+            },
+            |context| {
+                Box::pin(async move {
+                    mattermost::run_mattermost_send(
+                        &context.resolved,
+                        target_kind,
+                        target.as_str(),
+                        text.as_str(),
+                    )
+                    .await
+                })
+            },
+            |context| {
+                format!(
+                    "mattermost message sent (config={}, configured_account={}, account={}, selected_by_default={}, default_source={}, target_kind={})",
+                    context.resolved_path.display(),
+                    context.resolved.configured_account_id,
+                    context.resolved.account.label,
+                    context.route.selected_by_default(),
+                    context.route.default_account_source.as_str(),
+                    target_kind
+                )
+            },
+        )
+        .await
+    }
+}
+
+#[allow(clippy::print_stdout)] // CLI output
+pub async fn run_nextcloud_talk_send(
+    config_path: Option<&str>,
+    account_id: Option<&str>,
+    target: &str,
+    target_kind: ChannelOutboundTargetKind,
+    text: &str,
+) -> CliResult<()> {
+    if !cfg!(feature = "channel-nextcloud-talk") {
+        return Err(
+            "nextcloud talk channel is disabled (enable feature `channel-nextcloud-talk`)"
+                .to_owned(),
+        );
+    }
+
+    #[cfg(not(feature = "channel-nextcloud-talk"))]
+    {
+        let _ = (config_path, account_id, target, target_kind, text);
+        return Err(
+            "nextcloud talk channel is disabled (enable feature `channel-nextcloud-talk`)"
+                .to_owned(),
+        );
+    }
+
+    #[cfg(feature = "channel-nextcloud-talk")]
+    {
+        let context = load_nextcloud_talk_command_context(config_path, account_id)?;
+        let target = target.to_owned();
+        let text = text.to_owned();
+        run_channel_send_command(
+            context,
+            ChannelSendCommandSpec {
+                channel_id: "nextcloud-talk",
+            },
+            |context| {
+                Box::pin(async move {
+                    nextcloud_talk::run_nextcloud_talk_send(
+                        &context.resolved,
+                        target_kind,
+                        target.as_str(),
+                        text.as_str(),
+                    )
+                    .await
+                })
+            },
+            |context| {
+                format!(
+                    "nextcloud talk message sent (config={}, configured_account={}, account={}, selected_by_default={}, default_source={}, target_kind={})",
+                    context.resolved_path.display(),
+                    context.resolved.configured_account_id,
+                    context.resolved.account.label,
+                    context.route.selected_by_default(),
+                    context.route.default_account_source.as_str(),
+                    target_kind
+                )
+            },
+        )
+        .await
+    }
+}
+
+#[allow(clippy::print_stdout)] // CLI output
+pub async fn run_synology_chat_send(
+    config_path: Option<&str>,
+    account_id: Option<&str>,
+    target: Option<&str>,
+    target_kind: ChannelOutboundTargetKind,
+    text: &str,
+) -> CliResult<()> {
+    if !cfg!(feature = "channel-synology-chat") {
+        return Err(
+            "synology chat channel is disabled (enable feature `channel-synology-chat`)".to_owned(),
+        );
+    }
+
+    #[cfg(not(feature = "channel-synology-chat"))]
+    {
+        let _ = (config_path, account_id, target, target_kind, text);
+        return Err(
+            "synology chat channel is disabled (enable feature `channel-synology-chat`)".to_owned(),
+        );
+    }
+
+    #[cfg(feature = "channel-synology-chat")]
+    {
+        let context = load_synology_chat_command_context(config_path, account_id)?;
+        let target = target
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
+        let target_selected = target.is_some();
+        let text = text.to_owned();
+        run_channel_send_command(
+            context,
+            ChannelSendCommandSpec {
+                channel_id: "synology-chat",
+            },
+            |context| {
+                Box::pin(async move {
+                    synology_chat::run_synology_chat_send(
+                        &context.resolved,
+                        target_kind,
+                        target.as_deref(),
+                        text.as_str(),
+                    )
+                    .await
+                })
+            },
+            |context| {
+                format!(
+                    "synology chat message sent (config={}, configured_account={}, account={}, selected_by_default={}, default_source={}, target_kind={}, target_selected={})",
+                    context.resolved_path.display(),
+                    context.resolved.configured_account_id,
+                    context.resolved.account.label,
+                    context.route.selected_by_default(),
+                    context.route.default_account_source.as_str(),
+                    target_kind,
+                    target_selected
                 )
             },
         )

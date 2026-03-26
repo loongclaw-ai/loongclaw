@@ -1,5 +1,60 @@
 use super::*;
 pub use clap::{CommandFactory, Parser};
+use std::ffi::OsString;
+
+const CLI_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
+
+fn with_cli_stack<T, F>(thread_name: &str, operation: F) -> T
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    let thread_builder = std::thread::Builder::new();
+    let thread_builder = thread_builder.name(thread_name.to_owned());
+    let thread_builder = thread_builder.stack_size(CLI_STACK_SIZE_BYTES);
+    let join_handle = thread_builder
+        .spawn(operation)
+        .expect("spawn CLI stack thread");
+    join_handle.join().expect("join CLI stack thread")
+}
+
+fn try_parse_cli<const N: usize>(args: [&str; N]) -> Result<Cli, clap::Error> {
+    let owned_args = args
+        .into_iter()
+        .map(OsString::from)
+        .collect::<Vec<OsString>>();
+    with_cli_stack("integration-cli-parse", move || {
+        Cli::try_parse_from(owned_args)
+    })
+}
+
+fn cli_command_name() -> String {
+    with_cli_stack("integration-cli-command-name", || {
+        let command = Cli::command();
+        command.get_name().to_owned()
+    })
+}
+
+fn render_cli_help<const N: usize>(subcommand_path: [&str; N]) -> String {
+    let owned_path = subcommand_path
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<String>>();
+    with_cli_stack("integration-cli-help", move || {
+        let mut command = Cli::command();
+        let mut current = &mut command;
+        for subcommand in owned_path {
+            current = current
+                .find_subcommand_mut(subcommand.as_str())
+                .unwrap_or_else(|| panic!("missing CLI subcommand `{subcommand}`"));
+        }
+        let mut rendered = Vec::new();
+        current
+            .write_long_help(&mut rendered)
+            .expect("render CLI help");
+        String::from_utf8(rendered).expect("help should be utf8")
+    })
+}
 
 fn validation_diagnostic_with_severity(
     severity: &str,
@@ -45,21 +100,12 @@ mod spec_runtime_bridge;
 
 #[test]
 fn cli_uses_loongclaw_program_name() {
-    let command = Cli::command();
-    assert_eq!(command.get_name(), "loongclaw");
+    assert_eq!(cli_command_name(), "loongclaw");
 }
 
 #[test]
 fn cli_import_help_explains_explicit_power_user_flow() {
-    let mut command = Cli::command();
-    let import = command
-        .find_subcommand_mut("import")
-        .expect("import subcommand should exist");
-    let mut help = Vec::new();
-    import
-        .write_long_help(&mut help)
-        .expect("render import help");
-    let help = String::from_utf8(help).expect("help should be utf8");
+    let help = render_cli_help(["import"]);
 
     assert!(
         help.contains("Power-user import flow"),
@@ -88,15 +134,7 @@ fn cli_import_help_explains_explicit_power_user_flow() {
 
 #[test]
 fn cli_migrate_help_explains_explicit_migration_flow() {
-    let mut command = Cli::command();
-    let migrate = command
-        .find_subcommand_mut("migrate")
-        .expect("migrate subcommand should exist");
-    let mut help = Vec::new();
-    migrate
-        .write_long_help(&mut help)
-        .expect("render migrate help");
-    let help = String::from_utf8(help).expect("help should be utf8");
+    let help = render_cli_help(["migrate"]);
 
     assert!(
         help.contains("Power-user migration flow"),
@@ -118,15 +156,7 @@ fn cli_migrate_help_explains_explicit_migration_flow() {
 
 #[test]
 fn cli_onboard_help_mentions_detected_reusable_settings() {
-    let mut command = Cli::command();
-    let onboard = command
-        .find_subcommand_mut("onboard")
-        .expect("onboard subcommand should exist");
-    let mut help = Vec::new();
-    onboard
-        .write_long_help(&mut help)
-        .expect("render onboard help");
-    let help = String::from_utf8(help).expect("help should be utf8");
+    let help = render_cli_help(["onboard"]);
 
     assert!(
         help.contains("detect"),
@@ -151,13 +181,7 @@ fn cli_onboard_help_mentions_detected_reusable_settings() {
 
 #[test]
 fn cli_ask_help_mentions_one_shot_assistant_usage() {
-    let mut command = Cli::command();
-    let ask = command
-        .find_subcommand_mut("ask")
-        .expect("ask subcommand should exist");
-    let mut help = Vec::new();
-    ask.write_long_help(&mut help).expect("render ask help");
-    let help = String::from_utf8(help).expect("help should be utf8");
+    let help = render_cli_help(["ask"]);
 
     assert!(
         help.contains("one-shot"),
@@ -175,15 +199,7 @@ fn cli_ask_help_mentions_one_shot_assistant_usage() {
 
 #[test]
 fn cli_runtime_restore_help_mentions_dry_run_default() {
-    let mut command = Cli::command();
-    let runtime_restore = command
-        .find_subcommand_mut("runtime-restore")
-        .expect("runtime-restore subcommand should exist");
-    let mut help = Vec::new();
-    runtime_restore
-        .write_long_help(&mut help)
-        .expect("render runtime-restore help");
-    let help = String::from_utf8(help).expect("help should be utf8");
+    let help = render_cli_help(["runtime-restore"]);
 
     assert!(
         help.contains("Dry-run by default"),
@@ -197,7 +213,7 @@ fn cli_runtime_restore_help_mentions_dry_run_default() {
 
 #[test]
 fn ask_cli_accepts_message_session_and_acp_flags() {
-    let cli = Cli::try_parse_from([
+    let cli = try_parse_cli([
         "loongclaw",
         "ask",
         "--message",
@@ -236,8 +252,7 @@ fn ask_cli_accepts_message_session_and_acp_flags() {
 
 #[test]
 fn ask_cli_requires_message_flag() {
-    let error =
-        Cli::try_parse_from(["loongclaw", "ask"]).expect_err("ask without --message should fail");
+    let error = try_parse_cli(["loongclaw", "ask"]).expect_err("ask without --message should fail");
     let rendered = error.to_string();
 
     assert!(
@@ -248,7 +263,7 @@ fn ask_cli_requires_message_flag() {
 
 #[test]
 fn audit_cli_recent_parses_global_flags_after_subcommand() {
-    let cli = Cli::try_parse_from([
+    let cli = try_parse_cli([
         "loongclaw",
         "audit",
         "recent",
@@ -281,7 +296,7 @@ fn audit_cli_recent_parses_global_flags_after_subcommand() {
 
 #[test]
 fn audit_cli_summary_parses_limit_without_json() {
-    let cli = Cli::try_parse_from(["loongclaw", "audit", "summary", "--limit", "10"])
+    let cli = try_parse_cli(["loongclaw", "audit", "summary", "--limit", "10"])
         .expect("audit summary CLI should parse");
 
     match cli.command {
@@ -528,13 +543,22 @@ fn render_channel_surfaces_text_reports_catalog_only_channels() {
         channel_serve_command("whatsapp")
     )));
     assert!(rendered.contains(
-        "LINE [line] implementation_status=stub selection_order=60 selection_label=\"consumer messaging bot\""
+        "LINE [line] implementation_status=config_backed selection_order=60 selection_label=\"consumer messaging bot\" capabilities=multi_account,send aliases=line-bot transport=line_messaging_api target_kinds=address configured_accounts=1 default_configured_account=default"
     ));
     assert!(rendered.contains(
-        "Google Chat [google-chat] implementation_status=stub selection_order=120 selection_label=\"workspace thread bot\""
+        "DingTalk [dingtalk] implementation_status=config_backed selection_order=80 selection_label=\"group webhook bot\" capabilities=multi_account,send aliases=ding,ding-bot transport=dingtalk_custom_robot_webhook target_kinds=endpoint configured_accounts=1 default_configured_account=default"
     ));
     assert!(rendered.contains(
-        "catalog op send (google-chat-send) availability=stub tracks_runtime=false target_kinds=conversation requirements=enabled,service_account_json,space_id"
+        "Google Chat [google-chat] implementation_status=config_backed selection_order=120 selection_label=\"workspace space webhook\" capabilities=multi_account,send aliases=gchat,googlechat transport=google_chat_incoming_webhook target_kinds=endpoint configured_accounts=1 default_configured_account=default"
+    ));
+    assert!(rendered.contains(
+        "op send (dingtalk-send) disabled: disabled by dingtalk account configuration target_kinds=endpoint requirements=enabled,webhook_url"
+    ));
+    assert!(rendered.contains(
+        "op send (google-chat-send) disabled: disabled by google_chat account configuration target_kinds=endpoint requirements=enabled,webhook_url"
+    ));
+    assert!(rendered.contains(
+        "op serve (google-chat-serve) unsupported: google chat incoming webhook surface is outbound-only target_kinds=endpoint requirements=enabled,webhook_url"
     ));
     assert!(rendered.contains(
         "Signal [signal] implementation_status=config_backed selection_order=130 selection_label=\"private messenger bridge\" capabilities=multi_account,send aliases=signal-cli transport=signal_cli_rest_api target_kinds=address configured_accounts=1 default_configured_account=default"
@@ -544,6 +568,24 @@ fn render_channel_surfaces_text_reports_catalog_only_channels() {
     ));
     assert!(rendered.contains(
         "op serve (signal-serve) unsupported: signal serve runtime is not implemented yet target_kinds=address requirements=enabled,service_url,account"
+    ));
+    assert!(rendered.contains(
+        "Nextcloud Talk [nextcloud-talk] implementation_status=config_backed selection_order=160 selection_label=\"self-hosted room bot\" capabilities=multi_account,send aliases=nextcloud,nextcloudtalk transport=nextcloud_talk_bot_api target_kinds=conversation configured_accounts=1 default_configured_account=default"
+    ));
+    assert!(rendered.contains(
+        "op send (nextcloud-talk-send) disabled: disabled by nextcloud_talk account configuration target_kinds=conversation requirements=enabled,server_url,shared_secret"
+    ));
+    assert!(rendered.contains(
+        "op serve (nextcloud-talk-serve) unsupported: nextcloud talk bot callback serve is not implemented yet target_kinds=conversation requirements=enabled,server_url,shared_secret"
+    ));
+    assert!(rendered.contains(
+        "Synology Chat [synology-chat] implementation_status=config_backed selection_order=165 selection_label=\"nas webhook bot\" capabilities=multi_account,send aliases=synologychat,synochat transport=synology_chat_outgoing_incoming_webhooks target_kinds=address configured_accounts=1 default_configured_account=default"
+    ));
+    assert!(rendered.contains(
+        "op send (synology-chat-send) disabled: disabled by synology_chat account configuration target_kinds=address requirements=enabled,incoming_url"
+    ));
+    assert!(rendered.contains(
+        "op serve (synology-chat-serve) unsupported: synology chat outgoing webhook serve is not implemented yet target_kinds=address requirements=enabled,token,incoming_url,allowed_user_ids"
     ));
     assert!(rendered.contains(
         "Webhook [webhook] implementation_status=stub selection_order=110 selection_label=\"generic http integration\""
@@ -1048,11 +1090,65 @@ fn build_channels_cli_json_payload_includes_full_channel_catalog() {
                                 .filter_map(serde_json::Value::as_str)
                                 .collect::<Vec<_>>()
                         })
-                        == Some(vec!["conversation"])
+                        == Some(vec!["endpoint"])
                     && entry
                         .get("selection_order")
                         .and_then(serde_json::Value::as_u64)
                         == Some(120)
+            })
+    );
+    assert!(
+        encoded["channel_catalog"]
+            .as_array()
+            .expect("channel catalog array")
+            .iter()
+            .any(|entry| {
+                entry.get("id").and_then(serde_json::Value::as_str) == Some("nextcloud-talk")
+                    && entry
+                        .get("supported_target_kinds")
+                        .and_then(serde_json::Value::as_array)
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .collect::<Vec<_>>()
+                        })
+                        == Some(vec!["conversation"])
+                    && entry
+                        .get("selection_order")
+                        .and_then(serde_json::Value::as_u64)
+                        == Some(160)
+                    && entry
+                        .get("implementation_status")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("config_backed")
+            })
+    );
+    assert!(
+        encoded["channel_catalog"]
+            .as_array()
+            .expect("channel catalog array")
+            .iter()
+            .any(|entry| {
+                entry.get("id").and_then(serde_json::Value::as_str) == Some("synology-chat")
+                    && entry
+                        .get("supported_target_kinds")
+                        .and_then(serde_json::Value::as_array)
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .collect::<Vec<_>>()
+                        })
+                        == Some(vec!["address"])
+                    && entry
+                        .get("selection_order")
+                        .and_then(serde_json::Value::as_u64)
+                        == Some(165)
+                    && entry
+                        .get("implementation_status")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("config_backed")
             })
     );
     assert!(

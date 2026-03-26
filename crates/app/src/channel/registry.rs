@@ -3,14 +3,20 @@ use std::{collections::BTreeSet, path::Path};
 use serde::Serialize;
 
 use crate::config::{
-    ChannelDefaultAccountSelectionSource, DISCORD_BOT_TOKEN_ENV, FEISHU_APP_ID_ENV,
-    FEISHU_APP_SECRET_ENV, FEISHU_ENCRYPT_KEY_ENV, FEISHU_VERIFICATION_TOKEN_ENV,
-    FeishuChannelServeMode, LoongClawConfig, MATRIX_ACCESS_TOKEN_ENV, ResolvedDiscordChannelConfig,
-    ResolvedFeishuChannelConfig, ResolvedMatrixChannelConfig, ResolvedSignalChannelConfig,
-    ResolvedSlackChannelConfig, ResolvedTelegramChannelConfig, ResolvedWecomChannelConfig,
+    ChannelDefaultAccountSelectionSource, DINGTALK_SECRET_ENV, DINGTALK_WEBHOOK_URL_ENV,
+    DISCORD_BOT_TOKEN_ENV, FEISHU_APP_ID_ENV, FEISHU_APP_SECRET_ENV, FEISHU_ENCRYPT_KEY_ENV,
+    FEISHU_VERIFICATION_TOKEN_ENV, FeishuChannelServeMode, GOOGLE_CHAT_WEBHOOK_URL_ENV,
+    LINE_CHANNEL_ACCESS_TOKEN_ENV, LINE_CHANNEL_SECRET_ENV, LoongClawConfig,
+    MATRIX_ACCESS_TOKEN_ENV, MATTERMOST_BOT_TOKEN_ENV, MATTERMOST_SERVER_URL_ENV,
+    NEXTCLOUD_TALK_SERVER_URL_ENV, NEXTCLOUD_TALK_SHARED_SECRET_ENV, ResolvedDingtalkChannelConfig,
+    ResolvedDiscordChannelConfig, ResolvedFeishuChannelConfig, ResolvedGoogleChatChannelConfig,
+    ResolvedLineChannelConfig, ResolvedMatrixChannelConfig, ResolvedMattermostChannelConfig,
+    ResolvedNextcloudTalkChannelConfig, ResolvedSignalChannelConfig, ResolvedSlackChannelConfig,
+    ResolvedSynologyChatChannelConfig, ResolvedTelegramChannelConfig, ResolvedWecomChannelConfig,
     ResolvedWhatsappChannelConfig, SIGNAL_ACCOUNT_ENV, SIGNAL_SERVICE_URL_ENV, SLACK_BOT_TOKEN_ENV,
-    TELEGRAM_BOT_TOKEN_ENV, WECOM_BOT_ID_ENV, WECOM_SECRET_ENV, WHATSAPP_ACCESS_TOKEN_ENV,
-    WHATSAPP_APP_SECRET_ENV, WHATSAPP_PHONE_NUMBER_ID_ENV, WHATSAPP_VERIFY_TOKEN_ENV,
+    SYNOLOGY_CHAT_INCOMING_URL_ENV, SYNOLOGY_CHAT_TOKEN_ENV, TELEGRAM_BOT_TOKEN_ENV,
+    WECOM_BOT_ID_ENV, WECOM_SECRET_ENV, WHATSAPP_ACCESS_TOKEN_ENV, WHATSAPP_APP_SECRET_ENV,
+    WHATSAPP_PHONE_NUMBER_ID_ENV, WHATSAPP_VERIFY_TOKEN_ENV,
 };
 
 use super::{ChannelCatalogTargetKind, ChannelOperationRuntime, ChannelPlatform, runtime_state};
@@ -21,29 +27,15 @@ pub const CHANNEL_OPERATION_SERVE_ID: &str = "serve";
 const DISCORD_APPLICATION_ID_ENV: &str = "DISCORD_APPLICATION_ID";
 const SLACK_APP_TOKEN_ENV: &str = "SLACK_APP_TOKEN";
 const SLACK_SIGNING_SECRET_ENV: &str = "SLACK_SIGNING_SECRET";
-const LINE_CHANNEL_ACCESS_TOKEN_ENV: &str = "LINE_CHANNEL_ACCESS_TOKEN";
-const LINE_CHANNEL_SECRET_ENV: &str = "LINE_CHANNEL_SECRET";
-const DINGTALK_APP_KEY_ENV: &str = "DINGTALK_APP_KEY";
-const DINGTALK_APP_SECRET_ENV: &str = "DINGTALK_APP_SECRET";
-const DINGTALK_ROBOT_CODE_ENV: &str = "DINGTALK_ROBOT_CODE";
 const EMAIL_SMTP_USERNAME_ENV: &str = "EMAIL_SMTP_USERNAME";
 const EMAIL_SMTP_PASSWORD_ENV: &str = "EMAIL_SMTP_PASSWORD";
 const EMAIL_IMAP_USERNAME_ENV: &str = "EMAIL_IMAP_USERNAME";
 const EMAIL_IMAP_PASSWORD_ENV: &str = "EMAIL_IMAP_PASSWORD";
 const WEBHOOK_AUTH_TOKEN_ENV: &str = "WEBHOOK_AUTH_TOKEN";
 const WEBHOOK_SIGNING_SECRET_ENV: &str = "WEBHOOK_SIGNING_SECRET";
-const GOOGLE_CHAT_SERVICE_ACCOUNT_JSON_ENV: &str = "GOOGLE_CHAT_SERVICE_ACCOUNT_JSON";
-const GOOGLE_CHAT_VERIFICATION_TOKEN_ENV: &str = "GOOGLE_CHAT_VERIFICATION_TOKEN";
 const TEAMS_APP_ID_ENV: &str = "TEAMS_APP_ID";
 const TEAMS_APP_PASSWORD_ENV: &str = "TEAMS_APP_PASSWORD";
 const TEAMS_TENANT_ID_ENV: &str = "TEAMS_TENANT_ID";
-const MATTERMOST_SERVER_URL_ENV: &str = "MATTERMOST_SERVER_URL";
-const MATTERMOST_BOT_TOKEN_ENV: &str = "MATTERMOST_BOT_TOKEN";
-const NEXTCLOUD_TALK_SERVER_URL_ENV: &str = "NEXTCLOUD_TALK_SERVER_URL";
-const NEXTCLOUD_TALK_APP_PASSWORD_ENV: &str = "NEXTCLOUD_TALK_APP_PASSWORD";
-const NEXTCLOUD_TALK_BOT_ACTOR_ID_ENV: &str = "NEXTCLOUD_TALK_BOT_ACTOR_ID";
-const SYNOLOGY_CHAT_TOKEN_ENV: &str = "SYNOLOGY_CHAT_TOKEN";
-const SYNOLOGY_CHAT_INCOMING_URL_ENV: &str = "SYNOLOGY_CHAT_INCOMING_URL";
 const IRC_SERVER_ENV: &str = "IRC_SERVER";
 const IRC_NICKNAME_ENV: &str = "IRC_NICKNAME";
 const IMESSAGE_BRIDGE_URL_ENV: &str = "IMESSAGE_BRIDGE_URL";
@@ -1096,7 +1088,7 @@ const LINE_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
     label: "push send",
     command: "line-send",
-    availability: ChannelCatalogOperationAvailability::Stub,
+    availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: LINE_SEND_REQUIREMENTS,
     supported_target_kinds: &[ChannelCatalogTargetKind::Address],
@@ -1110,21 +1102,28 @@ const LINE_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     requirements: LINE_SERVE_REQUIREMENTS,
     supported_target_kinds: &[ChannelCatalogTargetKind::Address],
 };
+pub const LINE_CATALOG_COMMAND_FAMILY_DESCRIPTOR: ChannelCatalogCommandFamilyDescriptor =
+    ChannelCatalogCommandFamilyDescriptor {
+        channel_id: "line",
+        default_send_target_kind: ChannelCatalogTargetKind::Address,
+        send: LINE_SEND_OPERATION,
+        serve: LINE_SERVE_OPERATION,
+    };
 const LINE_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
     ChannelRegistryOperationDescriptor {
-        operation: LINE_SEND_OPERATION,
+        operation: LINE_CATALOG_COMMAND_FAMILY_DESCRIPTOR.send,
         doctor_checks: &[],
     },
     ChannelRegistryOperationDescriptor {
-        operation: LINE_SERVE_OPERATION,
+        operation: LINE_CATALOG_COMMAND_FAMILY_DESCRIPTOR.serve,
         doctor_checks: &[],
     },
 ];
 const LINE_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
-    strategy: ChannelOnboardingStrategy::Planned,
-    setup_hint: "planned LINE Messaging API surface; catalog metadata reflects the intended channel access token and webhook secret contract, but no runtime adapter is implemented yet",
-    status_command: "loongclaw channels --json",
-    repair_command: None,
+    strategy: ChannelOnboardingStrategy::ManualConfig,
+    setup_hint: "configure LINE Messaging API credentials in loongclaw.toml under line or line.accounts.<account>; outbound push send is shipped, while inbound webhook serve support remains planned",
+    status_command: "loongclaw doctor",
+    repair_command: Some("loongclaw doctor --fix"),
 };
 
 const WECOM_ENABLED_REQUIREMENT: ChannelCatalogOperationRequirement =
@@ -1244,86 +1243,80 @@ const DINGTALK_ENABLED_REQUIREMENT: ChannelCatalogOperationRequirement =
         env_pointer_paths: &[],
         default_env_var: None,
     };
-const DINGTALK_APP_KEY_REQUIREMENT: ChannelCatalogOperationRequirement =
+const DINGTALK_WEBHOOK_URL_REQUIREMENT: ChannelCatalogOperationRequirement =
     ChannelCatalogOperationRequirement {
-        id: "app_key",
-        label: "app key",
-        config_paths: &["dingtalk.app_key", "dingtalk.accounts.<account>.app_key"],
-        env_pointer_paths: &[
-            "dingtalk.app_key_env",
-            "dingtalk.accounts.<account>.app_key_env",
-        ],
-        default_env_var: Some(DINGTALK_APP_KEY_ENV),
-    };
-const DINGTALK_APP_SECRET_REQUIREMENT: ChannelCatalogOperationRequirement =
-    ChannelCatalogOperationRequirement {
-        id: "app_secret",
-        label: "app secret",
+        id: "webhook_url",
+        label: "custom robot webhook url",
         config_paths: &[
-            "dingtalk.app_secret",
-            "dingtalk.accounts.<account>.app_secret",
+            "dingtalk.webhook_url",
+            "dingtalk.accounts.<account>.webhook_url",
         ],
         env_pointer_paths: &[
-            "dingtalk.app_secret_env",
-            "dingtalk.accounts.<account>.app_secret_env",
+            "dingtalk.webhook_url_env",
+            "dingtalk.accounts.<account>.webhook_url_env",
         ],
-        default_env_var: Some(DINGTALK_APP_SECRET_ENV),
+        default_env_var: Some(DINGTALK_WEBHOOK_URL_ENV),
     };
-const DINGTALK_ROBOT_CODE_REQUIREMENT: ChannelCatalogOperationRequirement =
+const DINGTALK_SECRET_REQUIREMENT: ChannelCatalogOperationRequirement =
     ChannelCatalogOperationRequirement {
-        id: "robot_code",
-        label: "robot code",
-        config_paths: &[
-            "dingtalk.robot_code",
-            "dingtalk.accounts.<account>.robot_code",
-        ],
+        id: "secret",
+        label: "custom robot sign secret",
+        config_paths: &["dingtalk.secret", "dingtalk.accounts.<account>.secret"],
         env_pointer_paths: &[
-            "dingtalk.robot_code_env",
-            "dingtalk.accounts.<account>.robot_code_env",
+            "dingtalk.secret_env",
+            "dingtalk.accounts.<account>.secret_env",
         ],
-        default_env_var: Some(DINGTALK_ROBOT_CODE_ENV),
+        default_env_var: Some(DINGTALK_SECRET_ENV),
     };
 const DINGTALK_SEND_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
     DINGTALK_ENABLED_REQUIREMENT,
-    DINGTALK_APP_KEY_REQUIREMENT,
-    DINGTALK_APP_SECRET_REQUIREMENT,
-    DINGTALK_ROBOT_CODE_REQUIREMENT,
+    DINGTALK_WEBHOOK_URL_REQUIREMENT,
 ];
-const DINGTALK_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] =
-    DINGTALK_SEND_REQUIREMENTS;
+const DINGTALK_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
+    DINGTALK_ENABLED_REQUIREMENT,
+    DINGTALK_WEBHOOK_URL_REQUIREMENT,
+    DINGTALK_SECRET_REQUIREMENT,
+];
 const DINGTALK_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
-    label: "robot send",
+    label: "custom robot send",
     command: "dingtalk-send",
-    availability: ChannelCatalogOperationAvailability::Stub,
+    availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: DINGTALK_SEND_REQUIREMENTS,
-    supported_target_kinds: &[ChannelCatalogTargetKind::Address],
+    supported_target_kinds: &[ChannelCatalogTargetKind::Endpoint],
 };
 const DINGTALK_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SERVE_ID,
-    label: "event callback service",
+    label: "outgoing callback service",
     command: "dingtalk-serve",
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: true,
     requirements: DINGTALK_SERVE_REQUIREMENTS,
-    supported_target_kinds: &[ChannelCatalogTargetKind::Address],
+    supported_target_kinds: &[ChannelCatalogTargetKind::Endpoint],
 };
+pub const DINGTALK_CATALOG_COMMAND_FAMILY_DESCRIPTOR: ChannelCatalogCommandFamilyDescriptor =
+    ChannelCatalogCommandFamilyDescriptor {
+        channel_id: "dingtalk",
+        default_send_target_kind: ChannelCatalogTargetKind::Endpoint,
+        send: DINGTALK_SEND_OPERATION,
+        serve: DINGTALK_SERVE_OPERATION,
+    };
 const DINGTALK_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
     ChannelRegistryOperationDescriptor {
-        operation: DINGTALK_SEND_OPERATION,
+        operation: DINGTALK_CATALOG_COMMAND_FAMILY_DESCRIPTOR.send,
         doctor_checks: &[],
     },
     ChannelRegistryOperationDescriptor {
-        operation: DINGTALK_SERVE_OPERATION,
+        operation: DINGTALK_CATALOG_COMMAND_FAMILY_DESCRIPTOR.serve,
         doctor_checks: &[],
     },
 ];
 const DINGTALK_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
-    strategy: ChannelOnboardingStrategy::Planned,
-    setup_hint: "planned DingTalk robot surface; catalog metadata reflects the intended app key, app secret, and robot code contract, but no runtime adapter is implemented yet",
-    status_command: "loongclaw channels --json",
-    repair_command: None,
+    strategy: ChannelOnboardingStrategy::ManualConfig,
+    setup_hint: "configure DingTalk custom robot webhook credentials in loongclaw.toml under dingtalk or dingtalk.accounts.<account>; outbound webhook send is shipped, while inbound outgoing-callback serve support remains planned",
+    status_command: "loongclaw doctor",
+    repair_command: Some("loongclaw doctor --fix"),
 };
 
 const WHATSAPP_ENABLED_REQUIREMENT: ChannelCatalogOperationRequirement =
@@ -1697,101 +1690,69 @@ const GOOGLE_CHAT_ENABLED_REQUIREMENT: ChannelCatalogOperationRequirement =
         env_pointer_paths: &[],
         default_env_var: None,
     };
-const GOOGLE_CHAT_SERVICE_ACCOUNT_JSON_REQUIREMENT: ChannelCatalogOperationRequirement =
+const GOOGLE_CHAT_WEBHOOK_URL_REQUIREMENT: ChannelCatalogOperationRequirement =
     ChannelCatalogOperationRequirement {
-        id: "service_account_json",
-        label: "service account json",
+        id: "webhook_url",
+        label: "incoming webhook url",
         config_paths: &[
-            "google_chat.service_account_json",
-            "google_chat.accounts.<account>.service_account_json",
+            "google_chat.webhook_url",
+            "google_chat.accounts.<account>.webhook_url",
         ],
         env_pointer_paths: &[
-            "google_chat.service_account_json_env",
-            "google_chat.accounts.<account>.service_account_json_env",
+            "google_chat.webhook_url_env",
+            "google_chat.accounts.<account>.webhook_url_env",
         ],
-        default_env_var: Some(GOOGLE_CHAT_SERVICE_ACCOUNT_JSON_ENV),
-    };
-const GOOGLE_CHAT_SPACE_ID_REQUIREMENT: ChannelCatalogOperationRequirement =
-    ChannelCatalogOperationRequirement {
-        id: "space_id",
-        label: "space id",
-        config_paths: &[
-            "google_chat.space_id",
-            "google_chat.accounts.<account>.space_id",
-        ],
-        env_pointer_paths: &[],
-        default_env_var: None,
-    };
-const GOOGLE_CHAT_ALLOWED_SPACE_IDS_REQUIREMENT: ChannelCatalogOperationRequirement =
-    ChannelCatalogOperationRequirement {
-        id: "allowed_space_ids",
-        label: "allowed space ids",
-        config_paths: &[
-            "google_chat.allowed_space_ids",
-            "google_chat.accounts.<account>.allowed_space_ids",
-        ],
-        env_pointer_paths: &[],
-        default_env_var: None,
-    };
-const GOOGLE_CHAT_VERIFICATION_TOKEN_REQUIREMENT: ChannelCatalogOperationRequirement =
-    ChannelCatalogOperationRequirement {
-        id: "verification_token",
-        label: "verification token",
-        config_paths: &[
-            "google_chat.verification_token",
-            "google_chat.accounts.<account>.verification_token",
-        ],
-        env_pointer_paths: &[
-            "google_chat.verification_token_env",
-            "google_chat.accounts.<account>.verification_token_env",
-        ],
-        default_env_var: Some(GOOGLE_CHAT_VERIFICATION_TOKEN_ENV),
+        default_env_var: Some(GOOGLE_CHAT_WEBHOOK_URL_ENV),
     };
 const GOOGLE_CHAT_SEND_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
     GOOGLE_CHAT_ENABLED_REQUIREMENT,
-    GOOGLE_CHAT_SERVICE_ACCOUNT_JSON_REQUIREMENT,
-    GOOGLE_CHAT_SPACE_ID_REQUIREMENT,
+    GOOGLE_CHAT_WEBHOOK_URL_REQUIREMENT,
 ];
 const GOOGLE_CHAT_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
     GOOGLE_CHAT_ENABLED_REQUIREMENT,
-    GOOGLE_CHAT_SERVICE_ACCOUNT_JSON_REQUIREMENT,
-    GOOGLE_CHAT_ALLOWED_SPACE_IDS_REQUIREMENT,
-    GOOGLE_CHAT_VERIFICATION_TOKEN_REQUIREMENT,
+    GOOGLE_CHAT_WEBHOOK_URL_REQUIREMENT,
 ];
 const GOOGLE_CHAT_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
-    label: "space send",
+    label: "incoming webhook send",
     command: "google-chat-send",
-    availability: ChannelCatalogOperationAvailability::Stub,
+    availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: GOOGLE_CHAT_SEND_REQUIREMENTS,
-    supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
+    supported_target_kinds: &[ChannelCatalogTargetKind::Endpoint],
 };
 const GOOGLE_CHAT_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SERVE_ID,
-    label: "space event service",
+    label: "interactive event service",
     command: "google-chat-serve",
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: true,
     requirements: GOOGLE_CHAT_SERVE_REQUIREMENTS,
-    supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
+    supported_target_kinds: &[ChannelCatalogTargetKind::Endpoint],
 };
+pub const GOOGLE_CHAT_CATALOG_COMMAND_FAMILY_DESCRIPTOR: ChannelCatalogCommandFamilyDescriptor =
+    ChannelCatalogCommandFamilyDescriptor {
+        channel_id: "google-chat",
+        default_send_target_kind: ChannelCatalogTargetKind::Endpoint,
+        send: GOOGLE_CHAT_SEND_OPERATION,
+        serve: GOOGLE_CHAT_SERVE_OPERATION,
+    };
 const GOOGLE_CHAT_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
     ChannelRegistryOperationDescriptor {
-        operation: GOOGLE_CHAT_SEND_OPERATION,
+        operation: GOOGLE_CHAT_CATALOG_COMMAND_FAMILY_DESCRIPTOR.send,
         doctor_checks: &[],
     },
     ChannelRegistryOperationDescriptor {
-        operation: GOOGLE_CHAT_SERVE_OPERATION,
+        operation: GOOGLE_CHAT_CATALOG_COMMAND_FAMILY_DESCRIPTOR.serve,
         doctor_checks: &[],
     },
 ];
 const GOOGLE_CHAT_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor =
     ChannelOnboardingDescriptor {
-        strategy: ChannelOnboardingStrategy::Planned,
-        setup_hint: "planned Google Chat surface; catalog metadata reflects the intended service-account, space routing, and event verification contract, but no runtime adapter is implemented yet",
-        status_command: "loongclaw channels --json",
-        repair_command: None,
+        strategy: ChannelOnboardingStrategy::ManualConfig,
+        setup_hint: "configure Google Chat incoming webhook credentials in loongclaw.toml under google_chat or google_chat.accounts.<account>; outbound webhook send is shipped, while interactive event serve support remains planned",
+        status_command: "loongclaw doctor",
+        repair_command: Some("loongclaw doctor --fix"),
     };
 
 const SIGNAL_ENABLED_REQUIREMENT: ChannelCatalogOperationRequirement =
@@ -2056,7 +2017,7 @@ const MATTERMOST_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperati
     id: CHANNEL_OPERATION_SEND_ID,
     label: "channel send",
     command: "mattermost-send",
-    availability: ChannelCatalogOperationAvailability::Stub,
+    availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: MATTERMOST_SEND_REQUIREMENTS,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
@@ -2070,21 +2031,28 @@ const MATTERMOST_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperat
     requirements: MATTERMOST_SERVE_REQUIREMENTS,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
 };
+pub const MATTERMOST_CATALOG_COMMAND_FAMILY_DESCRIPTOR: ChannelCatalogCommandFamilyDescriptor =
+    ChannelCatalogCommandFamilyDescriptor {
+        channel_id: "mattermost",
+        default_send_target_kind: ChannelCatalogTargetKind::Conversation,
+        send: MATTERMOST_SEND_OPERATION,
+        serve: MATTERMOST_SERVE_OPERATION,
+    };
 const MATTERMOST_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
     ChannelRegistryOperationDescriptor {
-        operation: MATTERMOST_SEND_OPERATION,
+        operation: MATTERMOST_CATALOG_COMMAND_FAMILY_DESCRIPTOR.send,
         doctor_checks: &[],
     },
     ChannelRegistryOperationDescriptor {
-        operation: MATTERMOST_SERVE_OPERATION,
+        operation: MATTERMOST_CATALOG_COMMAND_FAMILY_DESCRIPTOR.serve,
         doctor_checks: &[],
     },
 ];
 const MATTERMOST_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
-    strategy: ChannelOnboardingStrategy::Planned,
-    setup_hint: "planned Mattermost surface; catalog metadata reflects the intended self-hosted server url, bot token, and channel allowlist contract, but no runtime adapter is implemented yet",
-    status_command: "loongclaw channels --json",
-    repair_command: None,
+    strategy: ChannelOnboardingStrategy::ManualConfig,
+    setup_hint: "configure Mattermost server and bot credentials in loongclaw.toml under mattermost or mattermost.accounts.<account>; outbound post send is shipped, while inbound websocket serve support remains planned",
+    status_command: "loongclaw doctor",
+    repair_command: Some("loongclaw doctor --fix"),
 };
 
 const NEXTCLOUD_TALK_ENABLED_REQUIREMENT: ChannelCatalogOperationRequirement =
@@ -2112,63 +2080,35 @@ const NEXTCLOUD_TALK_SERVER_URL_REQUIREMENT: ChannelCatalogOperationRequirement 
         ],
         default_env_var: Some(NEXTCLOUD_TALK_SERVER_URL_ENV),
     };
-const NEXTCLOUD_TALK_APP_PASSWORD_REQUIREMENT: ChannelCatalogOperationRequirement =
+const NEXTCLOUD_TALK_SHARED_SECRET_REQUIREMENT: ChannelCatalogOperationRequirement =
     ChannelCatalogOperationRequirement {
-        id: "app_password",
-        label: "app password",
+        id: "shared_secret",
+        label: "bot shared secret",
         config_paths: &[
-            "nextcloud_talk.app_password",
-            "nextcloud_talk.accounts.<account>.app_password",
+            "nextcloud_talk.shared_secret",
+            "nextcloud_talk.accounts.<account>.shared_secret",
         ],
         env_pointer_paths: &[
-            "nextcloud_talk.app_password_env",
-            "nextcloud_talk.accounts.<account>.app_password_env",
+            "nextcloud_talk.shared_secret_env",
+            "nextcloud_talk.accounts.<account>.shared_secret_env",
         ],
-        default_env_var: Some(NEXTCLOUD_TALK_APP_PASSWORD_ENV),
-    };
-const NEXTCLOUD_TALK_BOT_ACTOR_ID_REQUIREMENT: ChannelCatalogOperationRequirement =
-    ChannelCatalogOperationRequirement {
-        id: "bot_actor_id",
-        label: "bot actor id",
-        config_paths: &[
-            "nextcloud_talk.bot_actor_id",
-            "nextcloud_talk.accounts.<account>.bot_actor_id",
-        ],
-        env_pointer_paths: &[
-            "nextcloud_talk.bot_actor_id_env",
-            "nextcloud_talk.accounts.<account>.bot_actor_id_env",
-        ],
-        default_env_var: Some(NEXTCLOUD_TALK_BOT_ACTOR_ID_ENV),
-    };
-const NEXTCLOUD_TALK_ALLOWED_ROOM_IDS_REQUIREMENT: ChannelCatalogOperationRequirement =
-    ChannelCatalogOperationRequirement {
-        id: "allowed_room_ids",
-        label: "allowed room ids",
-        config_paths: &[
-            "nextcloud_talk.allowed_room_ids",
-            "nextcloud_talk.accounts.<account>.allowed_room_ids",
-        ],
-        env_pointer_paths: &[],
-        default_env_var: None,
+        default_env_var: Some(NEXTCLOUD_TALK_SHARED_SECRET_ENV),
     };
 const NEXTCLOUD_TALK_SEND_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
     NEXTCLOUD_TALK_ENABLED_REQUIREMENT,
     NEXTCLOUD_TALK_SERVER_URL_REQUIREMENT,
-    NEXTCLOUD_TALK_APP_PASSWORD_REQUIREMENT,
-    NEXTCLOUD_TALK_BOT_ACTOR_ID_REQUIREMENT,
+    NEXTCLOUD_TALK_SHARED_SECRET_REQUIREMENT,
 ];
 const NEXTCLOUD_TALK_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
     NEXTCLOUD_TALK_ENABLED_REQUIREMENT,
     NEXTCLOUD_TALK_SERVER_URL_REQUIREMENT,
-    NEXTCLOUD_TALK_APP_PASSWORD_REQUIREMENT,
-    NEXTCLOUD_TALK_BOT_ACTOR_ID_REQUIREMENT,
-    NEXTCLOUD_TALK_ALLOWED_ROOM_IDS_REQUIREMENT,
+    NEXTCLOUD_TALK_SHARED_SECRET_REQUIREMENT,
 ];
 const NEXTCLOUD_TALK_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
     label: "room send",
     command: "nextcloud-talk-send",
-    availability: ChannelCatalogOperationAvailability::Stub,
+    availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: NEXTCLOUD_TALK_SEND_REQUIREMENTS,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
@@ -2182,22 +2122,29 @@ const NEXTCLOUD_TALK_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOp
     requirements: NEXTCLOUD_TALK_SERVE_REQUIREMENTS,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
 };
+pub const NEXTCLOUD_TALK_CATALOG_COMMAND_FAMILY_DESCRIPTOR: ChannelCatalogCommandFamilyDescriptor =
+    ChannelCatalogCommandFamilyDescriptor {
+        channel_id: "nextcloud-talk",
+        default_send_target_kind: ChannelCatalogTargetKind::Conversation,
+        send: NEXTCLOUD_TALK_SEND_OPERATION,
+        serve: NEXTCLOUD_TALK_SERVE_OPERATION,
+    };
 const NEXTCLOUD_TALK_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
     ChannelRegistryOperationDescriptor {
-        operation: NEXTCLOUD_TALK_SEND_OPERATION,
+        operation: NEXTCLOUD_TALK_CATALOG_COMMAND_FAMILY_DESCRIPTOR.send,
         doctor_checks: &[],
     },
     ChannelRegistryOperationDescriptor {
-        operation: NEXTCLOUD_TALK_SERVE_OPERATION,
+        operation: NEXTCLOUD_TALK_CATALOG_COMMAND_FAMILY_DESCRIPTOR.serve,
         doctor_checks: &[],
     },
 ];
 const NEXTCLOUD_TALK_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor =
     ChannelOnboardingDescriptor {
-        strategy: ChannelOnboardingStrategy::Planned,
-        setup_hint: "planned Nextcloud Talk surface; catalog metadata reflects the intended server url, app password, bot actor id, and room allowlist contract, but no runtime adapter is implemented yet",
-        status_command: "loongclaw channels --json",
-        repair_command: None,
+        strategy: ChannelOnboardingStrategy::ManualConfig,
+        setup_hint: "configure Nextcloud Talk bot credentials in loongclaw.toml under nextcloud_talk or nextcloud_talk.accounts.<account>; outbound room send is shipped, while inbound bot callback serve support remains planned",
+        status_command: "loongclaw doctor",
+        repair_command: Some("loongclaw doctor --fix"),
     };
 
 const SYNOLOGY_CHAT_ENABLED_REQUIREMENT: ChannelCatalogOperationRequirement =
@@ -2252,7 +2199,6 @@ const SYNOLOGY_CHAT_ALLOWED_USER_IDS_REQUIREMENT: ChannelCatalogOperationRequire
     };
 const SYNOLOGY_CHAT_SEND_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
     SYNOLOGY_CHAT_ENABLED_REQUIREMENT,
-    SYNOLOGY_CHAT_TOKEN_REQUIREMENT,
     SYNOLOGY_CHAT_INCOMING_URL_REQUIREMENT,
 ];
 const SYNOLOGY_CHAT_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
@@ -2265,7 +2211,7 @@ const SYNOLOGY_CHAT_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOper
     id: CHANNEL_OPERATION_SEND_ID,
     label: "chat send",
     command: "synology-chat-send",
-    availability: ChannelCatalogOperationAvailability::Stub,
+    availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: SYNOLOGY_CHAT_SEND_REQUIREMENTS,
     supported_target_kinds: &[ChannelCatalogTargetKind::Address],
@@ -2279,22 +2225,29 @@ const SYNOLOGY_CHAT_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOpe
     requirements: SYNOLOGY_CHAT_SERVE_REQUIREMENTS,
     supported_target_kinds: &[ChannelCatalogTargetKind::Address],
 };
+pub const SYNOLOGY_CHAT_CATALOG_COMMAND_FAMILY_DESCRIPTOR: ChannelCatalogCommandFamilyDescriptor =
+    ChannelCatalogCommandFamilyDescriptor {
+        channel_id: "synology-chat",
+        default_send_target_kind: ChannelCatalogTargetKind::Address,
+        send: SYNOLOGY_CHAT_SEND_OPERATION,
+        serve: SYNOLOGY_CHAT_SERVE_OPERATION,
+    };
 const SYNOLOGY_CHAT_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
     ChannelRegistryOperationDescriptor {
-        operation: SYNOLOGY_CHAT_SEND_OPERATION,
+        operation: SYNOLOGY_CHAT_CATALOG_COMMAND_FAMILY_DESCRIPTOR.send,
         doctor_checks: &[],
     },
     ChannelRegistryOperationDescriptor {
-        operation: SYNOLOGY_CHAT_SERVE_OPERATION,
+        operation: SYNOLOGY_CHAT_CATALOG_COMMAND_FAMILY_DESCRIPTOR.serve,
         doctor_checks: &[],
     },
 ];
 const SYNOLOGY_CHAT_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor =
     ChannelOnboardingDescriptor {
-        strategy: ChannelOnboardingStrategy::Planned,
-        setup_hint: "planned Synology Chat surface; catalog metadata reflects the intended outgoing webhook token, incoming webhook url, and user allowlist contract, but no runtime adapter is implemented yet",
-        status_command: "loongclaw channels --json",
-        repair_command: None,
+        strategy: ChannelOnboardingStrategy::ManualConfig,
+        setup_hint: "configure Synology Chat incoming webhook credentials in loongclaw.toml under synology_chat or synology_chat.accounts.<account>; outbound incoming-webhook send is shipped, while inbound outgoing-webhook serve support remains planned",
+        status_command: "loongclaw doctor",
+        repair_command: Some("loongclaw doctor --fix"),
     };
 
 const IRC_ENABLED_REQUIREMENT: ChannelCatalogOperationRequirement =
@@ -3095,6 +3048,23 @@ pub(crate) const SLACK_CHANNEL_REGISTRY_DESCRIPTOR: ChannelRegistryDescriptor =
         operations: SLACK_OPERATIONS,
     };
 
+pub(crate) const LINE_CHANNEL_REGISTRY_DESCRIPTOR: ChannelRegistryDescriptor =
+    ChannelRegistryDescriptor {
+        id: "line",
+        runtime: None,
+        snapshot_builder: Some(build_line_snapshots),
+        selection_order: 60,
+        selection_label: "consumer messaging bot",
+        blurb: "Shipped LINE Messaging API outbound surface with config-backed push sends; inbound webhook serve support remains planned.",
+        implementation_status: ChannelCatalogImplementationStatus::ConfigBacked,
+        capabilities: CONFIG_BACKED_SEND_CHANNEL_CAPABILITIES,
+        label: "LINE",
+        aliases: &["line-bot"],
+        transport: "line_messaging_api",
+        onboarding: LINE_ONBOARDING_DESCRIPTOR,
+        operations: LINE_OPERATIONS,
+    };
+
 pub(crate) const WHATSAPP_CHANNEL_REGISTRY_DESCRIPTOR: ChannelRegistryDescriptor =
     ChannelRegistryDescriptor {
         id: "whatsapp",
@@ -3129,6 +3099,23 @@ pub(crate) const SIGNAL_CHANNEL_REGISTRY_DESCRIPTOR: ChannelRegistryDescriptor =
         operations: SIGNAL_OPERATIONS,
     };
 
+pub(crate) const MATTERMOST_CHANNEL_REGISTRY_DESCRIPTOR: ChannelRegistryDescriptor =
+    ChannelRegistryDescriptor {
+        id: "mattermost",
+        runtime: None,
+        snapshot_builder: Some(build_mattermost_snapshots),
+        selection_order: 150,
+        selection_label: "self-hosted workspace bot",
+        blurb: "Shipped Mattermost outbound surface with config-backed post sends; inbound websocket serve support remains planned.",
+        implementation_status: ChannelCatalogImplementationStatus::ConfigBacked,
+        capabilities: CONFIG_BACKED_SEND_CHANNEL_CAPABILITIES,
+        label: "Mattermost",
+        aliases: &["mm"],
+        transport: "mattermost_rest_api",
+        onboarding: MATTERMOST_ONBOARDING_DESCRIPTOR,
+        operations: MATTERMOST_OPERATIONS,
+    };
+
 const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
     TELEGRAM_CHANNEL_REGISTRY_DESCRIPTOR,
     FEISHU_CHANNEL_REGISTRY_DESCRIPTOR,
@@ -3136,33 +3123,19 @@ const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
     WECOM_CHANNEL_REGISTRY_DESCRIPTOR,
     DISCORD_CHANNEL_REGISTRY_DESCRIPTOR,
     SLACK_CHANNEL_REGISTRY_DESCRIPTOR,
-    ChannelRegistryDescriptor {
-        id: "line",
-        runtime: None,
-        snapshot_builder: None,
-        selection_order: 60,
-        selection_label: "consumer messaging bot",
-        blurb: "Planned LINE Messaging API surface for push sends and webhook-driven reply loops.",
-        implementation_status: ChannelCatalogImplementationStatus::Stub,
-        capabilities: PLANNED_CHANNEL_CAPABILITIES,
-        label: "LINE",
-        aliases: &["line-bot"],
-        transport: "line_messaging_api",
-        onboarding: LINE_ONBOARDING_DESCRIPTOR,
-        operations: LINE_OPERATIONS,
-    },
+    LINE_CHANNEL_REGISTRY_DESCRIPTOR,
     ChannelRegistryDescriptor {
         id: "dingtalk",
         runtime: None,
-        snapshot_builder: None,
+        snapshot_builder: Some(build_dingtalk_snapshots),
         selection_order: 80,
-        selection_label: "dingtalk robot app",
-        blurb: "Planned DingTalk robot and event-callback surface with explicit app and robot credential metadata.",
-        implementation_status: ChannelCatalogImplementationStatus::Stub,
-        capabilities: PLANNED_CHANNEL_CAPABILITIES,
+        selection_label: "group webhook bot",
+        blurb: "Shipped DingTalk custom robot outbound surface with config-backed webhook sends; inbound callback serve support remains planned.",
+        implementation_status: ChannelCatalogImplementationStatus::ConfigBacked,
+        capabilities: CONFIG_BACKED_SEND_CHANNEL_CAPABILITIES,
         label: "DingTalk",
         aliases: &["ding", "ding-bot"],
-        transport: "dingtalk_stream_or_callback_api",
+        transport: "dingtalk_custom_robot_webhook",
         onboarding: DINGTALK_ONBOARDING_DESCRIPTOR,
         operations: DINGTALK_OPERATIONS,
     },
@@ -3200,15 +3173,15 @@ const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
     ChannelRegistryDescriptor {
         id: "google-chat",
         runtime: None,
-        snapshot_builder: None,
+        snapshot_builder: Some(build_google_chat_snapshots),
         selection_order: 120,
-        selection_label: "workspace thread bot",
-        blurb: "Planned Google Chat surface for space-targeted sends and verified event delivery.",
-        implementation_status: ChannelCatalogImplementationStatus::Stub,
-        capabilities: PLANNED_CHANNEL_CAPABILITIES,
+        selection_label: "workspace space webhook",
+        blurb: "Shipped Google Chat outbound surface with config-backed incoming-webhook sends; interactive event serve support remains planned.",
+        implementation_status: ChannelCatalogImplementationStatus::ConfigBacked,
+        capabilities: CONFIG_BACKED_SEND_CHANNEL_CAPABILITIES,
         label: "Google Chat",
         aliases: &["gchat", "googlechat"],
-        transport: "google_chat_events_api",
+        transport: "google_chat_incoming_webhook",
         onboarding: GOOGLE_CHAT_ONBOARDING_DESCRIPTOR,
         operations: GOOGLE_CHAT_OPERATIONS,
     },
@@ -3228,45 +3201,31 @@ const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
         onboarding: TEAMS_ONBOARDING_DESCRIPTOR,
         operations: TEAMS_OPERATIONS,
     },
-    ChannelRegistryDescriptor {
-        id: "mattermost",
-        runtime: None,
-        snapshot_builder: None,
-        selection_order: 150,
-        selection_label: "self-hosted workspace bot",
-        blurb: "Planned Mattermost surface for self-hosted team chat sends and websocket event handling.",
-        implementation_status: ChannelCatalogImplementationStatus::Stub,
-        capabilities: PLANNED_CHANNEL_CAPABILITIES,
-        label: "Mattermost",
-        aliases: &["mm"],
-        transport: "mattermost_websocket_api",
-        onboarding: MATTERMOST_ONBOARDING_DESCRIPTOR,
-        operations: MATTERMOST_OPERATIONS,
-    },
+    MATTERMOST_CHANNEL_REGISTRY_DESCRIPTOR,
     ChannelRegistryDescriptor {
         id: "nextcloud-talk",
         runtime: None,
-        snapshot_builder: None,
+        snapshot_builder: Some(build_nextcloud_talk_snapshots),
         selection_order: 160,
         selection_label: "self-hosted room bot",
-        blurb: "Planned Nextcloud Talk surface for room delivery on self-hosted collaboration stacks.",
-        implementation_status: ChannelCatalogImplementationStatus::Stub,
-        capabilities: PLANNED_CHANNEL_CAPABILITIES,
+        blurb: "Shipped Nextcloud Talk bot outbound surface with config-backed room sends; inbound callback serve support remains planned.",
+        implementation_status: ChannelCatalogImplementationStatus::ConfigBacked,
+        capabilities: CONFIG_BACKED_SEND_CHANNEL_CAPABILITIES,
         label: "Nextcloud Talk",
         aliases: &["nextcloud", "nextcloudtalk"],
-        transport: "nextcloud_talk_api",
+        transport: "nextcloud_talk_bot_api",
         onboarding: NEXTCLOUD_TALK_ONBOARDING_DESCRIPTOR,
         operations: NEXTCLOUD_TALK_OPERATIONS,
     },
     ChannelRegistryDescriptor {
         id: "synology-chat",
         runtime: None,
-        snapshot_builder: None,
+        snapshot_builder: Some(build_synology_chat_snapshots),
         selection_order: 165,
         selection_label: "nas webhook bot",
-        blurb: "Planned Synology Chat surface for self-hosted NAS chat delivery through outgoing and incoming webhooks.",
-        implementation_status: ChannelCatalogImplementationStatus::Stub,
-        capabilities: PLANNED_CHANNEL_CAPABILITIES,
+        blurb: "Shipped Synology Chat outbound surface with config-backed incoming-webhook sends; inbound outgoing-webhook serve support remains planned.",
+        implementation_status: ChannelCatalogImplementationStatus::ConfigBacked,
+        capabilities: CONFIG_BACKED_SEND_CHANNEL_CAPABILITIES,
         label: "Synology Chat",
         aliases: &["synologychat", "synochat"],
         transport: "synology_chat_outgoing_incoming_webhooks",
@@ -4031,6 +3990,86 @@ fn build_slack_snapshots(
         .collect()
 }
 
+fn build_line_snapshots(
+    descriptor: &ChannelRegistryDescriptor,
+    config: &LoongClawConfig,
+    _runtime_dir: &Path,
+    _now_ms: u64,
+) -> Vec<ChannelStatusSnapshot> {
+    let compiled = cfg!(feature = "channel-line");
+    let default_selection = config.line.default_configured_account_selection();
+    let default_configured_account_id = default_selection.id.clone();
+    let default_account_source = default_selection.source;
+    config
+        .line
+        .configured_account_ids()
+        .into_iter()
+        .map(|configured_account_id| {
+            let is_default_account = configured_account_id == default_configured_account_id;
+            match config
+                .line
+                .resolve_account(Some(configured_account_id.as_str()))
+            {
+                Ok(resolved) => build_line_snapshot_for_account(
+                    descriptor,
+                    compiled,
+                    resolved,
+                    is_default_account,
+                    default_account_source,
+                ),
+                Err(error) => build_invalid_line_snapshot(
+                    descriptor,
+                    compiled,
+                    configured_account_id.as_str(),
+                    is_default_account,
+                    default_account_source,
+                    error,
+                ),
+            }
+        })
+        .collect()
+}
+
+fn build_dingtalk_snapshots(
+    descriptor: &ChannelRegistryDescriptor,
+    config: &LoongClawConfig,
+    _runtime_dir: &Path,
+    _now_ms: u64,
+) -> Vec<ChannelStatusSnapshot> {
+    let compiled = cfg!(feature = "channel-dingtalk");
+    let default_selection = config.dingtalk.default_configured_account_selection();
+    let default_configured_account_id = default_selection.id.clone();
+    let default_account_source = default_selection.source;
+    config
+        .dingtalk
+        .configured_account_ids()
+        .into_iter()
+        .map(|configured_account_id| {
+            let is_default_account = configured_account_id == default_configured_account_id;
+            match config
+                .dingtalk
+                .resolve_account(Some(configured_account_id.as_str()))
+            {
+                Ok(resolved) => build_dingtalk_snapshot_for_account(
+                    descriptor,
+                    compiled,
+                    resolved,
+                    is_default_account,
+                    default_account_source,
+                ),
+                Err(error) => build_invalid_dingtalk_snapshot(
+                    descriptor,
+                    compiled,
+                    configured_account_id.as_str(),
+                    is_default_account,
+                    default_account_source,
+                    error,
+                ),
+            }
+        })
+        .collect()
+}
+
 fn build_whatsapp_snapshots(
     descriptor: &ChannelRegistryDescriptor,
     config: &LoongClawConfig,
@@ -4059,6 +4098,46 @@ fn build_whatsapp_snapshots(
                     default_account_source,
                 ),
                 Err(error) => build_invalid_whatsapp_snapshot(
+                    descriptor,
+                    compiled,
+                    configured_account_id.as_str(),
+                    is_default_account,
+                    default_account_source,
+                    error,
+                ),
+            }
+        })
+        .collect()
+}
+
+fn build_google_chat_snapshots(
+    descriptor: &ChannelRegistryDescriptor,
+    config: &LoongClawConfig,
+    _runtime_dir: &Path,
+    _now_ms: u64,
+) -> Vec<ChannelStatusSnapshot> {
+    let compiled = cfg!(feature = "channel-google-chat");
+    let default_selection = config.google_chat.default_configured_account_selection();
+    let default_configured_account_id = default_selection.id.clone();
+    let default_account_source = default_selection.source;
+    config
+        .google_chat
+        .configured_account_ids()
+        .into_iter()
+        .map(|configured_account_id| {
+            let is_default_account = configured_account_id == default_configured_account_id;
+            match config
+                .google_chat
+                .resolve_account(Some(configured_account_id.as_str()))
+            {
+                Ok(resolved) => build_google_chat_snapshot_for_account(
+                    descriptor,
+                    compiled,
+                    resolved,
+                    is_default_account,
+                    default_account_source,
+                ),
+                Err(error) => build_invalid_google_chat_snapshot(
                     descriptor,
                     compiled,
                     configured_account_id.as_str(),
@@ -4109,6 +4188,215 @@ fn build_signal_snapshots(
             }
         })
         .collect()
+}
+
+fn build_mattermost_snapshots(
+    descriptor: &ChannelRegistryDescriptor,
+    config: &LoongClawConfig,
+    _runtime_dir: &Path,
+    _now_ms: u64,
+) -> Vec<ChannelStatusSnapshot> {
+    let compiled = cfg!(feature = "channel-mattermost");
+    let default_selection = config.mattermost.default_configured_account_selection();
+    let default_configured_account_id = default_selection.id.clone();
+    let default_account_source = default_selection.source;
+    config
+        .mattermost
+        .configured_account_ids()
+        .into_iter()
+        .map(|configured_account_id| {
+            let is_default_account = configured_account_id == default_configured_account_id;
+            match config
+                .mattermost
+                .resolve_account(Some(configured_account_id.as_str()))
+            {
+                Ok(resolved) => build_mattermost_snapshot_for_account(
+                    descriptor,
+                    compiled,
+                    resolved,
+                    is_default_account,
+                    default_account_source,
+                ),
+                Err(error) => build_invalid_mattermost_snapshot(
+                    descriptor,
+                    compiled,
+                    configured_account_id.as_str(),
+                    is_default_account,
+                    default_account_source,
+                    error,
+                ),
+            }
+        })
+        .collect()
+}
+
+fn build_nextcloud_talk_snapshots(
+    descriptor: &ChannelRegistryDescriptor,
+    config: &LoongClawConfig,
+    _runtime_dir: &Path,
+    _now_ms: u64,
+) -> Vec<ChannelStatusSnapshot> {
+    let compiled = cfg!(feature = "channel-nextcloud-talk");
+    let default_selection = config.nextcloud_talk.default_configured_account_selection();
+    let default_configured_account_id = default_selection.id.clone();
+    let default_account_source = default_selection.source;
+    config
+        .nextcloud_talk
+        .configured_account_ids()
+        .into_iter()
+        .map(|configured_account_id| {
+            let is_default_account = configured_account_id == default_configured_account_id;
+            match config
+                .nextcloud_talk
+                .resolve_account(Some(configured_account_id.as_str()))
+            {
+                Ok(resolved) => build_nextcloud_talk_snapshot_for_account(
+                    descriptor,
+                    compiled,
+                    resolved,
+                    is_default_account,
+                    default_account_source,
+                ),
+                Err(error) => build_invalid_nextcloud_talk_snapshot(
+                    descriptor,
+                    compiled,
+                    configured_account_id.as_str(),
+                    is_default_account,
+                    default_account_source,
+                    error,
+                ),
+            }
+        })
+        .collect()
+}
+
+fn build_synology_chat_snapshots(
+    descriptor: &ChannelRegistryDescriptor,
+    config: &LoongClawConfig,
+    _runtime_dir: &Path,
+    _now_ms: u64,
+) -> Vec<ChannelStatusSnapshot> {
+    let compiled = cfg!(feature = "channel-synology-chat");
+    let default_selection = config.synology_chat.default_configured_account_selection();
+    let default_configured_account_id = default_selection.id.clone();
+    let default_account_source = default_selection.source;
+    config
+        .synology_chat
+        .configured_account_ids()
+        .into_iter()
+        .map(|configured_account_id| {
+            let is_default_account = configured_account_id == default_configured_account_id;
+            match config
+                .synology_chat
+                .resolve_account(Some(configured_account_id.as_str()))
+            {
+                Ok(resolved) => build_synology_chat_snapshot_for_account(
+                    descriptor,
+                    compiled,
+                    resolved,
+                    is_default_account,
+                    default_account_source,
+                ),
+                Err(error) => build_invalid_synology_chat_snapshot(
+                    descriptor,
+                    compiled,
+                    configured_account_id.as_str(),
+                    is_default_account,
+                    default_account_source,
+                    error,
+                ),
+            }
+        })
+        .collect()
+}
+
+fn redact_endpoint_status_url(raw: Option<String>) -> Option<String> {
+    let raw = raw?;
+    let parsed = reqwest::Url::parse(raw.as_str()).ok()?;
+    let mut redacted = parsed;
+    redacted.set_query(None);
+    redacted.set_fragment(None);
+    Some(redacted.to_string())
+}
+
+fn build_dingtalk_snapshot_for_account(
+    descriptor: &ChannelRegistryDescriptor,
+    compiled: bool,
+    resolved: ResolvedDingtalkChannelConfig,
+    is_default_account: bool,
+    default_account_source: ChannelDefaultAccountSelectionSource,
+) -> ChannelStatusSnapshot {
+    let mut send_issues = Vec::new();
+
+    let webhook_url = resolved.webhook_url();
+    if webhook_url.is_none() {
+        send_issues.push("webhook_url is missing".to_owned());
+    }
+    let parsed_webhook_url = webhook_url.as_deref().map(reqwest::Url::parse).transpose();
+    if let Err(error) = parsed_webhook_url {
+        send_issues.push(format!("webhook_url is invalid: {error}"));
+    }
+
+    let send_operation = if !compiled {
+        unsupported_operation(
+            DINGTALK_SEND_OPERATION,
+            "binary built without feature `channel-dingtalk`".to_owned(),
+        )
+    } else if !resolved.enabled {
+        disabled_operation(
+            DINGTALK_SEND_OPERATION,
+            "disabled by dingtalk account configuration".to_owned(),
+        )
+    } else if !send_issues.is_empty() {
+        misconfigured_operation(DINGTALK_SEND_OPERATION, send_issues)
+    } else {
+        ready_operation(DINGTALK_SEND_OPERATION)
+    };
+
+    let serve_operation = if !compiled {
+        unsupported_operation(
+            DINGTALK_SERVE_OPERATION,
+            "binary built without feature `channel-dingtalk`".to_owned(),
+        )
+    } else {
+        unsupported_operation(
+            DINGTALK_SERVE_OPERATION,
+            "dingtalk custom robot surface is outbound-only".to_owned(),
+        )
+    };
+
+    let mut notes = vec![
+        format!("configured_account_id={}", resolved.configured_account_id),
+        format!("configured_account={}", resolved.configured_account_label),
+        format!("account_id={}", resolved.account.id),
+        format!("account={}", resolved.account.label),
+    ];
+    if resolved.secret().is_some() {
+        notes.push("signed_webhook=true".to_owned());
+    }
+    if is_default_account {
+        notes.push("default_account=true".to_owned());
+    }
+    notes.push(format!(
+        "default_account_source={}",
+        default_account_source.as_str()
+    ));
+
+    ChannelStatusSnapshot {
+        id: descriptor.id,
+        configured_account_id: resolved.configured_account_id.clone(),
+        configured_account_label: resolved.configured_account_label.clone(),
+        is_default_account,
+        default_account_source,
+        label: descriptor.label,
+        aliases: descriptor.aliases.to_vec(),
+        transport: descriptor.transport,
+        compiled,
+        enabled: resolved.enabled,
+        api_base_url: redact_endpoint_status_url(webhook_url),
+        notes,
+        operations: vec![send_operation, serve_operation],
+    }
 }
 
 fn build_discord_snapshot_for_account(
@@ -4259,6 +4547,83 @@ fn build_slack_snapshot_for_account(
     }
 }
 
+fn build_line_snapshot_for_account(
+    descriptor: &ChannelRegistryDescriptor,
+    compiled: bool,
+    resolved: ResolvedLineChannelConfig,
+    is_default_account: bool,
+    default_account_source: ChannelDefaultAccountSelectionSource,
+) -> ChannelStatusSnapshot {
+    let mut send_issues = Vec::new();
+    if resolved.channel_access_token().is_none() {
+        send_issues.push("channel_access_token is missing".to_owned());
+    }
+
+    let api_base_url = resolved.resolved_api_base_url();
+    let api_base_url_parse = reqwest::Url::parse(api_base_url.as_str());
+    if let Err(error) = api_base_url_parse {
+        send_issues.push(format!("api_base_url is invalid: {error}"));
+    }
+
+    let send_operation = if !compiled {
+        unsupported_operation(
+            LINE_SEND_OPERATION,
+            "binary built without feature `channel-line`".to_owned(),
+        )
+    } else if !resolved.enabled {
+        disabled_operation(
+            LINE_SEND_OPERATION,
+            "disabled by line account configuration".to_owned(),
+        )
+    } else if !send_issues.is_empty() {
+        misconfigured_operation(LINE_SEND_OPERATION, send_issues)
+    } else {
+        ready_operation(LINE_SEND_OPERATION)
+    };
+
+    let serve_operation = if !compiled {
+        unsupported_operation(
+            LINE_SERVE_OPERATION,
+            "binary built without feature `channel-line`".to_owned(),
+        )
+    } else {
+        unsupported_operation(
+            LINE_SERVE_OPERATION,
+            "line serve runtime is not implemented yet".to_owned(),
+        )
+    };
+
+    let mut notes = vec![
+        format!("configured_account_id={}", resolved.configured_account_id),
+        format!("configured_account={}", resolved.configured_account_label),
+        format!("account_id={}", resolved.account.id),
+        format!("account={}", resolved.account.label),
+    ];
+    if is_default_account {
+        notes.push("default_account=true".to_owned());
+    }
+    notes.push(format!(
+        "default_account_source={}",
+        default_account_source.as_str()
+    ));
+
+    ChannelStatusSnapshot {
+        id: descriptor.id,
+        configured_account_id: resolved.configured_account_id.clone(),
+        configured_account_label: resolved.configured_account_label.clone(),
+        is_default_account,
+        default_account_source,
+        label: descriptor.label,
+        aliases: descriptor.aliases.to_vec(),
+        transport: descriptor.transport,
+        compiled,
+        enabled: resolved.enabled,
+        api_base_url: Some(api_base_url),
+        notes,
+        operations: vec![send_operation, serve_operation],
+    }
+}
+
 fn build_whatsapp_snapshot_for_account(
     descriptor: &ChannelRegistryDescriptor,
     compiled: bool,
@@ -4334,6 +4699,331 @@ fn build_whatsapp_snapshot_for_account(
         compiled,
         enabled: resolved.enabled,
         api_base_url: Some(api_base_url),
+        notes,
+        operations: vec![send_operation, serve_operation],
+    }
+}
+
+fn build_google_chat_snapshot_for_account(
+    descriptor: &ChannelRegistryDescriptor,
+    compiled: bool,
+    resolved: ResolvedGoogleChatChannelConfig,
+    is_default_account: bool,
+    default_account_source: ChannelDefaultAccountSelectionSource,
+) -> ChannelStatusSnapshot {
+    let mut send_issues = Vec::new();
+
+    let webhook_url = resolved.webhook_url();
+    if webhook_url.is_none() {
+        send_issues.push("webhook_url is missing".to_owned());
+    }
+    let parsed_webhook_url = webhook_url.as_deref().map(reqwest::Url::parse).transpose();
+    if let Err(error) = parsed_webhook_url {
+        send_issues.push(format!("webhook_url is invalid: {error}"));
+    }
+
+    let send_operation = if !compiled {
+        unsupported_operation(
+            GOOGLE_CHAT_SEND_OPERATION,
+            "binary built without feature `channel-google-chat`".to_owned(),
+        )
+    } else if !resolved.enabled {
+        disabled_operation(
+            GOOGLE_CHAT_SEND_OPERATION,
+            "disabled by google_chat account configuration".to_owned(),
+        )
+    } else if !send_issues.is_empty() {
+        misconfigured_operation(GOOGLE_CHAT_SEND_OPERATION, send_issues)
+    } else {
+        ready_operation(GOOGLE_CHAT_SEND_OPERATION)
+    };
+
+    let serve_operation = if !compiled {
+        unsupported_operation(
+            GOOGLE_CHAT_SERVE_OPERATION,
+            "binary built without feature `channel-google-chat`".to_owned(),
+        )
+    } else {
+        unsupported_operation(
+            GOOGLE_CHAT_SERVE_OPERATION,
+            "google chat incoming webhook surface is outbound-only".to_owned(),
+        )
+    };
+
+    let mut notes = vec![
+        format!("configured_account_id={}", resolved.configured_account_id),
+        format!("configured_account={}", resolved.configured_account_label),
+        format!("account_id={}", resolved.account.id),
+        format!("account={}", resolved.account.label),
+    ];
+    if is_default_account {
+        notes.push("default_account=true".to_owned());
+    }
+    notes.push(format!(
+        "default_account_source={}",
+        default_account_source.as_str()
+    ));
+
+    ChannelStatusSnapshot {
+        id: descriptor.id,
+        configured_account_id: resolved.configured_account_id.clone(),
+        configured_account_label: resolved.configured_account_label.clone(),
+        is_default_account,
+        default_account_source,
+        label: descriptor.label,
+        aliases: descriptor.aliases.to_vec(),
+        transport: descriptor.transport,
+        compiled,
+        enabled: resolved.enabled,
+        api_base_url: redact_endpoint_status_url(webhook_url),
+        notes,
+        operations: vec![send_operation, serve_operation],
+    }
+}
+
+fn build_mattermost_snapshot_for_account(
+    descriptor: &ChannelRegistryDescriptor,
+    compiled: bool,
+    resolved: ResolvedMattermostChannelConfig,
+    is_default_account: bool,
+    default_account_source: ChannelDefaultAccountSelectionSource,
+) -> ChannelStatusSnapshot {
+    let mut send_issues = Vec::new();
+
+    let server_url = resolved.server_url();
+    if server_url.is_none() {
+        send_issues.push("server_url is missing".to_owned());
+    }
+    let parsed_server_url = server_url.as_deref().map(reqwest::Url::parse).transpose();
+    if let Err(error) = parsed_server_url {
+        send_issues.push(format!("server_url is invalid: {error}"));
+    }
+    if resolved.bot_token().is_none() {
+        send_issues.push("bot_token is missing".to_owned());
+    }
+
+    let send_operation = if !compiled {
+        unsupported_operation(
+            MATTERMOST_SEND_OPERATION,
+            "binary built without feature `channel-mattermost`".to_owned(),
+        )
+    } else if !resolved.enabled {
+        disabled_operation(
+            MATTERMOST_SEND_OPERATION,
+            "disabled by mattermost account configuration".to_owned(),
+        )
+    } else if !send_issues.is_empty() {
+        misconfigured_operation(MATTERMOST_SEND_OPERATION, send_issues)
+    } else {
+        ready_operation(MATTERMOST_SEND_OPERATION)
+    };
+
+    let serve_operation = if !compiled {
+        unsupported_operation(
+            MATTERMOST_SERVE_OPERATION,
+            "binary built without feature `channel-mattermost`".to_owned(),
+        )
+    } else {
+        unsupported_operation(
+            MATTERMOST_SERVE_OPERATION,
+            "mattermost serve runtime is not implemented yet".to_owned(),
+        )
+    };
+
+    let mut notes = vec![
+        format!("configured_account_id={}", resolved.configured_account_id),
+        format!("configured_account={}", resolved.configured_account_label),
+        format!("account_id={}", resolved.account.id),
+        format!("account={}", resolved.account.label),
+    ];
+    if is_default_account {
+        notes.push("default_account=true".to_owned());
+    }
+    notes.push(format!(
+        "default_account_source={}",
+        default_account_source.as_str()
+    ));
+
+    ChannelStatusSnapshot {
+        id: descriptor.id,
+        configured_account_id: resolved.configured_account_id.clone(),
+        configured_account_label: resolved.configured_account_label.clone(),
+        is_default_account,
+        default_account_source,
+        label: descriptor.label,
+        aliases: descriptor.aliases.to_vec(),
+        transport: descriptor.transport,
+        compiled,
+        enabled: resolved.enabled,
+        api_base_url: server_url,
+        notes,
+        operations: vec![send_operation, serve_operation],
+    }
+}
+
+fn build_nextcloud_talk_snapshot_for_account(
+    descriptor: &ChannelRegistryDescriptor,
+    compiled: bool,
+    resolved: ResolvedNextcloudTalkChannelConfig,
+    is_default_account: bool,
+    default_account_source: ChannelDefaultAccountSelectionSource,
+) -> ChannelStatusSnapshot {
+    let mut send_issues = Vec::new();
+
+    let server_url = resolved.server_url();
+    if server_url.is_none() {
+        send_issues.push("server_url is missing".to_owned());
+    }
+    let parsed_server_url = server_url.as_deref().map(reqwest::Url::parse).transpose();
+    if let Err(error) = parsed_server_url {
+        send_issues.push(format!("server_url is invalid: {error}"));
+    }
+    if resolved.shared_secret().is_none() {
+        send_issues.push("shared_secret is missing".to_owned());
+    }
+
+    let send_operation = if !compiled {
+        unsupported_operation(
+            NEXTCLOUD_TALK_SEND_OPERATION,
+            "binary built without feature `channel-nextcloud-talk`".to_owned(),
+        )
+    } else if !resolved.enabled {
+        disabled_operation(
+            NEXTCLOUD_TALK_SEND_OPERATION,
+            "disabled by nextcloud_talk account configuration".to_owned(),
+        )
+    } else if !send_issues.is_empty() {
+        misconfigured_operation(NEXTCLOUD_TALK_SEND_OPERATION, send_issues)
+    } else {
+        ready_operation(NEXTCLOUD_TALK_SEND_OPERATION)
+    };
+
+    let serve_operation = if !compiled {
+        unsupported_operation(
+            NEXTCLOUD_TALK_SERVE_OPERATION,
+            "binary built without feature `channel-nextcloud-talk`".to_owned(),
+        )
+    } else {
+        unsupported_operation(
+            NEXTCLOUD_TALK_SERVE_OPERATION,
+            "nextcloud talk bot callback serve is not implemented yet".to_owned(),
+        )
+    };
+
+    let mut notes = vec![
+        format!("configured_account_id={}", resolved.configured_account_id),
+        format!("configured_account={}", resolved.configured_account_label),
+        format!("account_id={}", resolved.account.id),
+        format!("account={}", resolved.account.label),
+    ];
+    if is_default_account {
+        notes.push("default_account=true".to_owned());
+    }
+    notes.push(format!(
+        "default_account_source={}",
+        default_account_source.as_str()
+    ));
+
+    ChannelStatusSnapshot {
+        id: descriptor.id,
+        configured_account_id: resolved.configured_account_id.clone(),
+        configured_account_label: resolved.configured_account_label.clone(),
+        is_default_account,
+        default_account_source,
+        label: descriptor.label,
+        aliases: descriptor.aliases.to_vec(),
+        transport: descriptor.transport,
+        compiled,
+        enabled: resolved.enabled,
+        api_base_url: server_url,
+        notes,
+        operations: vec![send_operation, serve_operation],
+    }
+}
+
+fn build_synology_chat_snapshot_for_account(
+    descriptor: &ChannelRegistryDescriptor,
+    compiled: bool,
+    resolved: ResolvedSynologyChatChannelConfig,
+    is_default_account: bool,
+    default_account_source: ChannelDefaultAccountSelectionSource,
+) -> ChannelStatusSnapshot {
+    let mut send_issues = Vec::new();
+
+    let incoming_url = resolved.incoming_url();
+    if incoming_url.is_none() {
+        send_issues.push("incoming_url is missing".to_owned());
+    }
+    let parsed_incoming_url = incoming_url.as_deref().map(reqwest::Url::parse).transpose();
+    if let Err(error) = parsed_incoming_url {
+        send_issues.push(format!("incoming_url is invalid: {error}"));
+    }
+
+    let send_operation = if !compiled {
+        unsupported_operation(
+            SYNOLOGY_CHAT_SEND_OPERATION,
+            "binary built without feature `channel-synology-chat`".to_owned(),
+        )
+    } else if !resolved.enabled {
+        disabled_operation(
+            SYNOLOGY_CHAT_SEND_OPERATION,
+            "disabled by synology_chat account configuration".to_owned(),
+        )
+    } else if !send_issues.is_empty() {
+        misconfigured_operation(SYNOLOGY_CHAT_SEND_OPERATION, send_issues)
+    } else {
+        ready_operation(SYNOLOGY_CHAT_SEND_OPERATION)
+    };
+
+    let serve_operation = if !compiled {
+        unsupported_operation(
+            SYNOLOGY_CHAT_SERVE_OPERATION,
+            "binary built without feature `channel-synology-chat`".to_owned(),
+        )
+    } else {
+        unsupported_operation(
+            SYNOLOGY_CHAT_SERVE_OPERATION,
+            "synology chat outgoing webhook serve is not implemented yet".to_owned(),
+        )
+    };
+
+    let mut notes = vec![
+        format!("configured_account_id={}", resolved.configured_account_id),
+        format!("configured_account={}", resolved.configured_account_label),
+        format!("account_id={}", resolved.account.id),
+        format!("account={}", resolved.account.label),
+    ];
+    if !resolved.allowed_user_ids.is_empty() {
+        let user_ids = resolved
+            .allowed_user_ids
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>();
+        notes.push(format!("allowed_user_ids={}", user_ids.join(",")));
+    }
+    if resolved.token().is_some() {
+        notes.push("outgoing_webhook_token_configured=true".to_owned());
+    }
+    if is_default_account {
+        notes.push("default_account=true".to_owned());
+    }
+    notes.push(format!(
+        "default_account_source={}",
+        default_account_source.as_str()
+    ));
+
+    ChannelStatusSnapshot {
+        id: descriptor.id,
+        configured_account_id: resolved.configured_account_id.clone(),
+        configured_account_label: resolved.configured_account_label.clone(),
+        is_default_account,
+        default_account_source,
+        label: descriptor.label,
+        aliases: descriptor.aliases.to_vec(),
+        transport: descriptor.transport,
+        compiled,
+        enabled: resolved.enabled,
+        api_base_url: redact_endpoint_status_url(incoming_url),
         notes,
         operations: vec![send_operation, serve_operation],
     }
@@ -5150,6 +5840,120 @@ fn build_invalid_slack_snapshot(
     }
 }
 
+fn build_invalid_line_snapshot(
+    descriptor: &ChannelRegistryDescriptor,
+    compiled: bool,
+    configured_account_id: &str,
+    is_default_account: bool,
+    default_account_source: ChannelDefaultAccountSelectionSource,
+    error: String,
+) -> ChannelStatusSnapshot {
+    let send_operation = if !compiled {
+        unsupported_operation(
+            LINE_SEND_OPERATION,
+            "binary built without feature `channel-line`".to_owned(),
+        )
+    } else {
+        misconfigured_operation(LINE_SEND_OPERATION, vec![error.clone()])
+    };
+    let serve_operation = if !compiled {
+        unsupported_operation(
+            LINE_SERVE_OPERATION,
+            "binary built without feature `channel-line`".to_owned(),
+        )
+    } else {
+        unsupported_operation(
+            LINE_SERVE_OPERATION,
+            "line serve runtime is not implemented yet".to_owned(),
+        )
+    };
+
+    let mut notes = vec![
+        format!("configured_account_id={configured_account_id}"),
+        format!("selection_error={error}"),
+    ];
+    if is_default_account {
+        notes.push("default_account=true".to_owned());
+    }
+    notes.push(format!(
+        "default_account_source={}",
+        default_account_source.as_str()
+    ));
+
+    ChannelStatusSnapshot {
+        id: descriptor.id,
+        configured_account_id: configured_account_id.to_owned(),
+        configured_account_label: configured_account_id.to_owned(),
+        is_default_account,
+        default_account_source,
+        label: descriptor.label,
+        aliases: descriptor.aliases.to_vec(),
+        transport: descriptor.transport,
+        compiled,
+        enabled: false,
+        api_base_url: None,
+        notes,
+        operations: vec![send_operation, serve_operation],
+    }
+}
+
+fn build_invalid_dingtalk_snapshot(
+    descriptor: &ChannelRegistryDescriptor,
+    compiled: bool,
+    configured_account_id: &str,
+    is_default_account: bool,
+    default_account_source: ChannelDefaultAccountSelectionSource,
+    error: String,
+) -> ChannelStatusSnapshot {
+    let send_operation = if !compiled {
+        unsupported_operation(
+            DINGTALK_SEND_OPERATION,
+            "binary built without feature `channel-dingtalk`".to_owned(),
+        )
+    } else {
+        misconfigured_operation(DINGTALK_SEND_OPERATION, vec![error.clone()])
+    };
+    let serve_operation = if !compiled {
+        unsupported_operation(
+            DINGTALK_SERVE_OPERATION,
+            "binary built without feature `channel-dingtalk`".to_owned(),
+        )
+    } else {
+        unsupported_operation(
+            DINGTALK_SERVE_OPERATION,
+            "dingtalk custom robot surface is outbound-only".to_owned(),
+        )
+    };
+
+    let mut notes = vec![
+        format!("configured_account_id={configured_account_id}"),
+        format!("selection_error={error}"),
+    ];
+    if is_default_account {
+        notes.push("default_account=true".to_owned());
+    }
+    notes.push(format!(
+        "default_account_source={}",
+        default_account_source.as_str()
+    ));
+
+    ChannelStatusSnapshot {
+        id: descriptor.id,
+        configured_account_id: configured_account_id.to_owned(),
+        configured_account_label: configured_account_id.to_owned(),
+        is_default_account,
+        default_account_source,
+        label: descriptor.label,
+        aliases: descriptor.aliases.to_vec(),
+        transport: descriptor.transport,
+        compiled,
+        enabled: false,
+        api_base_url: None,
+        notes,
+        operations: vec![send_operation, serve_operation],
+    }
+}
+
 fn build_invalid_whatsapp_snapshot(
     descriptor: &ChannelRegistryDescriptor,
     compiled: bool,
@@ -5207,6 +6011,63 @@ fn build_invalid_whatsapp_snapshot(
     }
 }
 
+fn build_invalid_google_chat_snapshot(
+    descriptor: &ChannelRegistryDescriptor,
+    compiled: bool,
+    configured_account_id: &str,
+    is_default_account: bool,
+    default_account_source: ChannelDefaultAccountSelectionSource,
+    error: String,
+) -> ChannelStatusSnapshot {
+    let send_operation = if !compiled {
+        unsupported_operation(
+            GOOGLE_CHAT_SEND_OPERATION,
+            "binary built without feature `channel-google-chat`".to_owned(),
+        )
+    } else {
+        misconfigured_operation(GOOGLE_CHAT_SEND_OPERATION, vec![error.clone()])
+    };
+    let serve_operation = if !compiled {
+        unsupported_operation(
+            GOOGLE_CHAT_SERVE_OPERATION,
+            "binary built without feature `channel-google-chat`".to_owned(),
+        )
+    } else {
+        unsupported_operation(
+            GOOGLE_CHAT_SERVE_OPERATION,
+            "google chat incoming webhook surface is outbound-only".to_owned(),
+        )
+    };
+
+    let mut notes = vec![
+        format!("configured_account_id={configured_account_id}"),
+        format!("selection_error={error}"),
+    ];
+    if is_default_account {
+        notes.push("default_account=true".to_owned());
+    }
+    notes.push(format!(
+        "default_account_source={}",
+        default_account_source.as_str()
+    ));
+
+    ChannelStatusSnapshot {
+        id: descriptor.id,
+        configured_account_id: configured_account_id.to_owned(),
+        configured_account_label: configured_account_id.to_owned(),
+        is_default_account,
+        default_account_source,
+        label: descriptor.label,
+        aliases: descriptor.aliases.to_vec(),
+        transport: descriptor.transport,
+        compiled,
+        enabled: false,
+        api_base_url: None,
+        notes,
+        operations: vec![send_operation, serve_operation],
+    }
+}
+
 fn build_invalid_signal_snapshot(
     descriptor: &ChannelRegistryDescriptor,
     compiled: bool,
@@ -5232,6 +6093,177 @@ fn build_invalid_signal_snapshot(
         unsupported_operation(
             SIGNAL_SERVE_OPERATION,
             "signal serve runtime is not implemented yet".to_owned(),
+        )
+    };
+
+    let mut notes = vec![
+        format!("configured_account_id={configured_account_id}"),
+        format!("selection_error={error}"),
+    ];
+    if is_default_account {
+        notes.push("default_account=true".to_owned());
+    }
+    notes.push(format!(
+        "default_account_source={}",
+        default_account_source.as_str()
+    ));
+
+    ChannelStatusSnapshot {
+        id: descriptor.id,
+        configured_account_id: configured_account_id.to_owned(),
+        configured_account_label: configured_account_id.to_owned(),
+        is_default_account,
+        default_account_source,
+        label: descriptor.label,
+        aliases: descriptor.aliases.to_vec(),
+        transport: descriptor.transport,
+        compiled,
+        enabled: false,
+        api_base_url: None,
+        notes,
+        operations: vec![send_operation, serve_operation],
+    }
+}
+
+fn build_invalid_mattermost_snapshot(
+    descriptor: &ChannelRegistryDescriptor,
+    compiled: bool,
+    configured_account_id: &str,
+    is_default_account: bool,
+    default_account_source: ChannelDefaultAccountSelectionSource,
+    error: String,
+) -> ChannelStatusSnapshot {
+    let send_operation = if !compiled {
+        unsupported_operation(
+            MATTERMOST_SEND_OPERATION,
+            "binary built without feature `channel-mattermost`".to_owned(),
+        )
+    } else {
+        misconfigured_operation(MATTERMOST_SEND_OPERATION, vec![error.clone()])
+    };
+    let serve_operation = if !compiled {
+        unsupported_operation(
+            MATTERMOST_SERVE_OPERATION,
+            "binary built without feature `channel-mattermost`".to_owned(),
+        )
+    } else {
+        unsupported_operation(
+            MATTERMOST_SERVE_OPERATION,
+            "mattermost serve runtime is not implemented yet".to_owned(),
+        )
+    };
+
+    let mut notes = vec![
+        format!("configured_account_id={configured_account_id}"),
+        format!("selection_error={error}"),
+    ];
+    if is_default_account {
+        notes.push("default_account=true".to_owned());
+    }
+    notes.push(format!(
+        "default_account_source={}",
+        default_account_source.as_str()
+    ));
+
+    ChannelStatusSnapshot {
+        id: descriptor.id,
+        configured_account_id: configured_account_id.to_owned(),
+        configured_account_label: configured_account_id.to_owned(),
+        is_default_account,
+        default_account_source,
+        label: descriptor.label,
+        aliases: descriptor.aliases.to_vec(),
+        transport: descriptor.transport,
+        compiled,
+        enabled: false,
+        api_base_url: None,
+        notes,
+        operations: vec![send_operation, serve_operation],
+    }
+}
+
+fn build_invalid_nextcloud_talk_snapshot(
+    descriptor: &ChannelRegistryDescriptor,
+    compiled: bool,
+    configured_account_id: &str,
+    is_default_account: bool,
+    default_account_source: ChannelDefaultAccountSelectionSource,
+    error: String,
+) -> ChannelStatusSnapshot {
+    let send_operation = if !compiled {
+        unsupported_operation(
+            NEXTCLOUD_TALK_SEND_OPERATION,
+            "binary built without feature `channel-nextcloud-talk`".to_owned(),
+        )
+    } else {
+        misconfigured_operation(NEXTCLOUD_TALK_SEND_OPERATION, vec![error.clone()])
+    };
+    let serve_operation = if !compiled {
+        unsupported_operation(
+            NEXTCLOUD_TALK_SERVE_OPERATION,
+            "binary built without feature `channel-nextcloud-talk`".to_owned(),
+        )
+    } else {
+        unsupported_operation(
+            NEXTCLOUD_TALK_SERVE_OPERATION,
+            "nextcloud talk bot callback serve is not implemented yet".to_owned(),
+        )
+    };
+
+    let mut notes = vec![
+        format!("configured_account_id={configured_account_id}"),
+        format!("selection_error={error}"),
+    ];
+    if is_default_account {
+        notes.push("default_account=true".to_owned());
+    }
+    notes.push(format!(
+        "default_account_source={}",
+        default_account_source.as_str()
+    ));
+
+    ChannelStatusSnapshot {
+        id: descriptor.id,
+        configured_account_id: configured_account_id.to_owned(),
+        configured_account_label: configured_account_id.to_owned(),
+        is_default_account,
+        default_account_source,
+        label: descriptor.label,
+        aliases: descriptor.aliases.to_vec(),
+        transport: descriptor.transport,
+        compiled,
+        enabled: false,
+        api_base_url: None,
+        notes,
+        operations: vec![send_operation, serve_operation],
+    }
+}
+
+fn build_invalid_synology_chat_snapshot(
+    descriptor: &ChannelRegistryDescriptor,
+    compiled: bool,
+    configured_account_id: &str,
+    is_default_account: bool,
+    default_account_source: ChannelDefaultAccountSelectionSource,
+    error: String,
+) -> ChannelStatusSnapshot {
+    let send_operation = if !compiled {
+        unsupported_operation(
+            SYNOLOGY_CHAT_SEND_OPERATION,
+            "binary built without feature `channel-synology-chat`".to_owned(),
+        )
+    } else {
+        misconfigured_operation(SYNOLOGY_CHAT_SEND_OPERATION, vec![error.clone()])
+    };
+    let serve_operation = if !compiled {
+        unsupported_operation(
+            SYNOLOGY_CHAT_SERVE_OPERATION,
+            "binary built without feature `channel-synology-chat`".to_owned(),
+        )
+    } else {
+        unsupported_operation(
+            SYNOLOGY_CHAT_SERVE_OPERATION,
+            "synology chat outgoing webhook serve is not implemented yet".to_owned(),
         )
     };
 
@@ -5506,7 +6538,7 @@ mod tests {
         assert_eq!(google_chat.serve.command, "google-chat-serve");
         assert_eq!(
             google_chat.default_send_target_kind,
-            ChannelCatalogTargetKind::Conversation
+            ChannelCatalogTargetKind::Endpoint
         );
 
         assert_eq!(synology_chat.channel_id, "synology-chat");
@@ -5934,12 +6966,8 @@ mod tests {
     }
 
     #[test]
-    fn channel_catalog_includes_openclaw_inspired_planned_surfaces() {
+    fn channel_catalog_includes_openclaw_inspired_extended_surfaces() {
         let catalog = list_channel_catalog();
-        let google_chat = catalog
-            .iter()
-            .find(|entry| entry.id == "google-chat")
-            .expect("google chat catalog entry");
         let signal = catalog
             .iter()
             .find(|entry| entry.id == "signal")
@@ -5962,26 +6990,16 @@ mod tests {
             .expect("webchat catalog entry");
 
         assert_eq!(
-            google_chat.implementation_status,
-            ChannelCatalogImplementationStatus::Stub
-        );
-        assert_eq!(google_chat.selection_order, 120);
-        assert_eq!(google_chat.aliases, vec!["gchat", "googlechat"]);
-        assert_eq!(google_chat.transport, "google_chat_events_api");
-        assert_eq!(
-            google_chat.supported_target_kinds,
-            vec![ChannelCatalogTargetKind::Conversation]
-        );
-        assert_eq!(google_chat.operations[0].command, "google-chat-send");
-        assert_eq!(google_chat.operations[1].command, "google-chat-serve");
-
-        assert_eq!(
             signal.supported_target_kinds,
             vec![ChannelCatalogTargetKind::Address]
         );
         assert_eq!(signal.operations[0].command, "signal-send");
         assert_eq!(signal.operations[1].command, "signal-serve");
 
+        assert_eq!(
+            synology_chat.implementation_status,
+            ChannelCatalogImplementationStatus::ConfigBacked
+        );
         assert_eq!(synology_chat.selection_order, 165);
         assert_eq!(synology_chat.aliases, vec!["synologychat", "synochat"]);
         assert_eq!(
@@ -5994,6 +7012,14 @@ mod tests {
         );
         assert_eq!(synology_chat.operations[0].command, "synology-chat-send");
         assert_eq!(synology_chat.operations[1].command, "synology-chat-serve");
+        assert_eq!(
+            synology_chat.operations[0].availability,
+            ChannelCatalogOperationAvailability::Implemented
+        );
+        assert_eq!(
+            synology_chat.operations[1].availability,
+            ChannelCatalogOperationAvailability::Stub
+        );
 
         assert_eq!(imessage.aliases, vec!["bluebubbles", "blue-bubbles"]);
         assert_eq!(imessage.selection_order, 180);
@@ -6033,10 +7059,26 @@ mod tests {
             .iter()
             .find(|entry| entry.id == "discord")
             .expect("discord catalog entry");
+        let line = catalog
+            .iter()
+            .find(|entry| entry.id == "line")
+            .expect("line catalog entry");
         let google_chat = catalog
             .iter()
             .find(|entry| entry.id == "google-chat")
             .expect("google chat catalog entry");
+        let mattermost = catalog
+            .iter()
+            .find(|entry| entry.id == "mattermost")
+            .expect("mattermost catalog entry");
+        let nextcloud_talk = catalog
+            .iter()
+            .find(|entry| entry.id == "nextcloud-talk")
+            .expect("nextcloud talk catalog entry");
+        let synology_chat = catalog
+            .iter()
+            .find(|entry| entry.id == "synology-chat")
+            .expect("synology chat catalog entry");
 
         assert_eq!(
             telegram.operations[0]
@@ -6126,12 +7168,67 @@ mod tests {
         );
 
         assert_eq!(
+            line.operations[0]
+                .requirements
+                .iter()
+                .map(|requirement| requirement.id)
+                .collect::<Vec<_>>(),
+            vec!["enabled", "channel_access_token"]
+        );
+        assert_eq!(
+            line.operations[1]
+                .requirements
+                .iter()
+                .map(|requirement| requirement.id)
+                .collect::<Vec<_>>(),
+            vec!["enabled", "channel_access_token", "channel_secret"]
+        );
+        assert_eq!(
+            line.operations[0].requirements[1].default_env_var,
+            Some("LINE_CHANNEL_ACCESS_TOKEN")
+        );
+        assert_eq!(
+            line.operations[1].requirements[2].default_env_var,
+            Some("LINE_CHANNEL_SECRET")
+        );
+
+        let dingtalk = catalog
+            .iter()
+            .find(|entry| entry.id == "dingtalk")
+            .expect("dingtalk catalog entry");
+
+        assert_eq!(
+            dingtalk.operations[0]
+                .requirements
+                .iter()
+                .map(|requirement| requirement.id)
+                .collect::<Vec<_>>(),
+            vec!["enabled", "webhook_url"]
+        );
+        assert_eq!(
+            dingtalk.operations[1]
+                .requirements
+                .iter()
+                .map(|requirement| requirement.id)
+                .collect::<Vec<_>>(),
+            vec!["enabled", "webhook_url", "secret"]
+        );
+        assert_eq!(
+            dingtalk.operations[0].requirements[1].default_env_var,
+            Some("DINGTALK_WEBHOOK_URL")
+        );
+        assert_eq!(
+            dingtalk.operations[1].requirements[2].default_env_var,
+            Some("DINGTALK_SECRET")
+        );
+
+        assert_eq!(
             google_chat.operations[0]
                 .requirements
                 .iter()
                 .map(|requirement| requirement.id)
                 .collect::<Vec<_>>(),
-            vec!["enabled", "service_account_json", "space_id"]
+            vec!["enabled", "webhook_url"]
         );
         assert_eq!(
             google_chat.operations[1]
@@ -6139,20 +7236,86 @@ mod tests {
                 .iter()
                 .map(|requirement| requirement.id)
                 .collect::<Vec<_>>(),
-            vec![
-                "enabled",
-                "service_account_json",
-                "allowed_space_ids",
-                "verification_token",
-            ]
+            vec!["enabled", "webhook_url"]
         );
         assert_eq!(
             google_chat.operations[0].requirements[1].default_env_var,
-            Some("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON")
+            Some("GOOGLE_CHAT_WEBHOOK_URL")
+        );
+
+        assert_eq!(
+            mattermost.operations[0]
+                .requirements
+                .iter()
+                .map(|requirement| requirement.id)
+                .collect::<Vec<_>>(),
+            vec!["enabled", "server_url", "bot_token"]
         );
         assert_eq!(
-            google_chat.operations[1].requirements[3].default_env_var,
-            Some("GOOGLE_CHAT_VERIFICATION_TOKEN")
+            mattermost.operations[1]
+                .requirements
+                .iter()
+                .map(|requirement| requirement.id)
+                .collect::<Vec<_>>(),
+            vec!["enabled", "server_url", "bot_token", "allowed_channel_ids"]
+        );
+        assert_eq!(
+            mattermost.operations[0].requirements[1].default_env_var,
+            Some("MATTERMOST_SERVER_URL")
+        );
+        assert_eq!(
+            mattermost.operations[0].requirements[2].default_env_var,
+            Some("MATTERMOST_BOT_TOKEN")
+        );
+
+        assert_eq!(
+            nextcloud_talk.operations[0]
+                .requirements
+                .iter()
+                .map(|requirement| requirement.id)
+                .collect::<Vec<_>>(),
+            vec!["enabled", "server_url", "shared_secret"]
+        );
+        assert_eq!(
+            nextcloud_talk.operations[1]
+                .requirements
+                .iter()
+                .map(|requirement| requirement.id)
+                .collect::<Vec<_>>(),
+            vec!["enabled", "server_url", "shared_secret"]
+        );
+        assert_eq!(
+            nextcloud_talk.operations[0].requirements[1].default_env_var,
+            Some("NEXTCLOUD_TALK_SERVER_URL")
+        );
+        assert_eq!(
+            nextcloud_talk.operations[0].requirements[2].default_env_var,
+            Some("NEXTCLOUD_TALK_SHARED_SECRET")
+        );
+
+        assert_eq!(
+            synology_chat.operations[0]
+                .requirements
+                .iter()
+                .map(|requirement| requirement.id)
+                .collect::<Vec<_>>(),
+            vec!["enabled", "incoming_url"]
+        );
+        assert_eq!(
+            synology_chat.operations[1]
+                .requirements
+                .iter()
+                .map(|requirement| requirement.id)
+                .collect::<Vec<_>>(),
+            vec!["enabled", "token", "incoming_url", "allowed_user_ids"]
+        );
+        assert_eq!(
+            synology_chat.operations[0].requirements[1].default_env_var,
+            Some("SYNOLOGY_CHAT_INCOMING_URL")
+        );
+        assert_eq!(
+            synology_chat.operations[1].requirements[1].default_env_var,
+            Some("SYNOLOGY_CHAT_TOKEN")
         );
     }
 
@@ -6171,10 +7334,18 @@ mod tests {
             .iter()
             .find(|entry| entry.id == "discord")
             .expect("discord catalog entry");
+        let nextcloud_talk = catalog
+            .iter()
+            .find(|entry| entry.id == "nextcloud-talk")
+            .expect("nextcloud talk catalog entry");
         let signal = catalog
             .iter()
             .find(|entry| entry.id == "signal")
             .expect("signal catalog entry");
+        let synology_chat = catalog
+            .iter()
+            .find(|entry| entry.id == "synology-chat")
+            .expect("synology chat catalog entry");
 
         assert_eq!(
             telegram.operations[0].supported_target_kinds,
@@ -6204,11 +7375,27 @@ mod tests {
             &[ChannelCatalogTargetKind::Conversation]
         );
         assert_eq!(
+            nextcloud_talk.operations[0].supported_target_kinds,
+            &[ChannelCatalogTargetKind::Conversation]
+        );
+        assert_eq!(
+            nextcloud_talk.operations[1].supported_target_kinds,
+            &[ChannelCatalogTargetKind::Conversation]
+        );
+        assert_eq!(
             signal.operations[0].supported_target_kinds,
             &[ChannelCatalogTargetKind::Address]
         );
         assert_eq!(
             signal.operations[1].supported_target_kinds,
+            &[ChannelCatalogTargetKind::Address]
+        );
+        assert_eq!(
+            synology_chat.operations[0].supported_target_kinds,
+            &[ChannelCatalogTargetKind::Address]
+        );
+        assert_eq!(
+            synology_chat.operations[1].supported_target_kinds,
             &[ChannelCatalogTargetKind::Address]
         );
     }
@@ -6219,10 +7406,14 @@ mod tests {
             resolve_channel_catalog_operation("telegram", "send").expect("telegram send operation");
         let feishu =
             resolve_channel_catalog_operation("feishu", "send").expect("feishu send operation");
+        let nextcloud_talk = resolve_channel_catalog_operation("nextcloud-talk", "send")
+            .expect("nextcloud talk send operation");
         let webhook =
             resolve_channel_catalog_operation("webhook", "send").expect("webhook send operation");
         let signal =
             resolve_channel_catalog_operation("signal", "send").expect("signal send operation");
+        let synology_chat = resolve_channel_catalog_operation("synology-chat", "send")
+            .expect("synology chat send operation");
 
         assert_eq!(
             telegram.default_target_kind(),
@@ -6237,6 +7428,11 @@ mod tests {
         assert!(feishu.supports_target_kind(ChannelCatalogTargetKind::MessageReply));
         assert!(!feishu.supports_target_kind(ChannelCatalogTargetKind::Conversation));
         assert_eq!(
+            nextcloud_talk.default_target_kind(),
+            Some(ChannelCatalogTargetKind::Conversation)
+        );
+        assert!(nextcloud_talk.supports_target_kind(ChannelCatalogTargetKind::Conversation));
+        assert_eq!(
             webhook.default_target_kind(),
             Some(ChannelCatalogTargetKind::Endpoint)
         );
@@ -6247,6 +7443,11 @@ mod tests {
             Some(ChannelCatalogTargetKind::Address)
         );
         assert!(signal.supports_target_kind(ChannelCatalogTargetKind::Address));
+        assert_eq!(
+            synology_chat.default_target_kind(),
+            Some(ChannelCatalogTargetKind::Address)
+        );
+        assert!(synology_chat.supports_target_kind(ChannelCatalogTargetKind::Address));
     }
 
     #[test]
@@ -6264,10 +7465,18 @@ mod tests {
             .iter()
             .find(|entry| entry.id == "discord")
             .expect("discord catalog entry");
+        let nextcloud_talk = catalog
+            .iter()
+            .find(|entry| entry.id == "nextcloud-talk")
+            .expect("nextcloud talk catalog entry");
         let signal = catalog
             .iter()
             .find(|entry| entry.id == "signal")
             .expect("signal catalog entry");
+        let synology_chat = catalog
+            .iter()
+            .find(|entry| entry.id == "synology-chat")
+            .expect("synology chat catalog entry");
 
         assert_eq!(
             telegram.supported_target_kinds,
@@ -6285,7 +7494,15 @@ mod tests {
             vec![ChannelCatalogTargetKind::Conversation]
         );
         assert_eq!(
+            nextcloud_talk.supported_target_kinds,
+            vec![ChannelCatalogTargetKind::Conversation]
+        );
+        assert_eq!(
             signal.supported_target_kinds,
+            vec![ChannelCatalogTargetKind::Address]
+        );
+        assert_eq!(
+            synology_chat.supported_target_kinds,
             vec![ChannelCatalogTargetKind::Address]
         );
     }
@@ -6295,22 +7512,10 @@ mod tests {
         let config = LoongClawConfig::default();
         let snapshots = channel_status_snapshots(&config);
         let catalog_only = catalog_only_channel_entries(&snapshots);
-        let line = catalog_only
-            .iter()
-            .find(|entry| entry.id == "line")
-            .expect("line catalog entry");
         let webhook = catalog_only
             .iter()
             .find(|entry| entry.id == "webhook")
             .expect("webhook catalog entry");
-        let google_chat = catalog_only
-            .iter()
-            .find(|entry| entry.id == "google-chat")
-            .expect("google chat catalog entry");
-        let synology_chat = catalog_only
-            .iter()
-            .find(|entry| entry.id == "synology-chat")
-            .expect("synology chat catalog entry");
         let tlon = catalog_only
             .iter()
             .find(|entry| entry.id == "tlon")
@@ -6326,15 +7531,9 @@ mod tests {
                 .map(|entry| entry.id)
                 .collect::<Vec<_>>(),
             vec![
-                "line",
-                "dingtalk",
                 "email",
                 "webhook",
-                "google-chat",
                 "teams",
-                "mattermost",
-                "nextcloud-talk",
-                "synology-chat",
                 "irc",
                 "imessage",
                 "nostr",
@@ -6347,12 +7546,19 @@ mod tests {
         );
         assert!(!catalog_only.iter().any(|entry| entry.id == "discord"));
         assert!(!catalog_only.iter().any(|entry| entry.id == "slack"));
+        assert!(!catalog_only.iter().any(|entry| entry.id == "line"));
+        assert!(!catalog_only.iter().any(|entry| entry.id == "dingtalk"));
         assert!(!catalog_only.iter().any(|entry| entry.id == "whatsapp"));
+        assert!(!catalog_only.iter().any(|entry| entry.id == "google-chat"));
         assert!(!catalog_only.iter().any(|entry| entry.id == "signal"));
-        assert_eq!(line.operations[0].command, "line-send");
+        assert!(!catalog_only.iter().any(|entry| entry.id == "mattermost"));
+        assert!(
+            !catalog_only
+                .iter()
+                .any(|entry| entry.id == "nextcloud-talk")
+        );
+        assert!(!catalog_only.iter().any(|entry| entry.id == "synology-chat"));
         assert_eq!(webhook.operations[1].command, "webhook-serve");
-        assert_eq!(google_chat.operations[0].command, "google-chat-send");
-        assert_eq!(synology_chat.operations[1].command, "synology-chat-serve");
         assert_eq!(tlon.operations[0].command, "tlon-send");
         assert_eq!(webchat.operations[1].command, "webchat-serve");
     }
@@ -6369,7 +7575,20 @@ mod tests {
                 .map(|snapshot| snapshot.id)
                 .collect::<Vec<_>>(),
             vec![
-                "telegram", "feishu", "matrix", "wecom", "discord", "slack", "whatsapp", "signal",
+                "telegram",
+                "feishu",
+                "matrix",
+                "wecom",
+                "discord",
+                "slack",
+                "line",
+                "dingtalk",
+                "whatsapp",
+                "google-chat",
+                "signal",
+                "mattermost",
+                "nextcloud-talk",
+                "synology-chat",
             ]
         );
         assert_eq!(
@@ -6379,15 +7598,9 @@ mod tests {
                 .map(|entry| entry.id)
                 .collect::<Vec<_>>(),
             vec![
-                "line",
-                "dingtalk",
                 "email",
                 "webhook",
-                "google-chat",
                 "teams",
-                "mattermost",
-                "nextcloud-talk",
-                "synology-chat",
                 "irc",
                 "imessage",
                 "nostr",
@@ -6431,6 +7644,169 @@ mod tests {
                 "zalo-personal",
                 "webchat",
             ]
+        );
+    }
+
+    #[test]
+    fn channel_catalog_includes_dingtalk_and_google_chat_config_backed_webhook_surfaces() {
+        let catalog = list_channel_catalog();
+        let dingtalk = catalog
+            .iter()
+            .find(|entry| entry.id == "dingtalk")
+            .expect("dingtalk catalog entry");
+        let google_chat = catalog
+            .iter()
+            .find(|entry| entry.id == "google-chat")
+            .expect("google chat catalog entry");
+
+        assert_eq!(
+            dingtalk.implementation_status,
+            ChannelCatalogImplementationStatus::ConfigBacked
+        );
+        assert_eq!(dingtalk.selection_order, 80);
+        assert_eq!(dingtalk.aliases, vec!["ding", "ding-bot"]);
+        assert_eq!(dingtalk.transport, "dingtalk_custom_robot_webhook");
+        assert_eq!(
+            dingtalk.supported_target_kinds,
+            vec![ChannelCatalogTargetKind::Endpoint]
+        );
+        assert_eq!(dingtalk.operations[0].command, "dingtalk-send");
+        assert_eq!(dingtalk.operations[1].command, "dingtalk-serve");
+        assert_eq!(
+            dingtalk.operations[0].availability,
+            ChannelCatalogOperationAvailability::Implemented
+        );
+        assert_eq!(
+            dingtalk.operations[1].availability,
+            ChannelCatalogOperationAvailability::Stub
+        );
+
+        assert_eq!(
+            google_chat.implementation_status,
+            ChannelCatalogImplementationStatus::ConfigBacked
+        );
+        assert_eq!(google_chat.selection_order, 120);
+        assert_eq!(google_chat.aliases, vec!["gchat", "googlechat"]);
+        assert_eq!(google_chat.transport, "google_chat_incoming_webhook");
+        assert_eq!(
+            google_chat.supported_target_kinds,
+            vec![ChannelCatalogTargetKind::Endpoint]
+        );
+        assert_eq!(google_chat.operations[0].command, "google-chat-send");
+        assert_eq!(google_chat.operations[1].command, "google-chat-serve");
+        assert_eq!(
+            google_chat.operations[0].availability,
+            ChannelCatalogOperationAvailability::Implemented
+        );
+        assert_eq!(
+            google_chat.operations[1].availability,
+            ChannelCatalogOperationAvailability::Stub
+        );
+    }
+
+    #[test]
+    fn channel_catalog_includes_nextcloud_talk_config_backed_bot_surface() {
+        let catalog = list_channel_catalog();
+        let nextcloud_talk = catalog
+            .iter()
+            .find(|entry| entry.id == "nextcloud-talk")
+            .expect("nextcloud talk catalog entry");
+        let synology_chat = catalog
+            .iter()
+            .find(|entry| entry.id == "synology-chat")
+            .expect("synology chat catalog entry");
+
+        assert_eq!(
+            nextcloud_talk.implementation_status,
+            ChannelCatalogImplementationStatus::ConfigBacked
+        );
+        assert_eq!(nextcloud_talk.selection_order, 160);
+        assert_eq!(nextcloud_talk.aliases, vec!["nextcloud", "nextcloudtalk"]);
+        assert_eq!(nextcloud_talk.transport, "nextcloud_talk_bot_api");
+        assert_eq!(
+            nextcloud_talk.supported_target_kinds,
+            vec![ChannelCatalogTargetKind::Conversation]
+        );
+        assert_eq!(nextcloud_talk.operations[0].command, "nextcloud-talk-send");
+        assert_eq!(nextcloud_talk.operations[1].command, "nextcloud-talk-serve");
+        assert_eq!(
+            nextcloud_talk.operations[0].availability,
+            ChannelCatalogOperationAvailability::Implemented
+        );
+        assert_eq!(
+            nextcloud_talk.operations[1].availability,
+            ChannelCatalogOperationAvailability::Stub
+        );
+
+        assert_eq!(
+            synology_chat.implementation_status,
+            ChannelCatalogImplementationStatus::ConfigBacked
+        );
+        assert_eq!(synology_chat.selection_order, 165);
+        assert_eq!(synology_chat.aliases, vec!["synologychat", "synochat"]);
+        assert_eq!(
+            synology_chat.transport,
+            "synology_chat_outgoing_incoming_webhooks"
+        );
+        assert_eq!(
+            synology_chat.supported_target_kinds,
+            vec![ChannelCatalogTargetKind::Address]
+        );
+        assert_eq!(synology_chat.operations[0].command, "synology-chat-send");
+        assert_eq!(synology_chat.operations[1].command, "synology-chat-serve");
+        assert_eq!(
+            synology_chat.operations[0].availability,
+            ChannelCatalogOperationAvailability::Implemented
+        );
+        assert_eq!(
+            synology_chat.operations[1].availability,
+            ChannelCatalogOperationAvailability::Stub
+        );
+    }
+
+    #[test]
+    fn channel_status_snapshots_redact_endpoint_query_secrets_for_webhook_channels() {
+        let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
+            "dingtalk": {
+                "enabled": true,
+                "webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=secret-token"
+            },
+            "google_chat": {
+                "enabled": true,
+                "webhook_url": "https://chat.googleapis.com/v1/spaces/AAAA/messages?key=secret-key&token=secret-token"
+            },
+            "synology_chat": {
+                "enabled": true,
+                "incoming_url": "https://chat.example.test/webapi/entry.cgi?api=SYNO.Chat.External&method=incoming&version=2&token=secret-token"
+            }
+        }))
+        .expect("deserialize webhook channel config");
+
+        let snapshots = channel_status_snapshots(&config);
+        let dingtalk = snapshots
+            .iter()
+            .find(|snapshot| snapshot.id == "dingtalk")
+            .expect("dingtalk snapshot");
+        let google_chat = snapshots
+            .iter()
+            .find(|snapshot| snapshot.id == "google-chat")
+            .expect("google chat snapshot");
+        let synology_chat = snapshots
+            .iter()
+            .find(|snapshot| snapshot.id == "synology-chat")
+            .expect("synology chat snapshot");
+
+        assert_eq!(
+            dingtalk.api_base_url.as_deref(),
+            Some("https://oapi.dingtalk.com/robot/send")
+        );
+        assert_eq!(
+            google_chat.api_base_url.as_deref(),
+            Some("https://chat.googleapis.com/v1/spaces/AAAA/messages")
+        );
+        assert_eq!(
+            synology_chat.api_base_url.as_deref(),
+            Some("https://chat.example.test/webapi/entry.cgi")
         );
     }
 
@@ -6505,6 +7881,22 @@ mod tests {
         );
         assert_eq!(discord.configured_accounts[0].id, "discord");
 
+        let line = inventory
+            .channel_surfaces
+            .iter()
+            .find(|surface| surface.catalog.id == "line")
+            .expect("line surface");
+        assert_eq!(
+            line.catalog.implementation_status,
+            ChannelCatalogImplementationStatus::ConfigBacked
+        );
+        assert_eq!(line.configured_accounts.len(), 1);
+        assert_eq!(
+            line.default_configured_account_id.as_deref(),
+            Some("default")
+        );
+        assert_eq!(line.configured_accounts[0].id, "line");
+
         let wecom = inventory
             .channel_surfaces
             .iter()
@@ -6520,6 +7912,38 @@ mod tests {
             Some("default")
         );
         assert_eq!(wecom.configured_accounts[0].id, "wecom");
+
+        let mattermost = inventory
+            .channel_surfaces
+            .iter()
+            .find(|surface| surface.catalog.id == "mattermost")
+            .expect("mattermost surface");
+        assert_eq!(
+            mattermost.catalog.implementation_status,
+            ChannelCatalogImplementationStatus::ConfigBacked
+        );
+        assert_eq!(mattermost.configured_accounts.len(), 1);
+        assert_eq!(
+            mattermost.default_configured_account_id.as_deref(),
+            Some("default")
+        );
+        assert_eq!(mattermost.configured_accounts[0].id, "mattermost");
+
+        let synology_chat = inventory
+            .channel_surfaces
+            .iter()
+            .find(|surface| surface.catalog.id == "synology-chat")
+            .expect("synology chat surface");
+        assert_eq!(
+            synology_chat.catalog.implementation_status,
+            ChannelCatalogImplementationStatus::ConfigBacked
+        );
+        assert_eq!(synology_chat.configured_accounts.len(), 1);
+        assert_eq!(
+            synology_chat.default_configured_account_id.as_deref(),
+            Some("default")
+        );
+        assert_eq!(synology_chat.configured_accounts[0].id, "synology-chat");
 
         let webchat = inventory
             .channel_surfaces
@@ -6883,6 +8307,32 @@ mod tests {
     }
 
     #[test]
+    fn line_status_reports_ready_send_and_stub_serve() {
+        let mut config = LoongClawConfig::default();
+        config.line.enabled = true;
+        config.line.channel_access_token = Some(loongclaw_contracts::SecretRef::Inline(
+            "line-access-token".to_owned(),
+        ));
+
+        let snapshots = channel_status_snapshots(&config);
+        let line = snapshots
+            .iter()
+            .find(|snapshot| snapshot.id == "line")
+            .expect("line snapshot");
+        let send = line.operation("send").expect("line send operation");
+        let serve = line.operation("serve").expect("line serve operation");
+
+        assert_eq!(send.health, ChannelOperationHealth::Ready);
+        assert_eq!(serve.health, ChannelOperationHealth::Unsupported);
+        assert_eq!(
+            line.api_base_url.as_deref(),
+            Some("https://api.line.me/v2/bot")
+        );
+        assert!(send.runtime.is_none());
+        assert!(serve.runtime.is_none());
+    }
+
+    #[test]
     fn signal_status_requires_account_for_send() {
         let mut config = LoongClawConfig::default();
         config.signal.enabled = true;
@@ -6970,6 +8420,37 @@ mod tests {
                 .iter()
                 .any(|note| note == "phone_number_id=1234567890"),
             "status notes should expose the resolved phone number id"
+        );
+        assert!(send.runtime.is_none());
+        assert!(serve.runtime.is_none());
+    }
+
+    #[test]
+    fn mattermost_status_reports_ready_send_and_stub_serve() {
+        let mut config = LoongClawConfig::default();
+        config.mattermost.enabled = true;
+        config.mattermost.server_url = Some("https://mattermost.example.test".to_owned());
+        config.mattermost.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
+            "mattermost-bot-token".to_owned(),
+        ));
+
+        let snapshots = channel_status_snapshots(&config);
+        let mattermost = snapshots
+            .iter()
+            .find(|snapshot| snapshot.id == "mattermost")
+            .expect("mattermost snapshot");
+        let send = mattermost
+            .operation("send")
+            .expect("mattermost send operation");
+        let serve = mattermost
+            .operation("serve")
+            .expect("mattermost serve operation");
+
+        assert_eq!(send.health, ChannelOperationHealth::Ready);
+        assert_eq!(serve.health, ChannelOperationHealth::Unsupported);
+        assert_eq!(
+            mattermost.api_base_url.as_deref(),
+            Some("https://mattermost.example.test")
         );
         assert!(send.runtime.is_none());
         assert!(serve.runtime.is_none());

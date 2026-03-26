@@ -105,6 +105,22 @@ const SLACK_CHANNEL_DESCRIPTOR: ChannelDescriptor = ChannelDescriptor {
     serve_subcommand: None,
 };
 
+const LINE_CHANNEL_DESCRIPTOR: ChannelDescriptor = ChannelDescriptor {
+    id: "line",
+    label: "line",
+    surface_label: "line channel",
+    runtime_kind: ChannelRuntimeKind::Service,
+    serve_subcommand: None,
+};
+
+const DINGTALK_CHANNEL_DESCRIPTOR: ChannelDescriptor = ChannelDescriptor {
+    id: "dingtalk",
+    label: "dingtalk",
+    surface_label: "dingtalk channel",
+    runtime_kind: ChannelRuntimeKind::Service,
+    serve_subcommand: None,
+};
+
 const WHATSAPP_CHANNEL_DESCRIPTOR: ChannelDescriptor = ChannelDescriptor {
     id: "whatsapp",
     label: "whatsapp",
@@ -113,10 +129,42 @@ const WHATSAPP_CHANNEL_DESCRIPTOR: ChannelDescriptor = ChannelDescriptor {
     serve_subcommand: None,
 };
 
+const GOOGLE_CHAT_CHANNEL_DESCRIPTOR: ChannelDescriptor = ChannelDescriptor {
+    id: "google-chat",
+    label: "google-chat",
+    surface_label: "google chat channel",
+    runtime_kind: ChannelRuntimeKind::Service,
+    serve_subcommand: None,
+};
+
 const SIGNAL_CHANNEL_DESCRIPTOR: ChannelDescriptor = ChannelDescriptor {
     id: "signal",
     label: "signal",
     surface_label: "signal channel",
+    runtime_kind: ChannelRuntimeKind::Service,
+    serve_subcommand: None,
+};
+
+const MATTERMOST_CHANNEL_DESCRIPTOR: ChannelDescriptor = ChannelDescriptor {
+    id: "mattermost",
+    label: "mattermost",
+    surface_label: "mattermost channel",
+    runtime_kind: ChannelRuntimeKind::Service,
+    serve_subcommand: None,
+};
+
+const NEXTCLOUD_TALK_CHANNEL_DESCRIPTOR: ChannelDescriptor = ChannelDescriptor {
+    id: "nextcloud-talk",
+    label: "nextcloud-talk",
+    surface_label: "nextcloud talk channel",
+    runtime_kind: ChannelRuntimeKind::Service,
+    serve_subcommand: None,
+};
+
+const SYNOLOGY_CHAT_CHANNEL_DESCRIPTOR: ChannelDescriptor = ChannelDescriptor {
+    id: "synology-chat",
+    label: "synology-chat",
+    surface_label: "synology chat channel",
     runtime_kind: ChannelRuntimeKind::Service,
     serve_subcommand: None,
 };
@@ -205,6 +253,22 @@ const SLACK_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrati
     background_surface_is_enabled: None,
 };
 
+const LINE_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
+    descriptor: &LINE_CHANNEL_DESCRIPTOR,
+    background_runtime: None,
+    is_enabled: line_channel_is_enabled,
+    collect_validation_issues: collect_line_channel_validation_issues,
+    background_surface_is_enabled: None,
+};
+
+const DINGTALK_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
+    descriptor: &DINGTALK_CHANNEL_DESCRIPTOR,
+    background_runtime: None,
+    is_enabled: dingtalk_channel_is_enabled,
+    collect_validation_issues: collect_dingtalk_channel_validation_issues,
+    background_surface_is_enabled: None,
+};
+
 const WHATSAPP_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
     descriptor: &WHATSAPP_CHANNEL_DESCRIPTOR,
     background_runtime: None,
@@ -212,6 +276,15 @@ const WHATSAPP_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegr
     collect_validation_issues: collect_whatsapp_channel_validation_issues,
     background_surface_is_enabled: None,
 };
+
+const GOOGLE_CHAT_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor =
+    ChannelIntegrationDescriptor {
+        descriptor: &GOOGLE_CHAT_CHANNEL_DESCRIPTOR,
+        background_runtime: None,
+        is_enabled: google_chat_channel_is_enabled,
+        collect_validation_issues: collect_google_chat_channel_validation_issues,
+        background_surface_is_enabled: None,
+    };
 
 const SIGNAL_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
     descriptor: &SIGNAL_CHANNEL_DESCRIPTOR,
@@ -221,6 +294,32 @@ const SIGNAL_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrat
     background_surface_is_enabled: None,
 };
 
+const MATTERMOST_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
+    descriptor: &MATTERMOST_CHANNEL_DESCRIPTOR,
+    background_runtime: None,
+    is_enabled: mattermost_channel_is_enabled,
+    collect_validation_issues: collect_mattermost_channel_validation_issues,
+    background_surface_is_enabled: None,
+};
+
+const NEXTCLOUD_TALK_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor =
+    ChannelIntegrationDescriptor {
+        descriptor: &NEXTCLOUD_TALK_CHANNEL_DESCRIPTOR,
+        background_runtime: None,
+        is_enabled: nextcloud_talk_channel_is_enabled,
+        collect_validation_issues: collect_nextcloud_talk_channel_validation_issues,
+        background_surface_is_enabled: None,
+    };
+
+const SYNOLOGY_CHAT_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor =
+    ChannelIntegrationDescriptor {
+        descriptor: &SYNOLOGY_CHAT_CHANNEL_DESCRIPTOR,
+        background_runtime: None,
+        is_enabled: synology_chat_channel_is_enabled,
+        collect_validation_issues: collect_synology_chat_channel_validation_issues,
+        background_surface_is_enabled: None,
+    };
+
 const CHANNEL_INTEGRATIONS: &[ChannelIntegrationDescriptor] = &[
     CLI_CHANNEL_INTEGRATION,
     TELEGRAM_CHANNEL_INTEGRATION,
@@ -229,8 +328,14 @@ const CHANNEL_INTEGRATIONS: &[ChannelIntegrationDescriptor] = &[
     WECOM_CHANNEL_INTEGRATION,
     DISCORD_CHANNEL_INTEGRATION,
     SLACK_CHANNEL_INTEGRATION,
+    LINE_CHANNEL_INTEGRATION,
+    DINGTALK_CHANNEL_INTEGRATION,
     WHATSAPP_CHANNEL_INTEGRATION,
+    GOOGLE_CHAT_CHANNEL_INTEGRATION,
     SIGNAL_CHANNEL_INTEGRATION,
+    MATTERMOST_CHANNEL_INTEGRATION,
+    NEXTCLOUD_TALK_CHANNEL_INTEGRATION,
+    SYNOLOGY_CHAT_CHANNEL_INTEGRATION,
 ];
 
 pub(crate) fn channel_descriptor(id: &str) -> Option<&'static ChannelDescriptor> {
@@ -335,12 +440,36 @@ fn slack_channel_is_enabled(config: &LoongClawConfig) -> bool {
     config.slack.enabled
 }
 
+fn line_channel_is_enabled(config: &LoongClawConfig) -> bool {
+    config.line.enabled
+}
+
+fn dingtalk_channel_is_enabled(config: &LoongClawConfig) -> bool {
+    config.dingtalk.enabled
+}
+
 fn whatsapp_channel_is_enabled(config: &LoongClawConfig) -> bool {
     config.whatsapp.enabled
 }
 
+fn google_chat_channel_is_enabled(config: &LoongClawConfig) -> bool {
+    config.google_chat.enabled
+}
+
 fn signal_channel_is_enabled(config: &LoongClawConfig) -> bool {
     config.signal.enabled
+}
+
+fn mattermost_channel_is_enabled(config: &LoongClawConfig) -> bool {
+    config.mattermost.enabled
+}
+
+fn nextcloud_talk_channel_is_enabled(config: &LoongClawConfig) -> bool {
+    config.nextcloud_talk.enabled
+}
+
+fn synology_chat_channel_is_enabled(config: &LoongClawConfig) -> bool {
+    config.synology_chat.enabled
 }
 
 fn collect_cli_channel_validation_issues(_config: &LoongClawConfig) -> Vec<ConfigValidationIssue> {
@@ -379,16 +508,50 @@ fn collect_slack_channel_validation_issues(config: &LoongClawConfig) -> Vec<Conf
     config.slack.validate()
 }
 
+fn collect_line_channel_validation_issues(config: &LoongClawConfig) -> Vec<ConfigValidationIssue> {
+    config.line.validate()
+}
+
+fn collect_dingtalk_channel_validation_issues(
+    config: &LoongClawConfig,
+) -> Vec<ConfigValidationIssue> {
+    config.dingtalk.validate()
+}
+
 fn collect_whatsapp_channel_validation_issues(
     config: &LoongClawConfig,
 ) -> Vec<ConfigValidationIssue> {
     config.whatsapp.validate()
 }
 
+fn collect_google_chat_channel_validation_issues(
+    config: &LoongClawConfig,
+) -> Vec<ConfigValidationIssue> {
+    config.google_chat.validate()
+}
+
 fn collect_signal_channel_validation_issues(
     config: &LoongClawConfig,
 ) -> Vec<ConfigValidationIssue> {
     config.signal.validate()
+}
+
+fn collect_mattermost_channel_validation_issues(
+    config: &LoongClawConfig,
+) -> Vec<ConfigValidationIssue> {
+    config.mattermost.validate()
+}
+
+fn collect_nextcloud_talk_channel_validation_issues(
+    config: &LoongClawConfig,
+) -> Vec<ConfigValidationIssue> {
+    config.nextcloud_talk.validate()
+}
+
+fn collect_synology_chat_channel_validation_issues(
+    config: &LoongClawConfig,
+) -> Vec<ConfigValidationIssue> {
+    config.synology_chat.validate()
 }
 
 fn telegram_background_surface_is_enabled(
@@ -473,7 +636,20 @@ mod tests {
         assert_eq!(
             ids,
             vec![
-                "telegram", "feishu", "matrix", "wecom", "discord", "slack", "whatsapp", "signal",
+                "telegram",
+                "feishu",
+                "matrix",
+                "wecom",
+                "discord",
+                "slack",
+                "line",
+                "dingtalk",
+                "whatsapp",
+                "google-chat",
+                "signal",
+                "mattermost",
+                "nextcloud-talk",
+                "synology-chat",
             ]
         );
     }

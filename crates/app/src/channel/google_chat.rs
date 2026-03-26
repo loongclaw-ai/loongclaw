@@ -1,0 +1,73 @@
+use serde_json::{Value, json};
+
+use crate::{CliResult, config::ResolvedGoogleChatChannelConfig};
+
+use super::ChannelOutboundTargetKind;
+
+pub(super) async fn run_google_chat_send(
+    _resolved: &ResolvedGoogleChatChannelConfig,
+    target_kind: ChannelOutboundTargetKind,
+    endpoint_url: &str,
+    text: &str,
+) -> CliResult<()> {
+    if target_kind != ChannelOutboundTargetKind::Endpoint {
+        return Err(format!(
+            "google chat send requires endpoint target kind, got {}",
+            target_kind.as_str()
+        ));
+    }
+
+    let trimmed_endpoint_url = endpoint_url.trim();
+    if trimmed_endpoint_url.is_empty() {
+        return Err("google chat outbound target endpoint is empty".to_owned());
+    }
+
+    let request_body = json!({
+        "text": text,
+    });
+
+    let client = reqwest::Client::new();
+    let request = client.post(trimmed_endpoint_url).json(&request_body);
+    let response = request
+        .send()
+        .await
+        .map_err(|error| format!("google chat send failed: {error}"))?;
+    let payload = read_google_chat_json_response(response).await?;
+
+    let message_name = payload
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if message_name.is_none() {
+        return Err(format!(
+            "google chat send did not return a message name: {payload}"
+        ));
+    }
+
+    Ok(())
+}
+
+async fn read_google_chat_json_response(response: reqwest::Response) -> CliResult<Value> {
+    let status = response.status();
+    let payload = response
+        .json::<Value>()
+        .await
+        .map_err(|error| format!("decode google chat send response failed: {error}"))?;
+
+    if status.is_success() {
+        return Ok(payload);
+    }
+
+    let detail = payload
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| payload.to_string());
+    Err(format!(
+        "google chat send failed with status {}: {detail}",
+        status.as_u16()
+    ))
+}

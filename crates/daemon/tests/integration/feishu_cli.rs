@@ -10,12 +10,6 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
-fn command_help(mut command: clap::Command) -> String {
-    let mut rendered = Vec::new();
-    command.write_long_help(&mut rendered).expect("render help");
-    String::from_utf8(rendered).expect("help utf8")
-}
-
 fn temp_feishu_cli_dir(label: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
         "loongclaw-feishu-cli-{label}-{}",
@@ -216,12 +210,7 @@ async fn record_request(State(state): State<MockServerState>, request: Request) 
 
 #[test]
 fn feishu_command_registers_nested_integration_subcommands() {
-    let mut root = Cli::command();
-    let feishu = root
-        .find_subcommand_mut("feishu")
-        .expect("feishu subcommand should exist")
-        .clone();
-    let help = command_help(feishu);
+    let help = render_cli_help(["feishu"]);
 
     assert!(help.contains("auth"));
     assert!(help.contains("whoami"));
@@ -237,16 +226,7 @@ fn feishu_command_registers_nested_integration_subcommands() {
 
 #[test]
 fn feishu_auth_subcommand_registers_start_exchange_status_and_revoke() {
-    let mut root = Cli::command();
-    let mut feishu = root
-        .find_subcommand_mut("feishu")
-        .expect("feishu subcommand should exist")
-        .clone();
-    let auth = feishu
-        .find_subcommand_mut("auth")
-        .expect("feishu auth subcommand should exist")
-        .clone();
-    let help = command_help(auth);
+    let help = render_cli_help(["feishu", "auth"]);
 
     assert!(help.contains("start"));
     assert!(help.contains("exchange"));
@@ -258,10 +238,9 @@ fn feishu_auth_subcommand_registers_start_exchange_status_and_revoke() {
 
 #[test]
 fn feishu_resource_subcommands_parse() {
-    Cli::try_parse_from(["loongclaw", "feishu", "auth", "list"])
-        .expect("auth list command should parse");
+    try_parse_cli(["loongclaw", "feishu", "auth", "list"]).expect("auth list command should parse");
 
-    Cli::try_parse_from([
+    try_parse_cli([
         "loongclaw",
         "feishu",
         "auth",
@@ -271,7 +250,7 @@ fn feishu_resource_subcommands_parse() {
     ])
     .expect("auth select command should parse");
 
-    Cli::try_parse_from([
+    try_parse_cli([
         "loongclaw",
         "feishu",
         "doc",
@@ -281,7 +260,7 @@ fn feishu_resource_subcommands_parse() {
     ])
     .expect("doc create command should parse");
 
-    Cli::try_parse_from([
+    try_parse_cli([
         "loongclaw",
         "feishu",
         "doc",
@@ -293,7 +272,7 @@ fn feishu_resource_subcommands_parse() {
     ])
     .expect("doc append command should parse");
 
-    Cli::try_parse_from([
+    try_parse_cli([
         "loongclaw",
         "feishu",
         "read",
@@ -303,7 +282,7 @@ fn feishu_resource_subcommands_parse() {
     ])
     .expect("read doc command should parse");
 
-    Cli::try_parse_from([
+    try_parse_cli([
         "loongclaw",
         "feishu",
         "messages",
@@ -315,7 +294,7 @@ fn feishu_resource_subcommands_parse() {
     ])
     .expect("messages history command should parse");
 
-    Cli::try_parse_from([
+    try_parse_cli([
         "loongclaw",
         "feishu",
         "messages",
@@ -331,7 +310,7 @@ fn feishu_resource_subcommands_parse() {
     ])
     .expect("messages resource command should parse");
 
-    let parsed = Cli::try_parse_from([
+    let parsed = try_parse_cli([
         "loongclaw",
         "feishu",
         "messages",
@@ -361,7 +340,7 @@ fn feishu_resource_subcommands_parse() {
         loongclaw_daemon::feishu_cli::FeishuMessageResourceCliType::File
     ));
 
-    Cli::try_parse_from([
+    try_parse_cli([
         "loongclaw",
         "feishu",
         "search",
@@ -371,7 +350,7 @@ fn feishu_resource_subcommands_parse() {
     ])
     .expect("search messages command should parse");
 
-    Cli::try_parse_from([
+    try_parse_cli([
         "loongclaw",
         "feishu",
         "calendar",
@@ -385,7 +364,7 @@ fn feishu_resource_subcommands_parse() {
     ])
     .expect("calendar freebusy command should parse");
 
-    Cli::try_parse_from([
+    try_parse_cli([
         "loongclaw",
         "feishu",
         "send",
@@ -402,7 +381,7 @@ fn feishu_resource_subcommands_parse() {
     ])
     .expect("nested feishu send command should parse");
 
-    Cli::try_parse_from([
+    try_parse_cli([
         "loongclaw",
         "feishu",
         "reply",
@@ -418,7 +397,7 @@ fn feishu_resource_subcommands_parse() {
     ])
     .expect("nested feishu reply command should parse");
 
-    Cli::try_parse_from([
+    try_parse_cli([
         "loongclaw",
         "feishu",
         "send",
@@ -429,7 +408,7 @@ fn feishu_resource_subcommands_parse() {
     ])
     .expect("nested feishu send post command should parse");
 
-    Cli::try_parse_from([
+    try_parse_cli([
         "loongclaw",
         "feishu",
         "send",
@@ -440,7 +419,7 @@ fn feishu_resource_subcommands_parse() {
     ])
     .expect("nested feishu send image-path command should parse");
 
-    Cli::try_parse_from([
+    try_parse_cli([
         "loongclaw",
         "feishu",
         "reply",
@@ -451,13 +430,13 @@ fn feishu_resource_subcommands_parse() {
     ])
     .expect("nested feishu reply file-path command should parse");
 
-    Cli::try_parse_from(["loongclaw", "feishu", "serve", "--bind", "127.0.0.1:18080"])
+    try_parse_cli(["loongclaw", "feishu", "serve", "--bind", "127.0.0.1:18080"])
         .expect("nested feishu serve command should parse");
 }
 
 #[test]
 fn legacy_feishu_send_subcommand_supports_rich_outbound_flags() {
-    Cli::try_parse_from([
+    try_parse_cli([
         "loongclaw",
         "feishu-send",
         "--receive-id",
@@ -467,7 +446,7 @@ fn legacy_feishu_send_subcommand_supports_rich_outbound_flags() {
     ])
     .expect("legacy feishu-send should parse post content");
 
-    Cli::try_parse_from([
+    try_parse_cli([
         "loongclaw",
         "feishu-send",
         "--receive-id-type",
@@ -481,7 +460,7 @@ fn legacy_feishu_send_subcommand_supports_rich_outbound_flags() {
     ])
     .expect("legacy feishu-send should parse image-path content");
 
-    Cli::try_parse_from([
+    try_parse_cli([
         "loongclaw",
         "feishu-send",
         "--receive-id",

@@ -1,0 +1,116 @@
+use base64::Engine;
+use hmac::Mac;
+use serde_json::{Value, json};
+
+use crate::{CliResult, config::ResolvedDingtalkChannelConfig};
+
+use super::ChannelOutboundTargetKind;
+
+type DingtalkHmacSha256 = hmac::Hmac<sha2::Sha256>;
+
+pub(super) async fn run_dingtalk_send(
+    resolved: &ResolvedDingtalkChannelConfig,
+    target_kind: ChannelOutboundTargetKind,
+    endpoint_url: &str,
+    text: &str,
+) -> CliResult<()> {
+    if target_kind != ChannelOutboundTargetKind::Endpoint {
+        return Err(format!(
+            "dingtalk send requires endpoint target kind, got {}",
+            target_kind.as_str()
+        ));
+    }
+
+    let trimmed_endpoint_url = endpoint_url.trim();
+    if trimmed_endpoint_url.is_empty() {
+        return Err("dingtalk outbound target endpoint is empty".to_owned());
+    }
+
+    let secret = resolved.secret();
+    let request_url = build_dingtalk_request_url(trimmed_endpoint_url, secret.as_deref())?;
+    let request_body = json!({
+        "msgtype": "text",
+        "text": {
+            "content": text,
+        },
+    });
+
+    let client = reqwest::Client::new();
+    let request = client.post(request_url).json(&request_body);
+    let response = request
+        .send()
+        .await
+        .map_err(|error| format!("dingtalk send failed: {error}"))?;
+    let payload = read_dingtalk_json_response(response).await?;
+
+    let errcode = payload.get("errcode").and_then(Value::as_i64).unwrap_or(-1);
+    if errcode != 0 {
+        let errmsg = payload
+            .get("errmsg")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| payload.to_string());
+        return Err(format!("dingtalk send did not succeed: {errmsg}"));
+    }
+
+    Ok(())
+}
+
+fn build_dingtalk_request_url(endpoint_url: &str, secret: Option<&str>) -> CliResult<String> {
+    let mut url = reqwest::Url::parse(endpoint_url)
+        .map_err(|error| format!("dingtalk webhook url is invalid: {error}"))?;
+
+    let secret = secret
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    if let Some(secret) = secret {
+        let timestamp_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| format!("current system time is invalid: {error}"))?
+            .as_millis()
+            .to_string();
+        let sign = build_dingtalk_sign(timestamp_ms.as_str(), secret.as_str())?;
+        let mut query_pairs = url.query_pairs_mut();
+        query_pairs.append_pair("timestamp", timestamp_ms.as_str());
+        query_pairs.append_pair("sign", sign.as_str());
+    }
+
+    Ok(url.to_string())
+}
+
+fn build_dingtalk_sign(timestamp_ms: &str, secret: &str) -> CliResult<String> {
+    let string_to_sign = format!("{timestamp_ms}\n{secret}");
+    let mut mac = DingtalkHmacSha256::new_from_slice(secret.as_bytes())
+        .map_err(|error| format!("build dingtalk webhook signature failed: {error}"))?;
+    mac.update(string_to_sign.as_bytes());
+    let signature = mac.finalize().into_bytes();
+    let encoded_signature = base64::engine::general_purpose::STANDARD.encode(signature);
+    Ok(encoded_signature)
+}
+
+async fn read_dingtalk_json_response(response: reqwest::Response) -> CliResult<Value> {
+    let status = response.status();
+    let payload = response
+        .json::<Value>()
+        .await
+        .map_err(|error| format!("decode dingtalk send response failed: {error}"))?;
+
+    if status.is_success() {
+        return Ok(payload);
+    }
+
+    let detail = payload
+        .get("errmsg")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| payload.to_string());
+    Err(format!(
+        "dingtalk send failed with status {}: {detail}",
+        status.as_u16()
+    ))
+}

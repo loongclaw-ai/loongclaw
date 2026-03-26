@@ -12,8 +12,10 @@ use crate::CliResult;
 use super::{
     audit::AuditConfig,
     channels::{
-        CliChannelConfig, DiscordChannelConfig, FeishuChannelConfig, MatrixChannelConfig,
-        SignalChannelConfig, SlackChannelConfig, TelegramChannelConfig, WecomChannelConfig,
+        CliChannelConfig, DingtalkChannelConfig, DiscordChannelConfig, FeishuChannelConfig,
+        GoogleChatChannelConfig, LineChannelConfig, MatrixChannelConfig, MattermostChannelConfig,
+        NextcloudTalkChannelConfig, SignalChannelConfig, SlackChannelConfig,
+        SynologyChatChannelConfig, TelegramChannelConfig, WecomChannelConfig,
         WhatsappChannelConfig,
     },
     conversation::ConversationConfig,
@@ -95,7 +97,19 @@ pub struct LoongClawConfig {
     #[serde(default)]
     pub discord: DiscordChannelConfig,
     #[serde(default)]
+    pub line: LineChannelConfig,
+    #[serde(default)]
+    pub dingtalk: DingtalkChannelConfig,
+    #[serde(default)]
     pub slack: SlackChannelConfig,
+    #[serde(default)]
+    pub google_chat: GoogleChatChannelConfig,
+    #[serde(default)]
+    pub mattermost: MattermostChannelConfig,
+    #[serde(default)]
+    pub nextcloud_talk: NextcloudTalkChannelConfig,
+    #[serde(default)]
+    pub synology_chat: SynologyChatChannelConfig,
     #[serde(default)]
     pub signal: SignalChannelConfig,
     #[serde(default)]

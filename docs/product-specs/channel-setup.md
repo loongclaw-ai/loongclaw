@@ -9,13 +9,14 @@ needs.
 ## Acceptance Criteria
 
 - [ ] Product docs clearly distinguish the shipped MVP surfaces:
-      CLI as the default surface, plus Telegram, Feishu / Lark, Matrix, and WeCom as optional channels.
-- [ ] Product docs clearly distinguish runtime-backed shipped surfaces from
-      catalog-only planned surfaces such as Discord, Slack, LINE,
-      DingTalk, WhatsApp, Email, generic Webhook, Google Chat, Signal,
-      Microsoft Teams, Mattermost, Nextcloud Talk, Synology Chat, IRC,
-      iMessage / BlueBubbles, Nostr, Twitch, Tlon, Zalo, Zalo Personal,
-      and WebChat.
+      CLI as the default surface, plus runtime-backed Telegram, Feishu / Lark,
+      Matrix, and WeCom, and config-backed outbound Discord, Slack, LINE,
+      DingTalk, WhatsApp, Google Chat, Signal, Mattermost, Nextcloud Talk, and
+      Synology Chat.
+- [ ] Product docs clearly distinguish runtime-backed shipped surfaces,
+      config-backed outbound shipped surfaces, and catalog-only planned
+      surfaces such as Email, generic Webhook, Microsoft Teams, IRC, iMessage
+      / BlueBubbles, Nostr, Twitch, Tlon, Zalo, Zalo Personal, and WebChat.
 - [ ] Channel setup guidance describes required credentials, config toggles, and
       the command used to run each shipped channel.
 - [ ] WeCom setup guidance documents the official AIBot long-connection flow and
@@ -30,10 +31,10 @@ needs.
 
 ## Out of Scope
 
-- Shipping additional channels beyond CLI, Telegram, Feishu / Lark, Matrix, and WeCom
-- Promoting the remaining catalog-only planned surfaces such as Discord, Slack,
-  DingTalk, WhatsApp, Signal, Synology Chat, Tlon, or iMessage / BlueBubbles
-  to runtime-backed support in this slice
+- Shipping additional runtime-backed channels beyond CLI, Telegram, Feishu /
+  Lark, Matrix, and WeCom
+- Promoting the remaining catalog-only planned surfaces such as Email, generic
+  Webhook, Tlon, or iMessage / BlueBubbles to shipped support in this slice
 - Broad cross-channel inbox or routing UX
 - Full remote pairing flows for unshipped surfaces
 
@@ -46,22 +47,35 @@ needs.
 | Feishu / Lark | Runtime-backed | webhook or websocket | `feishu.enabled`, `feishu.app_id`, `feishu.app_secret`, `feishu.allowed_chat_ids`; webhook mode also needs `verification_token` and `encrypt_key` | `loongclaw feishu-send`, `loongclaw feishu-serve` |
 | Matrix | Runtime-backed | Client-Server sync | `matrix.enabled`, `matrix.access_token`, `matrix.base_url`, `matrix.allowed_room_ids` | `loongclaw matrix-send`, `loongclaw matrix-serve` |
 | WeCom | Runtime-backed | official AIBot long connection | `wecom.enabled`, `wecom.bot_id`, `wecom.secret`, `wecom.allowed_conversation_ids` | `loongclaw wecom-send`, `loongclaw wecom-serve` |
+| Discord | Config-backed outbound | Discord HTTP API | `discord.enabled`, `discord.bot_token` | `loongclaw discord-send` |
+| Slack | Config-backed outbound | Slack Web API | `slack.enabled`, `slack.bot_token` | `loongclaw slack-send` |
+| LINE | Config-backed outbound | LINE Messaging API | `line.enabled`, `line.channel_access_token` | `loongclaw line-send` |
+| DingTalk | Config-backed outbound | DingTalk custom robot webhook | `dingtalk.enabled`, `dingtalk.webhook_url`; `secret` is optional when the webhook uses signed requests | `loongclaw dingtalk-send` |
+| WhatsApp | Config-backed outbound | WhatsApp Cloud API | `whatsapp.enabled`, `whatsapp.access_token`, `whatsapp.phone_number_id` | `loongclaw whatsapp-send` |
+| Google Chat | Config-backed outbound | Google Chat incoming webhook | `google_chat.enabled`, `google_chat.webhook_url` | `loongclaw google-chat-send` |
+| Signal | Config-backed outbound | signal-cli REST bridge | `signal.enabled`, `signal.service_url`, `signal.account` | `loongclaw signal-send` |
+| Mattermost | Config-backed outbound | Mattermost REST API | `mattermost.enabled`, `mattermost.server_url`, `mattermost.bot_token` | `loongclaw mattermost-send` |
+| Nextcloud Talk | Config-backed outbound | Nextcloud Talk bot API | `nextcloud_talk.enabled`, `nextcloud_talk.server_url`, `nextcloud_talk.shared_secret` | `loongclaw nextcloud-talk-send` |
+| Synology Chat | Config-backed outbound | Synology Chat incoming webhook | `synology_chat.enabled`, `synology_chat.incoming_url` | `loongclaw synology-chat-send` |
 
 ## Expansion Model
 
-LoongClaw keeps channel expansion in three explicit layers so planned surfaces
+LoongClaw keeps channel expansion in four explicit layers so planned surfaces
 do not overclaim runtime support:
 
 - the channel catalog is the superset and can model planned surfaces before a
   runtime adapter exists
+- config-backed outbound surfaces are a shipped subset that own credentials,
+  status, and direct sends without pretending they also own a long-running
+  serve runtime
 - runtime-backed service channels are a strict shipped subset of the catalog
 - `multi-channel-serve` only supervises enabled runtime-backed channels and uses
   repeatable `--channel-account <channel=account>` selectors instead of
   channel-specific flags
 
 This lets the product align channel naming and onboarding with broader channel
-ecosystems such as OpenClaw without pretending a stub catalog entry is already a
-shipped runtime surface.
+ecosystems such as OpenClaw without pretending a stub catalog entry or a
+send-only surface is already a shipped runtime surface.
 
 ## Setup Rules
 
@@ -120,6 +134,42 @@ long-connection transport:
 LoongClaw does not support a WeCom webhook callback mode on this surface. The
 runtime contract is explicitly the official AIBot websocket subscription flow.
 
+### Config-Backed Outbound Surfaces
+
+Discord, Slack, LINE, DingTalk, WhatsApp, Google Chat, Signal, Mattermost,
+Nextcloud Talk, and Synology Chat are shipped as account-aware outbound
+surfaces:
+
+- they publish send commands, config validation, inventory snapshots, and
+  onboarding metadata through the shared channel SDK
+- they do not join `multi-channel-serve` because they do not own a shipped
+  reply-loop runtime
+- their `serve` metadata remains planned or unsupported until the underlying
+  inbound transport contract is implemented
+
+### Nextcloud Talk
+
+Nextcloud Talk is shipped through the official bot API send surface:
+
+- configure `nextcloud_talk.server_url` and `nextcloud_talk.shared_secret`
+- use `nextcloud-talk-send` with a conversation token target
+- `nextcloud-talk-serve` remains planned until LoongClaw owns the inbound bot
+  callback contract
+
+### Synology Chat
+
+Synology Chat is shipped through the incoming webhook send surface:
+
+- configure `synology_chat.incoming_url`
+- use `synology-chat-send` with no explicit target to post into the webhook's
+  bound room
+- optionally pass a numeric user id target when the operator wants the webhook
+  to direct-message a specific Synology Chat user
+- `synology_chat.token` is reserved for a future outbound webhook serve
+  contract and is not required for send readiness today
+- `synology-chat-serve` remains planned until LoongClaw owns the outbound
+  webhook callback contract
+
 ### Multi-Channel Serve
 
 `multi-channel-serve` is the runtime owner for the shipped service-channel
@@ -130,6 +180,9 @@ subset:
 - it accepts repeatable `--channel-account <channel=account>` selectors to pin
   specific accounts such as `telegram=bot_123456`, `lark=alerts`, `matrix=bridge-sync`,
   or `wecom=robot-prod`
-- it never promotes catalog-only planned surfaces such as WhatsApp, Signal,
-  DingTalk, Synology Chat, or Tlon into runtime supervision until those
-  adapters are implemented
+- it never promotes config-backed outbound surfaces such as WhatsApp, Signal,
+  DingTalk, Google Chat, Mattermost, Nextcloud Talk, or Synology Chat into
+  runtime supervision until those adapters grow real serve ownership
+- it never promotes catalog-only planned surfaces such as Email, generic
+  Webhook, or Tlon into runtime supervision until those adapters are
+  implemented
