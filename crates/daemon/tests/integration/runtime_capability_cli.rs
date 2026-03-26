@@ -17,11 +17,18 @@ fn unique_temp_dir(prefix: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("clock should be after epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!("{prefix}-{nanos}"))
+    let temp_dir = std::env::temp_dir();
+    let canonical_temp_dir = dunce::canonicalize(&temp_dir).unwrap_or(temp_dir);
+    canonical_temp_dir.join(format!("{prefix}-{nanos}"))
 }
 
 fn normalized_path_text(value: &str) -> String {
     value.replace('\\', "/")
+}
+
+fn canonicalized_path_text(path: &Path) -> String {
+    let canonical_path = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    canonical_path.display().to_string()
 }
 
 fn artifact_path_suffix(path: &Path) -> String {
@@ -1776,20 +1783,14 @@ fn runtime_capability_plan_builds_promotable_managed_skill_plan() {
     assert_eq!(plan.provenance.candidate_ids.len(), 2);
     assert_eq!(plan.provenance.source_run_ids.len(), 2);
     assert!(
-        plan.provenance.source_run_artifact_paths.contains(
-            &fs::canonicalize(&run_a_path)
-                .expect("canonicalize run a path")
-                .display()
-                .to_string()
-        )
+        plan.provenance
+            .source_run_artifact_paths
+            .contains(&canonicalized_path_text(&run_a_path))
     );
     assert!(
-        plan.provenance.source_run_artifact_paths.contains(
-            &fs::canonicalize(&run_b_path)
-                .expect("canonicalize run b path")
-                .display()
-                .to_string()
-        )
+        plan.provenance
+            .source_run_artifact_paths
+            .contains(&canonicalized_path_text(&run_b_path))
     );
 
     fs::remove_dir_all(&root).ok();

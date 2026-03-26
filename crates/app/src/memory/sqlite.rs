@@ -1144,7 +1144,45 @@ fn acquire_sqlite_runtime_with_diagnostics(
         // Lock drops here — cold bootstrap runs without blocking other paths.
     }
 
-    // Slow path: bootstrap outside the lock, then re-acquire to insert.
+    #[cfg(test)]
+    test_support::wait_for_sqlite_runtime_cache_miss(&normalized_path);
+
+    let bootstrap_lock = {
+        let mut bootstrap_registry =
+            sqlite_runtime_bootstrap_lock_registry()
+                .lock()
+                .map_err(|poisoned| {
+                    format!("lock sqlite runtime bootstrap registry failed: {poisoned}")
+                })?;
+        let bootstrap_entry = bootstrap_registry
+            .entry(normalized_path.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(())));
+        bootstrap_entry.clone()
+    };
+    let _bootstrap_guard = bootstrap_lock
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    {
+        let registry_lock_started_at = StdInstant::now();
+        let registry = sqlite_runtime_registry()
+            .lock()
+            .map_err(|poisoned| format!("lock sqlite runtime registry failed: {poisoned}"))?;
+        diagnostics.registry_lock_ms += elapsed_ms(registry_lock_started_at);
+
+        let registry_lookup_started_at = StdInstant::now();
+        if let Some(runtime) = registry.get(&normalized_path) {
+            diagnostics.registry_lookup_ms += elapsed_ms(registry_lookup_started_at);
+            diagnostics.cache_hit = true;
+            diagnostics.total_ms = elapsed_ms(total_started_at);
+            return Ok((runtime.clone(), diagnostics));
+        }
+        diagnostics.registry_lookup_ms += elapsed_ms(registry_lookup_started_at);
+    }
+
+    // Slow path: bootstrap outside the global registry lock, but serialize cold
+    // starts for the same normalized path so concurrent callers do not race
+    // each other through connection configuration.
     let runtime_create_started_at = StdInstant::now();
     let (runtime, connection_diagnostics) =
         SqliteRuntime::new_with_diagnostics(normalized_path.clone())?;
@@ -1178,6 +1216,13 @@ fn sqlite_runtime_registry() -> &'static Mutex<HashMap<PathBuf, Arc<SqliteRuntim
     static SQLITE_RUNTIME_REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Arc<SqliteRuntime>>>> =
         OnceLock::new();
     SQLITE_RUNTIME_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn sqlite_runtime_bootstrap_lock_registry() -> &'static Mutex<HashMap<PathBuf, Arc<Mutex<()>>>> {
+    static SQLITE_RUNTIME_BOOTSTRAP_LOCK_REGISTRY: OnceLock<
+        Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
+    > = OnceLock::new();
+    SQLITE_RUNTIME_BOOTSTRAP_LOCK_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn sqlite_runtime_path_alias_registry() -> &'static Mutex<HashMap<PathBuf, PathBuf>> {
@@ -1743,9 +1788,22 @@ fn summary_normalization_count_for_tests() -> usize {
 }
 
 #[cfg(test)]
+fn configure_sqlite_runtime_cache_miss_for_tests(path: &Path, target_waiters: usize) {
+    test_support::configure_sqlite_runtime_cache_miss(path, target_waiters);
+}
+
+#[cfg(test)]
+fn clear_sqlite_runtime_cache_miss_for_tests() {
+    test_support::clear_sqlite_runtime_cache_miss();
+}
+
+#[cfg(test)]
 fn reset_sqlite_runtime_test_state() {
     if let Ok(mut registry) = sqlite_runtime_registry().lock() {
         registry.clear();
+    }
+    if let Ok(mut bootstrap_registry) = sqlite_runtime_bootstrap_lock_registry().lock() {
+        bootstrap_registry.clear();
     }
     if let Ok(mut alias_registry) = sqlite_runtime_path_alias_registry().lock() {
         alias_registry.clear();
@@ -1761,6 +1819,9 @@ pub(super) fn drop_cached_sqlite_runtime(path: &Path) -> Result<bool, String> {
     let removed = registry.remove(&normalized_path).is_some();
     if removed && let Ok(mut alias_registry) = sqlite_runtime_path_alias_registry().lock() {
         alias_registry.retain(|_key, value| *value != normalized_path);
+    }
+    if removed && let Ok(mut bootstrap_registry) = sqlite_runtime_bootstrap_lock_registry().lock() {
+        bootstrap_registry.remove(&normalized_path);
     }
     Ok(removed)
 }
@@ -3537,6 +3598,71 @@ mod tests {
 
         let _ = fs::remove_file(&db_path);
         let _ = fs::remove_dir(&tmp);
+    }
+
+    #[test]
+    fn concurrent_same_path_bootstrap_reuses_one_cold_runtime() {
+        use crate::config::{MemoryMode, MemoryProfile};
+
+        let _guard = sqlite_runtime_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reset_sqlite_runtime_test_state();
+
+        let tmp = std::env::temp_dir().join(format!(
+            "loongclaw-sqlite-runtime-concurrent-bootstrap-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).expect("create temp dir");
+        let db_path = tmp.join("runtime-concurrent.sqlite3");
+        let _ = fs::remove_file(&db_path);
+
+        let config = MemoryRuntimeConfig {
+            profile: MemoryProfile::WindowOnly,
+            mode: MemoryMode::WindowOnly,
+            sqlite_path: Some(db_path.clone()),
+            sliding_window: 2,
+            ..MemoryRuntimeConfig::default()
+        };
+
+        configure_sqlite_runtime_cache_miss_for_tests(&db_path, 2);
+
+        let start_barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let thread_a_barrier = start_barrier.clone();
+        let thread_a_path = db_path.clone();
+        let thread_a_config = config.clone();
+        let thread_a = std::thread::spawn(move || {
+            thread_a_barrier.wait();
+            ensure_memory_db_ready(Some(thread_a_path), &thread_a_config)
+        });
+
+        let thread_b_barrier = start_barrier.clone();
+        let thread_b_path = db_path.clone();
+        let thread_b_config = config.clone();
+        let thread_b = std::thread::spawn(move || {
+            thread_b_barrier.wait();
+            ensure_memory_db_ready(Some(thread_b_path), &thread_b_config)
+        });
+
+        start_barrier.wait();
+
+        let thread_a_result = thread_a.join().expect("join bootstrap thread a");
+        let thread_b_result = thread_b.join().expect("join bootstrap thread b");
+
+        clear_sqlite_runtime_cache_miss_for_tests();
+
+        thread_a_result.expect("bootstrap thread a should succeed");
+        thread_b_result.expect("bootstrap thread b should succeed");
+
+        assert_eq!(
+            sqlite_bootstrap_count_for_tests(&db_path),
+            1,
+            "expected concurrent cold access to serialize same-path bootstrap work"
+        );
+
+        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -7171,6 +7297,7 @@ mod tests {
 #[cfg(test)]
 mod test_support {
     use super::*;
+    use std::sync::Condvar;
 
     #[derive(Default)]
     struct SqliteMetricCapture {
@@ -7178,6 +7305,14 @@ mod test_support {
         cached_prepare_counts: HashMap<&'static str, usize>,
         summary_materialization_counts: HashMap<&'static str, usize>,
         runtime_path_normalization_counts: HashMap<&'static str, usize>,
+    }
+
+    #[derive(Default)]
+    struct SqliteRuntimeCacheMissGate {
+        path: Option<PathBuf>,
+        target_waiters: usize,
+        waiting_threads: usize,
+        released: bool,
     }
 
     fn bootstrap_counts() -> &'static Mutex<HashMap<PathBuf, usize>> {
@@ -7199,6 +7334,19 @@ mod test_support {
     fn sqlite_metric_capture() -> &'static Mutex<SqliteMetricCapture> {
         static SQLITE_METRIC_CAPTURE: OnceLock<Mutex<SqliteMetricCapture>> = OnceLock::new();
         SQLITE_METRIC_CAPTURE.get_or_init(|| Mutex::new(SqliteMetricCapture::default()))
+    }
+
+    fn sqlite_runtime_cache_miss_gate() -> &'static (Mutex<SqliteRuntimeCacheMissGate>, Condvar) {
+        static SQLITE_RUNTIME_CACHE_MISS_GATE: OnceLock<(
+            Mutex<SqliteRuntimeCacheMissGate>,
+            Condvar,
+        )> = OnceLock::new();
+        SQLITE_RUNTIME_CACHE_MISS_GATE.get_or_init(|| {
+            (
+                Mutex::new(SqliteRuntimeCacheMissGate::default()),
+                Condvar::new(),
+            )
+        })
     }
 
     fn lock_sqlite_metric_capture() -> std::sync::MutexGuard<'static, SqliteMetricCapture> {
@@ -7332,6 +7480,61 @@ mod test_support {
             .get("alias_hit")
             .copied()
             .unwrap_or_default()
+    }
+
+    pub(super) fn configure_sqlite_runtime_cache_miss(path: &Path, target_waiters: usize) {
+        let normalized_path = normalize_runtime_db_path_best_effort(path);
+        let (gate_lock, gate_condvar) = sqlite_runtime_cache_miss_gate();
+        let mut gate = gate_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        gate.path = Some(normalized_path);
+        gate.target_waiters = target_waiters;
+        gate.waiting_threads = 0;
+        gate.released = false;
+        gate_condvar.notify_all();
+    }
+
+    pub(super) fn wait_for_sqlite_runtime_cache_miss(path: &Path) {
+        let normalized_path = normalize_runtime_db_path_best_effort(path);
+        let (gate_lock, gate_condvar) = sqlite_runtime_cache_miss_gate();
+        let mut gate = gate_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(configured_path) = gate.path.as_ref() else {
+            return;
+        };
+        if *configured_path != normalized_path {
+            return;
+        }
+        if gate.released {
+            return;
+        }
+
+        gate.waiting_threads += 1;
+        if gate.waiting_threads >= gate.target_waiters {
+            gate.released = true;
+            gate_condvar.notify_all();
+            return;
+        }
+
+        while !gate.released {
+            gate = gate_condvar
+                .wait(gate)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
+
+    pub(super) fn clear_sqlite_runtime_cache_miss() {
+        let (gate_lock, gate_condvar) = sqlite_runtime_cache_miss_gate();
+        let mut gate = gate_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        gate.path = None;
+        gate.target_waiters = 0;
+        gate.waiting_threads = 0;
+        gate.released = false;
+        gate_condvar.notify_all();
     }
 
     pub(super) fn record_summary_streaming_query(kind: &'static str) {
@@ -7510,5 +7713,6 @@ mod test_support {
         end_sqlite_metric_capture();
         reset_cached_prepare_metrics();
         reset_summary_materialization_metrics();
+        clear_sqlite_runtime_cache_miss();
     }
 }
