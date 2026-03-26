@@ -124,8 +124,12 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   rust-test-default:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     permissions:
       contents: read
     steps:
@@ -163,8 +167,12 @@ jobs:
           channel-cli,channel-telegram,channel-feishu,channel-matrix,config-toml,memory-sqlite,feishu-integration,tool-shell,tool-file,tool-browser,provider-openai,provider-anthropic,provider-bedrock,provider-volcengine
 
   rust-test-all-features:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     permissions:
       contents: read
     steps:
