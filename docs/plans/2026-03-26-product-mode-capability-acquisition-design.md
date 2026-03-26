@@ -257,8 +257,26 @@ Proposed action classes:
   - `session_recover`
   - `session_archive`
 
+Canonical base mode decision table:
+
+| action class | `discovery_only` | `guided_acquisition` | `bounded_autonomous` | notes |
+| --- | --- | --- | --- | --- |
+| `discover` | `allow` | `allow` | `allow` | discovery-first remains available in every mode |
+| `execute_existing` | `allow` | `allow` | `allow` | product mode does not interfere with already-visible tool execution |
+| `capability_fetch` | `blocked` | `approval_required` | `allow` | lower layers may still block on source policy, binding, or budget |
+| `capability_install` | `blocked` | `approval_required` | `allow` | lower layers may still block on source policy, binding, or budget |
+| `capability_load` | `blocked` | `approval_required` | `allow` | an approved install may reuse the same approval transaction |
+| `runtime_switch` | `blocked` | `approval_required` | `approval_required` | may elevate to `allow` only when autonomous provider switching is explicitly enabled |
+| `topology_expand` | `blocked` | `approval_required` | `approval_required` | never auto-allowed by product mode alone |
+| `policy_mutation` | `blocked` | `approval_required` | `approval_required` | remains governed and never auto-allowed by product mode alone |
+| `session_mutation` | `blocked` | `approval_required` | `approval_required` | remains governed and never auto-allowed by product mode alone |
+
 This taxonomy lets the mode engine stay stable even as new tools or channels are
 added.
+
+This table is the canonical base product-mode decision matrix. Governance,
+source-policy, channel-support, runtime-binding, and budget layers may only make
+an outcome stricter. They must not weaken the base mode result.
 
 ## Policy Layering
 
@@ -277,6 +295,7 @@ enum. It should sit inside a layered policy stack.
 - decides whether the runtime may cross the boundary from "visible capability"
   into "newly acquired or switched capability"
 - reasons over capability action classes rather than raw tool names
+- uses the canonical base decision matrix from `Capability Action Classes`
 - decides between `allow`, `approval_required`, and `blocked`
 
 ### 3. Governance layer
@@ -350,6 +369,9 @@ This should produce one resolved outcome before capability acquisition begins:
 - `blocked(unsupported_by_channel_surface)`
 - `blocked(kernel_binding_missing)`
 - `blocked(approval_roundtrip_unavailable)`
+
+Those outcomes are resolved after the base mode decision matrix runs and before
+lower-layer restrictions or approval execution proceed.
 
 That is important for operator trust. Silent downgrade from
 `bounded_autonomous` to `discovery_only` would make the system harder to reason
@@ -430,6 +452,8 @@ Blocked reasons:
 - `product_mode_kernel_binding_missing`
 - `product_mode_approval_roundtrip_unavailable`
 - `product_mode_autonomy_budget_exceeded`
+- `product_mode_source_policy_denied`
+- `product_mode_provider_switch_disallowed`
 - `product_mode_unsupported_by_channel_surface`
 
 Approval-required reasons should be carried by approval requests. Blocked
@@ -495,18 +519,9 @@ behavior:
 - whether an action was auto-executed because the mode allowed it
 - why the runtime refused to proceed when blocked
 
-Suggested failure reasons:
-
-- `product_mode_disallows_capability_acquisition`
-- `product_mode_kernel_binding_missing`
-- `product_mode_approval_roundtrip_unavailable`
-- `product_mode_autonomy_budget_exceeded`
-- `product_mode_source_policy_denied`
-- `product_mode_provider_switch_disallowed`
-- `product_mode_unsupported_by_channel_surface`
-
-These are better than a raw "tool not found" or an empty search result when the
-real problem is that the current mode forbids expansion.
+Use the canonical blocked reason list from `Approval and Blocked Outcome Model`
+as the only product-mode blocked reason source of truth. UI surfaces should map
+those codes directly rather than redefining a second list here.
 
 ## Budget Model
 
