@@ -366,12 +366,18 @@ Validation rules:
 This should produce one resolved outcome before capability acquisition begins:
 
 - `resolved(mode)`
-- `blocked(unsupported_by_channel_surface)`
-- `blocked(kernel_binding_missing)`
-- `blocked(approval_roundtrip_unavailable)`
+- `blocked(product_mode_unsupported_by_channel_surface)`
+- `blocked(product_mode_kernel_binding_missing)`
+- `blocked(product_mode_approval_roundtrip_unavailable)`
 
-Those outcomes are resolved after the base mode decision matrix runs and before
-lower-layer restrictions or approval execution proceed.
+Mode resolution happens first.
+
+If it returns `resolved(mode)`, the runtime then consults the base mode decision
+matrix for that resolved mode.
+
+Only after the base mode decision matrix yields its
+`allow | approval_required | blocked` result should lower-layer restrictions or
+approval execution proceed.
 
 That is important for operator trust. Silent downgrade from
 `bounded_autonomous` to `discovery_only` would make the system harder to reason
