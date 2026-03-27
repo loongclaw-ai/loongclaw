@@ -874,6 +874,23 @@ pub enum Commands {
         #[arg(long)]
         text: String,
     },
+    /// Send one Zalo official account customer-service message
+    ZaloSend {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long = "target")]
+        target: String,
+        #[arg(
+            long,
+            default_value_t = default_zalo_send_target_kind(),
+            value_parser = parse_zalo_send_target_kind
+        )]
+        target_kind: mvp::channel::ChannelOutboundTargetKind,
+        #[arg(long)]
+        text: String,
+    },
     /// Send one SMTP email message
     EmailSend {
         #[arg(long)]
@@ -4141,6 +4158,11 @@ pub const WHATSAPP_SEND_CLI_SPEC: ChannelSendCliSpec = ChannelSendCliSpec {
     run: run_whatsapp_send_cli_impl,
 };
 
+pub const ZALO_SEND_CLI_SPEC: ChannelSendCliSpec = ChannelSendCliSpec {
+    family: mvp::channel::ZALO_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    run: run_zalo_send_cli_impl,
+};
+
 pub const EMAIL_SEND_CLI_SPEC: ChannelSendCliSpec = ChannelSendCliSpec {
     family: mvp::channel::EMAIL_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
     run: run_email_send_cli_impl,
@@ -4379,6 +4401,21 @@ pub fn run_whatsapp_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliCom
         let _ = args.as_card;
         let target = args.target.unwrap_or_default();
         mvp::channel::run_whatsapp_send(
+            args.config_path,
+            args.account,
+            target,
+            args.target_kind,
+            args.text,
+        )
+        .await
+    })
+}
+
+pub fn run_zalo_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliCommandFuture<'_> {
+    Box::pin(async move {
+        let _ = args.as_card;
+        let target = require_channel_send_target("zalo-send", args.target)?;
+        mvp::channel::run_zalo_send(
             args.config_path,
             args.account,
             target,
@@ -4699,6 +4736,16 @@ pub fn parse_whatsapp_send_target_kind(
     parse_channel_send_target_kind(WHATSAPP_SEND_CLI_SPEC, raw)
 }
 
+pub fn default_zalo_send_target_kind() -> mvp::channel::ChannelOutboundTargetKind {
+    default_channel_send_target_kind(ZALO_SEND_CLI_SPEC)
+}
+
+pub fn parse_zalo_send_target_kind(
+    raw: &str,
+) -> Result<mvp::channel::ChannelOutboundTargetKind, String> {
+    parse_channel_send_target_kind(ZALO_SEND_CLI_SPEC, raw)
+}
+
 pub fn default_email_send_target_kind() -> mvp::channel::ChannelOutboundTargetKind {
     default_channel_send_target_kind(EMAIL_SEND_CLI_SPEC)
 }
@@ -4933,6 +4980,50 @@ mod channel_send_cli_tests {
             error,
             "nostr --target-kind does not support `conversation`; use `address`"
         );
+    }
+
+    #[test]
+    fn zalo_send_cli_accepts_address_target_kind() {
+        let target_kind =
+            parse_zalo_send_target_kind("address").expect("zalo should accept address targets");
+
+        assert_eq!(
+            default_zalo_send_target_kind(),
+            mvp::channel::ChannelOutboundTargetKind::Address
+        );
+        assert_eq!(
+            target_kind,
+            mvp::channel::ChannelOutboundTargetKind::Address
+        );
+    }
+
+    #[test]
+    fn zalo_send_cli_rejects_non_address_target_kind() {
+        let error = parse_zalo_send_target_kind("conversation")
+            .expect_err("conversation targets should be rejected");
+
+        assert_eq!(
+            error,
+            "zalo --target-kind does not support `conversation`; use `address`"
+        );
+    }
+
+    #[tokio::test]
+    async fn zalo_send_cli_requires_target() {
+        let args = ChannelSendCliArgs {
+            config_path: None,
+            account: None,
+            target: None,
+            target_kind: mvp::channel::ChannelOutboundTargetKind::Address,
+            text: "hello",
+            as_card: false,
+        };
+
+        let error = run_zalo_send_cli_impl(args)
+            .await
+            .expect_err("missing target should fail");
+
+        assert_eq!(error, "zalo-send requires --target");
     }
 }
 

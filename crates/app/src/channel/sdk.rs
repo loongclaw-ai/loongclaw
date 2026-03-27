@@ -225,6 +225,14 @@ const NOSTR_CHANNEL_DESCRIPTOR: ChannelDescriptor = ChannelDescriptor {
     serve_subcommand: None,
 };
 
+const ZALO_CHANNEL_DESCRIPTOR: ChannelDescriptor = ChannelDescriptor {
+    id: "zalo",
+    label: "zalo",
+    surface_label: "zalo channel",
+    runtime_kind: ChannelRuntimeKind::Service,
+    serve_subcommand: None,
+};
+
 const CLI_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
     descriptor: &CLI_CHANNEL_DESCRIPTOR,
     background_runtime: None,
@@ -432,6 +440,14 @@ const NOSTR_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrati
     background_surface_is_enabled: None,
 };
 
+const ZALO_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
+    descriptor: &ZALO_CHANNEL_DESCRIPTOR,
+    background_runtime: None,
+    is_enabled: zalo_channel_is_enabled,
+    collect_validation_issues: collect_zalo_channel_validation_issues,
+    background_surface_is_enabled: None,
+};
+
 const CHANNEL_INTEGRATIONS: &[ChannelIntegrationDescriptor] = &[
     CLI_CHANNEL_INTEGRATION,
     TELEGRAM_CHANNEL_INTEGRATION,
@@ -455,6 +471,7 @@ const CHANNEL_INTEGRATIONS: &[ChannelIntegrationDescriptor] = &[
     IRC_CHANNEL_INTEGRATION,
     IMESSAGE_CHANNEL_INTEGRATION,
     NOSTR_CHANNEL_INTEGRATION,
+    ZALO_CHANNEL_INTEGRATION,
 ];
 
 pub(crate) fn channel_descriptor(id: &str) -> Option<&'static ChannelDescriptor> {
@@ -619,6 +636,10 @@ fn nostr_channel_is_enabled(config: &LoongClawConfig) -> bool {
     config.nostr.enabled
 }
 
+fn zalo_channel_is_enabled(config: &LoongClawConfig) -> bool {
+    config.zalo.enabled
+}
+
 fn collect_cli_channel_validation_issues(_config: &LoongClawConfig) -> Vec<ConfigValidationIssue> {
     Vec::new()
 }
@@ -735,6 +756,10 @@ fn collect_nostr_channel_validation_issues(config: &LoongClawConfig) -> Vec<Conf
     config.nostr.validate()
 }
 
+fn collect_zalo_channel_validation_issues(config: &LoongClawConfig) -> Vec<ConfigValidationIssue> {
+    config.zalo.validate()
+}
+
 fn telegram_background_surface_is_enabled(
     config: &LoongClawConfig,
     account_id: Option<&str>,
@@ -838,6 +863,7 @@ mod tests {
                 "irc",
                 "imessage",
                 "nostr",
+                "zalo",
             ]
         );
     }

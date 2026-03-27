@@ -17,13 +17,14 @@ use crate::config::{
     ResolvedNextcloudTalkChannelConfig, ResolvedNostrChannelConfig, ResolvedSignalChannelConfig,
     ResolvedSlackChannelConfig, ResolvedSynologyChatChannelConfig, ResolvedTeamsChannelConfig,
     ResolvedTelegramChannelConfig, ResolvedTwitchChannelConfig, ResolvedWebhookChannelConfig,
-    ResolvedWecomChannelConfig, ResolvedWhatsappChannelConfig, SIGNAL_ACCOUNT_ENV,
-    SIGNAL_SERVICE_URL_ENV, SLACK_BOT_TOKEN_ENV, SYNOLOGY_CHAT_INCOMING_URL_ENV,
-    SYNOLOGY_CHAT_TOKEN_ENV, TEAMS_APP_ID_ENV, TEAMS_APP_PASSWORD_ENV, TEAMS_TENANT_ID_ENV,
-    TEAMS_WEBHOOK_URL_ENV, TELEGRAM_BOT_TOKEN_ENV, TWITCH_ACCESS_TOKEN_ENV,
-    WEBHOOK_ENDPOINT_URL_ENV, WEBHOOK_SIGNING_SECRET_ENV, WECOM_BOT_ID_ENV, WECOM_SECRET_ENV,
-    WHATSAPP_ACCESS_TOKEN_ENV, WHATSAPP_APP_SECRET_ENV, WHATSAPP_PHONE_NUMBER_ID_ENV,
-    WHATSAPP_VERIFY_TOKEN_ENV, WebhookPayloadFormat, parse_email_smtp_endpoint,
+    ResolvedWecomChannelConfig, ResolvedWhatsappChannelConfig, ResolvedZaloChannelConfig,
+    SIGNAL_ACCOUNT_ENV, SIGNAL_SERVICE_URL_ENV, SLACK_BOT_TOKEN_ENV,
+    SYNOLOGY_CHAT_INCOMING_URL_ENV, SYNOLOGY_CHAT_TOKEN_ENV, TEAMS_APP_ID_ENV,
+    TEAMS_APP_PASSWORD_ENV, TEAMS_TENANT_ID_ENV, TEAMS_WEBHOOK_URL_ENV, TELEGRAM_BOT_TOKEN_ENV,
+    TWITCH_ACCESS_TOKEN_ENV, WEBHOOK_ENDPOINT_URL_ENV, WEBHOOK_SIGNING_SECRET_ENV,
+    WECOM_BOT_ID_ENV, WECOM_SECRET_ENV, WHATSAPP_ACCESS_TOKEN_ENV, WHATSAPP_APP_SECRET_ENV,
+    WHATSAPP_PHONE_NUMBER_ID_ENV, WHATSAPP_VERIFY_TOKEN_ENV, WebhookPayloadFormat, ZALO_APP_ID_ENV,
+    ZALO_APP_SECRET_ENV, ZALO_OA_ACCESS_TOKEN_ENV, parse_email_smtp_endpoint,
     parse_irc_server_endpoint,
 };
 
@@ -48,9 +49,6 @@ const EMAIL_IMAP_PASSWORD_ENV: &str = "EMAIL_IMAP_PASSWORD";
 const TLON_SHIP_ENV: &str = "TLON_SHIP";
 const TLON_URL_ENV: &str = "TLON_URL";
 const TLON_CODE_ENV: &str = "TLON_CODE";
-const ZALO_APP_ID_ENV: &str = "ZALO_APP_ID";
-const ZALO_OA_ACCESS_TOKEN_ENV: &str = "ZALO_OA_ACCESS_TOKEN";
-const ZALO_APP_SECRET_ENV: &str = "ZALO_APP_SECRET";
 const ZALO_PERSONAL_ACCESS_TOKEN_ENV: &str = "ZALO_PERSONAL_ACCESS_TOKEN";
 const WEBCHAT_PUBLIC_BASE_URL_ENV: &str = "WEBCHAT_PUBLIC_BASE_URL";
 const WEBCHAT_SESSION_SIGNING_SECRET_ENV: &str = "WEBCHAT_SESSION_SIGNING_SECRET";
@@ -2767,7 +2765,7 @@ const ZALO_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
     label: "official account send",
     command: "zalo-send",
-    availability: ChannelCatalogOperationAvailability::Stub,
+    availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: ZALO_SEND_REQUIREMENTS,
     supported_target_kinds: &[ChannelCatalogTargetKind::Address],
@@ -2781,21 +2779,28 @@ const ZALO_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     requirements: ZALO_SERVE_REQUIREMENTS,
     supported_target_kinds: &[ChannelCatalogTargetKind::Address],
 };
+pub const ZALO_CATALOG_COMMAND_FAMILY_DESCRIPTOR: ChannelCatalogCommandFamilyDescriptor =
+    ChannelCatalogCommandFamilyDescriptor {
+        channel_id: "zalo",
+        default_send_target_kind: ChannelCatalogTargetKind::Address,
+        send: ZALO_SEND_OPERATION,
+        serve: ZALO_SERVE_OPERATION,
+    };
 const ZALO_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
     ChannelRegistryOperationDescriptor {
-        operation: ZALO_SEND_OPERATION,
+        operation: ZALO_CATALOG_COMMAND_FAMILY_DESCRIPTOR.send,
         doctor_checks: &[],
     },
     ChannelRegistryOperationDescriptor {
-        operation: ZALO_SERVE_OPERATION,
+        operation: ZALO_CATALOG_COMMAND_FAMILY_DESCRIPTOR.serve,
         doctor_checks: &[],
     },
 ];
 const ZALO_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
-    strategy: ChannelOnboardingStrategy::Planned,
-    setup_hint: "planned Zalo official account surface; catalog metadata reflects the intended app id, official account access token, and webhook secret contract, but no runtime adapter is implemented yet",
-    status_command: "loongclaw channels --json",
-    repair_command: None,
+    strategy: ChannelOnboardingStrategy::ManualConfig,
+    setup_hint: "configure Zalo official account credentials in loongclaw.toml under zalo or zalo.accounts.<account>; outbound official account send is shipped, while inbound webhook serve support remains planned",
+    status_command: "loongclaw doctor",
+    repair_command: Some("loongclaw doctor --fix"),
 };
 
 const ZALO_PERSONAL_ENABLED_REQUIREMENT: ChannelCatalogOperationRequirement =
@@ -3150,6 +3155,23 @@ pub(crate) const MATTERMOST_CHANNEL_REGISTRY_DESCRIPTOR: ChannelRegistryDescript
         operations: MATTERMOST_OPERATIONS,
     };
 
+pub(crate) const ZALO_CHANNEL_REGISTRY_DESCRIPTOR: ChannelRegistryDescriptor =
+    ChannelRegistryDescriptor {
+        id: "zalo",
+        runtime: None,
+        snapshot_builder: Some(build_zalo_snapshots),
+        selection_order: 210,
+        selection_label: "official account bot",
+        blurb: "Shipped Zalo official account outbound surface with config-backed customer-service sends; inbound webhook support remains planned.",
+        implementation_status: ChannelCatalogImplementationStatus::ConfigBacked,
+        capabilities: CONFIG_BACKED_SEND_CHANNEL_CAPABILITIES,
+        label: "Zalo",
+        aliases: &["zalo-oa"],
+        transport: "zalo_official_account_api",
+        onboarding: ZALO_ONBOARDING_DESCRIPTOR,
+        operations: ZALO_OPERATIONS,
+    };
+
 const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
     TELEGRAM_CHANNEL_REGISTRY_DESCRIPTOR,
     FEISHU_CHANNEL_REGISTRY_DESCRIPTOR,
@@ -3341,21 +3363,7 @@ const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
         onboarding: TLON_ONBOARDING_DESCRIPTOR,
         operations: TLON_OPERATIONS,
     },
-    ChannelRegistryDescriptor {
-        id: "zalo",
-        runtime: None,
-        snapshot_builder: None,
-        selection_order: 210,
-        selection_label: "official account bot",
-        blurb: "Planned Zalo official account surface for business messaging and webhook-backed delivery.",
-        implementation_status: ChannelCatalogImplementationStatus::Stub,
-        capabilities: PLANNED_CHANNEL_CAPABILITIES,
-        label: "Zalo",
-        aliases: &["zalo-oa"],
-        transport: "zalo_official_account_api",
-        onboarding: ZALO_ONBOARDING_DESCRIPTOR,
-        operations: ZALO_OPERATIONS,
-    },
+    ZALO_CHANNEL_REGISTRY_DESCRIPTOR,
     ChannelRegistryDescriptor {
         id: "zalo-personal",
         runtime: None,
@@ -4132,6 +4140,46 @@ fn build_whatsapp_snapshots(
                     default_account_source,
                 ),
                 Err(error) => build_invalid_whatsapp_snapshot(
+                    descriptor,
+                    compiled,
+                    configured_account_id.as_str(),
+                    is_default_account,
+                    default_account_source,
+                    error,
+                ),
+            }
+        })
+        .collect()
+}
+
+fn build_zalo_snapshots(
+    descriptor: &ChannelRegistryDescriptor,
+    config: &LoongClawConfig,
+    _runtime_dir: &Path,
+    _now_ms: u64,
+) -> Vec<ChannelStatusSnapshot> {
+    let compiled = cfg!(feature = "channel-zalo");
+    let default_selection = config.zalo.default_configured_account_selection();
+    let default_configured_account_id = default_selection.id.clone();
+    let default_account_source = default_selection.source;
+    config
+        .zalo
+        .configured_account_ids()
+        .into_iter()
+        .map(|configured_account_id| {
+            let is_default_account = configured_account_id == default_configured_account_id;
+            match config
+                .zalo
+                .resolve_account(Some(configured_account_id.as_str()))
+            {
+                Ok(resolved) => build_zalo_snapshot_for_account(
+                    descriptor,
+                    compiled,
+                    resolved,
+                    is_default_account,
+                    default_account_source,
+                ),
+                Err(error) => build_invalid_zalo_snapshot(
                     descriptor,
                     compiled,
                     configured_account_id.as_str(),
@@ -5097,6 +5145,83 @@ fn build_whatsapp_snapshot_for_account(
     if let Some(phone_number_id) = resolved.phone_number_id() {
         notes.push(format!("phone_number_id={phone_number_id}"));
     }
+    if is_default_account {
+        notes.push("default_account=true".to_owned());
+    }
+    notes.push(format!(
+        "default_account_source={}",
+        default_account_source.as_str()
+    ));
+
+    ChannelStatusSnapshot {
+        id: descriptor.id,
+        configured_account_id: resolved.configured_account_id.clone(),
+        configured_account_label: resolved.configured_account_label.clone(),
+        is_default_account,
+        default_account_source,
+        label: descriptor.label,
+        aliases: descriptor.aliases.to_vec(),
+        transport: descriptor.transport,
+        compiled,
+        enabled: resolved.enabled,
+        api_base_url: Some(api_base_url),
+        notes,
+        operations: vec![send_operation, serve_operation],
+    }
+}
+
+fn build_zalo_snapshot_for_account(
+    descriptor: &ChannelRegistryDescriptor,
+    compiled: bool,
+    resolved: ResolvedZaloChannelConfig,
+    is_default_account: bool,
+    default_account_source: ChannelDefaultAccountSelectionSource,
+) -> ChannelStatusSnapshot {
+    let mut send_issues = Vec::new();
+    if resolved.app_id().is_none() {
+        send_issues.push("app_id is missing".to_owned());
+    }
+    if resolved.oa_access_token().is_none() {
+        send_issues.push("oa_access_token is missing".to_owned());
+    }
+
+    let api_base_url = resolved.resolved_api_base_url();
+    validate_http_url("api_base_url", api_base_url.as_str(), &mut send_issues);
+
+    let send_operation = if !compiled {
+        unsupported_operation(
+            ZALO_SEND_OPERATION,
+            "binary built without feature `channel-zalo`".to_owned(),
+        )
+    } else if !resolved.enabled {
+        disabled_operation(
+            ZALO_SEND_OPERATION,
+            "disabled by zalo account configuration".to_owned(),
+        )
+    } else if !send_issues.is_empty() {
+        misconfigured_operation(ZALO_SEND_OPERATION, send_issues)
+    } else {
+        ready_operation(ZALO_SEND_OPERATION)
+    };
+
+    let serve_operation = if !compiled {
+        unsupported_operation(
+            ZALO_SERVE_OPERATION,
+            "binary built without feature `channel-zalo`".to_owned(),
+        )
+    } else {
+        unsupported_operation(
+            ZALO_SERVE_OPERATION,
+            "zalo official account serve runtime is not implemented yet".to_owned(),
+        )
+    };
+
+    let mut notes = vec![
+        format!("configured_account_id={}", resolved.configured_account_id),
+        format!("configured_account={}", resolved.configured_account_label),
+        format!("account_id={}", resolved.account.id),
+        format!("account={}", resolved.account.label),
+    ];
     if is_default_account {
         notes.push("default_account=true".to_owned());
     }
@@ -7086,6 +7211,63 @@ fn build_invalid_whatsapp_snapshot(
     }
 }
 
+fn build_invalid_zalo_snapshot(
+    descriptor: &ChannelRegistryDescriptor,
+    compiled: bool,
+    configured_account_id: &str,
+    is_default_account: bool,
+    default_account_source: ChannelDefaultAccountSelectionSource,
+    error: String,
+) -> ChannelStatusSnapshot {
+    let send_operation = if !compiled {
+        unsupported_operation(
+            ZALO_SEND_OPERATION,
+            "binary built without feature `channel-zalo`".to_owned(),
+        )
+    } else {
+        misconfigured_operation(ZALO_SEND_OPERATION, vec![error.clone()])
+    };
+    let serve_operation = if !compiled {
+        unsupported_operation(
+            ZALO_SERVE_OPERATION,
+            "binary built without feature `channel-zalo`".to_owned(),
+        )
+    } else {
+        unsupported_operation(
+            ZALO_SERVE_OPERATION,
+            "zalo official account serve runtime is not implemented yet".to_owned(),
+        )
+    };
+
+    let mut notes = vec![
+        format!("configured_account_id={configured_account_id}"),
+        format!("selection_error={error}"),
+    ];
+    if is_default_account {
+        notes.push("default_account=true".to_owned());
+    }
+    notes.push(format!(
+        "default_account_source={}",
+        default_account_source.as_str()
+    ));
+
+    ChannelStatusSnapshot {
+        id: descriptor.id,
+        configured_account_id: configured_account_id.to_owned(),
+        configured_account_label: configured_account_id.to_owned(),
+        is_default_account,
+        default_account_source,
+        label: descriptor.label,
+        aliases: descriptor.aliases.to_vec(),
+        transport: descriptor.transport,
+        compiled,
+        enabled: false,
+        api_base_url: None,
+        notes,
+        operations: vec![send_operation, serve_operation],
+    }
+}
+
 fn build_invalid_email_snapshot(
     descriptor: &ChannelRegistryDescriptor,
     compiled: bool,
@@ -8476,6 +8658,10 @@ mod tests {
             .iter()
             .find(|entry| entry.id == "nostr")
             .expect("nostr catalog entry");
+        let zalo = catalog
+            .iter()
+            .find(|entry| entry.id == "zalo")
+            .expect("zalo catalog entry");
         let tlon = catalog
             .iter()
             .find(|entry| entry.id == "tlon")
@@ -8615,6 +8801,29 @@ mod tests {
             ChannelCatalogOperationAvailability::Stub
         );
 
+        assert_eq!(
+            zalo.implementation_status,
+            ChannelCatalogImplementationStatus::ConfigBacked
+        );
+        assert_eq!(zalo.selection_order, 210);
+        assert_eq!(zalo.aliases, vec!["zalo-oa"]);
+        assert_eq!(zalo.transport, "zalo_official_account_api");
+        assert!(zalo.blurb.contains("customer-service sends"));
+        assert_eq!(
+            zalo.supported_target_kinds,
+            vec![ChannelCatalogTargetKind::Address]
+        );
+        assert_eq!(zalo.operations[0].command, "zalo-send");
+        assert_eq!(zalo.operations[1].command, "zalo-serve");
+        assert_eq!(
+            zalo.operations[0].availability,
+            ChannelCatalogOperationAvailability::Implemented
+        );
+        assert_eq!(
+            zalo.operations[1].availability,
+            ChannelCatalogOperationAvailability::Stub
+        );
+
         assert_eq!(tlon.selection_order, 205);
         assert_eq!(tlon.aliases, vec!["urbit"]);
         assert_eq!(tlon.transport, "tlon_urbit_ship_api");
@@ -8681,6 +8890,10 @@ mod tests {
             .iter()
             .find(|entry| entry.id == "nostr")
             .expect("nostr catalog entry");
+        let zalo = catalog
+            .iter()
+            .find(|entry| entry.id == "zalo")
+            .expect("zalo catalog entry");
 
         assert_eq!(
             telegram.operations[0]
@@ -9008,6 +9221,30 @@ mod tests {
             nostr.operations[0].requirements[2].default_env_var,
             Some("NOSTR_PRIVATE_KEY")
         );
+        assert_eq!(
+            zalo.operations[0]
+                .requirements
+                .iter()
+                .map(|requirement| requirement.id)
+                .collect::<Vec<_>>(),
+            vec!["enabled", "app_id", "oa_access_token"]
+        );
+        assert_eq!(
+            zalo.operations[1]
+                .requirements
+                .iter()
+                .map(|requirement| requirement.id)
+                .collect::<Vec<_>>(),
+            vec!["enabled", "app_id", "oa_access_token", "app_secret"]
+        );
+        assert_eq!(
+            zalo.operations[0].requirements[1].default_env_var,
+            Some("ZALO_APP_ID")
+        );
+        assert_eq!(
+            zalo.operations[0].requirements[2].default_env_var,
+            Some("ZALO_OA_ACCESS_TOKEN")
+        );
     }
 
     #[test]
@@ -9173,6 +9410,7 @@ mod tests {
             resolve_channel_catalog_operation("imessage", "send").expect("imessage send operation");
         let nostr =
             resolve_channel_catalog_operation("nostr", "send").expect("nostr send operation");
+        let zalo = resolve_channel_catalog_operation("zalo", "send").expect("zalo send operation");
 
         assert_eq!(
             telegram.default_target_kind(),
@@ -9227,6 +9465,11 @@ mod tests {
             Some(ChannelCatalogTargetKind::Address)
         );
         assert!(nostr.supports_target_kind(ChannelCatalogTargetKind::Address));
+        assert_eq!(
+            zalo.default_target_kind(),
+            Some(ChannelCatalogTargetKind::Address)
+        );
+        assert!(zalo.supports_target_kind(ChannelCatalogTargetKind::Address));
     }
 
     #[test]
@@ -9272,6 +9515,10 @@ mod tests {
             .iter()
             .find(|entry| entry.id == "imessage")
             .expect("imessage catalog entry");
+        let zalo = catalog
+            .iter()
+            .find(|entry| entry.id == "zalo")
+            .expect("zalo catalog entry");
 
         assert_eq!(
             telegram.supported_target_kinds,
@@ -9318,6 +9565,10 @@ mod tests {
         assert_eq!(
             imessage.supported_target_kinds,
             vec![ChannelCatalogTargetKind::Conversation]
+        );
+        assert_eq!(
+            zalo.supported_target_kinds,
+            vec![ChannelCatalogTargetKind::Address]
         );
     }
 
@@ -9367,8 +9618,9 @@ mod tests {
                 .iter()
                 .map(|entry| entry.id)
                 .collect::<Vec<_>>(),
-            vec!["tlon", "zalo", "zalo-personal", "webchat",]
+            vec!["tlon", "zalo-personal", "webchat",]
         );
+        assert!(!catalog_only.iter().any(|entry| entry.id == "zalo"));
         assert!(!catalog_only.iter().any(|entry| entry.id == "nostr"));
         assert!(!catalog_only.iter().any(|entry| entry.id == "discord"));
         assert!(!catalog_only.iter().any(|entry| entry.id == "slack"));
@@ -9426,6 +9678,7 @@ mod tests {
                 "imessage",
                 "nostr",
                 "twitch",
+                "zalo",
             ]
         );
         assert_eq!(
@@ -9434,7 +9687,7 @@ mod tests {
                 .iter()
                 .map(|entry| entry.id)
                 .collect::<Vec<_>>(),
-            vec!["tlon", "zalo", "zalo-personal", "webchat",]
+            vec!["tlon", "zalo-personal", "webchat",]
         );
         assert_eq!(
             inventory
@@ -9966,6 +10219,22 @@ mod tests {
             Some("default")
         );
 
+        let zalo = inventory
+            .channel_surfaces
+            .iter()
+            .find(|surface| surface.catalog.id == "zalo")
+            .expect("zalo surface");
+        assert_eq!(
+            zalo.catalog.implementation_status,
+            ChannelCatalogImplementationStatus::ConfigBacked
+        );
+        assert_eq!(zalo.configured_accounts.len(), 1);
+        assert_eq!(
+            zalo.default_configured_account_id.as_deref(),
+            Some("default")
+        );
+        assert_eq!(zalo.configured_accounts[0].id, "zalo");
+
         let webchat = inventory
             .channel_surfaces
             .iter()
@@ -10483,6 +10752,64 @@ mod tests {
         );
         assert!(send.runtime.is_none());
         assert!(serve.runtime.is_none());
+    }
+
+    #[test]
+    fn zalo_status_reports_ready_send_and_stub_serve() {
+        let mut config = LoongClawConfig::default();
+        config.zalo.enabled = true;
+        config.zalo.app_id = Some(loongclaw_contracts::SecretRef::Inline(
+            "zalo-app-id".to_owned(),
+        ));
+        config.zalo.oa_access_token = Some(loongclaw_contracts::SecretRef::Inline(
+            "zalo-access-token".to_owned(),
+        ));
+
+        let snapshots = channel_status_snapshots(&config);
+        let zalo = snapshots
+            .iter()
+            .find(|snapshot| snapshot.id == "zalo")
+            .expect("zalo snapshot");
+        let send = zalo.operation("send").expect("zalo send operation");
+        let serve = zalo.operation("serve").expect("zalo serve operation");
+
+        assert_eq!(send.health, ChannelOperationHealth::Ready);
+        assert_eq!(serve.health, ChannelOperationHealth::Unsupported);
+        assert_eq!(
+            zalo.api_base_url.as_deref(),
+            Some("https://openapi.zalo.me/v3.0/oa")
+        );
+        assert!(send.runtime.is_none());
+        assert!(serve.runtime.is_none());
+    }
+
+    #[test]
+    fn zalo_status_rejects_non_http_api_base_url() {
+        let mut config = LoongClawConfig::default();
+        config.zalo.enabled = true;
+        config.zalo.app_id = Some(loongclaw_contracts::SecretRef::Inline(
+            "zalo-app-id".to_owned(),
+        ));
+        config.zalo.oa_access_token = Some(loongclaw_contracts::SecretRef::Inline(
+            "zalo-access-token".to_owned(),
+        ));
+        config.zalo.api_base_url = Some("file:///tmp/zalo".to_owned());
+
+        let snapshots = channel_status_snapshots(&config);
+        let zalo = snapshots
+            .iter()
+            .find(|snapshot| snapshot.id == "zalo")
+            .expect("zalo snapshot");
+        let send = zalo.operation("send").expect("zalo send operation");
+
+        assert_eq!(send.health, ChannelOperationHealth::Misconfigured);
+        assert!(
+            send.issues
+                .iter()
+                .any(|issue| issue.contains("api_base_url must use http or https")),
+            "unexpected issues: {:?}",
+            send.issues
+        );
     }
 
     #[test]

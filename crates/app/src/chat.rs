@@ -1,18 +1,32 @@
 use std::collections::BTreeMap;
 #[cfg(feature = "memory-sqlite")]
 use std::collections::BTreeSet;
+#[cfg(unix)]
+use std::fs::OpenOptions;
+#[cfg(unix)]
+use std::io::Read;
 use std::io::{self, Write};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex as StdMutex;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+#[cfg(unix)]
+use std::time::Duration;
 
 #[cfg(feature = "memory-sqlite")]
 use loongclaw_contracts::Capability;
-use tokio::io::{self as tokio_io, AsyncBufReadExt, BufReader};
 use tokio::sync::Notify;
+#[cfg(unix)]
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+#[cfg(not(unix))]
+use tokio::{
+    io::{self as tokio_io, AsyncBufReadExt, BufReader},
+    sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
+};
 
 use crate::CliResult;
 use crate::acp::{
@@ -214,6 +228,198 @@ enum CliChatLoopControl {
     Continue,
     Exit,
     AssistantText(String),
+}
+
+#[cfg(unix)]
+struct ConcurrentCliStdinReader {
+    line_rx: UnboundedReceiver<CliResult<Option<String>>>,
+    stop_requested: Arc<AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(unix)]
+impl ConcurrentCliStdinReader {
+    fn new(shutdown: ConcurrentCliShutdown) -> CliResult<Self> {
+        let (line_tx, line_rx) = unbounded_channel();
+        let stop_requested = Arc::new(AtomicBool::new(false));
+        let worker_stop_requested = Arc::clone(&stop_requested);
+
+        let worker = std::thread::Builder::new()
+            .name("loongclaw-cli-stdin".to_owned())
+            .spawn(move || {
+                Self::run_worker(line_tx, worker_stop_requested, shutdown);
+            })
+            .map_err(|error| format!("spawn stdin reader failed: {error}"))?;
+
+        Ok(Self {
+            line_rx,
+            stop_requested,
+            worker: Some(worker),
+        })
+    }
+
+    async fn next_line(&mut self) -> CliResult<Option<String>> {
+        let next_line = self.line_rx.recv().await;
+        let Some(next_line) = next_line else {
+            return Ok(None);
+        };
+
+        next_line
+    }
+
+    fn run_worker(
+        line_tx: UnboundedSender<CliResult<Option<String>>>,
+        stop_requested: Arc<AtomicBool>,
+        shutdown: ConcurrentCliShutdown,
+    ) {
+        let run_result = Self::pump_lines(&line_tx, &stop_requested, &shutdown);
+        if let Err(error) = run_result {
+            let send_result = line_tx.send(Err(error));
+            let _ = send_result;
+        }
+    }
+
+    fn take_line_from_buffer(buffer: &mut Vec<u8>) -> CliResult<Option<String>> {
+        let newline_index = buffer.iter().position(|byte| *byte == b'\n');
+        let Some(newline_index) = newline_index else {
+            return Ok(None);
+        };
+
+        let mut remaining = buffer.split_off(newline_index + 1);
+        let mut line_bytes = std::mem::take(buffer);
+        line_bytes.pop();
+        std::mem::swap(buffer, &mut remaining);
+
+        let line = Self::decode_line_bytes(line_bytes)?;
+        Ok(Some(line))
+    }
+
+    fn take_trailing_line(buffer: &mut Vec<u8>) -> CliResult<Option<String>> {
+        if buffer.is_empty() {
+            return Ok(None);
+        }
+
+        let line_bytes = std::mem::take(buffer);
+        let line = Self::decode_line_bytes(line_bytes)?;
+        Ok(Some(line))
+    }
+
+    fn pump_lines(
+        line_tx: &UnboundedSender<CliResult<Option<String>>>,
+        stop_requested: &Arc<AtomicBool>,
+        shutdown: &ConcurrentCliShutdown,
+    ) -> CliResult<()> {
+        let mut options = OpenOptions::new();
+        let open_flags = libc::O_NONBLOCK;
+
+        options.read(true);
+        options.custom_flags(open_flags);
+
+        let mut stdin_file = options
+            .open("/dev/stdin")
+            .map_err(|error| format!("open stdin failed: {error}"))?;
+        let mut buffer = Vec::new();
+
+        loop {
+            let should_stop = stop_requested.load(Ordering::SeqCst);
+            let shutdown_requested = shutdown.is_requested();
+
+            if should_stop || shutdown_requested {
+                return Ok(());
+            }
+
+            let mut chunk = [0_u8; 1024];
+            let read_result = stdin_file.read(&mut chunk);
+            let read = match read_result {
+                Ok(read) => read,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    let poll_interval = Duration::from_millis(50);
+                    std::thread::park_timeout(poll_interval);
+                    continue;
+                }
+                Err(error) => return Err(format!("read stdin failed: {error}")),
+            };
+
+            if read == 0 {
+                let trailing_line = Self::take_trailing_line(&mut buffer)?;
+                if let Some(line) = trailing_line {
+                    let send_result = line_tx.send(Ok(Some(line)));
+                    if send_result.is_err() {
+                        return Ok(());
+                    }
+                }
+
+                let send_result = line_tx.send(Ok(None));
+                if send_result.is_err() {
+                    return Ok(());
+                }
+
+                return Ok(());
+            }
+
+            let bytes = chunk
+                .get(..read)
+                .ok_or_else(|| "read stdin returned an invalid byte count".to_owned())?;
+            buffer.extend_from_slice(bytes);
+
+            loop {
+                let buffered_line = Self::take_line_from_buffer(&mut buffer)?;
+                let Some(line) = buffered_line else {
+                    break;
+                };
+
+                let send_result = line_tx.send(Ok(Some(line)));
+                if send_result.is_err() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    fn decode_line_bytes(mut line_bytes: Vec<u8>) -> CliResult<String> {
+        if line_bytes.last().copied() == Some(b'\r') {
+            line_bytes.pop();
+        }
+
+        String::from_utf8(line_bytes).map_err(|error| format!("read stdin failed: {error}"))
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ConcurrentCliStdinReader {
+    fn drop(&mut self) {
+        self.stop_requested.store(true, Ordering::SeqCst);
+
+        let worker = self.worker.take();
+        let Some(worker) = worker else {
+            return;
+        };
+
+        let join_result = worker.join();
+        let _ = join_result;
+    }
+}
+
+#[cfg(not(unix))]
+struct ConcurrentCliStdinReader {
+    stdin_lines: tokio_io::Lines<BufReader<tokio_io::Stdin>>,
+}
+
+#[cfg(not(unix))]
+impl ConcurrentCliStdinReader {
+    fn new(_shutdown: ConcurrentCliShutdown) -> CliResult<Self> {
+        let stdin = tokio_io::stdin();
+        let stdin_lines = BufReader::new(stdin).lines();
+
+        Ok(Self { stdin_lines })
+    }
+
+    async fn next_line(&mut self) -> CliResult<Option<String>> {
+        self.stdin_lines
+            .next_line()
+            .await
+            .map_err(|error| format!("read stdin failed: {error}"))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -577,9 +783,13 @@ async fn run_concurrent_cli_host_loop(
     options: &CliChatOptions,
     shutdown: &ConcurrentCliShutdown,
 ) -> CliResult<()> {
-    let mut stdin_lines = BufReader::new(tokio_io::stdin()).lines();
+    let mut stdin_reader = ConcurrentCliStdinReader::new(shutdown.clone())?;
 
     loop {
+        if shutdown.is_requested() {
+            break;
+        }
+
         print!("you> ");
         io::stdout()
             .flush()
@@ -587,9 +797,7 @@ async fn run_concurrent_cli_host_loop(
 
         let next_line = tokio::select! {
             _ = shutdown.wait() => None,
-            line = stdin_lines.next_line() => Some(
-                line.map_err(|error| format!("read stdin failed: {error}"))?
-            ),
+            line = stdin_reader.next_line() => Some(line?),
         };
 
         let Some(line) = next_line else {

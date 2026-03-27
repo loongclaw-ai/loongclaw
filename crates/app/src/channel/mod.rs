@@ -21,7 +21,8 @@ use std::time::Duration;
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-imessage",
-    feature = "channel-nostr"
+    feature = "channel-nostr",
+    feature = "channel-zalo"
 ))]
 use std::{
     collections::BTreeSet,
@@ -91,7 +92,8 @@ use crate::CliResult;
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-imessage",
-    feature = "channel-nostr"
+    feature = "channel-nostr",
+    feature = "channel-zalo"
 ))]
 use crate::KernelContext;
 #[cfg(any(
@@ -114,7 +116,8 @@ use crate::KernelContext;
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-imessage",
-    feature = "channel-nostr"
+    feature = "channel-nostr",
+    feature = "channel-zalo"
 ))]
 use crate::acp::{AcpConversationTurnOptions, AcpTurnProvenance};
 #[cfg(any(
@@ -137,7 +140,8 @@ use crate::acp::{AcpConversationTurnOptions, AcpTurnProvenance};
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-imessage",
-    feature = "channel-nostr"
+    feature = "channel-nostr",
+    feature = "channel-zalo"
 ))]
 use crate::context::{DEFAULT_TOKEN_TTL_S, bootstrap_kernel_context_with_config};
 
@@ -183,6 +187,8 @@ use super::config::ResolvedWebhookChannelConfig;
 use super::config::ResolvedWecomChannelConfig;
 #[cfg(feature = "channel-whatsapp")]
 use super::config::ResolvedWhatsappChannelConfig;
+#[cfg(feature = "channel-zalo")]
+use super::config::ResolvedZaloChannelConfig;
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-discord",
@@ -204,7 +210,8 @@ use super::config::ResolvedWhatsappChannelConfig;
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-imessage",
-    feature = "channel-nostr"
+    feature = "channel-nostr",
+    feature = "channel-zalo"
 ))]
 use super::config::{ChannelResolvedAccountRoute, LoongClawConfig, normalize_channel_account_id};
 #[cfg(any(
@@ -282,6 +289,8 @@ mod webhook_auth;
 mod wecom;
 #[cfg(feature = "channel-whatsapp")]
 mod whatsapp;
+#[cfg(feature = "channel-zalo")]
+mod zalo;
 
 pub use registry::{
     CHANNEL_OPERATION_SEND_ID, CHANNEL_OPERATION_SERVE_ID, ChannelCapability,
@@ -306,12 +315,13 @@ pub use registry::{
     TWITCH_CATALOG_COMMAND_FAMILY_DESCRIPTOR, WEBHOOK_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
     WECOM_CATALOG_COMMAND_FAMILY_DESCRIPTOR, WECOM_COMMAND_FAMILY_DESCRIPTOR,
     WECOM_RUNTIME_COMMAND_DESCRIPTOR, WHATSAPP_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
-    catalog_only_channel_entries, channel_inventory, channel_status_snapshots,
-    list_channel_catalog, normalize_channel_catalog_id, normalize_channel_platform,
-    resolve_channel_catalog_command_family_descriptor, resolve_channel_catalog_entry,
-    resolve_channel_catalog_operation, resolve_channel_command_family_descriptor,
-    resolve_channel_doctor_operation_spec, resolve_channel_onboarding_descriptor,
-    resolve_channel_operation_descriptor, resolve_channel_runtime_command_descriptor,
+    ZALO_CATALOG_COMMAND_FAMILY_DESCRIPTOR, catalog_only_channel_entries, channel_inventory,
+    channel_status_snapshots, list_channel_catalog, normalize_channel_catalog_id,
+    normalize_channel_platform, resolve_channel_catalog_command_family_descriptor,
+    resolve_channel_catalog_entry, resolve_channel_catalog_operation,
+    resolve_channel_command_family_descriptor, resolve_channel_doctor_operation_spec,
+    resolve_channel_onboarding_descriptor, resolve_channel_operation_descriptor,
+    resolve_channel_runtime_command_descriptor,
 };
 pub use runtime_state::ChannelOperationRuntime;
 use runtime_state::ChannelOperationRuntimeTracker;
@@ -866,7 +876,8 @@ type ChannelProcessFuture = Pin<Box<dyn Future<Output = CliResult<String>> + Sen
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-imessage",
-    feature = "channel-nostr"
+    feature = "channel-nostr",
+    feature = "channel-zalo"
 ))]
 type ChannelCommandFuture<'a> = Pin<Box<dyn Future<Output = CliResult<()>> + Send + 'a>>;
 
@@ -1238,7 +1249,8 @@ where
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-imessage",
-    feature = "channel-nostr"
+    feature = "channel-nostr",
+    feature = "channel-zalo"
 ))]
 #[derive(Debug, Clone)]
 struct ChannelCommandContext<R> {
@@ -1267,7 +1279,8 @@ struct ChannelCommandContext<R> {
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-imessage",
-    feature = "channel-nostr"
+    feature = "channel-nostr",
+    feature = "channel-zalo"
 ))]
 impl<R> ChannelCommandContext<R> {
     fn emit_route_notice(&self, channel_id: &str) {
@@ -1353,7 +1366,8 @@ impl ChannelResolvedRuntimeAccount for ResolvedWecomChannelConfig {
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-imessage",
-    feature = "channel-nostr"
+    feature = "channel-nostr",
+    feature = "channel-zalo"
 ))]
 async fn run_channel_send_command<R, F, G>(
     context: ChannelCommandContext<R>,
@@ -1810,6 +1824,39 @@ fn build_whatsapp_command_context(
     })
 }
 
+#[cfg(feature = "channel-zalo")]
+fn load_zalo_command_context(
+    config_path: Option<&str>,
+    account_id: Option<&str>,
+) -> CliResult<ChannelCommandContext<ResolvedZaloChannelConfig>> {
+    let (resolved_path, config) = super::config::load(config_path)?;
+    build_zalo_command_context(resolved_path, config, account_id)
+}
+
+#[cfg(feature = "channel-zalo")]
+fn build_zalo_command_context(
+    resolved_path: PathBuf,
+    config: LoongClawConfig,
+    account_id: Option<&str>,
+) -> CliResult<ChannelCommandContext<ResolvedZaloChannelConfig>> {
+    let resolved = config.zalo.resolve_account(account_id)?;
+    let route = config
+        .zalo
+        .resolved_account_route(account_id, resolved.configured_account_id.as_str());
+    if !resolved.enabled {
+        return Err(format!(
+            "zalo account `{}` is disabled by configuration",
+            resolved.configured_account_id
+        ));
+    }
+    Ok(ChannelCommandContext {
+        resolved_path,
+        config,
+        resolved,
+        route,
+    })
+}
+
 #[cfg(feature = "channel-email")]
 fn load_email_command_context(
     config_path: Option<&str>,
@@ -2157,7 +2204,8 @@ fn build_nostr_command_context(
     feature = "channel-whatsapp",
     feature = "channel-teams",
     feature = "channel-imessage",
-    feature = "channel-nostr"
+    feature = "channel-nostr",
+    feature = "channel-zalo"
 ))]
 #[derive(Debug, Clone, Copy)]
 struct ChannelSendCommandSpec {
@@ -2956,6 +3004,59 @@ pub async fn run_whatsapp_send(
             |context| {
                 format!(
                     "whatsapp message sent (config={}, configured_account={}, account={}, selected_by_default={}, default_source={}, target_kind={})",
+                    context.resolved_path.display(),
+                    context.resolved.configured_account_id,
+                    context.resolved.account.label,
+                    context.route.selected_by_default(),
+                    context.route.default_account_source.as_str(),
+                    target_kind
+                )
+            },
+        )
+        .await
+    }
+}
+
+#[allow(clippy::print_stdout)] // CLI output
+pub async fn run_zalo_send(
+    config_path: Option<&str>,
+    account_id: Option<&str>,
+    target: &str,
+    target_kind: ChannelOutboundTargetKind,
+    text: &str,
+) -> CliResult<()> {
+    if !cfg!(feature = "channel-zalo") {
+        return Err("zalo channel is disabled (enable feature `channel-zalo`)".to_owned());
+    }
+
+    #[cfg(not(feature = "channel-zalo"))]
+    {
+        let _ = (config_path, account_id, target, target_kind, text);
+        return Err("zalo channel is disabled (enable feature `channel-zalo`)".to_owned());
+    }
+
+    #[cfg(feature = "channel-zalo")]
+    {
+        let context = load_zalo_command_context(config_path, account_id)?;
+        let target = target.to_owned();
+        let text = text.to_owned();
+        run_channel_send_command(
+            context,
+            ChannelSendCommandSpec { channel_id: "zalo" },
+            |context| {
+                Box::pin(async move {
+                    zalo::run_zalo_send(
+                        &context.resolved,
+                        target_kind,
+                        target.as_str(),
+                        text.as_str(),
+                    )
+                    .await
+                })
+            },
+            |context| {
+                format!(
+                    "zalo message sent (config={}, configured_account={}, account={}, selected_by_default={}, default_source={}, target_kind={})",
                     context.resolved_path.display(),
                     context.resolved.configured_account_id,
                     context.resolved.account.label,

@@ -28,13 +28,13 @@ pub use channels::{
     ResolvedNextcloudTalkChannelConfig, ResolvedNostrChannelConfig, ResolvedSignalChannelConfig,
     ResolvedSlackChannelConfig, ResolvedSynologyChatChannelConfig, ResolvedTeamsChannelConfig,
     ResolvedTelegramChannelConfig, ResolvedTwitchChannelConfig, ResolvedWebhookChannelConfig,
-    ResolvedWecomChannelConfig, ResolvedWhatsappChannelConfig, SignalAccountConfig,
-    SignalChannelConfig, SlackAccountConfig, SlackChannelConfig, SynologyChatAccountConfig,
-    SynologyChatChannelConfig, TeamsAccountConfig, TeamsChannelConfig, TelegramAccountConfig,
-    TelegramChannelConfig, TelegramStreamingMode, TwitchAccountConfig, TwitchChannelConfig,
-    WebhookAccountConfig, WebhookChannelConfig, WebhookPayloadFormat, WecomAccountConfig,
-    WecomChannelConfig, WhatsappAccountConfig, WhatsappChannelConfig, channel_descriptor,
-    service_channel_descriptors,
+    ResolvedWecomChannelConfig, ResolvedWhatsappChannelConfig, ResolvedZaloChannelConfig,
+    SignalAccountConfig, SignalChannelConfig, SlackAccountConfig, SlackChannelConfig,
+    SynologyChatAccountConfig, SynologyChatChannelConfig, TeamsAccountConfig, TeamsChannelConfig,
+    TelegramAccountConfig, TelegramChannelConfig, TelegramStreamingMode, TwitchAccountConfig,
+    TwitchChannelConfig, WebhookAccountConfig, WebhookChannelConfig, WebhookPayloadFormat,
+    WecomAccountConfig, WecomChannelConfig, WhatsappAccountConfig, WhatsappChannelConfig,
+    ZaloAccountConfig, ZaloChannelConfig, channel_descriptor, service_channel_descriptors,
 };
 #[allow(unused_imports)]
 pub(crate) use channels::{
@@ -52,7 +52,8 @@ pub(crate) use channels::{
     TWITCH_ACCESS_TOKEN_ENV, WEBHOOK_AUTH_TOKEN_ENV, WEBHOOK_ENDPOINT_URL_ENV,
     WEBHOOK_SIGNING_SECRET_ENV, WECOM_BOT_ID_ENV, WECOM_SECRET_ENV, WHATSAPP_ACCESS_TOKEN_ENV,
     WHATSAPP_APP_SECRET_ENV, WHATSAPP_PHONE_NUMBER_ID_ENV, WHATSAPP_VERIFY_TOKEN_ENV,
-    normalize_channel_account_id, parse_email_smtp_endpoint, parse_irc_server_endpoint,
+    ZALO_APP_ID_ENV, ZALO_APP_SECRET_ENV, ZALO_OA_ACCESS_TOKEN_ENV, normalize_channel_account_id,
+    parse_email_smtp_endpoint, parse_irc_server_endpoint,
 };
 #[allow(unused_imports)]
 pub use conversation::{ConversationConfig, ConversationTurnLoopConfig};
@@ -145,6 +146,7 @@ mod tests {
             "irc",
             "imessage",
             "nostr",
+            "zalo",
         ]
     }
 
@@ -290,6 +292,12 @@ mod tests {
         assert_eq!(nostr.runtime_kind, ChannelRuntimeKind::Service);
         assert_eq!(nostr.serve_subcommand, None);
 
+        let zalo = channel_descriptor("zalo").expect("zalo descriptor");
+        assert_eq!(zalo.id, "zalo");
+        assert_eq!(zalo.surface_label, "zalo channel");
+        assert_eq!(zalo.runtime_kind, ChannelRuntimeKind::Service);
+        assert_eq!(zalo.serve_subcommand, None);
+
         assert!(channel_descriptor("unknown").is_none());
     }
 
@@ -320,6 +328,7 @@ mod tests {
         config.irc.enabled = true;
         config.imessage.enabled = true;
         config.nostr.enabled = true;
+        config.zalo.enabled = true;
 
         assert_eq!(
             config.enabled_channel_ids(),
@@ -346,6 +355,7 @@ mod tests {
                 "irc",
                 "imessage",
                 "nostr",
+                "zalo",
             ]
         );
         assert_eq!(
