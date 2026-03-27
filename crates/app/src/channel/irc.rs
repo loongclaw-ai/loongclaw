@@ -1,8 +1,10 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use rustls::{ClientConfig, RootCertStore, pki_types::ServerName};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
+use tokio::time::timeout;
 use tokio_rustls::TlsConnector as TokioTlsConnector;
 
 use crate::{
@@ -19,12 +21,33 @@ trait IrcIo: AsyncRead + AsyncWrite + Send + Unpin {}
 impl<T> IrcIo for T where T: AsyncRead + AsyncWrite + Send + Unpin {}
 
 const IRC_CHANNEL_PREFIXES: [char; 4] = ['#', '&', '+', '!'];
+const IRC_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const IRC_SESSION_READY_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(super) async fn run_irc_send(
     resolved: &ResolvedIrcChannelConfig,
     target_kind: ChannelOutboundTargetKind,
     target_id: &str,
     text: &str,
+) -> CliResult<()> {
+    run_irc_send_with_timeouts(
+        resolved,
+        target_kind,
+        target_id,
+        text,
+        IRC_CONNECT_TIMEOUT,
+        IRC_SESSION_READY_TIMEOUT,
+    )
+    .await
+}
+
+async fn run_irc_send_with_timeouts(
+    resolved: &ResolvedIrcChannelConfig,
+    target_kind: ChannelOutboundTargetKind,
+    target_id: &str,
+    text: &str,
+    connect_timeout: Duration,
+    session_ready_timeout: Duration,
 ) -> CliResult<()> {
     ensure_irc_target_kind(target_kind)?;
 
@@ -49,8 +72,9 @@ pub(super) async fn run_irc_send(
 
     let password = resolved.password();
     let password = normalize_optional_irc_password(password.as_deref())?;
+    ensure_irc_password_transport(&endpoint, password.as_deref())?;
 
-    let transport = connect_irc_stream(&endpoint).await?;
+    let transport = connect_irc_stream(&endpoint, connect_timeout).await?;
     run_irc_send_session(
         transport,
         target.as_str(),
@@ -59,6 +83,7 @@ pub(super) async fn run_irc_send(
         realname.as_str(),
         password.as_deref(),
         &message_lines,
+        session_ready_timeout,
     )
     .await
 }
@@ -75,7 +100,11 @@ fn ensure_irc_target_kind(target_kind: ChannelOutboundTargetKind) -> CliResult<(
 }
 
 fn normalize_irc_target(raw: &str) -> CliResult<String> {
-    normalize_irc_atom("target", raw)
+    let trimmed = raw.trim();
+    if trimmed.contains(',') {
+        return Err("irc target must not contain multiple recipients".to_owned());
+    }
+    normalize_irc_atom("target", trimmed)
 }
 
 fn normalize_irc_atom(label: &str, raw: &str) -> CliResult<String> {
@@ -126,8 +155,12 @@ fn normalize_irc_message_lines(text: &str) -> CliResult<Vec<String>> {
         if visible.is_empty() {
             continue;
         }
-        if line.contains('\0') {
-            return Err("irc send text contains forbidden control characters".to_owned());
+        let contains_carriage_return = line.contains('\r');
+        let contains_null = line.contains('\0');
+        if contains_carriage_return || contains_null {
+            return Err(
+                "irc send text contains forbidden control characters (`\\r` / `\\0`)".to_owned(),
+            );
         }
         lines.push(line.to_owned());
     }
@@ -139,10 +172,33 @@ fn normalize_irc_message_lines(text: &str) -> CliResult<Vec<String>> {
     Ok(lines)
 }
 
-async fn connect_irc_stream(endpoint: &IrcServerEndpoint) -> CliResult<Box<dyn IrcIo>> {
+fn ensure_irc_password_transport(
+    endpoint: &IrcServerEndpoint,
+    password: Option<&str>,
+) -> CliResult<()> {
+    let has_password = password.is_some();
+    let uses_plain_transport = endpoint.transport == IrcServerTransport::Plain;
+    if has_password && uses_plain_transport {
+        return Err(
+            "irc password requires an `ircs://` server endpoint; refusing to send PASS over plaintext transport"
+                .to_owned(),
+        );
+    }
+
+    Ok(())
+}
+
+async fn connect_irc_stream(
+    endpoint: &IrcServerEndpoint,
+    connect_timeout: Duration,
+) -> CliResult<Box<dyn IrcIo>> {
     let address = format!("{}:{}", endpoint.host, endpoint.port);
-    let tcp_stream = TcpStream::connect(address.as_str())
-        .await
+    let connect_result = timeout(connect_timeout, TcpStream::connect(address.as_str())).await;
+    let tcp_stream = connect_result
+        .map_err(|_| {
+            let formatted_timeout = format_irc_timeout(connect_timeout);
+            format!("connect irc server timed out after {formatted_timeout}")
+        })?
         .map_err(|error| format!("connect irc server failed: {error}"))?;
 
     if endpoint.transport == IrcServerTransport::Plain {
@@ -161,9 +217,16 @@ async fn connect_irc_stream(endpoint: &IrcServerEndpoint) -> CliResult<Box<dyn I
         )
     })?;
     let server_name = server_name.to_owned();
-    let tls_stream = tokio_tls_connector
-        .connect(server_name, tcp_stream)
-        .await
+    let tls_connect_result = timeout(
+        connect_timeout,
+        tokio_tls_connector.connect(server_name, tcp_stream),
+    )
+    .await;
+    let tls_stream = tls_connect_result
+        .map_err(|_| {
+            let formatted_timeout = format_irc_timeout(connect_timeout);
+            format!("connect irc tls session timed out after {formatted_timeout}")
+        })?
         .map_err(|error| format!("connect irc tls session failed: {error}"))?;
     Ok(Box::new(tls_stream))
 }
@@ -214,6 +277,7 @@ async fn run_irc_send_session(
     realname: &str,
     password: Option<&str>,
     message_lines: &[String],
+    session_ready_timeout: Duration,
 ) -> CliResult<()> {
     let (read_half, mut write_half) = tokio::io::split(stream);
     let mut reader = BufReader::new(read_half);
@@ -229,13 +293,13 @@ async fn run_irc_send_session(
     let user_command = format!("USER {username} 0 * :{realname}");
     send_irc_command(&mut write_half, user_command.as_str(), "irc user").await?;
 
-    wait_for_irc_welcome(&mut reader, &mut write_half).await?;
-
-    if irc_target_requires_join(target) {
-        let join_command = format!("JOIN {target}");
-        send_irc_command(&mut write_half, join_command.as_str(), "irc join").await?;
-        wait_for_irc_join(&mut reader, &mut write_half).await?;
-    }
+    let ready_future = wait_for_irc_session_ready(&mut reader, &mut write_half, target);
+    let ready_result = timeout(session_ready_timeout, ready_future).await;
+    let ready_result = ready_result.map_err(|_| {
+        let formatted_timeout = format_irc_timeout(session_ready_timeout);
+        format!("irc send timed out after {formatted_timeout} while waiting for server readiness")
+    })?;
+    ready_result?;
 
     for message_line in message_lines {
         let privmsg_command = format!("PRIVMSG {target} :{message_line}");
@@ -244,6 +308,26 @@ async fn run_irc_send_session(
 
     send_irc_command(&mut write_half, "QUIT :loongclaw send complete", "irc quit").await?;
     Ok(())
+}
+
+async fn wait_for_irc_session_ready<R, W>(
+    reader: &mut BufReader<R>,
+    writer: &mut W,
+    target: &str,
+) -> CliResult<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    wait_for_irc_welcome(reader, writer).await?;
+
+    if !irc_target_requires_join(target) {
+        return Ok(());
+    }
+
+    let join_command = format!("JOIN {target}");
+    send_irc_command(writer, join_command.as_str(), "irc join").await?;
+    wait_for_irc_join(reader, writer).await
 }
 
 async fn send_irc_command<W>(writer: &mut W, command: &str, context: &str) -> CliResult<()>
@@ -358,6 +442,17 @@ fn parse_irc_ping_payload(line: &str) -> Option<&str> {
     None
 }
 
+fn format_irc_timeout(timeout: Duration) -> String {
+    let timeout_ms = timeout.as_millis();
+    let is_second_aligned = timeout_ms % 1_000 == 0;
+    if is_second_aligned {
+        let timeout_s = timeout_ms / 1_000;
+        return format!("{timeout_s}s");
+    }
+
+    format!("{timeout_ms}ms")
+}
+
 fn is_irc_registration_error(command: Option<&str>) -> bool {
     matches!(
         command,
@@ -418,6 +513,17 @@ mod tests {
     }
 
     #[test]
+    fn parse_irc_server_endpoint_rejects_bare_host_with_whitespace() {
+        let error = parse_irc_server_endpoint("irc.example test")
+            .expect_err("bare host with whitespace should be rejected");
+
+        assert!(
+            error.contains("must not contain whitespace"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn ensure_irc_target_kind_rejects_non_conversation_targets() {
         let error = ensure_irc_target_kind(ChannelOutboundTargetKind::Address)
             .expect_err("address target kind should be rejected");
@@ -429,11 +535,61 @@ mod tests {
     }
 
     #[test]
+    fn normalize_irc_target_rejects_multiple_recipients() {
+        let error = normalize_irc_target("#ops,#alerts")
+            .expect_err("multi-recipient target should be rejected");
+
+        assert!(
+            error.contains("must not contain multiple recipients"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn normalize_irc_message_lines_rejects_blank_message() {
         let error =
             normalize_irc_message_lines(" \n\t").expect_err("blank irc message should be rejected");
 
         assert_eq!(error, "irc send text is empty");
+    }
+
+    #[test]
+    fn normalize_irc_message_lines_rejects_carriage_returns() {
+        let error = normalize_irc_message_lines("hello\rworld")
+            .expect_err("carriage return should be rejected");
+
+        assert!(
+            error.contains("forbidden control characters"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_irc_send_rejects_password_over_plaintext_transport() {
+        let config = IrcChannelConfig {
+            enabled: true,
+            server: Some("irc://irc.example.test".to_owned()),
+            nickname: Some("loongclaw_bot".to_owned()),
+            password: Some(loongclaw_contracts::SecretRef::Inline(
+                "server-password".to_owned(),
+            )),
+            ..IrcChannelConfig::default()
+        };
+        let resolved = config.resolve_account(None).expect("resolve irc config");
+
+        let error = run_irc_send(
+            &resolved,
+            ChannelOutboundTargetKind::Conversation,
+            "#ops",
+            "hello from irc",
+        )
+        .await
+        .expect_err("plaintext password transport should be rejected");
+
+        assert!(
+            error.contains("refusing to send PASS over plaintext"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]
@@ -467,6 +623,51 @@ mod tests {
         assert_eq!(frames[2], "JOIN #ops");
         assert_eq!(frames[3], "PRIVMSG #ops :hello from irc");
         assert_eq!(frames[4], "QUIT :loongclaw send complete");
+    }
+
+    #[tokio::test]
+    async fn run_irc_send_times_out_while_waiting_for_welcome() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock irc server");
+        let address = listener.local_addr().expect("mock irc server address");
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.map_err(|error| error.to_string())?;
+            let _socket = socket;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            Ok::<(), String>(())
+        });
+
+        let config = IrcChannelConfig {
+            enabled: true,
+            server: Some(format!("irc://{address}")),
+            nickname: Some("loongclaw_bot".to_owned()),
+            username: Some("loongclaw".to_owned()),
+            realname: Some("LoongClaw Bot".to_owned()),
+            ..IrcChannelConfig::default()
+        };
+        let resolved = config.resolve_account(None).expect("resolve irc config");
+
+        let error = run_irc_send_with_timeouts(
+            &resolved,
+            ChannelOutboundTargetKind::Conversation,
+            "#ops",
+            "hello from irc",
+            Duration::from_secs(1),
+            Duration::from_millis(50),
+        )
+        .await
+        .expect_err("welcome timeout should be reported");
+
+        assert!(
+            error.contains("waiting for server readiness"),
+            "unexpected error: {error}"
+        );
+
+        server_task
+            .await
+            .expect("join timeout server task")
+            .expect("timeout server task should complete");
     }
 
     async fn spawn_mock_irc_server(

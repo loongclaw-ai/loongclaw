@@ -5887,7 +5887,15 @@ fn summarize_irc_status_endpoint(server: Option<&str>) -> Option<String> {
         crate::config::IrcServerTransport::Plain => "irc",
         crate::config::IrcServerTransport::Tls => "ircs",
     };
-    Some(format!("{scheme}://{}:{}", endpoint.host, endpoint.port))
+    let host = endpoint.host.as_str();
+    let normalized_host = host.trim_start_matches('[');
+    let normalized_host = normalized_host.trim_end_matches(']');
+    let display_host = if normalized_host.contains(':') {
+        format!("[{normalized_host}]")
+    } else {
+        normalized_host.to_owned()
+    };
+    Some(format!("{scheme}://{display_host}:{}", endpoint.port))
 }
 
 fn build_feishu_snapshot_for_account(
@@ -9910,6 +9918,25 @@ mod tests {
         );
         assert!(send.runtime.is_none());
         assert!(serve.runtime.is_none());
+    }
+
+    #[test]
+    fn irc_status_formats_ipv6_server_endpoint_with_brackets() {
+        let mut config = LoongClawConfig::default();
+        config.irc.enabled = true;
+        config.irc.server = Some("ircs://[2001:db8::42]:6697".to_owned());
+        config.irc.nickname = Some("loongclaw".to_owned());
+
+        let snapshots = channel_status_snapshots(&config);
+        let irc = snapshots
+            .iter()
+            .find(|snapshot| snapshot.id == "irc")
+            .expect("irc snapshot");
+
+        assert_eq!(
+            irc.api_base_url.as_deref(),
+            Some("ircs://[2001:db8::42]:6697")
+        );
     }
 
     #[test]

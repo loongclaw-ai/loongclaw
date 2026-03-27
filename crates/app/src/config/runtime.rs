@@ -1243,11 +1243,24 @@ fn canonicalize_synology_chat_channel_for_encoding(config: &mut SynologyChatChan
 }
 
 fn canonicalize_irc_channel_for_encoding(config: &mut IrcChannelConfig) {
+    canonicalize_optional_env_name(&mut config.server_env);
+    canonicalize_optional_env_name(&mut config.nickname_env);
     canonicalize_env_secret_reference(&mut config.password, &mut config.password_env);
 
     for account in config.accounts.values_mut() {
+        canonicalize_optional_env_name(&mut account.server_env);
+        canonicalize_optional_env_name(&mut account.nickname_env);
         canonicalize_env_secret_reference(&mut account.password, &mut account.password_env);
     }
+}
+
+fn canonicalize_optional_env_name(env_name: &mut Option<String>) {
+    let normalized_env_name = env_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    *env_name = normalized_env_name;
 }
 
 fn canonicalize_provider_secret_env_reference(
@@ -2928,6 +2941,36 @@ model = "gpt-5"
         assert!(!raw.contains("access_token = \"${WHATSAPP_ACCESS_TOKEN}\""));
         assert!(!raw.contains("verify_token = \"${WHATSAPP_VERIFY_TOKEN}\""));
         assert!(!raw.contains("app_secret = \"${WHATSAPP_APP_SECRET}\""));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    #[cfg(feature = "config-toml")]
+    fn write_canonicalizes_irc_env_name_fields() {
+        let path = unique_config_path("loongclaw-config-runtime-trimmed-irc-env");
+        let path_string = path.display().to_string();
+        let mut config = LoongClawConfig::default();
+        let mut ops_account = crate::config::channels::IrcAccountConfig::default();
+
+        config.irc.server_env = Some(" IRC_SERVER ".to_owned());
+        config.irc.nickname_env = Some(" IRC_NICKNAME ".to_owned());
+        ops_account.server_env = Some(" OPS_IRC_SERVER ".to_owned());
+        ops_account.nickname_env = Some(" OPS_IRC_NICKNAME ".to_owned());
+        config.irc.accounts.insert("ops".to_owned(), ops_account);
+
+        write(Some(&path_string), &config, true).expect("config write should pass");
+
+        let raw = fs::read_to_string(&path).expect("read written config");
+
+        assert!(raw.contains("server_env = \"IRC_SERVER\""));
+        assert!(raw.contains("nickname_env = \"IRC_NICKNAME\""));
+        assert!(raw.contains("server_env = \"OPS_IRC_SERVER\""));
+        assert!(raw.contains("nickname_env = \"OPS_IRC_NICKNAME\""));
+        assert!(!raw.contains("server_env = \" IRC_SERVER \""));
+        assert!(!raw.contains("nickname_env = \" IRC_NICKNAME \""));
+        assert!(!raw.contains("server_env = \" OPS_IRC_SERVER \""));
+        assert!(!raw.contains("nickname_env = \" OPS_IRC_NICKNAME \""));
 
         let _ = fs::remove_file(path);
     }
