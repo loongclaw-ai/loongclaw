@@ -1,11 +1,10 @@
-#[cfg(any(test, feature = "test-hooks"))]
-use std::time::Duration;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     io::Read,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -32,6 +31,7 @@ use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
+use tokio::sync::Mutex as TokioMutex;
 use tokio::time::Instant as TokioInstant;
 #[cfg(any(test, feature = "test-hooks"))]
 use tokio::time::sleep;
@@ -374,7 +374,9 @@ pub struct ProgrammaticConcurrencyPolicy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProgrammaticCircuitBreakerPolicy {
+pub struct ConnectorCircuitBreakerPolicy {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     #[serde(default = "default_programmatic_circuit_failure_threshold")]
     pub failure_threshold: usize,
     #[serde(default = "default_programmatic_circuit_cooldown_ms")]
@@ -384,6 +386,20 @@ pub struct ProgrammaticCircuitBreakerPolicy {
     #[serde(default = "default_programmatic_circuit_success_threshold")]
     pub success_threshold: usize,
 }
+
+impl Default for ConnectorCircuitBreakerPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            failure_threshold: default_programmatic_circuit_failure_threshold(),
+            cooldown_ms: default_programmatic_circuit_cooldown_ms(),
+            half_open_max_calls: default_programmatic_circuit_half_open_max_calls(),
+            success_threshold: default_programmatic_circuit_success_threshold(),
+        }
+    }
+}
+
+pub type ProgrammaticCircuitBreakerPolicy = ConnectorCircuitBreakerPolicy;
 
 #[derive(Debug, Clone)]
 pub struct PreparedProgrammaticBatchCall {
@@ -427,31 +443,195 @@ pub struct ProgrammaticBatchExecutionSummary {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProgrammaticCircuitPhase {
+pub enum ConnectorCircuitPhase {
     Closed,
     Open,
     HalfOpen,
 }
 
 #[derive(Debug, Clone)]
-pub struct ProgrammaticCircuitRuntimeState {
-    pub phase: ProgrammaticCircuitPhase,
+pub struct ConnectorCircuitRuntimeState {
+    pub phase: ConnectorCircuitPhase,
     pub consecutive_failures: usize,
     pub open_until: Option<TokioInstant>,
     pub half_open_remaining_calls: usize,
     pub half_open_successes: usize,
 }
 
-impl Default for ProgrammaticCircuitRuntimeState {
+impl Default for ConnectorCircuitRuntimeState {
     fn default() -> Self {
         Self {
-            phase: ProgrammaticCircuitPhase::Closed,
+            phase: ConnectorCircuitPhase::Closed,
             consecutive_failures: 0,
             open_until: None,
             half_open_remaining_calls: 0,
             half_open_successes: 0,
         }
     }
+}
+
+pub type ProgrammaticCircuitPhase = ConnectorCircuitPhase;
+pub type ProgrammaticCircuitRuntimeState = ConnectorCircuitRuntimeState;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectorCircuitAcquireError {
+    Open { remaining_cooldown_ms: u64 },
+    HalfOpenReopened,
+}
+
+pub fn validate_connector_circuit_breaker_policy(
+    policy: &ConnectorCircuitBreakerPolicy,
+    context: &str,
+) -> Result<(), String> {
+    if !policy.enabled {
+        return Ok(());
+    }
+    if policy.failure_threshold == 0 {
+        return Err(format!(
+            "{context} failure_threshold must be greater than 0"
+        ));
+    }
+    if policy.cooldown_ms == 0 {
+        return Err(format!("{context} cooldown_ms must be greater than 0"));
+    }
+    if policy.half_open_max_calls == 0 {
+        return Err(format!(
+            "{context} half_open_max_calls must be greater than 0"
+        ));
+    }
+    if policy.success_threshold == 0 {
+        return Err(format!(
+            "{context} success_threshold must be greater than 0"
+        ));
+    }
+    if policy.success_threshold > policy.half_open_max_calls {
+        return Err(format!(
+            "{context} success_threshold must be <= half_open_max_calls"
+        ));
+    }
+    Ok(())
+}
+
+pub const fn connector_circuit_phase_label(phase: ConnectorCircuitPhase) -> &'static str {
+    match phase {
+        ConnectorCircuitPhase::Closed => "closed",
+        ConnectorCircuitPhase::Open => "open",
+        ConnectorCircuitPhase::HalfOpen => "half_open",
+    }
+}
+
+pub fn connector_circuit_remaining_cooldown_ms(
+    state: &ConnectorCircuitRuntimeState,
+    now: TokioInstant,
+) -> Option<u64> {
+    let open_until = state.open_until?;
+    if open_until <= now {
+        return Some(0);
+    }
+
+    let remaining_duration = open_until.duration_since(now);
+    let remaining_ms = remaining_duration.as_millis();
+    let clamped_ms = remaining_ms.min(u128::from(u64::MAX));
+
+    Some(clamped_ms as u64)
+}
+
+pub fn acquire_connector_circuit_slot_for_state(
+    policy: &ConnectorCircuitBreakerPolicy,
+    state: &mut ConnectorCircuitRuntimeState,
+    now: TokioInstant,
+) -> Result<&'static str, ConnectorCircuitAcquireError> {
+    if !policy.enabled {
+        return Ok("disabled");
+    }
+
+    if state.phase == ConnectorCircuitPhase::Open {
+        let remaining_cooldown_ms = connector_circuit_remaining_cooldown_ms(state, now);
+        if let Some(remaining_cooldown_ms) = remaining_cooldown_ms
+            && remaining_cooldown_ms > 0
+        {
+            return Err(ConnectorCircuitAcquireError::Open {
+                remaining_cooldown_ms,
+            });
+        }
+
+        state.phase = ConnectorCircuitPhase::HalfOpen;
+        state.open_until = None;
+        state.half_open_remaining_calls = policy.half_open_max_calls;
+        state.half_open_successes = 0;
+    }
+
+    if state.phase == ConnectorCircuitPhase::HalfOpen {
+        if state.half_open_remaining_calls == 0 {
+            let reopen_deadline = now + Duration::from_millis(policy.cooldown_ms);
+
+            state.phase = ConnectorCircuitPhase::Open;
+            state.open_until = Some(reopen_deadline);
+            return Err(ConnectorCircuitAcquireError::HalfOpenReopened);
+        }
+
+        state.half_open_remaining_calls = state.half_open_remaining_calls.saturating_sub(1);
+        return Ok("half_open");
+    }
+
+    Ok("closed")
+}
+
+pub fn record_connector_circuit_outcome_for_state(
+    policy: &ConnectorCircuitBreakerPolicy,
+    state: &mut ConnectorCircuitRuntimeState,
+    success: bool,
+    now: TokioInstant,
+) -> &'static str {
+    if !policy.enabled {
+        return "disabled";
+    }
+
+    match state.phase {
+        ConnectorCircuitPhase::Closed => {
+            if success {
+                state.consecutive_failures = 0;
+            } else {
+                state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+                if state.consecutive_failures >= policy.failure_threshold {
+                    let reopen_deadline = now + Duration::from_millis(policy.cooldown_ms);
+
+                    state.phase = ConnectorCircuitPhase::Open;
+                    state.open_until = Some(reopen_deadline);
+                    state.half_open_remaining_calls = 0;
+                    state.half_open_successes = 0;
+                }
+            }
+        }
+        ConnectorCircuitPhase::HalfOpen => {
+            if success {
+                state.half_open_successes = state.half_open_successes.saturating_add(1);
+                if state.half_open_successes >= policy.success_threshold {
+                    state.phase = ConnectorCircuitPhase::Closed;
+                    state.consecutive_failures = 0;
+                    state.open_until = None;
+                    state.half_open_remaining_calls = 0;
+                    state.half_open_successes = 0;
+                } else if state.half_open_remaining_calls == 0 {
+                    let reopen_deadline = now + Duration::from_millis(policy.cooldown_ms);
+
+                    state.phase = ConnectorCircuitPhase::Open;
+                    state.open_until = Some(reopen_deadline);
+                    state.half_open_successes = 0;
+                }
+            } else {
+                let reopen_deadline = now + Duration::from_millis(policy.cooldown_ms);
+
+                state.phase = ConnectorCircuitPhase::Open;
+                state.open_until = Some(reopen_deadline);
+                state.half_open_remaining_calls = 0;
+                state.half_open_successes = 0;
+            }
+        }
+        ConnectorCircuitPhase::Open => {}
+    }
+
+    connector_circuit_phase_label(state.phase)
 }
 
 pub fn default_tool_search_limit() -> usize {
@@ -800,6 +980,7 @@ pub struct BridgeRuntimePolicy {
     pub execute_wasm_component: bool,
     pub compatibility_matrix: BridgeSupportMatrix,
     pub allowed_process_commands: BTreeSet<String>,
+    pub bridge_circuit_breaker: ConnectorCircuitBreakerPolicy,
     pub wasm_allowed_path_prefixes: Vec<PathBuf>,
     pub wasm_max_component_bytes: Option<usize>,
     pub wasm_fuel_limit: Option<u64>,
@@ -1211,6 +1392,8 @@ pub struct SecurityRuntimeExecutionSpec {
     pub max_component_bytes: Option<usize>,
     #[serde(default)]
     pub fuel_limit: Option<u64>,
+    #[serde(default)]
+    pub bridge_circuit_breaker: ConnectorCircuitBreakerPolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2321,12 +2504,195 @@ pub struct DynamicCatalogConnector {
     pub provider_id: String,
     pub catalog: Arc<Mutex<IntegrationCatalog>>,
     pub bridge_runtime_policy: BridgeRuntimePolicy,
+    pub bridge_circuit_state: Arc<TokioMutex<ConnectorCircuitRuntimeState>>,
 }
 
 #[derive(Debug, Clone)]
 struct ProviderPluginCompatibilityContext {
     payload: Value,
     blocking_reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct BridgeCircuitObservation {
+    phase_before: String,
+    phase_after: String,
+    consecutive_failures: usize,
+    half_open_remaining_calls: usize,
+    half_open_successes: usize,
+    remaining_cooldown_ms: Option<u64>,
+}
+
+impl BridgeCircuitObservation {
+    fn disabled() -> Self {
+        Self {
+            phase_before: "disabled".to_owned(),
+            phase_after: "disabled".to_owned(),
+            consecutive_failures: 0,
+            half_open_remaining_calls: 0,
+            half_open_successes: 0,
+            remaining_cooldown_ms: None,
+        }
+    }
+}
+
+impl DynamicCatalogConnector {
+    pub fn new(
+        connector_name: String,
+        provider_id: String,
+        catalog: Arc<Mutex<IntegrationCatalog>>,
+        bridge_runtime_policy: BridgeRuntimePolicy,
+    ) -> Self {
+        let bridge_circuit_state =
+            Arc::new(TokioMutex::new(ConnectorCircuitRuntimeState::default()));
+
+        Self {
+            connector_name,
+            provider_id,
+            catalog,
+            bridge_runtime_policy,
+            bridge_circuit_state,
+        }
+    }
+
+    async fn acquire_bridge_circuit_phase(&self) -> Result<String, ConnectorError> {
+        let policy = &self.bridge_runtime_policy.bridge_circuit_breaker;
+        if !policy.enabled {
+            return Ok("disabled".to_owned());
+        }
+
+        let mut state = self.bridge_circuit_state.lock().await;
+        let now = TokioInstant::now();
+        let acquire_result = acquire_connector_circuit_slot_for_state(policy, &mut state, now);
+
+        match acquire_result {
+            Ok(phase) => Ok(phase.to_owned()),
+            Err(ConnectorCircuitAcquireError::Open {
+                remaining_cooldown_ms,
+            }) => Err(ConnectorError::Execution(format!(
+                "plugin connector {} is circuit-open (remaining_cooldown_ms={remaining_cooldown_ms})",
+                self.connector_name
+            ))),
+            Err(ConnectorCircuitAcquireError::HalfOpenReopened) => {
+                Err(ConnectorError::Execution(format!(
+                    "plugin connector {} half-open window exhausted and re-opened",
+                    self.connector_name
+                )))
+            }
+        }
+    }
+
+    async fn record_bridge_circuit_outcome(
+        &self,
+        success: bool,
+        phase_before: &str,
+    ) -> BridgeCircuitObservation {
+        let policy = &self.bridge_runtime_policy.bridge_circuit_breaker;
+        if !policy.enabled {
+            return BridgeCircuitObservation::disabled();
+        }
+
+        let mut state = self.bridge_circuit_state.lock().await;
+        let now = TokioInstant::now();
+        let phase_after =
+            record_connector_circuit_outcome_for_state(policy, &mut state, success, now);
+        let remaining_cooldown_ms = connector_circuit_remaining_cooldown_ms(&state, now);
+
+        BridgeCircuitObservation {
+            phase_before: phase_before.to_owned(),
+            phase_after: phase_after.to_owned(),
+            consecutive_failures: state.consecutive_failures,
+            half_open_remaining_calls: state.half_open_remaining_calls,
+            half_open_successes: state.half_open_successes,
+            remaining_cooldown_ms,
+        }
+    }
+}
+
+fn bridge_execution_status_is_failure(bridge_execution: &Value) -> bool {
+    bridge_execution
+        .get("status")
+        .and_then(Value::as_str)
+        .is_some_and(|status| matches!(status, "blocked" | "failed"))
+}
+
+fn bridge_circuit_breaker_runtime_value(
+    policy: &ConnectorCircuitBreakerPolicy,
+    observation: &BridgeCircuitObservation,
+) -> Value {
+    let mut payload = Map::new();
+    let enabled = policy.enabled;
+    let phase_before = observation.phase_before.clone();
+    let phase_after = observation.phase_after.clone();
+    let failure_threshold = policy.failure_threshold as u64;
+    let cooldown_ms = policy.cooldown_ms;
+    let half_open_max_calls = policy.half_open_max_calls as u64;
+    let success_threshold = policy.success_threshold as u64;
+    let consecutive_failures = observation.consecutive_failures as u64;
+    let half_open_remaining_calls = observation.half_open_remaining_calls as u64;
+    let half_open_successes = observation.half_open_successes as u64;
+
+    payload.insert("enabled".to_owned(), Value::Bool(enabled));
+    payload.insert("phase_before".to_owned(), Value::String(phase_before));
+    payload.insert("phase_after".to_owned(), Value::String(phase_after));
+    payload.insert(
+        "failure_threshold".to_owned(),
+        Value::Number(failure_threshold.into()),
+    );
+    payload.insert("cooldown_ms".to_owned(), Value::Number(cooldown_ms.into()));
+    payload.insert(
+        "half_open_max_calls".to_owned(),
+        Value::Number(half_open_max_calls.into()),
+    );
+    payload.insert(
+        "success_threshold".to_owned(),
+        Value::Number(success_threshold.into()),
+    );
+    payload.insert(
+        "consecutive_failures".to_owned(),
+        Value::Number(consecutive_failures.into()),
+    );
+    payload.insert(
+        "half_open_remaining_calls".to_owned(),
+        Value::Number(half_open_remaining_calls.into()),
+    );
+    payload.insert(
+        "half_open_successes".to_owned(),
+        Value::Number(half_open_successes.into()),
+    );
+
+    let remaining_cooldown_ms = observation
+        .remaining_cooldown_ms
+        .map(|value| Value::Number(value.into()))
+        .unwrap_or(Value::Null);
+    payload.insert("remaining_cooldown_ms".to_owned(), remaining_cooldown_ms);
+
+    Value::Object(payload)
+}
+
+fn attach_bridge_circuit_breaker_runtime(
+    bridge_execution: &mut Value,
+    policy: &ConnectorCircuitBreakerPolicy,
+    observation: &BridgeCircuitObservation,
+) {
+    let Some(bridge_execution_object) = bridge_execution.as_object_mut() else {
+        return;
+    };
+
+    let runtime_value = bridge_circuit_breaker_runtime_value(policy, observation);
+    bridge_execution_object.insert("circuit_breaker".to_owned(), runtime_value);
+}
+
+fn format_bridge_execution_failure_reason(
+    reason: &str,
+    observation: &BridgeCircuitObservation,
+) -> String {
+    let phase_before = observation.phase_before.as_str();
+    let phase_after = observation.phase_after.as_str();
+
+    format!(
+        "{reason} (bridge_circuit_phase_before={phase_before}, bridge_circuit_phase_after={phase_after})"
+    )
 }
 
 #[async_trait]
@@ -2406,15 +2772,25 @@ impl CoreConnectorAdapter for DynamicCatalogConnector {
             (provider.clone(), chosen_channel)
         };
 
+        let circuit_phase_before = self.acquire_bridge_circuit_phase().await?;
         let operation = command.operation.clone();
         let payload = command.payload.clone();
-        let bridge_execution = bridge_execution_payload(
+        let mut bridge_execution = bridge_execution_payload(
             &provider,
             &chosen_channel,
             &command,
             &self.bridge_runtime_policy,
         )
         .await;
+        let bridge_execution_success = !bridge_execution_status_is_failure(&bridge_execution);
+        let circuit_observation = self
+            .record_bridge_circuit_outcome(bridge_execution_success, &circuit_phase_before)
+            .await;
+        attach_bridge_circuit_breaker_runtime(
+            &mut bridge_execution,
+            &self.bridge_runtime_policy.bridge_circuit_breaker,
+            &circuit_observation,
+        );
 
         if bridge_execution
             .get("block_class")
@@ -2425,7 +2801,8 @@ impl CoreConnectorAdapter for DynamicCatalogConnector {
                 .get("reason")
                 .and_then(Value::as_str)
                 .unwrap_or("plugin compatibility contract blocked bridge execution");
-            return Err(ConnectorError::Execution(reason.to_owned()));
+            let reason = format_bridge_execution_failure_reason(reason, &circuit_observation);
+            return Err(ConnectorError::Execution(reason));
         }
 
         if self.bridge_runtime_policy.enforce_execution_success
@@ -2438,7 +2815,8 @@ impl CoreConnectorAdapter for DynamicCatalogConnector {
                 .get("reason")
                 .and_then(Value::as_str)
                 .unwrap_or("bridge execution failed under strict runtime policy");
-            return Err(ConnectorError::Execution(reason.to_owned()));
+            let reason = format_bridge_execution_failure_reason(reason, &circuit_observation);
+            return Err(ConnectorError::Execution(reason));
         }
 
         Ok(ConnectorOutcome {
@@ -4875,6 +5253,7 @@ mod tests {
         collections::{BTreeMap, BTreeSet},
         path::Path,
         sync::{Arc, Mutex},
+        time::Duration,
     };
     #[cfg(unix)]
     use std::{
@@ -4892,7 +5271,8 @@ mod tests {
         parse_wasm_signals_based_traps,
     };
     use super::{
-        BridgeRuntimePolicy, ConnectorProtocolContext, CoreToolRuntime, DynamicCatalogConnector,
+        BridgeRuntimePolicy, ConnectorCircuitBreakerPolicy, ConnectorProtocolContext,
+        CoreToolRuntime, DynamicCatalogConnector,
         PLUGIN_ACTIVATION_RUNTIME_CONTRACT_CHECKSUM_METADATA_KEY,
         PLUGIN_ACTIVATION_RUNTIME_CONTRACT_METADATA_KEY, PluginActivationRuntimeContract,
         WasmModuleCache, activation_runtime_contract_checksum_hex, build_wasm_module_cache_key,
@@ -4905,7 +5285,9 @@ mod tests {
         PluginCompatibilityShimSupport, PluginContractDialect, PluginSourceKind, ToolCoreOutcome,
         ToolCoreRequest,
     };
+    use loongclaw_protocol::PROTOCOL_VERSION;
     use serde_json::{Value, json};
+    use tokio::time::sleep;
 
     const EMPTY_WASM_MODULE: [u8; 8] = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
 
@@ -5045,6 +5427,60 @@ mod tests {
             version: "1.0.0".to_owned(),
             metadata,
         }
+    }
+
+    fn process_stdio_provider_with_command(
+        command: &str,
+        args: Vec<String>,
+    ) -> kernel::ProviderConfig {
+        let mut metadata = BTreeMap::new();
+
+        metadata.insert("bridge_kind".to_owned(), "process_stdio".to_owned());
+        metadata.insert("command".to_owned(), command.to_owned());
+        if !args.is_empty() {
+            let args_json = serde_json::to_string(&args).expect("encode process args");
+            metadata.insert("args_json".to_owned(), args_json);
+        }
+
+        provider_with_metadata(metadata)
+    }
+
+    fn process_stdio_channel_for_provider(
+        provider: &kernel::ProviderConfig,
+    ) -> kernel::ChannelConfig {
+        kernel::ChannelConfig {
+            channel_id: "channel-process".to_owned(),
+            provider_id: provider.provider_id.clone(),
+            endpoint: "stdio://connector".to_owned(),
+            enabled: true,
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    fn process_stdio_request_id(
+        provider: &kernel::ProviderConfig,
+        channel: &kernel::ChannelConfig,
+        operation: &str,
+    ) -> String {
+        format!(
+            "{}:{}:{operation}",
+            provider.provider_id, channel.channel_id
+        )
+    }
+
+    fn process_stdio_success_args(request_id: &str) -> Vec<String> {
+        let response = json!({
+            "method": "tools/call",
+            "id": request_id,
+            "payload": {
+                "ok": true,
+            },
+            "version": PROTOCOL_VERSION,
+        });
+        let response_text = response.to_string();
+        let script = format!("IFS= read -r _line; printf '%s\\n' '{response_text}'");
+
+        vec!["-c".to_owned(), script]
     }
 
     fn openclaw_attested_runtime_contract() -> PluginActivationRuntimeContract {
@@ -5372,15 +5808,15 @@ mod tests {
         let mut catalog = IntegrationCatalog::new();
         catalog.upsert_provider(provider.clone());
         catalog.upsert_channel(channel.clone());
-        let connector = DynamicCatalogConnector {
-            connector_name: provider.connector_name.clone(),
-            provider_id: provider.provider_id.clone(),
-            catalog: Arc::new(Mutex::new(catalog)),
-            bridge_runtime_policy: BridgeRuntimePolicy {
+        let connector = DynamicCatalogConnector::new(
+            provider.connector_name.clone(),
+            provider.provider_id.clone(),
+            Arc::new(Mutex::new(catalog)),
+            BridgeRuntimePolicy {
                 compatibility_matrix: openclaw_runtime_matrix(&["javascript"]),
                 ..BridgeRuntimePolicy::default()
             },
-        };
+        );
 
         let error = connector
             .invoke_core(kernel::ConnectorCommand {
@@ -5396,6 +5832,93 @@ mod tests {
             error
                 .to_string()
                 .contains("plugin activation contract drifted after registration")
+        );
+    }
+
+    #[tokio::test]
+    async fn dynamic_catalog_connector_circuit_breaker_isolates_repeated_bridge_failures() {
+        let provider = process_stdio_provider_with_command("false", Vec::new());
+        let channel = process_stdio_channel_for_provider(&provider);
+        let request_id = process_stdio_request_id(&provider, &channel, "invoke");
+        let recovery_args = process_stdio_success_args(&request_id);
+        let recovery_provider = process_stdio_provider_with_command("sh", recovery_args);
+        let mut catalog = IntegrationCatalog::new();
+
+        catalog.upsert_provider(provider.clone());
+        catalog.upsert_channel(channel.clone());
+
+        let connector = DynamicCatalogConnector::new(
+            provider.connector_name.clone(),
+            provider.provider_id.clone(),
+            Arc::new(Mutex::new(catalog)),
+            BridgeRuntimePolicy {
+                execute_process_stdio: true,
+                allowed_process_commands: BTreeSet::from(["false".to_owned(), "sh".to_owned()]),
+                bridge_circuit_breaker: ConnectorCircuitBreakerPolicy {
+                    enabled: true,
+                    failure_threshold: 2,
+                    cooldown_ms: 25,
+                    half_open_max_calls: 1,
+                    success_threshold: 1,
+                },
+                enforce_execution_success: true,
+                ..BridgeRuntimePolicy::default()
+            },
+        );
+
+        let command = kernel::ConnectorCommand {
+            connector_name: provider.connector_name.clone(),
+            operation: "invoke".to_owned(),
+            required_capabilities: BTreeSet::new(),
+            payload: json!({"channel_id": channel.channel_id}),
+        };
+
+        let first_error = connector
+            .invoke_core(command.clone())
+            .await
+            .expect_err("first failing bridge call should error");
+        let first_error_text = first_error.to_string();
+        assert!(first_error_text.contains("bridge_circuit_phase_before=closed"));
+        assert!(first_error_text.contains("bridge_circuit_phase_after=closed"));
+
+        let second_error = connector
+            .invoke_core(command.clone())
+            .await
+            .expect_err("second failing bridge call should open circuit");
+        let second_error_text = second_error.to_string();
+        assert!(second_error_text.contains("bridge_circuit_phase_before=closed"));
+        assert!(second_error_text.contains("bridge_circuit_phase_after=open"));
+
+        {
+            let mut catalog = connector.catalog.lock().expect("catalog mutex poisoned");
+
+            catalog.upsert_provider(recovery_provider);
+        }
+
+        let open_error = connector
+            .invoke_core(command.clone())
+            .await
+            .expect_err("open circuit should short-circuit before re-execution");
+        let open_error_text = open_error.to_string();
+        assert!(open_error_text.contains("circuit-open"));
+
+        sleep(Duration::from_millis(30)).await;
+
+        let recovered = connector
+            .invoke_core(command)
+            .await
+            .expect("half-open recovery call should succeed");
+        assert_eq!(
+            recovered.payload["bridge_execution"]["status"],
+            json!("executed")
+        );
+        assert_eq!(
+            recovered.payload["bridge_execution"]["circuit_breaker"]["phase_before"],
+            json!("half_open")
+        );
+        assert_eq!(
+            recovered.payload["bridge_execution"]["circuit_breaker"]["phase_after"],
+            json!("closed")
         );
     }
 

@@ -2290,6 +2290,7 @@ async fn execute_spec_wasm_component_bridge_executes_when_runtime_enabled() {
                     allowed_path_prefixes: vec![plugin_root.display().to_string()],
                     max_component_bytes: Some(128 * 1024),
                     fuel_limit: Some(200_000),
+                    bridge_circuit_breaker: ConnectorCircuitBreakerPolicy::default(),
                 },
                 high_risk_metadata_keywords: Vec::new(),
                 wasm: WasmSecurityScanSpec {
@@ -2524,6 +2525,7 @@ async fn execute_spec_wasm_component_bridge_blocks_when_component_sha256_mismatc
                     allowed_path_prefixes: vec![plugin_root.display().to_string()],
                     max_component_bytes: Some(128 * 1024),
                     fuel_limit: Some(200_000),
+                    bridge_circuit_breaker: ConnectorCircuitBreakerPolicy::default(),
                 },
                 high_risk_metadata_keywords: Vec::new(),
                 wasm: WasmSecurityScanSpec {
@@ -2663,6 +2665,7 @@ async fn execute_spec_wasm_component_bridge_blocks_when_metadata_pin_conflicts_w
                     allowed_path_prefixes: vec![plugin_root.display().to_string()],
                     max_component_bytes: Some(128 * 1024),
                     fuel_limit: Some(200_000),
+                    bridge_circuit_breaker: ConnectorCircuitBreakerPolicy::default(),
                 },
                 high_risk_metadata_keywords: Vec::new(),
                 wasm: WasmSecurityScanSpec {
@@ -2804,6 +2807,7 @@ async fn execute_spec_wasm_component_bridge_blocks_when_hash_pin_required_but_mi
                     allowed_path_prefixes: vec![plugin_root.display().to_string()],
                     max_component_bytes: Some(128 * 1024),
                     fuel_limit: Some(200_000),
+                    bridge_circuit_breaker: ConnectorCircuitBreakerPolicy::default(),
                 },
                 high_risk_metadata_keywords: Vec::new(),
                 wasm: WasmSecurityScanSpec {
@@ -2947,6 +2951,7 @@ async fn execute_spec_wasm_component_bridge_blocks_artifact_outside_runtime_pref
                     allowed_path_prefixes: vec![disallowed_root.display().to_string()],
                     max_component_bytes: Some(128 * 1024),
                     fuel_limit: Some(100_000),
+                    bridge_circuit_breaker: ConnectorCircuitBreakerPolicy::default(),
                 },
                 high_risk_metadata_keywords: Vec::new(),
                 wasm: WasmSecurityScanSpec {
@@ -3094,6 +3099,7 @@ async fn execute_spec_wasm_component_bridge_blocks_symlink_escape_under_allowed_
                     allowed_path_prefixes: vec![plugin_root.display().to_string()],
                     max_component_bytes: Some(128 * 1024),
                     fuel_limit: Some(100_000),
+                    bridge_circuit_breaker: ConnectorCircuitBreakerPolicy::default(),
                 },
                 high_risk_metadata_keywords: Vec::new(),
                 wasm: WasmSecurityScanSpec {
@@ -3232,6 +3238,7 @@ async fn execute_spec_wasm_component_bridge_blocks_non_regular_artifact_path() {
                     allowed_path_prefixes: vec![plugin_root.display().to_string()],
                     max_component_bytes: Some(128 * 1024),
                     fuel_limit: Some(100_000),
+                    bridge_circuit_breaker: ConnectorCircuitBreakerPolicy::default(),
                 },
                 high_risk_metadata_keywords: Vec::new(),
                 wasm: WasmSecurityScanSpec {
@@ -3371,6 +3378,7 @@ async fn execute_spec_wasm_component_bridge_blocks_when_module_size_exceeds_runt
                     allowed_path_prefixes: vec![plugin_root.display().to_string()],
                     max_component_bytes: Some(8),
                     fuel_limit: Some(100_000),
+                    bridge_circuit_breaker: ConnectorCircuitBreakerPolicy::default(),
                 },
                 high_risk_metadata_keywords: Vec::new(),
                 wasm: WasmSecurityScanSpec {
@@ -3478,6 +3486,7 @@ async fn execute_spec_blocks_when_wasm_runtime_enabled_without_allowed_prefixes(
                     allowed_path_prefixes: Vec::new(),
                     max_component_bytes: Some(1024),
                     fuel_limit: Some(10_000),
+                    bridge_circuit_breaker: ConnectorCircuitBreakerPolicy::default(),
                 },
                 high_risk_metadata_keywords: Vec::new(),
                 wasm: WasmSecurityScanSpec {

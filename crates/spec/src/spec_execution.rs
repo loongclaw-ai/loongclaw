@@ -454,7 +454,33 @@ pub async fn execute_spec_with_native_tool_executor(
     }
 
     let shared_catalog = Arc::new(Mutex::new(integration_catalog.clone()));
-    let bridge_runtime_policy = bridge_runtime_policy(spec, security_scan_policy.as_ref());
+    let bridge_runtime_policy = match bridge_runtime_policy(spec, security_scan_policy.as_ref()) {
+        Ok(policy) => policy,
+        Err(error) => {
+            let reason = format!("bridge runtime policy is invalid: {error}");
+            return build_blocked_spec_run_report(
+                pack.pack_id.clone(),
+                spec.agent_id.clone(),
+                reason,
+                approval_guard,
+                bridge_support_checksum,
+                bridge_support_sha256,
+                self_awareness,
+                architecture_guard,
+                plugin_scan_reports,
+                plugin_translation_reports,
+                plugin_activation_plans,
+                plugin_bootstrap_reports,
+                plugin_bootstrap_queue,
+                plugin_absorb_reports,
+                security_scan_report,
+                auto_provision_plan,
+                integration_catalog,
+                include_audit,
+                &audit_sink,
+            );
+        }
+    };
     register_dynamic_catalog_connectors(&mut kernel, shared_catalog, bridge_runtime_policy);
 
     if let Err(error) = kernel.register_pack(pack.clone()) {
@@ -914,20 +940,41 @@ pub(super) fn bridge_support_spec_matrix(bridge: &BridgeSupportSpec) -> BridgeSu
     matrix
 }
 
+fn raw_bridge_runtime_spec(spec: &RunnerSpec) -> SecurityRuntimeExecutionSpec {
+    let raw_runtime = spec
+        .bridge_support
+        .as_ref()
+        .filter(|bridge| bridge.enabled)
+        .and_then(|bridge| bridge.security_scan.as_ref())
+        .map(|scan| scan.runtime.clone());
+
+    raw_runtime.unwrap_or_default()
+}
+
 fn bridge_runtime_policy(
     spec: &RunnerSpec,
     security_scan: Option<&SecurityScanSpec>,
-) -> BridgeRuntimePolicy {
+) -> CliResult<BridgeRuntimePolicy> {
     let Some(bridge) = &spec.bridge_support else {
-        return BridgeRuntimePolicy::default();
+        return Ok(BridgeRuntimePolicy::default());
     };
     if !bridge.enabled {
-        return BridgeRuntimePolicy::default();
+        return Ok(BridgeRuntimePolicy::default());
     }
 
     let runtime = security_scan
         .map(|scan| scan.runtime.clone())
         .unwrap_or_default();
+    let raw_runtime = raw_bridge_runtime_spec(spec);
+    let bridge_circuit_breaker = if security_scan.is_some() {
+        runtime.bridge_circuit_breaker.clone()
+    } else {
+        raw_runtime.bridge_circuit_breaker
+    };
+    validate_connector_circuit_breaker_policy(
+        &bridge_circuit_breaker,
+        "bridge runtime circuit breaker",
+    )?;
     let (compatibility_matrix, _) = bridge_support_matrix(spec);
     let (wasm_require_hash_pin, wasm_required_sha256_by_plugin) = security_scan
         .map(|scan| {
@@ -944,7 +991,7 @@ fn bridge_runtime_policy(
         .map(|path| normalize_path_for_policy(&path))
         .collect();
 
-    BridgeRuntimePolicy {
+    Ok(BridgeRuntimePolicy {
         execute_process_stdio: bridge.execute_process_stdio,
         execute_http_json: bridge.execute_http_json,
         execute_wasm_component: runtime.execute_wasm_component,
@@ -955,13 +1002,14 @@ fn bridge_runtime_policy(
             .map(|value| value.trim().to_ascii_lowercase())
             .filter(|value| !value.is_empty())
             .collect(),
+        bridge_circuit_breaker,
         wasm_allowed_path_prefixes,
         wasm_max_component_bytes: runtime.max_component_bytes,
         wasm_fuel_limit: runtime.fuel_limit,
         wasm_require_hash_pin,
         wasm_required_sha256_by_plugin,
         enforce_execution_success: bridge.enforce_execution_success,
-    }
+    })
 }
 
 pub fn current_epoch_s() -> u64 {
@@ -1481,12 +1529,14 @@ fn register_dynamic_catalog_connectors(
     };
 
     for provider in snapshot {
-        kernel.register_core_connector_adapter(DynamicCatalogConnector {
-            connector_name: provider.connector_name,
-            provider_id: provider.provider_id,
-            catalog: catalog.clone(),
-            bridge_runtime_policy: bridge_runtime_policy.clone(),
-        });
+        let connector = DynamicCatalogConnector::new(
+            provider.connector_name,
+            provider.provider_id,
+            catalog.clone(),
+            bridge_runtime_policy.clone(),
+        );
+
+        kernel.register_core_connector_adapter(connector);
     }
 }
 
@@ -2078,6 +2128,54 @@ mod setup_readiness_context_tests {
             context.verified_config_keys,
             BTreeSet::from(["tools.web_search.default_provider".to_owned()])
         );
+    }
+}
+
+#[cfg(test)]
+mod bridge_runtime_policy_tests {
+    use super::*;
+
+    #[test]
+    fn bridge_runtime_policy_honors_raw_circuit_breaker_override_when_scan_is_disabled() {
+        let mut spec = RunnerSpec::template();
+        let (mut bridge, _source) =
+            load_bundled_bridge_support_policy("openclaw-ecosystem-balanced")
+                .expect("bundled bridge support should resolve");
+        let mut security_scan = SecurityScanSpec {
+            enabled: false,
+            ..SecurityScanSpec::default()
+        };
+        security_scan.runtime.bridge_circuit_breaker.enabled = false;
+        bridge.security_scan = Some(security_scan);
+        spec.bridge_support = Some(bridge);
+
+        let policy =
+            bridge_runtime_policy(&spec, None).expect("bridge runtime policy should build");
+
+        assert!(!policy.bridge_circuit_breaker.enabled);
+    }
+
+    #[test]
+    fn bridge_runtime_policy_rejects_invalid_circuit_breaker_override() {
+        let mut spec = RunnerSpec::template();
+        let (mut bridge, _source) =
+            load_bundled_bridge_support_policy("openclaw-ecosystem-balanced")
+                .expect("bundled bridge support should resolve");
+        let mut security_scan = SecurityScanSpec {
+            enabled: false,
+            ..SecurityScanSpec::default()
+        };
+        security_scan
+            .runtime
+            .bridge_circuit_breaker
+            .failure_threshold = 0;
+        bridge.security_scan = Some(security_scan);
+        spec.bridge_support = Some(bridge);
+
+        let error = bridge_runtime_policy(&spec, None)
+            .expect_err("invalid bridge circuit breaker policy should fail");
+
+        assert!(error.contains("failure_threshold"));
     }
 }
 
