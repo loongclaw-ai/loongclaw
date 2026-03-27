@@ -1186,10 +1186,13 @@ impl ProviderConfig {
         if let Some(hint) = self.alternative_auth_configuration_hint() {
             configuration_paths.push(hint);
         }
-        let mut message = format!(
-            "provider credentials are missing; {}",
-            join_guidance_options(&configuration_paths)
-        );
+        let mut message = "provider credentials are missing".to_owned();
+        if let Some(detail) = self.missing_auth_runtime_detail() {
+            message.push_str("; ");
+            message.push_str(detail.as_str());
+        }
+        message.push_str("; ");
+        message.push_str(join_guidance_options(&configuration_paths).as_str());
         if let Some(hint) = self.auth_guidance_hint() {
             message.push(' ');
             message.push_str(hint.as_str());
@@ -1833,6 +1836,38 @@ impl ProviderConfig {
         Some(env_name)
     }
 
+    fn missing_auth_source_runtime_detail(
+        &self,
+        label: &str,
+        secret_ref: Option<&SecretRef>,
+        configured_env_name: Option<&str>,
+    ) -> Option<String> {
+        match resolve_secret_lookup(secret_ref) {
+            SecretLookup::Value(_) => return None,
+            SecretLookup::Missing => {
+                if let Some(env_name) = secret_ref_env_name(secret_ref) {
+                    return Some(format!(
+                        "configured provider {label} env `{env_name}` is unset, empty, or not visible to the current process"
+                    ));
+                }
+                if has_configured_secret_ref(secret_ref) {
+                    return Some(format!(
+                        "configured provider {label} secret reference could not be resolved at runtime"
+                    ));
+                }
+            }
+            SecretLookup::Absent => {}
+        }
+
+        let env_name = configured_env_name?;
+        match env::var(env_name) {
+            Ok(value) if !value.trim().is_empty() => None,
+            _ => Some(format!(
+                "configured provider {label} env `{env_name}` is unset, empty, or not visible to the current process"
+            )),
+        }
+    }
+
     pub fn configured_api_key_env_override(&self) -> Option<String> {
         let explicit_secret_env = secret_ref_env_name(self.api_key.as_ref());
         if let Some(explicit_secret_env) = explicit_secret_env {
@@ -1848,6 +1883,29 @@ impl ProviderConfig {
         }
         self.configured_oauth_access_token_env_name()
             .map(str::to_owned)
+    }
+
+    fn missing_auth_runtime_detail(&self) -> Option<String> {
+        match self.kind.auth_scheme() {
+            ProviderAuthScheme::Bearer => self
+                .missing_auth_source_runtime_detail(
+                    "oauth access token",
+                    self.oauth_access_token.as_ref(),
+                    self.configured_oauth_access_token_env_name(),
+                )
+                .or_else(|| {
+                    self.missing_auth_source_runtime_detail(
+                        "api key",
+                        self.api_key.as_ref(),
+                        self.configured_api_key_env_name(),
+                    )
+                }),
+            ProviderAuthScheme::XApiKey => self.missing_auth_source_runtime_detail(
+                "api key",
+                self.api_key.as_ref(),
+                self.configured_api_key_env_name(),
+            ),
+        }
     }
 
     pub fn normalized_for_persistence(&self) -> Self {

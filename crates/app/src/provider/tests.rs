@@ -447,6 +447,44 @@ fn bedrock_missing_auth_configuration_message_mentions_sigv4_fallback() {
     assert!(message.contains("AWS_REGION"));
 }
 
+#[test]
+fn missing_auth_configuration_message_mentions_current_process_for_explicit_env_secret_ref() {
+    let mut env = ScopedEnv::new();
+    env.remove("DEEPSEEK_API_KEY");
+    let provider = ProviderConfig {
+        kind: ProviderKind::Deepseek,
+        api_key: Some(SecretRef::Env {
+            env: "DEEPSEEK_API_KEY".to_owned(),
+        }),
+        ..ProviderConfig::default()
+    };
+
+    let message = provider.missing_auth_configuration_message();
+
+    assert!(message.contains("provider credentials are missing"));
+    assert!(message.contains("DEEPSEEK_API_KEY"));
+    assert!(message.contains("current process"));
+}
+
+#[test]
+fn missing_auth_configuration_message_mentions_current_process_for_explicit_api_key_env_field() {
+    let mut env = ScopedEnv::new();
+    env.remove("DEEPSEEK_API_KEY");
+    let provider: ProviderConfig = toml::from_str(
+        r#"
+kind = "deepseek"
+api_key_env = "DEEPSEEK_API_KEY"
+"#,
+    )
+    .expect("deserialize provider config");
+
+    let message = provider.missing_auth_configuration_message();
+
+    assert!(message.contains("provider credentials are missing"));
+    assert!(message.contains("DEEPSEEK_API_KEY"));
+    assert!(message.contains("current process"));
+}
+
 fn cleanup_sqlite_artifacts(path: &Path) {
     let _ = std::fs::remove_file(path);
     let wal = format!("{}-wal", path.display());
