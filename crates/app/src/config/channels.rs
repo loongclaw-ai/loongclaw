@@ -1357,7 +1357,7 @@ pub struct TwitchAccountConfig {
     pub account_id: Option<String>,
     #[serde(default)]
     pub access_token: Option<SecretRef>,
-    #[serde(default = "default_twitch_access_token_env")]
+    #[serde(default)]
     pub access_token_env: Option<String>,
     #[serde(default)]
     pub api_base_url: Option<String>,
@@ -9811,6 +9811,35 @@ mod tests {
             "https://id.twitch.example.test/oauth2"
         );
         assert_eq!(backup.channel_names, vec!["backup-channel".to_owned()]);
+    }
+
+    #[test]
+    fn twitch_empty_account_override_inherits_top_level_access_token_env() {
+        let mut env = crate::test_support::ScopedEnv::new();
+        env.set("CUSTOM_TWITCH_TOKEN", "custom-top-level-token");
+
+        let config_value = json!({
+            "enabled": true,
+            "access_token_env": "CUSTOM_TWITCH_TOKEN",
+            "default_account": "Ops",
+            "accounts": {
+                "Ops": {}
+            }
+        });
+        let config: TwitchChannelConfig =
+            serde_json::from_value(config_value).expect("deserialize twitch config");
+
+        let resolved = config
+            .resolve_account(None)
+            .expect("resolve default twitch account");
+        let access_token = resolved.access_token();
+
+        assert_eq!(resolved.configured_account_id, "ops");
+        assert_eq!(
+            resolved.access_token_env.as_deref(),
+            Some("CUSTOM_TWITCH_TOKEN")
+        );
+        assert_eq!(access_token.as_deref(), Some("custom-top-level-token"));
     }
 
     #[test]

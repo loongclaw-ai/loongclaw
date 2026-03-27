@@ -59,7 +59,7 @@ needs.
 | Webhook | Config-backed outbound | generic HTTP webhook POST | `webhook.enabled`, `webhook.endpoint_url`; `auth_token` is optional and can pair with custom header and prefix overrides | `loongclaw webhook-send` |
 | Google Chat | Config-backed outbound | Google Chat incoming webhook | `google_chat.enabled`, `google_chat.webhook_url` | `loongclaw google-chat-send` |
 | Signal | Config-backed outbound | signal-cli REST bridge | `signal.enabled`, `signal.service_url`, `signal.account` | `loongclaw signal-send` |
-| Twitch | Config-backed outbound | Twitch Chat API | `twitch.enabled`, `twitch.access_token`; optional `api_base_url`, `oauth_base_url`, and `channel_names` remain available for controlled environments and planned serve work | `loongclaw twitch-send` |
+| Twitch | Config-backed outbound | Twitch Chat API | `twitch.enabled`, `twitch.access_token` or `twitch.access_token_env`; optional `default_account`, `accounts`, `api_base_url`, `oauth_base_url`, and `channel_names` remain available for account routing, controlled environments, and planned serve work | `loongclaw twitch-send` |
 | Microsoft Teams | Config-backed outbound | Teams incoming webhook | `teams.enabled`, `teams.webhook_url` for sends; future bot runtime fields keep `teams.app_id`, `teams.app_password`, `teams.tenant_id`, `teams.allowed_conversation_ids` reserved for the planned serve path | `loongclaw teams-send` |
 | Mattermost | Config-backed outbound | Mattermost REST API | `mattermost.enabled`, `mattermost.server_url`, `mattermost.bot_token` | `loongclaw mattermost-send` |
 | Nextcloud Talk | Config-backed outbound | Nextcloud Talk bot API | `nextcloud_talk.enabled`, `nextcloud_talk.server_url`, `nextcloud_talk.shared_secret` | `loongclaw nextcloud-talk-send` |
@@ -214,8 +214,13 @@ Microsoft Teams is shipped through the incoming webhook send surface:
 
 Twitch is shipped through the official Twitch Chat API send surface:
 
-- configure `twitch.access_token` with a Twitch user access token that carries
-  `user:write:chat`
+- enable the surface with `twitch.enabled = true`
+- configure `twitch.access_token` or `twitch.access_token_env` with a Twitch
+  user access token that carries `user:write:chat`
+- use `twitch.account_id` when the operator wants an explicit runtime account
+  identity label for the default config
+- use `twitch.default_account` and `twitch.accounts.<account>` when the
+  deployment needs multiple Twitch identities or environment-specific tokens
 - use `twitch-send` with a channel login or broadcaster id target
 - LoongClaw validates the token at send time to derive the sender user id and
   client id instead of duplicating those identifiers in config
@@ -223,6 +228,41 @@ Twitch is shipped through the official Twitch Chat API send surface:
   and controlled environments
 - `twitch.channel_names` remains reserved for the planned EventSub or
   chat-listener serve path
+
+Example:
+
+```toml
+[twitch]
+enabled = true
+default_account = "ops"
+channel_names = ["main-stream"]
+
+[twitch.access_token]
+env = "TWITCH_ACCESS_TOKEN"
+
+[twitch.accounts.ops]
+account_id = "twitch-ops"
+
+[twitch.accounts.ops.access_token]
+env = "TWITCH_OPS_ACCESS_TOKEN"
+
+[twitch.accounts.backup]
+enabled = false
+account_id = "twitch-backup"
+access_token_env = "TWITCH_BACKUP_ACCESS_TOKEN"
+channel_names = ["backup-stream"]
+```
+
+Resolution notes:
+
+- when `--account` is omitted, LoongClaw selects `twitch.default_account` if it
+  is configured, otherwise it falls back to the single configured account or the
+  sorted first account key
+- `twitch.accounts.<account>.access_token` or
+  `twitch.accounts.<account>.access_token_env` override the top-level token only
+  for that account
+- `twitch.accounts.<account>.account_id` overrides the top-level
+  `twitch.account_id` for the resolved runtime identity
 
 ### Nextcloud Talk
 

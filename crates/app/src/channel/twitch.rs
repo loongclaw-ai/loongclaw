@@ -71,6 +71,11 @@ pub(super) async fn run_twitch_send(
         ));
     }
 
+    let normalized_target_id = target_id.trim();
+    if normalized_target_id.is_empty() {
+        return Err("twitch outbound target id is empty".to_owned());
+    }
+
     let access_token = resolved
         .access_token()
         .ok_or_else(|| "twitch access token missing (set twitch.access_token or env)".to_owned())?;
@@ -85,7 +90,7 @@ pub(super) async fn run_twitch_send(
         resolved,
         access_token.as_str(),
         validated_token.client_id.as_str(),
-        target_id,
+        normalized_target_id,
     )
     .await?;
 
@@ -215,14 +220,68 @@ async fn resolve_twitch_broadcaster(
     let api_base_url = resolved.resolved_api_base_url();
     let trimmed_api_base_url = api_base_url.trim_end_matches('/');
     let request_url = format!("{trimmed_api_base_url}/users");
-    let query_key = if trimmed_target.chars().all(|value| value.is_ascii_digit()) {
-        "id"
-    } else {
-        "login"
-    };
-    let query_pairs = [(query_key, trimmed_target)];
+    let is_numeric_target = trimmed_target.chars().all(|value| value.is_ascii_digit());
+    if !is_numeric_target {
+        let login_lookup = lookup_twitch_broadcaster(
+            client,
+            request_url.as_str(),
+            access_token,
+            client_id,
+            "login",
+            trimmed_target,
+        )
+        .await?;
+        if let Some(broadcaster) = login_lookup {
+            return Ok(broadcaster);
+        }
+
+        return Err(format!(
+            "twitch broadcaster `{trimmed_target}` was not found"
+        ));
+    }
+
+    let id_lookup = lookup_twitch_broadcaster(
+        client,
+        request_url.as_str(),
+        access_token,
+        client_id,
+        "id",
+        trimmed_target,
+    )
+    .await?;
+    if let Some(broadcaster) = id_lookup {
+        return Ok(broadcaster);
+    }
+
+    let login_lookup = lookup_twitch_broadcaster(
+        client,
+        request_url.as_str(),
+        access_token,
+        client_id,
+        "login",
+        trimmed_target,
+    )
+    .await?;
+    if let Some(broadcaster) = login_lookup {
+        return Ok(broadcaster);
+    }
+
+    Err(format!(
+        "twitch broadcaster `{trimmed_target}` was not found"
+    ))
+}
+
+async fn lookup_twitch_broadcaster(
+    client: &reqwest::Client,
+    request_url: &str,
+    access_token: &str,
+    client_id: &str,
+    query_key: &str,
+    query_value: &str,
+) -> CliResult<Option<ResolvedTwitchBroadcaster>> {
+    let query_pairs = [(query_key, query_value)];
     let request = client
-        .get(request_url.as_str())
+        .get(request_url)
         .bearer_auth(access_token)
         .header("Client-Id", client_id)
         .query(&query_pairs);
@@ -232,6 +291,9 @@ async fn resolve_twitch_broadcaster(
         .map_err(|error| format!("twitch broadcaster lookup failed: {error}"))?;
     let (status, body, payload) =
         read_json_or_text_response(response, "twitch broadcaster lookup").await?;
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
     if !status.is_success() {
         let detail = twitch_response_error_detail(&payload, body.as_str());
         return Err(format!(
@@ -242,15 +304,12 @@ async fn resolve_twitch_broadcaster(
 
     let decoded = serde_json::from_value::<TwitchUsersResponse>(payload)
         .map_err(|error| format!("decode twitch broadcaster lookup response failed: {error}"))?;
-    let broadcaster = decoded
-        .data
-        .into_iter()
-        .next()
-        .ok_or_else(|| format!("twitch broadcaster `{trimmed_target}` was not found"))?;
+    let broadcaster = decoded.data.into_iter().next();
+    let resolved_broadcaster = broadcaster.map(|entry| ResolvedTwitchBroadcaster {
+        broadcaster_id: entry.id,
+    });
 
-    Ok(ResolvedTwitchBroadcaster {
-        broadcaster_id: broadcaster.id,
-    })
+    Ok(resolved_broadcaster)
 }
 
 async fn ensure_twitch_send_success(response: reqwest::Response) -> CliResult<()> {
@@ -466,6 +525,144 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_twitch_send_rejects_blank_target_before_token_validation() {
+        let state = MockTwitchState::default();
+        let router = build_mock_twitch_router(state.clone());
+        let (base_url, server) = spawn_mock_twitch_server(router).await;
+
+        let resolved = ResolvedTwitchChannelConfig {
+            configured_account_id: "default".to_owned(),
+            configured_account_label: "default".to_owned(),
+            account: crate::config::ChannelAccountIdentity {
+                id: "default".to_owned(),
+                label: "default".to_owned(),
+                source: crate::config::ChannelAccountIdentitySource::Default,
+            },
+            enabled: true,
+            access_token: Some(SecretRef::Inline("twitch-access-token".to_owned())),
+            access_token_env: None,
+            api_base_url: Some(format!("{base_url}/helix")),
+            oauth_base_url: Some(format!("{base_url}/oauth2")),
+            channel_names: Vec::new(),
+        };
+
+        let error = run_twitch_send(
+            &resolved,
+            ChannelOutboundTargetKind::Conversation,
+            "   ",
+            "hello from loongclaw",
+        )
+        .await
+        .expect_err("blank targets should fail");
+
+        assert_eq!(error, "twitch outbound target id is empty");
+
+        let validate_headers = state
+            .validate_headers
+            .lock()
+            .expect("validate headers lock");
+        assert!(validate_headers.is_empty());
+
+        let users_queries = state.users_queries.lock().expect("users queries lock");
+        assert!(users_queries.is_empty());
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn run_twitch_send_falls_back_to_login_lookup_for_numeric_logins() {
+        let state = MockTwitchState::default();
+        let router = build_mock_twitch_router(state.clone());
+        let (base_url, server) = spawn_mock_twitch_server(router).await;
+
+        let resolved = ResolvedTwitchChannelConfig {
+            configured_account_id: "default".to_owned(),
+            configured_account_label: "default".to_owned(),
+            account: crate::config::ChannelAccountIdentity {
+                id: "default".to_owned(),
+                label: "default".to_owned(),
+                source: crate::config::ChannelAccountIdentitySource::Default,
+            },
+            enabled: true,
+            access_token: Some(SecretRef::Inline("twitch-access-token".to_owned())),
+            access_token_env: None,
+            api_base_url: Some(format!("{base_url}/helix")),
+            oauth_base_url: Some(format!("{base_url}/oauth2")),
+            channel_names: Vec::new(),
+        };
+
+        let send_result = run_twitch_send(
+            &resolved,
+            ChannelOutboundTargetKind::Conversation,
+            "12345",
+            "hello from loongclaw",
+        )
+        .await;
+
+        send_result.expect("numeric logins should fall back to login lookups");
+
+        let users_queries = state.users_queries.lock().expect("users queries lock");
+        assert_eq!(
+            users_queries.as_slice(),
+            &[String::from("id=12345"), String::from("login=12345")]
+        );
+
+        let send_bodies = state.send_bodies.lock().expect("send bodies lock");
+        assert_eq!(send_bodies.len(), 1);
+        assert_eq!(
+            send_bodies[0].get("broadcaster_id").and_then(Value::as_str),
+            Some("numeric-login-12345")
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn run_twitch_send_prefers_id_lookup_when_numeric_id_exists() {
+        let state = MockTwitchState::default();
+        let router = build_mock_twitch_router(state.clone());
+        let (base_url, server) = spawn_mock_twitch_server(router).await;
+
+        let resolved = ResolvedTwitchChannelConfig {
+            configured_account_id: "default".to_owned(),
+            configured_account_label: "default".to_owned(),
+            account: crate::config::ChannelAccountIdentity {
+                id: "default".to_owned(),
+                label: "default".to_owned(),
+                source: crate::config::ChannelAccountIdentitySource::Default,
+            },
+            enabled: true,
+            access_token: Some(SecretRef::Inline("twitch-access-token".to_owned())),
+            access_token_env: None,
+            api_base_url: Some(format!("{base_url}/helix")),
+            oauth_base_url: Some(format!("{base_url}/oauth2")),
+            channel_names: Vec::new(),
+        };
+
+        let send_result = run_twitch_send(
+            &resolved,
+            ChannelOutboundTargetKind::Conversation,
+            "987654",
+            "hello from loongclaw",
+        )
+        .await;
+
+        send_result.expect("numeric ids should resolve on the first lookup");
+
+        let users_queries = state.users_queries.lock().expect("users queries lock");
+        assert_eq!(users_queries.as_slice(), &[String::from("id=987654")]);
+
+        let send_bodies = state.send_bodies.lock().expect("send bodies lock");
+        assert_eq!(send_bodies.len(), 1);
+        assert_eq!(
+            send_bodies[0].get("broadcaster_id").and_then(Value::as_str),
+            Some("numeric-id-987654")
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn run_twitch_send_requires_conversation_target_kind() {
         let resolved = ResolvedTwitchChannelConfig {
             configured_account_id: "default".to_owned(),
@@ -582,11 +779,23 @@ mod tests {
             users_headers.push(format!("{authorization} | {client_id}"));
         }
 
-        let body = serde_json::json!({
-            "data": [{
-                "id": "broadcaster-456",
-            }],
-        });
+        let broadcaster_id = match (query_key, query_value.as_str()) {
+            ("id", "12345") => None,
+            ("login", "12345") => Some("numeric-login-12345"),
+            ("id", "987654") => Some("numeric-id-987654"),
+            ("login", "987654") => None,
+            _ => Some("broadcaster-456"),
+        };
+        let body = match broadcaster_id {
+            Some(broadcaster_id) => serde_json::json!({
+                "data": [{
+                    "id": broadcaster_id,
+                }],
+            }),
+            None => serde_json::json!({
+                "data": [],
+            }),
+        };
         Json(body)
     }
 

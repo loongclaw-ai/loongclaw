@@ -1047,6 +1047,7 @@ fn canonicalize_channel_configs_for_encoding(config: &mut LoongClawConfig) {
     canonicalize_nextcloud_talk_channel_for_encoding(&mut config.nextcloud_talk);
     canonicalize_synology_chat_channel_for_encoding(&mut config.synology_chat);
     canonicalize_irc_channel_for_encoding(&mut config.irc);
+    canonicalize_twitch_channel_for_encoding(&mut config.twitch);
 }
 
 fn canonicalize_telegram_channel_for_encoding(config: &mut TelegramChannelConfig) {
@@ -1267,6 +1268,13 @@ fn canonicalize_irc_channel_for_encoding(config: &mut IrcChannelConfig) {
         canonicalize_optional_env_name(&mut account.server_env);
         canonicalize_optional_env_name(&mut account.nickname_env);
         canonicalize_env_secret_reference(&mut account.password, &mut account.password_env);
+    }
+}
+
+fn canonicalize_twitch_channel_for_encoding(config: &mut TwitchChannelConfig) {
+    canonicalize_env_secret_reference(&mut config.access_token, &mut config.access_token_env);
+    for account in config.accounts.values_mut() {
+        canonicalize_env_secret_reference(&mut account.access_token, &mut account.access_token_env);
     }
 }
 
@@ -3008,6 +3016,39 @@ model = "gpt-5"
         assert!(!raw.contains("nickname_env = \" IRC_NICKNAME \""));
         assert!(!raw.contains("server_env = \" OPS_IRC_SERVER \""));
         assert!(!raw.contains("nickname_env = \" OPS_IRC_NICKNAME \""));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    #[cfg(feature = "config-toml")]
+    fn write_canonicalizes_twitch_env_name_fields() {
+        let path = unique_config_path("loongclaw-config-runtime-trimmed-twitch-env");
+        let path_string = path.display().to_string();
+        let mut config = LoongClawConfig::default();
+        let mut backup_account = crate::config::channels::TwitchAccountConfig::default();
+
+        config.twitch.access_token = Some(SecretRef::Inline("${TWITCH_ACCESS_TOKEN}".to_owned()));
+        config.twitch.access_token_env = Some(" TWITCH_ACCESS_TOKEN ".to_owned());
+        backup_account.access_token = Some(SecretRef::Inline(
+            "${BACKUP_TWITCH_ACCESS_TOKEN}".to_owned(),
+        ));
+        backup_account.access_token_env = Some(" BACKUP_TWITCH_ACCESS_TOKEN ".to_owned());
+        config
+            .twitch
+            .accounts
+            .insert("backup".to_owned(), backup_account);
+
+        write(Some(&path_string), &config, true).expect("config write should pass");
+
+        let raw = fs::read_to_string(&path).expect("read written config");
+
+        assert!(raw.contains("access_token_env = \"TWITCH_ACCESS_TOKEN\""));
+        assert!(raw.contains("access_token_env = \"BACKUP_TWITCH_ACCESS_TOKEN\""));
+        assert!(!raw.contains("access_token_env = \" TWITCH_ACCESS_TOKEN \""));
+        assert!(!raw.contains("access_token_env = \" BACKUP_TWITCH_ACCESS_TOKEN \""));
+        assert!(!raw.contains("access_token = \"${TWITCH_ACCESS_TOKEN}\""));
+        assert!(!raw.contains("access_token = \"${BACKUP_TWITCH_ACCESS_TOKEN}\""));
 
         let _ = fs::remove_file(path);
     }
