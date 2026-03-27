@@ -258,7 +258,7 @@ fn ask_cli_accepts_message_session_and_acp_flags() {
 
 #[test]
 fn init_spec_cli_accepts_plugin_trust_guard_preset() {
-    let cli = Cli::try_parse_from([
+    let cli = try_parse_cli([
         "loongclaw",
         "init-spec",
         "--output",
@@ -279,7 +279,7 @@ fn init_spec_cli_accepts_plugin_trust_guard_preset() {
 
 #[test]
 fn run_spec_cli_accepts_render_summary_flag() {
-    let cli = Cli::try_parse_from([
+    let cli = try_parse_cli([
         "loongclaw",
         "run-spec",
         "--spec",
@@ -414,7 +414,7 @@ fn audit_cli_summary_parses_limit_without_json() {
 
 #[test]
 fn audit_cli_recent_parses_kind_and_triage_filters() {
-    let cli = Cli::try_parse_from([
+    let cli = try_parse_cli([
         "loongclaw",
         "audit",
         "recent",
@@ -462,7 +462,7 @@ fn audit_cli_recent_parses_kind_and_triage_filters() {
 
 #[test]
 fn audit_cli_recent_parses_tool_search_filters() {
-    let cli = Cli::try_parse_from([
+    let cli = try_parse_cli([
         "loongclaw",
         "audit",
         "recent",
@@ -495,7 +495,7 @@ fn audit_cli_recent_parses_tool_search_filters() {
 
 #[test]
 fn audit_cli_summary_parses_kind_filter_in_canonical_form() {
-    let cli = Cli::try_parse_from([
+    let cli = try_parse_cli([
         "loongclaw",
         "audit",
         "summary",
@@ -537,7 +537,7 @@ fn audit_cli_summary_parses_kind_filter_in_canonical_form() {
 
 #[test]
 fn audit_cli_summary_parses_group_by_alias() {
-    let cli = Cli::try_parse_from(["loongclaw", "audit", "summary", "--group-by", "token-id"])
+    let cli = try_parse_cli(["loongclaw", "audit", "summary", "--group-by", "token-id"])
         .expect("audit summary CLI should parse group-by alias");
 
     match cli.command {
@@ -553,7 +553,7 @@ fn audit_cli_summary_parses_group_by_alias() {
 
 #[test]
 fn audit_cli_discovery_parses_trust_filters_and_aliases() {
-    let cli = Cli::try_parse_from([
+    let cli = try_parse_cli([
         "loongclaw",
         "audit",
         "discovery",
@@ -603,7 +603,7 @@ fn audit_cli_discovery_parses_trust_filters_and_aliases() {
 
 #[test]
 fn audit_cli_discovery_parses_group_by_alias() {
-    let cli = Cli::try_parse_from(["loongclaw", "audit", "discovery", "--group-by", "agent-id"])
+    let cli = try_parse_cli(["loongclaw", "audit", "discovery", "--group-by", "agent-id"])
         .expect("audit discovery CLI should parse group-by alias");
 
     match cli.command {
@@ -619,7 +619,7 @@ fn audit_cli_discovery_parses_group_by_alias() {
 
 #[test]
 fn audit_cli_recent_parses_time_window_filters() {
-    let cli = Cli::try_parse_from([
+    let cli = try_parse_cli([
         "loongclaw",
         "audit",
         "recent",
@@ -667,7 +667,7 @@ fn audit_cli_recent_parses_time_window_filters() {
 
 #[test]
 fn audit_cli_discovery_parses_pack_and_agent_filters() {
-    let cli = Cli::try_parse_from([
+    let cli = try_parse_cli([
         "loongclaw",
         "audit",
         "discovery",
@@ -715,7 +715,7 @@ fn audit_cli_discovery_parses_pack_and_agent_filters() {
 
 #[test]
 fn audit_cli_recent_parses_event_and_token_filters() {
-    let cli = Cli::try_parse_from([
+    let cli = try_parse_cli([
         "loongclaw",
         "audit",
         "recent",
@@ -761,7 +761,7 @@ fn audit_cli_recent_parses_event_and_token_filters() {
 
 #[test]
 fn audit_cli_token_trail_parses_required_token_and_identity_filters() {
-    let cli = Cli::try_parse_from([
+    let cli = try_parse_cli([
         "loongclaw",
         "audit",
         "token-trail",

@@ -1,7 +1,7 @@
 # Architecture Drift Report 2026-03
 
 ## Summary
-- Generated at: 2026-03-27T09:54:37Z
+- Generated at: 2026-03-27T15:05:51Z
 - Report month: `2026-03`
 - Baseline report: none
 - Hotspots tracked: 14
@@ -12,8 +12,8 @@
 
 | Key | Classes | File | Lines | Max Lines | Line Headroom | Functions | Max Functions | Fn Headroom | Peak Usage | Pressure |
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|---|
-| spec_runtime | `foundation` | `crates/spec/src/spec_runtime.rs` | 3289 | 3600 | 311 | 48 | 65 | 17 | 91.4% | WATCH |
-| spec_execution | `foundation` | `crates/spec/src/spec_execution.rs` | 2057 | 3700 | 1643 | 29 | 80 | 51 | 55.6% | HEALTHY |
+| spec_runtime | `foundation` | `crates/spec/src/spec_runtime.rs` | 3435 | 3600 | 165 | 48 | 65 | 17 | 95.4% | TIGHT |
+| spec_execution | `foundation` | `crates/spec/src/spec_execution.rs` | 2664 | 3700 | 1036 | 35 | 80 | 45 | 72.0% | HEALTHY |
 | provider_mod | `foundation` | `crates/app/src/provider/mod.rs` | 375 | 1000 | 625 | 10 | 20 | 10 | 50.0% | HEALTHY |
 | memory_mod | `foundation` | `crates/app/src/memory/mod.rs` | 356 | 650 | 294 | 14 | 16 | 2 | 87.5% | WATCH |
 | acp_manager | `operational_density` | `crates/app/src/acp/manager.rs` | 3327 | 3600 | 273 | 8 | 12 | 4 | 92.4% | WATCH |
@@ -24,13 +24,13 @@
 | channel_mod | `structural_size,operational_density` | `crates/app/src/channel/mod.rs` | 6294 | 6400 | 106 | 103 | 110 | 7 | 98.3% | TIGHT |
 | turn_coordinator | `structural_size,operational_density` | `crates/app/src/conversation/turn_coordinator.rs` | 9964 | 11200 | 1236 | 92 | 120 | 28 | 89.0% | WATCH |
 | tools_mod | `structural_size` | `crates/app/src/tools/mod.rs` | 14199 | 15000 | 801 | 54 | 70 | 16 | 94.7% | WATCH |
-| daemon_lib | `structural_size` | `crates/daemon/src/lib.rs` | 5792 | 6000 | 208 | 179 | 190 | 11 | 96.5% | TIGHT |
+| daemon_lib | `structural_size` | `crates/daemon/src/lib.rs` | 5899 | 6000 | 101 | 186 | 190 | 4 | 98.3% | TIGHT |
 | onboard_cli | `structural_size` | `crates/daemon/src/onboard_cli.rs` | 9256 | 9800 | 544 | 227 | 250 | 23 | 94.4% | WATCH |
 
 ## Prioritization Signals
 - BREACH hotspots (>100% of any tracked budget): none
-- TIGHT hotspots (>=95% of any tracked budget): channel_registry (100.0%), channel_config (100.0%), channel_mod (98.3%), daemon_lib (96.5%)
-- WATCH hotspots (>=85% and <95% of any tracked budget): spec_runtime (91.4%), memory_mod (87.5%), acp_manager (92.4%), acpx_runtime (92.0%), chat_runtime (93.4%), turn_coordinator (89.0%), tools_mod (94.7%), onboard_cli (94.4%)
+- TIGHT hotspots (>=95% of any tracked budget): spec_runtime (95.4%), channel_registry (100.0%), channel_config (100.0%), channel_mod (98.3%), daemon_lib (98.3%)
+- WATCH hotspots (>=85% and <95% of any tracked budget): memory_mod (87.5%), acp_manager (92.4%), acpx_runtime (92.0%), chat_runtime (93.4%), turn_coordinator (89.0%), tools_mod (94.7%), onboard_cli (94.4%)
 - Mixed-class hotspots (size plus operational density): chat_runtime, channel_mod, turn_coordinator
 
 ## Boundary Checks
@@ -57,8 +57,8 @@
 - [Release template](TEMPLATE.md)
 - [CI workflow](../../.github/workflows/ci.yml)
 
-<!-- arch-hotspot key=spec_runtime lines=3289 functions=48 -->
-<!-- arch-hotspot key=spec_execution lines=2057 functions=29 -->
+<!-- arch-hotspot key=spec_runtime lines=3435 functions=48 -->
+<!-- arch-hotspot key=spec_execution lines=2664 functions=35 -->
 <!-- arch-hotspot key=provider_mod lines=375 functions=10 -->
 <!-- arch-hotspot key=memory_mod lines=356 functions=14 -->
 <!-- arch-hotspot key=acp_manager lines=3327 functions=8 -->
@@ -69,7 +69,7 @@
 <!-- arch-hotspot key=channel_mod lines=6294 functions=103 -->
 <!-- arch-hotspot key=turn_coordinator lines=9964 functions=92 -->
 <!-- arch-hotspot key=tools_mod lines=14199 functions=54 -->
-<!-- arch-hotspot key=daemon_lib lines=5792 functions=179 -->
+<!-- arch-hotspot key=daemon_lib lines=5899 functions=186 -->
 <!-- arch-hotspot key=onboard_cli lines=9256 functions=227 -->
 <!-- arch-boundary key=memory_literals status=PASS -->
 <!-- arch-boundary key=provider_mod_helper_definitions status=PASS -->
