@@ -123,7 +123,7 @@ mod tests {
                         if std::time::Instant::now() >= deadline {
                             return Ok(false);
                         }
-                        std::thread::sleep(Duration::from_millis(10));
+                        std::thread::park_timeout(Duration::from_millis(10));
                     }
                     Err(error) => {
                         return Err(format!("accept test server connection: {error}"));
