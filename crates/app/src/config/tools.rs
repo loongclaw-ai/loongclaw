@@ -880,6 +880,7 @@ impl DelegateChildRuntimeConfig {
         crate::tools::runtime_config::ToolRuntimeNarrowing {
             web_fetch: crate::tools::runtime_config::WebFetchRuntimeNarrowing {
                 allow_private_hosts: self.web.allow_private_hosts,
+                enforce_allowed_domains: !self.web.normalized_allowed_domains().is_empty(),
                 allowed_domains: self.web.normalized_allowed_domains().into_iter().collect(),
                 blocked_domains: self.web.normalized_blocked_domains().into_iter().collect(),
                 timeout_seconds: self.web.timeout_seconds,

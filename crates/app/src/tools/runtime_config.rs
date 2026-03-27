@@ -14,6 +14,10 @@ use crate::config::{FeishuChannelConfig, FeishuIntegrationConfig};
 use crate::secrets::has_configured_secret_ref;
 use crate::secrets::{SecretLookup, resolve_secret_lookup};
 
+fn bool_is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct BrowserRuntimeNarrowing {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -35,6 +39,8 @@ impl BrowserRuntimeNarrowing {
 pub struct WebFetchRuntimeNarrowing {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_private_hosts: Option<bool>,
+    #[serde(default, skip_serializing_if = "bool_is_false")]
+    pub enforce_allowed_domains: bool,
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub allowed_domains: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
@@ -51,11 +57,17 @@ impl WebFetchRuntimeNarrowing {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.allow_private_hosts.is_none()
+            && !self.enforces_allowed_domains()
             && self.allowed_domains.is_empty()
             && self.blocked_domains.is_empty()
             && self.timeout_seconds.is_none()
             && self.max_bytes.is_none()
             && self.max_redirects.is_none()
+    }
+
+    #[must_use]
+    pub fn enforces_allowed_domains(&self) -> bool {
+        self.enforce_allowed_domains || !self.allowed_domains.is_empty()
     }
 }
 
@@ -72,6 +84,99 @@ impl ToolRuntimeNarrowing {
     pub fn is_empty(&self) -> bool {
         self.browser.is_empty() && self.web_fetch.is_empty()
     }
+
+    #[must_use]
+    pub fn intersect(&self, other: &Self) -> Self {
+        if self.is_empty() {
+            return other.clone();
+        }
+        if other.is_empty() {
+            return self.clone();
+        }
+
+        let browser = BrowserRuntimeNarrowing {
+            max_sessions: min_optional_limit(self.browser.max_sessions, other.browser.max_sessions),
+            max_links: min_optional_limit(self.browser.max_links, other.browser.max_links),
+            max_text_chars: min_optional_limit(
+                self.browser.max_text_chars,
+                other.browser.max_text_chars,
+            ),
+        };
+
+        let left_enforces_allowed_domains = self.web_fetch.enforces_allowed_domains();
+        let right_enforces_allowed_domains = other.web_fetch.enforces_allowed_domains();
+        let mut allowed_domains = BTreeSet::new();
+        let mut enforce_allowed_domains = false;
+
+        if left_enforces_allowed_domains && right_enforces_allowed_domains {
+            enforce_allowed_domains = true;
+            let left_is_deny_all = self.web_fetch.allowed_domains.is_empty();
+            let right_is_deny_all = other.web_fetch.allowed_domains.is_empty();
+            if !left_is_deny_all && !right_is_deny_all {
+                allowed_domains = self
+                    .web_fetch
+                    .allowed_domains
+                    .intersection(&other.web_fetch.allowed_domains)
+                    .cloned()
+                    .collect();
+            }
+        } else if left_enforces_allowed_domains {
+            enforce_allowed_domains = true;
+            allowed_domains = self.web_fetch.allowed_domains.clone();
+        } else if right_enforces_allowed_domains {
+            enforce_allowed_domains = true;
+            allowed_domains = other.web_fetch.allowed_domains.clone();
+        }
+
+        let allow_private_hosts = intersect_private_host_setting(
+            self.web_fetch.allow_private_hosts,
+            other.web_fetch.allow_private_hosts,
+        );
+
+        let blocked_domains = self
+            .web_fetch
+            .blocked_domains
+            .union(&other.web_fetch.blocked_domains)
+            .cloned()
+            .collect();
+
+        let web_fetch = WebFetchRuntimeNarrowing {
+            allow_private_hosts,
+            enforce_allowed_domains,
+            allowed_domains,
+            blocked_domains,
+            timeout_seconds: min_optional_limit(
+                self.web_fetch.timeout_seconds,
+                other.web_fetch.timeout_seconds,
+            ),
+            max_bytes: min_optional_limit(self.web_fetch.max_bytes, other.web_fetch.max_bytes),
+            max_redirects: min_optional_limit(
+                self.web_fetch.max_redirects,
+                other.web_fetch.max_redirects,
+            ),
+        };
+
+        Self { browser, web_fetch }
+    }
+}
+
+fn min_optional_limit<T>(left: Option<T>, right: Option<T>) -> Option<T>
+where
+    T: Ord + Copy,
+{
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    }
+}
+
+fn intersect_private_host_setting(left: Option<bool>, right: Option<bool>) -> Option<bool> {
+    if left == Some(false) || right == Some(false) {
+        return Some(false);
+    }
+    None
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -773,11 +878,13 @@ impl ToolRuntimeConfig {
 
         let preserve_deny_all = narrowed.web_fetch.enforce_allowed_domains
             && narrowed.web_fetch.allowed_domains.is_empty();
-        if !narrowing.web_fetch.allowed_domains.is_empty() {
+        if narrowing.web_fetch.enforces_allowed_domains() {
             narrowed.web_fetch.enforce_allowed_domains = true;
             if !preserve_deny_all {
                 narrowed.web_fetch.allowed_domains =
-                    if narrowed.web_fetch.allowed_domains.is_empty() {
+                    if narrowing.web_fetch.allowed_domains.is_empty() {
+                        BTreeSet::new()
+                    } else if narrowed.web_fetch.allowed_domains.is_empty() {
                         narrowing.web_fetch.allowed_domains.clone()
                     } else {
                         narrowed
@@ -838,7 +945,7 @@ impl ToolRuntimeConfig {
                     }
                 ));
             }
-            if !narrowing.web_fetch.allowed_domains.is_empty() {
+            if narrowing.web_fetch.enforces_allowed_domains() {
                 rendered_any = true;
                 if effective.web_fetch.enforce_allowed_domains
                     && effective.web_fetch.allowed_domains.is_empty()
@@ -2011,6 +2118,7 @@ mod tests {
             },
             web_fetch: WebFetchRuntimeNarrowing {
                 allow_private_hosts: Some(false),
+                enforce_allowed_domains: false,
                 allowed_domains: BTreeSet::from(["docs.example.com".to_owned()]),
                 blocked_domains: BTreeSet::from(["deny.example.com".to_owned()]),
                 timeout_seconds: Some(5),
@@ -2060,6 +2168,7 @@ mod tests {
         let narrowing = ToolRuntimeNarrowing {
             web_fetch: WebFetchRuntimeNarrowing {
                 allow_private_hosts: None,
+                enforce_allowed_domains: false,
                 allowed_domains: BTreeSet::from(["docs.example.com".to_owned()]),
                 blocked_domains: BTreeSet::new(),
                 timeout_seconds: None,
@@ -2143,6 +2252,60 @@ mod tests {
     }
 
     #[test]
+    fn tool_runtime_narrowing_intersect_fail_closes_disjoint_allowlists() {
+        let left = ToolRuntimeNarrowing {
+            browser: BrowserRuntimeNarrowing {
+                max_sessions: Some(1),
+                ..BrowserRuntimeNarrowing::default()
+            },
+            web_fetch: WebFetchRuntimeNarrowing {
+                allow_private_hosts: Some(false),
+                enforce_allowed_domains: false,
+                allowed_domains: BTreeSet::from(["docs.example.com".to_owned()]),
+                blocked_domains: BTreeSet::from(["deny-left.example.com".to_owned()]),
+                timeout_seconds: Some(5),
+                max_bytes: Some(4_096),
+                max_redirects: Some(2),
+            },
+        };
+        let right = ToolRuntimeNarrowing {
+            browser: BrowserRuntimeNarrowing {
+                max_sessions: Some(3),
+                ..BrowserRuntimeNarrowing::default()
+            },
+            web_fetch: WebFetchRuntimeNarrowing {
+                allow_private_hosts: None,
+                enforce_allowed_domains: false,
+                allowed_domains: BTreeSet::from(["api.example.com".to_owned()]),
+                blocked_domains: BTreeSet::from(["deny-right.example.com".to_owned()]),
+                timeout_seconds: Some(9),
+                max_bytes: Some(8_192),
+                max_redirects: Some(4),
+            },
+        };
+
+        let effective = left.intersect(&right);
+
+        assert_eq!(effective.browser.max_sessions, Some(1));
+        assert_eq!(effective.web_fetch.allow_private_hosts, Some(false));
+        assert!(effective.web_fetch.enforce_allowed_domains);
+        assert!(
+            effective.web_fetch.allowed_domains.is_empty(),
+            "disjoint allowlists should collapse to an enforced empty intersection"
+        );
+        assert_eq!(
+            effective.web_fetch.blocked_domains,
+            BTreeSet::from([
+                "deny-left.example.com".to_owned(),
+                "deny-right.example.com".to_owned(),
+            ])
+        );
+        assert_eq!(effective.web_fetch.timeout_seconds, Some(5));
+        assert_eq!(effective.web_fetch.max_bytes, Some(4_096));
+        assert_eq!(effective.web_fetch.max_redirects, Some(2));
+    }
+
+    #[test]
     fn delegate_child_prompt_summary_returns_none_when_narrowing_is_empty() {
         assert_eq!(
             ToolRuntimeConfig::default()
@@ -2180,6 +2343,7 @@ mod tests {
             },
             web_fetch: WebFetchRuntimeNarrowing {
                 allow_private_hosts: Some(true),
+                enforce_allowed_domains: false,
                 allowed_domains: BTreeSet::from(["docs.example.com".to_owned()]),
                 blocked_domains: BTreeSet::from(["deny.example.com".to_owned()]),
                 timeout_seconds: Some(5),

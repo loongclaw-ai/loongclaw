@@ -102,8 +102,8 @@ impl PromptWindowQueryDiagnostics {
 }
 
 const SUMMARY_FORMAT_VERSION: i64 = 1;
-const SQLITE_MEMORY_SCHEMA_VERSION: i64 = 4;
-const SQLITE_CURRENT_SCHEMA_OBJECT_COUNT: i64 = 9;
+const SQLITE_MEMORY_SCHEMA_VERSION: i64 = 5;
+const SQLITE_CURRENT_SCHEMA_OBJECT_COUNT: i64 = 10;
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 const SQLITE_PREPARED_STATEMENT_CACHE_CAPACITY: usize = 16;
 const SQL_INSERT_TURN: &str = "INSERT INTO turns(session_id, session_turn_index, role, content, ts) VALUES (?1, ?2, ?3, ?4, ?5)";
@@ -147,7 +147,8 @@ const SQL_COUNT_CURRENT_SCHEMA_OBJECTS: &str = "SELECT COUNT(*)
                         'memory_summary_checkpoints',
                         'memory_summary_checkpoint_bodies',
                         'approval_requests',
-                        'approval_grants'
+                        'approval_grants',
+                        'session_tool_policies'
                     ))
                 OR (type = 'index' AND name IN (
                         'idx_turns_session_id',
@@ -1317,6 +1318,12 @@ fn open_sqlite_connection_with_diagnostics(
               updated_at INTEGER NOT NULL,
               PRIMARY KEY(scope_session_id, approval_key)
             );
+            CREATE TABLE IF NOT EXISTS session_tool_policies(
+              session_id TEXT PRIMARY KEY,
+              requested_tool_ids_json TEXT NOT NULL,
+              runtime_narrowing_json TEXT NOT NULL,
+              updated_at INTEGER NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS idx_approval_requests_session_status_requested_at
               ON approval_requests(session_id, status, requested_at DESC, approval_request_id);
             ",
@@ -1328,6 +1335,7 @@ fn open_sqlite_connection_with_diagnostics(
     if user_version < SQLITE_MEMORY_SCHEMA_VERSION {
         ensure_turn_session_index_and_state_metadata(&conn)?;
         ensure_approval_lifecycle_tables(&conn)?;
+        ensure_session_tool_policy_storage(&conn)?;
         ensure_summary_checkpoint_storage_layout(&conn)?;
         write_sqlite_user_version(&conn, SQLITE_MEMORY_SCHEMA_VERSION)?;
     }
@@ -1499,6 +1507,25 @@ fn ensure_approval_lifecycle_tables(conn: &Connection) -> Result<(), String> {
         ",
     )
     .map_err(|error| format!("ensure approval lifecycle storage failed: {error}"))?;
+
+    Ok(())
+}
+
+fn ensure_session_tool_policy_storage(conn: &Connection) -> Result<(), String> {
+    #[cfg(test)]
+    test_support::record_sqlite_schema_repair("session_tool_policy");
+
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS session_tool_policies(
+          session_id TEXT PRIMARY KEY,
+          requested_tool_ids_json TEXT NOT NULL,
+          runtime_narrowing_json TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        ",
+    )
+    .map_err(|error| format!("ensure session tool policy storage failed: {error}"))?;
 
     Ok(())
 }

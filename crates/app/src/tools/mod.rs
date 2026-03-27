@@ -91,8 +91,8 @@ const WEB_FETCH_TOOL_NAME: &str = "web.fetch";
 const WEB_SEARCH_TOOL_NAME: &str = "web.search";
 
 pub(crate) const LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY: &str = "_loongclaw";
-const LOONGCLAW_INTERNAL_TOOL_SEARCH_KEY: &str = "tool_search";
-const LOONGCLAW_INTERNAL_TOOL_SEARCH_VISIBLE_TOOL_IDS_KEY: &str = "visible_tool_ids";
+pub(crate) const LOONGCLAW_INTERNAL_TOOL_SEARCH_KEY: &str = "tool_search";
+pub(crate) const LOONGCLAW_INTERNAL_TOOL_SEARCH_VISIBLE_TOOL_IDS_KEY: &str = "visible_tool_ids";
 pub(crate) const LOONGCLAW_INTERNAL_RUNTIME_NARROWING_KEY: &str = "runtime_narrowing";
 
 pub fn normalize_external_skills_domain_rule(raw: &str) -> Result<String, String> {
@@ -176,7 +176,7 @@ fn trusted_internal_tool_payload_enabled() -> bool {
             .unwrap_or(false)
 }
 
-fn payload_uses_reserved_internal_tool_context(payload: &Value) -> bool {
+pub(crate) fn payload_uses_reserved_internal_tool_context(payload: &Value) -> bool {
     payload
         .as_object()
         .is_some_and(|body| body.contains_key(LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY))
@@ -281,15 +281,21 @@ fn execute_app_tool_with_browser_companion_readiness(
                 tool_config,
             )
         }
-        "sessions_list" | "sessions_history" | "session_status" | "session_events"
-        | "session_archive" | "session_cancel" | "session_recover" => {
-            session::execute_session_tool_with_policies(
-                request,
-                current_session_id,
-                memory_config,
-                tool_config,
-            )
-        }
+        "sessions_list"
+        | "sessions_history"
+        | "session_tool_policy_status"
+        | "session_tool_policy_set"
+        | "session_tool_policy_clear"
+        | "session_status"
+        | "session_events"
+        | "session_archive"
+        | "session_cancel"
+        | "session_recover" => session::execute_session_tool_with_policies(
+            request,
+            current_session_id,
+            memory_config,
+            tool_config,
+        ),
         #[cfg(feature = "tool-browser")]
         "browser.companion.click" | "browser.companion.type" => {
             if assume_browser_companion_ready {
@@ -1756,6 +1762,7 @@ mod tests {
             "file.write",
             "provider.switch",
             "session_events",
+            "session_tool_policy_status",
             "session_status",
             "session_wait",
             "sessions_history",
@@ -1797,6 +1804,7 @@ mod tests {
             "file.write",
             "provider.switch",
             "session_events",
+            "session_tool_policy_status",
             "session_status",
             "session_wait",
             "sessions_history",
@@ -1822,6 +1830,8 @@ mod tests {
         assert!(names.contains(&"session_archive"));
         assert!(names.contains(&"session_cancel"));
         assert!(names.contains(&"session_recover"));
+        assert!(names.contains(&"session_tool_policy_set"));
+        assert!(names.contains(&"session_tool_policy_clear"));
     }
 
     #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
@@ -1864,6 +1874,7 @@ mod tests {
             "delegate",
             "delegate_async",
             "session_events",
+            "session_tool_policy_status",
             "session_status",
             "session_wait",
             "sessions_history",
@@ -1878,7 +1889,13 @@ mod tests {
             );
         }
 
-        for tool_name in ["session_archive", "session_cancel", "session_recover"] {
+        for tool_name in [
+            "session_archive",
+            "session_cancel",
+            "session_recover",
+            "session_tool_policy_set",
+            "session_tool_policy_clear",
+        ] {
             assert!(
                 !view.contains(tool_name),
                 "expected runtime view to hide `{tool_name}` by default"
@@ -1905,6 +1922,8 @@ mod tests {
         assert!(view.contains("session_archive"));
         assert!(view.contains("session_cancel"));
         assert!(view.contains("session_recover"));
+        assert!(view.contains("session_tool_policy_set"));
+        assert!(view.contains("session_tool_policy_clear"));
     }
 
     #[test]

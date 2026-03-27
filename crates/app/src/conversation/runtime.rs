@@ -39,7 +39,8 @@ use super::turn_middleware_registry::{
 use crate::memory::runtime_config::MemoryRuntimeConfig;
 #[cfg(feature = "memory-sqlite")]
 use crate::session::repository::{
-    SessionKind, SessionRepository, SessionState, TransitionSessionWithEventIfCurrentRequest,
+    SessionKind, SessionRepository, SessionState, SessionToolPolicyRecord,
+    TransitionSessionWithEventIfCurrentRequest,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,6 +125,49 @@ fn load_delegate_runtime_narrowing(
     Ok(execution.and_then(|execution| {
         (!execution.runtime_narrowing.is_empty()).then_some(execution.runtime_narrowing)
     }))
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn load_session_tool_policy(
+    repo: &SessionRepository,
+    session_id: &str,
+) -> Result<Option<SessionToolPolicyRecord>, String> {
+    repo.load_session_tool_policy(session_id)
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn apply_session_tool_policy_to_tool_view(
+    base_tool_view: ToolView,
+    session_tool_policy: Option<&SessionToolPolicyRecord>,
+) -> ToolView {
+    let Some(session_tool_policy) = session_tool_policy else {
+        return base_tool_view;
+    };
+    if session_tool_policy.requested_tool_ids.is_empty() {
+        return base_tool_view;
+    }
+
+    let policy_tool_view = ToolView::from_tool_names(session_tool_policy.requested_tool_ids.iter());
+    base_tool_view.intersect(&policy_tool_view)
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn merge_effective_runtime_narrowing(
+    delegate_runtime_narrowing: Option<ToolRuntimeNarrowing>,
+    session_tool_policy: Option<&SessionToolPolicyRecord>,
+) -> Option<ToolRuntimeNarrowing> {
+    let policy_runtime_narrowing = session_tool_policy.and_then(|policy| {
+        (!policy.runtime_narrowing.is_empty()).then_some(policy.runtime_narrowing.clone())
+    });
+
+    match (delegate_runtime_narrowing, policy_runtime_narrowing) {
+        (Some(delegate_runtime_narrowing), Some(policy_runtime_narrowing)) => {
+            Some(delegate_runtime_narrowing.intersect(&policy_runtime_narrowing))
+        }
+        (Some(delegate_runtime_narrowing), None) => Some(delegate_runtime_narrowing),
+        (None, Some(policy_runtime_narrowing)) => Some(policy_runtime_narrowing),
+        (None, None) => None,
+    }
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -430,6 +474,56 @@ impl<E> DefaultConversationRuntime<E>
 where
     E: ConversationContextEngine,
 {
+    fn base_tool_view(&self, config: &LoongClawConfig, session_id: &str) -> CliResult<ToolView> {
+        #[cfg(feature = "memory-sqlite")]
+        {
+            let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+            if let Ok(repo) = SessionRepository::new(&memory_config) {
+                if let Some(session) = repo
+                    .load_session(session_id)
+                    .map_err(|error| format!("load session tool-view context failed: {error}"))?
+                {
+                    if session.parent_session_id.is_some() {
+                        let depth = match repo.session_lineage_depth(session_id) {
+                            Ok(depth) => depth,
+                            Err(error)
+                                if error.starts_with("session_lineage_broken:")
+                                    || error.starts_with("session_lineage_cycle_detected:") =>
+                            {
+                                return Ok(delegate_child_tool_view_for_config_with_delegate(
+                                    &config.tools,
+                                    false,
+                                ));
+                            }
+                            Err(error) => {
+                                return Err(format!(
+                                    "compute session lineage depth for tool view failed: {error}"
+                                ));
+                            }
+                        };
+                        let allow_nested_delegate = depth < config.tools.delegate.max_depth;
+                        return Ok(delegate_child_tool_view_for_config_with_delegate(
+                            &config.tools,
+                            allow_nested_delegate,
+                        ));
+                    }
+                } else if repo
+                    .load_session_summary_with_legacy_fallback(session_id)
+                    .map_err(|error| {
+                        format!("load legacy session tool-view context failed: {error}")
+                    })?
+                    .is_some_and(|session| session.kind == SessionKind::DelegateChild)
+                {
+                    return Ok(delegate_child_tool_view_for_config(&config.tools));
+                }
+            }
+        }
+
+        Ok(crate::tools::runtime_tool_view_from_loongclaw_config(
+            config,
+        ))
+    }
+
     async fn build_context_for_tool_view(
         &self,
         config: &LoongClawConfig,
@@ -791,17 +885,28 @@ where
         {
             let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
             if let Ok(repo) = SessionRepository::new(&memory_config) {
+                let session_tool_policy = load_session_tool_policy(&repo, session_id)?;
                 if let Some(session) = repo
                     .load_session(session_id)
                     .map_err(|error| format!("load session context failed: {error}"))?
                 {
                     if let Some(parent_session_id) = session.parent_session_id {
-                        let runtime_narrowing = load_delegate_runtime_narrowing(&repo, session_id)?;
+                        let delegate_runtime_narrowing =
+                            load_delegate_runtime_narrowing(&repo, session_id)?;
+                        let runtime_narrowing = merge_effective_runtime_narrowing(
+                            delegate_runtime_narrowing,
+                            session_tool_policy.as_ref(),
+                        );
                         let runtime_self_continuity =
                             load_session_runtime_self_continuity(&repo, session_id)?;
                         let session_context =
-                            SessionContext::child(session.session_id, parent_session_id, tool_view)
-                                .with_runtime_narrowing(runtime_narrowing.unwrap_or_default());
+                            SessionContext::child(session.session_id, parent_session_id, tool_view);
+                        let session_context = match runtime_narrowing {
+                            Some(runtime_narrowing) => {
+                                session_context.with_runtime_narrowing(runtime_narrowing)
+                            }
+                            None => session_context,
+                        };
                         let session_context = match runtime_self_continuity {
                             Some(runtime_self_continuity) => session_context
                                 .with_runtime_self_continuity(runtime_self_continuity),
@@ -812,8 +917,16 @@ where
 
                     let runtime_self_continuity =
                         load_session_runtime_self_continuity(&repo, session_id)?;
+                    let runtime_narrowing =
+                        merge_effective_runtime_narrowing(None, session_tool_policy.as_ref());
                     let session_context =
                         SessionContext::root_with_tool_view(session.session_id, tool_view);
+                    let session_context = match runtime_narrowing {
+                        Some(runtime_narrowing) => {
+                            session_context.with_runtime_narrowing(runtime_narrowing)
+                        }
+                        None => session_context,
+                    };
                     let session_context = match runtime_self_continuity {
                         Some(runtime_self_continuity) => {
                             session_context.with_runtime_self_continuity(runtime_self_continuity)
@@ -826,12 +939,22 @@ where
                     .map_err(|error| format!("load legacy session context failed: {error}"))?
                     && let Some(parent_session_id) = summary.parent_session_id
                 {
-                    let runtime_narrowing = load_delegate_runtime_narrowing(&repo, session_id)?;
+                    let delegate_runtime_narrowing =
+                        load_delegate_runtime_narrowing(&repo, session_id)?;
+                    let runtime_narrowing = merge_effective_runtime_narrowing(
+                        delegate_runtime_narrowing,
+                        session_tool_policy.as_ref(),
+                    );
                     let runtime_self_continuity =
                         load_session_runtime_self_continuity(&repo, session_id)?;
                     let session_context =
-                        SessionContext::child(summary.session_id, parent_session_id, tool_view)
-                            .with_runtime_narrowing(runtime_narrowing.unwrap_or_default());
+                        SessionContext::child(summary.session_id, parent_session_id, tool_view);
+                    let session_context = match runtime_narrowing {
+                        Some(runtime_narrowing) => {
+                            session_context.with_runtime_narrowing(runtime_narrowing)
+                        }
+                        None => session_context,
+                    };
                     let session_context = match runtime_self_continuity {
                         Some(runtime_self_continuity) => {
                             session_context.with_runtime_self_continuity(runtime_self_continuity)
@@ -845,8 +968,16 @@ where
                 {
                     let runtime_self_continuity =
                         load_session_runtime_self_continuity(&repo, session_id)?;
+                    let runtime_narrowing =
+                        merge_effective_runtime_narrowing(None, session_tool_policy.as_ref());
                     let session_context =
                         SessionContext::root_with_tool_view(summary.session_id, tool_view);
+                    let session_context = match runtime_narrowing {
+                        Some(runtime_narrowing) => {
+                            session_context.with_runtime_narrowing(runtime_narrowing)
+                        }
+                        None => session_context,
+                    };
                     let session_context = match runtime_self_continuity {
                         Some(runtime_self_continuity) => {
                             session_context.with_runtime_self_continuity(runtime_self_continuity)
@@ -867,53 +998,23 @@ where
         session_id: &str,
         _binding: ConversationRuntimeBinding<'_>,
     ) -> CliResult<ToolView> {
+        let base_tool_view = self.base_tool_view(config, session_id)?;
+
         #[cfg(feature = "memory-sqlite")]
         {
             let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
             if let Ok(repo) = SessionRepository::new(&memory_config) {
-                if let Some(session) = repo
-                    .load_session(session_id)
-                    .map_err(|error| format!("load session tool-view context failed: {error}"))?
-                {
-                    if session.parent_session_id.is_some() {
-                        let depth = match repo.session_lineage_depth(session_id) {
-                            Ok(depth) => depth,
-                            Err(error)
-                                if error.starts_with("session_lineage_broken:")
-                                    || error.starts_with("session_lineage_cycle_detected:") =>
-                            {
-                                return Ok(delegate_child_tool_view_for_config_with_delegate(
-                                    &config.tools,
-                                    false,
-                                ));
-                            }
-                            Err(error) => {
-                                return Err(format!(
-                                    "compute session lineage depth for tool view failed: {error}"
-                                ));
-                            }
-                        };
-                        let allow_nested_delegate = depth < config.tools.delegate.max_depth;
-                        return Ok(delegate_child_tool_view_for_config_with_delegate(
-                            &config.tools,
-                            allow_nested_delegate,
-                        ));
-                    }
-                } else if repo
-                    .load_session_summary_with_legacy_fallback(session_id)
-                    .map_err(|error| {
-                        format!("load legacy session tool-view context failed: {error}")
-                    })?
-                    .is_some_and(|session| session.kind == SessionKind::DelegateChild)
-                {
-                    return Ok(delegate_child_tool_view_for_config(&config.tools));
+                let session_tool_policy = load_session_tool_policy(&repo, session_id)?;
+                if session_tool_policy.is_some() {
+                    return Ok(apply_session_tool_policy_to_tool_view(
+                        base_tool_view,
+                        session_tool_policy.as_ref(),
+                    ));
                 }
             }
         }
 
-        Ok(crate::tools::runtime_tool_view_from_loongclaw_config(
-            config,
-        ))
+        Ok(base_tool_view)
     }
 
     async fn bootstrap(
