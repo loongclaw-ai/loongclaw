@@ -1,7 +1,7 @@
 # Architecture Drift Report 2026-03
 
 ## Summary
-- Generated at: 2026-03-27T16:49:04Z
+- Generated at: 2026-03-27T17:05:43Z
 - Report month: `2026-03`
 - Baseline report: none
 - Hotspots tracked: 14
@@ -18,7 +18,7 @@
 | memory_mod | `foundation` | `crates/app/src/memory/mod.rs` | 356 | 650 | 294 | 14 | 16 | 2 | 87.5% | WATCH |
 | acp_manager | `operational_density` | `crates/app/src/acp/manager.rs` | 3327 | 3600 | 273 | 8 | 12 | 4 | 92.4% | WATCH |
 | acpx_runtime | `operational_density` | `crates/app/src/acp/acpx.rs` | 2696 | 2800 | 104 | 56 | 65 | 9 | 96.3% | TIGHT |
-| channel_registry | `structural_size` | `crates/app/src/channel/registry.rs` | 9883 | 10500 | 617 | 90 | 90 | 0 | 100.0% | TIGHT |
+| channel_registry | `structural_size` | `crates/app/src/channel/registry.rs` | 9884 | 10500 | 616 | 90 | 90 | 0 | 100.0% | TIGHT |
 | channel_config | `structural_size` | `crates/app/src/config/channels.rs` | 9756 | 9800 | 44 | 90 | 90 | 0 | 100.0% | TIGHT |
 | chat_runtime | `structural_size,operational_density` | `crates/app/src/chat.rs` | 6821 | 7300 | 479 | 145 | 160 | 15 | 93.4% | WATCH |
 | channel_mod | `structural_size,operational_density` | `crates/app/src/channel/mod.rs` | 6399 | 6400 | 1 | 106 | 110 | 4 | 100.0% | TIGHT |
@@ -63,7 +63,7 @@
 <!-- arch-hotspot key=memory_mod lines=356 functions=14 -->
 <!-- arch-hotspot key=acp_manager lines=3327 functions=8 -->
 <!-- arch-hotspot key=acpx_runtime lines=2696 functions=56 -->
-<!-- arch-hotspot key=channel_registry lines=9883 functions=90 -->
+<!-- arch-hotspot key=channel_registry lines=9884 functions=90 -->
 <!-- arch-hotspot key=channel_config lines=9756 functions=90 -->
 <!-- arch-hotspot key=chat_runtime lines=6821 functions=145 -->
 <!-- arch-hotspot key=channel_mod lines=6399 functions=106 -->
