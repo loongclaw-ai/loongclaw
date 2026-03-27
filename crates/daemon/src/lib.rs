@@ -79,6 +79,7 @@ pub mod completions_cli;
 pub mod doctor_cli;
 pub mod feishu_cli;
 pub mod feishu_support;
+pub mod gateway;
 pub mod import_cli;
 #[cfg(any(feature = "memory-sqlite", feature = "mvp"))]
 mod memory_context_benchmark;
@@ -103,6 +104,7 @@ pub mod skills_cli;
 pub mod source_presentation;
 pub mod supervisor;
 
+pub use gateway::read_models::{ChannelsCliJsonPayload, ChannelsCliJsonSchema};
 pub use loongclaw_spec::programmatic::{
     acquire_programmatic_circuit_slot, record_programmatic_circuit_outcome,
 };
@@ -2851,7 +2853,7 @@ pub fn build_runtime_snapshot_artifact_json_payload(
     snapshot: &RuntimeSnapshotCliState,
     metadata: &RuntimeSnapshotArtifactMetadata,
 ) -> CliResult<Value> {
-    let base_payload = build_runtime_snapshot_cli_json_payload(snapshot);
+    let base_payload = build_runtime_snapshot_cli_json_payload(snapshot)?;
     let lineage = runtime_snapshot_artifact_lineage(snapshot, metadata)?;
     let document = RuntimeSnapshotArtifactDocument {
         config: snapshot.config.clone(),
@@ -2963,24 +2965,6 @@ pub fn run_channels_cli(config_path: Option<&str>, as_json: bool) -> CliResult<(
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct ChannelsCliJsonSchema {
-    pub version: u32,
-    pub primary_channel_view: &'static str,
-    pub catalog_view: &'static str,
-    pub legacy_channel_views: &'static [&'static str],
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ChannelsCliJsonPayload {
-    pub config: String,
-    pub schema: ChannelsCliJsonSchema,
-    pub channels: Vec<mvp::channel::ChannelStatusSnapshot>,
-    pub catalog_only_channels: Vec<mvp::channel::ChannelCatalogEntry>,
-    pub channel_catalog: Vec<mvp::channel::ChannelCatalogEntry>,
-    pub channel_surfaces: Vec<mvp::channel::ChannelSurface>,
-}
-
 pub const CHANNELS_CLI_JSON_SCHEMA_VERSION: u32 = 1;
 pub const CHANNELS_CLI_JSON_LEGACY_VIEWS: &[&str] = &["channels", "catalog_only_channels"];
 
@@ -2988,19 +2972,7 @@ pub fn build_channels_cli_json_payload(
     config_path: &str,
     inventory: &mvp::channel::ChannelInventory,
 ) -> ChannelsCliJsonPayload {
-    ChannelsCliJsonPayload {
-        config: config_path.to_owned(),
-        schema: ChannelsCliJsonSchema {
-            version: CHANNELS_CLI_JSON_SCHEMA_VERSION,
-            primary_channel_view: "channel_surfaces",
-            catalog_view: "channel_catalog",
-            legacy_channel_views: CHANNELS_CLI_JSON_LEGACY_VIEWS,
-        },
-        channels: inventory.channels.clone(),
-        catalog_only_channels: inventory.catalog_only_channels.clone(),
-        channel_catalog: inventory.channel_catalog.clone(),
-        channel_surfaces: inventory.channel_surfaces.clone(),
-    }
+    gateway::read_models::build_channel_inventory_read_model(config_path, inventory)
 }
 
 pub fn render_channel_surfaces_text(
@@ -3490,14 +3462,15 @@ pub async fn run_acp_status_cli(
         .await?;
 
     if as_json {
-        let payload = json!({
-            "config": resolved_path.display().to_string(),
-            "requested_session": session_key,
-            "requested_conversation_id": conversation_id,
-            "requested_route_session_id": route_session_id,
-            "resolved_session_key": resolved_session_key,
-            "status": acp_session_status_json(&status),
-        });
+        let config_display = resolved_path.display().to_string();
+        let payload = gateway::read_models::build_acp_status_read_model(
+            config_display.as_str(),
+            session_key,
+            conversation_id,
+            route_session_id,
+            resolved_session_key.as_str(),
+            &status,
+        );
         let pretty = serde_json::to_string_pretty(&payload)
             .map_err(|error| format!("serialize ACP status output failed: {error}"))?;
         println!("{pretty}");
@@ -3544,10 +3517,11 @@ pub async fn run_acp_observability_cli(config_path: Option<&str>, as_json: bool)
     let snapshot = manager.observability_snapshot(&config).await?;
 
     if as_json {
-        let payload = json!({
-            "config": resolved_path.display().to_string(),
-            "snapshot": acp_manager_observability_json(&snapshot),
-        });
+        let config_display = resolved_path.display().to_string();
+        let payload = gateway::read_models::build_acp_observability_read_model(
+            config_display.as_str(),
+            &snapshot,
+        );
         let pretty = serde_json::to_string_pretty(&payload)
             .map_err(|error| format!("serialize ACP observability output failed: {error}"))?;
         println!("{pretty}");
@@ -3796,17 +3770,13 @@ pub fn run_acp_dispatch_cli(
     let decision = mvp::acp::evaluate_acp_conversation_dispatch_for_address(&config, &address)?;
 
     if as_json {
-        let payload = json!({
-            "config": resolved_path.display().to_string(),
-            "address": {
-                "session_id": address.session_id,
-                "channel_id": address.channel_id,
-                "account_id": address.account_id,
-                "conversation_id": address.conversation_id,
-                "thread_id": address.thread_id,
-            },
-            "dispatch": acp_dispatch_decision_json(session_id.as_str(), &decision),
-        });
+        let config_display = resolved_path.display().to_string();
+        let payload = gateway::read_models::build_acp_dispatch_read_model(
+            config_display.as_str(),
+            &address,
+            session_id.as_str(),
+            &decision,
+        );
         let pretty = serde_json::to_string_pretty(&payload)
             .map_err(|error| format!("serialize ACP dispatch output failed: {error}"))?;
         println!("{pretty}");
@@ -4868,32 +4838,13 @@ pub fn parse_json_payload(raw: &str, context: &str) -> CliResult<Value> {
     serde_json::from_str(raw).map_err(|error| format!("invalid JSON for {context}: {error}"))
 }
 
-pub fn build_runtime_snapshot_cli_json_payload(snapshot: &RuntimeSnapshotCliState) -> Value {
-    json!({
-        "config": snapshot.config,
-        "schema": {
-            "version": RUNTIME_SNAPSHOT_CLI_JSON_SCHEMA_VERSION,
-            "surface": "runtime_snapshot",
-            "purpose": "experiment_reproducibility",
-        },
-        "provider": runtime_snapshot_provider_json(&snapshot.provider),
-        "context_engine": runtime_snapshot_context_engine_json(&snapshot.context_engine),
-        "memory_system": runtime_snapshot_memory_system_json(&snapshot.memory_system),
-        "acp": runtime_snapshot_acp_json(&snapshot.acp),
-        "channels": {
-            "enabled_channel_ids": snapshot.enabled_channel_ids,
-            "enabled_service_channel_ids": snapshot.enabled_service_channel_ids,
-            "inventory": build_channels_cli_json_payload(&snapshot.config, &snapshot.channels),
-        },
-        "tool_runtime": runtime_snapshot_tool_runtime_json(&snapshot.tool_runtime),
-        "tools": {
-            "visible_tool_count": snapshot.visible_tool_names.len(),
-            "visible_tool_names": snapshot.visible_tool_names,
-            "capability_snapshot_sha256": snapshot.capability_snapshot_sha256,
-            "capability_snapshot": snapshot.capability_snapshot,
-        },
-        "external_skills": runtime_snapshot_external_skills_json(&snapshot.external_skills),
-    })
+pub fn build_runtime_snapshot_cli_json_payload(
+    snapshot: &RuntimeSnapshotCliState,
+) -> CliResult<Value> {
+    let read_model = gateway::read_models::build_runtime_snapshot_read_model(snapshot);
+    let payload = serde_json::to_value(read_model)
+        .map_err(|error| format!("serialize runtime snapshot read model failed: {error}"))?;
+    Ok(payload)
 }
 
 pub fn render_runtime_snapshot_text(snapshot: &RuntimeSnapshotCliState) -> String {
