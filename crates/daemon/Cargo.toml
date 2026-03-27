@@ -54,6 +54,7 @@ libc = "0.2"
 
 
 [dependencies]
+axum.workspace = true
 clap.workspace = true
 clap_complete = "4.5"
 dialoguer.workspace = true
@@ -85,7 +86,6 @@ name = "loongclaw"
 path = "src/main.rs"
 
 [dev-dependencies]
-axum.workspace = true
 loongclaw-spec = { path = "../spec", features = ["test-hooks"] }
 sha2.workspace = true
 wat = "1"
