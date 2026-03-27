@@ -11,11 +11,11 @@ pub struct NostrAccountConfig {
     pub account_id: Option<String>,
     #[serde(default)]
     pub relay_urls: Option<Vec<String>>,
-    #[serde(default = "default_nostr_relay_urls_env")]
+    #[serde(default)]
     pub relay_urls_env: Option<String>,
     #[serde(default)]
     pub private_key: Option<SecretRef>,
-    #[serde(default = "default_nostr_private_key_env")]
+    #[serde(default)]
     pub private_key_env: Option<String>,
     #[serde(default)]
     pub allowed_pubkeys: Option<Vec<String>>,
@@ -71,7 +71,7 @@ impl ResolvedNostrChannelConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct NostrChannelConfig {
     #[serde(default)]
@@ -92,6 +92,22 @@ pub struct NostrChannelConfig {
     pub allowed_pubkeys: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub accounts: BTreeMap<String, NostrAccountConfig>,
+}
+
+impl Default for NostrChannelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            account_id: None,
+            default_account: None,
+            relay_urls: Vec::new(),
+            relay_urls_env: default_nostr_relay_urls_env(),
+            private_key: None,
+            private_key_env: default_nostr_private_key_env(),
+            allowed_pubkeys: Vec::new(),
+            accounts: BTreeMap::new(),
+        }
+    }
 }
 
 impl NostrChannelConfig {
@@ -219,6 +235,9 @@ impl NostrChannelConfig {
             .account_key
             .as_deref()
             .and_then(|key| self.accounts.get(key));
+        let has_relay_urls_override = account_override
+            .and_then(|account| account.relay_urls.as_ref())
+            .is_some();
 
         let merged = NostrChannelConfig {
             enabled: self.enabled
@@ -232,9 +251,13 @@ impl NostrChannelConfig {
             relay_urls: account_override
                 .and_then(|account| account.relay_urls.clone())
                 .unwrap_or_else(|| self.relay_urls.clone()),
-            relay_urls_env: account_override
-                .and_then(|account| account.relay_urls_env.clone())
-                .or_else(|| self.relay_urls_env.clone()),
+            relay_urls_env: if has_relay_urls_override {
+                account_override.and_then(|account| account.relay_urls_env.clone())
+            } else {
+                account_override
+                    .and_then(|account| account.relay_urls_env.clone())
+                    .or_else(|| self.relay_urls_env.clone())
+            },
             private_key: account_override
                 .and_then(|account| account.private_key.clone())
                 .or_else(|| self.private_key.clone()),
@@ -284,15 +307,16 @@ impl NostrChannelConfig {
         }
 
         let private_key_hex = self.normalized_private_key_hex();
-        let private_key_hex = private_key_hex.ok().flatten();
-        let Some(private_key_hex) = private_key_hex else {
-            return default_channel_account_identity();
+        let private_key_hex = match private_key_hex {
+            Ok(Some(value)) => value,
+            Ok(None) => return default_channel_account_identity(),
+            Err(_error) => return default_channel_account_identity(),
         };
 
         let public_key_hex = derive_nostr_public_key_hex(private_key_hex.as_str());
         let public_key_hex = match public_key_hex {
             Ok(value) => value,
-            Err(_) => return default_channel_account_identity(),
+            Err(_error) => return default_channel_account_identity(),
         };
         let short_public_key = public_key_hex.get(..16).unwrap_or(public_key_hex.as_str());
         let account_id = format!("nostr_{short_public_key}");
@@ -381,24 +405,28 @@ fn normalize_nostr_key_hex(bytes: [u8; 32]) -> String {
 
 pub(crate) fn parse_nostr_private_key_hex(raw: &str) -> CliResult<String> {
     let trimmed = raw.trim();
-    if trimmed.starts_with("nsec1") {
-        let bytes = decode_nostr_bech32_bytes(trimmed, "nsec")?;
-        return Ok(normalize_nostr_key_hex(bytes));
-    }
-
-    let bytes = decode_nostr_hex_bytes(trimmed, "private")?;
-    Ok(normalize_nostr_key_hex(bytes))
+    let private_key_bytes = if trimmed.starts_with("nsec1") {
+        decode_nostr_bech32_bytes(trimmed, "nsec")?
+    } else {
+        decode_nostr_hex_bytes(trimmed, "private")?
+    };
+    let secret_key = SecretKey::from_byte_array(private_key_bytes)
+        .map_err(|error| format!("invalid nostr private key: {error}"))?;
+    let normalized_private_key_bytes = secret_key.secret_bytes();
+    Ok(normalize_nostr_key_hex(normalized_private_key_bytes))
 }
 
 pub(crate) fn parse_nostr_public_key_hex(raw: &str) -> CliResult<String> {
     let trimmed = raw.trim();
-    if trimmed.starts_with("npub1") {
-        let bytes = decode_nostr_bech32_bytes(trimmed, "npub")?;
-        return Ok(normalize_nostr_key_hex(bytes));
-    }
-
-    let bytes = decode_nostr_hex_bytes(trimmed, "public")?;
-    Ok(normalize_nostr_key_hex(bytes))
+    let public_key_bytes = if trimmed.starts_with("npub1") {
+        decode_nostr_bech32_bytes(trimmed, "npub")?
+    } else {
+        decode_nostr_hex_bytes(trimmed, "public")?
+    };
+    let public_key = XOnlyPublicKey::from_byte_array(public_key_bytes)
+        .map_err(|error| format!("invalid nostr public key: {error}"))?;
+    let normalized_public_key_bytes = public_key.serialize();
+    Ok(normalize_nostr_key_hex(normalized_public_key_bytes))
 }
 
 fn derive_nostr_public_key_hex(private_key_hex: &str) -> CliResult<String> {
@@ -460,6 +488,17 @@ mod tests {
 
     use serde_json::json;
 
+    fn deterministic_test_nostr_private_key_bytes() -> [u8; 32] {
+        [0x11_u8; 32]
+    }
+
+    fn deterministic_test_nostr_private_key_nsec() -> String {
+        let hrp = Hrp::parse("nsec").expect("valid nsec hrp");
+        let private_key_bytes = deterministic_test_nostr_private_key_bytes();
+        bech32::encode::<bech32::Bech32>(hrp, &private_key_bytes)
+            .expect("encode deterministic test nsec")
+    }
+
     #[test]
     fn nostr_resolves_relay_urls_and_nsec_private_key_from_env_pointers() {
         let mut env = crate::test_support::ScopedEnv::new();
@@ -467,9 +506,10 @@ mod tests {
             "TEST_NOSTR_RELAY_URLS",
             "wss://relay-one.example.test,wss://relay-two.example.test",
         );
+        let deterministic_nostr_private_key = deterministic_test_nostr_private_key_nsec();
         env.set(
             "TEST_NOSTR_PRIVATE_KEY",
-            "nsec1lqw6zqyanj9mz8gwhdam6tqge42vptz4zg93qsfej440xm5h5esqya0juv",
+            deterministic_nostr_private_key.as_str(),
         );
 
         let config_value = json!({
@@ -522,5 +562,90 @@ mod tests {
             config.private_key_env.as_deref(),
             Some(NOSTR_PRIVATE_KEY_ENV)
         );
+    }
+
+    #[test]
+    fn nostr_default_config_keeps_default_env_pointers_when_table_is_omitted() {
+        let config = crate::config::LoongClawConfig::default();
+
+        assert_eq!(
+            config.nostr.relay_urls_env.as_deref(),
+            Some(NOSTR_RELAY_URLS_ENV)
+        );
+        assert_eq!(
+            config.nostr.private_key_env.as_deref(),
+            Some(NOSTR_PRIVATE_KEY_ENV)
+        );
+    }
+
+    #[test]
+    fn nostr_account_omission_inherits_top_level_env_pointer_names() {
+        let config: NostrChannelConfig = serde_json::from_value(json!({
+            "enabled": true,
+            "relay_urls_env": "CUSTOM_NOSTR_RELAY_URLS",
+            "private_key_env": "CUSTOM_NOSTR_PRIVATE_KEY",
+            "accounts": {
+                "ops": {
+                    "enabled": true
+                }
+            }
+        }))
+        .expect("deserialize nostr config");
+
+        let resolved = config
+            .resolve_account(Some("ops"))
+            .expect("resolve nostr account");
+
+        assert_eq!(
+            resolved.relay_urls_env.as_deref(),
+            Some("CUSTOM_NOSTR_RELAY_URLS")
+        );
+        assert_eq!(
+            resolved.private_key_env.as_deref(),
+            Some("CUSTOM_NOSTR_PRIVATE_KEY")
+        );
+    }
+
+    #[test]
+    fn nostr_account_explicit_empty_relay_urls_do_not_fall_back_to_top_level_env() {
+        let mut env = crate::test_support::ScopedEnv::new();
+        env.set("CUSTOM_NOSTR_RELAY_URLS", "wss://relay.example.test");
+
+        let config: NostrChannelConfig = serde_json::from_value(json!({
+            "enabled": true,
+            "relay_urls_env": "CUSTOM_NOSTR_RELAY_URLS",
+            "accounts": {
+                "ops": {
+                    "relay_urls": []
+                }
+            }
+        }))
+        .expect("deserialize nostr config");
+
+        let resolved = config
+            .resolve_account(Some("ops"))
+            .expect("resolve nostr account");
+        let relay_urls = resolved.relay_urls();
+
+        assert!(relay_urls.is_empty());
+        assert_eq!(resolved.relay_urls_env, None);
+    }
+
+    #[test]
+    fn nostr_private_key_parser_rejects_zero_scalar() {
+        let zero_private_key = "00".repeat(32);
+        let error = parse_nostr_private_key_hex(zero_private_key.as_str())
+            .expect_err("zero scalar should be rejected");
+
+        assert!(error.contains("invalid nostr private key"));
+    }
+
+    #[test]
+    fn nostr_public_key_parser_rejects_invalid_curve_point() {
+        let invalid_public_key = "ff".repeat(32);
+        let error = parse_nostr_public_key_hex(invalid_public_key.as_str())
+            .expect_err("invalid curve point should be rejected");
+
+        assert!(error.contains("invalid nostr public key"));
     }
 }

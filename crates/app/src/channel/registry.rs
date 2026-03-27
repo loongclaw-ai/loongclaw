@@ -8817,7 +8817,6 @@ mod tests {
             .iter()
             .find(|entry| entry.id == "nostr")
             .expect("nostr catalog entry");
-
         assert_eq!(
             nostr.implementation_status,
             ChannelCatalogImplementationStatus::ConfigBacked
@@ -8922,7 +8921,6 @@ mod tests {
             .iter()
             .find(|entry| entry.id == "nostr")
             .expect("nostr catalog entry");
-
         assert_eq!(
             nostr.implementation_status,
             ChannelCatalogImplementationStatus::ConfigBacked

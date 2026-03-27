@@ -1038,6 +1038,7 @@ fn canonicalize_channel_configs_for_encoding(config: &mut LoongClawConfig) {
     canonicalize_google_chat_channel_for_encoding(&mut config.google_chat);
     canonicalize_teams_channel_for_encoding(&mut config.teams);
     canonicalize_imessage_channel_for_encoding(&mut config.imessage);
+    canonicalize_nostr_channel_for_encoding(&mut config.nostr);
     canonicalize_whatsapp_channel_for_encoding(&mut config.whatsapp);
     canonicalize_mattermost_channel_for_encoding(&mut config.mattermost);
     canonicalize_nextcloud_talk_channel_for_encoding(&mut config.nextcloud_talk);
@@ -1200,6 +1201,16 @@ fn canonicalize_imessage_channel_for_encoding(config: &mut ImessageChannelConfig
 
     for account in config.accounts.values_mut() {
         canonicalize_env_secret_reference(&mut account.bridge_token, &mut account.bridge_token_env);
+    }
+}
+
+fn canonicalize_nostr_channel_for_encoding(config: &mut NostrChannelConfig) {
+    canonicalize_optional_env_name(&mut config.relay_urls_env);
+    canonicalize_env_secret_reference(&mut config.private_key, &mut config.private_key_env);
+
+    for account in config.accounts.values_mut() {
+        canonicalize_optional_env_name(&mut account.relay_urls_env);
+        canonicalize_env_secret_reference(&mut account.private_key, &mut account.private_key_env);
     }
 }
 
@@ -2912,12 +2923,26 @@ model = "gpt-5"
         let path = unique_config_path("loongclaw-config-runtime-trimmed-config-backed-env");
         let path_string = path.display().to_string();
         let mut config = LoongClawConfig::default();
+        let mut ops_nostr_account = crate::config::NostrAccountConfig::default();
 
         config.discord.bot_token = Some(SecretRef::Inline("${DISCORD_BOT_TOKEN}".to_owned()));
         config.discord.bot_token_env = Some(" DISCORD_BOT_TOKEN ".to_owned());
 
         config.slack.bot_token = Some(SecretRef::Inline("${SLACK_BOT_TOKEN}".to_owned()));
         config.slack.bot_token_env = Some(" SLACK_BOT_TOKEN ".to_owned());
+
+        config.nostr.relay_urls_env = Some(" NOSTR_RELAY_URLS ".to_owned());
+        config.nostr.private_key = Some(SecretRef::Inline("${NOSTR_PRIVATE_KEY}".to_owned()));
+        config.nostr.private_key_env = Some(" NOSTR_PRIVATE_KEY ".to_owned());
+
+        ops_nostr_account.relay_urls_env = Some(" OPS_NOSTR_RELAY_URLS ".to_owned());
+        ops_nostr_account.private_key =
+            Some(SecretRef::Inline("${OPS_NOSTR_PRIVATE_KEY}".to_owned()));
+        ops_nostr_account.private_key_env = Some(" OPS_NOSTR_PRIVATE_KEY ".to_owned());
+        config
+            .nostr
+            .accounts
+            .insert("ops".to_owned(), ops_nostr_account);
 
         config.whatsapp.access_token =
             Some(SecretRef::Inline("${WHATSAPP_ACCESS_TOKEN}".to_owned()));
@@ -2934,12 +2959,19 @@ model = "gpt-5"
 
         assert!(raw.contains("bot_token_env = \"DISCORD_BOT_TOKEN\""));
         assert!(raw.contains("bot_token_env = \"SLACK_BOT_TOKEN\""));
+        assert!(raw.contains("relay_urls_env = \"NOSTR_RELAY_URLS\""));
+        assert!(raw.contains("private_key_env = \"NOSTR_PRIVATE_KEY\""));
+        assert!(raw.contains("relay_urls_env = \"OPS_NOSTR_RELAY_URLS\""));
+        assert!(raw.contains("private_key_env = \"OPS_NOSTR_PRIVATE_KEY\""));
         assert!(raw.contains("access_token_env = \"WHATSAPP_ACCESS_TOKEN\""));
         assert!(raw.contains("verify_token_env = \"WHATSAPP_VERIFY_TOKEN\""));
         assert!(raw.contains("app_secret_env = \"WHATSAPP_APP_SECRET\""));
 
         assert!(!raw.contains("bot_token = \"${DISCORD_BOT_TOKEN}\""));
         assert!(!raw.contains("bot_token = \"${SLACK_BOT_TOKEN}\""));
+        assert!(!raw.contains("relay_urls_env = \" NOSTR_RELAY_URLS \""));
+        assert!(!raw.contains("private_key = \"${NOSTR_PRIVATE_KEY}\""));
+        assert!(!raw.contains("private_key = \"${OPS_NOSTR_PRIVATE_KEY}\""));
         assert!(!raw.contains("access_token = \"${WHATSAPP_ACCESS_TOKEN}\""));
         assert!(!raw.contains("verify_token = \"${WHATSAPP_VERIFY_TOKEN}\""));
         assert!(!raw.contains("app_secret = \"${WHATSAPP_APP_SECRET}\""));

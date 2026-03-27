@@ -193,27 +193,27 @@ fn build_nostr_snapshot_for_account(
     }
 
     let normalized_private_key_hex = resolved.normalized_private_key_hex();
-    let mut private_key_invalid = false;
+    let mut private_key_is_invalid = false;
     let private_key_hex = match normalized_private_key_hex {
         Ok(value) => value,
         Err(error) => {
+            private_key_is_invalid = true;
             send_issues.push(format!("private_key is invalid: {error}"));
-            private_key_invalid = true;
             None
         }
     };
-    let public_key_hex = if private_key_invalid || private_key_hex.is_none() {
+    let public_key_hex = if private_key_is_invalid || private_key_hex.is_none() {
         None
     } else {
         match resolved.public_key_hex() {
             Ok(value) => value,
             Err(error) => {
-                send_issues.push(format!("private_key is invalid: {error}"));
+                send_issues.push(format!("public_key is invalid: {error}"));
                 None
             }
         }
     };
-    if private_key_hex.is_none() && !private_key_invalid {
+    if private_key_hex.is_none() && !private_key_is_invalid {
         send_issues.push("private_key is missing".to_owned());
     }
 
@@ -345,6 +345,11 @@ fn build_invalid_nostr_snapshot(
 mod tests {
     use super::*;
 
+    fn deterministic_test_nostr_private_key_hex() -> String {
+        let private_key_bytes = [0x11_u8; 32];
+        hex::encode(private_key_bytes)
+    }
+
     #[test]
     fn channel_catalog_includes_nostr_config_backed_surface() {
         let catalog = list_channel_catalog();
@@ -411,7 +416,7 @@ mod tests {
         config.nostr.enabled = true;
         config.nostr.relay_urls = vec!["https://relay.example.test".to_owned()];
         config.nostr.private_key = Some(loongclaw_contracts::SecretRef::Inline(
-            "67dea2ed01af4efe6b84652f82d193946d9d6d74a8d8ddf1ee8f5a67f9f4b1f0".to_owned(),
+            deterministic_test_nostr_private_key_hex(),
         ));
 
         let snapshots = channel_status_snapshots(&config);
@@ -431,13 +436,11 @@ mod tests {
     }
 
     #[test]
-    fn nostr_status_reports_invalid_private_key_without_missing_duplication() {
+    fn nostr_status_reports_invalid_private_key_without_missing_duplicate() {
         let mut config = LoongClawConfig::default();
         config.nostr.enabled = true;
         config.nostr.relay_urls = vec!["wss://relay.example.test".to_owned()];
-        config.nostr.private_key = Some(loongclaw_contracts::SecretRef::Inline(
-            "invalid-private-key".to_owned(),
-        ));
+        config.nostr.private_key = Some(loongclaw_contracts::SecretRef::Inline("00".repeat(32)));
 
         let snapshots = channel_status_snapshots(&config);
         let nostr = snapshots

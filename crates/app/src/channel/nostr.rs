@@ -124,7 +124,7 @@ fn build_text_note_event_with_created_at(
     };
     let serialized = serialize_unsigned_event(&unsigned_event)?;
     let id = compute_event_id_hex(serialized.as_str());
-    let signature = sign_event_id(private_key_hex, id.as_str())?;
+    let signature = sign_event_id(&keypair, id.as_str())?;
 
     Ok(NostrEvent {
         id,
@@ -194,19 +194,19 @@ fn compute_event_id_hex(serialized: &str) -> String {
     hex::encode(digest)
 }
 
-fn sign_event_id(private_key_hex: &str, event_id_hex: &str) -> CliResult<String> {
-    let secret_key = parse_secret_key(private_key_hex)?;
+fn sign_event_id(keypair: &Keypair, event_id_hex: &str) -> CliResult<String> {
     let event_id_bytes = hex::decode(event_id_hex)
         .map_err(|error| format!("invalid nostr event id hex: {error}"))?;
     let event_id_array = <[u8; 32]>::try_from(event_id_bytes.as_slice())
         .map_err(|_conversion_error| "invalid nostr event id length".to_owned())?;
     let secp = Secp256k1::new();
-    let keypair = Keypair::from_secret_key(&secp, &secret_key);
-    let signature = secp.sign_schnorr_no_aux_rand(event_id_array.as_slice(), &keypair);
+    let signature = secp.sign_schnorr_no_aux_rand(event_id_array.as_slice(), keypair);
     Ok(signature.to_string())
 }
 
 async fn publish_event_to_relays(relay_urls: &[String], event: &NostrEvent) -> CliResult<()> {
+    // this send surface fails closed: every configured relay must accept the
+    // publish so operators do not get a false-positive success.
     let mut relay_errors = Vec::new();
 
     for relay_url in relay_urls {
@@ -389,8 +389,14 @@ mod tests {
 
     const TEST_PRIVATE_KEY_HEX: &str =
         "67dea2ed01af4efe6b84652f82d193946d9d6d74a8d8ddf1ee8f5a67f9f4b1f0";
-    const TEST_TARGET_PUBKEY_HEX: &str =
-        "32e182763f3e8587ab4b67b10af9d32860d876ff45c68c205d338244065e31f4";
+
+    fn test_target_pubkey_hex() -> String {
+        let secret_key = parse_secret_key(TEST_PRIVATE_KEY_HEX).expect("parse test private key");
+        let secp = Secp256k1::new();
+        let keypair = Keypair::from_secret_key(&secp, &secret_key);
+        let public_key = XOnlyPublicKey::from_keypair(&keypair).0;
+        public_key.to_string()
+    }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum MockRelayResponse {
@@ -405,20 +411,18 @@ mod tests {
 
     #[test]
     fn build_text_note_event_adds_optional_p_tag() {
+        let target_pubkey_hex = test_target_pubkey_hex();
         let event = build_text_note_event_with_created_at(
             "hello nostr",
             TEST_PRIVATE_KEY_HEX,
-            Some(TEST_TARGET_PUBKEY_HEX),
+            Some(target_pubkey_hex.as_str()),
             1_700_000_000,
         )
         .expect("build event");
 
         assert_eq!(event.kind, NOSTR_TEXT_NOTE_KIND);
         assert_eq!(event.content, "hello nostr");
-        assert_eq!(
-            event.tags,
-            vec![vec!["p".to_owned(), TEST_TARGET_PUBKEY_HEX.to_owned()]]
-        );
+        assert_eq!(event.tags, vec![vec!["p".to_owned(), target_pubkey_hex]]);
         assert_eq!(event.id.len(), 64);
         assert_eq!(event.pubkey.len(), 64);
         assert_eq!(event.sig.len(), 128);
@@ -432,11 +436,12 @@ mod tests {
         let relay_url = relay.0;
         let relay_task = relay.1;
         let resolved = resolved_nostr_config(vec![relay_url.clone()]);
+        let target_pubkey_hex = test_target_pubkey_hex();
 
         run_nostr_send(
             &resolved,
             ChannelOutboundTargetKind::Address,
-            Some(TEST_TARGET_PUBKEY_HEX),
+            Some(target_pubkey_hex.as_str()),
             "relay publish",
         )
         .await
@@ -450,7 +455,7 @@ mod tests {
         assert_eq!(observed.event.content, "relay publish");
         assert_eq!(
             observed.event.tags,
-            vec![vec!["p".to_owned(), TEST_TARGET_PUBKEY_HEX.to_owned()]]
+            vec![vec!["p".to_owned(), target_pubkey_hex]]
         );
     }
 

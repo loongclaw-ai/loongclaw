@@ -193,7 +193,8 @@ use super::config::ResolvedWhatsappChannelConfig;
     feature = "channel-teams",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
-    feature = "channel-imessage"
+    feature = "channel-imessage",
+    feature = "channel-nostr"
 ))]
 use super::config::{ChannelResolvedAccountRoute, normalize_channel_account_id};
 #[cfg(any(
@@ -1190,7 +1191,8 @@ where
     feature = "channel-teams",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
-    feature = "channel-imessage"
+    feature = "channel-imessage",
+    feature = "channel-nostr"
 ))]
 #[derive(Debug, Clone)]
 struct ChannelCommandContext<R> {
@@ -1219,7 +1221,8 @@ struct ChannelCommandContext<R> {
     feature = "channel-teams",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
-    feature = "channel-imessage"
+    feature = "channel-imessage",
+    feature = "channel-nostr"
 ))]
 impl<R> ChannelCommandContext<R> {
     fn emit_route_notice(&self, channel_id: &str) {
@@ -1306,7 +1309,8 @@ impl ChannelResolvedRuntimeAccount for ResolvedWecomChannelConfig {
     feature = "channel-teams",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
-    feature = "channel-imessage"
+    feature = "channel-imessage",
+    feature = "channel-nostr"
 ))]
 async fn run_channel_send_command<R, F, G>(
     context: ChannelCommandContext<R>,
@@ -2079,7 +2083,8 @@ fn build_nostr_command_context(
     feature = "channel-wecom",
     feature = "channel-whatsapp",
     feature = "channel-teams",
-    feature = "channel-imessage"
+    feature = "channel-imessage",
+    feature = "channel-nostr"
 ))]
 #[derive(Debug, Clone, Copy)]
 struct ChannelSendCommandSpec {
@@ -4650,7 +4655,8 @@ fn normalized_feishu_callback_context(
     feature = "channel-teams",
     feature = "channel-wecom",
     feature = "channel-whatsapp",
-    feature = "channel-imessage"
+    feature = "channel-imessage",
+    feature = "channel-nostr"
 ))]
 fn render_channel_route_notice(
     channel_id: &str,
