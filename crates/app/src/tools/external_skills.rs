@@ -16,6 +16,8 @@ use serde_yaml::Value as YamlValue;
 use sha2::{Digest, Sha256};
 use tar::Archive;
 
+use super::tool_search::{rank_searchable_entries, searchable_entry_from_manual_definition};
+
 const DEFAULT_DOWNLOAD_DIR_NAME: &str = "external-skills-downloads";
 const DEFAULT_INSTALL_DIR_NAME: &str = "external-skills-installed";
 const DEFAULT_SKILL_FILENAME: &str = "SKILL.md";
@@ -213,6 +215,42 @@ struct SkillDiscoveryInventory {
     skills: Vec<DiscoveredSkillEntry>,
     shadowed_skills: Vec<DiscoveredSkillEntry>,
     blocked_skill_errors: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum SkillDiscoveryResolution {
+    Active,
+    Shadowed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkillDiscoveryMode {
+    Search,
+    Recommend,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct SkillDiscoveryInventorySummary {
+    visible_skill_count: usize,
+    shadowed_skill_count: usize,
+    blocked_skill_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct RankedSkillDiscoveryResult {
+    #[serde(flatten)]
+    skill: DiscoveredSkillEntry,
+    resolution: SkillDiscoveryResolution,
+    match_reasons: Vec<String>,
+    limitations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct RankedBlockedSkillDiscoveryResult {
+    skill_id: String,
+    error: String,
+    match_reasons: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -920,6 +958,32 @@ pub(crate) fn execute_external_skills_operator_inspect_tool_with_config(
     )
 }
 
+pub(crate) fn execute_external_skills_operator_search_tool_with_config(
+    query: &str,
+    limit: usize,
+    config: &super::runtime_config::ToolRuntimeConfig,
+) -> Result<ToolCoreOutcome, String> {
+    execute_external_skills_operator_discovery_tool_with_config(
+        query,
+        limit,
+        config,
+        SkillDiscoveryMode::Search,
+    )
+}
+
+pub(crate) fn execute_external_skills_operator_recommend_tool_with_config(
+    query: &str,
+    limit: usize,
+    config: &super::runtime_config::ToolRuntimeConfig,
+) -> Result<ToolCoreOutcome, String> {
+    execute_external_skills_operator_discovery_tool_with_config(
+        query,
+        limit,
+        config,
+        SkillDiscoveryMode::Recommend,
+    )
+}
+
 pub(super) fn execute_external_skills_remove_tool_with_config(
     request: ToolCoreRequest,
     config: &super::runtime_config::ToolRuntimeConfig,
@@ -1015,6 +1079,419 @@ fn execute_external_skills_inspect_for_audience(
             ),
         }),
     })
+}
+
+fn execute_external_skills_operator_discovery_tool_with_config(
+    query: &str,
+    limit: usize,
+    config: &super::runtime_config::ToolRuntimeConfig,
+    mode: SkillDiscoveryMode,
+) -> Result<ToolCoreOutcome, String> {
+    let trimmed_query = query.trim();
+    if trimmed_query.is_empty() {
+        return Err("skills discovery requires a non-empty query".to_owned());
+    }
+    if limit == 0 {
+        return Err("skills discovery limit must be greater than zero".to_owned());
+    }
+
+    let inventory = discover_skill_inventory(config)?;
+    let visible_skill_count = inventory.skills.len();
+    let shadowed_skill_count = inventory.shadowed_skills.len();
+    let blocked_skill_count = inventory.blocked_skill_errors.len();
+    let tool_name = match mode {
+        SkillDiscoveryMode::Search => "skills.search",
+        SkillDiscoveryMode::Recommend => "skills.recommend",
+    };
+
+    let results = build_ranked_skill_discovery_results(
+        inventory.skills.as_slice(),
+        trimmed_query,
+        limit,
+        SkillDiscoveryResolution::Active,
+    );
+    let shadowed_results = build_ranked_skill_discovery_results(
+        inventory.shadowed_skills.as_slice(),
+        trimmed_query,
+        limit,
+        SkillDiscoveryResolution::Shadowed,
+    );
+    let blocked_results = build_ranked_blocked_skill_discovery_results(
+        &inventory.blocked_skill_errors,
+        trimmed_query,
+        limit,
+    );
+    let inventory_summary = SkillDiscoveryInventorySummary {
+        visible_skill_count,
+        shadowed_skill_count,
+        blocked_skill_count,
+    };
+
+    Ok(ToolCoreOutcome {
+        status: "ok".to_owned(),
+        payload: json!({
+            "adapter": "core-tools",
+            "tool_name": tool_name,
+            "query": trimmed_query,
+            "limit": limit,
+            "inventory_summary": inventory_summary,
+            "results": results,
+            "shadowed_results": shadowed_results,
+            "blocked_results": blocked_results,
+        }),
+    })
+}
+
+fn build_ranked_skill_discovery_results(
+    skills: &[DiscoveredSkillEntry],
+    query: &str,
+    limit: usize,
+    resolution: SkillDiscoveryResolution,
+) -> Vec<RankedSkillDiscoveryResult> {
+    let mut searchable_entries = Vec::new();
+    let mut skills_by_identity = BTreeMap::new();
+
+    for skill in skills {
+        let search_identity = skill_search_identity(skill, resolution);
+        let searchable_entry = searchable_entry_from_skill(skill, resolution, &search_identity);
+        searchable_entries.push(searchable_entry);
+        skills_by_identity.insert(search_identity, skill.clone());
+    }
+
+    let ranking = rank_searchable_entries(searchable_entries, query, limit);
+    let mut ranked_results = Vec::new();
+    for ranked_entry in ranking.results {
+        let search_identity = ranked_entry.entry.canonical_name;
+        let Some(skill) = skills_by_identity.remove(&search_identity) else {
+            continue;
+        };
+        let match_reasons = render_skill_discovery_match_reasons(ranked_entry.why);
+        let limitations = build_skill_discovery_limitations(&skill, resolution);
+        let ranked_result = RankedSkillDiscoveryResult {
+            skill,
+            resolution,
+            match_reasons,
+            limitations,
+        };
+        ranked_results.push(ranked_result);
+    }
+
+    ranked_results
+}
+
+fn build_ranked_blocked_skill_discovery_results(
+    blocked_skill_errors: &BTreeMap<String, String>,
+    query: &str,
+    limit: usize,
+) -> Vec<RankedBlockedSkillDiscoveryResult> {
+    let mut searchable_entries = Vec::new();
+    let mut blocked_entries_by_identity = BTreeMap::new();
+
+    for (skill_id, error) in blocked_skill_errors {
+        let search_identity = format!("{skill_id}::blocked");
+        let required_fields = vec![skill_id.clone()];
+        let required_field_groups = vec![vec![skill_id.clone()]];
+        let tags = vec![
+            "external_skills".to_owned(),
+            "skill".to_owned(),
+            "blocked".to_owned(),
+        ];
+        let searchable_entry = searchable_entry_from_manual_definition(
+            search_identity.as_str(),
+            error.as_str(),
+            error.as_str(),
+            required_fields,
+            required_field_groups,
+            tags,
+        );
+        searchable_entries.push(searchable_entry);
+        blocked_entries_by_identity.insert(search_identity, (skill_id.clone(), error.clone()));
+    }
+
+    let ranking = rank_searchable_entries(searchable_entries, query, limit);
+    let mut ranked_results = Vec::new();
+    for ranked_entry in ranking.results {
+        let search_identity = ranked_entry.entry.canonical_name;
+        let Some((skill_id, error)) = blocked_entries_by_identity.remove(&search_identity) else {
+            continue;
+        };
+        let match_reasons = render_skill_discovery_match_reasons(ranked_entry.why);
+        let ranked_result = RankedBlockedSkillDiscoveryResult {
+            skill_id,
+            error,
+            match_reasons,
+        };
+        ranked_results.push(ranked_result);
+    }
+
+    ranked_results
+}
+
+fn searchable_entry_from_skill(
+    skill: &DiscoveredSkillEntry,
+    resolution: SkillDiscoveryResolution,
+    search_identity: &str,
+) -> super::tool_search::SearchableToolEntry {
+    let summary = build_skill_search_summary(skill);
+    let argument_hint = build_skill_search_argument_hint(skill, resolution);
+    let required_fields = build_skill_search_required_fields(skill);
+    let required_field_groups = build_skill_search_required_field_groups(&required_fields);
+    let tags = build_skill_search_tags(skill, resolution);
+    searchable_entry_from_manual_definition(
+        search_identity,
+        summary.as_str(),
+        argument_hint.as_str(),
+        required_fields,
+        required_field_groups,
+        tags,
+    )
+}
+
+fn build_skill_search_summary(skill: &DiscoveredSkillEntry) -> String {
+    let display_name = skill.display_name.trim();
+    let summary = skill.summary.trim();
+    let display_name_missing = display_name.is_empty();
+    if display_name_missing {
+        return summary.to_owned();
+    }
+    let summary_missing = summary.is_empty();
+    if summary_missing {
+        return display_name.to_owned();
+    }
+
+    let display_name_matches_summary = display_name.eq_ignore_ascii_case(summary);
+    if display_name_matches_summary {
+        return display_name.to_owned();
+    }
+
+    format!("{display_name}. {summary}")
+}
+
+fn build_skill_search_argument_hint(
+    skill: &DiscoveredSkillEntry,
+    resolution: SkillDiscoveryResolution,
+) -> String {
+    let mut fragments = Vec::new();
+    let display_name = skill.display_name.clone();
+    fragments.push(display_name);
+
+    let scope_fragment = format!("scope {}", discovered_skill_scope_id(skill.scope));
+    fragments.push(scope_fragment);
+
+    let source_kind_fragment = format!("source {}", skill.source_kind);
+    fragments.push(source_kind_fragment);
+
+    let visibility_fragment = format!(
+        "visibility {}",
+        skill_model_visibility_id(skill.model_visibility)
+    );
+    fragments.push(visibility_fragment);
+
+    let invocation_fragment = format!(
+        "invocation {}",
+        invocation_policy_id(skill.invocation_policy)
+    );
+    fragments.push(invocation_fragment);
+
+    if resolution == SkillDiscoveryResolution::Shadowed {
+        fragments.push("shadowed by a higher-precedence resolved skill".to_owned());
+    }
+    if !skill.active {
+        fragments.push("inactive resolved skill".to_owned());
+    }
+    for issue in &skill.eligibility.issues {
+        fragments.push(issue.clone());
+    }
+    for required_env in &skill.required_env {
+        let fragment = format!("env {required_env}");
+        fragments.push(fragment);
+    }
+    for required_bin in &skill.required_bin {
+        let fragment = format!("binary {required_bin}");
+        fragments.push(fragment);
+    }
+    for required_path in &skill.required_paths {
+        let fragment = format!("path {required_path}");
+        fragments.push(fragment);
+    }
+    for required_config in &skill.required_config {
+        let fragment = format!("config {required_config}");
+        fragments.push(fragment);
+    }
+    for allowed_tool in &skill.allowed_tools {
+        let fragment = format!("allowed tool {allowed_tool}");
+        fragments.push(fragment);
+    }
+    for blocked_tool in &skill.blocked_tools {
+        let fragment = format!("blocked tool {blocked_tool}");
+        fragments.push(fragment);
+    }
+
+    fragments.join("; ")
+}
+
+fn build_skill_search_required_fields(skill: &DiscoveredSkillEntry) -> Vec<String> {
+    let mut required_fields = BTreeSet::new();
+    for required_env in &skill.required_env {
+        required_fields.insert(required_env.clone());
+    }
+    for required_bin in &skill.required_bin {
+        required_fields.insert(required_bin.clone());
+    }
+    for required_path in &skill.required_paths {
+        required_fields.insert(required_path.clone());
+    }
+    for required_config in &skill.required_config {
+        required_fields.insert(required_config.clone());
+    }
+
+    required_fields.into_iter().collect()
+}
+
+fn build_skill_search_required_field_groups(required_fields: &[String]) -> Vec<Vec<String>> {
+    let fields_missing = required_fields.is_empty();
+    if fields_missing {
+        return Vec::new();
+    }
+
+    vec![required_fields.to_vec()]
+}
+
+fn build_skill_search_tags(
+    skill: &DiscoveredSkillEntry,
+    resolution: SkillDiscoveryResolution,
+) -> Vec<String> {
+    let mut tags = BTreeSet::new();
+    tags.insert("external_skills".to_owned());
+    tags.insert("skill".to_owned());
+    tags.insert(discovered_skill_scope_id(skill.scope).to_owned());
+    tags.insert(skill.source_kind.clone());
+    tags.insert(skill_model_visibility_id(skill.model_visibility).to_owned());
+    tags.insert(invocation_policy_id(skill.invocation_policy).to_owned());
+    tags.insert(skill_discovery_resolution_id(resolution).to_owned());
+
+    let eligibility_tag = if skill.eligibility.available {
+        "eligible"
+    } else {
+        "ineligible"
+    };
+    tags.insert(eligibility_tag.to_owned());
+
+    if !skill.active {
+        tags.insert("inactive".to_owned());
+    }
+    for allowed_tool in &skill.allowed_tools {
+        tags.insert(allowed_tool.clone());
+    }
+    for blocked_tool in &skill.blocked_tools {
+        tags.insert(blocked_tool.clone());
+    }
+
+    tags.into_iter().collect()
+}
+
+fn build_skill_discovery_limitations(
+    skill: &DiscoveredSkillEntry,
+    resolution: SkillDiscoveryResolution,
+) -> Vec<String> {
+    let mut limitations = Vec::new();
+    if resolution == SkillDiscoveryResolution::Shadowed {
+        limitations.push(
+            "shadowed by a higher-precedence resolved skill with the same `skill_id`".to_owned(),
+        );
+    }
+    if !skill.active {
+        limitations.push("resolved winner is inactive".to_owned());
+    }
+    if skill.model_visibility == SkillModelVisibility::Hidden {
+        limitations.push("hidden from the model surface".to_owned());
+    }
+    if skill.invocation_policy == SkillInvocationPolicy::Manual {
+        limitations.push("manual-only invocation".to_owned());
+    }
+    for issue in &skill.eligibility.issues {
+        limitations.push(issue.clone());
+    }
+
+    limitations
+}
+
+fn render_skill_discovery_match_reasons(raw_reasons: Vec<String>) -> Vec<String> {
+    let mut rendered_reasons = Vec::new();
+    for raw_reason in raw_reasons {
+        let rendered_reason = render_skill_discovery_match_reason(raw_reason.as_str());
+        rendered_reasons.push(rendered_reason);
+    }
+
+    rendered_reasons
+}
+
+fn render_skill_discovery_match_reason(raw_reason: &str) -> String {
+    if raw_reason == "name_phrase" {
+        return "matched skill id directly".to_owned();
+    }
+    if raw_reason == "summary_phrase" {
+        return "matched display name or summary directly".to_owned();
+    }
+    if raw_reason == "argument_phrase" {
+        return "matched discovery metadata or prerequisite text".to_owned();
+    }
+    if raw_reason == "schema_phrase" {
+        return "matched required capability or prerequisite fields".to_owned();
+    }
+    if raw_reason == "tag_phrase" {
+        return "matched discovery tags directly".to_owned();
+    }
+    if raw_reason == "coarse_fallback" {
+        return "fallback discovery ranking kept this candidate visible".to_owned();
+    }
+    if raw_reason == "coarse_discovery_tool" {
+        return "discovery-oriented metadata boosted this candidate".to_owned();
+    }
+
+    let Some((kind, value)) = raw_reason.split_once(':') else {
+        return raw_reason.to_owned();
+    };
+    match kind {
+        "name" => format!("skill id matched `{value}`"),
+        "summary" => format!("display name or summary matched `{value}`"),
+        "argument" => format!("metadata matched `{value}`"),
+        "schema" => format!("requirements matched `{value}`"),
+        "tag" => format!("classification matched `{value}`"),
+        "concept" => format!("query intent matched `{value}`"),
+        "category" => format!("query category matched `{value}`"),
+        _ => raw_reason.to_owned(),
+    }
+}
+
+fn skill_search_identity(
+    skill: &DiscoveredSkillEntry,
+    resolution: SkillDiscoveryResolution,
+) -> String {
+    let resolution_id = skill_discovery_resolution_id(resolution);
+    format!("{}::{resolution_id}::{}", skill.skill_id, skill.sha256)
+}
+
+fn skill_discovery_resolution_id(resolution: SkillDiscoveryResolution) -> &'static str {
+    match resolution {
+        SkillDiscoveryResolution::Active => "active",
+        SkillDiscoveryResolution::Shadowed => "shadowed",
+    }
+}
+
+fn discovered_skill_scope_id(scope: DiscoveredSkillScope) -> &'static str {
+    match scope {
+        DiscoveredSkillScope::Managed => "managed",
+        DiscoveredSkillScope::User => "user",
+        DiscoveredSkillScope::Project => "project",
+    }
+}
+
+fn skill_model_visibility_id(visibility: SkillModelVisibility) -> &'static str {
+    match visibility {
+        SkillModelVisibility::Visible => "visible",
+        SkillModelVisibility::Hidden => "hidden",
+    }
 }
 
 fn policy_override_store() -> &'static RwLock<ExternalSkillsPolicyOverride> {

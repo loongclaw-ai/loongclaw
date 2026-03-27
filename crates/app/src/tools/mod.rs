@@ -111,6 +111,24 @@ pub fn external_skills_operator_inspect_with_config(
     external_skills::execute_external_skills_operator_inspect_tool_with_config(skill_id, config)
 }
 
+pub fn external_skills_operator_search_with_config(
+    query: &str,
+    limit: usize,
+    config: &runtime_config::ToolRuntimeConfig,
+) -> Result<ToolCoreOutcome, String> {
+    external_skills::execute_external_skills_operator_search_tool_with_config(query, limit, config)
+}
+
+pub fn external_skills_operator_recommend_with_config(
+    query: &str,
+    limit: usize,
+    config: &runtime_config::ToolRuntimeConfig,
+) -> Result<ToolCoreOutcome, String> {
+    external_skills::execute_external_skills_operator_recommend_tool_with_config(
+        query, limit, config,
+    )
+}
+
 pub(crate) fn discover_installable_external_skill_roots(
     root: &Path,
 ) -> Result<Vec<PathBuf>, String> {
