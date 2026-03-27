@@ -233,10 +233,12 @@ IRC is shipped through a config-backed socket send surface:
   endpoint, or an `ircs://host[:port]` endpoint
 - configure `irc.nickname` for the bot identity used during registration
 - optionally configure `irc.username`, `irc.realname`, and `irc.password`
+- when `irc.password` is set, use an `ircs://` endpoint so LoongClaw does not
+  send `PASS` over plaintext transport
 - optionally configure `irc.channel_names` when the operator wants status
   snapshots to advertise the preferred channel set for that account
-- use `irc-send` with a conversation target such as `#ops` for a channel or a
-  nick for a direct message
+- use `irc-send` with a single conversation target such as `#ops` for a
+  channel or a nick for a direct message
 - `irc-serve` remains planned until LoongClaw owns a long-lived relay-loop
   contract for IRC traffic
 

@@ -6792,6 +6792,9 @@ pub(crate) fn parse_irc_server_endpoint(raw: &str) -> CliResult<IrcServerEndpoin
                 .to_owned(),
         );
     }
+    if trimmed.chars().any(char::is_whitespace) {
+        return Err("bare irc server must not contain whitespace".to_owned());
+    }
     if trimmed.contains('/') || trimmed.contains('?') || trimmed.contains('#') {
         return Err(
             "bare irc server must be a hostname only; use `irc://` or `ircs://` for url-style values"
