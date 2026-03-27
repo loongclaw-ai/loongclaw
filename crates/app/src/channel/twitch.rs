@@ -5,7 +5,10 @@ use crate::{CliResult, config::ResolvedTwitchChannelConfig};
 
 use super::{
     ChannelOutboundTargetKind,
-    http::{build_outbound_http_client, read_json_or_text_response, response_body_detail},
+    http::{
+        ChannelOutboundHttpPolicy, build_outbound_http_client, read_json_or_text_response,
+        response_body_detail, validate_outbound_http_target,
+    },
 };
 
 const TWITCH_USER_WRITE_CHAT_SCOPE: &str = "user:write:chat";
@@ -63,6 +66,7 @@ pub(super) async fn run_twitch_send(
     target_kind: ChannelOutboundTargetKind,
     target_id: &str,
     text: &str,
+    policy: ChannelOutboundHttpPolicy,
 ) -> CliResult<()> {
     if target_kind != ChannelOutboundTargetKind::Conversation {
         return Err(format!(
@@ -80,9 +84,9 @@ pub(super) async fn run_twitch_send(
         .access_token()
         .ok_or_else(|| "twitch access token missing (set twitch.access_token or env)".to_owned())?;
 
-    let client = build_outbound_http_client("twitch send")?;
+    let client = build_outbound_http_client("twitch send", policy)?;
     let validated_token =
-        validate_twitch_access_token(&client, resolved, access_token.as_str()).await?;
+        validate_twitch_access_token(&client, resolved, access_token.as_str(), policy).await?;
     ensure_twitch_send_scope(&validated_token)?;
 
     let broadcaster = resolve_twitch_broadcaster(
@@ -91,12 +95,16 @@ pub(super) async fn run_twitch_send(
         access_token.as_str(),
         validated_token.client_id.as_str(),
         normalized_target_id,
+        policy,
     )
     .await?;
 
-    let api_base_url = resolved.resolved_api_base_url();
-    let trimmed_api_base_url = api_base_url.trim_end_matches('/');
-    let request_url = format!("{trimmed_api_base_url}/chat/messages");
+    let request_url = build_twitch_request_url(
+        "twitch api_base_url",
+        resolved.resolved_api_base_url().as_str(),
+        "chat/messages",
+        policy,
+    )?;
     let request_body = serde_json::json!({
         "broadcaster_id": broadcaster.broadcaster_id,
         "sender_id": validated_token.user_id,
@@ -121,13 +129,17 @@ async fn validate_twitch_access_token(
     client: &reqwest::Client,
     resolved: &ResolvedTwitchChannelConfig,
     access_token: &str,
+    policy: ChannelOutboundHttpPolicy,
 ) -> CliResult<ValidatedTwitchToken> {
-    let oauth_base_url = resolved.resolved_oauth_base_url();
-    let trimmed_oauth_base_url = oauth_base_url.trim_end_matches('/');
-    let request_url = format!("{trimmed_oauth_base_url}/validate");
+    let request_url = build_twitch_request_url(
+        "twitch oauth_base_url",
+        resolved.resolved_oauth_base_url().as_str(),
+        "validate",
+        policy,
+    )?;
     let authorization_value = format!("OAuth {access_token}");
     let request = client
-        .get(request_url.as_str())
+        .get(request_url)
         .header("Authorization", authorization_value);
     let response = request
         .send()
@@ -211,6 +223,7 @@ async fn resolve_twitch_broadcaster(
     access_token: &str,
     client_id: &str,
     target_id: &str,
+    policy: ChannelOutboundHttpPolicy,
 ) -> CliResult<ResolvedTwitchBroadcaster> {
     let trimmed_target = target_id.trim();
     if trimmed_target.is_empty() {
@@ -218,9 +231,12 @@ async fn resolve_twitch_broadcaster(
     }
 
     let not_found_error = format!("twitch broadcaster `{trimmed_target}` was not found");
-    let api_base_url = resolved.resolved_api_base_url();
-    let trimmed_api_base_url = api_base_url.trim_end_matches('/');
-    let request_url = format!("{trimmed_api_base_url}/users");
+    let request_url = build_twitch_request_url(
+        "twitch api_base_url",
+        resolved.resolved_api_base_url().as_str(),
+        "users",
+        policy,
+    )?;
     let is_numeric_target = trimmed_target.chars().all(|value| value.is_ascii_digit());
 
     if !is_numeric_target {
@@ -314,6 +330,28 @@ async fn lookup_twitch_broadcaster(
     });
 
     Ok(resolved_broadcaster)
+}
+
+fn build_twitch_request_url(
+    field_name: &str,
+    base_url: &str,
+    path_suffix: &str,
+    policy: ChannelOutboundHttpPolicy,
+) -> CliResult<reqwest::Url> {
+    let trimmed_base_url = base_url.trim();
+    let parsed_base_url = validate_outbound_http_target(field_name, trimmed_base_url, policy)?;
+    if parsed_base_url.query().is_some() {
+        return Err(format!("{field_name} must not include a query string"));
+    }
+    if parsed_base_url.fragment().is_some() {
+        return Err(format!("{field_name} must not include a url fragment"));
+    }
+
+    let normalized_base_url = trimmed_base_url.trim_end_matches('/');
+    let raw_request_url = format!("{normalized_base_url}/{path_suffix}");
+    let request_url = reqwest::Url::parse(raw_request_url.as_str())
+        .map_err(|error| format!("{field_name} is invalid: {error}"))?;
+    Ok(request_url)
 }
 
 async fn ensure_twitch_send_success(response: reqwest::Response) -> CliResult<()> {
@@ -418,6 +456,12 @@ mod tests {
         validate_scopes: Arc<Mutex<Vec<String>>>,
     }
 
+    fn private_host_test_policy() -> ChannelOutboundHttpPolicy {
+        ChannelOutboundHttpPolicy {
+            allow_private_hosts: true,
+        }
+    }
+
     #[tokio::test]
     async fn run_twitch_send_validates_token_resolves_target_and_sends_message() {
         let state = MockTwitchState::default();
@@ -445,6 +489,7 @@ mod tests {
             ChannelOutboundTargetKind::Conversation,
             "streamer",
             "hello from loongclaw",
+            private_host_test_policy(),
         )
         .await;
 
@@ -519,6 +564,7 @@ mod tests {
             ChannelOutboundTargetKind::Conversation,
             "streamer",
             "hello from loongclaw",
+            private_host_test_policy(),
         )
         .await
         .expect_err("missing scope should fail");
@@ -555,6 +601,7 @@ mod tests {
             ChannelOutboundTargetKind::Conversation,
             "   ",
             "hello from loongclaw",
+            private_host_test_policy(),
         )
         .await
         .expect_err("blank targets should fail");
@@ -600,6 +647,7 @@ mod tests {
             ChannelOutboundTargetKind::Conversation,
             "12345",
             "hello from loongclaw",
+            private_host_test_policy(),
         )
         .await;
 
@@ -648,6 +696,7 @@ mod tests {
             ChannelOutboundTargetKind::Conversation,
             "987654",
             "hello from loongclaw",
+            private_host_test_policy(),
         )
         .await;
 
@@ -696,6 +745,7 @@ mod tests {
             ChannelOutboundTargetKind::Conversation,
             "55555",
             "hello from loongclaw",
+            private_host_test_policy(),
         )
         .await
         .expect_err("ambiguous numeric targets should fail");
@@ -740,6 +790,7 @@ mod tests {
             ChannelOutboundTargetKind::Address,
             "streamer",
             "hello from loongclaw",
+            private_host_test_policy(),
         )
         .await
         .expect_err("address targets should fail");
@@ -748,6 +799,57 @@ mod tests {
             error,
             "twitch send requires conversation target kind, got address"
         );
+    }
+
+    #[test]
+    fn build_twitch_request_url_preserves_base_path() {
+        let policy = ChannelOutboundHttpPolicy {
+            allow_private_hosts: false,
+        };
+        let request_url = build_twitch_request_url(
+            "twitch api_base_url",
+            "https://api.twitch.example/base",
+            "chat/messages",
+            policy,
+        )
+        .expect("build twitch request url");
+
+        assert_eq!(
+            request_url.as_str(),
+            "https://api.twitch.example/base/chat/messages"
+        );
+    }
+
+    #[test]
+    fn build_twitch_request_url_rejects_private_hosts_without_override() {
+        let policy = ChannelOutboundHttpPolicy {
+            allow_private_hosts: false,
+        };
+        let error = build_twitch_request_url(
+            "twitch api_base_url",
+            "http://127.0.0.1:8080/helix",
+            "chat/messages",
+            policy,
+        )
+        .expect_err("private hosts should be rejected");
+
+        assert!(error.contains("private or special-use"));
+    }
+
+    #[test]
+    fn build_twitch_request_url_rejects_base_urls_with_query_strings() {
+        let policy = ChannelOutboundHttpPolicy {
+            allow_private_hosts: false,
+        };
+        let error = build_twitch_request_url(
+            "twitch api_base_url",
+            "https://api.twitch.example/helix?token=secret",
+            "chat/messages",
+            policy,
+        )
+        .expect_err("query-bearing base urls should be rejected");
+
+        assert_eq!(error, "twitch api_base_url must not include a query string");
     }
 
     fn build_mock_twitch_router(state: MockTwitchState) -> Router {

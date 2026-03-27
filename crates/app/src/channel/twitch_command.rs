@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use super::{
     ChannelCommandContext, ChannelOutboundTargetKind, ChannelSendCommandSpec, LoongClawConfig,
-    run_channel_send_command, twitch,
+    http, run_channel_send_command, twitch,
 };
 use crate::CliResult;
 use crate::config::{self, ResolvedTwitchChannelConfig};
@@ -61,6 +61,7 @@ pub async fn run_twitch_send(
     #[cfg(feature = "channel-twitch")]
     {
         let context = load_twitch_command_context(config_path, account_id)?;
+        let outbound_http_policy = http::outbound_http_policy_from_config(&context.config);
         let target = target.to_owned();
         let text = text.to_owned();
 
@@ -76,6 +77,7 @@ pub async fn run_twitch_send(
                         target_kind,
                         target.as_str(),
                         text.as_str(),
+                        outbound_http_policy,
                     )
                     .await
                 })
