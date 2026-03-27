@@ -7522,6 +7522,7 @@ mod tests {
     fn resolve_channel_selection_order_uses_registry_metadata() {
         assert_eq!(resolve_channel_selection_order("telegram"), Some(10));
         assert_eq!(resolve_channel_selection_order("discord-bot"), Some(40));
+        assert_eq!(resolve_channel_selection_order(" DISCORD-BOT "), Some(40));
         assert_eq!(resolve_channel_selection_order("unknown"), None);
     }
 
