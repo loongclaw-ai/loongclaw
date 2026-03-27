@@ -1091,6 +1091,8 @@ fn channel_registry_apply_selected_channels_merges_wecom_config() {
 
 #[test]
 fn resolve_channel_import_readiness_reports_partial_wecom_channel_credentials() {
+    let _env = MigrationEnvironmentGuard::set(&[("WECOM_BOT_ID", None), ("WECOM_SECRET", None)]);
+
     let mut config = mvp::config::LoongClawConfig::default();
     config.wecom.bot_id = Some(loongclaw_contracts::SecretRef::Inline(
         "wecom-bot".to_owned(),

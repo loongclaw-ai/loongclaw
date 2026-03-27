@@ -230,9 +230,12 @@ fn merge_wecom_config(
             changed = true;
         }
     }
-    if target.websocket_url == default.websocket_url
-        && source.websocket_url != default.websocket_url
-    {
+    let default_websocket_url = default.resolved_websocket_url();
+    let target_websocket_url = target.resolved_websocket_url();
+    let source_websocket_url = source.resolved_websocket_url();
+    let target_uses_default_websocket = target_websocket_url == default_websocket_url;
+    let source_uses_default_websocket = source_websocket_url == default_websocket_url;
+    if target_uses_default_websocket && !source_uses_default_websocket {
         target.websocket_url = source.websocket_url.clone();
         changed = true;
     }
@@ -520,5 +523,41 @@ mod tests {
         assert_eq!(target.allowed_conversation_ids, vec!["group_ops"]);
         assert_eq!(target.acp.working_directory.as_deref(), Some("/tmp/wecom"));
         assert!(target.accounts.contains_key("ops"));
+    }
+
+    #[test]
+    fn merge_wecom_config_treats_explicit_default_websocket_url_as_default() {
+        let default_websocket_url =
+            mvp::config::WecomChannelConfig::default().resolved_websocket_url();
+        let mut target = mvp::config::WecomChannelConfig {
+            websocket_url: Some(default_websocket_url),
+            ..Default::default()
+        };
+        let source = mvp::config::WecomChannelConfig {
+            websocket_url: Some("wss://wecom.example.test".to_owned()),
+            ..Default::default()
+        };
+
+        let changed = merge_wecom_config(&mut target, &source);
+
+        assert!(changed);
+        assert_eq!(
+            target.websocket_url.as_deref(),
+            Some("wss://wecom.example.test")
+        );
+    }
+
+    #[test]
+    fn merge_wecom_config_ignores_blank_websocket_url_override() {
+        let mut target = mvp::config::WecomChannelConfig::default();
+        let source = mvp::config::WecomChannelConfig {
+            websocket_url: Some("   ".to_owned()),
+            ..Default::default()
+        };
+
+        let changed = merge_wecom_config(&mut target, &source);
+
+        assert!(!changed);
+        assert_eq!(target.websocket_url, None);
     }
 }
