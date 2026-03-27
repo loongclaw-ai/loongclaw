@@ -12,12 +12,11 @@ needs.
       CLI as the default surface, plus runtime-backed Telegram, Feishu / Lark,
       Matrix, and WeCom, and config-backed outbound Discord, Slack, LINE,
       DingTalk, WhatsApp, Email, generic Webhook, Google Chat, Signal,
-      Microsoft Teams, Mattermost, Nextcloud Talk, Synology Chat, IRC, and
-      iMessage / BlueBubbles.
+      Microsoft Teams, Mattermost, Nextcloud Talk, Synology Chat, IRC,
+      iMessage / BlueBubbles, and Nostr.
 - [ ] Product docs clearly distinguish runtime-backed shipped surfaces,
       config-backed outbound shipped surfaces, and catalog-only planned
-      surfaces such as Nostr, Twitch, Tlon, Zalo, Zalo Personal, and
-      WebChat.
+      surfaces such as Twitch, Tlon, Zalo, Zalo Personal, and WebChat.
 - [ ] Channel setup guidance describes required credentials, config toggles, and
       the command used to run each shipped channel today.
 - [ ] Product docs describe `multi-channel-serve` as the current attached
@@ -37,9 +36,8 @@ needs.
 
 - Shipping additional runtime-backed channels beyond CLI, Telegram, Feishu /
   Lark, Matrix, and WeCom
-- Promoting the remaining catalog-only planned surfaces such as Nostr,
-  Twitch, Tlon, Zalo, Zalo Personal, or WebChat to
-  shipped support in this slice
+- Promoting the remaining catalog-only planned surfaces such as Twitch, Tlon,
+  Zalo, Zalo Personal, or WebChat to shipped support in this slice
 - Broad cross-channel inbox or routing UX
 - Full remote pairing flows for unshipped surfaces
 
@@ -67,6 +65,7 @@ needs.
 | Synology Chat | Config-backed outbound | Synology Chat incoming webhook | `synology_chat.enabled`, `synology_chat.incoming_url` | `loongclaw synology-chat-send` |
 | IRC | Config-backed outbound | IRC socket client | `irc.enabled`, `irc.server`, `irc.nickname`; `password` is optional, and `username`, `realname`, `channel_names` are optional operator hints | `loongclaw irc-send` |
 | iMessage / BlueBubbles | Config-backed outbound | BlueBubbles bridge REST API | `imessage.enabled`, `imessage.bridge_url`, `imessage.bridge_token` | `loongclaw imessage-send` |
+| Nostr | Config-backed outbound | relay publish over WebSocket | `nostr.enabled`, `nostr.relay_urls`, `nostr.private_key`; `allowed_pubkeys` stays reserved for the planned inbound path | `loongclaw nostr-send` |
 
 ## Expansion Model
 
@@ -152,7 +151,7 @@ runtime contract is explicitly the official AIBot websocket subscription flow.
 
 Discord, Slack, LINE, DingTalk, WhatsApp, Email, generic Webhook, Google
 Chat, Signal, Microsoft Teams, Mattermost, Nextcloud Talk, Synology Chat,
-IRC, and iMessage / BlueBubbles are shipped as account-aware outbound
+IRC, iMessage / BlueBubbles, and Nostr are shipped as account-aware outbound
 surfaces:
 
 - they publish send commands, config validation, inventory snapshots, and
@@ -260,6 +259,21 @@ iMessage is shipped through a BlueBubbles bridge send surface:
 - `imessage-serve` remains planned until LoongClaw owns the inbound bridge
   synchronization contract
 
+### Nostr
+
+Nostr is shipped as a signed relay-publish surface:
+
+- configure one or more relay URLs through `nostr.relay_urls`
+- configure a signing key through `nostr.private_key`; both raw hex and `nsec`
+  input are accepted, but LoongClaw normalizes internally to the standard hex
+  representation
+- use `nostr-send` to publish a regular text-note event and wait for relay `OK`
+  acknowledgements from the configured relay set
+- `nostr-send` may omit `--target` for a plain public note, or pass a public
+  key target to attach a `p` tag to the outbound event
+- `nostr.allowed_pubkeys` remains reserved for the planned inbound relay
+  subscriber path and is not required for send readiness today
+
 ### Multi-Channel Serve And Gateway Direction
 
 `multi-channel-serve` is the current attached runtime owner for the shipped
@@ -275,7 +289,7 @@ gateway service rather than the long-term product noun:
   Email, generic Webhook, Microsoft Teams, DingTalk, Google Chat,
   Mattermost, Nextcloud Talk, Synology Chat, IRC, or iMessage / BlueBubbles
   into runtime supervision until those adapters grow real serve ownership
-- it never promotes catalog-only planned surfaces such as Nostr, Tlon, Zalo,
+- it never promotes catalog-only planned surfaces such as Tlon, Zalo,
   Zalo Personal, or WebChat into runtime supervision until those adapters are
   implemented
 - the later gateway service should absorb this runtime ownership model, then

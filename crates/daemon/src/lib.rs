@@ -1057,6 +1057,23 @@ pub enum Commands {
         #[arg(long)]
         text: String,
     },
+    /// Publish one signed Nostr text note
+    NostrSend {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long = "target")]
+        target: Option<String>,
+        #[arg(
+            long,
+            default_value_t = default_nostr_send_target_kind(),
+            value_parser = parse_nostr_send_target_kind
+        )]
+        target_kind: mvp::channel::ChannelOutboundTargetKind,
+        #[arg(long)]
+        text: String,
+    },
     /// Run the multi-channel supervisor for coordinated runtime-backed service-channel serving
     MultiChannelServe {
         #[arg(long)]
@@ -4283,6 +4300,11 @@ pub const IMESSAGE_SEND_CLI_SPEC: ChannelSendCliSpec = ChannelSendCliSpec {
     run: run_imessage_send_cli_impl,
 };
 
+pub const NOSTR_SEND_CLI_SPEC: ChannelSendCliSpec = ChannelSendCliSpec {
+    family: mvp::channel::NOSTR_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    run: run_nostr_send_cli_impl,
+};
+
 pub const TELEGRAM_SERVE_CLI_SPEC: ChannelServeCliSpec = ChannelServeCliSpec {
     family: mvp::channel::TELEGRAM_COMMAND_FAMILY_DESCRIPTOR,
     run: run_telegram_serve_cli_impl,
@@ -4606,6 +4628,20 @@ pub fn run_imessage_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliCom
     })
 }
 
+pub fn run_nostr_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliCommandFuture<'_> {
+    Box::pin(async move {
+        let _ = args.as_card;
+        mvp::channel::run_nostr_send(
+            args.config_path,
+            args.account,
+            args.target,
+            args.target_kind,
+            args.text,
+        )
+        .await
+    })
+}
+
 pub fn run_signal_send_cli_impl(args: ChannelSendCliArgs<'_>) -> ChannelCliCommandFuture<'_> {
     Box::pin(async move {
         let _ = args.as_card;
@@ -4852,6 +4888,16 @@ pub fn parse_imessage_send_target_kind(
     parse_channel_send_target_kind(IMESSAGE_SEND_CLI_SPEC, raw)
 }
 
+pub fn default_nostr_send_target_kind() -> mvp::channel::ChannelOutboundTargetKind {
+    default_channel_send_target_kind(NOSTR_SEND_CLI_SPEC)
+}
+
+pub fn parse_nostr_send_target_kind(
+    raw: &str,
+) -> Result<mvp::channel::ChannelOutboundTargetKind, String> {
+    parse_channel_send_target_kind(NOSTR_SEND_CLI_SPEC, raw)
+}
+
 #[cfg(test)]
 mod channel_send_cli_tests {
     use super::*;
@@ -4940,6 +4986,32 @@ mod channel_send_cli_tests {
 
         let error = result.expect_err("missing target should fail before runtime execution");
         assert_eq!(error, "irc-send requires --target");
+    }
+
+    #[test]
+    fn nostr_send_cli_accepts_address_target_kind() {
+        let target_kind = parse_nostr_send_target_kind("address")
+            .expect("nostr-send should accept address targets");
+
+        assert_eq!(
+            default_nostr_send_target_kind(),
+            mvp::channel::ChannelOutboundTargetKind::Address
+        );
+        assert_eq!(
+            target_kind,
+            mvp::channel::ChannelOutboundTargetKind::Address
+        );
+    }
+
+    #[test]
+    fn nostr_send_cli_rejects_non_address_target_kind() {
+        let error = parse_nostr_send_target_kind("conversation")
+            .expect_err("conversation targets must be rejected");
+
+        assert_eq!(
+            error,
+            "nostr --target-kind does not support `conversation`; use `address`"
+        );
     }
 }
 
