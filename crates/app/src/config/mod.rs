@@ -2,6 +2,7 @@ mod audit;
 mod channels;
 mod conversation;
 mod feishu_integration;
+mod irc;
 mod memory;
 mod provider;
 mod runtime;
@@ -39,8 +40,7 @@ pub(crate) use channels::{
     EMAIL_IMAP_USERNAME_ENV, EMAIL_SMTP_PASSWORD_ENV, EMAIL_SMTP_USERNAME_ENV, EmailSmtpEndpoint,
     FEISHU_APP_ID_ENV, FEISHU_APP_SECRET_ENV, FEISHU_ENCRYPT_KEY_ENV,
     FEISHU_VERIFICATION_TOKEN_ENV, GOOGLE_CHAT_WEBHOOK_URL_ENV, IMESSAGE_BRIDGE_TOKEN_ENV,
-    IMESSAGE_BRIDGE_URL_ENV, IRC_NICKNAME_ENV, IRC_PASSWORD_ENV, IRC_SERVER_ENV, IrcServerEndpoint,
-    IrcServerTransport, LINE_CHANNEL_ACCESS_TOKEN_ENV, LINE_CHANNEL_SECRET_ENV,
+    IMESSAGE_BRIDGE_URL_ENV, LINE_CHANNEL_ACCESS_TOKEN_ENV, LINE_CHANNEL_SECRET_ENV,
     MATRIX_ACCESS_TOKEN_ENV, MATTERMOST_BOT_TOKEN_ENV, MATTERMOST_SERVER_URL_ENV,
     NEXTCLOUD_TALK_SERVER_URL_ENV, NEXTCLOUD_TALK_SHARED_SECRET_ENV, SIGNAL_ACCOUNT_ENV,
     SIGNAL_SERVICE_URL_ENV, SLACK_BOT_TOKEN_ENV, SYNOLOGY_CHAT_INCOMING_URL_ENV,
@@ -49,11 +49,14 @@ pub(crate) use channels::{
     WEBHOOK_ENDPOINT_URL_ENV, WEBHOOK_SIGNING_SECRET_ENV, WECOM_BOT_ID_ENV, WECOM_SECRET_ENV,
     WHATSAPP_ACCESS_TOKEN_ENV, WHATSAPP_APP_SECRET_ENV, WHATSAPP_PHONE_NUMBER_ID_ENV,
     WHATSAPP_VERIFY_TOKEN_ENV, normalize_channel_account_id, parse_email_smtp_endpoint,
-    parse_irc_server_endpoint,
 };
 #[allow(unused_imports)]
 pub use conversation::{ConversationConfig, ConversationTurnLoopConfig};
 pub use feishu_integration::FeishuIntegrationConfig;
+pub(crate) use irc::{
+    IRC_NICKNAME_ENV, IRC_SERVER_ENV, IrcServerEndpoint, IrcServerTransport,
+    parse_irc_server_endpoint,
+};
 #[allow(unused_imports)]
 pub use memory::{
     MemoryBackendKind, MemoryConfig, MemoryIngestMode, MemoryMode, MemoryProfile, MemorySystemKind,

@@ -195,7 +195,7 @@ async fn connect_irc_stream(
     let address = format!("{}:{}", endpoint.host, endpoint.port);
     let connect_result = timeout(connect_timeout, TcpStream::connect(address.as_str())).await;
     let tcp_stream = connect_result
-        .map_err(|_| {
+        .map_err(|_timeout_error| {
             let formatted_timeout = format_irc_timeout(connect_timeout);
             format!("connect irc server timed out after {formatted_timeout}")
         })?
@@ -223,7 +223,7 @@ async fn connect_irc_stream(
     )
     .await;
     let tls_stream = tls_connect_result
-        .map_err(|_| {
+        .map_err(|_timeout_error| {
             let formatted_timeout = format_irc_timeout(connect_timeout);
             format!("connect irc tls session timed out after {formatted_timeout}")
         })?
@@ -295,7 +295,7 @@ async fn run_irc_send_session(
 
     let ready_future = wait_for_irc_session_ready(&mut reader, &mut write_half, target);
     let ready_result = timeout(session_ready_timeout, ready_future).await;
-    let ready_result = ready_result.map_err(|_| {
+    let ready_result = ready_result.map_err(|_timeout_error| {
         let formatted_timeout = format_irc_timeout(session_ready_timeout);
         format!("irc send timed out after {formatted_timeout} while waiting for server readiness")
     })?;
@@ -444,7 +444,7 @@ fn parse_irc_ping_payload(line: &str) -> Option<&str> {
 
 fn format_irc_timeout(timeout: Duration) -> String {
     let timeout_ms = timeout.as_millis();
-    let is_second_aligned = timeout_ms % 1_000 == 0;
+    let is_second_aligned = timeout_ms.is_multiple_of(1_000);
     if is_second_aligned {
         let timeout_s = timeout_ms / 1_000;
         return format!("{timeout_s}s");
