@@ -3451,6 +3451,11 @@ pub fn list_channel_catalog() -> Vec<ChannelCatalogEntry> {
         .collect()
 }
 
+pub(crate) fn resolve_channel_selection_order(raw: &str) -> Option<u16> {
+    let descriptor = find_channel_registry_descriptor(raw)?;
+    Some(descriptor.selection_order)
+}
+
 pub fn normalize_channel_catalog_id(raw: &str) -> Option<&'static str> {
     find_channel_registry_descriptor(raw).map(|descriptor| descriptor.id)
 }
@@ -7511,6 +7516,13 @@ mod tests {
         assert_eq!(normalize_channel_catalog_id("urbit"), Some("tlon"));
         assert_eq!(normalize_channel_catalog_id("web-ui"), Some("webchat"));
         assert_eq!(normalize_channel_catalog_id("unknown"), None);
+    }
+
+    #[test]
+    fn resolve_channel_selection_order_uses_registry_metadata() {
+        assert_eq!(resolve_channel_selection_order("telegram"), Some(10));
+        assert_eq!(resolve_channel_selection_order("discord-bot"), Some(40));
+        assert_eq!(resolve_channel_selection_order("unknown"), None);
     }
 
     #[test]
