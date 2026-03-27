@@ -2185,6 +2185,7 @@ name = "loongclaw-kernel"
 version = "0.1.0-alpha.2"
 dependencies = [
  "async-trait",
+ "futures-util",
  "loongclaw-contracts",
  "proptest",
  "semver",
