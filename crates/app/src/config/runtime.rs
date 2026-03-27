@@ -17,7 +17,7 @@ use super::{
         LineChannelConfig, MatrixChannelConfig, MattermostChannelConfig,
         NextcloudTalkChannelConfig, NostrChannelConfig, SignalChannelConfig, SlackChannelConfig,
         SynologyChatChannelConfig, TeamsChannelConfig, TelegramChannelConfig, TwitchChannelConfig,
-        WebhookChannelConfig, WecomChannelConfig, WhatsappChannelConfig,
+        WebhookChannelConfig, WecomChannelConfig, WhatsappChannelConfig, ZaloChannelConfig,
     },
     conversation::ConversationConfig,
     feishu_integration::FeishuIntegrationConfig,
@@ -125,6 +125,8 @@ pub struct LoongClawConfig {
     pub imessage: ImessageChannelConfig,
     #[serde(default)]
     pub nostr: NostrChannelConfig,
+    #[serde(default)]
+    pub zalo: ZaloChannelConfig,
     #[serde(default)]
     pub whatsapp: WhatsappChannelConfig,
     #[serde(default)]

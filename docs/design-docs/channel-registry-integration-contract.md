@@ -138,10 +138,10 @@ pretending they already have concrete config or runtime support.
 
 Current examples of shipped config-backed outbound surfaces include Discord,
 Slack, LINE, DingTalk, WhatsApp, Email, generic Webhook, Google Chat, Signal,
-Nostr, Microsoft Teams, Mattermost, Nextcloud Talk, Synology Chat, IRC, and
-iMessage / BlueBubbles. They all publish snapshot builders, readiness checks,
-and send command metadata without pretending they already own a long-running
-serve runtime.
+Nostr, Zalo, Microsoft Teams, Mattermost, Nextcloud Talk, Synology Chat, IRC,
+and iMessage / BlueBubbles. They all publish snapshot builders, readiness
+checks, and send command metadata without pretending they already own a
+long-running serve runtime.
 
 ### 6. Runtime Owners Must Bind Through Runtime Registries
 

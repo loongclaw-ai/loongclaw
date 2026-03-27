@@ -6,7 +6,7 @@ license.workspace = true
 authors.workspace = true
 
 [features]
-default = ["channel-cli", "channel-telegram", "channel-feishu", "channel-matrix", "channel-wecom", "channel-discord", "channel-dingtalk", "channel-slack", "channel-webhook", "channel-google-chat", "channel-line", "channel-signal", "channel-twitch", "channel-teams", "channel-whatsapp", "channel-email", "channel-mattermost", "channel-nextcloud-talk", "channel-synology-chat", "channel-irc", "channel-imessage", "channel-nostr", "config-toml", "memory-sqlite", "feishu-integration", "tool-shell", "tool-file", "tool-browser", "tool-webfetch", "tool-websearch", "provider-openai", "provider-anthropic", "provider-bedrock", "provider-volcengine"]
+default = ["channel-cli", "channel-telegram", "channel-feishu", "channel-matrix", "channel-wecom", "channel-discord", "channel-dingtalk", "channel-slack", "channel-webhook", "channel-google-chat", "channel-line", "channel-signal", "channel-twitch", "channel-teams", "channel-whatsapp", "channel-email", "channel-mattermost", "channel-nextcloud-talk", "channel-synology-chat", "channel-irc", "channel-imessage", "channel-nostr", "channel-zalo", "config-toml", "memory-sqlite", "feishu-integration", "tool-shell", "tool-file", "tool-browser", "tool-webfetch", "tool-websearch", "provider-openai", "provider-anthropic", "provider-bedrock", "provider-volcengine"]
 channel-cli = []
 channel-telegram = []
 channel-feishu = ["dep:axum", "dep:aes", "dep:cbc", "dep:prost", "dep:rustls", "dep:tokio-tungstenite", "feishu-integration"]
@@ -29,6 +29,7 @@ channel-synology-chat = []
 channel-irc = ["dep:rustls", "dep:rustls-native-certs", "dep:tokio-rustls"]
 channel-imessage = []
 channel-nostr = ["dep:bech32", "dep:rustls", "dep:secp256k1", "dep:tokio-tungstenite"]
+channel-zalo = []
 provider-openai = []
 provider-anthropic = []
 provider-bedrock = ["dep:aws-config", "dep:aws-credential-types", "dep:aws-sigv4", "dep:http"]
@@ -82,6 +83,7 @@ tempfile = "3"
 which.workspace = true
 unicode-normalization = "0.1"
 unicode-segmentation = "1.12"
+libc = "0.2"
 # Kept unconditional because conversation/turn_shared.rs uses Regex to strip
 # leaked <think> tags even when tool-websearch is compiled out.
 regex.workspace = true

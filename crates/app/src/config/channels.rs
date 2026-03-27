@@ -52,6 +52,9 @@ pub(crate) const IMESSAGE_BRIDGE_URL_ENV: &str = "IMESSAGE_BRIDGE_URL";
 pub(crate) const IMESSAGE_BRIDGE_TOKEN_ENV: &str = "IMESSAGE_BRIDGE_TOKEN";
 pub(crate) const NOSTR_RELAY_URLS_ENV: &str = "NOSTR_RELAY_URLS";
 pub(crate) const NOSTR_PRIVATE_KEY_ENV: &str = "NOSTR_PRIVATE_KEY";
+pub(crate) const ZALO_APP_ID_ENV: &str = "ZALO_APP_ID";
+pub(crate) const ZALO_OA_ACCESS_TOKEN_ENV: &str = "ZALO_OA_ACCESS_TOKEN";
+pub(crate) const ZALO_APP_SECRET_ENV: &str = "ZALO_APP_SECRET";
 pub(crate) const IRC_SERVER_ENV: &str = "IRC_SERVER";
 pub(crate) const IRC_NICKNAME_ENV: &str = "IRC_NICKNAME";
 pub(crate) const IRC_PASSWORD_ENV: &str = "IRC_PASSWORD";
@@ -1365,6 +1368,69 @@ impl ResolvedNostrChannelConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ZaloAccountConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub app_id: Option<SecretRef>,
+    #[serde(default = "default_zalo_app_id_env")]
+    pub app_id_env: Option<String>,
+    #[serde(default)]
+    pub oa_access_token: Option<SecretRef>,
+    #[serde(default = "default_zalo_oa_access_token_env")]
+    pub oa_access_token_env: Option<String>,
+    #[serde(default)]
+    pub app_secret: Option<SecretRef>,
+    #[serde(default = "default_zalo_app_secret_env")]
+    pub app_secret_env: Option<String>,
+    #[serde(default)]
+    pub api_base_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedZaloChannelConfig {
+    pub configured_account_id: String,
+    pub configured_account_label: String,
+    pub account: ChannelAccountIdentity,
+    pub enabled: bool,
+    pub app_id: Option<SecretRef>,
+    pub app_id_env: Option<String>,
+    pub oa_access_token: Option<SecretRef>,
+    pub oa_access_token_env: Option<String>,
+    pub app_secret: Option<SecretRef>,
+    pub app_secret_env: Option<String>,
+    pub api_base_url: Option<String>,
+}
+
+impl ResolvedZaloChannelConfig {
+    pub fn app_id(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(self.app_id.as_ref(), self.app_id_env.as_deref())
+    }
+
+    pub fn oa_access_token(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(
+            self.oa_access_token.as_ref(),
+            self.oa_access_token_env.as_deref(),
+        )
+    }
+
+    pub fn app_secret(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(self.app_secret.as_ref(), self.app_secret_env.as_deref())
+    }
+
+    pub fn resolved_api_base_url(&self) -> String {
+        self.api_base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(default_zalo_api_base_url)
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SignalAccountConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
@@ -1899,6 +1965,33 @@ pub struct NostrChannelConfig {
     pub allowed_pubkeys: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub accounts: BTreeMap<String, NostrAccountConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ZaloChannelConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub default_account: Option<String>,
+    #[serde(default)]
+    pub app_id: Option<SecretRef>,
+    #[serde(default = "default_zalo_app_id_env")]
+    pub app_id_env: Option<String>,
+    #[serde(default)]
+    pub oa_access_token: Option<SecretRef>,
+    #[serde(default = "default_zalo_oa_access_token_env")]
+    pub oa_access_token_env: Option<String>,
+    #[serde(default)]
+    pub app_secret: Option<SecretRef>,
+    #[serde(default = "default_zalo_app_secret_env")]
+    pub app_secret_env: Option<String>,
+    #[serde(default)]
+    pub api_base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub accounts: BTreeMap<String, ZaloAccountConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2532,6 +2625,24 @@ impl Default for NostrChannelConfig {
             private_key: None,
             private_key_env: Some(NOSTR_PRIVATE_KEY_ENV.to_owned()),
             allowed_pubkeys: Vec::new(),
+            accounts: BTreeMap::new(),
+        }
+    }
+}
+
+impl Default for ZaloChannelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            account_id: None,
+            default_account: None,
+            app_id: None,
+            app_id_env: Some(ZALO_APP_ID_ENV.to_owned()),
+            oa_access_token: None,
+            oa_access_token_env: Some(ZALO_OA_ACCESS_TOKEN_ENV.to_owned()),
+            app_secret: None,
+            app_secret_env: Some(ZALO_APP_SECRET_ENV.to_owned()),
+            api_base_url: Some(default_zalo_api_base_url()),
             accounts: BTreeMap::new(),
         }
     }
@@ -6236,6 +6347,241 @@ impl NostrChannelConfig {
     }
 }
 
+impl ZaloChannelConfig {
+    pub(crate) fn validate(&self) -> Vec<ConfigValidationIssue> {
+        let mut issues = Vec::new();
+        validate_channel_account_integrity(
+            &mut issues,
+            "zalo",
+            self.default_account.as_deref(),
+            self.accounts.keys(),
+        );
+        validate_zalo_env_pointer(
+            &mut issues,
+            "zalo.app_id_env",
+            self.app_id_env.as_deref(),
+            "zalo.app_id",
+        );
+        validate_zalo_secret_ref_env_pointer(&mut issues, "zalo.app_id", self.app_id.as_ref());
+        validate_zalo_env_pointer(
+            &mut issues,
+            "zalo.oa_access_token_env",
+            self.oa_access_token_env.as_deref(),
+            "zalo.oa_access_token",
+        );
+        validate_zalo_secret_ref_env_pointer(
+            &mut issues,
+            "zalo.oa_access_token",
+            self.oa_access_token.as_ref(),
+        );
+        validate_zalo_env_pointer(
+            &mut issues,
+            "zalo.app_secret_env",
+            self.app_secret_env.as_deref(),
+            "zalo.app_secret",
+        );
+        validate_zalo_secret_ref_env_pointer(
+            &mut issues,
+            "zalo.app_secret",
+            self.app_secret.as_ref(),
+        );
+        for (raw_account_id, account) in &self.accounts {
+            let account_id = normalize_channel_account_id(raw_account_id);
+
+            let app_id_field_path = format!("zalo.accounts.{account_id}.app_id");
+            let app_id_env_field_path = format!("{app_id_field_path}_env");
+            validate_zalo_env_pointer(
+                &mut issues,
+                app_id_env_field_path.as_str(),
+                account.app_id_env.as_deref(),
+                app_id_field_path.as_str(),
+            );
+            validate_zalo_secret_ref_env_pointer(
+                &mut issues,
+                app_id_field_path.as_str(),
+                account.app_id.as_ref(),
+            );
+
+            let access_token_field_path = format!("zalo.accounts.{account_id}.oa_access_token");
+            let access_token_env_field_path = format!("{access_token_field_path}_env");
+            validate_zalo_env_pointer(
+                &mut issues,
+                access_token_env_field_path.as_str(),
+                account.oa_access_token_env.as_deref(),
+                access_token_field_path.as_str(),
+            );
+            validate_zalo_secret_ref_env_pointer(
+                &mut issues,
+                access_token_field_path.as_str(),
+                account.oa_access_token.as_ref(),
+            );
+
+            let app_secret_field_path = format!("zalo.accounts.{account_id}.app_secret");
+            let app_secret_env_field_path = format!("{app_secret_field_path}_env");
+            validate_zalo_env_pointer(
+                &mut issues,
+                app_secret_env_field_path.as_str(),
+                account.app_secret_env.as_deref(),
+                app_secret_field_path.as_str(),
+            );
+            validate_zalo_secret_ref_env_pointer(
+                &mut issues,
+                app_secret_field_path.as_str(),
+                account.app_secret.as_ref(),
+            );
+        }
+        issues
+    }
+
+    pub fn app_id(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(self.app_id.as_ref(), self.app_id_env.as_deref())
+    }
+
+    pub fn oa_access_token(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(
+            self.oa_access_token.as_ref(),
+            self.oa_access_token_env.as_deref(),
+        )
+    }
+
+    pub fn app_secret(&self) -> Option<String> {
+        resolve_secret_with_legacy_env(self.app_secret.as_ref(), self.app_secret_env.as_deref())
+    }
+
+    pub fn configured_account_ids(&self) -> Vec<String> {
+        let ids = configured_account_ids(self.accounts.keys());
+        if ids.is_empty() {
+            return vec![self.default_configured_account_id()];
+        }
+        ids
+    }
+
+    pub fn default_configured_account_selection(&self) -> ChannelDefaultAccountSelection {
+        resolve_default_configured_account_selection(
+            self.accounts.keys(),
+            self.default_account.as_deref(),
+            self.resolved_account_identity().id.as_str(),
+        )
+    }
+
+    pub fn default_configured_account_id(&self) -> String {
+        let selection = self.default_configured_account_selection();
+        selection.id
+    }
+
+    pub fn resolved_account_route(
+        &self,
+        requested_account_id: Option<&str>,
+        selected_configured_account_id: &str,
+    ) -> ChannelResolvedAccountRoute {
+        resolve_channel_account_route(
+            self.accounts.keys(),
+            self.default_account.as_deref(),
+            self.resolved_account_identity().id.as_str(),
+            requested_account_id,
+            selected_configured_account_id,
+        )
+    }
+
+    pub fn resolve_account(
+        &self,
+        requested_account_id: Option<&str>,
+    ) -> CliResult<ResolvedZaloChannelConfig> {
+        let configured = self.resolve_configured_account_selection(requested_account_id)?;
+        let account_override = configured
+            .account_key
+            .as_deref()
+            .and_then(|key| self.accounts.get(key));
+
+        let merged = ZaloChannelConfig {
+            enabled: self.enabled
+                && account_override
+                    .and_then(|account| account.enabled)
+                    .unwrap_or(true),
+            account_id: account_override
+                .and_then(|account| account.account_id.clone())
+                .or_else(|| self.account_id.clone()),
+            default_account: None,
+            app_id: account_override
+                .and_then(|account| account.app_id.clone())
+                .or_else(|| self.app_id.clone()),
+            app_id_env: account_override
+                .and_then(|account| account.app_id_env.clone())
+                .or_else(|| self.app_id_env.clone()),
+            oa_access_token: account_override
+                .and_then(|account| account.oa_access_token.clone())
+                .or_else(|| self.oa_access_token.clone()),
+            oa_access_token_env: account_override
+                .and_then(|account| account.oa_access_token_env.clone())
+                .or_else(|| self.oa_access_token_env.clone()),
+            app_secret: account_override
+                .and_then(|account| account.app_secret.clone())
+                .or_else(|| self.app_secret.clone()),
+            app_secret_env: account_override
+                .and_then(|account| account.app_secret_env.clone())
+                .or_else(|| self.app_secret_env.clone()),
+            api_base_url: account_override
+                .and_then(|account| account.api_base_url.clone())
+                .or_else(|| self.api_base_url.clone()),
+            accounts: BTreeMap::new(),
+        };
+        let account = merged.resolved_account_identity();
+
+        Ok(ResolvedZaloChannelConfig {
+            configured_account_id: configured.id,
+            configured_account_label: configured.label,
+            account,
+            enabled: merged.enabled,
+            app_id: merged.app_id,
+            app_id_env: merged.app_id_env,
+            oa_access_token: merged.oa_access_token,
+            oa_access_token_env: merged.oa_access_token_env,
+            app_secret: merged.app_secret,
+            app_secret_env: merged.app_secret_env,
+            api_base_url: merged.api_base_url,
+        })
+    }
+
+    pub fn resolve_account_for_session_account_id(
+        &self,
+        session_account_id: Option<&str>,
+    ) -> CliResult<ResolvedZaloChannelConfig> {
+        let resolved = resolve_account_for_session_account_id(
+            session_account_id,
+            || self.resolve_account(session_account_id),
+            || self.configured_account_ids(),
+            |configured_id| self.resolve_account(Some(configured_id)),
+            |resolved| resolved.account.id.as_str(),
+        )?;
+        Ok(resolved)
+    }
+
+    pub fn resolved_account_identity(&self) -> ChannelAccountIdentity {
+        if let Some((id, label)) = resolve_configured_account_identity(self.account_id.as_deref()) {
+            return ChannelAccountIdentity {
+                id,
+                label,
+                source: ChannelAccountIdentitySource::Configured,
+            };
+        }
+
+        default_channel_account_identity()
+    }
+
+    fn resolve_configured_account_selection(
+        &self,
+        requested_account_id: Option<&str>,
+    ) -> CliResult<ResolvedConfiguredAccount> {
+        let configured = resolve_configured_account_selection(
+            self.accounts.keys(),
+            requested_account_id,
+            self.default_account.as_deref(),
+            self.resolved_account_identity().id.as_str(),
+        )?;
+        Ok(configured)
+    }
+}
+
 impl SignalChannelConfig {
     pub(crate) fn validate(&self) -> Vec<ConfigValidationIssue> {
         let mut issues = Vec::new();
@@ -7024,6 +7370,22 @@ fn default_nostr_relay_urls_env() -> Option<String> {
 
 fn default_nostr_private_key_env() -> Option<String> {
     Some(NOSTR_PRIVATE_KEY_ENV.to_owned())
+}
+
+fn default_zalo_api_base_url() -> String {
+    "https://openapi.zalo.me/v3.0/oa".to_owned()
+}
+
+fn default_zalo_app_id_env() -> Option<String> {
+    Some(ZALO_APP_ID_ENV.to_owned())
+}
+
+fn default_zalo_oa_access_token_env() -> Option<String> {
+    Some(ZALO_OA_ACCESS_TOKEN_ENV.to_owned())
+}
+
+fn default_zalo_app_secret_env() -> Option<String> {
+    Some(ZALO_APP_SECRET_ENV.to_owned())
 }
 
 fn default_signal_service_url() -> String {
@@ -8086,6 +8448,57 @@ fn validate_nostr_secret_ref_env_pointer(
         EnvPointerValidationHint {
             inline_field_path: field_path,
             example_env_name: NOSTR_PRIVATE_KEY_ENV,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_zalo_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    env_key: Option<&str>,
+    inline_field_path: &str,
+) {
+    let example_env_name = if field_path.ends_with("app_id_env") {
+        ZALO_APP_ID_ENV
+    } else if field_path.ends_with("oa_access_token_env") {
+        ZALO_OA_ACCESS_TOKEN_ENV
+    } else {
+        ZALO_APP_SECRET_ENV
+    };
+    if let Err(issue) = validate_env_pointer_field(
+        field_path,
+        env_key,
+        EnvPointerValidationHint {
+            inline_field_path,
+            example_env_name,
+            detect_telegram_token_shape: false,
+        },
+    ) {
+        issues.push(*issue);
+    }
+}
+
+fn validate_zalo_secret_ref_env_pointer(
+    issues: &mut Vec<ConfigValidationIssue>,
+    field_path: &str,
+    secret_ref: Option<&SecretRef>,
+) {
+    let example_env_name = if field_path.ends_with("app_id") {
+        ZALO_APP_ID_ENV
+    } else if field_path.ends_with("oa_access_token") {
+        ZALO_OA_ACCESS_TOKEN_ENV
+    } else {
+        ZALO_APP_SECRET_ENV
+    };
+    if let Err(issue) = validate_secret_ref_env_pointer_field(
+        field_path,
+        secret_ref,
+        EnvPointerValidationHint {
+            inline_field_path: field_path,
+            example_env_name,
             detect_telegram_token_shape: false,
         },
     ) {
@@ -10520,6 +10933,121 @@ mod tests {
         assert_eq!(
             config.app_secret_env.as_deref(),
             Some(WHATSAPP_APP_SECRET_ENV)
+        );
+    }
+
+    #[test]
+    fn zalo_partial_deserialization_keeps_default_env_pointers() {
+        let config: ZaloChannelConfig = serde_json::from_value(json!({
+            "enabled": true
+        }))
+        .expect("deserialize zalo config");
+
+        assert_eq!(config.app_id_env.as_deref(), Some(ZALO_APP_ID_ENV));
+        assert_eq!(
+            config.oa_access_token_env.as_deref(),
+            Some(ZALO_OA_ACCESS_TOKEN_ENV)
+        );
+        assert_eq!(config.app_secret_env.as_deref(), Some(ZALO_APP_SECRET_ENV));
+
+        let resolved = config
+            .resolve_account(None)
+            .expect("resolve default zalo account");
+        assert_eq!(
+            resolved.resolved_api_base_url(),
+            "https://openapi.zalo.me/v3.0/oa"
+        );
+    }
+
+    #[test]
+    fn zalo_resolves_credentials_from_env_pointers() {
+        let mut env = crate::test_support::ScopedEnv::new();
+        env.set("TEST_ZALO_APP_ID", "zalo-app-id");
+        env.set("TEST_ZALO_ACCESS_TOKEN", "zalo-access-token");
+        env.set("TEST_ZALO_APP_SECRET", "zalo-app-secret");
+
+        let config: ZaloChannelConfig = serde_json::from_value(json!({
+            "enabled": true,
+            "app_id_env": "TEST_ZALO_APP_ID",
+            "oa_access_token_env": "TEST_ZALO_ACCESS_TOKEN",
+            "app_secret_env": "TEST_ZALO_APP_SECRET"
+        }))
+        .expect("deserialize zalo config");
+
+        let resolved = config
+            .resolve_account(None)
+            .expect("resolve default zalo account");
+        let app_id = resolved.app_id();
+        let access_token = resolved.oa_access_token();
+        let app_secret = resolved.app_secret();
+
+        assert_eq!(app_id.as_deref(), Some("zalo-app-id"));
+        assert_eq!(access_token.as_deref(), Some("zalo-access-token"));
+        assert_eq!(app_secret.as_deref(), Some("zalo-app-secret"));
+    }
+
+    #[test]
+    fn zalo_multi_account_resolution_merges_base_and_account_overrides() {
+        let config: ZaloChannelConfig = serde_json::from_value(json!({
+            "enabled": true,
+            "app_id": "base-app-id",
+            "oa_access_token": "base-access-token",
+            "app_secret": "base-app-secret",
+            "api_base_url": "https://openapi.zalo.me/v3.0/oa",
+            "default_account": "Primary",
+            "accounts": {
+                "Primary": {
+                    "account_id": "Zalo-Ops",
+                    "oa_access_token": "primary-access-token"
+                },
+                "Backup": {
+                    "enabled": false,
+                    "app_id": "backup-app-id",
+                    "api_base_url": "https://zalo-proxy.example.test/v3.0/oa"
+                }
+            }
+        }))
+        .expect("deserialize zalo multi-account config");
+
+        assert_eq!(config.configured_account_ids(), vec!["backup", "primary"]);
+        assert_eq!(config.default_configured_account_id(), "primary");
+
+        let primary = config
+            .resolve_account(None)
+            .expect("resolve default zalo account");
+        let primary_app_id = primary.app_id();
+        let primary_access_token = primary.oa_access_token();
+        let primary_app_secret = primary.app_secret();
+
+        assert_eq!(primary.configured_account_id, "primary");
+        assert_eq!(primary.account.id, "zalo-ops");
+        assert_eq!(primary.account.label, "Zalo-Ops");
+        assert_eq!(primary_app_id.as_deref(), Some("base-app-id"));
+        assert_eq!(
+            primary_access_token.as_deref(),
+            Some("primary-access-token")
+        );
+        assert_eq!(primary_app_secret.as_deref(), Some("base-app-secret"));
+        assert_eq!(
+            primary.resolved_api_base_url(),
+            "https://openapi.zalo.me/v3.0/oa"
+        );
+
+        let backup = config
+            .resolve_account(Some("Backup"))
+            .expect("resolve explicit zalo account");
+        let backup_app_id = backup.app_id();
+        let backup_access_token = backup.oa_access_token();
+        let backup_app_secret = backup.app_secret();
+
+        assert_eq!(backup.configured_account_id, "backup");
+        assert!(!backup.enabled);
+        assert_eq!(backup_app_id.as_deref(), Some("backup-app-id"));
+        assert_eq!(backup_access_token.as_deref(), Some("base-access-token"));
+        assert_eq!(backup_app_secret.as_deref(), Some("base-app-secret"));
+        assert_eq!(
+            backup.resolved_api_base_url(),
+            "https://zalo-proxy.example.test/v3.0/oa"
         );
     }
 
