@@ -220,7 +220,8 @@ fn runtime_snapshot_json_payload_includes_provider_tool_and_external_skill_inven
         config_path.to_str().expect("config path should be utf-8"),
     ))
     .expect("collect runtime snapshot");
-    let payload = build_runtime_snapshot_cli_json_payload(&snapshot);
+    let payload =
+        build_runtime_snapshot_cli_json_payload(&snapshot).expect("build runtime snapshot payload");
 
     assert_eq!(payload["schema"]["version"], 1);
     assert_eq!(payload["provider"]["active_profile_id"], "deepseek-lab");
@@ -288,7 +289,8 @@ fn runtime_snapshot_json_payload_marks_x_api_key_profiles_as_credential_resolved
         config_path.to_str().expect("config path should be utf-8"),
     ))
     .expect("collect runtime snapshot");
-    let payload = build_runtime_snapshot_cli_json_payload(&snapshot);
+    let payload =
+        build_runtime_snapshot_cli_json_payload(&snapshot).expect("build runtime snapshot payload");
 
     let anthropic_profile = array_object_with_string_field(
         &payload["provider"]["profiles"],
@@ -315,7 +317,8 @@ fn runtime_snapshot_json_payload_reflects_effective_external_skills_policy_overr
         config_path.to_str().expect("config path should be utf-8"),
     ))
     .expect("collect enabled runtime snapshot");
-    let enabled_payload = build_runtime_snapshot_cli_json_payload(&enabled_snapshot);
+    let enabled_payload = build_runtime_snapshot_cli_json_payload(&enabled_snapshot)
+        .expect("build enabled runtime snapshot payload");
     let enabled_digest = enabled_payload["tools"]["capability_snapshot_sha256"].clone();
     assert!(array_contains_string(
         &enabled_payload["tools"]["visible_tool_names"],
@@ -347,7 +350,8 @@ fn runtime_snapshot_json_payload_reflects_effective_external_skills_policy_overr
         config_path.to_str().expect("config path should be utf-8"),
     ))
     .expect("collect runtime snapshot");
-    let payload = build_runtime_snapshot_cli_json_payload(&snapshot);
+    let payload =
+        build_runtime_snapshot_cli_json_payload(&snapshot).expect("build runtime snapshot payload");
 
     assert!(!snapshot.tool_runtime.external_skills.enabled);
     assert!(

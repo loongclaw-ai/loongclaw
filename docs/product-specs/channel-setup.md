@@ -19,7 +19,10 @@ needs.
       surfaces such as IRC, Nostr, Twitch, Tlon, Zalo, Zalo Personal, and
       WebChat.
 - [ ] Channel setup guidance describes required credentials, config toggles, and
-      the command used to run each shipped channel.
+      the command used to run each shipped channel today.
+- [ ] Product docs describe `multi-channel-serve` as the current attached
+      runtime owner for shipped runtime-backed surfaces and as the precursor to
+      a broader gateway service layer rather than the long-term product noun.
 - [ ] WeCom setup guidance documents the official AIBot long-connection flow and
       never presents webhook callback mode as a supported LoongClaw integration path.
 - [ ] Channel setup never implies a channel is ready until its required
@@ -75,9 +78,13 @@ do not overclaim runtime support:
   status, and direct sends without pretending they also own a long-running
   serve runtime
 - runtime-backed service channels are a strict shipped subset of the catalog
-- `multi-channel-serve` only supervises enabled runtime-backed channels and uses
-  repeatable `--channel-account <channel=account>` selectors instead of
-  channel-specific flags
+- `multi-channel-serve` is the current attached runtime-owner precursor and
+  only supervises enabled runtime-backed channels while using repeatable
+  `--channel-account <channel=account>` selectors instead of channel-specific
+  flags
+- the longer-term direction is an explicit gateway service that will own
+  runtime-backed channels, route mounts, auth, detached lifecycle, and operator
+  APIs without changing the registry-first channel inventory model
 
 This lets the product align channel naming and onboarding with broader channel
 ecosystems such as OpenClaw without pretending a stub catalog entry or a
@@ -150,8 +157,8 @@ and iMessage / BlueBubbles are shipped as account-aware outbound surfaces:
   onboarding metadata through the shared channel SDK
 - they do not join `multi-channel-serve` because they do not own a shipped
   reply-loop runtime
-- their `serve` metadata remains planned or unsupported until the underlying
-  inbound transport contract is implemented
+- their `serve` metadata remains planned or unsupported until the gateway layer
+  and the underlying inbound transport contract are implemented
 
 ### Webhook
 
@@ -234,10 +241,11 @@ iMessage is shipped through a BlueBubbles bridge send surface:
 - `imessage-serve` remains planned until LoongClaw owns the inbound bridge
   synchronization contract
 
-### Multi-Channel Serve
+### Multi-Channel Serve And Gateway Direction
 
-`multi-channel-serve` is the runtime owner for the shipped service-channel
-subset:
+`multi-channel-serve` is the current attached runtime owner for the shipped
+service-channel subset. It is also the first precursor to the planned explicit
+gateway service rather than the long-term product noun:
 
 - it keeps the concurrent CLI host in the foreground
 - it supervises every enabled runtime-backed surface from the loaded config
@@ -250,3 +258,7 @@ subset:
   runtime supervision until those adapters grow real serve ownership
 - it never promotes catalog-only planned surfaces such as Tlon into runtime
   supervision until those adapters are implemented
+- the later gateway service should absorb this runtime ownership model, then
+  add detached service lifecycle, route mounting, status/log surfaces, pairing,
+  and richer gateway-native channel runtimes on top of the same registry-driven
+  inventory contract

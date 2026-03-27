@@ -1,6 +1,6 @@
 # LoongClaw Roadmap
 
-Last updated: 2026-03-20
+Last updated: 2026-03-27
 
 This roadmap is execution-focused. Every stage has:
 
@@ -329,7 +329,22 @@ Remaining deliverables:
   - still add isolated browser profile lifecycle and release packaging around the companion runtime
   - keep richer browser automation exposed only through truthful runtime-visible tool advertising and governed tool contracts
 - browser-facing product surface:
-  - Web UI implementation as a thin shell over existing ask/chat, onboarding, dashboard, and browser semantics, not a separate assistant runtime
+  - Web UI implementation as a thin shell over existing ask/chat, onboarding,
+    dashboard, and browser semantics, not a separate assistant runtime
+  - current product mode stays same-origin and localhost-only by default, but
+    that operating boundary is not the long-term architecture endpoint
+- gateway service foundation:
+  - promote today's attached runtime owner (`multi-channel-serve`) into an
+    explicit daemon-owned gateway service rather than leaving service ownership
+    fragmented across `chat`, `*-serve`, Web UI, and future paired clients
+  - extract channel, ACP, and runtime-snapshot payload builders into shared
+    service read models that can feed CLI, dashboard, Web UI, and future
+    paired/browser/mobile clients
+  - centralize bind ownership, route mounting, local admin auth, pairing, and
+    detached service lifecycle in the gateway while preserving kernel, app, and
+    ACP boundaries
+  - use the gateway layer as the prerequisite for richer long-lived runtimes
+    such as Discord, Slack, WhatsApp, and other gateway-native channel surfaces
 
 Acceptance criteria:
 
@@ -338,6 +353,9 @@ Acceptance criteria:
 - shell/file/web/browser tools obey policy constraints and emit auditable outcomes
 - advertised tools match the actually invokable runtime surface for the current config and compiled features
 - channel/provider modules can be toggled by feature flags without core code edits
+- service-oriented product surfaces can converge on one daemon-owned gateway
+  host without introducing a second assistant runtime or weakening kernel/app
+  governance
 
 ## Quality Gate Matrix (Always On)
 

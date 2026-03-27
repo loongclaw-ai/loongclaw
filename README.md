@@ -340,6 +340,12 @@ instability from true upstream unavailability.
 
    The initial product mode stays same-origin and local by default.
 
+   That local-first boundary is the current operating slice, not the long-term
+   architecture endpoint.
+
+   The long-term direction is to keep Web UI attached to the same daemon-owned
+   gateway/service runtime rather than creating a second assistant runtime.
+
    This surface is still evolving and should be understood as an active MVP rather than a fully finished product interface.
 
    If you would like to help us continue improving it, please switch to the `web` branch and share feedback there.
@@ -470,7 +476,15 @@ By default, LoongClaw reads `MATRIX_ACCESS_TOKEN`. Matrix room and user IDs ofte
 
 ### Multi-Channel Serve
 
-Use `multi-channel-serve` when you want one process to keep an interactive CLI session in the foreground while supervising every enabled runtime-backed service channel in the same runtime.
+Use `multi-channel-serve` when you want one process to keep an interactive CLI
+session in the foreground while supervising every enabled runtime-backed
+service channel in the same runtime.
+
+Today this command is the attached runtime-owner precursor to a broader
+daemon-owned gateway service surface. The current slice keeps CLI in the
+foreground, but the longer-term direction is to decouple CLI lifecycle from
+service lifecycle and let one service host own routes, status, logs, pairing,
+and richer channel runtimes.
 
 ```bash
 loongclaw multi-channel-serve \
