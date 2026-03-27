@@ -1,6 +1,6 @@
 use super::*;
 use loongclaw_daemon::kernel::{
-    PluginBridgeKind, PluginCompatibilityMode, PluginCompatibilityShim,
+    PluginActivationStatus, PluginBridgeKind, PluginCompatibilityMode, PluginCompatibilityShim,
     PluginCompatibilityShimSupport, PluginContractDialect,
 };
 
@@ -1585,6 +1585,9 @@ async fn execute_spec_surfaces_setup_incomplete_plugins_without_marking_them_rea
             enabled: true,
             supported_bridges: vec![PluginBridgeKind::HttpJson],
             supported_adapter_families: Vec::new(),
+            supported_compatibility_modes: vec![PluginCompatibilityMode::Native],
+            supported_compatibility_shims: Vec::new(),
+            supported_compatibility_shim_profiles: Vec::new(),
             enforce_supported: true,
             policy_version: None,
             expected_checksum: None,
@@ -1609,7 +1612,12 @@ async fn execute_spec_surfaces_setup_incomplete_plugins_without_marking_them_rea
 
     let report = execute_spec(&spec, true).await;
 
-    assert_eq!(report.operation_kind, "tool_search");
+    if report.operation_kind != "tool_search" {
+        panic!(
+            "unexpected operation_kind={} blocked_reason={:?} outcome={}",
+            report.operation_kind, report.blocked_reason, report.outcome
+        );
+    }
     assert_eq!(report.plugin_activation_plans.len(), 1);
     assert_eq!(report.plugin_activation_plans[0].ready_plugins, 0);
     assert_eq!(
@@ -5969,6 +5977,131 @@ async fn execute_spec_scans_multiple_roots_and_absorbs_per_root() {
 }
 
 #[tokio::test]
+async fn execute_spec_blocks_cross_root_slot_claim_conflicts_during_planning() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be monotonic")
+        .as_nanos();
+
+    let root_a = std::env::temp_dir().join(format!("loongclaw-plugin-slot-a-{unique}"));
+    let root_b = std::env::temp_dir().join(format!("loongclaw-plugin-slot-b-{unique}"));
+    fs::create_dir_all(&root_a).expect("create root a");
+    fs::create_dir_all(&root_b).expect("create root b");
+
+    fs::write(
+        root_a.join("a.py"),
+        r#"
+# LOONGCLAW_PLUGIN_START
+# {
+#   "plugin_id": "search-a",
+#   "provider_id": "search-a",
+#   "connector_name": "search-a",
+#   "channel_id": "primary",
+#   "endpoint": "https://example.com/search-a",
+#   "capabilities": ["InvokeConnector"],
+#   "metadata": {"bridge_kind":"http_json","version":"1.0.0"},
+#   "slot_claims": [
+#     {"slot":"provider:web_search","key":"tavily","mode":"exclusive"}
+#   ]
+# }
+# LOONGCLAW_PLUGIN_END
+"#,
+    )
+    .expect("write root a plugin");
+
+    fs::write(
+        root_b.join("b.py"),
+        r#"
+# LOONGCLAW_PLUGIN_START
+# {
+#   "plugin_id": "search-b",
+#   "provider_id": "search-b",
+#   "connector_name": "search-b",
+#   "channel_id": "primary",
+#   "endpoint": "https://example.com/search-b",
+#   "capabilities": ["InvokeConnector"],
+#   "metadata": {"bridge_kind":"http_json","version":"1.0.0"},
+#   "slot_claims": [
+#     {"slot":"provider:web_search","key":"tavily","mode":"exclusive"}
+#   ]
+# }
+# LOONGCLAW_PLUGIN_END
+"#,
+    )
+    .expect("write root b plugin");
+
+    let spec = RunnerSpec {
+        pack: VerticalPackManifest {
+            pack_id: "spec-cross-root-slot-claims".to_owned(),
+            domain: "ops".to_owned(),
+            version: "0.1.0".to_owned(),
+            default_route: ExecutionRoute {
+                harness_kind: HarnessKind::EmbeddedPi,
+                adapter: Some("pi-local".to_owned()),
+            },
+            allowed_connectors: BTreeSet::new(),
+            granted_capabilities: BTreeSet::from([Capability::ObserveTelemetry]),
+            metadata: BTreeMap::new(),
+        },
+        agent_id: "agent-cross-root-slot-claims".to_owned(),
+        ttl_s: 120,
+        approval: None,
+        defaults: None,
+        self_awareness: None,
+        plugin_scan: Some(PluginScanSpec {
+            enabled: true,
+            roots: vec![root_a.display().to_string(), root_b.display().to_string()],
+        }),
+        bridge_support: Some(BridgeSupportSpec {
+            enabled: true,
+            supported_bridges: vec![PluginBridgeKind::HttpJson],
+            supported_adapter_families: Vec::new(),
+            supported_compatibility_modes: vec![PluginCompatibilityMode::Native],
+            supported_compatibility_shims: Vec::new(),
+            supported_compatibility_shim_profiles: Vec::new(),
+            enforce_supported: true,
+            policy_version: None,
+            expected_checksum: None,
+            expected_sha256: None,
+            execute_process_stdio: false,
+            execute_http_json: false,
+            allowed_process_commands: Vec::new(),
+            enforce_execution_success: false,
+            security_scan: None,
+        }),
+        bootstrap: None,
+        auto_provision: None,
+        hotfixes: Vec::new(),
+        plugin_setup_readiness: None,
+        operation: OperationSpec::Task {
+            task_id: "t-cross-root-slot-claims".to_owned(),
+            objective: "detect cross-root slot conflicts during planning".to_owned(),
+            required_capabilities: BTreeSet::new(),
+            payload: json!({}),
+        },
+    };
+
+    let report = execute_spec(&spec, true).await;
+    let blocked_reason = report.blocked_reason.as_deref().unwrap_or_default();
+    let second_plan = &report.plugin_activation_plans[1];
+    let second_candidate = &second_plan.candidates[0];
+
+    assert_eq!(report.operation_kind, "blocked");
+    assert!(blocked_reason.contains("blocked_slot_claim_conflict"));
+    assert_eq!(report.plugin_activation_plans.len(), 2);
+    assert_eq!(second_plan.blocked_plugins, 1);
+    assert_eq!(
+        second_candidate.status,
+        PluginActivationStatus::BlockedSlotClaimConflict
+    );
+    assert!(report.plugin_absorb_reports.is_empty());
+    assert!(report.integration_catalog.provider("search-a").is_none());
+    assert!(report.integration_catalog.provider("search-b").is_none());
+}
+
+#[tokio::test]
 async fn execute_spec_plugin_scan_is_transactional_when_blocked() {
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -6253,6 +6386,7 @@ async fn execute_spec_blocks_when_package_manifest_uses_legacy_version_metadata(
         bootstrap: None,
         auto_provision: None,
         hotfixes: Vec::new(),
+        plugin_setup_readiness: None,
         operation: OperationSpec::Task {
             task_id: "t-plugin-package-legacy-version".to_owned(),
             objective: "package manifest should reject legacy metadata.version".to_owned(),
@@ -6591,9 +6725,11 @@ async fn execute_spec_tool_search_uses_explicit_plugin_setup_readiness_context()
         &plugin_manifest_path,
         r#"
 {
+  "api_version": "v1alpha1",
   "plugin_id": "tavily-search",
   "provider_id": "tavily",
   "connector_name": "tavily-http",
+  "version": "1.0.0",
   "endpoint": "https://api.tavily.com/search",
   "capabilities": ["InvokeConnector"],
   "metadata": {
@@ -6645,6 +6781,9 @@ async fn execute_spec_tool_search_uses_explicit_plugin_setup_readiness_context()
             enabled: true,
             supported_bridges: vec![PluginBridgeKind::HttpJson],
             supported_adapter_families: Vec::new(),
+            supported_compatibility_modes: vec![PluginCompatibilityMode::Native],
+            supported_compatibility_shims: Vec::new(),
+            supported_compatibility_shim_profiles: Vec::new(),
             enforce_supported: true,
             policy_version: None,
             expected_checksum: None,
@@ -6684,7 +6823,12 @@ async fn execute_spec_tool_search_uses_explicit_plugin_setup_readiness_context()
 
     let report = execute_spec(&spec, true).await;
 
-    assert_eq!(report.operation_kind, "tool_search");
+    if report.operation_kind != "tool_search" {
+        panic!(
+            "unexpected operation_kind={} blocked_reason={:?} outcome={}",
+            report.operation_kind, report.blocked_reason, report.outcome
+        );
+    }
     assert_eq!(report.plugin_activation_plans.len(), 1);
     assert_eq!(report.plugin_activation_plans[0].ready_plugins, 1);
     assert_eq!(
@@ -6898,6 +7042,7 @@ async fn execute_spec_tool_search_surfaces_slot_claim_activation_conflicts() {
         bootstrap: None,
         auto_provision: None,
         hotfixes: Vec::new(),
+        plugin_setup_readiness: None,
         operation: OperationSpec::ToolSearch {
             query: "blocked_slot_claim_conflict".to_owned(),
             limit: 10,
@@ -7024,6 +7169,7 @@ async fn execute_spec_plugin_inventory_surfaces_activation_setup_and_ownership_t
         bootstrap: None,
         auto_provision: None,
         hotfixes: Vec::new(),
+        plugin_setup_readiness: None,
         operation: OperationSpec::PluginInventory {
             query: "SEARCH_A_KEY".to_owned(),
             limit: 10,
@@ -7133,6 +7279,7 @@ async fn execute_spec_plugin_inventory_surfaces_host_compatibility_blockers() {
         bootstrap: None,
         auto_provision: None,
         hotfixes: Vec::new(),
+        plugin_setup_readiness: None,
         operation: OperationSpec::PluginInventory {
             query: "blocked_incompatible_host".to_owned(),
             limit: 10,
@@ -7296,6 +7443,7 @@ async fn execute_spec_plugin_inventory_requires_explicit_openclaw_shim_enablemen
         bootstrap: None,
         auto_provision: None,
         hotfixes: Vec::new(),
+        plugin_setup_readiness: None,
         operation: OperationSpec::PluginInventory {
             query: "weather-sdk".to_owned(),
             limit: 10,
@@ -7364,6 +7512,11 @@ async fn execute_spec_plugin_inventory_requires_explicit_openclaw_shim_enablemen
         bootstrap: None,
         auto_provision: None,
         hotfixes: Vec::new(),
+        plugin_setup_readiness: Some(PluginSetupReadinessSpec {
+            inherit_process_env: false,
+            verified_env_vars: Vec::new(),
+            verified_config_keys: vec!["plugins.entries.weather-sdk".to_owned()],
+        }),
         operation: OperationSpec::PluginInventory {
             query: "weather-sdk".to_owned(),
             limit: 10,
@@ -7520,6 +7673,7 @@ async fn execute_spec_plugin_inventory_blocks_openclaw_shim_profile_mismatch() {
         bootstrap: None,
         auto_provision: None,
         hotfixes: Vec::new(),
+        plugin_setup_readiness: None,
         operation: OperationSpec::PluginInventory {
             query: "weather-sdk".to_owned(),
             limit: 10,
@@ -7582,6 +7736,11 @@ async fn execute_spec_plugin_inventory_blocks_openclaw_shim_profile_mismatch() {
         bootstrap: None,
         auto_provision: None,
         hotfixes: Vec::new(),
+        plugin_setup_readiness: Some(PluginSetupReadinessSpec {
+            inherit_process_env: false,
+            verified_env_vars: Vec::new(),
+            verified_config_keys: vec!["plugins.entries.weather-sdk".to_owned()],
+        }),
         operation: OperationSpec::PluginInventory {
             query: "weather-sdk".to_owned(),
             limit: 10,
@@ -7733,6 +7892,11 @@ async fn execute_spec_openclaw_connector_runtime_surfaces_attested_activation_co
             required_capabilities: BTreeSet::from([Capability::InvokeConnector]),
         }),
         hotfixes: Vec::new(),
+        plugin_setup_readiness: Some(PluginSetupReadinessSpec {
+            inherit_process_env: false,
+            verified_env_vars: Vec::new(),
+            verified_config_keys: vec!["plugins.entries.weather-sdk".to_owned()],
+        }),
         operation: OperationSpec::ConnectorLegacy {
             connector_name: "weather-sdk".to_owned(),
             operation: "invoke".to_owned(),
@@ -7887,6 +8051,7 @@ async fn execute_spec_plugin_preflight_summarizes_runtime_activation_blockers() 
         bootstrap: None,
         auto_provision: None,
         hotfixes: Vec::new(),
+        plugin_setup_readiness: None,
         operation: OperationSpec::PluginPreflight {
             query: String::new(),
             limit: 10,
@@ -8069,6 +8234,7 @@ async fn execute_spec_plugin_preflight_blocks_embedded_source_sdk_release_contra
         bootstrap: None,
         auto_provision: None,
         hotfixes: Vec::new(),
+        plugin_setup_readiness: None,
         operation: OperationSpec::PluginPreflight {
             query: String::new(),
             limit: 10,
@@ -8194,6 +8360,7 @@ async fn execute_spec_plugin_preflight_honors_custom_policy_path_and_sha() {
         bootstrap: None,
         auto_provision: None,
         hotfixes: Vec::new(),
+        plugin_setup_readiness: None,
         operation: OperationSpec::PluginPreflight {
             query: String::new(),
             limit: 10,
@@ -8315,6 +8482,7 @@ async fn execute_spec_plugin_preflight_applies_contract_drift_exception_lane() {
         bootstrap: None,
         auto_provision: None,
         hotfixes: Vec::new(),
+        plugin_setup_readiness: None,
         operation: OperationSpec::PluginPreflight {
             query: String::new(),
             limit: 10,

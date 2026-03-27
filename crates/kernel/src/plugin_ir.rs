@@ -200,13 +200,19 @@ pub struct PluginActivationCandidate {
     pub source_kind: PluginSourceKind,
     pub package_root: String,
     pub package_manifest_path: Option<String>,
+    #[serde(default)]
     pub compatibility_mode: PluginCompatibilityMode,
+    #[serde(default)]
     pub compatibility_shim: Option<PluginCompatibilityShim>,
+    #[serde(default)]
     pub compatibility_shim_support: Option<PluginCompatibilityShimSupport>,
+    #[serde(default)]
     pub compatibility_shim_support_mismatch_reasons: Vec<String>,
     pub bridge_kind: PluginBridgeKind,
     pub adapter_family: String,
+    #[serde(default)]
     pub slot_claims: Vec<PluginSlotClaim>,
+    #[serde(default)]
     pub diagnostic_findings: Vec<PluginDiagnosticFinding>,
     pub status: PluginActivationStatus,
     pub reason: String,
@@ -336,7 +342,16 @@ impl PluginActivationPlan {
         let mut details = self
             .candidates
             .iter()
-            .filter(|candidate| !matches!(candidate.status, PluginActivationStatus::Ready))
+            .filter(|candidate| {
+                matches!(
+                    candidate.status,
+                    PluginActivationStatus::BlockedCompatibilityMode
+                        | PluginActivationStatus::BlockedUnsupportedBridge
+                        | PluginActivationStatus::BlockedIncompatibleHost
+                        | PluginActivationStatus::BlockedUnsupportedAdapterFamily
+                        | PluginActivationStatus::BlockedSlotClaimConflict
+                )
+            })
             .take(capped_limit)
             .map(|candidate| {
                 format!(
@@ -827,6 +842,7 @@ fn activation_diagnostic_finding(
 ) -> Option<PluginDiagnosticFinding> {
     let (code, field_path, remediation) = match status {
         PluginActivationStatus::Ready => return None,
+        PluginActivationStatus::SetupIncomplete => return None,
         PluginActivationStatus::BlockedCompatibilityMode => (
             PluginDiagnosticCode::CompatibilityShimRequired,
             Some("compatibility_mode".to_owned()),
@@ -1263,6 +1279,13 @@ mod tests {
         }
     }
 
+    fn verified_setup_readiness_context() -> PluginSetupReadinessContext {
+        PluginSetupReadinessContext {
+            verified_env_vars: BTreeSet::from(["TAVILY_API_KEY".to_owned()]),
+            verified_config_keys: BTreeSet::from(["tools.web_search.default_provider".to_owned()]),
+        }
+    }
+
     #[test]
     fn translator_infers_bridge_from_source_language() {
         let scanner_report = PluginScanReport {
@@ -1632,7 +1655,7 @@ mod tests {
             supported_compatibility_shim_profiles: BTreeMap::new(),
         };
 
-        let setup_readiness_context = PluginSetupReadinessContext::default();
+        let setup_readiness_context = verified_setup_readiness_context();
         let plan = PluginTranslator::new().plan_activation(
             &translation,
             &matrix,
@@ -1759,7 +1782,7 @@ mod tests {
             supported_compatibility_shim_profiles: BTreeMap::new(),
         };
 
-        let setup_readiness_context = PluginSetupReadinessContext::default();
+        let setup_readiness_context = verified_setup_readiness_context();
         let plan = PluginTranslator::new().plan_activation(
             &translation,
             &matrix,
@@ -1798,7 +1821,12 @@ mod tests {
             diagnostic_findings: Vec::new(),
             descriptors: vec![descriptor],
         });
-        let plan = translator.plan_activation(&translation, &BridgeSupportMatrix::default());
+        let setup_readiness_context = verified_setup_readiness_context();
+        let plan = translator.plan_activation(
+            &translation,
+            &BridgeSupportMatrix::default(),
+            &setup_readiness_context,
+        );
 
         let inventory = plan.inventory_entries(&translation);
 
@@ -1873,8 +1901,12 @@ mod tests {
             diagnostic_findings: Vec::new(),
             descriptors: vec![first, second],
         });
-        let plan =
-            PluginTranslator::new().plan_activation(&translation, &BridgeSupportMatrix::default());
+        let setup_readiness_context = PluginSetupReadinessContext::default();
+        let plan = PluginTranslator::new().plan_activation(
+            &translation,
+            &BridgeSupportMatrix::default(),
+            &setup_readiness_context,
+        );
 
         let summary = plan.blocker_summary(1);
 
@@ -1908,7 +1940,7 @@ mod tests {
             supported_compatibility_shim_profiles: BTreeMap::new(),
         };
 
-        let setup_readiness_context = PluginSetupReadinessContext::default();
+        let setup_readiness_context = verified_setup_readiness_context();
         let plan = PluginTranslator::new().plan_activation(
             &translation,
             &matrix,
@@ -1975,7 +2007,7 @@ mod tests {
             supported_compatibility_shim_profiles: BTreeMap::new(),
         };
 
-        let setup_readiness_context = PluginSetupReadinessContext::default();
+        let setup_readiness_context = verified_setup_readiness_context();
         let plan = PluginTranslator::new().plan_activation(
             &translation,
             &matrix,
@@ -2037,7 +2069,7 @@ mod tests {
             supported_compatibility_shim_profiles: BTreeMap::new(),
         };
 
-        let setup_readiness_context = PluginSetupReadinessContext::default();
+        let setup_readiness_context = verified_setup_readiness_context();
         let plan = PluginTranslator::new().plan_activation(
             &translation,
             &matrix,
@@ -2095,7 +2127,7 @@ mod tests {
             )]),
         };
 
-        let setup_readiness_context = PluginSetupReadinessContext::default();
+        let setup_readiness_context = verified_setup_readiness_context();
         let plan = PluginTranslator::new().plan_activation(
             &translation,
             &matrix,
@@ -2170,7 +2202,7 @@ mod tests {
             )]),
         };
 
-        let setup_readiness_context = PluginSetupReadinessContext::default();
+        let setup_readiness_context = verified_setup_readiness_context();
         let plan = PluginTranslator::new().plan_activation(
             &translation,
             &matrix,
@@ -2204,12 +2236,14 @@ mod tests {
         let translation = translator.translate_scan_report(&PluginScanReport {
             scanned_files: 1,
             matched_plugins: 1,
+            diagnostic_findings: Vec::new(),
             descriptors: vec![descriptor],
         });
 
         let matrix = BridgeSupportMatrix {
             supported_bridges: BTreeSet::from([PluginBridgeKind::HttpJson]),
             supported_adapter_families: BTreeSet::new(),
+            ..BridgeSupportMatrix::default()
         };
         let setup_readiness_context = PluginSetupReadinessContext {
             verified_env_vars: BTreeSet::from(["TAVILY_API_KEY".to_owned()]),
@@ -2237,12 +2271,14 @@ mod tests {
         let translation = translator.translate_scan_report(&PluginScanReport {
             scanned_files: 1,
             matched_plugins: 1,
+            diagnostic_findings: Vec::new(),
             descriptors: vec![descriptor],
         });
 
         let matrix = BridgeSupportMatrix {
             supported_bridges: BTreeSet::from([PluginBridgeKind::HttpJson]),
             supported_adapter_families: BTreeSet::new(),
+            ..BridgeSupportMatrix::default()
         };
         let setup_readiness_context = PluginSetupReadinessContext {
             verified_env_vars: BTreeSet::from(["tavily_api_key".to_owned()]),
@@ -2264,12 +2300,14 @@ mod tests {
         let translation = translator.translate_scan_report(&PluginScanReport {
             scanned_files: 1,
             matched_plugins: 1,
+            diagnostic_findings: Vec::new(),
             descriptors: vec![descriptor],
         });
 
         let matrix = BridgeSupportMatrix {
             supported_bridges: BTreeSet::from([PluginBridgeKind::HttpJson]),
             supported_adapter_families: BTreeSet::new(),
+            ..BridgeSupportMatrix::default()
         };
         let setup_readiness_context = PluginSetupReadinessContext {
             verified_env_vars: BTreeSet::from(["tavily_api_key".to_owned()]),
@@ -2325,12 +2363,14 @@ mod tests {
         let translation = translator.translate_scan_report(&PluginScanReport {
             scanned_files: 1,
             matched_plugins: 1,
+            diagnostic_findings: Vec::new(),
             descriptors: vec![descriptor],
         });
 
         let matrix = BridgeSupportMatrix {
             supported_bridges: BTreeSet::from([PluginBridgeKind::HttpJson]),
             supported_adapter_families: BTreeSet::new(),
+            ..BridgeSupportMatrix::default()
         };
         let setup_readiness_context = PluginSetupReadinessContext {
             verified_env_vars: BTreeSet::from(["TAVILY_API_KEY".to_owned()]),
@@ -2345,5 +2385,62 @@ mod tests {
             plan.candidates[0].status,
             PluginActivationStatus::BlockedUnsupportedBridge
         ));
+    }
+
+    #[test]
+    fn blocker_summary_excludes_setup_incomplete_candidates() {
+        let plan = PluginActivationPlan {
+            total_plugins: 2,
+            ready_plugins: 0,
+            setup_incomplete_plugins: 1,
+            blocked_plugins: 1,
+            candidates: vec![
+                PluginActivationCandidate {
+                    plugin_id: "setup-plugin".to_owned(),
+                    source_path: "/tmp/setup-plugin.py".to_owned(),
+                    source_kind: PluginSourceKind::EmbeddedSource,
+                    package_root: "/tmp".to_owned(),
+                    package_manifest_path: None,
+                    compatibility_mode: PluginCompatibilityMode::Native,
+                    compatibility_shim: None,
+                    compatibility_shim_support: None,
+                    compatibility_shim_support_mismatch_reasons: Vec::new(),
+                    bridge_kind: PluginBridgeKind::HttpJson,
+                    adapter_family: "http-adapter".to_owned(),
+                    slot_claims: Vec::new(),
+                    diagnostic_findings: Vec::new(),
+                    status: PluginActivationStatus::SetupIncomplete,
+                    reason: "missing TAVILY_API_KEY".to_owned(),
+                    missing_required_env_vars: vec!["TAVILY_API_KEY".to_owned()],
+                    missing_required_config_keys: Vec::new(),
+                    bootstrap_hint: "export TAVILY_API_KEY".to_owned(),
+                },
+                PluginActivationCandidate {
+                    plugin_id: "blocked-plugin".to_owned(),
+                    source_path: "/tmp/blocked-plugin.py".to_owned(),
+                    source_kind: PluginSourceKind::EmbeddedSource,
+                    package_root: "/tmp".to_owned(),
+                    package_manifest_path: None,
+                    compatibility_mode: PluginCompatibilityMode::Native,
+                    compatibility_shim: None,
+                    compatibility_shim_support: None,
+                    compatibility_shim_support_mismatch_reasons: Vec::new(),
+                    bridge_kind: PluginBridgeKind::HttpJson,
+                    adapter_family: "http-adapter".to_owned(),
+                    slot_claims: Vec::new(),
+                    diagnostic_findings: Vec::new(),
+                    status: PluginActivationStatus::BlockedUnsupportedBridge,
+                    reason: "http_json bridge is disabled".to_owned(),
+                    missing_required_env_vars: Vec::new(),
+                    missing_required_config_keys: Vec::new(),
+                    bootstrap_hint: "enable http bridge".to_owned(),
+                },
+            ],
+        };
+
+        let summary = plan.blocker_summary(4);
+
+        assert!(summary.contains("blocked-plugin"));
+        assert!(!summary.contains("setup-plugin"));
     }
 }

@@ -65,10 +65,9 @@ pub use plugin::{
 };
 pub use plugin_ir::{
     BridgeSupportMatrix, PluginActivationCandidate, PluginActivationInventoryEntry,
-    PluginActivationPlan, PluginActivationStatus, PluginBridgeKind,
-    PluginCompatibilityShimSupport, PluginIR, PluginRuntimeProfile, PluginSetupReadiness,
-    PluginSetupReadinessContext, PluginTranslationReport, PluginTranslator,
-    evaluate_plugin_setup_requirements,
+    PluginActivationPlan, PluginActivationStatus, PluginBridgeKind, PluginCompatibilityShimSupport,
+    PluginIR, PluginRuntimeProfile, PluginSetupReadiness, PluginSetupReadinessContext,
+    PluginTranslationReport, PluginTranslator, evaluate_plugin_setup_requirements,
 };
 pub use policy::{PolicyContext, PolicyDecision, PolicyEngine, PolicyRequest, StaticPolicyEngine};
 pub use policy_ext::{PolicyExtension, PolicyExtensionChain, PolicyExtensionContext};

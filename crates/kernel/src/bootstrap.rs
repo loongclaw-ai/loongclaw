@@ -49,6 +49,7 @@ pub enum BootstrapTaskStatus {
 pub struct BootstrapTask {
     pub plugin_id: String,
     pub source_path: String,
+    #[serde(default)]
     pub compatibility_mode: PluginCompatibilityMode,
     pub compatibility_shim: Option<PluginCompatibilityShim>,
     pub bridge_kind: PluginBridgeKind,
@@ -294,6 +295,7 @@ mod tests {
         let plan = PluginActivationPlan {
             total_plugins: 1,
             ready_plugins: 1,
+            setup_incomplete_plugins: 0,
             blocked_plugins: 0,
             candidates: vec![PluginActivationCandidate {
                 plugin_id: "openclaw-weather".to_owned(),
@@ -314,6 +316,8 @@ mod tests {
                 diagnostic_findings: Vec::new(),
                 status: PluginActivationStatus::Ready,
                 reason: "ready".to_owned(),
+                missing_required_env_vars: Vec::new(),
+                missing_required_config_keys: Vec::new(),
                 bootstrap_hint:
                     "enable compatibility shim `openclaw-modern-compat` (openclaw-modern-compat) and then spawn javascript worker".to_owned(),
             }],
@@ -420,5 +424,25 @@ mod tests {
             "/tmp/acpx-runtime.rs".to_owned(),
             "acpx-runtime-plugin".to_owned()
         )));
+    }
+
+    #[test]
+    fn bootstrap_task_deserializes_legacy_payload_without_compatibility_mode() {
+        let raw = r#"
+{
+  "plugin_id": "legacy-plugin",
+  "source_path": "/tmp/legacy-plugin.py",
+  "bridge_kind": "http_json",
+  "adapter_family": "http-adapter",
+  "bootstrap_hint": "register http adapter",
+  "status": "applied",
+  "reason": "legacy payload"
+}
+"#;
+
+        let task: BootstrapTask =
+            serde_json::from_str(raw).expect("legacy bootstrap task should deserialize");
+
+        assert_eq!(task.compatibility_mode, PluginCompatibilityMode::Native);
     }
 }

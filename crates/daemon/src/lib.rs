@@ -1619,15 +1619,15 @@ pub async fn run_spec_cli(
         spec_path,
         run_spec_bridge_support_selection(bridge_support).as_ref(),
     )?;
-    let mut report = execute_spec_with_native_tool_executor(
+    let report = execute_spec_with_native_tool_executor_and_bridge_support_provenance(
         &resolved.spec,
         print_audit,
         Some(native_spec_tool_executor),
+        resolved.bridge_support_source,
+        resolved.bridge_support_delta_source,
+        resolved.bridge_support_delta_sha256,
     )
     .await;
-    report.bridge_support_source = resolved.bridge_support_source;
-    report.bridge_support_delta_source = resolved.bridge_support_delta_source;
-    report.bridge_support_delta_sha256 = resolved.bridge_support_delta_sha256;
     let pretty = serde_json::to_string_pretty(&report)
         .map_err(|error| format!("serialize spec run report failed: {error}"))?;
     println!("{pretty}");

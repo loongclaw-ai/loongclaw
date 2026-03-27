@@ -392,7 +392,10 @@ fn apply_bridge_support_profile_delta(
         .iter()
         .cloned()
         .map(PluginCompatibilityShimSupport::normalized)
-        .map(|profile| (profile.shim.clone(), profile))
+        .map(|profile| {
+            let key = compatibility_shim_profile_key(&profile.shim, profile.version.as_deref());
+            (key, profile)
+        })
         .collect::<BTreeMap<_, _>>();
 
     for addition in &delta.shim_profile_additions {
@@ -407,38 +410,50 @@ fn apply_bridge_support_profile_delta(
             );
         }
         supported_compatibility_shims.insert(shim.clone());
-        let entry =
-            shim_profiles
-                .entry(shim.clone())
-                .or_insert_with(|| PluginCompatibilityShimSupport {
+        let mut matching_keys = shim_profiles
+            .keys()
+            .filter(|(existing_shim, _)| *existing_shim == shim)
+            .cloned()
+            .collect::<Vec<_>>();
+        if matching_keys.is_empty() {
+            let fallback_key = compatibility_shim_profile_key(&shim, None);
+            matching_keys.push(fallback_key);
+        }
+
+        for matching_key in matching_keys {
+            let entry = shim_profiles.entry(matching_key).or_insert_with(|| {
+                PluginCompatibilityShimSupport {
                     shim: shim.clone(),
                     version: None,
                     supported_dialects: BTreeSet::new(),
                     supported_bridges: BTreeSet::new(),
                     supported_adapter_families: BTreeSet::new(),
                     supported_source_languages: BTreeSet::new(),
-                });
+                }
+            });
 
-        for dialect in &addition.supported_dialects {
-            let parsed = parse_plugin_activation_runtime_dialect(dialect)
-                .ok_or_else(|| format!("unsupported bridge support delta dialect `{dialect}`"))?;
-            entry.supported_dialects.insert(parsed);
-        }
-        for bridge in &addition.supported_bridges {
-            let parsed = parse_bridge_kind_label(bridge)
-                .ok_or_else(|| format!("unsupported bridge support delta bridge `{bridge}`"))?;
-            entry.supported_bridges.insert(parsed);
-        }
-        for adapter_family in &addition.supported_adapter_families {
-            let normalized = adapter_family.trim().to_ascii_lowercase();
-            if !normalized.is_empty() {
-                entry.supported_adapter_families.insert(normalized);
+            for dialect in &addition.supported_dialects {
+                let parsed = parse_plugin_activation_runtime_dialect(dialect).ok_or_else(|| {
+                    format!("unsupported bridge support delta dialect `{dialect}`")
+                })?;
+                entry.supported_dialects.insert(parsed);
             }
-        }
-        for source_language in &addition.supported_source_languages {
-            let normalized = normalize_runtime_source_language(source_language);
-            if normalized != "unknown" {
-                entry.supported_source_languages.insert(normalized);
+            for bridge in &addition.supported_bridges {
+                let parsed = parse_bridge_kind_label(bridge)
+                    .ok_or_else(|| format!("unsupported bridge support delta bridge `{bridge}`"))?;
+                entry.supported_bridges.insert(parsed);
+            }
+            for adapter_family in &addition.supported_adapter_families {
+                let normalized = adapter_family.trim().to_ascii_lowercase();
+                if !normalized.is_empty() {
+                    entry.supported_adapter_families.insert(normalized);
+                }
+            }
+            for source_language in &addition.supported_source_languages {
+                let normalized = normalize_runtime_source_language(source_language);
+                if normalized != "unknown" {
+                    entry.supported_source_languages.insert(normalized);
+                }
             }
         }
     }
@@ -464,6 +479,17 @@ fn apply_bridge_support_profile_delta(
         });
 
     Ok(())
+}
+
+fn compatibility_shim_profile_key(
+    shim: &PluginCompatibilityShim,
+    version: Option<&str>,
+) -> (PluginCompatibilityShim, Option<String>) {
+    let normalized_version = version
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    (shim.clone(), normalized_version)
 }
 
 fn normalize_bridge_support_profile_delta(
@@ -668,6 +694,7 @@ fn bridge_support_policy_canonical_json(bridge: &BridgeSupportSpec) -> String {
     let security_scan = canonical_security_scan_value(bridge.security_scan.as_ref());
 
     let canonical = json!({
+        "enabled": bridge.enabled,
         "supported_bridges": bridges,
         "supported_adapter_families": adapter_families,
         "supported_compatibility_modes": compatibility_modes,
@@ -999,6 +1026,115 @@ mod tests {
 
         assert_ne!(without_profile, with_profile);
         assert_ne!(with_profile, with_profile_v2);
+    }
+
+    #[test]
+    fn bridge_support_policy_sha_changes_when_enabled_flag_changes() {
+        let mut baseline = BridgeSupportSpec {
+            enabled: true,
+            supported_bridges: vec![PluginBridgeKind::ProcessStdio],
+            supported_adapter_families: Vec::new(),
+            supported_compatibility_modes: vec![PluginCompatibilityMode::Native],
+            supported_compatibility_shims: Vec::new(),
+            supported_compatibility_shim_profiles: Vec::new(),
+            enforce_supported: true,
+            policy_version: Some("test".to_owned()),
+            expected_checksum: None,
+            expected_sha256: None,
+            execute_process_stdio: true,
+            execute_http_json: false,
+            allowed_process_commands: vec!["node".to_owned()],
+            enforce_execution_success: false,
+            security_scan: None,
+        };
+        let enabled_sha = bridge_support_policy_sha256(&baseline);
+
+        baseline.enabled = false;
+        let disabled_sha = bridge_support_policy_sha256(&baseline);
+
+        assert_ne!(enabled_sha, disabled_sha);
+    }
+
+    #[test]
+    fn apply_bridge_support_profile_delta_preserves_versioned_shim_profiles() {
+        let shim = PluginCompatibilityShim {
+            shim_id: "openclaw-modern-compat".to_owned(),
+            family: "openclaw-modern-compat".to_owned(),
+        };
+        let mut baseline = BridgeSupportSpec {
+            enabled: true,
+            supported_bridges: vec![PluginBridgeKind::ProcessStdio],
+            supported_adapter_families: Vec::new(),
+            supported_compatibility_modes: vec![PluginCompatibilityMode::OpenClawModern],
+            supported_compatibility_shims: vec![shim.clone()],
+            supported_compatibility_shim_profiles: vec![
+                PluginCompatibilityShimSupport {
+                    shim: shim.clone(),
+                    version: Some("openclaw-modern@1".to_owned()),
+                    supported_dialects: BTreeSet::new(),
+                    supported_bridges: BTreeSet::new(),
+                    supported_adapter_families: BTreeSet::new(),
+                    supported_source_languages: BTreeSet::from(["python".to_owned()]),
+                },
+                PluginCompatibilityShimSupport {
+                    shim,
+                    version: Some("openclaw-modern@2".to_owned()),
+                    supported_dialects: BTreeSet::new(),
+                    supported_bridges: BTreeSet::new(),
+                    supported_adapter_families: BTreeSet::new(),
+                    supported_source_languages: BTreeSet::from(["javascript".to_owned()]),
+                },
+            ],
+            enforce_supported: true,
+            policy_version: Some("test".to_owned()),
+            expected_checksum: None,
+            expected_sha256: None,
+            execute_process_stdio: true,
+            execute_http_json: false,
+            allowed_process_commands: Vec::new(),
+            enforce_execution_success: false,
+            security_scan: None,
+        };
+        let delta = PluginPreflightBridgeProfileDelta {
+            supported_bridges: Vec::new(),
+            supported_adapter_families: Vec::new(),
+            supported_compatibility_modes: Vec::new(),
+            supported_compatibility_shims: Vec::new(),
+            shim_profile_additions: vec![PluginPreflightBridgeShimProfileDelta {
+                shim_id: "openclaw-modern-compat".to_owned(),
+                shim_family: "openclaw-modern-compat".to_owned(),
+                supported_dialects: vec!["openclaw_modern_manifest".to_owned()],
+                supported_bridges: vec!["process_stdio".to_owned()],
+                supported_adapter_families: vec!["openclaw-modern-compat".to_owned()],
+                supported_source_languages: vec!["ruby".to_owned()],
+            }],
+            unresolved_blocking_reasons: Vec::new(),
+        };
+
+        apply_bridge_support_profile_delta(&mut baseline, &delta)
+            .expect("delta should preserve versioned shim profiles");
+
+        assert_eq!(baseline.supported_compatibility_shim_profiles.len(), 2);
+        assert!(
+            baseline
+                .supported_compatibility_shim_profiles
+                .iter()
+                .any(|profile| {
+                    profile.version.as_deref() == Some("openclaw-modern@1")
+                        && profile.supported_source_languages.contains("python")
+                        && profile.supported_source_languages.contains("ruby")
+                })
+        );
+        assert!(
+            baseline
+                .supported_compatibility_shim_profiles
+                .iter()
+                .any(|profile| {
+                    profile.version.as_deref() == Some("openclaw-modern@2")
+                        && profile.supported_source_languages.contains("javascript")
+                        && profile.supported_source_languages.contains("ruby")
+                })
+        );
     }
 
     #[test]

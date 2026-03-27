@@ -80,9 +80,6 @@ fn validate_plugin_preflight_policy_request(
         );
     }
     if let Some(signature) = policy_signature {
-        if signature.algorithm.trim().is_empty() {
-            return Err("plugin preflight policy_signature.algorithm cannot be empty".to_owned());
-        }
         if signature.public_key_base64.trim().is_empty() {
             return Err(
                 "plugin preflight policy_signature.public_key_base64 cannot be empty".to_owned(),
@@ -112,9 +109,10 @@ fn bundled_plugin_preflight_policy() -> Result<PluginPreflightPolicyProfile, Str
     BUNDLED_PLUGIN_PREFLIGHT_POLICY
         .get_or_init(|| {
             let raw = include_str!("../../config/plugin-preflight-medium-balanced.json");
-            let policy = serde_json::from_str(raw)
-                .or_else(|_| serde_json::from_str::<PluginPreflightPolicyProfile>("{}"))
-                .unwrap_or_default();
+            let policy: PluginPreflightPolicyProfile =
+                serde_json::from_str(raw).map_err(|error| {
+                    format!("bundled plugin preflight policy should parse: {error}")
+                })?;
             validate_plugin_preflight_policy_profile(&policy)
                 .map(|_| policy)
                 .map_err(|error| {
@@ -433,6 +431,10 @@ mod tests {
             .unwrap_or_else(|error| panic!("expected bundled policy to load: {error}"));
         assert!(!plugin_preflight_policy_checksum(&bundled).is_empty());
         assert_eq!(plugin_preflight_policy_sha256(&bundled).len(), 64);
+        assert_eq!(
+            bundled.policy_version.as_deref(),
+            Some("medium-balanced-2026-03-26")
+        );
     }
 
     #[test]
@@ -523,5 +525,20 @@ mod tests {
         let error = resolve_plugin_preflight_policy(Some(path.as_str()), None, None)
             .expect_err("invalid version req should fail");
         assert!(error.contains("invalid plugin_version_req"));
+    }
+
+    #[test]
+    fn validate_plugin_preflight_policy_request_allows_empty_signature_algorithm() {
+        let result = validate_plugin_preflight_policy_request(
+            Some("/tmp/policy.json"),
+            None,
+            Some(&SecurityProfileSignatureSpec {
+                algorithm: String::new(),
+                public_key_base64: "cHVibGljLWtleQ==".to_owned(),
+                signature_base64: "c2lnbmF0dXJl".to_owned(),
+            }),
+        );
+
+        assert!(result.is_ok());
     }
 }

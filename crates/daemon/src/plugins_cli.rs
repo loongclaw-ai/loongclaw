@@ -2017,8 +2017,8 @@ mod tests {
                 .and_then(|value| value.source.as_deref()),
             Some("bundled:bridge-support-openclaw-ecosystem-balanced.json")
         );
-        assert_eq!(execution.summary.blocked_plugins, 0);
-        assert_eq!(execution.summary.warned_plugins, 1);
+        assert_eq!(execution.summary.blocked_plugins, 1);
+        assert_eq!(execution.summary.warned_plugins, 0);
         assert_eq!(
             execution
                 .summary
@@ -2092,8 +2092,19 @@ mod tests {
             .and_then(Value::as_str)
             .unwrap_or_else(|| panic!("expected verdict string"));
 
-        assert_eq!(activation_status, "ready");
-        assert_eq!(verdict, "warn");
+        let activation_reason = plugin
+            .get("activation_reason")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("expected plugin.activation_reason string"));
+        let policy_flags = first_result
+            .get("policy_flags")
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("expected policy_flags array"));
+
+        assert_eq!(activation_status, "setup_incomplete");
+        assert_eq!(verdict, "block");
+        assert!(activation_reason.contains("plugins.entries.weather-sdk"));
+        assert!(policy_flags.iter().any(|flag| flag == "activation_blocked"));
     }
 
     #[tokio::test]

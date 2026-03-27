@@ -1330,8 +1330,8 @@ mod tests {
         IntegrationCatalog, PluginActivationCandidate, PluginActivationPlan,
         PluginActivationStatus, PluginBridgeKind, PluginCompatibilityMode, PluginContractDialect,
         PluginDiagnosticCode, PluginDiagnosticFinding, PluginDiagnosticPhase,
-        PluginDiagnosticSeverity, PluginSetupReadinessContext, PluginSlotClaim,
-        PluginSlotMode, PluginSourceKind, ProviderConfig,
+        PluginDiagnosticSeverity, PluginSetupReadinessContext, PluginSlotClaim, PluginSlotMode,
+        PluginSourceKind, ProviderConfig,
     };
     use std::collections::{BTreeMap, BTreeSet};
 

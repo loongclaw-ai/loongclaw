@@ -162,7 +162,7 @@ fn migrate_cli_parses_apply_selected_flags() {
 
 #[test]
 fn run_spec_cli_parses_bridge_support_delta_override() {
-    let cli = Cli::try_parse_from([
+    let cli = try_parse_cli([
         "loongclaw",
         "run-spec",
         "--spec",
@@ -197,15 +197,7 @@ fn run_spec_cli_parses_bridge_support_delta_override() {
 
 #[test]
 fn run_spec_help_mentions_bridge_support_overrides() {
-    let mut command = Cli::command();
-    let run_spec = command
-        .find_subcommand_mut("run-spec")
-        .expect("run-spec subcommand should exist");
-    let mut rendered = Vec::new();
-    run_spec
-        .write_long_help(&mut rendered)
-        .expect("render run-spec help");
-    let help = String::from_utf8(rendered).expect("help should be utf-8");
+    let help = render_cli_help(["run-spec"]);
 
     assert!(
         help.contains("--bridge-support <BRIDGE_SUPPORT>"),
@@ -217,6 +209,10 @@ fn run_spec_help_mentions_bridge_support_overrides() {
     );
     assert!(
         help.contains("--bridge-support-delta <BRIDGE_SUPPORT_DELTA>"),
+        "help: {help}"
+    );
+    assert!(
+        help.contains("--bridge-support-delta-sha256 <BRIDGE_SUPPORT_DELTA_SHA256>"),
         "help: {help}"
     );
 }

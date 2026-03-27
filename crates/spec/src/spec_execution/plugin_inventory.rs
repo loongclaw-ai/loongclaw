@@ -126,14 +126,11 @@ pub(super) fn collect_plugin_inventory_results(
     for report in plugin_scan_reports {
         for descriptor in &report.descriptors {
             let manifest = &descriptor.manifest;
-            if !include_deferred && manifest.defer_loading {
-                continue;
-            }
-
             let key = (descriptor.path.clone(), manifest.plugin_id.clone());
             let translation = translation_by_key.get(&key);
             let activation = activation_by_key.get(&key);
             let activation_candidate = activation_candidate_by_key.get(&key);
+            let is_deferred = manifest.defer_loading;
             let activation_status = activation
                 .and_then(|entry| entry.activation_status)
                 .map(|status| status.as_str().to_owned())
@@ -143,8 +140,33 @@ pub(super) fn collect_plugin_inventory_results(
             let is_blocked = activation_status
                 .as_deref()
                 .is_some_and(|status| status != "ready");
+            let bridge_kind = translation
+                .map(|(bridge, _, _, _)| *bridge)
+                .or_else(|| activation.map(|entry| entry.bridge_kind))
+                .or_else(|| activation_candidate.map(|candidate| candidate.bridge_kind))
+                .unwrap_or(PluginBridgeKind::Unknown);
+            let adapter_family = translation
+                .map(|(_, adapter, _, _)| adapter.clone())
+                .or_else(|| activation.map(|entry| entry.adapter_family.clone()))
+                .or_else(|| activation_candidate.map(|candidate| candidate.adapter_family.clone()));
+            let entrypoint_hint = translation
+                .map(|(_, _, entrypoint, _)| entrypoint.clone())
+                .or_else(|| activation.map(|entry| entry.entrypoint_hint.clone()))
+                .or_else(|| manifest.endpoint.clone());
+            let source_language = translation
+                .map(|(_, _, _, language)| language.clone())
+                .or_else(|| activation.map(|entry| entry.source_language.clone()))
+                .or_else(|| Some(descriptor.language.clone()));
 
-            if (!include_ready && !is_blocked) || (!include_blocked && is_blocked) {
+            if is_deferred {
+                if !include_deferred {
+                    continue;
+                }
+            } else if is_blocked {
+                if !include_blocked {
+                    continue;
+                }
+            } else if !include_ready {
                 continue;
             }
 
@@ -196,12 +218,10 @@ pub(super) fn collect_plugin_inventory_results(
                 source_kind: descriptor.source_kind.as_str().to_owned(),
                 package_root: descriptor.package_root.clone(),
                 package_manifest_path: descriptor.package_manifest_path.clone(),
-                bridge_kind: translation
-                    .map(|(bridge, _, _, _)| *bridge)
-                    .unwrap_or(PluginBridgeKind::Unknown),
-                adapter_family: translation.map(|(_, adapter, _, _)| adapter.clone()),
-                entrypoint_hint: translation.map(|(_, _, entrypoint, _)| entrypoint.clone()),
-                source_language: translation.map(|(_, _, _, language)| language.clone()),
+                bridge_kind,
+                adapter_family,
+                entrypoint_hint,
+                source_language,
                 setup_mode: manifest
                     .setup
                     .as_ref()
@@ -974,6 +994,7 @@ mod tests {
         let activation_plans = vec![PluginActivationPlan {
             total_plugins: 1,
             ready_plugins: 0,
+            setup_incomplete_plugins: 0,
             blocked_plugins: 1,
             candidates: vec![PluginActivationCandidate {
                 plugin_id: "tavily-search".to_owned(),
@@ -1006,6 +1027,8 @@ mod tests {
                 }],
                 status: PluginActivationStatus::BlockedSlotClaimConflict,
                 reason: "slot claim `provider:web_search`:`tavily` conflicts with existing plugin `web-search`".to_owned(),
+                missing_required_env_vars: Vec::new(),
+                missing_required_config_keys: Vec::new(),
                 bootstrap_hint: "register http connector adapter".to_owned(),
             }],
         }];
@@ -1241,6 +1264,7 @@ mod tests {
         let activation_plans = vec![PluginActivationPlan {
             total_plugins: 1,
             ready_plugins: 0,
+            setup_incomplete_plugins: 0,
             blocked_plugins: 1,
             candidates: vec![PluginActivationCandidate {
                 plugin_id: "openclaw-weather".to_owned(),
@@ -1271,6 +1295,8 @@ mod tests {
                 diagnostic_findings: Vec::new(),
                 status: PluginActivationStatus::BlockedCompatibilityMode,
                 reason: "compatibility shim profile mismatch".to_owned(),
+                missing_required_env_vars: Vec::new(),
+                missing_required_config_keys: Vec::new(),
                 bootstrap_hint: "enable compatibility shim profile".to_owned(),
             }],
         }];
@@ -1305,5 +1331,149 @@ mod tests {
             results[0].compatibility_shim_support_mismatch_reasons,
             vec!["source language `javascript`".to_owned()]
         );
+    }
+
+    #[test]
+    fn execute_plugin_inventory_includes_deferred_entries_without_ready_results() {
+        let descriptor = PluginDescriptor {
+            path: "/tmp/deferred/loongclaw.plugin.json".to_owned(),
+            source_kind: PluginSourceKind::PackageManifest,
+            dialect: PluginContractDialect::LoongClawPackageManifest,
+            dialect_version: Some("v1alpha1".to_owned()),
+            compatibility_mode: PluginCompatibilityMode::Native,
+            package_root: "/tmp/deferred".to_owned(),
+            package_manifest_path: Some("/tmp/deferred/loongclaw.plugin.json".to_owned()),
+            language: "manifest".to_owned(),
+            manifest: PluginManifest {
+                api_version: Some("v1alpha1".to_owned()),
+                version: Some("1.0.0".to_owned()),
+                plugin_id: "deferred-search".to_owned(),
+                provider_id: "deferred-search".to_owned(),
+                connector_name: "deferred-search".to_owned(),
+                channel_id: None,
+                endpoint: Some("https://example.com/deferred".to_owned()),
+                capabilities: BTreeSet::from([Capability::InvokeConnector]),
+                metadata: BTreeMap::new(),
+                summary: None,
+                tags: Vec::new(),
+                input_examples: Vec::new(),
+                output_examples: Vec::new(),
+                defer_loading: true,
+                setup: None,
+                slot_claims: Vec::new(),
+                compatibility: None,
+            },
+        };
+
+        let results = execute_plugin_inventory(
+            &IntegrationCatalog::new(),
+            &[PluginScanReport {
+                scanned_files: 1,
+                matched_plugins: 1,
+                diagnostic_findings: Vec::new(),
+                descriptors: vec![descriptor],
+            }],
+            &[],
+            &[],
+            "deferred",
+            10,
+            false,
+            false,
+            true,
+            false,
+        );
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].deferred);
+        assert_eq!(results[0].plugin_id, "deferred-search");
+    }
+
+    #[test]
+    fn execute_plugin_inventory_falls_back_to_available_runtime_metadata() {
+        let descriptor = PluginDescriptor {
+            path: "/tmp/fallback/loongclaw.plugin.json".to_owned(),
+            source_kind: PluginSourceKind::PackageManifest,
+            dialect: PluginContractDialect::LoongClawPackageManifest,
+            dialect_version: Some("v1alpha1".to_owned()),
+            compatibility_mode: PluginCompatibilityMode::Native,
+            package_root: "/tmp/fallback".to_owned(),
+            package_manifest_path: Some("/tmp/fallback/loongclaw.plugin.json".to_owned()),
+            language: "manifest".to_owned(),
+            manifest: PluginManifest {
+                api_version: Some("v1alpha1".to_owned()),
+                version: Some("1.0.0".to_owned()),
+                plugin_id: "fallback-search".to_owned(),
+                provider_id: "fallback-search".to_owned(),
+                connector_name: "fallback-search".to_owned(),
+                channel_id: None,
+                endpoint: Some("https://example.com/fallback".to_owned()),
+                capabilities: BTreeSet::from([Capability::InvokeConnector]),
+                metadata: BTreeMap::new(),
+                summary: None,
+                tags: Vec::new(),
+                input_examples: Vec::new(),
+                output_examples: Vec::new(),
+                defer_loading: false,
+                setup: None,
+                slot_claims: Vec::new(),
+                compatibility: None,
+            },
+        };
+        let activation_plans = vec![PluginActivationPlan {
+            total_plugins: 1,
+            ready_plugins: 0,
+            setup_incomplete_plugins: 0,
+            blocked_plugins: 1,
+            candidates: vec![PluginActivationCandidate {
+                plugin_id: "fallback-search".to_owned(),
+                source_path: "/tmp/fallback/loongclaw.plugin.json".to_owned(),
+                source_kind: PluginSourceKind::PackageManifest,
+                package_root: "/tmp/fallback".to_owned(),
+                package_manifest_path: Some("/tmp/fallback/loongclaw.plugin.json".to_owned()),
+                compatibility_mode: PluginCompatibilityMode::Native,
+                compatibility_shim: None,
+                compatibility_shim_support: None,
+                compatibility_shim_support_mismatch_reasons: Vec::new(),
+                bridge_kind: PluginBridgeKind::ProcessStdio,
+                adapter_family: "python-stdio-adapter".to_owned(),
+                slot_claims: Vec::new(),
+                diagnostic_findings: Vec::new(),
+                status: PluginActivationStatus::BlockedUnsupportedBridge,
+                reason: "process stdio bridge is disabled".to_owned(),
+                missing_required_env_vars: Vec::new(),
+                missing_required_config_keys: Vec::new(),
+                bootstrap_hint: "python -m fallback".to_owned(),
+            }],
+        }];
+
+        let results = execute_plugin_inventory(
+            &IntegrationCatalog::new(),
+            &[PluginScanReport {
+                scanned_files: 1,
+                matched_plugins: 1,
+                diagnostic_findings: Vec::new(),
+                descriptors: vec![descriptor],
+            }],
+            &[],
+            &activation_plans,
+            "python-stdio-adapter",
+            10,
+            true,
+            true,
+            false,
+            false,
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].bridge_kind, "process_stdio");
+        assert_eq!(
+            results[0].adapter_family.as_deref(),
+            Some("python-stdio-adapter")
+        );
+        assert_eq!(
+            results[0].entrypoint_hint.as_deref(),
+            Some("https://example.com/fallback")
+        );
+        assert_eq!(results[0].source_language.as_deref(), Some("manifest"));
     }
 }

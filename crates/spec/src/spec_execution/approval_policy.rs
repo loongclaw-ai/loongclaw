@@ -395,16 +395,18 @@ fn operation_payload_keys(operation: &OperationSpec) -> Vec<String> {
             );
             keys
         }
-        OperationSpec::PluginPreflight { .. } => {
+        OperationSpec::PluginPreflight {
+            policy_path,
+            policy_sha256,
+            policy_signature,
+            ..
+        } => {
             let mut keys = Vec::new();
             keys.extend(
                 [
                     "query",
                     "limit",
                     "profile",
-                    "policy_path",
-                    "policy_sha256",
-                    "policy_signature",
                     "include_passed",
                     "include_warned",
                     "include_blocked",
@@ -414,6 +416,20 @@ fn operation_payload_keys(operation: &OperationSpec) -> Vec<String> {
                 .iter()
                 .map(|value| (*value).to_owned()),
             );
+            if policy_path.is_some() {
+                keys.push("policy_path".to_owned());
+            }
+            if policy_sha256.is_some() {
+                keys.push("policy_sha256".to_owned());
+            }
+            if let Some(signature) = policy_signature {
+                keys.push("policy_signature".to_owned());
+                if !signature.algorithm.trim().is_empty() {
+                    keys.push("policy_signature.algorithm".to_owned());
+                }
+                keys.push("policy_signature.public_key_base64".to_owned());
+                keys.push("policy_signature.signature_base64".to_owned());
+            }
             keys
         }
         OperationSpec::ProgrammaticToolCall {
@@ -869,4 +885,68 @@ fn is_operation_preapproved(operation_key: &str, approvals: &[String]) -> bool {
         }
         normalized == operation_key_lower
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plugin_preflight_payload_keys_only_include_present_optional_fields() {
+        let operation = OperationSpec::PluginPreflight {
+            query: "search".to_owned(),
+            limit: 5,
+            profile: PluginPreflightProfile::RuntimeActivation,
+            policy_path: None,
+            policy_sha256: None,
+            policy_signature: None,
+            include_passed: true,
+            include_warned: true,
+            include_blocked: true,
+            include_deferred: false,
+            include_examples: false,
+        };
+
+        let keys = operation_payload_keys(&operation);
+
+        assert!(!keys.iter().any(|key| key == "policy_path"));
+        assert!(!keys.iter().any(|key| key == "policy_sha256"));
+        assert!(!keys.iter().any(|key| key == "policy_signature"));
+    }
+
+    #[test]
+    fn plugin_preflight_payload_keys_include_nested_signature_fields() {
+        let operation = OperationSpec::PluginPreflight {
+            query: "search".to_owned(),
+            limit: 5,
+            profile: PluginPreflightProfile::RuntimeActivation,
+            policy_path: Some("/tmp/policy.json".to_owned()),
+            policy_sha256: Some("abc123".to_owned()),
+            policy_signature: Some(SecurityProfileSignatureSpec {
+                algorithm: "ed25519".to_owned(),
+                public_key_base64: "cHVibGljLWtleQ==".to_owned(),
+                signature_base64: "c2lnbmF0dXJl".to_owned(),
+            }),
+            include_passed: true,
+            include_warned: true,
+            include_blocked: true,
+            include_deferred: false,
+            include_examples: false,
+        };
+
+        let keys = operation_payload_keys(&operation);
+
+        assert!(keys.iter().any(|key| key == "policy_path"));
+        assert!(keys.iter().any(|key| key == "policy_sha256"));
+        assert!(keys.iter().any(|key| key == "policy_signature"));
+        assert!(keys.iter().any(|key| key == "policy_signature.algorithm"));
+        assert!(
+            keys.iter()
+                .any(|key| key == "policy_signature.public_key_base64")
+        );
+        assert!(
+            keys.iter()
+                .any(|key| key == "policy_signature.signature_base64")
+        );
+    }
 }

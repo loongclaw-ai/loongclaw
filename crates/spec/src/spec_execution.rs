@@ -61,13 +61,43 @@ pub use plugin_preflight_policy::{
 pub use security_scan_policy::{load_security_scan_profile_from_path, security_scan_policy};
 
 pub async fn execute_spec(spec: &RunnerSpec, include_audit: bool) -> SpecRunReport {
-    execute_spec_with_native_tool_executor(spec, include_audit, None).await
+    execute_spec_internal(spec, include_audit, None, None, None, None).await
 }
 
 pub async fn execute_spec_with_native_tool_executor(
     spec: &RunnerSpec,
     include_audit: bool,
     native_tool_executor: Option<crate::NativeToolExecutor>,
+) -> SpecRunReport {
+    execute_spec_internal(spec, include_audit, native_tool_executor, None, None, None).await
+}
+
+pub async fn execute_spec_with_native_tool_executor_and_bridge_support_provenance(
+    spec: &RunnerSpec,
+    include_audit: bool,
+    native_tool_executor: Option<crate::NativeToolExecutor>,
+    bridge_support_source: Option<String>,
+    bridge_support_delta_source: Option<String>,
+    bridge_support_delta_sha256: Option<String>,
+) -> SpecRunReport {
+    execute_spec_internal(
+        spec,
+        include_audit,
+        native_tool_executor,
+        bridge_support_source,
+        bridge_support_delta_source,
+        bridge_support_delta_sha256,
+    )
+    .await
+}
+
+async fn execute_spec_internal(
+    spec: &RunnerSpec,
+    include_audit: bool,
+    native_tool_executor: Option<crate::NativeToolExecutor>,
+    bridge_support_source: Option<String>,
+    bridge_support_delta_source: Option<String>,
+    bridge_support_delta_sha256: Option<String>,
 ) -> SpecRunReport {
     let mut pack = spec.pack.clone();
     let audit_sink = default_in_memory_audit_sink();
@@ -192,8 +222,11 @@ pub async fn execute_spec_with_native_tool_executor(
             spec.agent_id.clone(),
             reason,
             approval_guard,
+            bridge_support_source.clone(),
             bridge_support_checksum,
             bridge_support_sha256,
+            bridge_support_delta_source.clone(),
+            bridge_support_delta_sha256.clone(),
             self_awareness,
             architecture_guard,
             plugin_scan_reports,
@@ -219,6 +252,8 @@ pub async fn execute_spec_with_native_tool_executor(
         let bootstrap_policy = bootstrap_policy(spec);
         let (bridge_matrix, enforce_bridge_support) = bridge_support_matrix(spec);
         let mut pending_absorb_inputs = Vec::new();
+        let mut planning_catalog = integration_catalog.clone();
+        let mut planning_pack = pack.clone();
         let mut remaining_bootstrap_budget =
             bootstrap_policy.as_ref().map(|policy| policy.max_tasks);
         for root in &plugin_scan.roots {
@@ -234,7 +269,7 @@ pub async fn execute_spec_with_native_tool_executor(
                 &translation,
                 &bridge_matrix,
                 &setup_readiness_context,
-                Some(&integration_catalog),
+                Some(&planning_catalog),
             );
 
             if enforce_bridge_support && activation.has_blockers() {
@@ -312,7 +347,18 @@ pub async fn execute_spec_with_native_tool_executor(
             plugin_translation_reports.push(translation);
             plugin_activation_plans.push(activation);
             plugin_scan_reports.push(report);
-            pending_absorb_inputs.push(enriched_filtered_report);
+            if blocked_reason.is_none() {
+                match scanner.absorb(
+                    &mut planning_catalog,
+                    &mut planning_pack,
+                    &enriched_filtered_report,
+                ) {
+                    Ok(_) => pending_absorb_inputs.push(enriched_filtered_report),
+                    Err(error) => {
+                        blocked_reason = Some(format!("plugin absorb failed: {error}"));
+                    }
+                }
+            }
 
             if blocked_reason.is_some() {
                 break;
@@ -369,8 +415,11 @@ pub async fn execute_spec_with_native_tool_executor(
             spec.agent_id.clone(),
             reason,
             approval_guard,
+            bridge_support_source.clone(),
             bridge_support_checksum,
             bridge_support_sha256,
+            bridge_support_delta_source.clone(),
+            bridge_support_delta_sha256.clone(),
             self_awareness,
             architecture_guard,
             plugin_scan_reports,
@@ -435,8 +484,11 @@ pub async fn execute_spec_with_native_tool_executor(
             spec.agent_id.clone(),
             reason,
             approval_guard,
+            bridge_support_source.clone(),
             bridge_support_checksum,
             bridge_support_sha256,
+            bridge_support_delta_source.clone(),
+            bridge_support_delta_sha256.clone(),
             self_awareness,
             architecture_guard,
             plugin_scan_reports,
@@ -463,8 +515,11 @@ pub async fn execute_spec_with_native_tool_executor(
                 spec.agent_id.clone(),
                 reason,
                 approval_guard,
+                bridge_support_source.clone(),
                 bridge_support_checksum,
                 bridge_support_sha256,
+                bridge_support_delta_source.clone(),
+                bridge_support_delta_sha256.clone(),
                 self_awareness,
                 architecture_guard,
                 plugin_scan_reports,
@@ -501,8 +556,11 @@ pub async fn execute_spec_with_native_tool_executor(
             spec.agent_id.clone(),
             reason,
             approval_guard,
+            bridge_support_source.clone(),
             bridge_support_checksum,
             bridge_support_sha256,
+            bridge_support_delta_source.clone(),
+            bridge_support_delta_sha256.clone(),
             self_awareness,
             architecture_guard,
             plugin_scan_reports,
@@ -535,8 +593,11 @@ pub async fn execute_spec_with_native_tool_executor(
             spec.agent_id.clone(),
             reason,
             approval_guard,
+            bridge_support_source.clone(),
             bridge_support_checksum,
             bridge_support_sha256,
+            bridge_support_delta_source.clone(),
+            bridge_support_delta_sha256.clone(),
             self_awareness,
             architecture_guard,
             plugin_scan_reports,
@@ -573,8 +634,11 @@ pub async fn execute_spec_with_native_tool_executor(
                 spec.agent_id.clone(),
                 reason,
                 approval_guard,
+                bridge_support_source.clone(),
                 bridge_support_checksum,
                 bridge_support_sha256,
+                bridge_support_delta_source.clone(),
+                bridge_support_delta_sha256.clone(),
                 self_awareness,
                 architecture_guard,
                 plugin_scan_reports,
@@ -624,8 +688,11 @@ pub async fn execute_spec_with_native_tool_executor(
                 spec.agent_id.clone(),
                 reason,
                 approval_guard,
+                bridge_support_source.clone(),
                 bridge_support_checksum,
                 bridge_support_sha256,
+                bridge_support_delta_source.clone(),
+                bridge_support_delta_sha256.clone(),
                 self_awareness,
                 architecture_guard,
                 plugin_scan_reports,
@@ -652,8 +719,11 @@ pub async fn execute_spec_with_native_tool_executor(
                 spec.agent_id.clone(),
                 reason,
                 approval_guard,
+                bridge_support_source.clone(),
                 bridge_support_checksum,
                 bridge_support_sha256,
+                bridge_support_delta_source.clone(),
+                bridge_support_delta_sha256.clone(),
                 self_awareness,
                 architecture_guard,
                 plugin_scan_reports,
@@ -683,11 +753,11 @@ pub async fn execute_spec_with_native_tool_executor(
         operation_kind,
         blocked_reason,
         approval_guard,
-        bridge_support_source: None,
+        bridge_support_source,
         bridge_support_checksum,
         bridge_support_sha256,
-        bridge_support_delta_source: None,
-        bridge_support_delta_sha256: None,
+        bridge_support_delta_source,
+        bridge_support_delta_sha256,
         self_awareness,
         architecture_guard,
         plugin_scan_reports,
@@ -721,8 +791,11 @@ fn build_blocked_spec_run_report(
     agent_id: String,
     reason: String,
     approval_guard: ApprovalDecisionReport,
+    bridge_support_source: Option<String>,
     bridge_support_checksum: Option<String>,
     bridge_support_sha256: Option<String>,
+    bridge_support_delta_source: Option<String>,
+    bridge_support_delta_sha256: Option<String>,
     self_awareness: Option<CodebaseAwarenessSnapshot>,
     architecture_guard: Option<ArchitectureGuardReport>,
     plugin_scan_reports: Vec<PluginScanReport>,
@@ -749,11 +822,11 @@ fn build_blocked_spec_run_report(
         operation_kind: "blocked",
         blocked_reason: Some(reason.clone()),
         approval_guard,
-        bridge_support_source: None,
+        bridge_support_source,
         bridge_support_checksum,
         bridge_support_sha256,
-        bridge_support_delta_source: None,
-        bridge_support_delta_sha256: None,
+        bridge_support_delta_source,
+        bridge_support_delta_sha256,
         self_awareness,
         architecture_guard,
         plugin_scan_reports,
@@ -1240,16 +1313,14 @@ fn enrich_scan_report_with_translation(
         .cloned()
         .map(|mut descriptor| {
             stamp_plugin_provenance_metadata(&mut descriptor);
-            descriptor
-                .manifest
-                .metadata
-                .entry("plugin_id".to_owned())
-                .or_insert_with(|| descriptor.manifest.plugin_id.clone());
-            descriptor
-                .manifest
-                .metadata
-                .entry("defer_loading".to_owned())
-                .or_insert_with(|| descriptor.manifest.defer_loading.to_string());
+            descriptor.manifest.metadata.insert(
+                "plugin_id".to_owned(),
+                descriptor.manifest.plugin_id.clone(),
+            );
+            descriptor.manifest.metadata.insert(
+                "defer_loading".to_owned(),
+                descriptor.manifest.defer_loading.to_string(),
+            );
             let setup = descriptor.manifest.setup.clone();
             insert_plugin_setup_metadata(&mut descriptor.manifest.metadata, setup.as_ref());
             insert_plugin_slot_claims_metadata(
@@ -1306,11 +1377,15 @@ fn enrich_scan_report_with_translation(
             if let Some(component) = descriptor.manifest.metadata.get("component").cloned() {
                 let resolved = resolve_plugin_relative_path(&descriptor.path, &component);
                 let normalized = normalize_path_for_policy(&resolved);
+                descriptor.manifest.metadata.insert(
+                    "component_resolved_path".to_owned(),
+                    normalized.display().to_string(),
+                );
+            } else {
                 descriptor
                     .manifest
                     .metadata
-                    .entry("component_resolved_path".to_owned())
-                    .or_insert_with(|| normalized.display().to_string());
+                    .remove("component_resolved_path");
             }
 
             if let Some((bridge_kind, adapter_family, entrypoint_hint, source_language)) =
@@ -1322,23 +1397,24 @@ fn enrich_scan_report_with_translation(
                 descriptor
                     .manifest
                     .metadata
-                    .entry("bridge_kind".to_owned())
-                    .or_insert_with(|| bridge_kind.clone());
+                    .insert("bridge_kind".to_owned(), bridge_kind.clone());
                 descriptor
                     .manifest
                     .metadata
-                    .entry("adapter_family".to_owned())
-                    .or_insert_with(|| adapter_family.clone());
+                    .insert("adapter_family".to_owned(), adapter_family.clone());
                 descriptor
                     .manifest
                     .metadata
-                    .entry("entrypoint_hint".to_owned())
-                    .or_insert_with(|| entrypoint_hint.clone());
+                    .insert("entrypoint_hint".to_owned(), entrypoint_hint.clone());
                 descriptor
                     .manifest
                     .metadata
-                    .entry("source_language".to_owned())
-                    .or_insert_with(|| source_language.clone());
+                    .insert("source_language".to_owned(), source_language.clone());
+            } else {
+                descriptor.manifest.metadata.remove("bridge_kind");
+                descriptor.manifest.metadata.remove("adapter_family");
+                descriptor.manifest.metadata.remove("entrypoint_hint");
+                descriptor.manifest.metadata.remove("source_language");
             }
             insert_plugin_activation_runtime_contract_metadata(
                 &mut descriptor.manifest.metadata,
@@ -1433,6 +1509,14 @@ fn insert_plugin_setup_metadata(
     setup: Option<&PluginSetup>,
 ) {
     let Some(setup) = setup else {
+        metadata.remove("plugin_setup_mode");
+        metadata.remove("plugin_setup_surface");
+        metadata.remove("plugin_setup_required_env_vars_json");
+        metadata.remove("plugin_setup_recommended_env_vars_json");
+        metadata.remove("plugin_setup_required_config_keys_json");
+        metadata.remove("plugin_setup_default_env_var");
+        metadata.remove("plugin_setup_docs_urls_json");
+        metadata.remove("plugin_setup_remediation");
         return;
     };
 
@@ -1443,6 +1527,8 @@ fn insert_plugin_setup_metadata(
     if let Some(surface) = setup.surface.clone() {
         let surface_key = "plugin_setup_surface".to_owned();
         metadata.insert(surface_key, surface);
+    } else {
+        metadata.remove("plugin_setup_surface");
     }
 
     insert_plugin_setup_string_list_metadata(
@@ -1464,6 +1550,8 @@ fn insert_plugin_setup_metadata(
     if let Some(default_env_var) = setup.default_env_var.clone() {
         let default_env_var_key = "plugin_setup_default_env_var".to_owned();
         metadata.insert(default_env_var_key, default_env_var);
+    } else {
+        metadata.remove("plugin_setup_default_env_var");
     }
 
     insert_plugin_setup_string_list_metadata(
@@ -1475,6 +1563,8 @@ fn insert_plugin_setup_metadata(
     if let Some(remediation) = setup.remediation.clone() {
         let remediation_key = "plugin_setup_remediation".to_owned();
         metadata.insert(remediation_key, remediation);
+    } else {
+        metadata.remove("plugin_setup_remediation");
     }
 }
 
@@ -1486,11 +1576,13 @@ fn insert_plugin_setup_string_list_metadata(
     let is_empty = values.is_empty();
 
     if is_empty {
+        metadata.remove(key);
         return;
     }
 
     let serialized = serde_json::to_string(values);
     let Ok(serialized) = serialized else {
+        metadata.remove(key);
         return;
     };
 
@@ -2379,6 +2471,7 @@ mod plugin_metadata_tests {
         PluginActivationPlan {
             total_plugins: 1,
             ready_plugins: 1,
+            setup_incomplete_plugins: 0,
             blocked_plugins: 0,
             candidates: vec![PluginActivationCandidate {
                 plugin_id: descriptor.manifest.plugin_id.clone(),
@@ -2396,6 +2489,8 @@ mod plugin_metadata_tests {
                 diagnostic_findings: Vec::new(),
                 status: PluginActivationStatus::Ready,
                 reason: "plugin runtime profile is supported by current runtime matrix".to_owned(),
+                missing_required_env_vars: Vec::new(),
+                missing_required_config_keys: Vec::new(),
                 bootstrap_hint: "spawn python worker and then wire http adapter".to_owned(),
             }],
         }
@@ -2651,6 +2746,124 @@ mod plugin_metadata_tests {
                 .get("plugin_setup_required_env_vars_json")
                 .map(String::as_str),
             Some("[\"TAVILY_API_KEY\"]")
+        );
+    }
+
+    #[test]
+    fn enrich_scan_report_removes_stale_host_projected_metadata_when_authoritative_values_absent() {
+        let mut descriptor = test_descriptor(PluginSourceKind::PackageManifest);
+        descriptor.manifest.setup = None;
+        descriptor.manifest.defer_loading = true;
+        descriptor
+            .manifest
+            .metadata
+            .insert("plugin_id".to_owned(), "forged-plugin-id".to_owned());
+        descriptor
+            .manifest
+            .metadata
+            .insert("defer_loading".to_owned(), "false".to_owned());
+        descriptor
+            .manifest
+            .metadata
+            .insert("plugin_setup_mode".to_owned(), "legacy".to_owned());
+        descriptor.manifest.metadata.insert(
+            "plugin_setup_required_env_vars_json".to_owned(),
+            "[\"LEGACY_KEY\"]".to_owned(),
+        );
+        descriptor.manifest.metadata.insert(
+            "component_resolved_path".to_owned(),
+            "/tmp/forged-component".to_owned(),
+        );
+        descriptor
+            .manifest
+            .metadata
+            .insert("bridge_kind".to_owned(), "process_stdio".to_owned());
+        descriptor
+            .manifest
+            .metadata
+            .insert("adapter_family".to_owned(), "legacy-adapter".to_owned());
+        descriptor
+            .manifest
+            .metadata
+            .insert("entrypoint_hint".to_owned(), "stdio://legacy".to_owned());
+        descriptor
+            .manifest
+            .metadata
+            .insert("source_language".to_owned(), "legacy".to_owned());
+
+        let report = PluginScanReport {
+            scanned_files: 1,
+            matched_plugins: 1,
+            diagnostic_findings: Vec::new(),
+            descriptors: vec![descriptor],
+        };
+
+        let enriched =
+            enrich_scan_report_with_translation(&report, &PluginTranslationReport::default(), None);
+        let metadata = &enriched.descriptors[0].manifest.metadata;
+
+        assert_eq!(
+            metadata.get("plugin_id").map(String::as_str),
+            Some("search-plugin")
+        );
+        assert_eq!(
+            metadata.get("defer_loading").map(String::as_str),
+            Some("true")
+        );
+        assert!(!metadata.contains_key("plugin_setup_mode"));
+        assert!(!metadata.contains_key("plugin_setup_required_env_vars_json"));
+        assert!(!metadata.contains_key("component_resolved_path"));
+        assert!(!metadata.contains_key("bridge_kind"));
+        assert!(!metadata.contains_key("adapter_family"));
+        assert!(!metadata.contains_key("entrypoint_hint"));
+        assert!(!metadata.contains_key("source_language"));
+    }
+
+    #[test]
+    fn enrich_scan_report_overwrites_forged_runtime_projection_metadata() {
+        let mut descriptor = test_descriptor(PluginSourceKind::PackageManifest);
+        descriptor
+            .manifest
+            .metadata
+            .insert("bridge_kind".to_owned(), "process_stdio".to_owned());
+        descriptor
+            .manifest
+            .metadata
+            .insert("adapter_family".to_owned(), "legacy-adapter".to_owned());
+        descriptor
+            .manifest
+            .metadata
+            .insert("entrypoint_hint".to_owned(), "stdio://legacy".to_owned());
+        descriptor
+            .manifest
+            .metadata
+            .insert("source_language".to_owned(), "legacy".to_owned());
+        let report = PluginScanReport {
+            scanned_files: 1,
+            matched_plugins: 1,
+            diagnostic_findings: Vec::new(),
+            descriptors: vec![descriptor.clone()],
+        };
+        let translation = test_translation(&descriptor);
+
+        let enriched = enrich_scan_report_with_translation(&report, &translation, None);
+        let metadata = &enriched.descriptors[0].manifest.metadata;
+
+        assert_eq!(
+            metadata.get("bridge_kind").map(String::as_str),
+            Some("http_json")
+        );
+        assert_eq!(
+            metadata.get("adapter_family").map(String::as_str),
+            Some("http-adapter")
+        );
+        assert_eq!(
+            metadata.get("entrypoint_hint").map(String::as_str),
+            Some("https://example.com/search")
+        );
+        assert_eq!(
+            metadata.get("source_language").map(String::as_str),
+            Some("manifest")
         );
     }
 

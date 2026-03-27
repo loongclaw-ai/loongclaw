@@ -214,6 +214,7 @@ async fn execute_spec_self_awareness_surfaces_plugin_activation_inventory() {
         bootstrap: None,
         auto_provision: None,
         hotfixes: Vec::new(),
+        plugin_setup_readiness: None,
         operation: OperationSpec::Task {
             task_id: "t-awareness-plugin-inventory".to_owned(),
             objective: "collect awareness activation inventory".to_owned(),

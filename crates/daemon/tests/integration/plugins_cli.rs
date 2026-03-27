@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn plugins_bridge_profiles_cli_parses_selected_profile_and_json_flag() {
-    let cli = Cli::try_parse_from([
+    let cli = try_parse_cli([
         "loongclaw",
         "plugins",
         "bridge-profiles",
@@ -37,7 +37,7 @@ fn plugins_bridge_profiles_cli_parses_selected_profile_and_json_flag() {
 
 #[test]
 fn plugins_actions_cli_parses_filters_and_global_json_after_subcommand() {
-    let cli = Cli::try_parse_from([
+    let cli = try_parse_cli([
         "loongclaw",
         "plugins",
         "actions",
@@ -101,7 +101,7 @@ fn plugins_actions_cli_parses_filters_and_global_json_after_subcommand() {
 
 #[test]
 fn plugins_bridge_template_cli_parses_output_and_bridge_profile() {
-    let cli = Cli::try_parse_from([
+    let cli = try_parse_cli([
         "loongclaw",
         "plugins",
         "bridge-template",
@@ -148,7 +148,7 @@ fn plugins_bridge_template_cli_parses_output_and_bridge_profile() {
 
 #[test]
 fn plugins_preflight_cli_parses_bridge_support_delta_selector() {
-    let cli = Cli::try_parse_from([
+    let cli = try_parse_cli([
         "loongclaw",
         "plugins",
         "preflight",
@@ -189,15 +189,7 @@ fn plugins_preflight_cli_parses_bridge_support_delta_selector() {
 
 #[test]
 fn plugins_help_mentions_preflight_and_action_plan() {
-    let mut command = Cli::command();
-    let plugins = command
-        .find_subcommand_mut("plugins")
-        .expect("plugins subcommand should exist");
-    let mut rendered = Vec::new();
-    plugins
-        .write_long_help(&mut rendered)
-        .expect("render plugins help");
-    let help = String::from_utf8(rendered).expect("help should be utf-8");
+    let help = render_cli_help(["plugins"]);
 
     assert!(help.contains("plugin preflight"), "help: {help}");
     assert!(help.contains("bridge-profiles"), "help: {help}");
@@ -208,18 +200,7 @@ fn plugins_help_mentions_preflight_and_action_plan() {
 
 #[test]
 fn plugins_bridge_profiles_help_mentions_profile_filter() {
-    let mut root = Cli::command();
-    let plugins = root
-        .find_subcommand_mut("plugins")
-        .expect("plugins subcommand should exist");
-    let bridge_profiles = plugins
-        .find_subcommand_mut("bridge-profiles")
-        .expect("plugins bridge-profiles subcommand should exist");
-    let mut rendered = Vec::new();
-    bridge_profiles
-        .write_long_help(&mut rendered)
-        .expect("render plugins bridge-profiles help");
-    let help = String::from_utf8(rendered).expect("help should be utf-8");
+    let help = render_cli_help(["plugins", "bridge-profiles"]);
 
     assert!(help.contains("--profile <PROFILE>"), "help: {help}");
     assert!(help.contains("native-balanced"), "help: {help}");
@@ -228,18 +209,7 @@ fn plugins_bridge_profiles_help_mentions_profile_filter() {
 
 #[test]
 fn plugins_bridge_template_help_mentions_output_and_root() {
-    let mut root = Cli::command();
-    let plugins = root
-        .find_subcommand_mut("plugins")
-        .expect("plugins subcommand should exist");
-    let bridge_template = plugins
-        .find_subcommand_mut("bridge-template")
-        .expect("plugins bridge-template subcommand should exist");
-    let mut rendered = Vec::new();
-    bridge_template
-        .write_long_help(&mut rendered)
-        .expect("render plugins bridge-template help");
-    let help = String::from_utf8(rendered).expect("help should be utf-8");
+    let help = render_cli_help(["plugins", "bridge-template"]);
 
     assert!(help.contains("--root <ROOT>"), "help: {help}");
     assert!(
@@ -259,18 +229,7 @@ fn plugins_bridge_template_help_mentions_output_and_root() {
 
 #[test]
 fn plugins_actions_help_mentions_root_and_filters() {
-    let mut root = Cli::command();
-    let plugins = root
-        .find_subcommand_mut("plugins")
-        .expect("plugins subcommand should exist");
-    let actions = plugins
-        .find_subcommand_mut("actions")
-        .expect("plugins actions subcommand should exist");
-    let mut rendered = Vec::new();
-    actions
-        .write_long_help(&mut rendered)
-        .expect("render plugins actions help");
-    let help = String::from_utf8(rendered).expect("help should be utf-8");
+    let help = render_cli_help(["plugins", "actions"]);
 
     assert!(help.contains("--root <ROOT>"), "help: {help}");
     assert!(

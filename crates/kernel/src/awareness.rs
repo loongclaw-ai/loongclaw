@@ -12,7 +12,7 @@ use crate::{
     plugin::{PluginScanReport, PluginScanner},
     plugin_ir::{
         BridgeSupportMatrix, PluginActivationInventoryEntry, PluginActivationPlan, PluginIR,
-        PluginTranslationReport, PluginTranslator,
+        PluginSetupReadinessContext, PluginTranslationReport, PluginTranslator,
     },
 };
 
@@ -111,13 +111,16 @@ impl CodebaseAwarenessEngine {
         let mut plugin_inventory = Vec::new();
         let mut plugin_activation_inventory = Vec::new();
         let bridge_matrix = BridgeSupportMatrix::default();
+        let setup_readiness_context = PluginSetupReadinessContext::default();
 
         for root in &plugin_roots {
             let report = self.plugin_scanner.scan_path(root)?;
             let translation = self.plugin_translator.translate_scan_report(&report);
-            let activation = self
-                .plugin_translator
-                .plan_activation(&translation, &bridge_matrix);
+            let activation = self.plugin_translator.plan_activation(
+                &translation,
+                &bridge_matrix,
+                &setup_readiness_context,
+            );
             plugin_inventory.extend(translation.entries.iter().cloned());
             plugin_activation_inventory.extend(activation.inventory_entries(&translation));
             plugin_scan_reports.push(report);
