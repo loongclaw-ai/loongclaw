@@ -458,7 +458,7 @@ fn build_tool_catalog() -> ToolCatalog {
             exposure: ToolExposureClass::Discoverable,
             visibility_gate: ToolVisibilityGate::Always,
             capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
+            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
             provider_definition_builder: claw_migrate_definition,
         },
         ToolDescriptor {
@@ -471,7 +471,7 @@ fn build_tool_catalog() -> ToolCatalog {
             exposure: ToolExposureClass::Discoverable,
             visibility_gate: ToolVisibilityGate::ExternalSkills,
             capability_action_class: CapabilityActionClass::CapabilityFetch,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
+            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
             provider_definition_builder: external_skills_fetch_definition,
         },
         ToolDescriptor {
@@ -497,7 +497,7 @@ fn build_tool_catalog() -> ToolCatalog {
             exposure: ToolExposureClass::Discoverable,
             visibility_gate: ToolVisibilityGate::ExternalSkills,
             capability_action_class: CapabilityActionClass::CapabilityInstall,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
+            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
             provider_definition_builder: external_skills_install_definition,
         },
         ToolDescriptor {
@@ -510,7 +510,7 @@ fn build_tool_catalog() -> ToolCatalog {
             exposure: ToolExposureClass::Discoverable,
             visibility_gate: ToolVisibilityGate::ExternalSkills,
             capability_action_class: CapabilityActionClass::CapabilityLoad,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
+            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
             provider_definition_builder: external_skills_invoke_definition,
         },
         ToolDescriptor {
@@ -549,7 +549,7 @@ fn build_tool_catalog() -> ToolCatalog {
             exposure: ToolExposureClass::Discoverable,
             visibility_gate: ToolVisibilityGate::ExternalSkills,
             capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
+            policy: ELEVATED_TOOL_POLICY_DESCRIPTOR,
             provider_definition_builder: external_skills_remove_definition,
         },
         ToolDescriptor {
@@ -562,7 +562,7 @@ fn build_tool_catalog() -> ToolCatalog {
             exposure: ToolExposureClass::Discoverable,
             visibility_gate: ToolVisibilityGate::Always,
             capability_action_class: CapabilityActionClass::RuntimeSwitch,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
+            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
             provider_definition_builder: provider_switch_definition,
         },
         ToolDescriptor {
@@ -839,7 +839,7 @@ fn build_tool_catalog() -> ToolCatalog {
             exposure: ToolExposureClass::Discoverable,
             visibility_gate: ToolVisibilityGate::Always,
             capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
+            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
             provider_definition_builder: file_write_definition,
         });
         descriptors.push(ToolDescriptor {
@@ -852,7 +852,7 @@ fn build_tool_catalog() -> ToolCatalog {
             exposure: ToolExposureClass::Discoverable,
             visibility_gate: ToolVisibilityGate::Always,
             capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
+            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
             provider_definition_builder: file_edit_definition,
         });
     }
@@ -869,7 +869,7 @@ fn build_tool_catalog() -> ToolCatalog {
             exposure: ToolExposureClass::Discoverable,
             visibility_gate: ToolVisibilityGate::Always,
             capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
+            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
             provider_definition_builder: shell_exec_definition,
         });
     }

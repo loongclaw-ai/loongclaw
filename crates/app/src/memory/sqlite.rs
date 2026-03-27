@@ -102,8 +102,8 @@ impl PromptWindowQueryDiagnostics {
 }
 
 const SUMMARY_FORMAT_VERSION: i64 = 1;
-const SQLITE_MEMORY_SCHEMA_VERSION: i64 = 5;
-const SQLITE_CURRENT_SCHEMA_OBJECT_COUNT: i64 = 10;
+const SQLITE_MEMORY_SCHEMA_VERSION: i64 = 6;
+const SQLITE_CURRENT_SCHEMA_OBJECT_COUNT: i64 = 11;
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 const SQLITE_PREPARED_STATEMENT_CACHE_CAPACITY: usize = 16;
 const SQL_INSERT_TURN: &str = "INSERT INTO turns(session_id, session_turn_index, role, content, ts) VALUES (?1, ?2, ?3, ?4, ?5)";
@@ -148,6 +148,7 @@ const SQL_COUNT_CURRENT_SCHEMA_OBJECTS: &str = "SELECT COUNT(*)
                         'memory_summary_checkpoint_bodies',
                         'approval_requests',
                         'approval_grants',
+                        'session_tool_consent',
                         'session_tool_policies'
                     ))
                 OR (type = 'index' AND name IN (
@@ -1318,6 +1319,13 @@ fn open_sqlite_connection_with_diagnostics(
               updated_at INTEGER NOT NULL,
               PRIMARY KEY(scope_session_id, approval_key)
             );
+            CREATE TABLE IF NOT EXISTS session_tool_consent(
+              scope_session_id TEXT PRIMARY KEY,
+              mode TEXT NOT NULL,
+              updated_by_session_id TEXT NULL,
+              created_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS session_tool_policies(
               session_id TEXT PRIMARY KEY,
               requested_tool_ids_json TEXT NOT NULL,
@@ -1335,6 +1343,7 @@ fn open_sqlite_connection_with_diagnostics(
     if user_version < SQLITE_MEMORY_SCHEMA_VERSION {
         ensure_turn_session_index_and_state_metadata(&conn)?;
         ensure_approval_lifecycle_tables(&conn)?;
+        ensure_session_tool_consent_storage(&conn)?;
         ensure_session_tool_policy_storage(&conn)?;
         ensure_summary_checkpoint_storage_layout(&conn)?;
         write_sqlite_user_version(&conn, SQLITE_MEMORY_SCHEMA_VERSION)?;
@@ -1507,6 +1516,26 @@ fn ensure_approval_lifecycle_tables(conn: &Connection) -> Result<(), String> {
         ",
     )
     .map_err(|error| format!("ensure approval lifecycle storage failed: {error}"))?;
+
+    Ok(())
+}
+
+fn ensure_session_tool_consent_storage(conn: &Connection) -> Result<(), String> {
+    #[cfg(test)]
+    test_support::record_sqlite_schema_repair("session_tool_consent");
+
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS session_tool_consent(
+          scope_session_id TEXT PRIMARY KEY,
+          mode TEXT NOT NULL,
+          updated_by_session_id TEXT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        ",
+    )
+    .map_err(|error| format!("ensure session tool consent storage failed: {error}"))?;
 
     Ok(())
 }

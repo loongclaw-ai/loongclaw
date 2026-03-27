@@ -29,8 +29,10 @@ use crate::acp::{
 };
 use crate::memory::runtime_config::MemoryRuntimeConfig;
 use crate::runtime_self_continuity;
+use crate::tools::ToolExecutionKind;
 
 use super::super::config::LoongClawConfig;
+use crate::config::ToolConsentMode;
 use super::ConversationSessionAddress;
 use super::ProviderErrorMode;
 use super::analytics::{
@@ -110,6 +112,8 @@ use super::turn_shared::{
     tool_loop_circuit_breaker_reply, tool_result_contains_truncation_signal,
     user_requested_raw_tool_output,
 };
+#[cfg(feature = "memory-sqlite")]
+use super::turn_shared::{ApprovalPromptActionId, parse_approval_prompt_action_input};
 #[cfg(test)]
 use super::turn_shared::{ReplyResolutionMode, ToolDrivenFollowupKind};
 #[cfg(feature = "memory-sqlite")]
@@ -121,8 +125,8 @@ use crate::session::recovery::{
 use crate::session::repository::{
     ApprovalDecision, ApprovalRequestRecord, ApprovalRequestStatus, CreateSessionWithEventRequest,
     FinalizeSessionTerminalRequest, NewApprovalGrantRecord, NewSessionEvent, NewSessionRecord,
-    SessionKind, SessionRepository, SessionState, TransitionApprovalRequestIfCurrentRequest,
-    TransitionSessionWithEventIfCurrentRequest,
+    NewSessionToolConsentRecord, SessionKind, SessionRepository, SessionState,
+    TransitionApprovalRequestIfCurrentRequest, TransitionSessionWithEventIfCurrentRequest,
 };
 
 #[derive(Default)]
@@ -1036,6 +1040,48 @@ fn build_resolved_provider_checkpoint(
     }
 }
 
+#[cfg(feature = "memory-sqlite")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingApprovalInputDecision {
+    RunOnce,
+    SessionAuto,
+    SessionFull,
+    Cancel,
+}
+
+#[cfg(feature = "memory-sqlite")]
+impl PendingApprovalInputDecision {
+    fn approval_decision(self) -> ApprovalDecision {
+        match self {
+            Self::RunOnce | Self::SessionAuto | Self::SessionFull => ApprovalDecision::ApproveOnce,
+            Self::Cancel => ApprovalDecision::Deny,
+        }
+    }
+
+    fn session_mode(self) -> Option<ToolConsentMode> {
+        match self {
+            Self::RunOnce | Self::Cancel => None,
+            Self::SessionAuto => Some(ToolConsentMode::Auto),
+            Self::SessionFull => Some(ToolConsentMode::Full),
+        }
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn normalize_pending_approval_control_input(input: &str) -> String {
+    super::turn_shared::normalize_approval_prompt_control_input(input)
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn parse_pending_approval_input_decision(input: &str) -> Option<PendingApprovalInputDecision> {
+    match parse_approval_prompt_action_input(input)? {
+        ApprovalPromptActionId::Yes => Some(PendingApprovalInputDecision::RunOnce),
+        ApprovalPromptActionId::Auto => Some(PendingApprovalInputDecision::SessionAuto),
+        ApprovalPromptActionId::Full => Some(PendingApprovalInputDecision::SessionFull),
+        ApprovalPromptActionId::Esc => Some(PendingApprovalInputDecision::Cancel),
+    }
+}
+
 impl ConversationTurnCoordinator {
     pub fn new() -> Self {
         Self
@@ -1669,6 +1715,21 @@ impl ConversationTurnCoordinator {
     ) -> CliResult<String> {
         let turn_result: CliResult<(String, bool)> = async {
             let session_id = address.session_id.as_str();
+            #[cfg(feature = "memory-sqlite")]
+            if let Some(reply) = self
+                .maybe_handle_pending_approval_control_turn(
+                    config,
+                    runtime,
+                    session_id,
+                    user_input,
+                    error_mode,
+                    binding,
+                    observer.as_ref(),
+                )
+                .await?
+            {
+                return Ok((reply, true));
+            }
             let preparing_event = ConversationTurnPhaseEvent::preparing();
             observe_turn_phase(observer.as_ref(), preparing_event);
 
@@ -1801,6 +1862,107 @@ impl ConversationTurnCoordinator {
                 Err(error)
             }
         }
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    async fn maybe_handle_pending_approval_control_turn<R: ConversationRuntime + ?Sized>(
+        &self,
+        config: &LoongClawConfig,
+        runtime: &R,
+        session_id: &str,
+        user_input: &str,
+        error_mode: ProviderErrorMode,
+        binding: ConversationRuntimeBinding<'_>,
+        observer: Option<&ConversationTurnObserverHandle>,
+    ) -> CliResult<Option<String>> {
+        let Some(control_decision) = parse_pending_approval_input_decision(user_input) else {
+            return Ok(None);
+        };
+
+        let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+        let repo = SessionRepository::new(&memory_config)?;
+        let Some(pending_request) = repo
+            .list_approval_requests_for_session(session_id, Some(ApprovalRequestStatus::Pending))?
+            .into_iter()
+            .next()
+        else {
+            return Ok(None);
+        };
+
+        let scope_session_id = repo
+            .lineage_root_session_id(&pending_request.session_id)?
+            .unwrap_or_else(|| pending_request.session_id.clone());
+        if let Some(mode) = control_decision.session_mode() {
+            repo.upsert_session_tool_consent(NewSessionToolConsentRecord {
+                scope_session_id,
+                mode,
+                updated_by_session_id: Some(session_id.to_owned()),
+            })?;
+        }
+
+        observe_turn_phase(observer, ConversationTurnPhaseEvent::preparing());
+        let session_context = runtime.session_context(config, session_id, binding)?;
+        let assembled_context = runtime.build_context(config, session_id, true, binding).await?;
+        let turn_id = next_conversation_turn_id();
+        let preparation = ProviderTurnPreparation::from_assembled_context_with_turn_id(
+            config,
+            assembled_context,
+            user_input,
+            turn_id.as_str(),
+            None,
+        );
+        observe_turn_phase(
+            observer,
+            ConversationTurnPhaseEvent::context_ready(
+                preparation.session.messages.len(),
+                preparation.session.estimated_tokens,
+            ),
+        );
+
+        let approval_turn = ProviderTurn {
+            assistant_text: String::new(),
+            tool_intents: vec![ToolIntent {
+                tool_name: "approval_request_resolve".to_owned(),
+                args_json: json!({
+                    "approval_request_id": pending_request.approval_request_id,
+                    "decision": control_decision.approval_decision().as_str(),
+                }),
+                source: "approval_control".to_owned(),
+                session_id: session_context.session_id.clone(),
+                turn_id: preparation.turn_id.clone(),
+                tool_call_id: format!(
+                    "call-approval-control-{}",
+                    normalize_pending_approval_control_input(user_input)
+                ),
+            }],
+            raw_meta: Value::Null,
+        };
+
+        let resolved_turn = resolve_provider_turn(
+            config,
+            runtime,
+            session_id,
+            user_input,
+            &preparation,
+            Ok(approval_turn),
+            error_mode,
+            binding,
+            None,
+            observer,
+        )
+        .await;
+        let reply = apply_resolved_provider_turn(
+            config,
+            runtime,
+            session_id,
+            user_input,
+            &preparation,
+            &resolved_turn,
+            binding,
+            observer,
+        )
+        .await?;
+        Ok(Some(reply))
     }
 
     fn reload_followup_provider_config_after_tool_turn(
@@ -3509,16 +3671,7 @@ where
         &self,
         approval_request: &ApprovalRequestRecord,
     ) -> Result<loongclaw_contracts::ToolCoreRequest, String> {
-        let execution_kind = approval_request
-            .request_payload_json
-            .get("execution_kind")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "approval_request_invalid_payload: missing execution_kind".to_owned())?;
-        if execution_kind != "app" {
-            return Err(format!(
-                "approval_request_invalid_execution_kind: expected `app`, got `{execution_kind}`"
-            ));
-        }
+        let _ = self.replay_execution_kind(approval_request)?;
 
         let tool_name = approval_request
             .request_payload_json
@@ -3539,42 +3692,72 @@ where
         })
     }
 
+    fn replay_execution_kind(
+        &self,
+        approval_request: &ApprovalRequestRecord,
+    ) -> Result<ToolExecutionKind, String> {
+        let execution_kind = approval_request
+            .request_payload_json
+            .get("execution_kind")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "approval_request_invalid_payload: missing execution_kind".to_owned())?;
+        match execution_kind {
+            "core" => Ok(ToolExecutionKind::Core),
+            "app" => Ok(ToolExecutionKind::App),
+            _ => Err(format!(
+                "approval_request_invalid_execution_kind: expected `core` or `app`, got `{execution_kind}`"
+            )),
+        }
+    }
+
     async fn replay_approved_request(
         &self,
         approval_request: &ApprovalRequestRecord,
     ) -> Result<loongclaw_contracts::ToolCoreOutcome, String> {
+        let execution_kind = self.replay_execution_kind(approval_request)?;
         let replay_request = self.replay_request(approval_request)?;
         let session_context = self
             .runtime
             .session_context(self.config, &approval_request.session_id, self.binding)
             .map_err(|error| format!("load approval request session context failed: {error}"))?;
 
-        match crate::tools::canonical_tool_name(replay_request.tool_name.as_str()) {
-            "delegate" => {
-                execute_delegate_tool(
-                    self.config,
-                    self.runtime,
-                    &session_context,
-                    replay_request.payload,
-                    self.binding,
-                )
-                .await
+        match execution_kind {
+            ToolExecutionKind::Core => {
+                let kernel_ctx = self
+                    .binding
+                    .kernel_context()
+                    .ok_or_else(|| "approval_request_replay_missing_kernel_context".to_owned())?;
+                crate::tools::execute_tool(replay_request, kernel_ctx).await
             }
-            "delegate_async" => {
-                execute_delegate_async_tool(
-                    self.config,
-                    self.runtime,
-                    &session_context,
-                    replay_request.payload,
-                    self.binding,
-                )
-                .await
-            }
-            _ => {
-                self.fallback
-                    .execute_app_tool(&session_context, replay_request, self.binding)
+            ToolExecutionKind::App => match crate::tools::canonical_tool_name(
+                replay_request.tool_name.as_str(),
+            ) {
+                "delegate" => {
+                    execute_delegate_tool(
+                        self.config,
+                        self.runtime,
+                        &session_context,
+                        replay_request.payload,
+                        self.binding,
+                    )
                     .await
-            }
+                }
+                "delegate_async" => {
+                    execute_delegate_async_tool(
+                        self.config,
+                        self.runtime,
+                        &session_context,
+                        replay_request.payload,
+                        self.binding,
+                    )
+                    .await
+                }
+                _ => {
+                    self.fallback
+                        .execute_app_tool(&session_context, replay_request, self.binding)
+                        .await
+                }
+            },
         }
     }
 
@@ -6598,6 +6781,35 @@ mod tests {
                 .expect("clock")
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn pending_approval_input_parser_accepts_keyword_and_numeric_aliases() {
+        assert_eq!(
+            parse_pending_approval_input_decision("yes"),
+            Some(PendingApprovalInputDecision::RunOnce)
+        );
+        assert_eq!(
+            parse_pending_approval_input_decision("2"),
+            Some(PendingApprovalInputDecision::SessionAuto)
+        );
+        assert_eq!(
+            parse_pending_approval_input_decision("本会话全自动"),
+            Some(PendingApprovalInputDecision::SessionFull)
+        );
+        assert_eq!(
+            parse_pending_approval_input_decision("esc"),
+            Some(PendingApprovalInputDecision::Cancel)
+        );
+        assert_eq!(
+            parse_pending_approval_input_decision("跳过这次"),
+            Some(PendingApprovalInputDecision::Cancel)
+        );
+        assert_eq!(
+            parse_pending_approval_input_decision("skip call"),
+            Some(PendingApprovalInputDecision::Cancel)
+        );
+        assert_eq!(parse_pending_approval_input_decision("maybe"), None);
     }
 
     #[cfg(feature = "memory-sqlite")]
