@@ -6,7 +6,7 @@ use crate::{
 use super::registry::{
     ChannelRuntimeCommandDescriptor, FEISHU_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
     MATRIX_CATALOG_COMMAND_FAMILY_DESCRIPTOR, TELEGRAM_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
-    WECOM_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
+    WECOM_CATALOG_COMMAND_FAMILY_DESCRIPTOR, resolve_channel_selection_order,
 };
 
 #[cfg(feature = "channel-feishu")]
@@ -428,9 +428,27 @@ pub(crate) fn channel_descriptor(id: &str) -> Option<&'static ChannelDescriptor>
     Some(integration.descriptor)
 }
 
+fn ordered_channel_integrations() -> Vec<&'static ChannelIntegrationDescriptor> {
+    let mut integrations = CHANNEL_INTEGRATIONS.iter().collect::<Vec<_>>();
+    integrations.sort_by_key(|integration| channel_integration_order_key(integration));
+    integrations
+}
+
+fn channel_integration_order_key(
+    integration: &ChannelIntegrationDescriptor,
+) -> (u8, u16, &'static str) {
+    let runtime_group = match integration.descriptor.runtime_kind {
+        ChannelRuntimeKind::Interactive => 0_u8,
+        ChannelRuntimeKind::Service => 1_u8,
+    };
+    let selection_order =
+        resolve_channel_selection_order(integration.descriptor.id).unwrap_or(u16::MAX);
+    (runtime_group, selection_order, integration.descriptor.id)
+}
+
 pub(crate) fn service_channel_descriptors() -> Vec<&'static ChannelDescriptor> {
-    CHANNEL_INTEGRATIONS
-        .iter()
+    ordered_channel_integrations()
+        .into_iter()
         .map(|integration| integration.descriptor)
         .filter(|descriptor| descriptor.runtime_kind == ChannelRuntimeKind::Service)
         .collect()
@@ -440,8 +458,8 @@ pub(crate) fn enabled_channel_ids(
     config: &LoongClawConfig,
     runtime_kind: Option<ChannelRuntimeKind>,
 ) -> Vec<String> {
-    CHANNEL_INTEGRATIONS
-        .iter()
+    ordered_channel_integrations()
+        .into_iter()
         .filter(|integration| {
             let enabled = (integration.is_enabled)(config);
             let matches_runtime_kind =
@@ -455,15 +473,15 @@ pub(crate) fn enabled_channel_ids(
 pub(crate) fn collect_channel_validation_issues(
     config: &LoongClawConfig,
 ) -> Vec<ConfigValidationIssue> {
-    CHANNEL_INTEGRATIONS
-        .iter()
+    ordered_channel_integrations()
+        .into_iter()
         .flat_map(|integration| (integration.collect_validation_issues)(config))
         .collect()
 }
 
 pub fn background_channel_runtime_descriptors() -> Vec<ChannelRuntimeCommandDescriptor> {
-    CHANNEL_INTEGRATIONS
-        .iter()
+    ordered_channel_integrations()
+        .into_iter()
         .filter_map(|integration| integration.background_runtime)
         .collect()
 }
@@ -754,49 +772,68 @@ mod tests {
 
     use super::*;
 
+    fn expected_service_channel_ids() -> Vec<&'static str> {
+        let mut channel_ids = Vec::new();
+        let catalog = super::super::registry::list_channel_catalog();
+
+        for catalog_entry in catalog {
+            let Some(descriptor) = channel_descriptor(catalog_entry.id) else {
+                continue;
+            };
+            if descriptor.runtime_kind != ChannelRuntimeKind::Service {
+                continue;
+            }
+            channel_ids.push(descriptor.id);
+        }
+
+        channel_ids
+    }
+
+    fn expected_background_channel_ids() -> Vec<&'static str> {
+        let mut channel_ids = Vec::new();
+        let catalog = super::super::registry::list_channel_catalog();
+
+        for catalog_entry in catalog {
+            let runtime_descriptor =
+                super::super::registry::resolve_channel_runtime_command_descriptor(
+                    catalog_entry.id,
+                );
+            if runtime_descriptor.is_none() {
+                continue;
+            }
+            let Some(descriptor) = channel_descriptor(catalog_entry.id) else {
+                continue;
+            };
+            if descriptor.runtime_kind != ChannelRuntimeKind::Service {
+                continue;
+            }
+            channel_ids.push(descriptor.id);
+        }
+
+        channel_ids
+    }
+
     #[test]
-    fn service_channel_descriptors_follow_integration_order() {
+    fn service_channel_descriptors_follow_registry_selection_order() {
         let descriptors = service_channel_descriptors();
         let ids = descriptors
             .into_iter()
             .map(|descriptor| descriptor.id)
             .collect::<Vec<_>>();
-
-        assert_eq!(
-            ids,
-            vec![
-                "telegram",
-                "feishu",
-                "matrix",
-                "wecom",
-                "discord",
-                "slack",
-                "line",
-                "dingtalk",
-                "whatsapp",
-                "email",
-                "webhook",
-                "google-chat",
-                "signal",
-                "teams",
-                "mattermost",
-                "nextcloud-talk",
-                "synology-chat",
-                "irc",
-                "imessage",
-            ]
-        );
+        let expected_ids = expected_service_channel_ids();
+        assert_eq!(ids, expected_ids);
     }
 
     #[test]
-    fn background_channel_runtime_descriptors_follow_integration_order() {
+    fn background_channel_runtime_descriptors_follow_registry_selection_order() {
         let descriptors = background_channel_runtime_descriptors();
         let ids = descriptors
             .into_iter()
             .map(|descriptor| descriptor.channel_id)
             .collect::<Vec<_>>();
+        let expected_ids = expected_background_channel_ids();
 
-        assert_eq!(ids, vec!["telegram", "feishu", "matrix", "wecom"]);
+        assert_eq!(ids, expected_ids);
     }
 
     #[test]

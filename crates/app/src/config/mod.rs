@@ -124,27 +124,44 @@ mod tests {
     use std::collections::BTreeSet;
 
     fn expected_service_channel_ids() -> Vec<&'static str> {
-        vec![
-            "telegram",
-            "feishu",
-            "matrix",
-            "wecom",
-            "discord",
-            "slack",
-            "line",
-            "dingtalk",
-            "whatsapp",
-            "email",
-            "webhook",
-            "google-chat",
-            "signal",
-            "teams",
-            "mattermost",
-            "nextcloud-talk",
-            "synology-chat",
-            "irc",
-            "imessage",
-        ]
+        let mut service_ids = Vec::new();
+        let catalog = crate::channel::list_channel_catalog();
+
+        for catalog_entry in catalog {
+            let Some(descriptor) = channel_descriptor(catalog_entry.id) else {
+                continue;
+            };
+            if descriptor.runtime_kind != ChannelRuntimeKind::Service {
+                continue;
+            }
+            service_ids.push(descriptor.id);
+        }
+
+        service_ids
+    }
+
+    fn config_with_all_service_channels_enabled() -> LoongClawConfig {
+        let default_config = LoongClawConfig::default();
+        let mut config_value =
+            serde_json::to_value(default_config).expect("serialize default config");
+        let config_object = config_value
+            .as_object_mut()
+            .expect("config should serialize to an object");
+        let service_ids = expected_service_channel_ids();
+
+        for channel_id in service_ids {
+            let field_name = channel_id.replace('-', "_");
+            let channel_value = config_object
+                .get_mut(field_name.as_str())
+                .expect("service channel config field");
+            let channel_object = channel_value
+                .as_object_mut()
+                .expect("channel config should serialize to an object");
+            let enabled_value = serde_json::Value::Bool(true);
+            channel_object.insert("enabled".to_owned(), enabled_value);
+        }
+
+        serde_json::from_value(config_value).expect("deserialize enabled config")
     }
 
     #[test]
@@ -282,65 +299,29 @@ mod tests {
 
     #[test]
     fn enabled_channel_views_follow_shared_catalog_order() {
-        let mut config = LoongClawConfig::default();
-        assert_eq!(config.enabled_channel_ids(), vec!["cli"]);
-        assert!(config.enabled_service_channel_ids().is_empty());
+        let default_config = LoongClawConfig::default();
+        assert_eq!(default_config.enabled_channel_ids(), vec!["cli"]);
+        assert!(default_config.enabled_service_channel_ids().is_empty());
+        let config = config_with_all_service_channels_enabled();
+        let expected_service_ids = expected_service_channel_ids();
+        let expected_enabled_service_ids = expected_service_ids
+            .iter()
+            .map(|channel_id| (*channel_id).to_owned())
+            .collect::<Vec<_>>();
+        let mut expected_enabled_channel_ids = vec!["cli".to_owned()];
+        expected_enabled_channel_ids.extend(expected_enabled_service_ids.iter().cloned());
 
-        config.telegram.enabled = true;
-        config.feishu.enabled = true;
-        config.matrix.enabled = true;
-        config.wecom.enabled = true;
-        config.discord.enabled = true;
-        config.slack.enabled = true;
-        config.line.enabled = true;
-        config.dingtalk.enabled = true;
-        config.whatsapp.enabled = true;
-        config.email.enabled = true;
-        config.webhook.enabled = true;
-        config.google_chat.enabled = true;
-        config.signal.enabled = true;
-        config.teams.enabled = true;
-        config.mattermost.enabled = true;
-        config.nextcloud_talk.enabled = true;
-        config.synology_chat.enabled = true;
-        config.irc.enabled = true;
-        config.imessage.enabled = true;
-
-        assert_eq!(
-            config.enabled_channel_ids(),
-            vec![
-                "cli",
-                "telegram",
-                "feishu",
-                "matrix",
-                "wecom",
-                "discord",
-                "slack",
-                "line",
-                "dingtalk",
-                "whatsapp",
-                "email",
-                "webhook",
-                "google-chat",
-                "signal",
-                "teams",
-                "mattermost",
-                "nextcloud-talk",
-                "synology-chat",
-                "irc",
-                "imessage",
-            ]
-        );
+        assert_eq!(config.enabled_channel_ids(), expected_enabled_channel_ids);
         assert_eq!(
             config.enabled_service_channel_ids(),
-            expected_service_channel_ids()
+            expected_enabled_service_ids
         );
 
         let service_ids = service_channel_descriptors()
             .into_iter()
             .map(|descriptor| descriptor.id)
             .collect::<Vec<_>>();
-        assert_eq!(service_ids, expected_service_channel_ids());
+        assert_eq!(service_ids, expected_service_ids);
     }
 
     #[test]
@@ -353,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn service_channel_descriptors_include_matrix_surface() {
+    fn service_channel_descriptors_follow_registry_selection_order() {
         let service_ids = service_channel_descriptors()
             .into_iter()
             .map(|descriptor| descriptor.id)
