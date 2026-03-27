@@ -1,3 +1,6 @@
+# Keep ownership rules reviewed by the designated maintainers
+/.github/CODEOWNERS @chumyin @gh-xj @primaryphd
+
 # Documentation and contributor-facing Markdown
 /*.md @loongclaw-ai/doc-ops
 /**/*.md @loongclaw-ai/doc-ops
@@ -109,6 +112,3 @@
 /docs/plans/*personality* @loongclaw-ai/doc-ops @loongclaw-ai/ux
 /docs/plans/*browser-companion* @loongclaw-ai/doc-ops @loongclaw-ai/ui @loongclaw-ai/ux
 /docs/plans/*browser-preview* @loongclaw-ai/doc-ops @loongclaw-ai/ui @loongclaw-ai/ux
-
-# Keep ownership rules reviewed by the designated maintainers
-/.github/CODEOWNERS @chumyin @gh-xj @primaryphd
