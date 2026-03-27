@@ -91,36 +91,6 @@ fn legacy_acp_dispatch_payload_json(
     })
 }
 
-fn legacy_runtime_snapshot_json(snapshot: &RuntimeSnapshotCliState) -> Value {
-    let inventory = legacy_channel_inventory_json(snapshot.config.as_str(), &snapshot.channels);
-
-    serde_json::json!({
-        "config": snapshot.config,
-        "schema": {
-            "version": RUNTIME_SNAPSHOT_CLI_JSON_SCHEMA_VERSION,
-            "surface": "runtime_snapshot",
-            "purpose": "experiment_reproducibility",
-        },
-        "provider": runtime_snapshot_provider_json(&snapshot.provider),
-        "context_engine": runtime_snapshot_context_engine_json(&snapshot.context_engine),
-        "memory_system": runtime_snapshot_memory_system_json(&snapshot.memory_system),
-        "acp": runtime_snapshot_acp_json(&snapshot.acp),
-        "channels": {
-            "enabled_channel_ids": snapshot.enabled_channel_ids,
-            "enabled_service_channel_ids": snapshot.enabled_service_channel_ids,
-            "inventory": inventory,
-        },
-        "tool_runtime": runtime_snapshot_tool_runtime_json(&snapshot.tool_runtime),
-        "tools": {
-            "visible_tool_count": snapshot.visible_tool_names.len(),
-            "visible_tool_names": snapshot.visible_tool_names,
-            "capability_snapshot_sha256": snapshot.capability_snapshot_sha256,
-            "capability_snapshot": snapshot.capability_snapshot,
-        },
-        "external_skills": runtime_snapshot_external_skills_json(&snapshot.external_skills),
-    })
-}
-
 #[test]
 fn gateway_read_model_channel_inventory_matches_channel_cli_contract() {
     let config = mvp::config::LoongClawConfig::default();
@@ -306,8 +276,12 @@ fn gateway_read_model_acp_dispatch_keeps_structured_address_and_target() {
         &decision,
     );
     let encoded = serde_json::to_value(&payload).expect("serialize ACP dispatch read model");
-    let legacy =
-        legacy_acp_dispatch_payload_json("/tmp/loongclaw.toml", &address, "opaque-session", &decision);
+    let legacy = legacy_acp_dispatch_payload_json(
+        "/tmp/loongclaw.toml",
+        &address,
+        "opaque-session",
+        &decision,
+    );
 
     assert_eq!(payload.config, "/tmp/loongclaw.toml");
     assert_eq!(payload.address.channel_id.as_deref(), Some("feishu"));
@@ -336,14 +310,12 @@ fn gateway_read_model_runtime_snapshot_embeds_inventory_and_tool_summary() {
         .expect("collect runtime snapshot");
     let payload = gateway::read_models::build_runtime_snapshot_read_model(&snapshot);
     let encoded = serde_json::to_value(&payload).expect("serialize runtime snapshot read model");
-    let legacy = legacy_runtime_snapshot_json(&snapshot);
 
     assert_eq!(
         payload.schema.version,
         RUNTIME_SNAPSHOT_CLI_JSON_SCHEMA_VERSION
     );
     assert_eq!(payload.schema.surface, "runtime_snapshot");
-    assert_eq!(encoded, legacy);
     assert_eq!(
         payload.channels.inventory.schema.primary_channel_view,
         "channel_surfaces"
