@@ -1846,6 +1846,7 @@ fn plugin_activation_status_label(status: PluginActivationStatus) -> &'static st
         PluginActivationStatus::BlockedCompatibilityMode => "blocked_compatibility_mode",
         PluginActivationStatus::BlockedIncompatibleHost => "blocked_incompatible_host",
         PluginActivationStatus::BlockedSlotClaimConflict => "blocked_slot_claim_conflict",
+        PluginActivationStatus::Unknown => "unknown",
     }
 }
 

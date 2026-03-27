@@ -1,6 +1,9 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{
     contracts::Capability,
@@ -14,7 +17,7 @@ use crate::{
     },
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PluginBridgeKind {
     HttpJson,
@@ -24,6 +27,7 @@ pub enum PluginBridgeKind {
     McpServer,
     AcpBridge,
     AcpRuntime,
+    #[default]
     Unknown,
 }
 
@@ -43,7 +47,8 @@ impl PluginBridgeKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct PluginRuntimeProfile {
     pub source_language: String,
     pub bridge_kind: PluginBridgeKind,
@@ -51,12 +56,14 @@ pub struct PluginRuntimeProfile {
     pub entrypoint_hint: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PluginIR {
     pub manifest_api_version: Option<String>,
     pub plugin_version: Option<String>,
+    #[serde(default)]
     pub dialect: PluginContractDialect,
     pub dialect_version: Option<String>,
+    #[serde(default)]
     pub compatibility_mode: PluginCompatibilityMode,
     pub plugin_id: String,
     pub provider_id: String,
@@ -71,11 +78,89 @@ pub struct PluginIR {
     pub source_kind: PluginSourceKind,
     pub package_root: String,
     pub package_manifest_path: Option<String>,
+    #[serde(default)]
     pub diagnostic_findings: Vec<PluginDiagnosticFinding>,
     pub setup: Option<PluginSetup>,
+    #[serde(default)]
     pub slot_claims: Vec<PluginSlotClaim>,
     pub compatibility: Option<PluginCompatibility>,
+    #[serde(default)]
     pub runtime: PluginRuntimeProfile,
+}
+
+#[derive(Debug, Deserialize)]
+struct PluginIRSerde {
+    manifest_api_version: Option<String>,
+    plugin_version: Option<String>,
+    dialect: Option<PluginContractDialect>,
+    dialect_version: Option<String>,
+    compatibility_mode: Option<PluginCompatibilityMode>,
+    plugin_id: String,
+    provider_id: String,
+    connector_name: String,
+    channel_id: Option<String>,
+    endpoint: Option<String>,
+    capabilities: BTreeSet<Capability>,
+    #[serde(default)]
+    trust_tier: PluginTrustTier,
+    metadata: BTreeMap<String, String>,
+    source_path: String,
+    source_kind: PluginSourceKind,
+    package_root: String,
+    package_manifest_path: Option<String>,
+    #[serde(default)]
+    diagnostic_findings: Vec<PluginDiagnosticFinding>,
+    setup: Option<PluginSetup>,
+    #[serde(default)]
+    slot_claims: Vec<PluginSlotClaim>,
+    compatibility: Option<PluginCompatibility>,
+    runtime: Option<PluginRuntimeProfile>,
+}
+
+impl<'de> Deserialize<'de> for PluginIR {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = PluginIRSerde::deserialize(deserializer)?;
+        let dialect = raw
+            .dialect
+            .unwrap_or_else(|| legacy_plugin_ir_dialect(raw.source_kind));
+        let compatibility_mode = raw.compatibility_mode.unwrap_or_default();
+        let runtime = raw.runtime.unwrap_or_else(|| {
+            legacy_plugin_ir_runtime_profile(
+                &raw.source_path,
+                raw.source_kind,
+                &raw.metadata,
+                raw.endpoint.as_deref(),
+            )
+        });
+
+        Ok(Self {
+            manifest_api_version: raw.manifest_api_version,
+            plugin_version: raw.plugin_version,
+            dialect,
+            dialect_version: raw.dialect_version,
+            compatibility_mode,
+            plugin_id: raw.plugin_id,
+            provider_id: raw.provider_id,
+            connector_name: raw.connector_name,
+            channel_id: raw.channel_id,
+            endpoint: raw.endpoint,
+            capabilities: raw.capabilities,
+            trust_tier: raw.trust_tier,
+            metadata: raw.metadata,
+            source_path: raw.source_path,
+            source_kind: raw.source_kind,
+            package_root: raw.package_root,
+            package_manifest_path: raw.package_manifest_path,
+            diagnostic_findings: raw.diagnostic_findings,
+            setup: raw.setup,
+            slot_claims: raw.slot_claims,
+            compatibility: raw.compatibility,
+            runtime,
+        })
+    }
 }
 
 /// Declares which setup requirements are already verified for a plugin.
@@ -177,6 +262,8 @@ pub enum PluginActivationStatus {
     BlockedUnsupportedBridge,
     BlockedUnsupportedAdapterFamily,
     BlockedSlotClaimConflict,
+    #[serde(other)]
+    Unknown,
 }
 
 impl PluginActivationStatus {
@@ -190,6 +277,7 @@ impl PluginActivationStatus {
             Self::BlockedUnsupportedBridge => "blocked_unsupported_bridge",
             Self::BlockedUnsupportedAdapterFamily => "blocked_unsupported_adapter_family",
             Self::BlockedSlotClaimConflict => "blocked_slot_claim_conflict",
+            Self::Unknown => "unknown",
         }
     }
 }
@@ -354,6 +442,7 @@ impl PluginActivationPlan {
                         | PluginActivationStatus::BlockedIncompatibleHost
                         | PluginActivationStatus::BlockedUnsupportedAdapterFamily
                         | PluginActivationStatus::BlockedSlotClaimConflict
+                        | PluginActivationStatus::Unknown
                 )
             })
             .take(capped_limit)
@@ -776,7 +865,8 @@ impl PluginTranslator {
                 | PluginActivationStatus::BlockedUnsupportedBridge
                 | PluginActivationStatus::BlockedIncompatibleHost
                 | PluginActivationStatus::BlockedUnsupportedAdapterFamily
-                | PluginActivationStatus::BlockedSlotClaimConflict => {
+                | PluginActivationStatus::BlockedSlotClaimConflict
+                | PluginActivationStatus::Unknown => {
                     plan.blocked_plugins = plan.blocked_plugins.saturating_add(1)
                 }
             }
@@ -890,6 +980,7 @@ fn activation_diagnostic_finding(
                     .to_owned(),
             ),
         ),
+        PluginActivationStatus::Unknown => return None,
     };
 
     Some(PluginDiagnosticFinding {
@@ -1046,32 +1137,37 @@ fn existing_slot_claims_from_catalog(
 }
 
 fn infer_runtime_profile(language: &str, manifest: &PluginManifest) -> PluginRuntimeProfile {
+    let endpoint = manifest.endpoint.as_deref();
+    infer_runtime_profile_from_parts(language, &manifest.metadata, endpoint)
+}
+
+fn infer_runtime_profile_from_parts(
+    language: &str,
+    metadata: &BTreeMap<String, String>,
+    endpoint: Option<&str>,
+) -> PluginRuntimeProfile {
     let source_language = normalize_language(language);
 
-    let bridge_kind = manifest
-        .metadata
+    let bridge_kind = metadata
         .get("bridge_kind")
         .and_then(|value| parse_bridge_kind(value))
         .or_else(|| {
-            manifest
-                .metadata
+            metadata
                 .get("protocol")
                 .filter(|value| value.eq_ignore_ascii_case("mcp"))
                 .map(|_| PluginBridgeKind::McpServer)
         })
-        .unwrap_or_else(|| default_bridge_kind(&source_language, manifest.endpoint.as_deref()));
+        .unwrap_or_else(|| default_bridge_kind(&source_language, endpoint));
 
-    let adapter_family = manifest
-        .metadata
+    let adapter_family = metadata
         .get("adapter_family")
         .cloned()
         .unwrap_or_else(|| default_adapter_family(&source_language, bridge_kind));
 
-    let entrypoint_hint = manifest
-        .metadata
+    let entrypoint_hint = metadata
         .get("entrypoint")
         .cloned()
-        .or_else(|| default_entrypoint_hint(bridge_kind, manifest.endpoint.as_deref()))
+        .or_else(|| default_entrypoint_hint(bridge_kind, endpoint))
         .unwrap_or_else(|| "invoke".to_owned());
 
     PluginRuntimeProfile {
@@ -1080,6 +1176,35 @@ fn infer_runtime_profile(language: &str, manifest: &PluginManifest) -> PluginRun
         adapter_family,
         entrypoint_hint,
     }
+}
+
+fn legacy_plugin_ir_dialect(source_kind: PluginSourceKind) -> PluginContractDialect {
+    match source_kind {
+        PluginSourceKind::PackageManifest => PluginContractDialect::LoongClawPackageManifest,
+        PluginSourceKind::EmbeddedSource => PluginContractDialect::LoongClawEmbeddedSource,
+    }
+}
+
+fn legacy_plugin_ir_runtime_profile(
+    source_path: &str,
+    source_kind: PluginSourceKind,
+    metadata: &BTreeMap<String, String>,
+    endpoint: Option<&str>,
+) -> PluginRuntimeProfile {
+    let source_language = legacy_plugin_ir_source_language(source_path, source_kind);
+    infer_runtime_profile_from_parts(&source_language, metadata, endpoint)
+}
+
+fn legacy_plugin_ir_source_language(source_path: &str, source_kind: PluginSourceKind) -> String {
+    if source_kind == PluginSourceKind::PackageManifest {
+        return "unknown".to_owned();
+    }
+
+    let extension = Path::new(source_path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    normalize_language(extension)
 }
 
 fn normalize_language(language: &str) -> String {
@@ -1537,6 +1662,68 @@ mod tests {
         assert_eq!(plan.candidates.len(), 1);
         assert!(plan.candidates[0].missing_required_env_vars.is_empty());
         assert!(plan.candidates[0].missing_required_config_keys.is_empty());
+    }
+
+    #[test]
+    fn plugin_ir_deserializes_legacy_embedded_source_payload_with_inferred_defaults() {
+        let raw = r#"{
+            "plugin_id": "legacy-plugin",
+            "provider_id": "legacy-provider",
+            "connector_name": "legacy-connector",
+            "capabilities": [],
+            "metadata": {},
+            "source_path": "/tmp/legacy-plugin.py",
+            "source_kind": "embedded_source",
+            "package_root": "/tmp"
+        }"#;
+
+        let ir: PluginIR =
+            serde_json::from_str(raw).expect("legacy embedded-source payload should deserialize");
+
+        assert_eq!(ir.dialect, PluginContractDialect::LoongClawEmbeddedSource);
+        assert_eq!(ir.compatibility_mode, PluginCompatibilityMode::Native);
+        assert!(ir.diagnostic_findings.is_empty());
+        assert!(ir.slot_claims.is_empty());
+        assert_eq!(ir.runtime.source_language, "python");
+        assert_eq!(ir.runtime.bridge_kind, PluginBridgeKind::ProcessStdio);
+        assert_eq!(ir.runtime.adapter_family, "python-stdio-adapter");
+    }
+
+    #[test]
+    fn plugin_ir_deserializes_legacy_package_manifest_payload_with_inferred_defaults() {
+        let raw = r#"{
+            "plugin_id": "legacy-package",
+            "provider_id": "legacy-provider",
+            "connector_name": "legacy-connector",
+            "endpoint": "https://plugins.example.test/invoke",
+            "capabilities": [],
+            "metadata": {},
+            "source_path": "/tmp/loongclaw.plugin.json",
+            "source_kind": "package_manifest",
+            "package_root": "/tmp"
+        }"#;
+
+        let ir: PluginIR =
+            serde_json::from_str(raw).expect("legacy package payload should deserialize");
+
+        assert_eq!(ir.dialect, PluginContractDialect::LoongClawPackageManifest);
+        assert_eq!(ir.compatibility_mode, PluginCompatibilityMode::Native);
+        assert_eq!(ir.runtime.source_language, "unknown");
+        assert_eq!(ir.runtime.bridge_kind, PluginBridgeKind::HttpJson);
+        assert_eq!(
+            ir.runtime.entrypoint_hint,
+            "https://plugins.example.test/invoke"
+        );
+    }
+
+    #[test]
+    fn plugin_activation_status_deserializes_unknown_variants_as_unknown() {
+        let raw = "\"blocked_future_contract_surface\"";
+        let status: PluginActivationStatus =
+            serde_json::from_str(raw).expect("unknown activation status should deserialize");
+
+        assert_eq!(status, PluginActivationStatus::Unknown);
+        assert_eq!(status.as_str(), "unknown");
     }
 
     #[test]

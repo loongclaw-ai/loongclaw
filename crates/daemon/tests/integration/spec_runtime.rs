@@ -771,19 +771,30 @@ fn run_spec_cli_resolves_bridge_support_delta_override_relative_to_process_cwd()
 
     let report: Value =
         serde_json::from_str(&stdout).expect("run-spec stdout should be a json report");
-    let expected_delta_source = fs::canonicalize(&delta_path)
-        .expect("delta path should canonicalize")
-        .display()
-        .to_string();
-    let expected_bridge_support_source = format!("delta:{expected_delta_source}");
+    fn canonicalized_path_text(path: &std::path::Path) -> String {
+        let canonical_path = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        canonical_path.display().to_string()
+    }
 
+    let expected_delta_source = canonicalized_path_text(&delta_path);
+    let actual_delta_source = report["bridge_support_delta_source"]
+        .as_str()
+        .expect("report should expose bridge support delta source");
+    let actual_bridge_support_source = report["bridge_support_source"]
+        .as_str()
+        .expect("report should expose bridge support source");
+    let actual_bridge_support_delta = actual_bridge_support_source
+        .strip_prefix("delta:")
+        .expect("bridge support source should encode delta provenance");
+    let normalized_actual_delta_source =
+        canonicalized_path_text(std::path::Path::new(actual_delta_source));
+    let normalized_actual_bridge_support_delta =
+        canonicalized_path_text(std::path::Path::new(actual_bridge_support_delta));
+
+    assert_eq!(normalized_actual_delta_source, expected_delta_source);
     assert_eq!(
-        report["bridge_support_delta_source"].as_str(),
-        Some(expected_delta_source.as_str())
-    );
-    assert_eq!(
-        report["bridge_support_source"].as_str(),
-        Some(expected_bridge_support_source.as_str())
+        normalized_actual_bridge_support_delta,
+        expected_delta_source
     );
 }
 
