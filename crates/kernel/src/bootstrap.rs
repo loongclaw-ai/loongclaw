@@ -2,7 +2,10 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::plugin_ir::{PluginActivationPlan, PluginActivationStatus, PluginBridgeKind};
+use crate::{
+    PluginCompatibilityMode, PluginCompatibilityShim,
+    plugin_ir::{PluginActivationPlan, PluginActivationStatus, PluginBridgeKind},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BootstrapPolicy {
@@ -46,6 +49,8 @@ pub enum BootstrapTaskStatus {
 pub struct BootstrapTask {
     pub plugin_id: String,
     pub source_path: String,
+    pub compatibility_mode: PluginCompatibilityMode,
+    pub compatibility_shim: Option<PluginCompatibilityShim>,
     pub bridge_kind: PluginBridgeKind,
     pub adapter_family: String,
     pub bootstrap_hint: String,
@@ -91,6 +96,8 @@ impl PluginBootstrapExecutor {
                 report.tasks.push(BootstrapTask {
                     plugin_id: candidate.plugin_id.clone(),
                     source_path: candidate.source_path.clone(),
+                    compatibility_mode: candidate.compatibility_mode,
+                    compatibility_shim: candidate.compatibility_shim.clone(),
                     bridge_kind: candidate.bridge_kind,
                     adapter_family: candidate.adapter_family.clone(),
                     bootstrap_hint: candidate.bootstrap_hint.clone(),
@@ -105,6 +112,8 @@ impl PluginBootstrapExecutor {
                 report.tasks.push(BootstrapTask {
                     plugin_id: candidate.plugin_id.clone(),
                     source_path: candidate.source_path.clone(),
+                    compatibility_mode: candidate.compatibility_mode,
+                    compatibility_shim: candidate.compatibility_shim.clone(),
                     bridge_kind: candidate.bridge_kind,
                     adapter_family: candidate.adapter_family.clone(),
                     bootstrap_hint: candidate.bootstrap_hint.clone(),
@@ -123,6 +132,8 @@ impl PluginBootstrapExecutor {
                 report.tasks.push(BootstrapTask {
                     plugin_id: candidate.plugin_id.clone(),
                     source_path: candidate.source_path.clone(),
+                    compatibility_mode: candidate.compatibility_mode,
+                    compatibility_shim: candidate.compatibility_shim.clone(),
                     bridge_kind: candidate.bridge_kind,
                     adapter_family: candidate.adapter_family.clone(),
                     bootstrap_hint: candidate.bootstrap_hint.clone(),
@@ -134,6 +145,8 @@ impl PluginBootstrapExecutor {
                 report.tasks.push(BootstrapTask {
                     plugin_id: candidate.plugin_id.clone(),
                     source_path: candidate.source_path.clone(),
+                    compatibility_mode: candidate.compatibility_mode,
+                    compatibility_shim: candidate.compatibility_shim.clone(),
                     bridge_kind: candidate.bridge_kind,
                     adapter_family: candidate.adapter_family.clone(),
                     bootstrap_hint: candidate.bootstrap_hint.clone(),
@@ -190,8 +203,14 @@ mod tests {
                     source_kind: PluginSourceKind::EmbeddedSource,
                     package_root: "/tmp".to_owned(),
                     package_manifest_path: None,
+                    compatibility_mode: PluginCompatibilityMode::Native,
+                    compatibility_shim: None,
+                    compatibility_shim_support: None,
+                    compatibility_shim_support_mismatch_reasons: Vec::new(),
                     bridge_kind: PluginBridgeKind::HttpJson,
                     adapter_family: "http-adapter".to_owned(),
+                    slot_claims: Vec::new(),
+                    diagnostic_findings: Vec::new(),
                     status: PluginActivationStatus::Ready,
                     reason: "ready".to_owned(),
                     missing_required_env_vars: Vec::new(),
@@ -204,8 +223,14 @@ mod tests {
                     source_kind: PluginSourceKind::EmbeddedSource,
                     package_root: "/tmp".to_owned(),
                     package_manifest_path: None,
+                    compatibility_mode: PluginCompatibilityMode::Native,
+                    compatibility_shim: None,
+                    compatibility_shim_support: None,
+                    compatibility_shim_support_mismatch_reasons: Vec::new(),
                     bridge_kind: PluginBridgeKind::NativeFfi,
                     adapter_family: "rust-ffi-adapter".to_owned(),
+                    slot_claims: Vec::new(),
+                    diagnostic_findings: Vec::new(),
                     status: PluginActivationStatus::Ready,
                     reason: "ready".to_owned(),
                     missing_required_env_vars: Vec::new(),
@@ -264,6 +289,57 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_tasks_preserve_compatibility_shim_context() {
+        let executor = PluginBootstrapExecutor::new();
+        let plan = PluginActivationPlan {
+            total_plugins: 1,
+            ready_plugins: 1,
+            blocked_plugins: 0,
+            candidates: vec![PluginActivationCandidate {
+                plugin_id: "openclaw-weather".to_owned(),
+                source_path: "/tmp/openclaw-weather/index.js".to_owned(),
+                source_kind: PluginSourceKind::EmbeddedSource,
+                package_root: "/tmp/openclaw-weather".to_owned(),
+                package_manifest_path: None,
+                compatibility_mode: PluginCompatibilityMode::OpenClawModern,
+                compatibility_shim: Some(PluginCompatibilityShim {
+                    shim_id: "openclaw-modern-compat".to_owned(),
+                    family: "openclaw-modern-compat".to_owned(),
+                }),
+                compatibility_shim_support: None,
+                compatibility_shim_support_mismatch_reasons: Vec::new(),
+                bridge_kind: PluginBridgeKind::ProcessStdio,
+                adapter_family: "javascript-stdio-adapter".to_owned(),
+                slot_claims: Vec::new(),
+                diagnostic_findings: Vec::new(),
+                status: PluginActivationStatus::Ready,
+                reason: "ready".to_owned(),
+                bootstrap_hint:
+                    "enable compatibility shim `openclaw-modern-compat` (openclaw-modern-compat) and then spawn javascript worker".to_owned(),
+            }],
+        };
+        let policy = BootstrapPolicy {
+            allow_process_stdio_auto_apply: true,
+            ..BootstrapPolicy::default()
+        };
+
+        let report = executor.execute(&plan, &policy);
+
+        assert_eq!(report.tasks.len(), 1);
+        assert_eq!(
+            report.tasks[0].compatibility_mode,
+            PluginCompatibilityMode::OpenClawModern
+        );
+        assert_eq!(
+            report.tasks[0]
+                .compatibility_shim
+                .as_ref()
+                .map(|shim| shim.shim_id.as_str()),
+            Some("openclaw-modern-compat")
+        );
+    }
+
+    #[test]
     fn acp_bridge_and_runtime_auto_apply_are_gated_independently() {
         let executor = PluginBootstrapExecutor::new();
         let plan = PluginActivationPlan {
@@ -278,8 +354,14 @@ mod tests {
                     source_kind: PluginSourceKind::EmbeddedSource,
                     package_root: "/tmp".to_owned(),
                     package_manifest_path: None,
+                    compatibility_mode: PluginCompatibilityMode::Native,
+                    compatibility_shim: None,
+                    compatibility_shim_support: None,
+                    compatibility_shim_support_mismatch_reasons: Vec::new(),
                     bridge_kind: PluginBridgeKind::AcpBridge,
                     adapter_family: "acp-bridge-adapter".to_owned(),
+                    slot_claims: Vec::new(),
+                    diagnostic_findings: Vec::new(),
                     status: PluginActivationStatus::Ready,
                     reason: "ready".to_owned(),
                     missing_required_env_vars: Vec::new(),
@@ -292,8 +374,14 @@ mod tests {
                     source_kind: PluginSourceKind::EmbeddedSource,
                     package_root: "/tmp".to_owned(),
                     package_manifest_path: None,
+                    compatibility_mode: PluginCompatibilityMode::Native,
+                    compatibility_shim: None,
+                    compatibility_shim_support: None,
+                    compatibility_shim_support_mismatch_reasons: Vec::new(),
                     bridge_kind: PluginBridgeKind::AcpRuntime,
                     adapter_family: "acp-runtime-adapter".to_owned(),
+                    slot_claims: Vec::new(),
+                    diagnostic_findings: Vec::new(),
                     status: PluginActivationStatus::Ready,
                     reason: "ready".to_owned(),
                     missing_required_env_vars: Vec::new(),

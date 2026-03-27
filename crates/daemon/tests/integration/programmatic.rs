@@ -1,4 +1,5 @@
 use super::*;
+use loongclaw_daemon::kernel::PluginCompatibilityMode;
 
 #[tokio::test]
 async fn execute_spec_programmatic_tool_call_supports_templates_and_steps() {
@@ -226,6 +227,9 @@ async fn execute_spec_programmatic_tool_call_blocks_when_caller_not_allowlisted(
             enabled: true,
             supported_bridges: vec![PluginBridgeKind::HttpJson],
             supported_adapter_families: Vec::new(),
+            supported_compatibility_modes: vec![PluginCompatibilityMode::Native],
+            supported_compatibility_shims: Vec::new(),
+            supported_compatibility_shim_profiles: Vec::new(),
             enforce_supported: true,
             policy_version: None,
             expected_checksum: None,

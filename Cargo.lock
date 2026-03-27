@@ -2217,6 +2217,7 @@ dependencies = [
  "loongclaw-kernel",
  "loongclaw-protocol",
  "reqwest",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

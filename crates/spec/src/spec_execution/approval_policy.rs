@@ -175,6 +175,10 @@ fn operation_approval_key(operation: &OperationSpec) -> String {
             format!("memory_extension:{extension}:{operation}")
         }
         OperationSpec::ToolSearch { query, .. } => format!("tool_search:{query}"),
+        OperationSpec::PluginInventory { query, .. } => format!("plugin_inventory:{query}"),
+        OperationSpec::PluginPreflight { query, profile, .. } => {
+            format!("plugin_preflight:{}:{query}", profile.as_str())
+        }
         OperationSpec::ProgrammaticToolCall { caller, .. } => {
             format!("programmatic_tool_call:{caller}")
         }
@@ -194,6 +198,8 @@ fn operation_approval_kind(operation: &OperationSpec) -> &'static str {
         OperationSpec::MemoryCore { .. } => "memory_core",
         OperationSpec::MemoryExtension { .. } => "memory_extension",
         OperationSpec::ToolSearch { .. } => "tool_search",
+        OperationSpec::PluginInventory { .. } => "plugin_inventory",
+        OperationSpec::PluginPreflight { .. } => "plugin_preflight",
         OperationSpec::ProgrammaticToolCall { .. } => "programmatic_tool_call",
     }
 }
@@ -370,6 +376,43 @@ fn operation_payload_keys(operation: &OperationSpec) -> Vec<String> {
                 ["query", "limit", "include_deferred", "include_examples"]
                     .iter()
                     .map(|value| (*value).to_owned()),
+            );
+            keys
+        }
+        OperationSpec::PluginInventory { .. } => {
+            let mut keys = Vec::new();
+            keys.extend(
+                [
+                    "query",
+                    "limit",
+                    "include_ready",
+                    "include_blocked",
+                    "include_deferred",
+                    "include_examples",
+                ]
+                .iter()
+                .map(|value| (*value).to_owned()),
+            );
+            keys
+        }
+        OperationSpec::PluginPreflight { .. } => {
+            let mut keys = Vec::new();
+            keys.extend(
+                [
+                    "query",
+                    "limit",
+                    "profile",
+                    "policy_path",
+                    "policy_sha256",
+                    "policy_signature",
+                    "include_passed",
+                    "include_warned",
+                    "include_blocked",
+                    "include_deferred",
+                    "include_examples",
+                ]
+                .iter()
+                .map(|value| (*value).to_owned()),
             );
             keys
         }
@@ -605,6 +648,53 @@ fn operation_payload_strings(operation: &OperationSpec) -> Vec<String> {
             vec![
                 query.clone(),
                 limit.to_string(),
+                include_deferred.to_string(),
+                include_examples.to_string(),
+            ]
+        }
+        OperationSpec::PluginInventory {
+            query,
+            limit,
+            include_ready,
+            include_blocked,
+            include_deferred,
+            include_examples,
+        } => {
+            vec![
+                query.clone(),
+                limit.to_string(),
+                include_ready.to_string(),
+                include_blocked.to_string(),
+                include_deferred.to_string(),
+                include_examples.to_string(),
+            ]
+        }
+        OperationSpec::PluginPreflight {
+            query,
+            limit,
+            profile,
+            policy_path,
+            policy_sha256,
+            policy_signature,
+            include_passed,
+            include_warned,
+            include_blocked,
+            include_deferred,
+            include_examples,
+        } => {
+            vec![
+                query.clone(),
+                limit.to_string(),
+                profile.as_str().to_owned(),
+                policy_path.clone().unwrap_or_default(),
+                policy_sha256.clone().unwrap_or_default(),
+                policy_signature
+                    .as_ref()
+                    .map(|signature| signature.algorithm.clone())
+                    .unwrap_or_default(),
+                include_passed.to_string(),
+                include_warned.to_string(),
+                include_blocked.to_string(),
                 include_deferred.to_string(),
                 include_examples.to_string(),
             ]

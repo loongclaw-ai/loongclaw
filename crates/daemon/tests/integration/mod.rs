@@ -92,6 +92,7 @@ mod migrate_cli;
 mod migration;
 mod multi_channel_serve_cli;
 mod onboard_cli;
+mod plugins_cli;
 mod programmatic;
 mod runtime_capability_cli;
 mod runtime_experiment_cli;

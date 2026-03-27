@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant as StdInstant, SystemTime, UNIX_EPOCH},
 };
 
-use kernel::{ChannelConfig, ConnectorCommand, ProviderConfig};
+use kernel::{BridgeSupportMatrix, ChannelConfig, ConnectorCommand, ProviderConfig};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -3218,6 +3218,7 @@ fn run_wasm_bridge_sample(wasm_artifact: &Path) -> CliResult<WasmBridgeSample> {
         execute_process_stdio: false,
         execute_http_json: false,
         execute_wasm_component: true,
+        compatibility_matrix: BridgeSupportMatrix::default(),
         allowed_process_commands: BTreeSet::new(),
         wasm_allowed_path_prefixes: vec![artifact_parent.to_path_buf()],
         wasm_max_component_bytes: Some(8 * 1024 * 1024),
