@@ -5578,7 +5578,7 @@ fn build_teams_snapshot_for_account(
         api_base_url: validated_webhook_url
             .as_ref()
             .and(webhook_url.as_deref())
-            .and_then(super::http::redact_endpoint_status_url),
+            .and_then(super::http::redact_generic_webhook_status_url),
         notes,
         operations: vec![send_operation, serve_operation],
     }
@@ -8754,7 +8754,7 @@ mod tests {
     }
 
     #[test]
-    fn channel_status_snapshots_redact_endpoint_query_secrets_for_webhook_channels() {
+    fn channel_status_snapshots_redact_webhook_channel_status_urls() {
         let config: LoongClawConfig = serde_json::from_value(serde_json::json!({
             "dingtalk": {
                 "enabled": true,
@@ -8803,7 +8803,7 @@ mod tests {
         );
         assert_eq!(
             teams.api_base_url.as_deref(),
-            Some("https://outlook.office.com/webhook/abc123/IncomingWebhook/demo")
+            Some("https://outlook.office.com/")
         );
         assert_eq!(
             synology_chat.api_base_url.as_deref(),
