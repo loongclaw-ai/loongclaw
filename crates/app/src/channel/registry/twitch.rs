@@ -1,4 +1,5 @@
 use super::*;
+use crate::channel::http;
 
 const TWITCH_ENABLED_REQUIREMENT: ChannelCatalogOperationRequirement =
     ChannelCatalogOperationRequirement {
@@ -92,6 +93,7 @@ pub(super) fn build_twitch_snapshots(
     _now_ms: u64,
 ) -> Vec<ChannelStatusSnapshot> {
     let compiled = cfg!(feature = "channel-twitch");
+    let http_policy = http::outbound_http_policy_from_config(config);
     let default_selection = config.twitch.default_configured_account_selection();
     let default_configured_account_id = default_selection.id.clone();
     let default_account_source = default_selection.source;
@@ -113,6 +115,7 @@ pub(super) fn build_twitch_snapshots(
                     resolved,
                     is_default_account,
                     default_account_source,
+                    http_policy,
                 ),
                 Err(error) => build_invalid_twitch_snapshot(
                     descriptor,
@@ -133,21 +136,28 @@ fn build_twitch_snapshot_for_account(
     resolved: ResolvedTwitchChannelConfig,
     is_default_account: bool,
     default_account_source: ChannelDefaultAccountSelectionSource,
+    http_policy: http::ChannelOutboundHttpPolicy,
 ) -> ChannelStatusSnapshot {
     let mut send_issues = Vec::new();
     if resolved.access_token().is_none() {
         send_issues.push("access_token is missing".to_owned());
     }
 
-    let api_base_url = resolved.resolved_api_base_url();
-    validate_http_url("api_base_url", api_base_url.as_str(), &mut send_issues);
-    let status_api_base_url = redact_endpoint_status_url(Some(api_base_url.clone()))
-        .unwrap_or_else(|| api_base_url.clone());
+    let resolved_api_base_url = resolved.resolved_api_base_url();
+    let api_base_url = validate_twitch_base_url(
+        "api_base_url",
+        resolved_api_base_url.as_str(),
+        http_policy,
+        &mut send_issues,
+    );
 
-    let oauth_base_url = resolved.resolved_oauth_base_url();
-    validate_http_url("oauth_base_url", oauth_base_url.as_str(), &mut send_issues);
-    let status_oauth_base_url = redact_endpoint_status_url(Some(oauth_base_url.clone()))
-        .unwrap_or_else(|| oauth_base_url.clone());
+    let resolved_oauth_base_url = resolved.resolved_oauth_base_url();
+    let oauth_base_url = validate_twitch_base_url(
+        "oauth_base_url",
+        resolved_oauth_base_url.as_str(),
+        http_policy,
+        &mut send_issues,
+    );
 
     let send_operation = if !compiled {
         unsupported_operation(
@@ -182,8 +192,13 @@ fn build_twitch_snapshot_for_account(
         format!("configured_account={}", resolved.configured_account_label),
         format!("account_id={}", resolved.account.id),
         format!("account={}", resolved.account.label),
-        format!("oauth_base_url={status_oauth_base_url}"),
     ];
+    let status_oauth_base_url = oauth_base_url
+        .as_ref()
+        .and_then(|_| http::redact_endpoint_status_url(resolved_oauth_base_url.as_str()));
+    if let Some(status_oauth_base_url) = status_oauth_base_url {
+        notes.push(format!("oauth_base_url={status_oauth_base_url}"));
+    }
     if !resolved.channel_names.is_empty() {
         let future_serve_channel_names = resolved.channel_names.join(",");
         notes.push(format!(
@@ -209,10 +224,31 @@ fn build_twitch_snapshot_for_account(
         transport: descriptor.transport,
         compiled,
         enabled: resolved.enabled,
-        api_base_url: Some(status_api_base_url),
+        api_base_url: api_base_url
+            .as_ref()
+            .and_then(|_| http::redact_endpoint_status_url(resolved_api_base_url.as_str())),
         notes,
         operations: vec![send_operation, serve_operation],
     }
+}
+
+fn validate_twitch_base_url(
+    field: &str,
+    value: &str,
+    policy: http::ChannelOutboundHttpPolicy,
+    issues: &mut Vec<String>,
+) -> Option<reqwest::Url> {
+    let validated_url = validate_http_url(field, value, policy, issues)?;
+    if validated_url.query().is_some() {
+        issues.push(format!("{field} must not include a query string"));
+        return None;
+    }
+    if validated_url.fragment().is_some() {
+        issues.push(format!("{field} must not include a url fragment"));
+        return None;
+    }
+
+    Some(validated_url)
 }
 
 fn build_invalid_twitch_snapshot(
@@ -318,14 +354,61 @@ mod tests {
     }
 
     #[test]
-    fn twitch_status_redacts_override_urls_in_snapshot_output() {
+    fn twitch_status_hides_query_bearing_override_urls_in_snapshot_output() {
         let mut config = LoongClawConfig::default();
         config.twitch.enabled = true;
         config.twitch.access_token = Some(loongclaw_contracts::SecretRef::Inline(
             "twitch-user-token".to_owned(),
         ));
-        config.twitch.api_base_url =
-            Some("https://user:secret@api.twitch.test/helix?token=secret".to_owned());
+        config.twitch.api_base_url = Some("https://api.twitch.test/helix?token=secret".to_owned());
+        config.twitch.oauth_base_url =
+            Some("https://id.twitch.test/oauth2?client=secret".to_owned());
+
+        let snapshots = channel_status_snapshots(&config);
+        let twitch = snapshots
+            .iter()
+            .find(|snapshot| snapshot.id == "twitch")
+            .expect("twitch snapshot");
+        let send = twitch.operation("send").expect("twitch send operation");
+
+        assert_eq!(send.health, ChannelOperationHealth::Misconfigured);
+        assert!(
+            send.issues
+                .iter()
+                .any(|issue| issue == "api_base_url must not include a query string"),
+            "send issues should reject twitch api base urls with query strings"
+        );
+        assert!(
+            send.issues
+                .iter()
+                .any(|issue| issue == "oauth_base_url must not include a query string"),
+            "send issues should reject twitch oauth base urls with query strings"
+        );
+        assert!(
+            twitch.api_base_url.is_none(),
+            "query-bearing twitch api urls should not be emitted in status output"
+        );
+        assert!(
+            twitch
+                .notes
+                .iter()
+                .all(|note| !note.starts_with("oauth_base_url=")),
+            "query-bearing twitch oauth urls should not be emitted in status notes"
+        );
+        assert!(
+            twitch.notes.iter().all(|note| !note.contains("secret")),
+            "status output should not leak query-bearing override secrets"
+        );
+    }
+
+    #[test]
+    fn twitch_status_hides_blocked_or_invalid_urls_in_snapshot_output() {
+        let mut config = LoongClawConfig::default();
+        config.twitch.enabled = true;
+        config.twitch.access_token = Some(loongclaw_contracts::SecretRef::Inline(
+            "twitch-user-token".to_owned(),
+        ));
+        config.twitch.api_base_url = Some("http://127.0.0.1:8080/helix".to_owned());
         config.twitch.oauth_base_url =
             Some("https://oauth:secret@id.twitch.test/oauth2?client=secret".to_owned());
 
@@ -334,21 +417,35 @@ mod tests {
             .iter()
             .find(|snapshot| snapshot.id == "twitch")
             .expect("twitch snapshot");
+        let send = twitch.operation("send").expect("twitch send operation");
 
-        assert_eq!(
-            twitch.api_base_url.as_deref(),
-            Some("https://api.twitch.test/helix")
+        assert_eq!(send.health, ChannelOperationHealth::Misconfigured);
+        assert!(
+            send.issues
+                .iter()
+                .any(|issue| issue.contains("private or special-use")),
+            "send issues should reject blocked private twitch api urls"
+        );
+        assert!(
+            send.issues
+                .iter()
+                .any(|issue| issue.contains("must not embed credentials")),
+            "send issues should reject credential-bearing twitch oauth urls"
+        );
+        assert!(
+            twitch.api_base_url.is_none(),
+            "blocked twitch api urls should not be emitted in status output"
         );
         assert!(
             twitch
                 .notes
                 .iter()
-                .any(|note| note == "oauth_base_url=https://id.twitch.test/oauth2"),
-            "status notes should redact override oauth urls"
+                .all(|note| !note.starts_with("oauth_base_url=")),
+            "invalid twitch oauth urls should not be emitted in status notes"
         );
         assert!(
             twitch.notes.iter().all(|note| !note.contains("secret")),
-            "status output should not leak override credentials"
+            "status output should not leak rejected twitch oauth credentials"
         );
     }
 }

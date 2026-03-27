@@ -2495,7 +2495,6 @@ pub async fn run_discord_send(
     if !cfg!(feature = "channel-discord") {
         return Err("discord channel is disabled (enable feature `channel-discord`)".to_owned());
     }
-
     #[cfg(not(feature = "channel-discord"))]
     {
         let _ = (config_path, account_id, target, target_kind, text);
@@ -2552,7 +2551,6 @@ pub async fn run_signal_send(
     if !cfg!(feature = "channel-signal") {
         return Err("signal channel is disabled (enable feature `channel-signal`)".to_owned());
     }
-
     #[cfg(not(feature = "channel-signal"))]
     {
         let _ = (config_path, account_id, target, target_kind, text);
@@ -2664,7 +2662,6 @@ pub async fn run_slack_send(
     if !cfg!(feature = "channel-slack") {
         return Err("slack channel is disabled (enable feature `channel-slack`)".to_owned());
     }
-
     #[cfg(not(feature = "channel-slack"))]
     {
         let _ = (config_path, account_id, target, target_kind, text);
@@ -2721,7 +2718,6 @@ pub async fn run_line_send(
     if !cfg!(feature = "channel-line") {
         return Err("line channel is disabled (enable feature `channel-line`)".to_owned());
     }
-
     #[cfg(not(feature = "channel-line"))]
     {
         let _ = (config_path, account_id, target, target_kind, text);
@@ -2776,7 +2772,6 @@ pub async fn run_dingtalk_send(
     if !cfg!(feature = "channel-dingtalk") {
         return Err("dingtalk channel is disabled (enable feature `channel-dingtalk`)".to_owned());
     }
-
     #[cfg(not(feature = "channel-dingtalk"))]
     {
         let _ = (config_path, account_id, target, target_kind, text);
