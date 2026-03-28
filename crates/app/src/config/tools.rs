@@ -237,6 +237,12 @@ pub struct BrowserCompanionToolConfig {
     pub expected_version: Option<String>,
     #[serde(default = "default_browser_companion_timeout_seconds")]
     pub timeout_seconds: u64,
+    #[serde(default)]
+    pub allow_private_hosts: bool,
+    #[serde(default)]
+    pub allowed_domains: Vec<String>,
+    #[serde(default)]
+    pub blocked_domains: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -478,6 +484,9 @@ impl Default for BrowserCompanionToolConfig {
             command: None,
             expected_version: None,
             timeout_seconds: default_browser_companion_timeout_seconds(),
+            allow_private_hosts: false,
+            allowed_domains: Vec::new(),
+            blocked_domains: Vec::new(),
         }
     }
 }
@@ -850,6 +859,16 @@ pub(crate) fn web_search_provider_parameter_description() -> String {
     )
 }
 
+impl BrowserCompanionToolConfig {
+    pub fn normalized_allowed_domains(&self) -> Vec<String> {
+        normalize_domain_entries(&self.allowed_domains)
+    }
+
+    pub fn normalized_blocked_domains(&self) -> Vec<String> {
+        normalize_domain_entries(&self.blocked_domains)
+    }
+}
+
 impl ExternalSkillsConfig {
     pub fn normalized_allowed_domains(&self) -> Vec<String> {
         normalize_domain_entries(&self.allowed_domains)
@@ -889,6 +908,7 @@ impl DelegateChildRuntimeConfig {
         crate::tools::runtime_config::ToolRuntimeNarrowing {
             web_fetch: crate::tools::runtime_config::WebFetchRuntimeNarrowing {
                 allow_private_hosts: self.web.allow_private_hosts,
+                enforce_allowed_domains: !self.web.normalized_allowed_domains().is_empty(),
                 allowed_domains: self.web.normalized_allowed_domains().into_iter().collect(),
                 blocked_domains: self.web.normalized_blocked_domains().into_iter().collect(),
                 timeout_seconds: self.web.timeout_seconds,
@@ -1510,6 +1530,9 @@ enabled = true
 command = "loongclaw-browser-companion"
 expected_version = "1.2.3"
 timeout_seconds = 7
+allow_private_hosts = true
+allowed_domains = ["Docs.Example.com", "docs.example.com", " api.example.com "]
+blocked_domains = ["internal.example", " INTERNAL.EXAMPLE "]
 "#;
         let parsed =
             toml::from_str::<crate::config::LoongClawConfig>(raw).expect("parse tool config");
@@ -1524,6 +1547,28 @@ timeout_seconds = 7
             Some("1.2.3")
         );
         assert_eq!(parsed.tools.browser_companion.timeout_seconds, 7);
+        assert!(parsed.tools.browser_companion.allow_private_hosts);
+        assert_eq!(
+            parsed.tools.browser_companion.normalized_allowed_domains(),
+            vec!["api.example.com".to_owned(), "docs.example.com".to_owned()]
+        );
+        assert_eq!(
+            parsed.tools.browser_companion.normalized_blocked_domains(),
+            vec!["internal.example".to_owned()]
+        );
+    }
+
+    #[test]
+    fn browser_companion_defaults_to_safe_public_mode() {
+        let config = BrowserCompanionToolConfig::default();
+        assert!(!config.enabled);
+        assert!(!config.allow_private_hosts);
+        assert!(config.allowed_domains.is_empty());
+        assert!(config.blocked_domains.is_empty());
+        assert_eq!(
+            config.timeout_seconds,
+            default_browser_companion_timeout_seconds()
+        );
     }
 
     /// When `shell_deny` is absent, it must default to empty — users start

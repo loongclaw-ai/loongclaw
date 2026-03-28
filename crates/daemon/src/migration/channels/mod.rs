@@ -10,6 +10,7 @@ use super::types::{
 mod feishu;
 mod matrix;
 mod telegram;
+mod wecom;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelPreview {
@@ -60,7 +61,7 @@ struct ChannelAdapter {
     apply_default_env_bindings: fn(&mut mvp::config::LoongClawConfig) -> Vec<String>,
 }
 
-const REGISTRY: [ChannelAdapter; 3] = [
+const REGISTRY: [ChannelAdapter; 4] = [
     ChannelAdapter {
         id: telegram::ID,
         collect_preview: telegram::collect_preview,
@@ -90,6 +91,16 @@ const REGISTRY: [ChannelAdapter; 3] = [
         collect_preflight_checks: matrix::collect_preflight_checks,
         collect_doctor_checks: matrix::collect_doctor_checks,
         apply_default_env_bindings: matrix::apply_default_env_bindings,
+    },
+    ChannelAdapter {
+        id: wecom::ID,
+        collect_preview: wecom::collect_preview,
+        apply: wecom::apply,
+        readiness_state: wecom::readiness_state,
+        apply_import_readiness: wecom::apply_import_readiness,
+        collect_preflight_checks: wecom::collect_preflight_checks,
+        collect_doctor_checks: wecom::collect_doctor_checks,
+        apply_default_env_bindings: wecom::apply_default_env_bindings,
     },
 ];
 

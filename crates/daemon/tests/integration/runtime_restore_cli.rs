@@ -698,7 +698,8 @@ fn runtime_restore_apply_replays_snapshot_state_and_verifies_post_apply_match() 
         config_path.to_str().expect("config path should be utf-8"),
     ))
     .expect("collect restored snapshot");
-    let payload = build_runtime_snapshot_cli_json_payload(&snapshot);
+    let payload =
+        build_runtime_snapshot_cli_json_payload(&snapshot).expect("build runtime snapshot payload");
     assert_eq!(payload["provider"]["active_profile_id"], "deepseek-lab");
     assert!(
         payload["external_skills"]["policy"]["enabled"]

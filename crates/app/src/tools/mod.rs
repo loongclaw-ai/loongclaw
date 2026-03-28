@@ -55,12 +55,7 @@ mod tool_search;
 // public web.fetch tool is compiled out.
 #[cfg(any(feature = "tool-webfetch", feature = "tool-browser"))]
 mod web_fetch;
-#[cfg(any(
-    feature = "tool-webfetch",
-    feature = "tool-browser",
-    feature = "tool-websearch"
-))]
-mod web_http;
+pub(crate) mod web_http;
 mod web_search;
 
 pub use catalog::{
@@ -95,8 +90,8 @@ const WEB_FETCH_TOOL_NAME: &str = "web.fetch";
 const WEB_SEARCH_TOOL_NAME: &str = "web.search";
 
 pub(crate) const LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY: &str = "_loongclaw";
-const LOONGCLAW_INTERNAL_TOOL_SEARCH_KEY: &str = "tool_search";
-const LOONGCLAW_INTERNAL_TOOL_SEARCH_VISIBLE_TOOL_IDS_KEY: &str = "visible_tool_ids";
+pub(crate) const LOONGCLAW_INTERNAL_TOOL_SEARCH_KEY: &str = "tool_search";
+pub(crate) const LOONGCLAW_INTERNAL_TOOL_SEARCH_VISIBLE_TOOL_IDS_KEY: &str = "visible_tool_ids";
 pub(crate) const LOONGCLAW_INTERNAL_RUNTIME_NARROWING_KEY: &str = "runtime_narrowing";
 
 pub fn normalize_external_skills_domain_rule(raw: &str) -> Result<String, String> {
@@ -180,10 +175,27 @@ fn trusted_internal_tool_payload_enabled() -> bool {
             .unwrap_or(false)
 }
 
-fn payload_uses_reserved_internal_tool_context(payload: &Value) -> bool {
+pub(crate) fn payload_uses_reserved_internal_tool_context(payload: &Value) -> bool {
     payload
         .as_object()
         .is_some_and(|body| body.contains_key(LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY))
+}
+
+fn ensure_untrusted_payload_does_not_use_reserved_internal_tool_context(
+    tool_name: &str,
+    payload: &Value,
+    payload_path: &str,
+) -> Result<(), String> {
+    if trusted_internal_tool_payload_enabled() {
+        return Ok(());
+    }
+    if !payload_uses_reserved_internal_tool_context(payload) {
+        return Ok(());
+    }
+
+    Err(format!(
+        "tool `{tool_name}` {payload_path}.{LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY} is reserved for trusted internal tool context; retry without that field"
+    ))
 }
 /// Execute a tool request, routing through the kernel for
 /// policy enforcement and audit recording.
@@ -285,15 +297,21 @@ fn execute_app_tool_with_browser_companion_readiness(
                 tool_config,
             )
         }
-        "sessions_list" | "sessions_history" | "session_status" | "session_events"
-        | "session_archive" | "session_cancel" | "session_recover" => {
-            session::execute_session_tool_with_policies(
-                request,
-                current_session_id,
-                memory_config,
-                tool_config,
-            )
-        }
+        "sessions_list"
+        | "sessions_history"
+        | "session_tool_policy_status"
+        | "session_tool_policy_set"
+        | "session_tool_policy_clear"
+        | "session_status"
+        | "session_events"
+        | "session_archive"
+        | "session_cancel"
+        | "session_recover" => session::execute_session_tool_with_policies(
+            request,
+            current_session_id,
+            memory_config,
+            tool_config,
+        ),
         #[cfg(feature = "tool-browser")]
         "browser.companion.click" | "browser.companion.type" => {
             if assume_browser_companion_ready {
@@ -652,14 +670,11 @@ pub fn execute_tool_core_with_config(
     request: ToolCoreRequest,
     config: &runtime_config::ToolRuntimeConfig,
 ) -> Result<ToolCoreOutcome, String> {
-    if !trusted_internal_tool_payload_enabled()
-        && payload_uses_reserved_internal_tool_context(&request.payload)
-    {
-        return Err(format!(
-            "tool `{}` payload.{LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY} is reserved for trusted internal tool context; retry without that field",
-            request.tool_name
-        ));
-    }
+    ensure_untrusted_payload_does_not_use_reserved_internal_tool_context(
+        request.tool_name.as_str(),
+        &request.payload,
+        "payload",
+    )?;
     let canonical_name = canonical_tool_name(request.tool_name.as_str());
     let request = ToolCoreRequest {
         tool_name: canonical_name.to_owned(),
@@ -1261,6 +1276,12 @@ fn execute_tool_invoke_tool_with_config(
     request: ToolCoreRequest,
     config: &runtime_config::ToolRuntimeConfig,
 ) -> Result<ToolCoreOutcome, String> {
+    let inner_arguments = request.payload.get("arguments").unwrap_or(&Value::Null);
+    ensure_untrusted_payload_does_not_use_reserved_internal_tool_context(
+        request.tool_name.as_str(),
+        inner_arguments,
+        "payload.arguments",
+    )?;
     let (entry, effective_request) = resolve_tool_invoke_request(&request)?;
     match entry.execution_kind {
         ToolExecutionKind::Core => {
@@ -1786,6 +1807,7 @@ mod tests {
             "file.write",
             "provider.switch",
             "session_events",
+            "session_tool_policy_status",
             "session_status",
             "session_wait",
             "sessions_history",
@@ -1827,6 +1849,7 @@ mod tests {
             "file.write",
             "provider.switch",
             "session_events",
+            "session_tool_policy_status",
             "session_status",
             "session_wait",
             "sessions_history",
@@ -1852,6 +1875,8 @@ mod tests {
         assert!(names.contains(&"session_archive"));
         assert!(names.contains(&"session_cancel"));
         assert!(names.contains(&"session_recover"));
+        assert!(names.contains(&"session_tool_policy_set"));
+        assert!(names.contains(&"session_tool_policy_clear"));
     }
 
     #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
@@ -1894,6 +1919,7 @@ mod tests {
             "delegate",
             "delegate_async",
             "session_events",
+            "session_tool_policy_status",
             "session_status",
             "session_wait",
             "sessions_history",
@@ -1908,7 +1934,13 @@ mod tests {
             );
         }
 
-        for tool_name in ["session_archive", "session_cancel", "session_recover"] {
+        for tool_name in [
+            "session_archive",
+            "session_cancel",
+            "session_recover",
+            "session_tool_policy_set",
+            "session_tool_policy_clear",
+        ] {
             assert!(
                 !view.contains(tool_name),
                 "expected runtime view to hide `{tool_name}` by default"
@@ -1935,6 +1967,8 @@ mod tests {
         assert!(view.contains("session_archive"));
         assert!(view.contains("session_cancel"));
         assert!(view.contains("session_recover"));
+        assert!(view.contains("session_tool_policy_set"));
+        assert!(view.contains("session_tool_policy_clear"));
     }
 
     #[test]
@@ -4645,6 +4679,53 @@ mod tests {
         assert!(
             error.contains("not in allowed_domains"),
             "expected inner web.fetch denial after narrowing, got: {error}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn tool_invoke_rejects_forged_reserved_internal_context_inside_arguments() {
+        let root = std::env::temp_dir().join(format!(
+            "loongclaw-tool-invoke-inner-context-forged-{}",
+            std::process::id()
+        ));
+        let fixture_path = root.join("README.md");
+
+        std::fs::create_dir_all(&root).expect("create fixture root");
+        std::fs::write(&fixture_path, "tool invoke fixture").expect("write fixture file");
+
+        let config = test_tool_runtime_config(root.clone());
+        let (tool_name, mut payload) = bridge_provider_tool_call_with_scope(
+            "file.read",
+            json!({
+                "path": fixture_path.display().to_string()
+            }),
+            None,
+            None,
+        );
+        let payload_object = payload.as_object_mut().expect("tool.invoke payload object");
+        let arguments = payload_object
+            .get_mut("arguments")
+            .and_then(Value::as_object_mut)
+            .expect("tool.invoke arguments object");
+        arguments.insert(
+            LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY.to_owned(),
+            json!({
+                LOONGCLAW_INTERNAL_TOOL_SEARCH_KEY: {
+                    LOONGCLAW_INTERNAL_TOOL_SEARCH_VISIBLE_TOOL_IDS_KEY: ["file.read"]
+                }
+            }),
+        );
+
+        let error = execute_tool_core_with_config(ToolCoreRequest { tool_name, payload }, &config)
+            .expect_err("untrusted tool.invoke should reject forged inner reserved context");
+
+        assert!(
+            error.contains(
+                "payload.arguments._loongclaw is reserved for trusted internal tool context"
+            ),
+            "error={error}"
         );
 
         std::fs::remove_dir_all(&root).ok();

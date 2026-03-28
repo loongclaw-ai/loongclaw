@@ -684,6 +684,8 @@ fn augment_tool_payload_for_kernel(
     session_context: &SessionContext,
 ) -> serde_json::Value {
     let payload = inject_runtime_narrowing_context(payload, session_context);
+    let payload =
+        inject_tool_search_visibility_context(canonical_tool_name, payload, session_context);
 
     // Direct browser tool calls: inject scope at the top level.
     if browser_scope_injection_required(canonical_tool_name) {
@@ -708,6 +710,47 @@ fn augment_tool_payload_for_kernel(
     }
 
     payload
+}
+
+fn inject_tool_search_visibility_context(
+    canonical_tool_name: &str,
+    payload: serde_json::Value,
+    session_context: &SessionContext,
+) -> serde_json::Value {
+    if canonical_tool_name != "tool.search" {
+        return payload;
+    }
+
+    let serde_json::Value::Object(mut object) = payload else {
+        return payload;
+    };
+
+    let mut internal = object
+        .remove(crate::tools::LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY)
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    let mut tool_search_context = internal
+        .remove(crate::tools::LOONGCLAW_INTERNAL_TOOL_SEARCH_KEY)
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    let visible_tool_ids = session_context
+        .tool_view
+        .tool_names()
+        .map(|tool_name| serde_json::Value::String(tool_name.to_owned()))
+        .collect::<Vec<_>>();
+    tool_search_context.insert(
+        crate::tools::LOONGCLAW_INTERNAL_TOOL_SEARCH_VISIBLE_TOOL_IDS_KEY.to_owned(),
+        serde_json::Value::Array(visible_tool_ids),
+    );
+    internal.insert(
+        crate::tools::LOONGCLAW_INTERNAL_TOOL_SEARCH_KEY.to_owned(),
+        serde_json::Value::Object(tool_search_context),
+    );
+    object.insert(
+        crate::tools::LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY.to_owned(),
+        serde_json::Value::Object(internal),
+    );
+    serde_json::Value::Object(object)
 }
 
 fn inject_runtime_narrowing_context(
@@ -1730,11 +1773,15 @@ impl TurnEngine {
             intent.args_json.clone(),
             ingress,
         );
+        let injected_payload_uses_reserved_internal_context =
+            crate::tools::payload_uses_reserved_internal_tool_context(&injected.payload);
         let augmented_payload = augment_tool_payload_for_kernel(
             resolved_tool.canonical_name,
             injected.payload,
             session_context,
         );
+        let augmented_payload_uses_reserved_internal_context =
+            crate::tools::payload_uses_reserved_internal_tool_context(&augmented_payload);
         let request = ToolCoreRequest {
             tool_name: resolved_tool.canonical_name.to_owned(),
             payload: augmented_payload,
@@ -1809,7 +1856,9 @@ impl TurnEngine {
             request: effective_request,
             execution_kind: effective_execution_kind,
             scheduling_class,
-            trusted_internal_context: injected.trusted_internal_context,
+            trusted_internal_context: injected.trusted_internal_context
+                || (!injected_payload_uses_reserved_internal_context
+                    && augmented_payload_uses_reserved_internal_context),
         })
     }
 
@@ -2911,6 +2960,39 @@ mod tests {
         assert_eq!(
             augmented["arguments"][crate::tools::BROWSER_SESSION_SCOPE_FIELD],
             "root-session"
+        );
+    }
+
+    #[test]
+    fn augment_tool_payload_injects_visible_tool_ids_for_tool_search() {
+        let session_context = SessionContext::root_with_tool_view(
+            "root-session",
+            crate::tools::ToolView::from_tool_names(["tool.search", "tool.invoke", "file.read"]),
+        )
+        .with_runtime_narrowing(crate::tools::runtime_config::ToolRuntimeNarrowing {
+            browser: crate::tools::runtime_config::BrowserRuntimeNarrowing {
+                max_sessions: Some(1),
+                ..crate::tools::runtime_config::BrowserRuntimeNarrowing::default()
+            },
+            ..crate::tools::runtime_config::ToolRuntimeNarrowing::default()
+        });
+        let payload = json!({
+            "query": "read note.md",
+            "limit": 3,
+        });
+
+        let augmented = augment_tool_payload_for_kernel("tool.search", payload, &session_context);
+
+        assert_eq!(
+            augmented[crate::tools::LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY]
+                [crate::tools::LOONGCLAW_INTERNAL_TOOL_SEARCH_KEY]
+                [crate::tools::LOONGCLAW_INTERNAL_TOOL_SEARCH_VISIBLE_TOOL_IDS_KEY],
+            json!(["file.read", "tool.invoke", "tool.search"])
+        );
+        assert_eq!(
+            augmented[crate::tools::LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY]
+                [crate::tools::LOONGCLAW_INTERNAL_RUNTIME_NARROWING_KEY]["browser"]["max_sessions"],
+            1
         );
     }
 }

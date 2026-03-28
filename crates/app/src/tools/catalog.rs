@@ -671,6 +671,45 @@ fn build_tool_catalog() -> ToolCatalog {
             provider_definition_builder: session_events_definition,
         },
         ToolDescriptor {
+            name: "session_tool_policy_status",
+            provider_name: "session_tool_policy_status",
+            aliases: &[],
+            description: "Inspect the session-scoped tool policy for a visible session",
+            execution_kind: ToolExecutionKind::App,
+            availability: runtime_session_tool_availability(),
+            exposure: ToolExposureClass::Discoverable,
+            visibility_gate: ToolVisibilityGate::Sessions,
+            capability_action_class: CapabilityActionClass::ExecuteExisting,
+            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
+            provider_definition_builder: session_tool_policy_status_definition,
+        },
+        ToolDescriptor {
+            name: "session_tool_policy_set",
+            provider_name: "session_tool_policy_set",
+            aliases: &[],
+            description: "Update the session-scoped tool policy for a visible session",
+            execution_kind: ToolExecutionKind::App,
+            availability: runtime_session_tool_availability(),
+            exposure: ToolExposureClass::Discoverable,
+            visibility_gate: ToolVisibilityGate::SessionMutation,
+            capability_action_class: CapabilityActionClass::PolicyMutation,
+            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
+            provider_definition_builder: session_tool_policy_set_definition,
+        },
+        ToolDescriptor {
+            name: "session_tool_policy_clear",
+            provider_name: "session_tool_policy_clear",
+            aliases: &[],
+            description: "Clear the session-scoped tool policy for a visible session",
+            execution_kind: ToolExecutionKind::App,
+            availability: runtime_session_tool_availability(),
+            exposure: ToolExposureClass::Discoverable,
+            visibility_gate: ToolVisibilityGate::SessionMutation,
+            capability_action_class: CapabilityActionClass::PolicyMutation,
+            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
+            provider_definition_builder: session_tool_policy_clear_definition,
+        },
+        ToolDescriptor {
             name: "session_recover",
             provider_name: "session_recover",
             aliases: &[],
@@ -2430,6 +2469,151 @@ fn session_status_definition(descriptor: &ToolDescriptor) -> Value {
     })
 }
 
+fn session_tool_runtime_narrowing_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "browser": {
+                "type": "object",
+                "properties": {
+                    "max_sessions": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional upper bound for browser session count."
+                    },
+                    "max_links": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional upper bound for extracted browser links."
+                    },
+                    "max_text_chars": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional upper bound for extracted browser text characters."
+                    }
+                },
+                "additionalProperties": false
+            },
+            "web_fetch": {
+                "type": "object",
+                "properties": {
+                    "allow_private_hosts": {
+                        "type": "boolean",
+                        "description": "Optional narrowing for private-host access. Use false to deny private hosts."
+                    },
+                    "enforce_allowed_domains": {
+                        "type": "boolean",
+                        "description": "When true, enforce the provided allowed_domains list even when it is empty."
+                    },
+                    "allowed_domains": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "Optional allowlist intersection for web.fetch."
+                    },
+                    "blocked_domains": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "Optional additional blocked domains for web.fetch."
+                    },
+                    "timeout_seconds": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional maximum web.fetch timeout."
+                    },
+                    "max_bytes": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional maximum web.fetch response size in bytes."
+                    },
+                    "max_redirects": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional maximum web.fetch redirect count."
+                    }
+                },
+                "additionalProperties": false
+            }
+        },
+        "additionalProperties": false
+    })
+}
+
+fn session_tool_policy_status_definition(descriptor: &ToolDescriptor) -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": descriptor.provider_name,
+            "description": descriptor.description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional visible session identifier to inspect. Defaults to the current session."
+                    }
+                },
+                "additionalProperties": false
+            }
+        }
+    })
+}
+
+fn session_tool_policy_set_definition(descriptor: &ToolDescriptor) -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": descriptor.provider_name,
+            "description": descriptor.description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional visible session identifier to update. Defaults to the current session."
+                    },
+                    "tool_ids": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "Optional replacement visible tool id set. Use an empty array to clear the session-specific tool surface restriction."
+                    },
+                    "runtime_narrowing": session_tool_runtime_narrowing_schema()
+                },
+                "anyOf": [
+                    { "required": ["tool_ids"] },
+                    { "required": ["runtime_narrowing"] }
+                ],
+                "additionalProperties": false
+            }
+        }
+    })
+}
+
+fn session_tool_policy_clear_definition(descriptor: &ToolDescriptor) -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": descriptor.provider_name,
+            "description": descriptor.description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional visible session identifier to clear. Defaults to the current session."
+                    }
+                },
+                "additionalProperties": false
+            }
+        }
+    })
+}
+
 fn session_recover_definition(descriptor: &ToolDescriptor) -> Value {
     json!({
         "type": "function",
@@ -2701,6 +2885,10 @@ fn tool_argument_hint(name: &str) -> &'static str {
         "bash.exec" => "command:string,cwd?:string,timeout_ms?:integer",
         "provider.switch" => "selector?:string",
         "delegate" | "delegate_async" => "task:string,label?:string,timeout_seconds?:integer",
+        "session_tool_policy_status" | "session_tool_policy_clear" => "session_id?:string",
+        "session_tool_policy_set" => {
+            "session_id?:string,tool_ids?:string[],runtime_narrowing?:object"
+        }
         "session_archive" | "session_cancel" | "session_events" | "session_recover"
         | "session_status" | "session_wait" | "sessions_history" => "session_id:string",
         "sessions_list" => "limit?:integer,state?:string",
@@ -2795,6 +2983,12 @@ fn tool_parameter_types(name: &str) -> &'static [(&'static str, &'static str)] {
             ("label", "string"),
             ("timeout_seconds", "integer"),
         ],
+        "session_tool_policy_status" | "session_tool_policy_clear" => &[("session_id", "string")],
+        "session_tool_policy_set" => &[
+            ("session_id", "string"),
+            ("tool_ids", "array"),
+            ("runtime_narrowing", "object"),
+        ],
         "session_archive" | "session_cancel" | "session_events" | "session_recover"
         | "session_status" | "session_wait" | "sessions_history" => &[("session_id", "string")],
         "sessions_list" => &[("limit", "integer"), ("state", "string")],
@@ -2833,6 +3027,8 @@ fn tool_required_fields(name: &str) -> &'static [&'static str] {
         "shell.exec" => &["command"],
         "bash.exec" => &["command"],
         "delegate" | "delegate_async" => &["task"],
+        "session_tool_policy_status" | "session_tool_policy_clear" => &[],
+        "session_tool_policy_set" => &[],
         "session_archive" | "session_cancel" | "session_events" | "session_recover"
         | "session_status" | "session_wait" | "sessions_history" => &["session_id"],
         "sessions_send" => &["session_id", "text"],
@@ -2870,6 +3066,9 @@ fn tool_tags(name: &str) -> &'static [&'static str] {
         "bash.exec" => &["bash", "command", "process", "exec"],
         "provider.switch" => &["provider", "switch", "model", "runtime"],
         "delegate" | "delegate_async" => &["session", "delegate", "child"],
+        "session_tool_policy_status" | "session_tool_policy_set" | "session_tool_policy_clear" => {
+            &["session", "policy", "tools", "security"]
+        }
         "session_archive" | "session_cancel" | "session_events" | "session_recover"
         | "session_status" | "session_wait" | "sessions_history" | "sessions_list" => {
             &["session", "history", "runtime"]
@@ -3260,6 +3459,18 @@ mod tests {
             ("session_archive", CapabilityActionClass::SessionMutation),
             ("session_cancel", CapabilityActionClass::SessionMutation),
             ("session_events", CapabilityActionClass::ExecuteExisting),
+            (
+                "session_tool_policy_status",
+                CapabilityActionClass::ExecuteExisting,
+            ),
+            (
+                "session_tool_policy_set",
+                CapabilityActionClass::PolicyMutation,
+            ),
+            (
+                "session_tool_policy_clear",
+                CapabilityActionClass::PolicyMutation,
+            ),
             ("session_recover", CapabilityActionClass::SessionMutation),
         ];
 

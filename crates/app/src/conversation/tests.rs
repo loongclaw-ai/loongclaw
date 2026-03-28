@@ -37,7 +37,8 @@ use crate::memory::{
 };
 #[cfg(feature = "memory-sqlite")]
 use crate::session::repository::{
-    NewSessionEvent, NewSessionRecord, SessionKind, SessionRepository, SessionState,
+    NewSessionEvent, NewSessionRecord, NewSessionToolPolicyRecord, SessionKind, SessionRepository,
+    SessionState,
 };
 
 #[cfg(feature = "memory-sqlite")]
@@ -1559,6 +1560,7 @@ fn sample_delegate_runtime_narrowing() -> crate::tools::runtime_config::ToolRunt
         },
         web_fetch: crate::tools::runtime_config::WebFetchRuntimeNarrowing {
             allow_private_hosts: Some(false),
+            enforce_allowed_domains: false,
             allowed_domains: BTreeSet::from(["docs.example.com".to_owned()]),
             blocked_domains: BTreeSet::from(["deny.example.com".to_owned()]),
             timeout_seconds: Some(5),
@@ -2101,6 +2103,84 @@ fn default_runtime_tool_view_uses_persisted_delegate_child_restrictions() {
 
 #[cfg(feature = "memory-sqlite")]
 #[test]
+fn default_runtime_tool_view_intersects_root_session_with_persisted_tool_policy() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-tool-view", "session-policy")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = SessionRepository::new(&memory_config).expect("session repository");
+    repo.create_session(NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: SessionState::Ready,
+    })
+    .expect("create root session");
+    repo.upsert_session_tool_policy(NewSessionToolPolicyRecord {
+        session_id: "root-session".to_owned(),
+        requested_tool_ids: vec![
+            "tool.search".to_owned(),
+            "tool.invoke".to_owned(),
+            "session_status".to_owned(),
+        ],
+        runtime_narrowing: crate::tools::runtime_config::ToolRuntimeNarrowing::default(),
+    })
+    .expect("upsert session tool policy");
+
+    let runtime = DefaultConversationRuntime::default();
+    let root_view = runtime
+        .tool_view(
+            &config,
+            "root-session",
+            ConversationRuntimeBinding::direct(),
+        )
+        .expect("root tool view");
+
+    assert!(root_view.contains("tool.search"));
+    assert!(root_view.contains("tool.invoke"));
+    assert!(root_view.contains("session_status"));
+    assert!(!root_view.contains("web.fetch"));
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[test]
+fn default_runtime_tool_view_errors_when_session_repository_is_unavailable() {
+    let db_path = std::env::temp_dir().join(unique_acp_test_id(
+        "conversation-tool-view",
+        "repo-unavailable",
+    ));
+    let _ = std::fs::remove_dir_all(&db_path);
+    std::fs::create_dir_all(&db_path).expect("create invalid sqlite directory");
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+
+    let runtime = DefaultConversationRuntime::default();
+    let error = runtime
+        .tool_view(
+            &config,
+            "root-session",
+            ConversationRuntimeBinding::direct(),
+        )
+        .expect_err("tool view should fail closed when the session repository is unavailable");
+
+    assert!(
+        error.contains("open session repository failed"),
+        "error={error}"
+    );
+
+    std::fs::remove_dir_all(&db_path).ok();
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[test]
 fn default_runtime_tool_view_denies_delegate_for_broken_lineage_child() {
     let mut config = test_config();
     config.tools.delegate.allow_shell_in_child = false;
@@ -2184,6 +2264,38 @@ fn default_runtime_session_context_uses_persisted_parent_session_id() {
         session_context.parent_session_id.as_deref(),
         Some("root-session")
     );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[test]
+fn default_runtime_session_context_errors_when_session_repository_is_unavailable() {
+    let db_path = std::env::temp_dir().join(unique_acp_test_id(
+        "conversation-session-context",
+        "repo-unavailable",
+    ));
+    let _ = std::fs::remove_dir_all(&db_path);
+    std::fs::create_dir_all(&db_path).expect("create invalid sqlite directory");
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+
+    let runtime = DefaultConversationRuntime::default();
+    let error = runtime
+        .session_context(
+            &config,
+            "root-session",
+            ConversationRuntimeBinding::direct(),
+        )
+        .expect_err(
+            "session context should fail closed when the session repository is unavailable",
+        );
+
+    assert!(
+        error.contains("open session repository failed"),
+        "error={error}"
+    );
+
+    std::fs::remove_dir_all(&db_path).ok();
 }
 
 #[tokio::test]
@@ -14901,6 +15013,66 @@ async fn session_context_preserves_child_runtime_narrowing_after_many_later_even
         BTreeSet::from(["docs.example.com".to_owned()])
     );
     assert_eq!(runtime_narrowing.browser.max_sessions, Some(1));
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn session_context_merges_persisted_session_policy_runtime_narrowing() {
+    let mut config = test_config();
+    let child_session_id = seed_delegate_child_session_with_runtime_narrowing(
+        &mut config,
+        "session-policy-merge",
+        sample_delegate_runtime_narrowing(),
+    );
+
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = SessionRepository::new(&memory_config).expect("session repository");
+    repo.upsert_session_tool_policy(NewSessionToolPolicyRecord {
+        session_id: child_session_id.clone(),
+        requested_tool_ids: Vec::new(),
+        runtime_narrowing: crate::tools::runtime_config::ToolRuntimeNarrowing {
+            browser: crate::tools::runtime_config::BrowserRuntimeNarrowing {
+                max_sessions: Some(3),
+                ..crate::tools::runtime_config::BrowserRuntimeNarrowing::default()
+            },
+            web_fetch: crate::tools::runtime_config::WebFetchRuntimeNarrowing {
+                allow_private_hosts: None,
+                enforce_allowed_domains: false,
+                allowed_domains: BTreeSet::from(["api.example.com".to_owned()]),
+                blocked_domains: BTreeSet::from(["extra-block.example.com".to_owned()]),
+                timeout_seconds: None,
+                max_bytes: None,
+                max_redirects: None,
+            },
+        },
+    })
+    .expect("upsert child session tool policy");
+
+    let runtime = DefaultConversationRuntime::default();
+    let session_context = runtime
+        .session_context(
+            &config,
+            &child_session_id,
+            ConversationRuntimeBinding::direct(),
+        )
+        .expect("load child session context");
+
+    let runtime_narrowing = session_context
+        .runtime_narrowing
+        .expect("effective runtime narrowing");
+    assert_eq!(runtime_narrowing.browser.max_sessions, Some(1));
+    assert!(runtime_narrowing.web_fetch.enforce_allowed_domains);
+    assert!(
+        runtime_narrowing.web_fetch.allowed_domains.is_empty(),
+        "disjoint allowlists should fail closed"
+    );
+    assert_eq!(
+        runtime_narrowing.web_fetch.blocked_domains,
+        BTreeSet::from([
+            "deny.example.com".to_owned(),
+            "extra-block.example.com".to_owned(),
+        ])
+    );
 }
 
 #[cfg(feature = "memory-sqlite")]

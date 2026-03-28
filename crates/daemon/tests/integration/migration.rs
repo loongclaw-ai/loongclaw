@@ -309,9 +309,29 @@ fn migration_channel_registry_includes_matrix_when_enabled() {
 }
 
 #[test]
-fn migration_channel_env_binding_applies_matrix_default() {
+fn migration_channel_registry_includes_wecom_when_enabled() {
+    let mut config = mvp::config::LoongClawConfig::default();
+    config.wecom.enabled = true;
+    config.wecom.bot_id = Some(loongclaw_contracts::SecretRef::Inline(
+        "wecom-bot".to_owned(),
+    ));
+    config.wecom.secret = Some(loongclaw_contracts::SecretRef::Inline(
+        "wecom-secret".to_owned(),
+    ));
+    config.wecom.allowed_conversation_ids = vec!["group_demo".to_owned()];
+
+    let checks = loongclaw_daemon::migration::channels::collect_channel_doctor_checks(&config);
+    let names = checks.iter().map(|check| check.name).collect::<Vec<_>>();
+
+    assert_eq!(names, vec!["wecom channel", "wecom aibot long connection"]);
+}
+
+#[test]
+fn migration_channel_env_binding_applies_matrix_and_wecom_defaults() {
     let mut config = mvp::config::LoongClawConfig::default();
     config.matrix.access_token_env = None;
+    config.wecom.bot_id_env = None;
+    config.wecom.secret_env = None;
 
     let fixes =
         loongclaw_daemon::migration::channels::apply_default_channel_env_bindings(&mut config);
@@ -320,10 +340,22 @@ fn migration_channel_env_binding_applies_matrix_default() {
         config.matrix.access_token_env.as_deref(),
         Some("MATRIX_ACCESS_TOKEN")
     );
+    assert_eq!(config.wecom.bot_id_env.as_deref(), Some("WECOM_BOT_ID"));
+    assert_eq!(config.wecom.secret_env.as_deref(), Some("WECOM_SECRET"));
     assert!(
         fixes
             .iter()
             .any(|fix| fix == "set matrix.access_token_env=MATRIX_ACCESS_TOKEN")
+    );
+    assert!(
+        fixes
+            .iter()
+            .any(|fix| fix == "set wecom.bot_id_env=WECOM_BOT_ID")
+    );
+    assert!(
+        fixes
+            .iter()
+            .any(|fix| fix == "set wecom.secret_env=WECOM_SECRET")
     );
 }
 
@@ -721,7 +753,7 @@ fn migration_recommended_plan_supplements_cli_prompt_metadata_and_memory_profile
 fn channel_registry_lists_registered_channel_ids() {
     assert_eq!(
         loongclaw_daemon::migration::channels::registered_channel_ids(),
-        vec!["telegram", "feishu", "matrix"]
+        vec!["telegram", "feishu", "matrix", "wecom"]
     );
 }
 
@@ -780,6 +812,14 @@ fn channel_registry_collects_ready_channel_candidates() {
     config.feishu.app_secret = Some(loongclaw_contracts::SecretRef::Inline(
         "feishu-secret".to_owned(),
     ));
+    config.wecom.enabled = true;
+    config.wecom.bot_id = Some(loongclaw_contracts::SecretRef::Inline(
+        "wecom-bot".to_owned(),
+    ));
+    config.wecom.secret = Some(loongclaw_contracts::SecretRef::Inline(
+        "wecom-secret".to_owned(),
+    ));
+    config.wecom.allowed_conversation_ids = vec!["group_demo".to_owned()];
 
     let previews = loongclaw_daemon::migration::channels::collect_channel_previews(
         &config,
@@ -793,7 +833,7 @@ fn channel_registry_collects_ready_channel_candidates() {
         .map(|preview| preview.candidate.id)
         .collect::<Vec<_>>();
 
-    assert_eq!(ids, vec!["telegram", "feishu"]);
+    assert_eq!(ids, vec!["telegram", "feishu", "wecom"]);
     assert!(
         previews.iter().all(|preview| {
             preview.candidate.status == loongclaw_daemon::migration::types::PreviewStatus::Ready
@@ -816,6 +856,14 @@ fn channel_preview_order_follows_shared_service_channel_catalog_order() {
     config.feishu.app_secret = Some(loongclaw_contracts::SecretRef::Inline(
         "feishu-secret".to_owned(),
     ));
+    config.wecom.enabled = true;
+    config.wecom.bot_id = Some(loongclaw_contracts::SecretRef::Inline(
+        "wecom-bot".to_owned(),
+    ));
+    config.wecom.secret = Some(loongclaw_contracts::SecretRef::Inline(
+        "wecom-secret".to_owned(),
+    ));
+    config.wecom.allowed_conversation_ids = vec!["group_demo".to_owned()];
 
     let previews = loongclaw_daemon::migration::channels::collect_channel_previews(
         &config,
@@ -866,10 +914,11 @@ fn channel_registry_lists_enabled_channel_ids() {
     let mut config = mvp::config::LoongClawConfig::default();
     config.telegram.enabled = true;
     config.feishu.enabled = true;
+    config.wecom.enabled = true;
 
     assert_eq!(
         loongclaw_daemon::migration::channels::registered_enabled_channel_ids(&config),
-        vec!["telegram", "feishu"]
+        vec!["telegram", "feishu", "wecom"]
     );
 }
 
@@ -878,14 +927,19 @@ fn channel_registry_enabled_ids_follow_app_service_channel_catalog() {
     let mut config = mvp::config::LoongClawConfig::default();
     config.telegram.enabled = true;
     config.feishu.enabled = true;
+    config.wecom.enabled = true;
 
     assert_eq!(
         config.enabled_service_channel_ids(),
-        vec!["telegram".to_owned(), "feishu".to_owned()]
+        vec![
+            "telegram".to_owned(),
+            "feishu".to_owned(),
+            "wecom".to_owned()
+        ]
     );
     assert_eq!(
         loongclaw_daemon::migration::channels::registered_enabled_channel_ids(&config),
-        vec!["telegram", "feishu"]
+        vec!["telegram", "feishu", "wecom"]
     );
 }
 
@@ -906,6 +960,14 @@ fn channel_registry_collects_preflight_checks_for_enabled_channels() {
     config.feishu.verification_token = Some(loongclaw_contracts::SecretRef::Inline(
         "verify-token".to_owned(),
     ));
+    config.wecom.enabled = true;
+    config.wecom.bot_id = Some(loongclaw_contracts::SecretRef::Inline(
+        "wecom-bot".to_owned(),
+    ));
+    config.wecom.secret = Some(loongclaw_contracts::SecretRef::Inline(
+        "wecom-secret".to_owned(),
+    ));
+    config.wecom.allowed_conversation_ids = vec!["group_demo".to_owned()];
 
     let checks = loongclaw_daemon::migration::channels::collect_channel_preflight_checks(&config);
 
@@ -932,6 +994,21 @@ fn channel_registry_collects_preflight_checks_for_enabled_channels() {
         }),
         "registry preflight should include feishu inbound transport readiness: {checks:#?}"
     );
+    assert!(
+        checks.iter().any(|check| {
+            check.name == "wecom channel"
+                && check.level == loongclaw_daemon::migration::channels::ChannelCheckLevel::Pass
+                && check.detail.contains("bot credentials resolved")
+        }),
+        "registry preflight should include wecom credential readiness: {checks:#?}"
+    );
+    assert!(
+        checks.iter().any(|check| {
+            check.name == "wecom aibot long connection"
+                && check.level == loongclaw_daemon::migration::channels::ChannelCheckLevel::Pass
+        }),
+        "registry preflight should include wecom long-connection readiness: {checks:#?}"
+    );
 }
 
 #[test]
@@ -939,13 +1016,14 @@ fn channel_registry_collects_serve_actions_for_enabled_channels() {
     let mut config = mvp::config::LoongClawConfig::default();
     config.telegram.enabled = true;
     config.feishu.enabled = true;
+    config.wecom.enabled = true;
 
     let actions = loongclaw_daemon::migration::channels::collect_channel_next_actions(
         &config,
         "/tmp/loongclaw-config.toml",
     );
 
-    assert_eq!(actions.len(), 2);
+    assert_eq!(actions.len(), 3);
     assert_eq!(actions[0].label, "Telegram");
     assert_eq!(
         actions[0].command,
@@ -955,6 +1033,79 @@ fn channel_registry_collects_serve_actions_for_enabled_channels() {
     assert_eq!(
         actions[1].command,
         "loongclaw feishu-serve --config '/tmp/loongclaw-config.toml'"
+    );
+    assert_eq!(actions[2].label, "WeCom");
+    assert_eq!(
+        actions[2].command,
+        "loongclaw wecom-serve --config '/tmp/loongclaw-config.toml'"
+    );
+}
+
+#[test]
+fn channel_registry_apply_selected_channels_merges_wecom_config() {
+    let mut target = mvp::config::LoongClawConfig::default();
+    target.wecom.secret_env = Some("TARGET_WECOM_SECRET".to_owned());
+
+    let mut source = mvp::config::LoongClawConfig::default();
+    source.wecom.enabled = true;
+    source.wecom.default_account = Some("ops".to_owned());
+    source.wecom.bot_id_env = Some("SOURCE_WECOM_BOT_ID".to_owned());
+    source.wecom.secret_env = Some("SOURCE_WECOM_SECRET".to_owned());
+    source.wecom.allowed_conversation_ids = vec!["group_alpha".to_owned()];
+    source.wecom.accounts.insert(
+        "ops".to_owned(),
+        mvp::config::WecomAccountConfig {
+            websocket_url: Some("wss://wecom.example.test".to_owned()),
+            allowed_conversation_ids: Some(vec!["group_ops".to_owned()]),
+            ..Default::default()
+        },
+    );
+
+    let changed = loongclaw_daemon::migration::channels::apply_selected_channels(
+        &mut target,
+        &source,
+        &["wecom"],
+    );
+
+    assert!(changed);
+    assert!(target.wecom.enabled);
+    assert_eq!(target.wecom.default_account.as_deref(), Some("ops"));
+    assert_eq!(
+        target.wecom.bot_id_env.as_deref(),
+        Some("SOURCE_WECOM_BOT_ID")
+    );
+    assert_eq!(
+        target.wecom.secret_env.as_deref(),
+        Some("TARGET_WECOM_SECRET")
+    );
+    assert_eq!(target.wecom.allowed_conversation_ids, vec!["group_alpha"]);
+    assert_eq!(
+        target
+            .wecom
+            .accounts
+            .get("ops")
+            .and_then(|account| account.websocket_url.as_deref()),
+        Some("wss://wecom.example.test")
+    );
+}
+
+#[test]
+fn resolve_channel_import_readiness_reports_partial_wecom_channel_credentials() {
+    let _env = MigrationEnvironmentGuard::set(&[("WECOM_BOT_ID", None), ("WECOM_SECRET", None)]);
+
+    let mut config = mvp::config::LoongClawConfig::default();
+    config.wecom.bot_id = Some(loongclaw_contracts::SecretRef::Inline(
+        "wecom-bot".to_owned(),
+    ));
+
+    let readiness =
+        loongclaw_daemon::migration::discovery::resolve_channel_import_readiness_from_config(
+            &config,
+        );
+
+    assert_eq!(
+        readiness.state("wecom"),
+        loongclaw_daemon::migration::ChannelCredentialState::Partial
     );
 }
 
