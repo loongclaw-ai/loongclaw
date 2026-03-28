@@ -2705,6 +2705,98 @@ fn runtime_capability_plan_emits_memory_stage_profile_payload() {
 }
 
 #[test]
+fn runtime_capability_plan_omits_memory_stage_profile_payload_for_other_targets() {
+    let root = unique_temp_dir("loongclaw-runtime-capability-plan-non-memory-payload");
+    let config_path = write_runtime_capability_config(&root);
+
+    let (run_a_path, _) = finish_runtime_experiment_variant(
+        &root,
+        &config_path,
+        "managed-skill-a",
+        -0.2,
+        &[],
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted,
+    );
+    let (run_b_path, _) = finish_runtime_experiment_variant(
+        &root,
+        &config_path,
+        "managed-skill-b",
+        -0.4,
+        &[],
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted,
+    );
+
+    let candidate_a_path = root.join("artifacts/runtime-capability-managed-skill-a.json");
+    let candidate_b_path = root.join("artifacts/runtime-capability-managed-skill-b.json");
+    propose_runtime_capability_variant_with_target(
+        &root,
+        &run_a_path,
+        "managed-skill-a",
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityTarget::ManagedSkill,
+        "Codify browser preview onboarding as a reusable managed skill",
+        "Browser preview onboarding and companion readiness checks only",
+        &["invoke_tool", "memory_read"],
+        &["browser", "onboarding"],
+    );
+    propose_runtime_capability_variant_with_target(
+        &root,
+        &run_b_path,
+        "managed-skill-b",
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityTarget::ManagedSkill,
+        "Codify browser preview onboarding as a reusable managed skill",
+        "Browser preview onboarding and companion readiness checks only",
+        &["invoke_tool", "memory_read"],
+        &["browser", "onboarding"],
+    );
+    review_runtime_capability_variant(
+        &candidate_a_path,
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityReviewDecision::Accepted,
+        "managed-skill-a",
+    );
+    review_runtime_capability_variant(
+        &candidate_b_path,
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityReviewDecision::Accepted,
+        "managed-skill-b",
+    );
+
+    let index_report =
+        loongclaw_daemon::runtime_capability_cli::execute_runtime_capability_index_command(
+            loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityIndexCommandOptions {
+                root: root.join("artifacts").display().to_string(),
+                json: false,
+            },
+        )
+        .expect("runtime capability index should succeed");
+    let family = index_report
+        .families
+        .first()
+        .expect("one capability family should be reported");
+
+    let plan = loongclaw_daemon::runtime_capability_cli::execute_runtime_capability_plan_command(
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityPlanCommandOptions {
+            root: root.join("artifacts").display().to_string(),
+            family_id: family.family_id.clone(),
+            json: false,
+        },
+    )
+    .expect("runtime capability plan should succeed");
+    let payload = serde_json::to_value(&plan).expect("serialize runtime capability plan");
+
+    assert!(
+        payload.pointer("/planned_payload").is_some(),
+        "planned_payload field should always be present"
+    );
+    assert!(
+        payload
+            .pointer("/planned_payload")
+            .is_some_and(Value::is_null),
+        "non-memory targets should serialize planned_payload as null"
+    );
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
 fn runtime_capability_plan_marks_memory_stage_profile_promotable_with_memory_delta_evidence() {
     let root = unique_temp_dir("loongclaw-runtime-capability-plan-memory-stage-profile-ready");
     let (run_a_path, _) = finish_runtime_experiment_variant_with_memory_compare_delta(
