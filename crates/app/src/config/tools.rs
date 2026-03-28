@@ -61,6 +61,8 @@ pub struct ToolConfig {
     #[serde(default)]
     pub browser_companion: BrowserCompanionToolConfig,
     #[serde(default)]
+    pub bash: BashToolConfig,
+    #[serde(default)]
     pub web: WebToolConfig,
     #[serde(default)]
     pub web_search: WebSearchToolConfig,
@@ -235,6 +237,12 @@ pub struct BrowserCompanionToolConfig {
     pub expected_version: Option<String>,
     #[serde(default = "default_browser_companion_timeout_seconds")]
     pub timeout_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct BashToolConfig {
+    #[serde(default)]
+    pub login_shell: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -454,6 +462,7 @@ impl Default for ToolConfig {
             runtime_self: RuntimeSelfToolConfig::default(),
             browser: BrowserToolConfig::default(),
             browser_companion: BrowserCompanionToolConfig::default(),
+            bash: BashToolConfig::default(),
             web: WebToolConfig::default(),
             web_search: WebSearchToolConfig::default(),
             tool_execution: ToolExecutionToolConfig::default(),

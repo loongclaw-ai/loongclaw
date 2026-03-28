@@ -10,8 +10,8 @@ use crate::KernelContext;
 use crate::runtime_self_continuity::{self, RuntimeSelfContinuity};
 use crate::tools::runtime_config::ToolRuntimeNarrowing;
 use crate::tools::{
-    ToolView, delegate_child_tool_view_for_config,
-    delegate_child_tool_view_for_config_with_delegate,
+    ToolView, delegate_child_tool_view_for_runtime_config,
+    delegate_child_tool_view_for_runtime_config_with_delegate,
 };
 
 use super::super::memory;
@@ -876,16 +876,23 @@ where
                     .map_err(|error| format!("load session tool-view context failed: {error}"))?
                 {
                     if session.parent_session_id.is_some() {
+                        let tool_runtime_config =
+                            crate::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(
+                                config, None,
+                            );
                         let depth = match repo.session_lineage_depth(session_id) {
                             Ok(depth) => depth,
                             Err(error)
                                 if error.starts_with("session_lineage_broken:")
                                     || error.starts_with("session_lineage_cycle_detected:") =>
                             {
-                                return Ok(delegate_child_tool_view_for_config_with_delegate(
-                                    &config.tools,
-                                    false,
-                                ));
+                                return Ok(
+                                    delegate_child_tool_view_for_runtime_config_with_delegate(
+                                        &config.tools,
+                                        &tool_runtime_config,
+                                        false,
+                                    ),
+                                );
                             }
                             Err(error) => {
                                 return Err(format!(
@@ -894,8 +901,9 @@ where
                             }
                         };
                         let allow_nested_delegate = depth < config.tools.delegate.max_depth;
-                        return Ok(delegate_child_tool_view_for_config_with_delegate(
+                        return Ok(delegate_child_tool_view_for_runtime_config_with_delegate(
                             &config.tools,
+                            &tool_runtime_config,
                             allow_nested_delegate,
                         ));
                     }
@@ -906,7 +914,14 @@ where
                     })?
                     .is_some_and(|session| session.kind == SessionKind::DelegateChild)
                 {
-                    return Ok(delegate_child_tool_view_for_config(&config.tools));
+                    let tool_runtime_config =
+                        crate::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(
+                            config, None,
+                        );
+                    return Ok(delegate_child_tool_view_for_runtime_config(
+                        &config.tools,
+                        &tool_runtime_config,
+                    ));
                 }
             }
         }
