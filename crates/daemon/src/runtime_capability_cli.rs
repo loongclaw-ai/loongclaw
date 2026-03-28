@@ -102,6 +102,8 @@ pub enum RuntimeCapabilityTarget {
     ManagedSkill,
     ProgrammaticFlow,
     ProfileNoteAddendum,
+    #[value(alias = "memory_stage_profile")]
+    MemoryStageProfile,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1356,6 +1358,7 @@ fn render_target(target: RuntimeCapabilityTarget) -> &'static str {
         RuntimeCapabilityTarget::ManagedSkill => "managed_skill",
         RuntimeCapabilityTarget::ProgrammaticFlow => "programmatic_flow",
         RuntimeCapabilityTarget::ProfileNoteAddendum => "profile_note_addendum",
+        RuntimeCapabilityTarget::MemoryStageProfile => "memory_stage_profile",
     }
 }
 
@@ -1447,6 +1450,11 @@ fn runtime_capability_promotion_target_contract(
         RuntimeCapabilityTarget::ProfileNoteAddendum => {
             ("profile_note_addendum", "profile_note", "profile-note")
         }
+        RuntimeCapabilityTarget::MemoryStageProfile => (
+            "memory_stage_profile",
+            "memory_stage_profiles",
+            "memory-stage-profile",
+        ),
     }
 }
 
@@ -1494,6 +1502,10 @@ fn build_runtime_capability_approval_checklist(
             "confirm the behavior belongs in advisory profile guidance rather than executable logic"
                 .to_owned()
         }
+        RuntimeCapabilityTarget::MemoryStageProfile => {
+            "confirm the behavior belongs in a governed memory stage profile rather than live runtime mutation"
+                .to_owned()
+        }
     });
     checklist
 }
@@ -1501,11 +1513,19 @@ fn build_runtime_capability_approval_checklist(
 fn build_runtime_capability_rollback_hints(
     planned_artifact: &RuntimeCapabilityPromotionArtifactPlan,
 ) -> Vec<String> {
-    vec![
-        format!(
+    let capture_hint = match planned_artifact.target_kind {
+        RuntimeCapabilityTarget::MemoryStageProfile => {
+            "capture the current `memory_stage_profiles` state before applying this memory stage profile".to_owned()
+        }
+        RuntimeCapabilityTarget::ManagedSkill
+        | RuntimeCapabilityTarget::ProgrammaticFlow
+        | RuntimeCapabilityTarget::ProfileNoteAddendum => format!(
             "capture the current `{}` state before applying artifact `{}`",
             planned_artifact.delivery_surface, planned_artifact.artifact_id
         ),
+    };
+    vec![
+        capture_hint,
         format!(
             "remove or revert `{}` from `{}` if downstream validation fails",
             planned_artifact.artifact_id, planned_artifact.delivery_surface

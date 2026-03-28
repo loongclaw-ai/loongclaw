@@ -1017,6 +1017,63 @@ fn runtime_capability_cli_parses_propose_review_show_index_and_plan() {
 }
 
 #[test]
+fn runtime_capability_cli_parses_memory_stage_profile_target() {
+    let propose = try_parse_cli([
+        "loongclaw",
+        "runtime-capability",
+        "propose",
+        "--run",
+        "/tmp/runtime-experiment.json",
+        "--output",
+        "/tmp/runtime-capability.json",
+        "--target",
+        "memory_stage_profile",
+        "--target-summary",
+        "Promote governed memory pipeline intent into a reusable profile",
+        "--bounded-scope",
+        "Governed memory pipeline promotion intent only",
+        "--required-capability",
+        "memory_read",
+        "--tag",
+        "memory",
+        "--tag",
+        "pipeline",
+    ])
+    .expect("`runtime-capability propose --target memory_stage_profile` should parse");
+
+    match propose.command {
+        Some(Commands::RuntimeCapability { command }) => match command {
+            loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Propose(
+                options,
+            ) => {
+                assert_eq!(options.run, "/tmp/runtime-experiment.json");
+                assert_eq!(options.output, "/tmp/runtime-capability.json");
+                assert_eq!(
+                    options.target,
+                    loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityTarget::MemoryStageProfile
+                );
+                assert!(options.target_summary.contains("governed memory pipeline"));
+                assert_eq!(
+                    options.bounded_scope,
+                    "Governed memory pipeline promotion intent only"
+                );
+                assert_eq!(options.required_capability, vec!["memory_read".to_owned()]);
+                assert_eq!(options.tag, vec!["memory".to_owned(), "pipeline".to_owned()]);
+            }
+            other @ (loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Review(
+                _,
+            )
+            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Show(_)
+            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Index(_)
+            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)) => {
+                panic!("unexpected runtime-capability subcommand parsed: {other:?}")
+            }
+        },
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
 fn acp_event_summary_cli_rejects_zero_limit() {
     let error = run_acp_event_summary_cli(None, Some("session-a"), 0, false)
         .expect_err("zero limit must be rejected");
