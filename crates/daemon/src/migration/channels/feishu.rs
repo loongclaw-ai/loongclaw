@@ -217,12 +217,10 @@ fn merge_feishu_config(
         changed = true;
     }
     if target.mode.is_none() {
-        let next_mode = source.mode.or_else(|| {
-            if target.enabled {
-                Some(mvp::config::FeishuChannelServeMode::Websocket)
-            } else {
-                None
-            }
+        let next_mode = source.mode.or(if target.enabled {
+            Some(mvp::config::FeishuChannelServeMode::Websocket)
+        } else {
+            None
         });
         if next_mode.is_some() {
             target.mode = next_mode;

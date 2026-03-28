@@ -2589,7 +2589,7 @@ impl FeishuChannelConfig {
             app_secret_env: merged.app_secret_env,
             domain: merged.domain,
             base_url: merged.base_url,
-            mode: merged.mode.unwrap_or_default(),
+            mode: merged.mode.unwrap_or(FeishuChannelServeMode::Websocket),
             receive_id_type: merged.receive_id_type,
             webhook_bind: merged.webhook_bind,
             webhook_path: merged.webhook_path,
