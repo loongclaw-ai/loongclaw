@@ -903,12 +903,13 @@ fn evaluate_family_readiness(
     let stability = evaluate_stability(evidence);
     let accepted_source_integrity = evaluate_accepted_source_integrity(artifacts, evidence);
     let warning_pressure = evaluate_warning_pressure(evidence);
-    let checks = vec![
+    let mut checks = vec![
         review_consensus,
         stability,
         accepted_source_integrity,
         warning_pressure,
     ];
+    checks.extend(evaluate_target_specific_readiness(artifacts, evidence));
     let status = if checks
         .iter()
         .any(|check| check.status == RuntimeCapabilityFamilyReadinessCheckStatus::Blocked)
@@ -923,6 +924,62 @@ fn evaluate_family_readiness(
         RuntimeCapabilityFamilyReadinessStatus::NotReady
     };
     RuntimeCapabilityFamilyReadiness { status, checks }
+}
+
+fn evaluate_target_specific_readiness(
+    artifacts: &[RuntimeCapabilityArtifactDocument],
+    evidence: &RuntimeCapabilityEvidenceDigest,
+) -> Vec<RuntimeCapabilityFamilyReadinessCheck> {
+    let Some(target) = artifacts.first().map(|artifact| artifact.proposal.target) else {
+        return Vec::new();
+    };
+
+    match target {
+        RuntimeCapabilityTarget::MemoryStageProfile => {
+            vec![evaluate_memory_stage_profile_delta_evidence(evidence)]
+        }
+        RuntimeCapabilityTarget::ManagedSkill
+        | RuntimeCapabilityTarget::ProgrammaticFlow
+        | RuntimeCapabilityTarget::ProfileNoteAddendum => Vec::new(),
+    }
+}
+
+fn evaluate_memory_stage_profile_delta_evidence(
+    evidence: &RuntimeCapabilityEvidenceDigest,
+) -> RuntimeCapabilityFamilyReadinessCheck {
+    let has_memory_surface = evidence.changed_surfaces.iter().any(|surface| {
+        matches!(
+            surface.as_str(),
+            "memory_selected"
+                | "memory_policy"
+                | "context_engine_selected"
+                | "context_engine_compaction"
+        )
+    });
+
+    let (status, summary) = if evidence.delta_candidate_count == 0 {
+        (
+            RuntimeCapabilityFamilyReadinessCheckStatus::NeedsEvidence,
+            "memory-stage-profile families need snapshot-delta evidence from finished experiments"
+                .to_owned(),
+        )
+    } else if !has_memory_surface {
+        (
+            RuntimeCapabilityFamilyReadinessCheckStatus::NeedsEvidence,
+            "snapshot-delta evidence must include memory or context-engine surfaces".to_owned(),
+        )
+    } else {
+        (
+            RuntimeCapabilityFamilyReadinessCheckStatus::Pass,
+            "snapshot-delta evidence includes memory/context-engine surface changes".to_owned(),
+        )
+    };
+
+    RuntimeCapabilityFamilyReadinessCheck {
+        dimension: "memory_delta_evidence".to_owned(),
+        status,
+        summary,
+    }
 }
 
 fn evaluate_review_consensus(
