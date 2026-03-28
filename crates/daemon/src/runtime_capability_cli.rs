@@ -1685,14 +1685,6 @@ fn build_runtime_capability_promotion_planned_payload(
 ) -> Option<RuntimeCapabilityPromotionPlannedPayload> {
     match planned_artifact.target_kind {
         RuntimeCapabilityTarget::MemoryStageProfile => {
-            let mut accepted_artifacts = artifacts
-                .iter()
-                .filter(|artifact| artifact.decision == RuntimeCapabilityDecision::Accepted)
-                .cloned()
-                .collect::<Vec<_>>();
-            sort_runtime_capability_artifacts(&mut accepted_artifacts);
-            let accepted_evidence = build_family_evidence_digest(&accepted_artifacts);
-
             Some(RuntimeCapabilityPromotionPlannedPayload {
                 memory_stage_profile: RuntimeCapabilityMemoryStageProfileDryRunPayload {
                     schema_version: 1,
@@ -1704,22 +1696,37 @@ fn build_runtime_capability_promotion_planned_payload(
                         required_capabilities: planned_artifact.required_capabilities.clone(),
                         tags: planned_artifact.tags.clone(),
                     },
-                    provenance: RuntimeCapabilityMemoryStageProfileDryRunProvenance {
-                        family_id: family_id.to_owned(),
-                        accepted_candidate_ids: accepted_artifacts
-                            .iter()
-                            .map(|artifact| artifact.candidate_id.clone())
-                            .collect(),
-                        evidence_digest: RuntimeCapabilityMemoryStageProfileDryRunEvidenceDigest {
-                            changed_surfaces: accepted_evidence.changed_surfaces,
-                        },
-                    },
+                    provenance: build_memory_stage_profile_dry_run_provenance(family_id, artifacts),
                 },
             })
         }
         RuntimeCapabilityTarget::ManagedSkill
         | RuntimeCapabilityTarget::ProgrammaticFlow
         | RuntimeCapabilityTarget::ProfileNoteAddendum => None,
+    }
+}
+
+fn build_memory_stage_profile_dry_run_provenance(
+    family_id: &str,
+    artifacts: &[RuntimeCapabilityArtifactDocument],
+) -> RuntimeCapabilityMemoryStageProfileDryRunProvenance {
+    let mut accepted_artifacts = artifacts
+        .iter()
+        .filter(|artifact| artifact.decision == RuntimeCapabilityDecision::Accepted)
+        .cloned()
+        .collect::<Vec<_>>();
+    sort_runtime_capability_artifacts(&mut accepted_artifacts);
+    let accepted_evidence = build_family_evidence_digest(&accepted_artifacts);
+
+    RuntimeCapabilityMemoryStageProfileDryRunProvenance {
+        family_id: family_id.to_owned(),
+        accepted_candidate_ids: accepted_artifacts
+            .iter()
+            .map(|artifact| artifact.candidate_id.clone())
+            .collect(),
+        evidence_digest: RuntimeCapabilityMemoryStageProfileDryRunEvidenceDigest {
+            changed_surfaces: accepted_evidence.changed_surfaces,
+        },
     }
 }
 
@@ -1798,9 +1805,9 @@ pub fn render_runtime_capability_promotion_plan_text(
         ),
     ];
 
-    if let Some(planned_payload) = render_runtime_capability_planned_payload_summary(
-        report.planned_payload.as_ref(),
-    ) {
+    if let Some(planned_payload) =
+        render_runtime_capability_planned_payload_summary(report.planned_payload.as_ref())
+    {
         lines.push(format!("planned_payload={planned_payload}"));
     }
 

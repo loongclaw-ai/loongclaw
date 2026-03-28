@@ -2553,8 +2553,8 @@ fn runtime_capability_plan_uses_memory_stage_profile_dry_run_artifact_surface() 
 }
 
 #[test]
-fn runtime_capability_plan_emits_memory_stage_profile_payload() {
-    let root = unique_temp_dir("loongclaw-runtime-capability-plan-memory-stage-profile-payload");
+fn runtime_capability_plan_scopes_memory_stage_profile_payload_provenance_to_accepted_evidence() {
+    let root = unique_temp_dir("loongclaw-runtime-capability-plan-memory-stage-profile-provenance");
     write_runtime_capability_config(&root);
 
     let (run_a_path, _) = finish_runtime_experiment_variant_with_memory_compare_delta(
@@ -2584,7 +2584,7 @@ fn runtime_capability_plan_emits_memory_stage_profile_payload() {
         &["memory_read"],
         &["memory", "pipeline"],
     );
-    let candidate_b = propose_runtime_capability_variant_with_target(
+    let _candidate_b = propose_runtime_capability_variant_with_target(
         &root,
         &run_b_path,
         "memory-stage-profile-b",
@@ -2594,6 +2594,23 @@ fn runtime_capability_plan_emits_memory_stage_profile_payload() {
         &["memory_read"],
         &["memory", "pipeline"],
     );
+    rewrite_json_file(&candidate_b_path, |payload| {
+        let changed_surface_count = payload
+            .pointer("/source_run/snapshot_delta/changed_surface_count")
+            .and_then(Value::as_u64)
+            .expect(
+                "candidate fixture should include source_run.snapshot_delta.changed_surface_count",
+            );
+        *payload
+            .pointer_mut("/source_run/snapshot_delta/changed_surface_count")
+            .expect(
+                "candidate fixture should include source_run.snapshot_delta.changed_surface_count",
+            ) = Value::from(changed_surface_count + 1);
+        let acp_policy_after = payload
+            .pointer_mut("/source_run/snapshot_delta/acp_policy/after")
+            .expect("candidate fixture should include source_run.snapshot_delta.acp_policy.after");
+        *acp_policy_after = Value::String("rejected-only-policy".to_owned());
+    });
     review_runtime_capability_variant(
         &candidate_a_path,
         loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityReviewDecision::Accepted,
@@ -2601,7 +2618,7 @@ fn runtime_capability_plan_emits_memory_stage_profile_payload() {
     );
     review_runtime_capability_variant(
         &candidate_b_path,
-        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityReviewDecision::Accepted,
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityReviewDecision::Rejected,
         "memory-stage-profile-b",
     );
 
@@ -2630,6 +2647,17 @@ fn runtime_capability_plan_emits_memory_stage_profile_payload() {
     let planned_payload = payload
         .pointer("/planned_payload/memory_stage_profile")
         .expect("memory-stage-profile plan should include a promoted payload");
+    let family_changed_surfaces = payload
+        .pointer("/evidence/changed_surfaces")
+        .and_then(Value::as_array)
+        .expect("plan should preserve broader report-level changed surfaces")
+        .iter()
+        .map(|value| value.as_str().expect("changed surface should be a string"))
+        .collect::<Vec<_>>();
+    assert!(
+        family_changed_surfaces.contains(&"acp_policy"),
+        "broader report-level evidence should still include rejected family evidence"
+    );
 
     assert_eq!(
         planned_payload
@@ -2666,7 +2694,11 @@ fn runtime_capability_plan_emits_memory_stage_profile_payload() {
         .and_then(Value::as_array)
         .expect("payload should include the profile required capabilities")
         .iter()
-        .map(|value| value.as_str().expect("required capability should be a string"))
+        .map(|value| {
+            value
+                .as_str()
+                .expect("required capability should be a string")
+        })
         .collect::<Vec<_>>();
     assert_eq!(required_capabilities, vec!["memory_read"]);
     let tags = planned_payload
@@ -2692,10 +2724,7 @@ fn runtime_capability_plan_emits_memory_stage_profile_payload() {
         .collect::<Vec<_>>();
     assert_eq!(
         accepted_candidate_ids,
-        vec![
-            candidate_a.candidate_id.as_str(),
-            candidate_b.candidate_id.as_str(),
-        ]
+        vec![candidate_a.candidate_id.as_str()]
     );
     let changed_surfaces = planned_payload
         .pointer("/provenance/evidence_digest/changed_surfaces")
@@ -2707,6 +2736,10 @@ fn runtime_capability_plan_emits_memory_stage_profile_payload() {
     assert_eq!(
         changed_surfaces,
         vec!["context_engine_compaction", "memory_policy"]
+    );
+    assert!(
+        !changed_surfaces.contains(&"acp_policy"),
+        "payload provenance digest should exclude rejected-only changed surfaces"
     );
 
     let rendered =
