@@ -14,6 +14,7 @@ Catalog of design documents and architectural decisions.
 | [Plugin Package Manifest Contract](plugin-package-manifest-contract.md) | Manifest-first plugin metadata, setup surface, and slot ownership contract | Active |
 | [OpenClaw Plugin Compatibility Contract](openclaw-plugin-compatibility-contract.md) | Foreign dialect normalization, compatibility-mode gating, and polyglot plugin strategy | Active |
 | [Provider Runtime Roadmap](provider-runtime-roadmap.md) | Provider/runtime evolution strategy | Active |
+| [Reference Runtime Comparison and Memory Convergence Roadmap](reference-runtime-comparison.md) | Reference-system comparison across Hermes Agent, OpenClaw, DeepAgents, and LoongClaw memory evolution priorities | Active |
 | [ACP/ACPX Pre-Embed](acp-acpx-preembed.md) | Advanced cryptographic primitives | Active |
 | [Harness Engineering](harness-engineering.md) | Environment design for agent-driven development | Active |
 

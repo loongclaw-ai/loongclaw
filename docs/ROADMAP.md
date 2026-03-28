@@ -267,6 +267,13 @@ Planned deliverables:
   - missing connector discovery strategy
   - deterministic configuration synthesis
   - idempotent reconciliation
+- layered memory continuity convergence:
+  - bounded builtin hot memory derived from LoongClaw-owned artifacts
+  - episodic recall over canonical history before semantic-vendor expansion
+  - typed derived-memory records for profile, fact, and later episode/procedure
+    layers
+  - compaction-aware durable-memory preservation after the artifact and recall
+    foundations land
 - bi-directional protocol bridge adapters:
   - OpenAI-compatible
   - Anthropic-compatible
@@ -278,6 +285,8 @@ Acceptance criteria:
 - unsupported protocol paths fail with explicit typed reasons
 - full integration catalog diff is auditable and reversible
 - discovery + orchestration tests remain stable under mixed absorbed/deferred plugin states
+- memory continuity evolves without surrendering canonical history or final
+  prompt projection to external systems
 
 ## Stage 4: Community Plugin Supply Chain (Next)
 
