@@ -288,6 +288,17 @@ async fn handle_gateway_stop(
     json_response(response_status, payload)
 }
 
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut result = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        result |= x ^ y;
+    }
+    result == 0
+}
+
 fn authorize_request(headers: &HeaderMap, expected_token: &str) -> CliResult<()> {
     let authorization_header = headers.get(AUTHORIZATION);
     let Some(authorization_header) = authorization_header else {
@@ -303,7 +314,7 @@ fn authorize_request(headers: &HeaderMap, expected_token: &str) -> CliResult<()>
         return Err("Authorization header must use Bearer auth".to_owned());
     };
 
-    if provided_token != expected_token {
+    if !constant_time_eq(provided_token.as_bytes(), expected_token.as_bytes()) {
         return Err("invalid gateway bearer token".to_owned());
     }
 
@@ -343,11 +354,14 @@ fn write_gateway_control_token_file(path: &Path, token: &str) -> CliResult<()> {
     ensure_gateway_control_parent_dir(path)?;
     harden_gateway_control_parent_dir(path)?;
 
-    let open_result = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path);
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(GATEWAY_CONTROL_TOKEN_FILE_MODE);
+    }
+    let open_result = options.open(path);
     let mut file = open_result.map_err(|error| {
         format!(
             "open gateway control token file failed for {}: {error}",
