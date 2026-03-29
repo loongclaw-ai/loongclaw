@@ -212,6 +212,22 @@ impl BridgeSupportProfileArg {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum CliChatUiModeArg {
+    #[default]
+    Text,
+    Tui,
+}
+
+impl From<CliChatUiModeArg> for mvp::chat::CliChatUiMode {
+    fn from(value: CliChatUiModeArg) -> Self {
+        match value {
+            CliChatUiModeArg::Text => Self::Text,
+            CliChatUiModeArg::Tui => Self::Tui,
+        }
+    }
+}
+
 #[derive(clap::Args, Debug, Clone, Default)]
 pub struct RunSpecBridgeSupportArgs {
     /// Optional JSON file containing a bridge support policy override for this spec run
@@ -785,6 +801,8 @@ pub enum Commands {
         config: Option<String>,
         #[arg(long)]
         session: Option<String>,
+        #[arg(long, value_enum, default_value_t = CliChatUiModeArg::Text)]
+        ui: CliChatUiModeArg,
         #[arg(long, default_value_t = false)]
         acp: bool,
         #[arg(long, default_value_t = false)]
@@ -4087,12 +4105,14 @@ pub fn resolve_acp_status_session_key(
 pub async fn run_chat_cli(
     config_path: Option<&str>,
     session: Option<&str>,
+    ui: CliChatUiModeArg,
     acp: bool,
     acp_event_stream: bool,
     acp_bootstrap_mcp_server: &[String],
     acp_cwd: Option<&str>,
 ) -> CliResult<()> {
-    let options = build_cli_chat_options(acp, acp_event_stream, acp_bootstrap_mcp_server, acp_cwd);
+    let options =
+        build_cli_chat_options(ui, acp, acp_event_stream, acp_bootstrap_mcp_server, acp_cwd);
     mvp::chat::run_cli_chat(config_path, session, &options).await
 }
 
@@ -4105,17 +4125,25 @@ pub async fn run_ask_cli(
     acp_bootstrap_mcp_server: &[String],
     acp_cwd: Option<&str>,
 ) -> CliResult<()> {
-    let options = build_cli_chat_options(acp, acp_event_stream, acp_bootstrap_mcp_server, acp_cwd);
+    let options = build_cli_chat_options(
+        CliChatUiModeArg::Text,
+        acp,
+        acp_event_stream,
+        acp_bootstrap_mcp_server,
+        acp_cwd,
+    );
     mvp::chat::run_cli_ask(config_path, session, message, &options).await
 }
 
 pub fn build_cli_chat_options(
+    ui: CliChatUiModeArg,
     acp: bool,
     acp_event_stream: bool,
     acp_bootstrap_mcp_server: &[String],
     acp_cwd: Option<&str>,
 ) -> mvp::chat::CliChatOptions {
     mvp::chat::CliChatOptions {
+        ui_mode: ui.into(),
         acp_requested: acp,
         acp_event_stream,
         acp_bootstrap_mcp_servers: acp_bootstrap_mcp_server.to_vec(),

@@ -390,6 +390,7 @@ async fn main() {
         Commands::Chat {
             config,
             session,
+            ui,
             acp,
             acp_event_stream,
             acp_bootstrap_mcp_server,
@@ -398,6 +399,7 @@ async fn main() {
             run_chat_cli(
                 config.as_deref(),
                 session.as_deref(),
+                ui,
                 acp,
                 acp_event_stream,
                 &acp_bootstrap_mcp_server,

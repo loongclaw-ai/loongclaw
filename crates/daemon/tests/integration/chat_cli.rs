@@ -145,6 +145,46 @@ impl Drop for ChatCliFixture {
 }
 
 #[test]
+fn chat_cli_accepts_tui_ui_flag() {
+    let cli = try_parse_cli(["loongclaw", "chat", "--ui", "tui"])
+        .expect("chat CLI should parse --ui tui");
+
+    match cli.command {
+        Some(Commands::Chat { ui, .. }) => assert_eq!(ui, CliChatUiModeArg::Tui),
+        other => panic!("unexpected command parse result: {other:?}"),
+    }
+}
+
+#[test]
+fn chat_cli_accepts_text_ui_flag() {
+    let cli = try_parse_cli(["loongclaw", "chat", "--ui", "text"])
+        .expect("chat CLI should parse --ui text");
+
+    match cli.command {
+        Some(Commands::Chat { ui, .. }) => assert_eq!(ui, CliChatUiModeArg::Text),
+        other => panic!("unexpected command parse result: {other:?}"),
+    }
+}
+
+#[test]
+fn chat_cli_help_mentions_ui_selector() {
+    let help = render_cli_help(["chat"]);
+
+    assert!(
+        help.contains("--ui <UI>"),
+        "chat help should mention the UI selector: {help}"
+    );
+    assert!(
+        help.contains("tui"),
+        "chat help should mention the tui UI value: {help}"
+    );
+    assert!(
+        help.contains("text"),
+        "chat help should mention the text UI value: {help}"
+    );
+}
+
+#[test]
 fn chat_without_config_runs_onboard_for_explicit_yes() {
     let fixture = ChatCliFixture::new("explicit-yes");
     let output = fixture.run_chat_command_with_fake_onboard(None, Some(b"yes\n"), Some(0));

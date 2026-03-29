@@ -21,8 +21,10 @@ use crate::acp::{
 use crate::context::{DEFAULT_TOKEN_TTL_S, bootstrap_kernel_context_with_config};
 
 mod cli_input;
+mod ui_mode;
 
 use self::cli_input::ConcurrentCliInputReader;
+pub use self::ui_mode::CliChatUiMode;
 
 use super::config::{self, ConversationConfig, LoongClawConfig};
 #[cfg(test)]
@@ -68,6 +70,7 @@ const CLI_CHAT_LIVE_TOOL_ARGS_MAX_BUFFER_CHARS: usize = 1024;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CliChatOptions {
+    pub ui_mode: CliChatUiMode,
     pub acp_requested: bool,
     pub acp_event_stream: bool,
     pub acp_bootstrap_mcp_servers: Vec<String>,
