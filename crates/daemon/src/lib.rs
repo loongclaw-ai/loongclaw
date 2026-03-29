@@ -795,13 +795,20 @@ pub enum Commands {
         #[arg(long = "acp-cwd")]
         acp_cwd: Option<String>,
     },
-    /// Start interactive CLI chat channel with sliding-window memory
+    #[command(
+        long_about = "Start interactive CLI chat with sliding-window memory.\n\nUse `--ui text` for the line-oriented chat surface or `--ui tui` for the balanced full-screen transcript shell. When LoongClaw cannot enter a full-screen terminal safely, it falls back to text mode automatically."
+    )]
     Chat {
         #[arg(long)]
         config: Option<String>,
         #[arg(long)]
         session: Option<String>,
-        #[arg(long, value_enum, default_value_t = CliChatUiModeArg::Text)]
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = CliChatUiModeArg::Text,
+            help = "Choose the interactive chat UI (`text` or `tui`)"
+        )]
         ui: CliChatUiModeArg,
         #[arg(long, default_value_t = false)]
         acp: bool,

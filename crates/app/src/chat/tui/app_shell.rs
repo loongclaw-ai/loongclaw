@@ -16,10 +16,11 @@ use crate::CliResult;
 use super::composer::{render_composer_text, render_composer_title};
 use super::events::UiEvent;
 use super::execution_band::render_execution_band_summary;
-use super::execution_drawer::render_execution_drawer_lines;
+use super::execution_drawer::{DrawerPayloadKind, render_execution_drawer_lines};
 use super::layout::split_shell;
 use super::reducer::reduce;
 use super::state::UiState;
+use super::theme::SemanticPalette;
 use super::transcript::{TranscriptRole, render_transcript_lines};
 
 pub(crate) fn build_shell_bootstrap_state(session_id: &str) -> UiState {
@@ -31,12 +32,20 @@ pub(crate) fn build_shell_bootstrap_state(session_id: &str) -> UiState {
     state
 }
 
-pub(super) async fn run_placeholder_shell(runtime: &super::super::CliTurnRuntime) -> CliResult<()> {
+pub(super) async fn run_placeholder_shell(
+    runtime: &super::super::CliTurnRuntime,
+    use_plain_palette: bool,
+) -> CliResult<()> {
     let mut terminal = TerminalGuard::enter()?;
     let mut events = EventStream::new();
     let mut state = build_shell_bootstrap_state(&runtime.session_id);
+    let palette = if use_plain_palette {
+        SemanticPalette::plain()
+    } else {
+        SemanticPalette::default()
+    };
 
-    terminal.draw(&state)?;
+    terminal.draw(&state, palette)?;
 
     while let Some(event) = events.next().await {
         match event {
@@ -49,9 +58,9 @@ pub(super) async fn run_placeholder_shell(runtime: &super::super::CliTurnRuntime
                     break;
                 }
 
-                terminal.draw(&state)?;
+                terminal.draw(&state, palette)?;
             }
-            Ok(Event::Resize(_, _)) => terminal.draw(&state)?,
+            Ok(Event::Resize(_, _)) => terminal.draw(&state, palette)?,
             Ok(_) => {}
             Err(error) => return Err(format!("failed to read TUI input event: {error}")),
         }
@@ -131,9 +140,9 @@ impl TerminalGuard {
         Ok(Self { terminal })
     }
 
-    fn draw(&mut self, state: &UiState) -> CliResult<()> {
+    fn draw(&mut self, state: &UiState, palette: SemanticPalette) -> CliResult<()> {
         self.terminal
-            .draw(|frame| render_shell(frame, state))
+            .draw(|frame| render_shell(frame, state, palette))
             .map(|_| ())
             .map_err(|error| format!("failed to draw TUI frame: {error}"))
     }
@@ -147,9 +156,12 @@ impl Drop for TerminalGuard {
     }
 }
 
-fn render_shell(frame: &mut Frame<'_>, state: &UiState) {
+fn render_shell(frame: &mut Frame<'_>, state: &UiState, palette: SemanticPalette) {
     let layout = split_shell(frame.area(), state.drawer.is_some());
     let focus_label = state.focus_target.label();
+    let border_style = Style::default().fg(palette.border);
+    let title_style = Style::default().fg(palette.accent);
+    let text_style = Style::default().fg(palette.text);
 
     let header = Paragraph::new(vec![
         Line::from("LoongClaw chat TUI"),
@@ -163,23 +175,58 @@ fn render_shell(frame: &mut Frame<'_>, state: &UiState) {
             }
         )),
     ])
-    .block(Block::default().title("Header").borders(Borders::ALL))
+    .style(text_style)
+    .block(
+        Block::default()
+            .title("Header")
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .title_style(title_style),
+    )
     .wrap(Wrap { trim: false });
     frame.render_widget(header, layout.header);
 
     let transcript = Paragraph::new(render_transcript_lines(&state.transcript))
-        .block(Block::default().title("Conversation").borders(Borders::ALL))
+        .style(text_style)
+        .block(
+            Block::default()
+                .title("Conversation")
+                .borders(Borders::ALL)
+                .border_style(border_style)
+                .title_style(title_style),
+        )
         .wrap(Wrap { trim: false });
     frame.render_widget(transcript, layout.transcript);
 
     let execution_band = Paragraph::new(render_execution_band_summary(&state.execution_band))
-        .block(Block::default().title("Execution").borders(Borders::ALL))
+        .style(text_style)
+        .block(
+            Block::default()
+                .title("Execution")
+                .borders(Borders::ALL)
+                .border_style(border_style)
+                .title_style(title_style),
+        )
         .wrap(Wrap { trim: false });
     frame.render_widget(execution_band, layout.execution_band);
 
     if let (Some(drawer_area), Some(drawer_payload)) = (layout.drawer, state.drawer.as_ref()) {
+        let drawer_title_style = match drawer_payload.kind {
+            DrawerPayloadKind::ApprovalDetail => Style::default().fg(palette.warning),
+            DrawerPayloadKind::ErrorDetail => Style::default().fg(palette.error),
+            DrawerPayloadKind::ToolOutput
+            | DrawerPayloadKind::ShellLog
+            | DrawerPayloadKind::Diff => title_style,
+        };
         let drawer = Paragraph::new(render_execution_drawer_lines(drawer_payload))
-            .block(Block::default().title("Drawer").borders(Borders::ALL))
+            .style(text_style)
+            .block(
+                Block::default()
+                    .title("Drawer")
+                    .borders(Borders::ALL)
+                    .border_style(border_style)
+                    .title_style(drawer_title_style),
+            )
             .wrap(Wrap { trim: false });
         frame.render_widget(drawer, drawer_area);
     }
@@ -188,10 +235,13 @@ fn render_shell(frame: &mut Frame<'_>, state: &UiState) {
         state.composer_text.as_str(),
         state.focus_target,
     ))
+    .style(text_style)
     .block(
         Block::default()
             .title(render_composer_title(state.focus_target))
-            .borders(Borders::ALL),
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .title_style(title_style),
     )
     .wrap(Wrap { trim: false });
     frame.render_widget(composer, layout.composer);

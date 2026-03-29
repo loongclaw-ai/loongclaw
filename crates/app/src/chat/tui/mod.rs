@@ -8,6 +8,7 @@ pub(super) mod layout;
 pub(super) mod reducer;
 pub(super) mod state;
 pub(super) mod terminal;
+pub(super) mod theme;
 pub(super) mod transcript;
 
 use crate::CliResult;
@@ -22,9 +23,11 @@ pub(super) async fn run_tui_chat(
     runtime: &super::CliTurnRuntime,
     _options: &super::CliChatOptions,
 ) -> CliResult<CliTuiLaunchResult> {
-    match terminal::resolve_launch_mode(terminal::TerminalSupportSnapshot::capture_current()) {
+    let policy =
+        terminal::resolve_terminal_policy(terminal::TerminalSupportSnapshot::capture_current());
+    match policy.launch {
         terminal::TerminalLaunch::Tui => {
-            app_shell::run_placeholder_shell(runtime).await?;
+            app_shell::run_placeholder_shell(runtime, policy.use_plain_palette).await?;
             Ok(CliTuiLaunchResult::Handled)
         }
         terminal::TerminalLaunch::FallbackToText { reason } => {
