@@ -1,3 +1,5 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use clap::Subcommand;
 use kernel::ToolCoreRequest;
 use loongclaw_app as mvp;
@@ -578,19 +580,110 @@ fn load_visible_background_task_ids(
 
     let mut task_ids = Vec::new();
     for session in sessions {
-        let task_id = session.session_id;
-        let status_payload =
-            load_task_status_payload(memory_config, tool_config, current_session_id, &task_id)?;
-        let status_summary = summarize_task_status_payload(&status_payload)?;
+        let status_summary = summarize_visible_background_task(&repo, &session)?;
         if !status_summary.is_background_task {
             continue;
         }
         if overdue_only && !status_summary.is_overdue {
             continue;
         }
+        let task_id = session.session_id;
         task_ids.push(task_id);
     }
     Ok(task_ids)
+}
+
+fn summarize_visible_background_task(
+    repo: &mvp::session::repository::SessionRepository,
+    session: &mvp::session::repository::SessionSummaryRecord,
+) -> CliResult<TaskStatusSummary> {
+    let delegate_kind = mvp::session::repository::SessionKind::DelegateChild;
+    if session.kind != delegate_kind {
+        return Ok(TaskStatusSummary {
+            is_background_task: false,
+            is_overdue: false,
+        });
+    }
+
+    let delegate_events = repo.list_delegate_lifecycle_events(&session.session_id)?;
+    let mut queued_at = None;
+    let mut started_at = None;
+    let mut queued_timeout_seconds = None;
+    let mut started_timeout_seconds = None;
+    let mut execution_mode = None;
+
+    for event in delegate_events {
+        let event_kind = event.event_kind.as_str();
+        let execution = mvp::conversation::ConstrainedSubagentExecution::from_event_payload(
+            &event.payload_json,
+        );
+        let event_mode = execution.as_ref().map(|value| value.mode);
+        let event_timeout_seconds = event
+            .payload_json
+            .get("timeout_seconds")
+            .and_then(Value::as_u64)
+            .or_else(|| execution.as_ref().map(|value| value.timeout_seconds));
+
+        match event_kind {
+            "delegate_queued" => {
+                queued_at = Some(event.ts);
+                if execution_mode.is_none() {
+                    execution_mode = event_mode;
+                }
+                if queued_timeout_seconds.is_none() {
+                    queued_timeout_seconds = event_timeout_seconds;
+                }
+            }
+            "delegate_started" => {
+                started_at = Some(event.ts);
+                if execution_mode.is_none() {
+                    execution_mode = event_mode;
+                }
+                if started_timeout_seconds.is_none() {
+                    started_timeout_seconds = event_timeout_seconds;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let async_mode = mvp::conversation::ConstrainedSubagentMode::Async;
+    let inline_mode = mvp::conversation::ConstrainedSubagentMode::Inline;
+    let effective_mode = execution_mode.unwrap_or_else(|| {
+        if queued_at.is_some() || session.state == mvp::session::repository::SessionState::Ready {
+            async_mode
+        } else {
+            inline_mode
+        }
+    });
+    let timeout_seconds = started_timeout_seconds.or(queued_timeout_seconds);
+    let reference_at = match session.state {
+        mvp::session::repository::SessionState::Ready => queued_at,
+        mvp::session::repository::SessionState::Running => started_at.or(queued_at),
+        mvp::session::repository::SessionState::Completed => None,
+        mvp::session::repository::SessionState::Failed => None,
+        mvp::session::repository::SessionState::TimedOut => None,
+    };
+    let now_ts = current_unix_timestamp();
+    let is_overdue = match (reference_at, timeout_seconds) {
+        (Some(reference_at), Some(timeout_seconds)) => {
+            let elapsed_seconds = now_ts.saturating_sub(reference_at).max(0) as u64;
+            elapsed_seconds > timeout_seconds
+        }
+        _ => false,
+    };
+    let is_background_task = effective_mode == async_mode;
+
+    Ok(TaskStatusSummary {
+        is_background_task,
+        is_overdue,
+    })
+}
+
+fn current_unix_timestamp() -> i64 {
+    let now = SystemTime::now();
+    let duration = now.duration_since(UNIX_EPOCH).unwrap_or_default();
+    duration.as_secs().min(i64::MAX as u64) as i64
 }
 
 fn build_task_detail(
