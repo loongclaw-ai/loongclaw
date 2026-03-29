@@ -1,9 +1,11 @@
 pub(super) mod app_shell;
 pub(super) mod events;
+pub(super) mod execution_band;
 pub(super) mod layout;
 pub(super) mod reducer;
 pub(super) mod state;
 pub(super) mod terminal;
+pub(super) mod transcript;
 
 use crate::CliResult;
 

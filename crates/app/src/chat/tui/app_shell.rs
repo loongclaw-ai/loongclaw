@@ -14,12 +14,19 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use crate::CliResult;
 
 use super::events::UiEvent;
+use super::execution_band::render_execution_band_summary;
 use super::layout::split_shell;
 use super::reducer::reduce;
 use super::state::{FocusTarget, UiState};
+use super::transcript::{TranscriptRole, render_transcript_lines};
 
 pub(crate) fn build_shell_bootstrap_state(session_id: &str) -> UiState {
-    UiState::with_session_id(session_id)
+    let mut state = UiState::with_session_id(session_id);
+    state.transcript.push_message(
+        TranscriptRole::Assistant,
+        "TUI shell bootstrap ready. Press Esc or Ctrl-C to exit.",
+    );
+    state
 }
 
 pub(super) async fn run_placeholder_shell(runtime: &super::super::CliTurnRuntime) -> CliResult<()> {
@@ -156,16 +163,12 @@ fn render_shell(frame: &mut Frame<'_>, state: &UiState) {
     .wrap(Wrap { trim: false });
     frame.render_widget(header, layout.header);
 
-    let transcript = Paragraph::new(vec![
-        Line::from("Transcript bootstrap"),
-        Line::from("The full transcript and execution state will land in later tasks."),
-        Line::from("Press Esc or Ctrl-C to exit the shell."),
-    ])
-    .block(Block::default().title("Conversation").borders(Borders::ALL))
-    .wrap(Wrap { trim: false });
+    let transcript = Paragraph::new(render_transcript_lines(&state.transcript))
+        .block(Block::default().title("Conversation").borders(Borders::ALL))
+        .wrap(Wrap { trim: false });
     frame.render_widget(transcript, layout.transcript);
 
-    let execution_band = Paragraph::new(state.status_message.as_str())
+    let execution_band = Paragraph::new(render_execution_band_summary(&state.execution_band))
         .block(Block::default().title("Execution").borders(Borders::ALL))
         .wrap(Wrap { trim: false });
     frame.render_widget(execution_band, layout.execution_band);
