@@ -228,37 +228,65 @@ mod tests {
         requests: Arc<Mutex<Vec<MockRequest>>>,
     }
 
-    async fn spawn_mock_feishu_server(router: Router) -> (String, tokio::task::JoinHandle<()>) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind mock feishu server");
-        let address = listener.local_addr().expect("mock server addr");
+    async fn spawn_mock_feishu_server(
+        router: Router,
+    ) -> CliResult<(String, tokio::task::JoinHandle<()>)> {
+        let bind_result = tokio::net::TcpListener::bind("127.0.0.1:0").await;
+        let listener = bind_result.map_err(|error| format!("bind mock feishu server: {error}"))?;
+        let address_result = listener.local_addr();
+        let address = address_result.map_err(|error| format!("mock server addr: {error}"))?;
         let handle = tokio::spawn(async move {
-            axum::serve(listener, router)
-                .await
-                .expect("serve mock feishu api");
+            let serve_result = axum::serve(listener, router).await;
+            assert!(
+                serve_result.is_ok(),
+                "serve mock feishu api: {:?}",
+                serve_result.err()
+            );
         });
-        (format!("http://{address}"), handle)
+        let base_url = format!("http://{address}");
+        Ok((base_url, handle))
     }
 
     async fn record_request(State(state): State<MockServerState>, request: Request) {
         let (parts, body) = request.into_parts();
-        let body = to_bytes(body, usize::MAX)
-            .await
-            .expect("read mock request body");
-        state.requests.lock().await.push(MockRequest {
-            path: parts.uri.path().to_owned(),
-            query: parts.uri.query().map(ToOwned::to_owned),
-            authorization: parts
-                .headers
-                .get(axum::http::header::AUTHORIZATION)
-                .and_then(|value| value.to_str().ok())
-                .map(ToOwned::to_owned),
-            body: String::from_utf8(body.to_vec()).expect("mock request body utf8"),
-        });
+        let body_result = to_bytes(body, usize::MAX).await;
+        assert!(
+            body_result.is_ok(),
+            "read mock request body: {:?}",
+            body_result.as_ref().err()
+        );
+        let body = match body_result {
+            Ok(body) => body,
+            Err(_) => return,
+        };
+        let body_text_result = String::from_utf8(body.to_vec());
+        assert!(
+            body_text_result.is_ok(),
+            "mock request body utf8: {:?}",
+            body_text_result.as_ref().err()
+        );
+        let body_text = match body_text_result {
+            Ok(body_text) => body_text,
+            Err(_) => return,
+        };
+        let authorization = parts
+            .headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .map(ToOwned::to_owned);
+        let path = parts.uri.path().to_owned();
+        let query = parts.uri.query().map(ToOwned::to_owned);
+        let request = MockRequest {
+            path,
+            query,
+            authorization,
+            body: body_text,
+        };
+        let mut requests = state.requests.lock().await;
+        requests.push(request);
     }
 
-    fn resolved_config(base_url: &str) -> ResolvedFeishuChannelConfig {
+    fn resolved_config(base_url: &str) -> CliResult<ResolvedFeishuChannelConfig> {
         let mut config = LoongClawConfig::default();
         config.feishu.enabled = true;
         config.feishu.account_id = Some("feishu_work".to_owned());
@@ -277,10 +305,10 @@ mod tests {
             "encrypt-key".to_owned(),
         ));
         config.feishu.allowed_chat_ids = vec!["oc_demo".to_owned()];
-        config
-            .feishu
-            .resolve_account(None)
-            .expect("resolve feishu test account")
+        let resolved_result = config.feishu.resolve_account(None);
+        let resolved =
+            resolved_result.map_err(|error| format!("resolve feishu test account: {error}"))?;
+        Ok(resolved)
     }
 
     #[tokio::test]
@@ -324,10 +352,29 @@ mod tests {
                     }
                 }),
             );
-        let (base_url, server) = spawn_mock_feishu_server(router).await;
+        let server_result = spawn_mock_feishu_server(router).await;
+        assert!(
+            server_result.is_ok(),
+            "spawn mock feishu server: {:?}",
+            server_result.as_ref().err()
+        );
+        let (base_url, server) = match server_result {
+            Ok(server) => server,
+            Err(_) => return,
+        };
+        let config_result = resolved_config(&base_url);
+        assert!(
+            config_result.is_ok(),
+            "resolve feishu test config: {:?}",
+            config_result.as_ref().err()
+        );
+        let config = match config_result {
+            Ok(config) => config,
+            Err(_) => return,
+        };
 
-        run_feishu_send(
-            &resolved_config(&base_url),
+        let send_result = run_feishu_send(
+            &config,
             &FeishuChannelSendRequest {
                 receive_id: "ou_demo".to_owned(),
                 receive_id_type: Some("open_id".to_owned()),
@@ -339,8 +386,12 @@ mod tests {
                 ..FeishuChannelSendRequest::default()
             },
         )
-        .await
-        .expect("run feishu send");
+        .await;
+        assert!(
+            send_result.is_ok(),
+            "run feishu send: {:?}",
+            send_result.as_ref().err()
+        );
 
         let requests = requests.lock().await.clone();
         assert_eq!(requests.len(), 2);
