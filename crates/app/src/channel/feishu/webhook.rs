@@ -22,13 +22,13 @@ use tokio::sync::Mutex;
 
 use crate::CliResult;
 use crate::KernelContext;
+use crate::channel::feishu::api::{FeishuClient, resources::cards};
 use crate::channel::{
     ChannelAdapter, ChannelInboundMessage, ChannelOutboundTarget, ChannelTurnFeedbackPolicy,
     process_inbound_with_provider, runtime_state::ChannelOperationRuntimeTracker,
 };
 use crate::config::{LoongClawConfig, ResolvedFeishuChannelConfig};
 use crate::crypto::timing_safe_eq;
-use crate::feishu::{FeishuClient, resources::cards};
 
 use super::adapter::{FeishuAdapter, outbound_reply_message_from_text};
 use super::payload::{FeishuCardCallbackEvent, FeishuWebhookAction};
@@ -2186,15 +2186,18 @@ mod tests {
             response.body(),
             &json!({
                 "card": {
+                    "schema": "2.0",
                     "config": {
                         "wide_screen_mode": true
                     },
-                    "elements": [
-                        {
-                            "tag": "markdown",
-                            "content": "Approved inline"
-                        }
-                    ]
+                    "body": {
+                        "elements": [
+                            {
+                                "tag": "markdown",
+                                "content": "Approved inline"
+                            }
+                        ]
+                    }
                 }
             })
         );
@@ -2386,15 +2389,18 @@ mod tests {
                     "content": "Approved"
                 },
                 "card": {
+                    "schema": "2.0",
                     "config": {
                         "wide_screen_mode": true
                     },
-                    "elements": [
-                        {
-                            "tag": "markdown",
-                            "content": "Approved inline"
-                        }
-                    ]
+                    "body": {
+                        "elements": [
+                            {
+                                "tag": "markdown",
+                                "content": "Approved inline"
+                            }
+                        ]
+                    }
                 }
             })
         );
