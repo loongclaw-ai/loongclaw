@@ -289,7 +289,11 @@ Delivered in current baseline:
 - `loongclaw plugins init <package_root>` scaffolds a manifest-first plugin
   package root with a canonical `loongclaw.plugin.json`, current host
   compatibility defaults, and a README that routes authors into shared
-  governance validation instead of internal crate spelunking
+  package diagnosis instead of internal crate spelunking
+- `loongclaw plugins doctor --root <package_root>` reuses the shared
+  `plugin_preflight` contract for author-facing package diagnosis, defaulting
+  to the `sdk_release` profile while surfacing setup truth, remediation
+  classes, and required operator follow-up actions
 - package-manifest runtime projection now also honors explicit
   `metadata.source_language`, so language-specific scaffolded packages keep
   canonical bridge, adapter-family, and preflight language semantics

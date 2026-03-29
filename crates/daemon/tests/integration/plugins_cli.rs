@@ -25,6 +25,7 @@ fn plugins_bridge_profiles_cli_parses_selected_profile_and_json_flag() {
                     );
                 }
                 other @ loongclaw_daemon::plugins_cli::PluginsCommands::Init(_)
+                | other @ loongclaw_daemon::plugins_cli::PluginsCommands::Doctor(_)
                 | other @ loongclaw_daemon::plugins_cli::PluginsCommands::Inventory(_)
                 | other @ loongclaw_daemon::plugins_cli::PluginsCommands::BridgeTemplate(_)
                 | other @ loongclaw_daemon::plugins_cli::PluginsCommands::Preflight(_)
@@ -74,6 +75,60 @@ fn plugins_inventory_cli_parses_bridge_profile_and_examples_flag() {
                     assert!(command.include_examples);
                 }
                 other @ loongclaw_daemon::plugins_cli::PluginsCommands::Init(_)
+                | other @ loongclaw_daemon::plugins_cli::PluginsCommands::Doctor(_)
+                | other @ loongclaw_daemon::plugins_cli::PluginsCommands::BridgeProfiles(_)
+                | other @ loongclaw_daemon::plugins_cli::PluginsCommands::BridgeTemplate(_)
+                | other @ loongclaw_daemon::plugins_cli::PluginsCommands::Preflight(_)
+                | other @ loongclaw_daemon::plugins_cli::PluginsCommands::Actions(_) => {
+                    panic!("unexpected plugins subcommand parsed: {other:?}");
+                }
+            }
+        }
+        other => panic!("unexpected parse result: {other:?}"),
+    }
+}
+
+#[test]
+fn plugins_doctor_cli_defaults_to_sdk_release_profile() {
+    let cli = try_parse_cli([
+        "loongclaw",
+        "plugins",
+        "doctor",
+        "--root",
+        "/tmp/plugins",
+        "--query",
+        "weather-sdk",
+        "--bridge-profile",
+        "openclaw-ecosystem-balanced",
+        "--json",
+    ])
+    .expect("plugins doctor CLI should parse");
+
+    match cli.command {
+        Some(Commands::Plugins { json, command }) => {
+            assert!(json);
+            match command {
+                loongclaw_daemon::plugins_cli::PluginsCommands::Doctor(command) => {
+                    assert_eq!(command.source.scan.roots, vec!["/tmp/plugins".to_owned()]);
+                    assert_eq!(command.source.scan.query, "weather-sdk");
+                    assert_eq!(command.source.scan.limit, None);
+                    assert_eq!(
+                        command.source.scan.bridge_profile,
+                        Some(
+                            loongclaw_daemon::plugins_cli::PluginBridgeProfileArg::OpenclawEcosystemBalanced
+                        )
+                    );
+                    assert_eq!(
+                        command.source.profile,
+                        loongclaw_daemon::plugins_cli::PluginPreflightProfileArg::SdkRelease
+                    );
+                    assert!(command.include_passed);
+                    assert!(command.include_warned);
+                    assert!(command.include_blocked);
+                    assert!(command.include_deferred);
+                }
+                other @ loongclaw_daemon::plugins_cli::PluginsCommands::Init(_)
+                | other @ loongclaw_daemon::plugins_cli::PluginsCommands::Inventory(_)
                 | other @ loongclaw_daemon::plugins_cli::PluginsCommands::BridgeProfiles(_)
                 | other @ loongclaw_daemon::plugins_cli::PluginsCommands::BridgeTemplate(_)
                 | other @ loongclaw_daemon::plugins_cli::PluginsCommands::Preflight(_)
@@ -140,6 +195,7 @@ fn plugins_actions_cli_parses_filters_and_global_json_after_subcommand() {
                     assert_eq!(command.requires_reload, Some(true));
                 }
                 other @ loongclaw_daemon::plugins_cli::PluginsCommands::Init(_)
+                | other @ loongclaw_daemon::plugins_cli::PluginsCommands::Doctor(_)
                 | other @ loongclaw_daemon::plugins_cli::PluginsCommands::Inventory(_)
                 | other @ loongclaw_daemon::plugins_cli::PluginsCommands::BridgeProfiles(_)
                 | other @ loongclaw_daemon::plugins_cli::PluginsCommands::BridgeTemplate(_)
@@ -189,6 +245,7 @@ fn plugins_bridge_template_cli_parses_output_and_bridge_profile() {
                     );
                 }
                 other @ loongclaw_daemon::plugins_cli::PluginsCommands::Init(_)
+                | other @ loongclaw_daemon::plugins_cli::PluginsCommands::Doctor(_)
                 | other @ loongclaw_daemon::plugins_cli::PluginsCommands::Inventory(_)
                 | other @ loongclaw_daemon::plugins_cli::PluginsCommands::BridgeProfiles(_)
                 | other @ loongclaw_daemon::plugins_cli::PluginsCommands::Preflight(_)
@@ -232,6 +289,7 @@ fn plugins_preflight_cli_parses_bridge_support_delta_selector() {
                     );
                 }
                 other @ loongclaw_daemon::plugins_cli::PluginsCommands::Init(_)
+                | other @ loongclaw_daemon::plugins_cli::PluginsCommands::Doctor(_)
                 | other @ loongclaw_daemon::plugins_cli::PluginsCommands::Inventory(_)
                 | other @ loongclaw_daemon::plugins_cli::PluginsCommands::BridgeProfiles(_)
                 | other @ loongclaw_daemon::plugins_cli::PluginsCommands::BridgeTemplate(_)
@@ -286,7 +344,8 @@ fn plugins_init_cli_parses_manifest_scaffold_request() {
                         Some("Tavily-backed search package")
                     );
                 }
-                other @ loongclaw_daemon::plugins_cli::PluginsCommands::BridgeProfiles(_)
+                other @ loongclaw_daemon::plugins_cli::PluginsCommands::Doctor(_)
+                | other @ loongclaw_daemon::plugins_cli::PluginsCommands::BridgeProfiles(_)
                 | other @ loongclaw_daemon::plugins_cli::PluginsCommands::Inventory(_)
                 | other @ loongclaw_daemon::plugins_cli::PluginsCommands::BridgeTemplate(_)
                 | other @ loongclaw_daemon::plugins_cli::PluginsCommands::Preflight(_)
@@ -304,6 +363,7 @@ fn plugins_help_mentions_preflight_and_action_plan() {
     let help = render_cli_help(["plugins"]);
 
     assert!(help.contains("plugin preflight"), "help: {help}");
+    assert!(help.contains("doctor"), "help: {help}");
     assert!(help.contains("init"), "help: {help}");
     assert!(help.contains("inventory"), "help: {help}");
     assert!(help.contains("bridge-profiles"), "help: {help}");
@@ -329,6 +389,25 @@ fn plugins_inventory_help_mentions_scan_and_bridge_flags_without_governance_prof
     );
     assert!(help.contains("--include-examples"), "help: {help}");
     assert!(!help.contains("--profile <PROFILE>"), "help: {help}");
+}
+
+#[test]
+fn plugins_doctor_help_mentions_sdk_release_profile_and_scan_flags() {
+    let help = render_cli_help(["plugins", "doctor"]);
+
+    assert!(help.contains("--root <ROOT>"), "help: {help}");
+    assert!(help.contains("--query <QUERY>"), "help: {help}");
+    assert!(help.contains("--limit <LIMIT>"), "help: {help}");
+    assert!(help.contains("--profile <PROFILE>"), "help: {help}");
+    assert!(help.contains("sdk-release"), "help: {help}");
+    assert!(
+        help.contains("--bridge-profile <BRIDGE_PROFILE>"),
+        "help: {help}"
+    );
+    assert!(
+        help.contains("--bridge-support-delta <BRIDGE_SUPPORT_DELTA>"),
+        "help: {help}"
+    );
 }
 
 #[test]

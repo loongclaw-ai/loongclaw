@@ -209,6 +209,9 @@ contract:
   bounded authoring bootstrap that writes a canonical
   `loongclaw.plugin.json` plus a README for external authors instead of asking
   them to reverse-engineer package shape from kernel internals or tests
+- the daemon now also exposes `loongclaw plugins doctor --root <package_root>`
+  as the author-facing diagnosis surface, reusing shared preflight truth to
+  surface setup contracts, remediation classes, and operator follow-up actions
 - scaffolded manifests pin `api_version` and `compatibility.host_api` to the
   current host contract and reuse kernel-owned bridge defaults for
   `bridge_kind`, `adapter_family`, and `entrypoint`
@@ -260,7 +263,7 @@ The scaffold is intentionally narrow:
 
 - it creates an empty package root only
 - it writes a canonical `loongclaw.plugin.json`
-- it writes a README that points authors to `plugins preflight` and
+- it writes a README that points authors to `plugins doctor` and
   `plugins actions`
 - it does not generate runtime code, widen trust policy, or guess setup/slot
   ownership
