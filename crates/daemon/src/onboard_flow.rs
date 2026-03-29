@@ -215,6 +215,102 @@ mod tests {
         }
     }
 
+    /// A runner that returns `Back` from a configured step on first visit,
+    /// exercising the back-navigation loop in `run_guided_onboard_flow`.
+    struct BackNavigatingRunner {
+        visited: Vec<OnboardWizardStep>,
+        back_from: OnboardWizardStep,
+        back_fired: bool,
+    }
+
+    impl BackNavigatingRunner {
+        fn new(back_from: OnboardWizardStep) -> Self {
+            Self {
+                visited: Vec::new(),
+                back_from,
+                back_fired: false,
+            }
+        }
+    }
+
+    impl GuidedOnboardFlowStepRunner for BackNavigatingRunner {
+        async fn run_step(
+            &mut self,
+            step: OnboardWizardStep,
+            draft: &mut OnboardDraft,
+        ) -> CliResult<OnboardFlowStepAction> {
+            self.visited.push(step);
+            if step == self.back_from && !self.back_fired {
+                self.back_fired = true;
+                return Ok(OnboardFlowStepAction::Back);
+            }
+            match step {
+                OnboardWizardStep::Workspace => {
+                    draft.set_workspace_file_root(PathBuf::from("/guided/workspace"));
+                    Ok(OnboardFlowStepAction::Next)
+                }
+                OnboardWizardStep::Protocols => {
+                    draft.set_acp_backend(Some("jsonrpc".to_owned()));
+                    Ok(OnboardFlowStepAction::Next)
+                }
+                OnboardWizardStep::Welcome
+                | OnboardWizardStep::Authentication
+                | OnboardWizardStep::RuntimeDefaults
+                | OnboardWizardStep::EnvironmentCheck
+                | OnboardWizardStep::ReviewAndWrite
+                | OnboardWizardStep::Ready => Ok(OnboardFlowStepAction::Next),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn guided_flow_back_navigation_replays_previous_step() {
+        let controller = OnboardFlowController::new(sample_draft());
+        let mut runner = BackNavigatingRunner::new(OnboardWizardStep::RuntimeDefaults);
+
+        let controller = run_guided_onboard_flow(controller, &mut runner)
+            .await
+            .expect("run guided onboard flow with back");
+
+        // RuntimeDefaults returns Back on first visit, so the flow should:
+        // Welcome -> Auth -> RuntimeDefaults(back) -> Auth(replay) -> RuntimeDefaults -> ...
+        assert_eq!(
+            runner.visited,
+            vec![
+                OnboardWizardStep::Welcome,
+                OnboardWizardStep::Authentication,
+                OnboardWizardStep::RuntimeDefaults, // first visit: returns Back
+                OnboardWizardStep::Authentication,  // replayed after back
+                OnboardWizardStep::RuntimeDefaults, // second visit: returns Next
+                OnboardWizardStep::Workspace,
+                OnboardWizardStep::Protocols,
+            ]
+        );
+        assert_eq!(
+            controller.current_step(),
+            OnboardWizardStep::EnvironmentCheck
+        );
+        assert!(runner.back_fired);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn guided_flow_back_from_welcome_stays_at_welcome() {
+        let controller = OnboardFlowController::new(sample_draft());
+        let mut runner = BackNavigatingRunner::new(OnboardWizardStep::Welcome);
+
+        let controller = run_guided_onboard_flow(controller, &mut runner)
+            .await
+            .expect("run guided onboard flow with back from welcome");
+
+        // Back from Welcome should clamp to cursor 0 (Welcome again), then proceed normally.
+        assert_eq!(runner.visited[0], OnboardWizardStep::Welcome); // first: returns Back
+        assert_eq!(runner.visited[1], OnboardWizardStep::Welcome); // replayed (clamped at 0)
+        assert_eq!(
+            controller.current_step(),
+            OnboardWizardStep::EnvironmentCheck
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn guided_flow_runner_owns_step_order_until_environment_boundary() {
         let controller = OnboardFlowController::new(sample_draft());

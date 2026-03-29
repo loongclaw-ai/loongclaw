@@ -3313,3 +3313,71 @@ fn rollback_removes_partial_first_write_config() {
         "first-write rollback should remove the partially written config"
     );
 }
+
+#[test]
+fn rollback_failure_produces_compound_error_message() {
+    let output_path = std::env::temp_dir().join(format!(
+        "loongclaw-compound-rollback-{}.toml",
+        std::process::id()
+    ));
+    fs::write(&output_path, "original = true\n").expect("write original config");
+
+    // Point backup to a non-existent directory so rollback copy fails.
+    let recovery = OnboardWriteRecovery {
+        output_preexisted: true,
+        backup_path: Some(
+            std::env::temp_dir()
+                .join("nonexistent-rollback-dir")
+                .join("backup.toml"),
+        ),
+        keep_backup_on_success: false,
+    };
+
+    let error =
+        rollback_onboard_write_failure(&output_path, &recovery, "config write failed: disk full");
+
+    assert!(
+        error.contains("config write failed: disk full"),
+        "compound error should include the original failure"
+    );
+    assert!(
+        error.contains("additionally failed to restore original config"),
+        "compound error should include the rollback failure"
+    );
+
+    // Cleanup
+    let _ = fs::remove_file(&output_path);
+}
+
+#[test]
+fn rollback_success_returns_original_failure_only() {
+    let dir =
+        std::env::temp_dir().join(format!("loongclaw-rollback-success-{}", std::process::id()));
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    let output_path = dir.join("config.toml");
+    let backup_path = dir.join("config.toml.bak");
+    fs::write(&output_path, "modified = true\n").expect("write modified config");
+    fs::write(&backup_path, "original = true\n").expect("write backup config");
+
+    let recovery = OnboardWriteRecovery {
+        output_preexisted: true,
+        backup_path: Some(backup_path),
+        keep_backup_on_success: false,
+    };
+
+    let error = rollback_onboard_write_failure(&output_path, &recovery, "verification failed");
+
+    assert_eq!(
+        error, "verification failed",
+        "when rollback succeeds, only the original failure should be returned"
+    );
+    assert_eq!(
+        fs::read_to_string(&output_path).unwrap(),
+        "original = true\n",
+        "rollback should restore the original config"
+    );
+
+    // Cleanup
+    let _ = fs::remove_dir_all(&dir);
+}
