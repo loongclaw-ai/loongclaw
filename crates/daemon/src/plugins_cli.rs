@@ -15,9 +15,9 @@ use crate::kernel::{
 use crate::{
     BridgeSupportSpec, CliResult, HumanApprovalMode, HumanApprovalSpec, JsonSchemaDescriptor,
     MaterializedBridgeSupportDeltaArtifact, OperationSpec, PluginInventoryResult,
-    PluginPreflightBridgeProfileRecommendation, PluginPreflightProfile, PluginScanSpec,
-    ResolvedBridgeSupportSelection, RunnerSpec, SecurityProfileSignatureSpec, SpecRunReport,
-    default_plugin_inventory_limit, default_plugin_preflight_limit, execute_spec,
+    PluginPreflightBridgeProfileRecommendation, PluginPreflightProfile, PluginPreflightResult,
+    PluginScanSpec, ResolvedBridgeSupportSelection, RunnerSpec, SecurityProfileSignatureSpec,
+    SpecRunReport, default_plugin_inventory_limit, default_plugin_preflight_limit, execute_spec,
     json_schema_descriptor, materialize_bridge_support_delta_artifact,
     materialize_bridge_support_template, resolve_bridge_support_policy,
     resolve_bridge_support_selection,
@@ -26,6 +26,7 @@ use crate::{
 pub const PLUGINS_COMMAND_SCHEMA_VERSION: u32 = 1;
 pub const PLUGINS_COMMAND_SCHEMA_SURFACE: &str = "plugin_governance";
 pub const PLUGINS_INVENTORY_SCHEMA_PURPOSE: &str = "package_inventory";
+pub const PLUGINS_DOCTOR_SCHEMA_PURPOSE: &str = "package_doctor";
 pub const PLUGINS_BRIDGE_PROFILES_SCHEMA_PURPOSE: &str = "bridge_profiles_catalog";
 pub const PLUGINS_BRIDGE_TEMPLATE_SCHEMA_PURPOSE: &str = "bridge_support_materialization";
 pub const PLUGINS_PREFLIGHT_SCHEMA_PURPOSE: &str = "ecosystem_preflight_evaluation";
@@ -45,6 +46,8 @@ pub enum PluginsCommands {
     Init(PluginInitCommand),
     /// Inspect manifest-first package truth across one or more plugin roots
     Inventory(PluginInventoryCommand),
+    /// Diagnose manifest-first plugin packages with author-facing remediation
+    Doctor(PluginDoctorCommand),
     /// List bundled bridge support profiles for controlled ecosystem compatibility
     BridgeProfiles(PluginBridgeProfilesCommand),
     /// Emit the effective recommended bridge support profile template for the scanned ecosystem
@@ -123,6 +126,52 @@ pub struct PluginInventoryCommand {
     /// Include input/output examples in inventory result rows
     #[arg(long, default_value_t = false)]
     pub include_examples: bool,
+}
+
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct PluginDoctorSourceArgs {
+    #[command(flatten)]
+    pub scan: PluginScanSourceArgs,
+    /// Author-facing governance profile to evaluate
+    #[arg(long, value_enum, default_value_t = PluginPreflightProfileArg::SdkRelease)]
+    pub profile: PluginPreflightProfileArg,
+    /// Optional plugin preflight policy JSON file
+    #[arg(long)]
+    pub policy_path: Option<String>,
+    /// Optional sha256 pin for the plugin preflight policy file
+    #[arg(long)]
+    pub policy_sha256: Option<String>,
+    /// Optional base64-encoded public key for plugin preflight policy signature verification
+    #[arg(long)]
+    pub policy_signature_public_key_base64: Option<String>,
+    /// Optional base64-encoded signature for plugin preflight policy verification
+    #[arg(long)]
+    pub policy_signature_base64: Option<String>,
+    /// Signature algorithm for the provided policy signature
+    #[arg(long, default_value = "ed25519")]
+    pub policy_signature_algorithm: String,
+}
+
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+#[command(
+    about = "Diagnose manifest-first plugin packages and show author-facing remediation",
+    long_about = "Diagnose manifest-first plugin packages and show author-facing remediation.\n\nThis command reuses the shared spec `plugin_preflight` surface, but defaults to the `sdk_release` profile and renders package-author truth first: setup contract, activation status, diagnostics, remediation classes, and required operator actions. Use `--profile runtime-activation` or `--profile marketplace-submission` when you need host-specific or stricter ecosystem review."
+)]
+pub struct PluginDoctorCommand {
+    #[command(flatten)]
+    pub source: PluginDoctorSourceArgs,
+    /// Include plugins that pass the selected governance profile
+    #[arg(long, default_value_t = true)]
+    pub include_passed: bool,
+    /// Include plugins that warn under the selected governance profile
+    #[arg(long, default_value_t = true)]
+    pub include_warned: bool,
+    /// Include plugins that block under the selected governance profile
+    #[arg(long, default_value_t = true)]
+    pub include_blocked: bool,
+    /// Include deferred plugins in the doctor scan
+    #[arg(long, default_value_t = true)]
+    pub include_deferred: bool,
 }
 
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
@@ -233,7 +282,7 @@ impl PluginInitBridgeKindArg {
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
 #[command(
     about = "Scaffold a manifest-first plugin package root for external authors",
-    long_about = "Scaffold a manifest-first plugin package root for external authors.\n\nThe generated package contains a canonical `loongclaw.plugin.json` plus a README that points authors to `loongclaw plugins preflight` and `loongclaw plugins actions` for governance validation. This command scaffolds package metadata only; it does not generate runtime code or widen trust policy."
+    long_about = "Scaffold a manifest-first plugin package root for external authors.\n\nThe generated package contains a canonical `loongclaw.plugin.json` plus a README that points authors to `loongclaw plugins doctor` and `loongclaw plugins actions` for shared governance validation. This command scaffolds package metadata only; it does not generate runtime code or widen trust policy."
 )]
 pub struct PluginInitCommand {
     /// Target package root to create or reuse when the directory is empty
@@ -459,6 +508,48 @@ pub struct PluginsInventoryExecution {
     pub results: Vec<PluginInventoryResult>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PluginsDoctorSummaryView {
+    pub matched_plugins: usize,
+    pub returned_plugins: usize,
+    pub passed_plugins: usize,
+    pub warned_plugins: usize,
+    pub blocked_plugins: usize,
+    pub activation_ready_plugins: usize,
+    pub setup_incomplete_plugins: usize,
+    pub deferred_plugins: usize,
+    pub loaded_plugins: usize,
+    pub packages_requiring_author_attention: usize,
+    pub packages_with_operator_actions: usize,
+    pub total_recommended_actions: usize,
+    pub total_operator_actions: usize,
+    pub remediation_counts: BTreeMap<String, usize>,
+    pub bridge_kind_distribution: BTreeMap<String, usize>,
+    pub source_language_distribution: BTreeMap<String, usize>,
+    pub setup_surface_distribution: BTreeMap<String, usize>,
+    pub activation_status_distribution: BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PluginsDoctorExecution {
+    pub schema_version: u32,
+    pub schema: JsonSchemaDescriptor,
+    pub scan_roots: Vec<String>,
+    pub query: String,
+    pub limit: usize,
+    pub profile: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bridge_support_provenance: Option<PluginsBridgeSupportProvenanceView>,
+    pub bridge_support_source: Option<String>,
+    pub bridge_support_sha256: Option<String>,
+    pub bridge_support_delta_source: Option<String>,
+    pub bridge_support_delta_sha256: Option<String>,
+    pub summary: PluginsDoctorSummaryView,
+    pub preflight_summary: PluginsPreflightSummaryView,
+    pub returned_results: usize,
+    pub results: Vec<PluginPreflightResult>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PluginsPreflightSummaryView {
     pub schema_version: u32,
@@ -479,6 +570,7 @@ pub struct PluginsPreflightSummaryView {
     pub error_diagnostics: usize,
     pub warning_diagnostics: usize,
     pub info_diagnostics: usize,
+    pub remediation_counts: BTreeMap<String, usize>,
     pub source_kind_distribution: BTreeMap<String, usize>,
     pub dialect_distribution: BTreeMap<String, usize>,
     pub compatibility_mode_distribution: BTreeMap<String, usize>,
@@ -523,7 +615,7 @@ pub struct PluginsPreflightExecution {
     pub bridge_support_delta_sha256: Option<String>,
     pub summary: PluginsPreflightSummaryView,
     pub returned_results: usize,
-    pub results: Vec<Value>,
+    pub results: Vec<PluginPreflightResult>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -637,6 +729,7 @@ pub struct PluginsInitExecution {
 pub enum PluginsCommandExecution {
     Init(Box<PluginsInitExecution>),
     Inventory(Box<PluginsInventoryExecution>),
+    Doctor(Box<PluginsDoctorExecution>),
     BridgeProfiles(Box<PluginsBridgeProfilesExecution>),
     BridgeTemplate(Box<PluginsBridgeTemplateExecution>),
     Preflight(Box<PluginsPreflightExecution>),
@@ -695,6 +788,44 @@ pub async fn execute_plugins_command(
                     bridge_support_delta_sha256: context.bridge_support_delta_sha256,
                     returned_results: results.len(),
                     summary,
+                    results,
+                },
+            )))
+        }
+        PluginsCommands::Doctor(command) => {
+            let context = build_plugin_doctor_context(
+                &command.source,
+                command.include_passed,
+                command.include_warned,
+                command.include_blocked,
+                command.include_deferred,
+            )?;
+            let report = execute_spec(&context.spec, false).await;
+            if let Some(reason) = report.blocked_reason.as_deref() {
+                return Err(format!("plugin doctor blocked: {reason}"));
+            }
+            let bridge_support_provenance = context.bridge_support_provenance();
+            let preflight_summary =
+                decode_preflight_summary(&report, bridge_support_provenance.clone())?;
+            let results = decode_preflight_results(&report)?;
+            let summary = summarize_plugin_doctor_results(&results, &preflight_summary);
+
+            Ok(PluginsCommandExecution::Doctor(Box::new(
+                PluginsDoctorExecution {
+                    schema_version: PLUGINS_COMMAND_SCHEMA_VERSION,
+                    schema: plugins_command_schema(PLUGINS_DOCTOR_SCHEMA_PURPOSE),
+                    scan_roots: context.scan_roots,
+                    query: context.query,
+                    limit: context.limit,
+                    profile: context.profile,
+                    bridge_support_provenance,
+                    bridge_support_source: context.bridge_support_source,
+                    bridge_support_sha256: context.bridge_support_sha256,
+                    bridge_support_delta_source: context.bridge_support_delta_source,
+                    bridge_support_delta_sha256: context.bridge_support_delta_sha256,
+                    summary,
+                    preflight_summary,
+                    returned_results: results.len(),
                     results,
                 },
             )))
@@ -1146,8 +1277,8 @@ fn plugin_scaffold_manifest_document(
 }
 
 fn render_plugin_scaffold_readme(package_root: &str, plugin_id: &str, bridge_kind: &str) -> String {
-    let preflight_command =
-        format!("loongclaw plugins preflight --root \"{package_root}\" --profile sdk-release");
+    let doctor_command =
+        format!("loongclaw plugins doctor --root \"{package_root}\" --profile sdk-release");
     let actions_command =
         format!("loongclaw plugins actions --root \"{package_root}\" --profile sdk-release");
 
@@ -1168,10 +1299,11 @@ fn render_plugin_scaffold_readme(package_root: &str, plugin_id: &str, bridge_kin
         format!(
             "2. Fill in `summary`, `setup`, `slot_claims`, `tags`, and examples in `{PACKAGE_MANIFEST_FILE_NAME}` as your package contract becomes concrete."
         ),
-        "3. Validate the package contract through the shared governance surface:".to_owned(),
+        "3. Diagnose the package contract through the shared author-facing governance surface:"
+            .to_owned(),
         String::new(),
         "```bash".to_owned(),
-        preflight_command,
+        doctor_command,
         "```".to_owned(),
         String::new(),
         "4. Review the deduplicated operator action plan before release or marketplace handoff:"
@@ -1188,6 +1320,7 @@ fn render_plugins_cli_text(execution: &PluginsCommandExecution) -> String {
     match execution {
         PluginsCommandExecution::Init(execution) => render_plugins_init_text(execution),
         PluginsCommandExecution::Inventory(execution) => render_plugins_inventory_text(execution),
+        PluginsCommandExecution::Doctor(execution) => render_plugins_doctor_text(execution),
         PluginsCommandExecution::BridgeProfiles(execution) => {
             render_plugins_bridge_profiles_text(execution)
         }
@@ -1215,7 +1348,7 @@ fn render_plugins_init_text(execution: &PluginsInitExecution) -> String {
     lines.push(format!("- manifest={}", execution.manifest_path));
     lines.push(format!("- readme={}", execution.readme_path));
     lines.push(format!(
-        "- next_steps=loongclaw plugins preflight --root \"{}\" --profile sdk-release",
+        "- next_steps=loongclaw plugins doctor --root \"{}\" --profile sdk-release",
         execution.package_root
     ));
     lines.push(format!(
@@ -1310,6 +1443,66 @@ fn render_plugins_inventory_text(execution: &PluginsInventoryExecution) -> Strin
         if let Some(reason) = result.activation_reason.as_deref() {
             lines.push(format!("  activation_reason={reason}"));
         }
+    }
+    lines.join("\n")
+}
+
+fn render_plugins_doctor_text(execution: &PluginsDoctorExecution) -> String {
+    let preflight_summary = &execution.preflight_summary;
+    let mut lines = vec![format!(
+        "plugins doctor profile={} query={} roots={} matched_plugins={} returned_plugins={} passed={} warned={} blocked={}",
+        execution.profile,
+        display_text_or_dash(Some(execution.query.as_str())),
+        execution.scan_roots.join(","),
+        execution.summary.matched_plugins,
+        execution.returned_results,
+        execution.summary.passed_plugins,
+        execution.summary.warned_plugins,
+        execution.summary.blocked_plugins
+    )];
+    lines.push(format!(
+        "policy source={} version={} checksum={} sha256={}",
+        preflight_summary.policy_source,
+        display_text_or_dash(preflight_summary.policy_version.as_deref()),
+        preflight_summary.policy_checksum,
+        preflight_summary.policy_sha256
+    ));
+    lines.push(format!(
+        "bridge_support source={} sha256={}",
+        display_text_or_dash(execution.bridge_support_source.as_deref()),
+        display_text_or_dash(execution.bridge_support_sha256.as_deref())
+    ));
+    lines.push(format!(
+        "bridge_support_delta source={} sha256={}",
+        display_text_or_dash(execution.bridge_support_delta_source.as_deref()),
+        display_text_or_dash(execution.bridge_support_delta_sha256.as_deref())
+    ));
+    lines.push(format!(
+        "ecosystem bridge={} language={} setup_surface={} activation_status={}",
+        format_rollup_map(&execution.summary.bridge_kind_distribution),
+        format_rollup_map(&execution.summary.source_language_distribution),
+        format_rollup_map(&execution.summary.setup_surface_distribution),
+        format_rollup_map(&execution.summary.activation_status_distribution)
+    ));
+    lines.push(format!(
+        "doctor_attention activation_ready={} setup_incomplete={} deferred={} loaded={} attention={} remediation_counts={}",
+        execution.summary.activation_ready_plugins,
+        execution.summary.setup_incomplete_plugins,
+        execution.summary.deferred_plugins,
+        execution.summary.loaded_plugins,
+        execution.summary.packages_requiring_author_attention,
+        format_rollup_map(&execution.summary.remediation_counts)
+    ));
+    lines.push(format!(
+        "doctor_actions recommended={} operator_actions={} packages_with_operator_actions={} operator_plan_by_kind={}",
+        execution.summary.total_recommended_actions,
+        execution.summary.total_operator_actions,
+        execution.summary.packages_with_operator_actions,
+        format_rollup_map(&preflight_summary.operator_action_counts_by_kind)
+    ));
+    lines.extend(render_bridge_profile_fit_lines(preflight_summary));
+    for result in &execution.results {
+        lines.extend(render_plugin_doctor_result_lines(result));
     }
     lines.join("\n")
 }
@@ -1487,52 +1680,141 @@ fn render_plugins_preflight_text(execution: &PluginsPreflightExecution) -> Strin
     ));
     lines.extend(render_bridge_profile_fit_lines(&execution.summary));
     for result in &execution.results {
-        let plugin = result.get("plugin");
-        let plugin_id = plugin
-            .and_then(|plugin| plugin.get("plugin_id"))
-            .and_then(Value::as_str);
-        let provider_id = plugin
-            .and_then(|plugin| plugin.get("provider_id"))
-            .and_then(Value::as_str);
-        let verdict = result.get("verdict").and_then(Value::as_str);
-        let baseline_verdict = result.get("baseline_verdict").and_then(Value::as_str);
-        let activation_ready = result
-            .get("activation_ready")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let loaded = plugin
-            .and_then(|plugin| plugin.get("loaded"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let action_kinds = result
-            .get("recommended_actions")
-            .and_then(Value::as_array)
-            .map(|actions| {
-                let kinds = actions
-                    .iter()
-                    .filter_map(|action| action.get("operator_action"))
-                    .filter_map(|action| action.get("kind"))
-                    .filter_map(Value::as_str)
-                    .collect::<BTreeSet<_>>();
-                if kinds.is_empty() {
-                    "-".to_owned()
-                } else {
-                    kinds.into_iter().collect::<Vec<_>>().join(",")
-                }
-            })
-            .unwrap_or_else(|| "-".to_owned());
+        let plugin = &result.plugin;
+        let action_kinds =
+            format_preflight_result_operator_action_kinds(&result.recommended_actions);
         lines.push(format!(
             "- plugin={} provider={} verdict={} baseline={} activation_ready={} loaded={} actions={}",
-            display_text_or_dash(plugin_id),
-            display_text_or_dash(provider_id),
-            display_text_or_dash(verdict),
-            display_text_or_dash(baseline_verdict),
-            activation_ready,
-            loaded,
+            plugin.plugin_id,
+            plugin.provider_id,
+            result.verdict,
+            result.baseline_verdict,
+            result.activation_ready,
+            plugin.loaded,
             action_kinds
         ));
     }
     lines.join("\n")
+}
+
+fn render_plugin_doctor_result_lines(result: &PluginPreflightResult) -> Vec<String> {
+    let plugin = &result.plugin;
+    let activation_status = inventory_result_status_label(plugin);
+    let setup_surface = inventory_result_setup_surface_label(plugin);
+    let source_language = plugin.source_language.as_deref().unwrap_or("-");
+    let manifest_path = display_text_or_dash(plugin.package_manifest_path.as_deref());
+    let setup_mode = display_text_or_dash(plugin.setup_mode.as_deref());
+    let required_env_vars = format_csv_or_dash(&plugin.setup_required_env_vars);
+    let required_config_keys = format_csv_or_dash(&plugin.setup_required_config_keys);
+    let setup_remediation = display_text_or_dash(plugin.setup_remediation.as_deref());
+    let runtime_health = plugin
+        .runtime_health
+        .as_ref()
+        .map(|health| health.status.as_str());
+    let attestation = plugin
+        .activation_attestation
+        .as_ref()
+        .map(|value| value.integrity.as_str());
+    let effective_flags = format_csv_or_dash(&result.effective_policy_flags);
+    let remediation_classes = format_preflight_remediation_classes(&result.remediation_classes);
+    let operator_action_kinds =
+        format_preflight_result_operator_action_kinds(&result.recommended_actions);
+    let blocking_diagnostics = format_csv_or_dash(&result.blocking_diagnostic_codes);
+    let advisory_diagnostics = format_csv_or_dash(&result.advisory_diagnostic_codes);
+    let recommended_actions =
+        format_preflight_result_recommended_actions(&result.recommended_actions);
+
+    let mut lines = vec![format!(
+        "- plugin={} provider={} verdict={} activation_status={} loaded={} deferred={} bridge={} language={} setup_surface={}",
+        plugin.plugin_id,
+        plugin.provider_id,
+        result.verdict,
+        activation_status,
+        plugin.loaded,
+        plugin.deferred,
+        plugin.bridge_kind,
+        source_language,
+        setup_surface
+    )];
+    lines.push(format!(
+        "  manifest={} setup_mode={} required_env={} required_config={} setup_remediation={}",
+        manifest_path, setup_mode, required_env_vars, required_config_keys, setup_remediation
+    ));
+    lines.push(format!(
+        "  source={} activation_ready={} runtime_health={} attestation={} summary={}",
+        plugin.source_path,
+        result.activation_ready,
+        display_text_or_dash(runtime_health),
+        display_text_or_dash(attestation),
+        display_text_or_dash(plugin.summary.as_deref())
+    ));
+    lines.push(format!(
+        "  policy_summary={} effective_flags={} remediation_classes={} operator_actions={}",
+        result.policy_summary, effective_flags, remediation_classes, operator_action_kinds
+    ));
+    lines.push(format!(
+        "  blocking_diagnostics={} advisory_diagnostics={}",
+        blocking_diagnostics, advisory_diagnostics
+    ));
+    if let Some(reason) = plugin.activation_reason.as_deref() {
+        lines.push(format!("  activation_reason={reason}"));
+    }
+    if recommended_actions != "-" {
+        lines.push(format!("  recommended_actions={recommended_actions}"));
+    }
+    lines
+}
+
+fn format_preflight_remediation_classes(
+    values: &[crate::PluginPreflightRemediationClass],
+) -> String {
+    if values.is_empty() {
+        return "-".to_owned();
+    }
+
+    let mut classes = values
+        .iter()
+        .map(|value| value.as_str().to_owned())
+        .collect::<Vec<_>>();
+    classes.sort();
+    classes.dedup();
+    classes.join(",")
+}
+
+fn format_preflight_result_operator_action_kinds(
+    values: &[crate::PluginPreflightRecommendedAction],
+) -> String {
+    let kinds = values
+        .iter()
+        .filter_map(|value| value.operator_action.as_ref())
+        .map(|value| value.kind.as_str().to_owned())
+        .collect::<BTreeSet<_>>();
+
+    if kinds.is_empty() {
+        return "-".to_owned();
+    }
+
+    kinds.into_iter().collect::<Vec<_>>().join(",")
+}
+
+fn format_preflight_result_recommended_actions(
+    values: &[crate::PluginPreflightRecommendedAction],
+) -> String {
+    if values.is_empty() {
+        return "-".to_owned();
+    }
+
+    let mut rendered = Vec::new();
+    for value in values {
+        let remediation_class = value.remediation_class.as_str();
+        let mut parts = vec![remediation_class.to_owned(), value.summary.clone()];
+        if let Some(action) = value.operator_action.as_ref() {
+            let kind = action.kind.as_str();
+            parts.push(format!("action={kind}"));
+        }
+        rendered.push(parts.join("|"));
+    }
+    rendered.join("; ")
 }
 
 fn render_plugins_actions_text(execution: &PluginsActionsExecution) -> String {
@@ -1714,6 +1996,14 @@ impl PluginPreflightContext {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PluginGovernanceSurfaceContextSpec {
+    pack_id: &'static str,
+    agent_id: &'static str,
+    operator_surface: &'static str,
+    surface_label: &'static str,
+}
+
 fn build_plugin_inventory_context(
     source: &PluginScanSourceArgs,
     include_ready: bool,
@@ -1781,6 +2071,41 @@ fn build_plugin_inventory_context(
     })
 }
 
+fn build_plugin_doctor_context(
+    source: &PluginDoctorSourceArgs,
+    include_passed: bool,
+    include_warned: bool,
+    include_blocked: bool,
+    include_deferred: bool,
+) -> CliResult<PluginPreflightContext> {
+    let policy_signature = build_policy_signature_spec(
+        source.policy_signature_algorithm.as_str(),
+        source.policy_signature_public_key_base64.as_deref(),
+        source.policy_signature_base64.as_deref(),
+    )?;
+    let profile = source.profile.as_profile();
+    let surface_spec = PluginGovernanceSurfaceContextSpec {
+        pack_id: "plugin-doctor",
+        agent_id: "agent-plugin-doctor",
+        operator_surface: "plugin_doctor",
+        surface_label: "plugins doctor",
+    };
+
+    build_plugin_preflight_context_from_parts(
+        &source.scan,
+        profile,
+        source.policy_path.clone(),
+        source.policy_sha256.clone(),
+        policy_signature,
+        include_passed,
+        include_warned,
+        include_blocked,
+        include_deferred,
+        false,
+        surface_spec,
+    )
+}
+
 fn build_plugin_preflight_context(
     source: &PluginGovernanceSourceArgs,
     include_passed: bool,
@@ -1789,18 +2114,54 @@ fn build_plugin_preflight_context(
     include_deferred: bool,
     include_examples: bool,
 ) -> CliResult<PluginPreflightContext> {
-    let default_limit = default_plugin_preflight_limit();
-    let resolved =
-        resolve_plugin_scan_source(&source.scan, default_limit, 500, "plugins governance")?;
     let policy_signature = build_policy_signature_spec(
         source.policy_signature_algorithm.as_str(),
         source.policy_signature_public_key_base64.as_deref(),
         source.policy_signature_base64.as_deref(),
     )?;
+    let profile = source.profile.as_profile();
+    let surface_spec = PluginGovernanceSurfaceContextSpec {
+        pack_id: "plugin-governance",
+        agent_id: "agent-plugin-governance",
+        operator_surface: "plugin_governance",
+        surface_label: "plugins governance",
+    };
+
+    build_plugin_preflight_context_from_parts(
+        &source.scan,
+        profile,
+        source.policy_path.clone(),
+        source.policy_sha256.clone(),
+        policy_signature,
+        include_passed,
+        include_warned,
+        include_blocked,
+        include_deferred,
+        include_examples,
+        surface_spec,
+    )
+}
+
+fn build_plugin_preflight_context_from_parts(
+    scan: &PluginScanSourceArgs,
+    profile: PluginPreflightProfile,
+    policy_path: Option<String>,
+    policy_sha256: Option<String>,
+    policy_signature: Option<SecurityProfileSignatureSpec>,
+    include_passed: bool,
+    include_warned: bool,
+    include_blocked: bool,
+    include_deferred: bool,
+    include_examples: bool,
+    surface_spec: PluginGovernanceSurfaceContextSpec,
+) -> CliResult<PluginPreflightContext> {
+    let default_limit = default_plugin_preflight_limit();
+    let resolved =
+        resolve_plugin_scan_source(scan, default_limit, 500, surface_spec.surface_label)?;
 
     let mut spec = RunnerSpec::template();
     spec.pack = VerticalPackManifest {
-        pack_id: "plugin-governance".to_owned(),
+        pack_id: surface_spec.pack_id.to_owned(),
         domain: "ops".to_owned(),
         version: "0.1.0".to_owned(),
         default_route: ExecutionRoute {
@@ -1811,10 +2172,10 @@ fn build_plugin_preflight_context(
         granted_capabilities: BTreeSet::from([Capability::ObserveTelemetry]),
         metadata: BTreeMap::from([(
             "operator_surface".to_owned(),
-            "plugin_governance".to_owned(),
+            surface_spec.operator_surface.to_owned(),
         )]),
     };
-    spec.agent_id = "agent-plugin-governance".to_owned();
+    spec.agent_id = surface_spec.agent_id.to_owned();
     spec.ttl_s = 120;
     spec.approval = Some(HumanApprovalSpec {
         mode: HumanApprovalMode::Disabled,
@@ -1833,13 +2194,12 @@ fn build_plugin_preflight_context(
     spec.bootstrap = None;
     spec.auto_provision = None;
     spec.hotfixes = Vec::new();
-    let profile = source.profile.as_profile();
     spec.operation = OperationSpec::PluginPreflight {
         query: resolved.query.clone(),
         limit: resolved.limit,
         profile,
-        policy_path: source.policy_path.clone(),
-        policy_sha256: source.policy_sha256.clone(),
+        policy_path,
+        policy_sha256,
         policy_signature,
         include_passed,
         include_warned,
@@ -2244,13 +2604,109 @@ fn decode_preflight_summary(
     Ok(summary)
 }
 
-fn decode_preflight_results(report: &SpecRunReport) -> CliResult<Vec<Value>> {
-    report
+fn decode_preflight_results(report: &SpecRunReport) -> CliResult<Vec<PluginPreflightResult>> {
+    let results_value = report
         .outcome
         .get("results")
-        .and_then(Value::as_array)
         .cloned()
-        .ok_or_else(|| "decode plugin preflight results failed: results is not an array".to_owned())
+        .unwrap_or(Value::Null);
+
+    serde_json::from_value(results_value)
+        .map_err(|error| format!("decode plugin preflight results failed: {error}"))
+}
+
+fn summarize_plugin_doctor_results(
+    results: &[PluginPreflightResult],
+    preflight_summary: &PluginsPreflightSummaryView,
+) -> PluginsDoctorSummaryView {
+    let mut activation_ready_plugins: usize = 0;
+    let mut setup_incomplete_plugins: usize = 0;
+    let mut deferred_plugins: usize = 0;
+    let mut loaded_plugins: usize = 0;
+    let mut packages_with_operator_actions: usize = 0;
+    let mut total_recommended_actions: usize = 0;
+    let mut total_operator_actions: usize = 0;
+    let mut bridge_kind_distribution = BTreeMap::new();
+    let mut source_language_distribution = BTreeMap::new();
+    let mut setup_surface_distribution = BTreeMap::new();
+    let mut activation_status_distribution = BTreeMap::new();
+
+    for result in results {
+        let plugin = &result.plugin;
+
+        if result.activation_ready {
+            activation_ready_plugins = activation_ready_plugins.saturating_add(1);
+        }
+
+        if plugin.activation_status.as_deref() == Some("setup_incomplete") {
+            setup_incomplete_plugins = setup_incomplete_plugins.saturating_add(1);
+        }
+
+        if plugin.deferred {
+            deferred_plugins = deferred_plugins.saturating_add(1);
+        }
+
+        if plugin.loaded {
+            loaded_plugins = loaded_plugins.saturating_add(1);
+        }
+
+        let recommended_action_count = result.recommended_actions.len();
+        total_recommended_actions =
+            total_recommended_actions.saturating_add(recommended_action_count);
+
+        let operator_action_count = count_preflight_result_operator_actions(result);
+        total_operator_actions = total_operator_actions.saturating_add(operator_action_count);
+
+        if operator_action_count > 0 {
+            packages_with_operator_actions = packages_with_operator_actions.saturating_add(1);
+        }
+
+        increment_rollup_count(&mut bridge_kind_distribution, plugin.bridge_kind.as_str());
+
+        let source_language = plugin.source_language.as_deref().unwrap_or("unknown");
+        increment_rollup_count(&mut source_language_distribution, source_language);
+
+        let setup_surface = inventory_result_setup_surface_label(plugin);
+        increment_rollup_count(&mut setup_surface_distribution, setup_surface);
+
+        let activation_status = inventory_result_status_label(plugin);
+        increment_rollup_count(&mut activation_status_distribution, activation_status);
+    }
+
+    let packages_requiring_author_attention = preflight_summary
+        .warned_plugins
+        .saturating_add(preflight_summary.blocked_plugins);
+
+    PluginsDoctorSummaryView {
+        matched_plugins: preflight_summary.matched_plugins,
+        returned_plugins: results.len(),
+        passed_plugins: preflight_summary.passed_plugins,
+        warned_plugins: preflight_summary.warned_plugins,
+        blocked_plugins: preflight_summary.blocked_plugins,
+        activation_ready_plugins,
+        setup_incomplete_plugins,
+        deferred_plugins,
+        loaded_plugins,
+        packages_requiring_author_attention,
+        packages_with_operator_actions,
+        total_recommended_actions,
+        total_operator_actions,
+        remediation_counts: preflight_summary.remediation_counts.clone(),
+        bridge_kind_distribution,
+        source_language_distribution,
+        setup_surface_distribution,
+        activation_status_distribution,
+    }
+}
+
+fn count_preflight_result_operator_actions(result: &PluginPreflightResult) -> usize {
+    let mut count = 0_usize;
+    for action in &result.recommended_actions {
+        if action.operator_action.is_some() {
+            count = count.saturating_add(1);
+        }
+    }
+    count
 }
 
 fn action_matches_filters(
@@ -2597,6 +3053,18 @@ mod tests {
         }
     }
 
+    fn plugin_doctor_source(plugin_root: &str, query: &str) -> PluginDoctorSourceArgs {
+        PluginDoctorSourceArgs {
+            scan: plugin_scan_source(plugin_root, query),
+            profile: PluginPreflightProfileArg::SdkRelease,
+            policy_path: None,
+            policy_sha256: None,
+            policy_signature_public_key_base64: None,
+            policy_signature_base64: None,
+            policy_signature_algorithm: "ed25519".to_owned(),
+        }
+    }
+
     #[test]
     fn build_policy_signature_spec_requires_complete_pair() {
         let error = build_policy_signature_spec("ed25519", Some("pub"), None)
@@ -2795,6 +3263,104 @@ mod tests {
                 .setup_required_config_keys
                 .iter()
                 .any(|key| key == "plugins.entries.weather-sdk")
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_plugins_doctor_defaults_to_sdk_release_and_surfaces_author_actions() {
+        let plugin_root = unique_temp_dir("loongclaw-plugins-cli-doctor-openclaw");
+        write_openclaw_weather_sdk_package(&plugin_root);
+
+        let mut source = plugin_doctor_source(&plugin_root, "weather-sdk");
+        source.scan.bridge_profile = Some(PluginBridgeProfileArg::OpenclawEcosystemBalanced);
+
+        let execution = execute_plugins_command(PluginsCommandOptions {
+            json: false,
+            command: PluginsCommands::Doctor(PluginDoctorCommand {
+                source,
+                include_passed: true,
+                include_warned: true,
+                include_blocked: true,
+                include_deferred: true,
+            }),
+        })
+        .await
+        .expect("plugins doctor should execute");
+
+        let PluginsCommandExecution::Doctor(execution) = execution else {
+            panic!("expected doctor execution");
+        };
+        assert_eq!(execution.schema_version, PLUGINS_COMMAND_SCHEMA_VERSION);
+        assert_eq!(execution.schema.version, PLUGINS_COMMAND_SCHEMA_VERSION);
+        assert_eq!(execution.schema.surface, PLUGINS_COMMAND_SCHEMA_SURFACE);
+        assert_eq!(execution.schema.purpose, PLUGINS_DOCTOR_SCHEMA_PURPOSE);
+        assert_eq!(execution.profile, "sdk_release");
+        assert_eq!(execution.returned_results, 1);
+        assert_eq!(execution.summary.matched_plugins, 1);
+        assert_eq!(execution.summary.returned_plugins, 1);
+        assert_eq!(execution.summary.passed_plugins, 0);
+        assert_eq!(execution.summary.warned_plugins, 0);
+        assert_eq!(execution.summary.blocked_plugins, 1);
+        assert_eq!(execution.summary.activation_ready_plugins, 0);
+        assert_eq!(execution.summary.setup_incomplete_plugins, 1);
+        assert_eq!(execution.summary.deferred_plugins, 1);
+        assert_eq!(execution.summary.loaded_plugins, 0);
+        assert_eq!(execution.summary.packages_requiring_author_attention, 1);
+        assert_eq!(
+            execution.summary.packages_with_operator_actions, 1,
+            "doctor should surface at least one actionable operator follow-up"
+        );
+        assert!(
+            execution.summary.total_recommended_actions > 0,
+            "doctor should expose recommended actions"
+        );
+        assert!(
+            execution.summary.total_operator_actions > 0,
+            "doctor should expose operator actions"
+        );
+        assert_eq!(
+            execution
+                .summary
+                .setup_surface_distribution
+                .get("channel")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            execution
+                .summary
+                .activation_status_distribution
+                .get("setup_incomplete")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            execution
+                .summary
+                .remediation_counts
+                .get("resolve_activation_blockers")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            execution
+                .preflight_summary
+                .operator_action_counts_by_kind
+                .get("review_diagnostics")
+                .copied(),
+            Some(1)
+        );
+        let result = &execution.results[0];
+        assert_eq!(result.profile, "sdk_release");
+        assert_eq!(result.verdict, "block");
+        assert_eq!(result.plugin.plugin_id, "weather-sdk");
+        assert_eq!(result.plugin.setup_mode.as_deref(), Some("governed_entry"));
+        assert_eq!(result.plugin.setup_surface.as_deref(), Some("channel"));
+        assert!(
+            result
+                .recommended_actions
+                .iter()
+                .any(|action| action.operator_action.is_some())
         );
     }
 
@@ -3031,32 +3597,22 @@ mod tests {
         );
         assert_eq!(execution.results.len(), 1);
         let first_result = &execution.results[0];
-        let plugin = first_result
-            .get("plugin")
-            .and_then(Value::as_object)
-            .unwrap_or_else(|| panic!("expected plugin object in first result"));
-        let activation_status = plugin
-            .get("activation_status")
-            .and_then(Value::as_str)
-            .unwrap_or_else(|| panic!("expected plugin.activation_status string"));
-        let verdict = first_result
-            .get("verdict")
-            .and_then(Value::as_str)
-            .unwrap_or_else(|| panic!("expected verdict string"));
-
+        let plugin = &first_result.plugin;
+        let activation_status = plugin.activation_status.as_deref();
         let activation_reason = plugin
-            .get("activation_reason")
-            .and_then(Value::as_str)
-            .unwrap_or_else(|| panic!("expected plugin.activation_reason string"));
-        let policy_flags = first_result
-            .get("policy_flags")
-            .and_then(Value::as_array)
-            .unwrap_or_else(|| panic!("expected policy_flags array"));
+            .activation_reason
+            .as_deref()
+            .expect("expected plugin activation reason");
 
-        assert_eq!(activation_status, "setup_incomplete");
-        assert_eq!(verdict, "block");
+        assert_eq!(activation_status, Some("setup_incomplete"));
+        assert_eq!(first_result.verdict, "block");
         assert!(activation_reason.contains("plugins.entries.weather-sdk"));
-        assert!(policy_flags.iter().any(|flag| flag == "activation_blocked"));
+        assert!(
+            first_result
+                .policy_flags
+                .iter()
+                .any(|flag| flag == "activation_blocked")
+        );
     }
 
     #[tokio::test]
@@ -3569,8 +4125,8 @@ mod tests {
         let rendered_readme =
             fs::read_to_string(&readme_path).expect("scaffold readme should exist");
         assert!(
-            rendered_readme.contains("loongclaw plugins preflight --root"),
-            "README should point authors to preflight: {rendered_readme}"
+            rendered_readme.contains("loongclaw plugins doctor --root"),
+            "README should point authors to doctor: {rendered_readme}"
         );
         assert!(
             rendered_readme.contains("loongclaw plugins actions --root"),
