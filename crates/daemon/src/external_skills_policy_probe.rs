@@ -83,7 +83,7 @@ fn external_skills_policy_from_payload(
 
 fn json_string_set(value: Option<&Value>, field_name: &str) -> Result<BTreeSet<String>, String> {
     let values = value
-        .as_array()
+        .and_then(Value::as_array)
         .ok_or_else(|| format!("external skills policy `{field_name}` must be an array"))?;
 
     let mut collected = BTreeSet::new();
