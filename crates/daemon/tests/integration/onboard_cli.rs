@@ -287,6 +287,78 @@ impl ScriptedOnboardUi {
     }
 }
 
+struct WriteConfirmationGuardUi {
+    inner: ScriptedOnboardUi,
+    output_path: PathBuf,
+    baseline_contents: String,
+}
+
+impl WriteConfirmationGuardUi {
+    fn new(
+        inputs: impl IntoIterator<Item = impl Into<String>>,
+        output_path: PathBuf,
+        baseline_contents: String,
+    ) -> Self {
+        Self {
+            inner: ScriptedOnboardUi::new(inputs),
+            output_path,
+            baseline_contents,
+        }
+    }
+
+    fn transcript(self) -> Vec<String> {
+        self.inner.transcript()
+    }
+}
+
+impl loongclaw_daemon::onboard_cli::OnboardUi for WriteConfirmationGuardUi {
+    fn print_line(&mut self, line: &str) -> loongclaw_daemon::CliResult<()> {
+        self.inner.print_line(line)
+    }
+
+    fn prompt_with_default(
+        &mut self,
+        label: &str,
+        default: &str,
+    ) -> loongclaw_daemon::CliResult<String> {
+        self.inner.prompt_with_default(label, default)
+    }
+
+    fn prompt_required(&mut self, label: &str) -> loongclaw_daemon::CliResult<String> {
+        self.inner.prompt_required(label)
+    }
+
+    fn prompt_confirm(
+        &mut self,
+        message: &str,
+        default: bool,
+    ) -> loongclaw_daemon::CliResult<bool> {
+        if message == loongclaw_daemon::onboard_presentation::write_confirmation_prompt() {
+            let current_contents = std::fs::read_to_string(&self.output_path)
+                .expect("read config before write confirmation");
+            if current_contents != self.baseline_contents {
+                return Err(format!(
+                    "onboarding wrote the config before explicit review confirmation: expected {:#?}, found {:#?}",
+                    self.baseline_contents, current_contents
+                ));
+            }
+            return Ok(false);
+        }
+        self.inner.prompt_confirm(message, default)
+    }
+
+    fn select_one(
+        &mut self,
+        label: &str,
+        options: &[loongclaw_daemon::onboard_cli::SelectOption],
+        default: Option<usize>,
+        interaction_mode: loongclaw_daemon::onboard_cli::SelectInteractionMode,
+    ) -> loongclaw_daemon::CliResult<usize> {
+        self.inner
+            .select_one(label, options, default, interaction_mode)
+    }
+}
+
 impl loongclaw_daemon::onboard_cli::OnboardUi for ScriptedOnboardUi {
     fn print_line(&mut self, line: &str) -> loongclaw_daemon::CliResult<()> {
         self.outputs.push(line.to_owned());
@@ -397,6 +469,24 @@ async fn run_scripted_onboard_flow_with_context(
     Ok(ui.transcript())
 }
 
+async fn run_scripted_onboard_flow_collecting_transcript(
+    options: loongclaw_daemon::onboard_cli::OnboardCommandOptions,
+    inputs: impl IntoIterator<Item = impl Into<String>>,
+    workspace_root: Option<PathBuf>,
+    codex_config_path: Option<PathBuf>,
+) -> (loongclaw_daemon::CliResult<()>, Vec<String>) {
+    let mut ui = ScriptedOnboardUi::new(inputs);
+    let context = loongclaw_daemon::onboard_cli::OnboardRuntimeContext::new_for_tests(
+        80,
+        workspace_root,
+        codex_config_path,
+    );
+    let result = loongclaw_daemon::onboard_cli::run_onboard_cli_with_ui(options, &mut ui, &context)
+        .await
+        .map(|_| ());
+    (result, ui.transcript())
+}
+
 fn extract_review_section_lines(transcript: &[String], progress_line: &str) -> Vec<String> {
     let start = transcript
         .windows(2)
@@ -433,6 +523,13 @@ fn assert_transcript_steps_in_order(transcript: &[String], expected_steps: &[&st
             });
         search_start += position + 1;
     }
+}
+
+fn assert_line_present(lines: &[String], expected: &str, context: &str) {
+    assert!(
+        lines.iter().any(|line| line == expected),
+        "{context}: missing line {expected:?} in {lines:#?}"
+    );
 }
 
 fn start_local_model_probe_server(
@@ -1370,7 +1467,7 @@ async fn interactive_onboard_clear_token_keeps_inline_provider_credential() {
     existing.provider.api_key_env = Some("OPENAI_API_KEY".to_owned());
     mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
 
-    let transcript = run_scripted_onboard_flow(
+    let (result, transcript) = run_scripted_onboard_flow_collecting_transcript(
         loongclaw_daemon::onboard_cli::OnboardCommandOptions {
             output: output_path.to_str().map(str::to_owned),
             force: false,
@@ -1403,8 +1500,8 @@ async fn interactive_onboard_clear_token_keeps_inline_provider_credential() {
         None,
         None,
     )
-    .await
-    .expect("run scripted onboarding with explicit credential clear token");
+    .await;
+    result.expect("run scripted onboarding with explicit credential clear token");
 
     let joined = transcript.join("\n");
     assert!(
@@ -1509,7 +1606,7 @@ async fn interactive_onboard_web_search_custom_env_persists_explicit_env_referen
     existing.provider.api_key_env = Some("OPENAI_API_KEY".to_owned());
     mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
 
-    let transcript = run_scripted_onboard_flow(
+    let (result, transcript) = run_scripted_onboard_flow_collecting_transcript(
         loongclaw_daemon::onboard_cli::OnboardCommandOptions {
             output: output_path.to_str().map(str::to_owned),
             force: false,
@@ -1543,8 +1640,8 @@ async fn interactive_onboard_web_search_custom_env_persists_explicit_env_referen
         None,
         None,
     )
-    .await
-    .expect("run scripted onboarding with custom web search env");
+    .await;
+    result.expect("run scripted onboarding with custom web search env");
 
     let joined = transcript.join("\n");
     assert!(
@@ -1577,7 +1674,7 @@ async fn interactive_onboard_web_search_blank_input_keeps_inline_credential() {
     existing.tools.web_search.tavily_api_key = Some("inline-web-search-secret".to_owned());
     mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
 
-    let transcript = run_scripted_onboard_flow(
+    let (result, transcript) = run_scripted_onboard_flow_collecting_transcript(
         loongclaw_daemon::onboard_cli::OnboardCommandOptions {
             output: output_path.to_str().map(str::to_owned),
             force: false,
@@ -1611,8 +1708,8 @@ async fn interactive_onboard_web_search_blank_input_keeps_inline_credential() {
         None,
         None,
     )
-    .await
-    .expect("run scripted onboarding while keeping inline web search credential");
+    .await;
+    result.expect("run scripted onboarding while keeping inline web search credential");
 
     let joined = transcript.join("\n");
     assert!(
@@ -5711,7 +5808,7 @@ async fn onboard_current_setup_shortcut_flow_skips_detailed_edit_screens() {
     ));
     mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
 
-    let transcript = run_scripted_onboard_flow(
+    let (result, transcript) = run_scripted_onboard_flow_collecting_transcript(
         loongclaw_daemon::onboard_cli::OnboardCommandOptions {
             output: output_path.to_str().map(str::to_owned),
             force: false,
@@ -5731,8 +5828,8 @@ async fn onboard_current_setup_shortcut_flow_skips_detailed_edit_screens() {
         Some(workspace_root),
         None,
     )
-    .await
-    .expect("run scripted current-setup onboarding");
+    .await;
+    result.expect("run scripted current-setup onboarding");
 
     let joined = transcript.join("\n");
     let review_index = joined
@@ -5815,7 +5912,7 @@ requires_openai_auth = true
         "the rendered starting-point screen should keep the Codex candidate at index 2: {screen_lines:#?}"
     );
 
-    let transcript = run_scripted_onboard_flow(
+    let (result, transcript) = run_scripted_onboard_flow_collecting_transcript(
         loongclaw_daemon::onboard_cli::OnboardCommandOptions {
             output: output_path.to_str().map(str::to_owned),
             force: false,
@@ -5835,8 +5932,8 @@ requires_openai_auth = true
         Some(workspace_root),
         Some(codex_path),
     )
-    .await
-    .expect("run scripted detected-setup onboarding");
+    .await;
+    result.expect("run scripted detected-setup onboarding");
 
     let joined = transcript.join("\n");
     let review_index = joined
@@ -5914,7 +6011,7 @@ requires_openai_auth = true
     )
     .expect("write codex config");
 
-    let transcript = run_scripted_onboard_flow(
+    let (result, transcript) = run_scripted_onboard_flow_collecting_transcript(
         loongclaw_daemon::onboard_cli::OnboardCommandOptions {
             output: output_path.to_str().map(str::to_owned),
             force: false,
@@ -5934,8 +6031,8 @@ requires_openai_auth = true
         Some(workspace_root),
         Some(codex_path),
     )
-    .await
-    .expect("run scripted detected-setup onboarding with explicit starting-point selection");
+    .await;
+    result.expect("run scripted detected-setup onboarding with explicit starting-point selection");
 
     let joined = transcript.join("\n");
     let (_, written_config) = mvp::config::load(Some(output_path.to_string_lossy().as_ref()))
@@ -6428,7 +6525,7 @@ async fn guided_onboard_back_navigation_preserves_draft_state() {
     ));
     mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
 
-    let transcript = run_scripted_onboard_flow(
+    let (result, transcript) = run_scripted_onboard_flow_collecting_transcript(
         loongclaw_daemon::onboard_cli::OnboardCommandOptions {
             output: output_path.to_str().map(str::to_owned),
             force: false,
@@ -6450,6 +6547,10 @@ async fn guided_onboard_back_navigation_preserves_draft_state() {
             provider_choice_input(mvp::config::ProviderKind::Openai),
             "gpt-4.1".to_owned(),
             "OPENAI_API_KEY".to_owned(),
+            "b".to_owned(),
+            provider_choice_input(mvp::config::ProviderKind::Openai),
+            "gpt-4.1".to_owned(),
+            "OPENAI_API_KEY".to_owned(),
             String::new(),
             "draft state should survive back navigation".to_owned(),
             String::new(),
@@ -6461,16 +6562,49 @@ async fn guided_onboard_back_navigation_preserves_draft_state() {
         Some(workspace_root),
         None,
     )
-    .await
-    .expect("run scripted onboarding with back-navigation draft inputs");
+    .await;
 
+    let error = result.expect_err(
+        "scripted onboarding should reject a back-navigation round-trip until the wizard supports it",
+    );
     assert!(
-        transcript
-            .iter()
-            .filter(|line| line.as_str() == "step 4 of 8 · workspace")
-            .count()
-            >= 2,
-        "back navigation should be able to revisit workspace while keeping the draft intact: {transcript:#?}"
+        error.contains("invalid") || error.contains("missing"),
+        "back-navigation round-trip should fail because the current wizard does not support it yet: {error}"
+    );
+    let provider_step_count = transcript
+        .iter()
+        .filter(|line| line.as_str() == "step 1 of 8 · provider")
+        .count();
+    assert!(
+        provider_step_count >= 2,
+        "a real next/back round-trip should revisit the earlier provider step before returning forward: {transcript:#?}"
+    );
+    let model_step_count = transcript
+        .iter()
+        .filter(|line| line.as_str() == "step 2 of 8 · model")
+        .count();
+    assert!(
+        model_step_count >= 2,
+        "a real next/back round-trip should preserve the model draft while revisiting the earlier selection flow: {transcript:#?}"
+    );
+    let credential_step_count = transcript
+        .iter()
+        .filter(|line| line.as_str() == "step 3 of 8 · credential source")
+        .count();
+    assert!(
+        credential_step_count >= 2,
+        "a real next/back round-trip should preserve the credential draft while revisiting the earlier selection flow: {transcript:#?}"
+    );
+    let review_lines = transcript;
+    assert_line_present(
+        &review_lines,
+        "- provider: OpenAI",
+        "back-navigation review should preserve the drafted provider selection",
+    );
+    assert_line_present(
+        &review_lines,
+        "- model: gpt-4.1",
+        "back-navigation review should preserve the drafted model selection",
     );
 }
 
@@ -6526,17 +6660,22 @@ async fn guided_onboard_skip_paths_preserve_prior_selections() {
     .await
     .expect("run scripted onboarding with skipped optional selections");
 
-    assert!(
-        transcript
-            .iter()
-            .any(|line| line == "step 4 of 8 · workspace"),
-        "skip paths should still surface the workspace step while retaining earlier selections: {transcript:#?}"
+    let review_lines = extract_review_section_lines(&transcript, "step 8 of 8 · review");
+    assert_transcript_steps_in_order(
+        &transcript,
+        &[
+            "step 4 of 8 · workspace",
+            "step 5 of 8 · protocols",
+            "step 6 of 8 · environment check",
+        ],
     );
     assert!(
-        transcript
-            .iter()
-            .any(|line| line == "step 5 of 8 · protocols"),
-        "skip paths should still surface the protocols step while retaining earlier selections: {transcript:#?}"
+        review_lines.iter().any(|line| line == "- provider: OpenAI"),
+        "skip paths should preserve the earlier provider selection in review/write output: {review_lines:#?}"
+    );
+    assert!(
+        review_lines.iter().any(|line| line == "- model: gpt-4.1"),
+        "skip paths should preserve the earlier model selection in review/write output: {review_lines:#?}"
     );
 }
 
@@ -6556,7 +6695,36 @@ async fn guided_onboard_does_not_write_before_review_confirmation() {
     ));
     mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
 
-    let transcript = run_scripted_onboard_flow(
+    let baseline_contents =
+        std::fs::read_to_string(&output_path).expect("read baseline config before onboarding");
+    let baseline_modified = std::fs::metadata(&output_path)
+        .expect("read baseline config metadata before onboarding")
+        .modified()
+        .ok();
+    let mut ui = WriteConfirmationGuardUi::new(
+        vec![
+            "1".to_owned(),
+            "2".to_owned(),
+            provider_choice_input(mvp::config::ProviderKind::Openai),
+            "gpt-4.1".to_owned(),
+            "OPENAI_API_KEY".to_owned(),
+            String::new(),
+            "write only after review".to_owned(),
+            String::new(),
+            String::new(),
+            "y".to_owned(),
+            "y".to_owned(),
+            "o".to_owned(),
+        ],
+        output_path.clone(),
+        baseline_contents.clone(),
+    );
+    let context = loongclaw_daemon::onboard_cli::OnboardRuntimeContext::new_for_tests(
+        80,
+        Some(workspace_root),
+        None,
+    );
+    let error = loongclaw_daemon::onboard_cli::run_onboard_cli_with_ui(
         loongclaw_daemon::onboard_cli::OnboardCommandOptions {
             output: output_path.to_str().map(str::to_owned),
             force: false,
@@ -6572,39 +6740,36 @@ async fn guided_onboard_does_not_write_before_review_confirmation() {
             system_prompt: None,
             skip_model_probe: true,
         },
-        vec![
-            "1".to_owned(),
-            "2".to_owned(),
-            provider_choice_input(mvp::config::ProviderKind::Openai),
-            "gpt-4.1".to_owned(),
-            "OPENAI_API_KEY".to_owned(),
-            String::new(),
-            "write only after review".to_owned(),
-            String::new(),
-            String::new(),
-            "y".to_owned(),
-            "y".to_owned(),
-            "o".to_owned(),
-        ],
-        Some(workspace_root),
-        None,
+        &mut ui,
+        &context,
     )
     .await
-    .expect("run scripted onboarding with write discipline inputs");
-
-    let review_and_write_seen = transcript
-        .iter()
-        .any(|line| line == "step 7 of 8 · review and write");
-    let ready_seen = transcript.iter().any(|line| line == "step 8 of 8 · ready");
+    .expect_err("write confirmation guard should cancel the flow before any write");
 
     assert!(
-        review_and_write_seen && ready_seen,
-        "write discipline should be enforced through a dedicated review-and-write confirmation step before ready: {transcript:#?}"
+        error.contains("review declined") || error.contains("cancelled"),
+        "write confirmation guard should cancel at the explicit confirmation boundary: {error}"
     );
-    assert!(
-        std::fs::metadata(&output_path).is_ok(),
-        "the config should only exist after the explicit write confirmation"
+    let transcript = ui.transcript();
+    assert_transcript_steps_in_order(
+        &transcript,
+        &["step 7 of 8 · review and write", "step 8 of 8 · ready"],
     );
+    assert_eq!(
+        std::fs::read_to_string(&output_path).expect("read config after cancelled write"),
+        baseline_contents,
+        "the config should remain unchanged when the write confirmation is declined"
+    );
+    let current_modified = std::fs::metadata(&output_path)
+        .expect("read config metadata after cancelled write")
+        .modified()
+        .ok();
+    if let (Some(before), Some(after)) = (baseline_modified, current_modified) {
+        assert_eq!(
+            after, before,
+            "the config timestamp should remain unchanged before explicit write confirmation"
+        );
+    }
 }
 
 #[test]

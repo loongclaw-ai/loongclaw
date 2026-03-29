@@ -699,11 +699,21 @@ mod tests {
             true,
         );
 
-        assert!(
+        assert_eq!(
             lines
                 .iter()
-                .any(|line| line.contains("SuccessWithWarnings")),
-            "warn-only preflight should advertise a success-with-warnings outcome once the new final status model lands: {lines:#?}"
+                .filter(|line| line.as_str() == "- outcome: SuccessWithWarnings")
+                .count(),
+            1,
+            "warn-only preflight should surface the success-with-warnings outcome label once the new status model lands: {lines:#?}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.as_str() == "- outcome: Blocked")
+                .count(),
+            0,
+            "warn-only preflight should not be classified as blocked: {lines:#?}"
         );
     }
 
@@ -716,9 +726,21 @@ mod tests {
             true,
         );
 
-        assert!(
-            lines.iter().any(|line| line.contains("blocked")),
-            "pre-write blockers should stay blocked instead of being treated like a generic warning path: {lines:#?}"
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.as_str() == "- outcome: Blocked")
+                .count(),
+            1,
+            "pre-write blockers should stay blocked before write: {lines:#?}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.as_str() == "- outcome: SuccessWithWarnings")
+                .count(),
+            0,
+            "pre-write blockers should not be labeled as success with warnings: {lines:#?}"
         );
     }
 
@@ -731,10 +753,21 @@ mod tests {
             true,
         );
 
-        assert!(
-            lines.iter().any(|line| line.contains("Blocked"))
-                && lines.iter().all(|line| !line.contains("Success")),
-            "post-write verification failures should be blocked without claiming success: {lines:#?}"
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.as_str() == "- outcome: Blocked")
+                .count(),
+            1,
+            "post-write verification failures should map to blocked without claiming success: {lines:#?}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.as_str() == "- outcome: SuccessWithWarnings")
+                .count(),
+            0,
+            "post-write verification failures should not be labeled as success with warnings: {lines:#?}"
         );
     }
 }
