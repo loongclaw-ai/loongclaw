@@ -3166,15 +3166,16 @@ fn runtime_capability_apply_materializes_memory_stage_profile_artifact() {
         report.planned_artifact.target_kind,
         loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityTarget::MemoryStageProfile
     );
+    let output_path = PathBuf::from(&report.output_path);
+    let actual_output_path_suffix = artifact_path_suffix(&output_path);
+    let expected_output_path_suffix = format!(
+        "memory_stage_profiles/{}.json",
+        report.planned_artifact.artifact_id
+    );
     assert!(
-        report.output_path.ends_with(&format!(
-            "memory_stage_profiles/{}.json",
-            report.planned_artifact.artifact_id
-        )),
+        actual_output_path_suffix == expected_output_path_suffix,
         "apply should materialize the memory-stage-profile artifact under the delivery surface"
     );
-
-    let output_path = PathBuf::from(&report.output_path);
     assert!(
         output_path.exists(),
         "apply should persist the output artifact"
