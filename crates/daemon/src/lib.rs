@@ -2198,6 +2198,7 @@ pub struct RuntimeSnapshotProviderProfileState {
     pub profile_id: String,
     pub is_active: bool,
     pub default_for_kind: bool,
+    pub descriptor: mvp::config::ProviderDescriptorDocument,
     pub kind: mvp::config::ProviderKind,
     pub model: String,
     pub wire_api: mvp::config::ProviderWireApi,
@@ -2458,6 +2459,7 @@ fn build_runtime_snapshot_provider_profile_state(
     is_active: bool,
 ) -> RuntimeSnapshotProviderProfileState {
     let provider = &profile.provider;
+    let descriptor = provider.descriptor_document();
     let mut header_names = provider.headers.keys().cloned().collect::<Vec<_>>();
     header_names.sort();
 
@@ -2465,6 +2467,7 @@ fn build_runtime_snapshot_provider_profile_state(
         profile_id: profile_id.to_owned(),
         is_active,
         default_for_kind: profile.default_for_kind,
+        descriptor,
         kind: provider.kind,
         model: provider.model.clone(),
         wire_api: provider.wire_api,
@@ -5509,10 +5512,13 @@ fn runtime_snapshot_provider_json(snapshot: &RuntimeSnapshotProviderState) -> Va
 }
 
 fn runtime_snapshot_provider_profile_json(profile: &RuntimeSnapshotProviderProfileState) -> Value {
+    let descriptor = runtime_snapshot_provider_descriptor_json(&profile.descriptor);
+
     json!({
         "profile_id": profile.profile_id,
         "is_active": profile.is_active,
         "default_for_kind": profile.default_for_kind,
+        "descriptor": descriptor,
         "kind": profile.kind.as_str(),
         "model": profile.model,
         "wire_api": profile.wire_api.as_str(),
@@ -5530,6 +5536,12 @@ fn runtime_snapshot_provider_profile_json(profile: &RuntimeSnapshotProviderProfi
         "header_names": profile.header_names,
         "preferred_models": profile.preferred_models,
     })
+}
+
+fn runtime_snapshot_provider_descriptor_json(
+    descriptor: &mvp::config::ProviderDescriptorDocument,
+) -> Value {
+    serde_json::to_value(descriptor).expect("provider descriptor document should serialize")
 }
 
 fn runtime_snapshot_context_engine_json(

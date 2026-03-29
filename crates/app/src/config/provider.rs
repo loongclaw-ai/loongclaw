@@ -90,6 +90,15 @@ pub enum ProviderAuthScheme {
     XApiKey,
 }
 
+impl ProviderAuthScheme {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Bearer => "bearer",
+            Self::XApiKey => "x_api_key",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderFeatureFamily {
     OpenAiCompatible,
@@ -99,6 +108,15 @@ pub enum ProviderFeatureFamily {
 }
 
 impl ProviderFeatureFamily {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenAiCompatible => "openai_compatible",
+            Self::Anthropic => "anthropic",
+            Self::Bedrock => "bedrock",
+            Self::Volcengine => "volcengine",
+        }
+    }
+
     pub fn support_facts(self) -> ProviderFeatureSupportFacts {
         let gate_name = self.feature_gate_name();
         let enabled_in_build = self.is_enabled_in_build();
@@ -232,6 +250,77 @@ pub struct ProviderSupportFacts {
     pub feature: ProviderFeatureSupportFacts,
     pub auth: ProviderAuthSupportFacts,
     pub region_endpoint: ProviderRegionEndpointSupportFacts,
+}
+
+pub const PROVIDER_DESCRIPTOR_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ProviderDescriptorSchema {
+    pub version: u32,
+    pub surface: &'static str,
+    pub purpose: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ProviderDescriptorHeader {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ProviderDescriptorFeature {
+    pub family: String,
+    pub gate_name: String,
+    pub enabled_in_build: bool,
+    pub disabled_message: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ProviderDescriptorAuth {
+    pub scheme: String,
+    pub auth_optional: bool,
+    pub model_probe_auth_optional: bool,
+    pub default_api_key_env: Option<String>,
+    pub api_key_env_aliases: Vec<String>,
+    pub default_oauth_access_token_env: Option<String>,
+    pub oauth_access_token_env_aliases: Vec<String>,
+    pub hint_env_names: Vec<String>,
+    pub requires_explicit_configuration: bool,
+    pub guidance_hint: Option<String>,
+    pub alternative_configuration_hint: Option<String>,
+    pub missing_configuration_message: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ProviderDescriptorRegionVariant {
+    pub label: String,
+    pub base_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ProviderDescriptorRegionEndpoint {
+    pub family_label: Option<String>,
+    pub variants: Vec<ProviderDescriptorRegionVariant>,
+    pub note: Option<String>,
+    pub catalog_failure_hint: Option<String>,
+    pub request_failure_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ProviderDescriptorDocument {
+    pub schema: ProviderDescriptorSchema,
+    pub kind: String,
+    pub display_name: String,
+    pub aliases: Vec<String>,
+    pub protocol_family: String,
+    pub default_headers: Vec<ProviderDescriptorHeader>,
+    pub default_user_agent: Option<String>,
+    pub configuration_hint: Option<String>,
+    pub default_model: Option<String>,
+    pub recommended_onboarding_model: Option<String>,
+    pub feature: ProviderDescriptorFeature,
+    pub auth: ProviderDescriptorAuth,
+    pub region_endpoint: ProviderDescriptorRegionEndpoint,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1280,6 +1369,46 @@ impl ProviderConfig {
         }
     }
 
+    pub fn descriptor_document(&self) -> ProviderDescriptorDocument {
+        let profile = self.kind.profile();
+        let support_facts = self.support_facts();
+        let schema = ProviderDescriptorSchema {
+            version: PROVIDER_DESCRIPTOR_SCHEMA_VERSION,
+            surface: "provider_descriptor",
+            purpose: "internal_sdk_contract",
+        };
+        let kind = self.kind.as_str().to_owned();
+        let display_name = self.kind.display_name().to_owned();
+        let aliases = provider_descriptor_aliases(profile);
+        let protocol_family = self.kind.protocol_family().as_str().to_owned();
+        let default_headers = provider_descriptor_headers(profile);
+        let default_user_agent = self.kind.default_user_agent().map(str::to_owned);
+        let configuration_hint = self.kind.configuration_hint().map(str::to_owned);
+        let default_model = self.kind.default_model().map(str::to_owned);
+        let recommended_onboarding_model =
+            self.kind.recommended_onboarding_model().map(str::to_owned);
+        let feature = build_provider_descriptor_feature(&support_facts.feature);
+        let auth = self.build_provider_descriptor_auth(&support_facts.auth);
+        let region_endpoint =
+            self.build_provider_descriptor_region_endpoint(&support_facts.region_endpoint);
+
+        ProviderDescriptorDocument {
+            schema,
+            kind,
+            display_name,
+            aliases,
+            protocol_family,
+            default_headers,
+            default_user_agent,
+            configuration_hint,
+            default_model,
+            recommended_onboarding_model,
+            feature,
+            auth,
+            region_endpoint,
+        }
+    }
+
     pub fn requires_explicit_auth_configuration(&self) -> bool {
         let support_facts = self.support_facts();
         support_facts.auth.requires_explicit_configuration
@@ -1308,6 +1437,43 @@ impl ProviderConfig {
 
         ProviderAuthSupportFacts {
             hint_env_names: env_names,
+            requires_explicit_configuration,
+            guidance_hint,
+            alternative_configuration_hint,
+            missing_configuration_message,
+        }
+    }
+
+    fn build_provider_descriptor_auth(
+        &self,
+        auth_support: &ProviderAuthSupportFacts,
+    ) -> ProviderDescriptorAuth {
+        let scheme = self.kind.auth_scheme().as_str().to_owned();
+        let auth_optional = self.kind.auth_optional();
+        let model_probe_auth_optional = self.kind.model_probe_auth_optional();
+        let default_api_key_env = self.kind.default_api_key_env().map(str::to_owned);
+        let api_key_env_aliases = provider_descriptor_env_aliases(self.kind.api_key_env_aliases());
+        let default_oauth_access_token_env = self
+            .kind
+            .default_oauth_access_token_env()
+            .map(str::to_owned);
+        let oauth_access_token_env_aliases =
+            provider_descriptor_env_aliases(self.kind.oauth_access_token_env_aliases());
+        let hint_env_names = auth_support.hint_env_names.clone();
+        let requires_explicit_configuration = auth_support.requires_explicit_configuration;
+        let guidance_hint = auth_support.guidance_hint.clone();
+        let alternative_configuration_hint = auth_support.alternative_configuration_hint.clone();
+        let missing_configuration_message = auth_support.missing_configuration_message.clone();
+
+        ProviderDescriptorAuth {
+            scheme,
+            auth_optional,
+            model_probe_auth_optional,
+            default_api_key_env,
+            api_key_env_aliases,
+            default_oauth_access_token_env,
+            oauth_access_token_env_aliases,
+            hint_env_names,
             requires_explicit_configuration,
             guidance_hint,
             alternative_configuration_hint,
@@ -1822,6 +1988,28 @@ impl ProviderConfig {
         let request_failure_hint = guide.map(|value| value.request_failure_hint(self));
 
         ProviderRegionEndpointSupportFacts {
+            note,
+            catalog_failure_hint,
+            request_failure_hint,
+        }
+    }
+
+    fn build_provider_descriptor_region_endpoint(
+        &self,
+        region_endpoint_support: &ProviderRegionEndpointSupportFacts,
+    ) -> ProviderDescriptorRegionEndpoint {
+        let region_endpoint_info = self.kind.region_endpoint_info();
+        let family_label = region_endpoint_info
+            .as_ref()
+            .map(|info| info.family_label.to_owned());
+        let variants = provider_descriptor_region_variants(region_endpoint_info);
+        let note = region_endpoint_support.note.clone();
+        let catalog_failure_hint = region_endpoint_support.catalog_failure_hint.clone();
+        let request_failure_hint = region_endpoint_support.request_failure_hint.clone();
+
+        ProviderDescriptorRegionEndpoint {
+            family_label,
+            variants,
             note,
             catalog_failure_hint,
             request_failure_hint,
@@ -2666,6 +2854,78 @@ impl ProviderKind {
             variants,
         })
     }
+}
+
+fn provider_descriptor_aliases(profile: &ProviderProfile) -> Vec<String> {
+    let mut aliases = Vec::new();
+
+    for alias in profile.aliases {
+        let alias = (*alias).to_owned();
+        aliases.push(alias);
+    }
+
+    aliases
+}
+
+fn provider_descriptor_headers(profile: &ProviderProfile) -> Vec<ProviderDescriptorHeader> {
+    let mut headers = Vec::new();
+
+    for (name, value) in profile.default_headers {
+        let header = ProviderDescriptorHeader {
+            name: (*name).to_owned(),
+            value: (*value).to_owned(),
+        };
+        headers.push(header);
+    }
+
+    headers
+}
+
+fn provider_descriptor_env_aliases(raw_aliases: &[&str]) -> Vec<String> {
+    let mut aliases = Vec::new();
+
+    for raw_alias in raw_aliases {
+        let alias = (*raw_alias).to_owned();
+        aliases.push(alias);
+    }
+
+    aliases
+}
+
+fn build_provider_descriptor_feature(
+    feature_support: &ProviderFeatureSupportFacts,
+) -> ProviderDescriptorFeature {
+    let family = feature_support.family.as_str().to_owned();
+    let gate_name = feature_support.gate_name.to_owned();
+    let enabled_in_build = feature_support.enabled_in_build;
+    let disabled_message = feature_support.disabled_message.clone();
+
+    ProviderDescriptorFeature {
+        family,
+        gate_name,
+        enabled_in_build,
+        disabled_message,
+    }
+}
+
+fn provider_descriptor_region_variants(
+    region_endpoint_info: Option<ProviderRegionEndpointInfo>,
+) -> Vec<ProviderDescriptorRegionVariant> {
+    let mut variants = Vec::new();
+
+    let Some(region_endpoint_info) = region_endpoint_info else {
+        return variants;
+    };
+
+    for variant in region_endpoint_info.variants {
+        let descriptor_variant = ProviderDescriptorRegionVariant {
+            label: variant.label.to_owned(),
+            base_url: variant.base_url.to_owned(),
+        };
+        variants.push(descriptor_variant);
+    }
+
+    variants
 }
 
 pub fn parse_provider_kind_id(raw: &str) -> Option<ProviderKind> {
@@ -3824,10 +4084,15 @@ fn derive_responses_path(chat_path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{Value, json};
     use std::collections::{BTreeMap, BTreeSet};
 
     use crate::test_support::ScopedEnv;
     use loongclaw_contracts::SecretRef;
+
+    fn encode_provider_descriptor(descriptor: &ProviderDescriptorDocument) -> Value {
+        serde_json::to_value(descriptor).expect("serialize provider descriptor document")
+    }
 
     #[test]
     fn provider_profile_lookup_matches_kind() {
@@ -4008,6 +4273,113 @@ mod tests {
         assert!(note.contains("MiniMax region endpoint"));
         assert!(note.contains("https://api.minimaxi.com"));
         assert!(note.contains("https://api.minimax.io"));
+        assert!(catalog_failure_hint.contains("https://api.minimaxi.com"));
+        assert!(catalog_failure_hint.contains("https://api.minimax.io"));
+        assert!(request_failure_hint.contains("https://api.minimaxi.com"));
+        assert!(request_failure_hint.contains("https://api.minimax.io"));
+    }
+
+    #[test]
+    fn provider_descriptor_document_preserves_x_api_key_contract_facts() {
+        let provider = ProviderConfig {
+            kind: ProviderKind::Anthropic,
+            ..ProviderConfig::default()
+        };
+
+        let descriptor = provider.descriptor_document();
+        let encoded = encode_provider_descriptor(&descriptor);
+        let hint_env_names = encoded["auth"]["hint_env_names"]
+            .as_array()
+            .expect("hint env names should be an array");
+
+        assert_eq!(
+            encoded["schema"]["version"],
+            json!(PROVIDER_DESCRIPTOR_SCHEMA_VERSION)
+        );
+        assert_eq!(encoded["schema"]["surface"], json!("provider_descriptor"));
+        assert_eq!(encoded["schema"]["purpose"], json!("internal_sdk_contract"));
+        assert_eq!(encoded["kind"], json!("anthropic"));
+        assert_eq!(encoded["display_name"], json!("Anthropic"));
+        assert_eq!(encoded["protocol_family"], json!("anthropic_messages"));
+        assert_eq!(encoded["feature"]["family"], json!("anthropic"));
+        assert_eq!(encoded["auth"]["scheme"], json!("x_api_key"));
+        assert_eq!(
+            encoded["auth"]["default_api_key_env"],
+            json!("ANTHROPIC_API_KEY")
+        );
+        assert_eq!(
+            encoded["auth"]["requires_explicit_configuration"],
+            json!(true)
+        );
+        assert!(
+            hint_env_names.contains(&json!("ANTHROPIC_API_KEY")),
+            "anthropic descriptor should surface the canonical x-api-key env hint"
+        );
+        assert_eq!(
+            encoded["default_headers"][0]["name"],
+            json!("anthropic-version")
+        );
+    }
+
+    #[test]
+    fn provider_descriptor_document_marks_auth_optional_profiles_without_required_envs() {
+        let provider = ProviderConfig {
+            kind: ProviderKind::Ollama,
+            ..ProviderConfig::default()
+        };
+
+        let descriptor = provider.descriptor_document();
+        let encoded = encode_provider_descriptor(&descriptor);
+
+        assert_eq!(encoded["kind"], json!("ollama"));
+        assert_eq!(encoded["auth"]["scheme"], json!("bearer"));
+        assert_eq!(encoded["auth"]["auth_optional"], json!(true));
+        assert_eq!(encoded["auth"]["model_probe_auth_optional"], json!(true));
+        assert_eq!(
+            encoded["auth"]["requires_explicit_configuration"],
+            json!(false)
+        );
+        assert_eq!(encoded["auth"]["hint_env_names"], json!([]));
+        assert_eq!(encoded["region_endpoint"]["variants"], json!([]));
+    }
+
+    #[test]
+    fn provider_descriptor_document_preserves_region_endpoint_variants_and_hints() {
+        let provider = ProviderConfig {
+            kind: ProviderKind::Minimax,
+            ..ProviderConfig::default()
+        };
+
+        let descriptor = provider.descriptor_document();
+        let encoded = encode_provider_descriptor(&descriptor);
+        let note = encoded["region_endpoint"]["note"]
+            .as_str()
+            .expect("minimax descriptor should expose a region note");
+        let catalog_failure_hint = encoded["region_endpoint"]["catalog_failure_hint"]
+            .as_str()
+            .expect("minimax descriptor should expose a catalog failure hint");
+        let request_failure_hint = encoded["region_endpoint"]["request_failure_hint"]
+            .as_str()
+            .expect("minimax descriptor should expose a request failure hint");
+
+        assert_eq!(encoded["region_endpoint"]["family_label"], json!("MiniMax"));
+        assert_eq!(
+            encoded["region_endpoint"]["variants"][0]["label"],
+            json!("CN")
+        );
+        assert_eq!(
+            encoded["region_endpoint"]["variants"][0]["base_url"],
+            json!("https://api.minimaxi.com")
+        );
+        assert_eq!(
+            encoded["region_endpoint"]["variants"][1]["label"],
+            json!("Global")
+        );
+        assert_eq!(
+            encoded["region_endpoint"]["variants"][1]["base_url"],
+            json!("https://api.minimax.io")
+        );
+        assert!(note.contains("MiniMax region endpoint"));
         assert!(catalog_failure_hint.contains("https://api.minimaxi.com"));
         assert!(catalog_failure_hint.contains("https://api.minimax.io"));
         assert!(request_failure_hint.contains("https://api.minimaxi.com"));
