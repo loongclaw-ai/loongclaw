@@ -3259,8 +3259,7 @@ mod tests {
             bash_exec: crate::tools::runtime_config::BashExecRuntimePolicy {
                 available: true,
                 command: Some(std::path::PathBuf::from("bash")),
-                warning: None,
-                login_shell: false,
+                ..crate::tools::runtime_config::BashExecRuntimePolicy::default()
             },
             ..ToolRuntimeConfig::default()
         };

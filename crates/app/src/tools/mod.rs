@@ -26,6 +26,8 @@ use crate::memory::runtime_config::MemoryRuntimeConfig;
 
 pub(crate) mod approval;
 mod bash;
+mod bash_ast;
+mod bash_rules;
 #[cfg(feature = "tool-browser")]
 mod browser;
 #[cfg(feature = "tool-browser")]
@@ -1577,8 +1579,7 @@ mod tests {
         runtime_config::BashExecRuntimePolicy {
             available: true,
             command: Some(PathBuf::from("bash")),
-            warning: None,
-            login_shell: false,
+            ..runtime_config::BashExecRuntimePolicy::default()
         }
     }
 
@@ -3208,8 +3209,7 @@ mod tests {
         config.bash_exec = runtime_config::BashExecRuntimePolicy {
             available: true,
             command: Some(runtime_path),
-            warning: None,
-            login_shell: false,
+            ..runtime_config::BashExecRuntimePolicy::default()
         };
 
         let outcome = execute_tool_core_with_config(
@@ -3250,8 +3250,7 @@ mod tests {
         config.bash_exec = runtime_config::BashExecRuntimePolicy {
             available: true,
             command: Some(runtime_path),
-            warning: None,
-            login_shell: false,
+            ..runtime_config::BashExecRuntimePolicy::default()
         };
 
         let outcome = execute_tool_core_with_config(
@@ -3291,8 +3290,7 @@ mod tests {
         config.bash_exec = runtime_config::BashExecRuntimePolicy {
             available: true,
             command: Some(runtime_path),
-            warning: None,
-            login_shell: false,
+            ..runtime_config::BashExecRuntimePolicy::default()
         };
 
         let outcome = execute_tool_core_with_config(
@@ -3330,8 +3328,7 @@ mod tests {
         config.bash_exec = runtime_config::BashExecRuntimePolicy {
             available: true,
             command: Some(runtime_path),
-            warning: None,
-            login_shell: false,
+            ..runtime_config::BashExecRuntimePolicy::default()
         };
 
         let error = execute_tool_core_with_config(
@@ -4513,8 +4510,7 @@ mod tests {
         config.bash_exec = runtime_config::BashExecRuntimePolicy {
             available: true,
             command: Some(runtime_path),
-            warning: None,
-            login_shell: false,
+            ..runtime_config::BashExecRuntimePolicy::default()
         };
 
         let search = execute_tool_core_with_config(
