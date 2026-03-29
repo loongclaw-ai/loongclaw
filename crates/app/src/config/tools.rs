@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
@@ -62,6 +62,8 @@ pub struct ToolConfig {
     pub browser: BrowserToolConfig,
     #[serde(default)]
     pub browser_companion: BrowserCompanionToolConfig,
+    #[serde(default)]
+    pub bash: BashToolConfig,
     #[serde(default)]
     pub web: WebToolConfig,
     #[serde(default)]
@@ -268,6 +270,14 @@ pub struct BrowserCompanionToolConfig {
     pub allowed_domains: Vec<String>,
     #[serde(default)]
     pub blocked_domains: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct BashToolConfig {
+    #[serde(default)]
+    pub login_shell: bool,
+    #[serde(default)]
+    pub rules_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -488,6 +498,7 @@ impl Default for ToolConfig {
             runtime_self: RuntimeSelfToolConfig::default(),
             browser: BrowserToolConfig::default(),
             browser_companion: BrowserCompanionToolConfig::default(),
+            bash: BashToolConfig::default(),
             web: WebToolConfig::default(),
             web_search: WebSearchToolConfig::default(),
             tool_execution: ToolExecutionToolConfig::default(),
@@ -826,6 +837,27 @@ impl ToolConfig {
             });
         }
         issues
+    }
+}
+
+impl BashToolConfig {
+    pub fn resolved_rules_dir(&self, config_path: Option<&Path>) -> PathBuf {
+        let base_dir = config_path
+            .and_then(Path::parent)
+            .filter(|path| !path.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+        let Some(rules_dir) = self.rules_dir.as_deref() else {
+            return base_dir.join(".loongclaw").join("rules");
+        };
+
+        let expanded = expand_path(rules_dir);
+        if expanded.is_absolute() {
+            expanded
+        } else {
+            base_dir.join(expanded)
+        }
     }
 }
 
@@ -1599,6 +1631,20 @@ blocked_domains = ["internal.example", " INTERNAL.EXAMPLE "]
             parsed.tools.browser_companion.normalized_blocked_domains(),
             vec!["internal.example".to_owned()]
         );
+    }
+
+    #[cfg(feature = "config-toml")]
+    #[test]
+    fn tool_config_parses_bash_rules_dir_override() {
+        let config: ToolConfig =
+            toml::from_str("[bash]\nrules_dir = \"custom/rules\"\n").expect("bash tool config");
+
+        assert_eq!(config.bash.rules_dir.as_deref(), Some("custom/rules"));
+    }
+
+    #[test]
+    fn bash_tool_config_defaults_to_no_explicit_rules_dir() {
+        assert!(BashToolConfig::default().rules_dir.is_none());
     }
 
     #[test]

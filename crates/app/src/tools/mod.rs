@@ -27,6 +27,10 @@ use crate::crypto::timing_safe_eq;
 use crate::memory::runtime_config::MemoryRuntimeConfig;
 
 pub(crate) mod approval;
+mod bash;
+mod bash_ast;
+mod bash_governance;
+mod bash_rules;
 #[cfg(feature = "tool-browser")]
 mod browser;
 #[cfg(feature = "tool-browser")]
@@ -45,6 +49,7 @@ mod kernel_adapter;
 mod memory_tools;
 pub(crate) mod messaging;
 mod payload;
+mod process_exec;
 mod provider_switch;
 pub mod runtime_config;
 mod session;
@@ -63,7 +68,8 @@ pub use catalog::{
     ToolExecutionKind, ToolGovernanceProfile, ToolGovernanceScope, ToolRiskClass,
     ToolSchedulingClass, ToolView, capability_action_class_for_descriptor,
     capability_action_class_for_tool_name, delegate_child_tool_view_for_config,
-    delegate_child_tool_view_for_config_with_delegate, governance_profile_for_descriptor,
+    delegate_child_tool_view_for_config_with_delegate, delegate_child_tool_view_for_runtime_config,
+    delegate_child_tool_view_for_runtime_config_with_delegate, governance_profile_for_descriptor,
     governance_profile_for_tool_name, planned_delegate_child_tool_view, planned_root_tool_view,
     runtime_tool_view, runtime_tool_view_for_config,
     runtime_tool_view_for_config_with_external_skills, runtime_tool_view_for_runtime_config,
@@ -84,6 +90,7 @@ const BROWSER_COMPANION_TOOL_PREFIX: &str = "browser.companion.";
 const DELEGATE_ASYNC_TOOL_NAME: &str = "delegate_async";
 const DELEGATE_TOOL_NAME: &str = "delegate";
 pub(crate) const SHELL_EXEC_TOOL_NAME: &str = "shell.exec";
+const BASH_EXEC_TOOL_NAME: &str = "bash.exec";
 const WEB_FETCH_TOOL_NAME: &str = "web.fetch";
 const WEB_SEARCH_TOOL_NAME: &str = "web.search";
 
@@ -745,6 +752,9 @@ fn tool_uses_dedicated_timeout(tool_name: &str) -> bool {
     if tool_name == SHELL_EXEC_TOOL_NAME {
         return true;
     }
+    if tool_name == BASH_EXEC_TOOL_NAME {
+        return true;
+    }
     if tool_name == WEB_FETCH_TOOL_NAME {
         return true;
     }
@@ -810,6 +820,7 @@ fn dispatch_tool_request(
             feishu::execute_feishu_tool_with_config(request, config)
         }
         "shell.exec" => shell::execute_shell_tool_with_config(request, config),
+        "bash.exec" => bash::execute_bash_tool_with_config(request, config),
         "file.read" => file::execute_file_read_tool_with_config(request, config),
         #[cfg(feature = "tool-file")]
         "memory_search" => memory_tools::execute_memory_search_tool_with_config(request, config),
@@ -1160,6 +1171,7 @@ fn tool_search_entry_is_runtime_usable(
                     crate::tools::shell_policy_ext::ShellPolicyDefault::Allow
                 )
         }
+        "bash.exec" => config.bash_exec.is_runtime_ready(),
         "external_skills.fetch"
         | "external_skills.install"
         | "external_skills.inspect"
@@ -1540,6 +1552,50 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    fn ready_bash_exec_runtime_policy() -> runtime_config::BashExecRuntimePolicy {
+        runtime_config::BashExecRuntimePolicy {
+            available: true,
+            command: Some(PathBuf::from("bash")),
+            ..runtime_config::BashExecRuntimePolicy::default()
+        }
+    }
+
+    #[cfg(all(feature = "tool-shell", unix))]
+    fn configured_test_bash_runtime_with_rules(
+        root: &Path,
+    ) -> (runtime_config::BashExecRuntimePolicy, PathBuf) {
+        let log_path = root.join("bash-args.log");
+        let runtime_path = write_fake_bash_runtime(root, "fake-bash", &log_path);
+        let rules_dir = root.join(".loongclaw").join("rules");
+        let rules = bash_rules::load_rules_from_dir(&rules_dir).expect("load rules");
+
+        (
+            runtime_config::BashExecRuntimePolicy {
+                available: true,
+                command: Some(runtime_path),
+                governance: runtime_config::BashGovernanceRuntimePolicy {
+                    rules_dir,
+                    rules,
+                    load_error: None,
+                },
+                ..runtime_config::BashExecRuntimePolicy::default()
+            },
+            log_path,
+        )
+    }
+
+    #[cfg(all(feature = "tool-shell", unix))]
+    fn write_fake_bash_runtime(root: &Path, name: &str, log_path: &Path) -> PathBuf {
+        let path = root.join(name);
+        let script = format!(
+            "#!/bin/sh\nLOG_PATH=\"{}\"\n: > \"$LOG_PATH\"\nfor arg in \"$@\"; do\n  printf '%s\\n' \"$arg\" >> \"$LOG_PATH\"\ndone\nMODE=\"${{1:-}}\"\nCOMMAND=\"${{2:-}}\"\ncase \"$MODE\" in\n  -c|-lc)\n    exec /bin/sh -c \"$COMMAND\"\n    ;;\n  *)\n    printf 'unexpected bash args: %s' \"$*\" >&2\n    exit 97\n    ;;\nesac\n",
+            log_path.display()
+        );
+        crate::test_support::write_executable_script_atomically(&path, &script)
+            .expect("write fake bash runtime");
+        path
     }
 
     fn execute_tool_core_with_test_context(
@@ -2160,6 +2216,147 @@ mod tests {
                 .any(|part| part == "timeout_ms?:integer"),
             "shell.exec argument hint should expose timeout_ms"
         );
+    }
+
+    #[cfg(feature = "tool-shell")]
+    #[test]
+    fn runtime_tool_view_hides_bash_exec_when_runtime_is_unavailable() {
+        let root = unique_tool_temp_dir("loongclaw-bash-tool-view-hidden");
+        std::fs::create_dir_all(&root).expect("create root dir");
+
+        let config = test_tool_runtime_config(root);
+        let tool_view = runtime_tool_view_for_runtime_config(&config);
+
+        assert!(!tool_view.contains("bash.exec"));
+    }
+
+    #[cfg(feature = "tool-shell")]
+    #[test]
+    fn runtime_tool_view_includes_bash_exec_when_runtime_is_available() {
+        let root = unique_tool_temp_dir("loongclaw-bash-tool-view-visible");
+        std::fs::create_dir_all(&root).expect("create root dir");
+
+        let mut config = test_tool_runtime_config(root);
+        config.bash_exec = ready_bash_exec_runtime_policy();
+        let tool_view = runtime_tool_view_for_runtime_config(&config);
+
+        assert!(tool_view.contains("bash.exec"));
+    }
+
+    #[cfg(feature = "tool-shell")]
+    #[test]
+    fn tool_search_hides_bash_exec_when_runtime_is_unavailable() {
+        let root = unique_tool_temp_dir("loongclaw-bash-tool-search-hidden");
+        std::fs::create_dir_all(&root).expect("create root dir");
+
+        let config = test_tool_runtime_config(root);
+        let outcome = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "tool.search".to_owned(),
+                payload: json!({
+                    "query": "bash command cwd timeout",
+                    "limit": 10
+                }),
+            },
+            &config,
+        )
+        .expect("tool search should succeed");
+
+        let results = outcome.payload["results"].as_array().expect("results");
+        assert!(results.iter().all(|entry| entry["tool_id"] != "bash.exec"));
+    }
+
+    #[cfg(feature = "tool-shell")]
+    #[test]
+    fn tool_search_includes_bash_exec_when_runtime_is_available() {
+        let root = unique_tool_temp_dir("loongclaw-bash-tool-search-visible");
+        std::fs::create_dir_all(&root).expect("create root dir");
+
+        let mut config = test_tool_runtime_config(root);
+        config.bash_exec = ready_bash_exec_runtime_policy();
+        let outcome = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "tool.search".to_owned(),
+                payload: json!({
+                    "query": "bash command cwd timeout",
+                    "limit": 10
+                }),
+            },
+            &config,
+        )
+        .expect("tool search should succeed");
+
+        let results = outcome.payload["results"].as_array().expect("results");
+        assert!(
+            results.iter().any(|entry| entry["tool_id"] == "bash.exec"),
+            "runtime-ready bash.exec should appear in tool search results"
+        );
+    }
+
+    #[cfg(feature = "tool-shell")]
+    #[test]
+    fn tool_search_exact_query_surfaces_bash_exec() {
+        let root = unique_tool_temp_dir("loongclaw-bash-tool-search-exact-query");
+        std::fs::create_dir_all(&root).expect("create root dir");
+
+        let mut config = test_tool_runtime_config(root);
+        config.bash_exec = ready_bash_exec_runtime_policy();
+        let outcome = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "tool.search".to_owned(),
+                payload: json!({
+                    "query": "bash.exec",
+                    "limit": 10
+                }),
+            },
+            &config,
+        )
+        .expect("tool search should succeed");
+
+        let results = outcome.payload["results"].as_array().expect("results");
+        assert!(
+            results.iter().any(|entry| entry["tool_id"] == "bash.exec"),
+            "exact tool-id query should surface bash.exec, got: {results:?}"
+        );
+    }
+
+    #[cfg(feature = "tool-shell")]
+    #[test]
+    fn bash_exec_catalog_exposes_command_cwd_and_timeout_ms() {
+        let catalog = tool_catalog();
+        let descriptor = catalog
+            .descriptor("bash.exec")
+            .expect("bash.exec should be in the catalog");
+        let definition = descriptor.provider_definition();
+        let properties = definition["function"]["parameters"]["properties"]
+            .as_object()
+            .expect("bash.exec parameters");
+
+        assert!(properties.contains_key("command"));
+        assert!(properties.contains_key("cwd"));
+        assert!(properties.contains_key("timeout_ms"));
+        assert!(!properties.contains_key("args"));
+        assert_eq!(
+            definition["function"]["parameters"]["required"],
+            json!(["command"])
+        );
+
+        let entry = catalog::find_tool_catalog_entry("bash.exec")
+            .expect("bash.exec should be in catalog entries");
+        assert_eq!(
+            entry.argument_hint,
+            "command:string,cwd?:string,timeout_ms?:integer"
+        );
+        assert_eq!(
+            entry.parameter_types,
+            vec![
+                ("command", "string"),
+                ("cwd", "string"),
+                ("timeout_ms", "integer"),
+            ]
+        );
+        assert_eq!(entry.required_fields, vec!["command"]);
+        assert_eq!(entry.tags, vec!["bash", "command", "process", "exec"]);
     }
 
     #[cfg(feature = "tool-websearch")]
@@ -2951,6 +3148,425 @@ mod tests {
         assert!(tool_uses_dedicated_timeout("web.fetch"));
         assert!(tool_uses_dedicated_timeout("web.search"));
         assert!(!tool_uses_dedicated_timeout("file.read"));
+    }
+
+    #[test]
+    fn canonical_tool_name_maps_bash_exec_provider_name() {
+        assert_eq!(canonical_tool_name("bash_exec"), "bash.exec");
+    }
+
+    #[test]
+    fn framework_timeout_treats_bash_exec_as_dedicated_timeout_tool() {
+        assert!(tool_uses_dedicated_timeout("bash.exec"));
+    }
+
+    #[cfg(feature = "tool-shell")]
+    #[test]
+    fn bash_exec_rejects_blank_command() {
+        let config = test_tool_runtime_config(std::env::temp_dir());
+        let error = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "bash.exec".to_owned(),
+                payload: json!({"command": "  "}),
+            },
+            &config,
+        )
+        .expect_err("blank command should be rejected");
+
+        assert!(
+            error.contains("bash.exec requires payload.command"),
+            "expected blank-command validation error, got: {error}"
+        );
+    }
+
+    #[cfg(feature = "tool-shell")]
+    #[test]
+    fn bash_exec_returns_runtime_unavailable_error_when_no_bash_is_configured() {
+        let config = test_tool_runtime_config(std::env::temp_dir());
+        let error = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "bash.exec".to_owned(),
+                payload: json!({"command": "printf 'hi\\n'"}),
+            },
+            &config,
+        )
+        .expect_err("missing runtime should fail");
+
+        assert!(
+            error.contains("bash unavailable"),
+            "expected runtime-unavailable error, got: {error}"
+        );
+    }
+
+    #[cfg(feature = "tool-shell")]
+    #[test]
+    fn bash_exec_fails_closed_when_rule_loading_failed() {
+        let mut config = test_tool_runtime_config(std::env::temp_dir());
+        config.bash_exec = ready_bash_exec_runtime_policy();
+        config.bash_exec.governance.load_error = Some("broken rules".to_owned());
+
+        let error = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "bash.exec".to_owned(),
+                payload: json!({"command": "cargo test"}),
+            },
+            &config,
+        )
+        .expect_err("broken rules should fail closed");
+
+        assert!(error.contains("broken rules"));
+    }
+
+    #[cfg(all(feature = "tool-shell", unix))]
+    #[test]
+    fn bash_exec_reports_failed_status_for_non_zero_exit() {
+        use std::fs;
+
+        let root = unique_tool_temp_dir("loongclaw-bash-exec-failed-status");
+        fs::create_dir_all(&root).expect("create fixture root");
+        let log_path = root.join("bash-args.log");
+        let runtime_path = write_fake_bash_runtime(&root, "fake-bash", &log_path);
+
+        let mut config = test_tool_runtime_config(root.clone());
+        config.shell_default_mode = shell_policy_ext::ShellPolicyDefault::Allow;
+        config.bash_exec = runtime_config::BashExecRuntimePolicy {
+            available: true,
+            command: Some(runtime_path),
+            ..runtime_config::BashExecRuntimePolicy::default()
+        };
+
+        let outcome = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "bash.exec".to_owned(),
+                payload: json!({"command": "printf 'hello'; exit 7"}),
+            },
+            &config,
+        )
+        .expect("non-zero exit should still produce an outcome");
+
+        assert_eq!(outcome.status, "failed");
+        assert_eq!(outcome.payload["stdout"].as_str(), Some("hello"));
+        assert_eq!(outcome.payload["exit_code"].as_i64(), Some(7));
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(feature = "tool-shell")]
+    #[test]
+    fn bash_exec_runtime_policy_defaults_to_non_login_shell() {
+        let config = test_tool_runtime_config(std::env::temp_dir());
+
+        assert!(!config.bash_exec.login_shell);
+    }
+
+    #[cfg(all(feature = "tool-shell", unix))]
+    #[test]
+    fn bash_exec_runs_command_string_via_bash_runtime() {
+        use std::fs;
+
+        let root = unique_tool_temp_dir("loongclaw-bash-exec-command");
+        fs::create_dir_all(&root).expect("create fixture root");
+        let log_path = root.join("bash-args.log");
+        let runtime_path = write_fake_bash_runtime(&root, "fake-bash", &log_path);
+
+        let mut config = test_tool_runtime_config(root.clone());
+        config.shell_default_mode = shell_policy_ext::ShellPolicyDefault::Allow;
+        config.bash_exec = runtime_config::BashExecRuntimePolicy {
+            available: true,
+            command: Some(runtime_path),
+            ..runtime_config::BashExecRuntimePolicy::default()
+        };
+
+        let outcome = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "bash.exec".to_owned(),
+                payload: json!({"command": "printf 'hello-from-bash'"}),
+            },
+            &config,
+        )
+        .expect("bash command should succeed");
+
+        let logged_args = fs::read_to_string(&log_path).expect("read fake bash args");
+        assert_eq!(outcome.status, "ok");
+        assert_eq!(outcome.payload["stdout"].as_str(), Some("hello-from-bash"));
+        assert!(
+            logged_args
+                .lines()
+                .eq(["-c", "printf 'hello-from-bash'"].into_iter()),
+            "expected non-login bash invocation, got: {logged_args:?}"
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(all(feature = "tool-shell", unix))]
+    #[test]
+    fn bash_exec_allows_plain_command_when_prefix_rule_allows() {
+        use std::fs;
+
+        let root = unique_tool_temp_dir("loongclaw-bash-governance-allow");
+        let rules_dir = root.join(".loongclaw").join("rules");
+        fs::create_dir_all(&rules_dir).expect("rules dir");
+        fs::write(
+            rules_dir.join("allow.rules"),
+            "prefix_rule(pattern=[\"printf\",\"ok\"], decision=\"allow\")\n",
+        )
+        .expect("rule file");
+
+        let mut config = test_tool_runtime_config(root.clone());
+        let (bash_exec, _log_path) = configured_test_bash_runtime_with_rules(&root);
+        config.bash_exec = bash_exec;
+
+        let outcome = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "bash.exec".to_owned(),
+                payload: json!({"command": "printf ok"}),
+            },
+            &config,
+        )
+        .expect("allow rule should permit execution");
+
+        assert_eq!(outcome.status, "ok");
+        assert_eq!(outcome.payload["stdout"].as_str(), Some("ok"));
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(all(feature = "tool-shell", unix))]
+    #[test]
+    fn bash_exec_denies_plain_command_when_prefix_rule_denies() {
+        use std::fs;
+
+        let root = unique_tool_temp_dir("loongclaw-bash-governance-deny");
+        let rules_dir = root.join(".loongclaw").join("rules");
+        fs::create_dir_all(&rules_dir).expect("rules dir");
+        fs::write(
+            rules_dir.join("deny.rules"),
+            "prefix_rule(pattern=[\"cargo\",\"publish\"], decision=\"deny\")\n",
+        )
+        .expect("rule file");
+
+        let mut config = test_tool_runtime_config(root.clone());
+        let (bash_exec, log_path) = configured_test_bash_runtime_with_rules(&root);
+        config.bash_exec = bash_exec;
+
+        let error = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "bash.exec".to_owned(),
+                payload: json!({"command": "cargo publish"}),
+            },
+            &config,
+        )
+        .expect_err("deny rule should block execution");
+
+        assert!(error.contains("policy_denied"));
+        assert!(error.contains("matched deny rule"));
+        assert!(
+            !log_path.exists(),
+            "bash runtime should not have been launched"
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(all(feature = "tool-shell", unix))]
+    #[test]
+    fn bash_exec_denies_escaped_static_command_name_when_deny_rule_matches_under_default_allow() {
+        use std::fs;
+
+        let root = unique_tool_temp_dir("loongclaw-bash-governance-escaped-deny");
+        let rules_dir = root.join(".loongclaw").join("rules");
+        fs::create_dir_all(&rules_dir).expect("rules dir");
+        fs::write(
+            rules_dir.join("deny.rules"),
+            "prefix_rule(pattern=[\"rm\"], decision=\"deny\")\n",
+        )
+        .expect("rule file");
+
+        let mut config = test_tool_runtime_config(root.clone());
+        config.shell_default_mode = shell_policy_ext::ShellPolicyDefault::Allow;
+        let (bash_exec, log_path) = configured_test_bash_runtime_with_rules(&root);
+        config.bash_exec = bash_exec;
+
+        let error = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "bash.exec".to_owned(),
+                payload: json!({"command": r"r\m --version"}),
+            },
+            &config,
+        )
+        .expect_err("escaped static command name should still match deny rule");
+
+        assert!(error.contains("policy_denied"));
+        assert!(error.contains("matched deny rule"));
+        assert!(
+            !log_path.exists(),
+            "bash runtime should not have been launched"
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(all(feature = "tool-shell", unix))]
+    #[test]
+    fn bash_exec_denies_or_list_when_rhs_branch_matches_deny_rule() {
+        use std::fs;
+
+        let root = unique_tool_temp_dir("loongclaw-bash-governance-or-deny");
+        let rules_dir = root.join(".loongclaw").join("rules");
+        fs::create_dir_all(&rules_dir).expect("rules dir");
+        fs::write(
+            rules_dir.join("rules.rules"),
+            concat!(
+                "prefix_rule(pattern=[\"printf\",\"ok\"], decision=\"allow\")\n",
+                "prefix_rule(pattern=[\"printf\",\"blocked\"], decision=\"deny\")\n",
+            ),
+        )
+        .expect("rule file");
+
+        let mut config = test_tool_runtime_config(root.clone());
+        let (bash_exec, log_path) = configured_test_bash_runtime_with_rules(&root);
+        config.bash_exec = bash_exec;
+
+        let error = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "bash.exec".to_owned(),
+                payload: json!({"command": "printf ok || printf blocked"}),
+            },
+            &config,
+        )
+        .expect_err("conservative || governance should deny the rhs branch");
+
+        assert!(error.contains("policy_denied"));
+        assert!(error.contains("matched deny rule"));
+        assert!(
+            !log_path.exists(),
+            "bash runtime should not have been launched"
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(all(feature = "tool-shell", unix))]
+    #[test]
+    fn bash_exec_allows_parse_unreliable_command_when_shell_default_mode_is_allow() {
+        use std::fs;
+
+        let root = unique_tool_temp_dir("loongclaw-bash-governance-default-allow");
+        fs::create_dir_all(&root).expect("fixture root");
+
+        let mut config = test_tool_runtime_config(root.clone());
+        config.shell_default_mode = shell_policy_ext::ShellPolicyDefault::Allow;
+        let (bash_exec, _log_path) = configured_test_bash_runtime_with_rules(&root);
+        config.bash_exec = bash_exec;
+
+        let outcome = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "bash.exec".to_owned(),
+                payload: json!({"command": "if then"}),
+            },
+            &config,
+        )
+        .expect("default-allow should permit parse-unreliable input to reach bash");
+
+        assert_eq!(outcome.status, "failed");
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(feature = "tool-shell")]
+    #[test]
+    fn bash_exec_keeps_shell_exec_unchanged() {
+        let config = test_tool_runtime_config(std::env::temp_dir());
+        let outcome = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "shell.exec".to_owned(),
+                payload: json!({"command": "echo", "args": ["hi"]}),
+            },
+            &config,
+        )
+        .expect("shell.exec should remain runnable");
+
+        assert_eq!(outcome.status, "ok");
+        assert_eq!(outcome.payload["stdout"].as_str(), Some("hi"));
+    }
+
+    #[cfg(all(feature = "tool-shell", unix))]
+    #[test]
+    fn bash_exec_honors_cwd() {
+        use std::fs;
+
+        let root = unique_tool_temp_dir("loongclaw-bash-exec-cwd");
+        let nested = root.join("nested");
+        fs::create_dir_all(&nested).expect("create nested dir");
+        let log_path = root.join("bash-args.log");
+        let runtime_path = write_fake_bash_runtime(&root, "fake-bash", &log_path);
+
+        let mut config = test_tool_runtime_config(root.clone());
+        config.shell_default_mode = shell_policy_ext::ShellPolicyDefault::Allow;
+        config.bash_exec = runtime_config::BashExecRuntimePolicy {
+            available: true,
+            command: Some(runtime_path),
+            ..runtime_config::BashExecRuntimePolicy::default()
+        };
+
+        let outcome = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "bash.exec".to_owned(),
+                payload: json!({
+                    "command": "pwd",
+                    "cwd": nested,
+                }),
+            },
+            &config,
+        )
+        .expect("bash command should honor cwd");
+
+        assert_eq!(outcome.status, "ok");
+        assert_eq!(
+            outcome.payload["stdout"].as_str(),
+            Some(root.join("nested").display().to_string().as_str())
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(all(feature = "tool-shell", unix))]
+    #[test]
+    fn bash_exec_times_out_when_timeout_ms_is_small() {
+        use std::fs;
+
+        let root = unique_tool_temp_dir("loongclaw-bash-exec-timeout");
+        fs::create_dir_all(&root).expect("create fixture root");
+        let log_path = root.join("bash-args.log");
+        let runtime_path = write_fake_bash_runtime(&root, "fake-bash", &log_path);
+
+        let mut config = test_tool_runtime_config(root.clone());
+        config.shell_default_mode = shell_policy_ext::ShellPolicyDefault::Allow;
+        config.bash_exec = runtime_config::BashExecRuntimePolicy {
+            available: true,
+            command: Some(runtime_path),
+            ..runtime_config::BashExecRuntimePolicy::default()
+        };
+
+        let error = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "bash.exec".to_owned(),
+                payload: json!({
+                    "command": "sleep 10",
+                    "timeout_ms": 1,
+                }),
+            },
+            &config,
+        )
+        .expect_err("slow bash command should time out");
+
+        assert!(
+            error.contains("timed out after"),
+            "expected timeout failure, got: {error}"
+        );
+
+        fs::remove_dir_all(&root).ok();
     }
 
     #[test]
@@ -4094,6 +4710,64 @@ mod tests {
                 .is_some_and(|path| path.ends_with("README.md"))
         );
         assert_eq!(outcome.payload["content"], "tool invoke fixture");
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(all(feature = "tool-shell", unix))]
+    #[test]
+    fn tool_invoke_dispatches_bash_exec_with_trusted_internal_context() {
+        use std::fs;
+
+        let root = unique_tool_temp_dir("loongclaw-tool-invoke-bash-exec");
+        fs::create_dir_all(&root).expect("create fixture root");
+        let log_path = root.join("bash-args.log");
+        let runtime_path = write_fake_bash_runtime(&root, "fake-bash", &log_path);
+
+        let mut config = test_tool_runtime_config(root.clone());
+        config.shell_default_mode = shell_policy_ext::ShellPolicyDefault::Allow;
+        config.bash_exec = runtime_config::BashExecRuntimePolicy {
+            available: true,
+            command: Some(runtime_path),
+            ..runtime_config::BashExecRuntimePolicy::default()
+        };
+
+        let search = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "tool.search".to_owned(),
+                payload: json!({"query": "bash command cwd timeout"}),
+            },
+            &config,
+        )
+        .expect("tool search should succeed");
+
+        let result = search.payload["results"]
+            .as_array()
+            .expect("results")
+            .iter()
+            .find(|entry| entry["tool_id"] == "bash.exec")
+            .expect("bash.exec search result");
+
+        let outcome = execute_tool_core_with_test_context(
+            ToolCoreRequest {
+                tool_name: "tool.invoke".to_owned(),
+                payload: json!({
+                    "tool_id": "bash.exec",
+                    "lease": result["lease"].clone(),
+                    "arguments": {
+                        "command": "printf 'invoke-bash'"
+                    },
+                    "_loongclaw": {
+                        LOONGCLAW_INTERNAL_RUNTIME_NARROWING_KEY: {}
+                    }
+                }),
+            },
+            &config,
+        )
+        .expect("tool.invoke should execute bash.exec with trusted internal context");
+
+        assert_eq!(outcome.status, "ok");
+        assert_eq!(outcome.payload["stdout"].as_str(), Some("invoke-bash"));
 
         fs::remove_dir_all(&root).ok();
     }

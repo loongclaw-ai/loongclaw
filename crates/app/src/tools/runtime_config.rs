@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 use loongclaw_contracts::{ExecutionSecurityTier, SecretRef};
 use serde::{Deserialize, Serialize};
 
-use super::shell_policy_ext::ShellPolicyDefault;
+use super::{bash_rules, shell_policy_ext::ShellPolicyDefault};
 use crate::config::{AutonomyProfile, LoongClawConfig};
 #[cfg(feature = "feishu-integration")]
 use crate::config::{FeishuChannelConfig, FeishuIntegrationConfig};
@@ -290,6 +290,128 @@ impl BrowserCompanionRuntimePolicy {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BashGovernanceRuntimePolicy {
+    pub rules_dir: PathBuf,
+    pub rules: Vec<bash_rules::CompiledPrefixRule>,
+    pub load_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BashExecRuntimePolicy {
+    pub available: bool,
+    pub command: Option<PathBuf>,
+    pub warning: Option<String>,
+    pub login_shell: bool,
+    pub governance: BashGovernanceRuntimePolicy,
+}
+
+impl BashExecRuntimePolicy {
+    #[must_use]
+    pub fn is_runtime_ready(&self) -> bool {
+        self.available && self.command.is_some()
+    }
+}
+
+#[allow(clippy::print_stderr)]
+fn emit_runtime_warning(warning: &str) {
+    eprintln!("warning: {warning}");
+}
+
+#[cfg(feature = "tool-shell")]
+fn cached_bash_exec_runtime_probe() -> BashExecRuntimePolicy {
+    static BASH_RUNTIME_PROBE: OnceLock<BashExecRuntimePolicy> = OnceLock::new();
+
+    BASH_RUNTIME_PROBE
+        .get_or_init(super::bash::detect_bash_runtime_policy)
+        .clone()
+}
+
+#[cfg(feature = "tool-shell")]
+fn emit_bash_runtime_warning_once(warning: &str) {
+    static BASH_RUNTIME_WARNING: OnceLock<()> = OnceLock::new();
+
+    BASH_RUNTIME_WARNING.get_or_init(|| emit_runtime_warning(warning));
+}
+
+fn translate_legacy_shell_rules<'a>(
+    source: &str,
+    decision: bash_rules::PrefixRuleDecision,
+    commands: impl IntoIterator<Item = &'a String>,
+) -> Vec<bash_rules::CompiledPrefixRule> {
+    commands
+        .into_iter()
+        .filter_map(|command| {
+            let normalized = command.trim().to_ascii_lowercase();
+            if normalized.is_empty() {
+                return None;
+            }
+
+            Some(bash_rules::CompiledPrefixRule {
+                source: format!("{source}:{normalized}"),
+                prefix: vec![normalized],
+                decision,
+            })
+        })
+        .collect()
+}
+
+fn build_bash_governance_runtime_policy<'a>(
+    rules_dir: PathBuf,
+    shell_allow: impl IntoIterator<Item = &'a String>,
+    shell_deny: impl IntoIterator<Item = &'a String>,
+) -> BashGovernanceRuntimePolicy {
+    let mut rules = translate_legacy_shell_rules(
+        "shell_allow",
+        bash_rules::PrefixRuleDecision::Allow,
+        shell_allow,
+    );
+    rules.extend(translate_legacy_shell_rules(
+        "shell_deny",
+        bash_rules::PrefixRuleDecision::Deny,
+        shell_deny,
+    ));
+
+    let load_error = match bash_rules::load_rules_from_dir(&rules_dir) {
+        Ok(loaded_rules) => {
+            rules.extend(loaded_rules);
+            None
+        }
+        Err(error) => Some(error),
+    };
+
+    BashGovernanceRuntimePolicy {
+        rules_dir,
+        rules,
+        load_error,
+    }
+}
+
+fn build_bash_exec_runtime_policy(
+    login_shell: bool,
+    governance: BashGovernanceRuntimePolicy,
+) -> BashExecRuntimePolicy {
+    #[cfg(feature = "tool-shell")]
+    {
+        let mut policy = cached_bash_exec_runtime_probe();
+        if let Some(warning) = policy.warning.as_deref() {
+            emit_bash_runtime_warning_once(warning);
+        }
+        policy.login_shell = login_shell;
+        policy.governance = governance;
+        policy
+    }
+
+    #[cfg(not(feature = "tool-shell"))]
+    {
+        BashExecRuntimePolicy {
+            login_shell,
+            governance,
+            ..BashExecRuntimePolicy::default()
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeSelfRuntimePolicy {
     pub max_source_chars: usize,
@@ -518,6 +640,7 @@ pub struct ToolRuntimeConfig {
     pub runtime_self: RuntimeSelfRuntimePolicy,
     pub browser: BrowserRuntimePolicy,
     pub browser_companion: BrowserCompanionRuntimePolicy,
+    pub bash_exec: BashExecRuntimePolicy,
     pub web_fetch: WebFetchRuntimePolicy,
     pub web_search: WebSearchRuntimePolicy,
     pub autonomy_profile: AutonomyProfile,
@@ -545,6 +668,7 @@ impl Default for ToolRuntimeConfig {
             runtime_self: RuntimeSelfRuntimePolicy::default(),
             browser: BrowserRuntimePolicy::default(),
             browser_companion: BrowserCompanionRuntimePolicy::default(),
+            bash_exec: BashExecRuntimePolicy::default(),
             web_fetch: WebFetchRuntimePolicy::default(),
             web_search: WebSearchRuntimePolicy::default(),
             autonomy_profile: AutonomyProfile::default(),
@@ -564,20 +688,27 @@ impl ToolRuntimeConfig {
             config.tools.browser_companion.normalized_allowed_domains();
         let browser_companion_enforce_allowed_domains =
             !browser_companion_allowed_domains.is_empty();
+        let shell_allow: BTreeSet<String> = config
+            .tools
+            .shell_allow
+            .iter()
+            .map(|value| value.to_ascii_lowercase())
+            .collect();
+        let shell_deny: BTreeSet<String> = config
+            .tools
+            .shell_deny
+            .iter()
+            .map(|value| value.to_ascii_lowercase())
+            .collect();
+        let bash_governance = build_bash_governance_runtime_policy(
+            config.tools.bash.resolved_rules_dir(config_path),
+            shell_allow.iter(),
+            shell_deny.iter(),
+        );
         Self {
             file_root: Some(config.tools.resolved_file_root()),
-            shell_allow: config
-                .tools
-                .shell_allow
-                .iter()
-                .map(|value| value.to_ascii_lowercase())
-                .collect(),
-            shell_deny: config
-                .tools
-                .shell_deny
-                .iter()
-                .map(|value| value.to_ascii_lowercase())
-                .collect(),
+            shell_allow,
+            shell_deny,
             shell_default_mode: ShellPolicyDefault::parse(&config.tools.shell_default_mode),
             config_path: config_path.map(Path::to_path_buf),
             sessions_enabled: config.tools.sessions.enabled,
@@ -609,6 +740,10 @@ impl ToolRuntimeConfig {
                     .into_iter()
                     .collect(),
                 browser_companion_enforce_allowed_domains,
+            ),
+            bash_exec: build_bash_exec_runtime_policy(
+                config.tools.bash.login_shell,
+                bash_governance,
             ),
             web_fetch: WebFetchRuntimePolicy {
                 enabled: config.tools.web.enabled,
@@ -706,6 +841,11 @@ impl ToolRuntimeConfig {
         let config_path = std::env::var("LOONGCLAW_CONFIG_PATH")
             .ok()
             .map(PathBuf::from);
+        let shell_allow: BTreeSet<String> = crate::config::DEFAULT_SHELL_ALLOW
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect();
+        let shell_deny = BTreeSet::new();
         let sessions_enabled = parse_env_bool("LOONGCLAW_TOOL_SESSIONS_ENABLED").unwrap_or(true);
         let sessions_allow_mutation =
             parse_env_bool("LOONGCLAW_TOOL_SESSIONS_ALLOW_MUTATION").unwrap_or(false);
@@ -822,6 +962,16 @@ impl ToolRuntimeConfig {
             default_timeout_seconds: tool_execution_default_timeout,
             per_tool_timeout: tool_execution_per_tool_timeout,
         };
+        let bash_exec = build_bash_exec_runtime_policy(
+            false,
+            build_bash_governance_runtime_policy(
+                crate::config::ToolConfig::default()
+                    .bash
+                    .resolved_rules_dir(config_path.as_deref()),
+                shell_allow.iter(),
+                shell_deny.iter(),
+            ),
+        );
 
         let browser_companion_allow_private_hosts = web_fetch_allow_private_hosts;
         let browser_companion_allowed_domains = web_fetch_allowed_domains.clone();
@@ -831,6 +981,9 @@ impl ToolRuntimeConfig {
 
         Self {
             file_root,
+            shell_allow,
+            shell_deny,
+            shell_default_mode: ShellPolicyDefault::Deny,
             config_path,
             sessions_enabled,
             sessions_allow_mutation,
@@ -854,6 +1007,7 @@ impl ToolRuntimeConfig {
                 browser_companion_blocked_domains,
                 browser_companion_enforce_allowed_domains,
             ),
+            bash_exec,
             web_fetch: WebFetchRuntimePolicy {
                 enabled: web_fetch_enabled,
                 allow_private_hosts: web_fetch_allow_private_hosts,
@@ -1545,6 +1699,119 @@ mod tests {
         assert_eq!(snapshot.budget.max_capability_acquisitions_per_turn, 1);
         assert_eq!(snapshot.budget.max_provider_switches_per_turn, 1);
         assert_eq!(snapshot.budget.max_topology_mutations_per_turn, 0);
+    }
+
+    #[test]
+    fn tool_runtime_config_default_marks_bash_exec_unavailable() {
+        let config = ToolRuntimeConfig::default();
+
+        assert!(!config.bash_exec.is_runtime_ready());
+        assert!(config.bash_exec.command.is_none());
+        assert!(config.bash_exec.warning.is_none());
+        assert!(!config.bash_exec.login_shell);
+    }
+
+    #[test]
+    fn tool_runtime_config_projects_bash_login_shell_flag() {
+        let config: crate::config::ToolConfig =
+            toml::from_str("[bash]\nlogin_shell = true\n").expect("bash tool config");
+        let loongclaw = crate::config::LoongClawConfig {
+            tools: config,
+            ..crate::config::LoongClawConfig::default()
+        };
+
+        let runtime = ToolRuntimeConfig::from_loongclaw_config(&loongclaw, None);
+
+        assert!(runtime.bash_exec.login_shell);
+    }
+
+    #[test]
+    fn tool_runtime_config_uses_default_workspace_rules_dir_when_unset() {
+        let runtime = ToolRuntimeConfig::from_loongclaw_config(
+            &LoongClawConfig::default(),
+            Some(std::path::Path::new("/tmp/work/loongclaw.toml")),
+        );
+
+        assert_eq!(
+            runtime.bash_exec.governance.rules_dir,
+            PathBuf::from("/tmp/work/.loongclaw/rules")
+        );
+    }
+
+    #[test]
+    fn tool_runtime_config_projects_bash_rules_dir_override() {
+        let config: crate::config::ToolConfig =
+            toml::from_str("[bash]\nrules_dir = \"custom/rules\"\n").expect("bash tool config");
+        let loongclaw = crate::config::LoongClawConfig {
+            tools: config,
+            ..crate::config::LoongClawConfig::default()
+        };
+
+        let runtime = ToolRuntimeConfig::from_loongclaw_config(
+            &loongclaw,
+            Some(std::path::Path::new("/tmp/work/loongclaw.toml")),
+        );
+
+        assert_eq!(
+            runtime.bash_exec.governance.rules_dir,
+            PathBuf::from("/tmp/work/custom/rules")
+        );
+    }
+
+    #[test]
+    fn bash_governance_runtime_treats_missing_rules_dir_as_empty_rule_set() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let config_path = tempdir.path().join("loongclaw.toml");
+
+        let runtime = ToolRuntimeConfig::from_loongclaw_config(
+            &LoongClawConfig::default(),
+            Some(config_path.as_path()),
+        );
+
+        assert!(runtime.bash_exec.governance.load_error.is_none());
+        assert!(runtime.bash_exec.governance.rules.is_empty());
+    }
+
+    #[test]
+    fn bash_governance_runtime_preserves_rule_load_error_for_broken_rule_file() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let rules_dir = tempdir.path().join(".loongclaw").join("rules");
+        std::fs::create_dir_all(&rules_dir).expect("create rules dir");
+        std::fs::write(rules_dir.join("broken.rules"), "not valid starlark")
+            .expect("write broken rule file");
+        let config_path = tempdir.path().join("loongclaw.toml");
+
+        let runtime = ToolRuntimeConfig::from_loongclaw_config(
+            &LoongClawConfig::default(),
+            Some(config_path.as_path()),
+        );
+
+        assert!(runtime.bash_exec.governance.load_error.is_some());
+    }
+
+    #[cfg(not(feature = "tool-shell"))]
+    #[test]
+    fn tool_runtime_config_from_loongclaw_config_does_not_probe_bash_when_tool_shell_disabled() {
+        let mut config = crate::config::LoongClawConfig::default();
+        config.tools.bash.login_shell = true;
+
+        let runtime = ToolRuntimeConfig::from_loongclaw_config(&config, None);
+
+        assert!(!runtime.bash_exec.available);
+        assert!(runtime.bash_exec.command.is_none());
+        assert!(runtime.bash_exec.warning.is_none());
+        assert!(runtime.bash_exec.login_shell);
+    }
+
+    #[cfg(not(feature = "tool-shell"))]
+    #[test]
+    fn tool_runtime_config_from_env_does_not_probe_bash_when_tool_shell_disabled() {
+        let runtime = ToolRuntimeConfig::from_env();
+
+        assert!(!runtime.bash_exec.available);
+        assert!(runtime.bash_exec.command.is_none());
+        assert!(runtime.bash_exec.warning.is_none());
+        assert!(!runtime.bash_exec.login_shell);
     }
 
     #[test]
