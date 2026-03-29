@@ -1,7 +1,7 @@
 # Architecture Drift Report 2026-03
 
 ## Summary
-- Generated at: 2026-03-29T03:10:44Z
+- Generated at: 2026-03-29T03:28:15Z
 - Report month: `2026-03`
 - Baseline report: none
 - Hotspots tracked: 14
@@ -17,7 +17,7 @@
 | provider_mod | `foundation` | `crates/app/src/provider/mod.rs` | 375 | 1000 | 625 | 10 | 20 | 10 | 50.0% | HEALTHY |
 | memory_mod | `foundation` | `crates/app/src/memory/mod.rs` | 356 | 650 | 294 | 14 | 16 | 2 | 87.5% | WATCH |
 | acp_manager | `operational_density` | `crates/app/src/acp/manager.rs` | 3327 | 3600 | 273 | 8 | 12 | 4 | 92.4% | WATCH |
-| acpx_runtime | `operational_density` | `crates/app/src/acp/acpx.rs` | 2696 | 2800 | 104 | 56 | 65 | 9 | 96.3% | TIGHT |
+| acpx_runtime | `operational_density` | `crates/app/src/acp/acpx.rs` | 2698 | 2800 | 102 | 56 | 65 | 9 | 96.4% | TIGHT |
 | channel_registry | `structural_size` | `crates/app/src/channel/registry.rs` | 9846 | 10500 | 654 | 88 | 90 | 2 | 97.8% | TIGHT |
 | channel_config | `structural_size` | `crates/app/src/config/channels.rs` | 9759 | 9800 | 41 | 90 | 90 | 0 | 100.0% | TIGHT |
 | chat_runtime | `structural_size,operational_density` | `crates/app/src/chat.rs` | 6821 | 7300 | 479 | 145 | 160 | 15 | 93.4% | WATCH |
@@ -29,7 +29,7 @@
 
 ## Prioritization Signals
 - BREACH hotspots (>100% of any tracked budget): none
-- TIGHT hotspots (>=95% of any tracked budget): spec_execution (95.8%), acpx_runtime (96.3%), channel_registry (97.8%), channel_config (100.0%), channel_mod (99.9%)
+- TIGHT hotspots (>=95% of any tracked budget): spec_execution (95.8%), acpx_runtime (96.4%), channel_registry (97.8%), channel_config (100.0%), channel_mod (99.9%)
 - WATCH hotspots (>=85% and <95% of any tracked budget): spec_runtime (90.8%), memory_mod (87.5%), acp_manager (92.4%), chat_runtime (93.4%), turn_coordinator (89.0%), tools_mod (94.7%), daemon_lib (90.5%), onboard_cli (94.4%)
 - Mixed-class hotspots (size plus operational density): chat_runtime, channel_mod, turn_coordinator
 
@@ -62,7 +62,7 @@
 <!-- arch-hotspot key=provider_mod lines=375 functions=10 -->
 <!-- arch-hotspot key=memory_mod lines=356 functions=14 -->
 <!-- arch-hotspot key=acp_manager lines=3327 functions=8 -->
-<!-- arch-hotspot key=acpx_runtime lines=2696 functions=56 -->
+<!-- arch-hotspot key=acpx_runtime lines=2698 functions=56 -->
 <!-- arch-hotspot key=channel_registry lines=9846 functions=88 -->
 <!-- arch-hotspot key=channel_config lines=9759 functions=90 -->
 <!-- arch-hotspot key=chat_runtime lines=6821 functions=145 -->
