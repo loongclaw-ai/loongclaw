@@ -227,6 +227,11 @@ impl OnboardDraft {
         self.protocols.acp_enabled = enabled;
         self.config.acp.enabled = enabled;
         self.mark_user_selected(Self::ACP_ENABLED_KEY);
+
+        if !enabled {
+            self.set_acp_backend(None);
+            self.set_bootstrap_mcp_servers(Vec::new());
+        }
     }
 
     pub fn set_acp_backend(&mut self, backend: Option<String>) {

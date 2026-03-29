@@ -7018,6 +7018,89 @@ async fn protocol_step_hides_bootstrap_summary_when_acp_is_disabled() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn protocol_step_disabling_acp_clears_hidden_protocol_state() {
+    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
+    let workspace_root = unique_temp_path("protocol-disable-clears-state-workspace");
+    std::fs::create_dir_all(&workspace_root).expect("create workspace root");
+    std::fs::write(workspace_root.join("AGENTS.md"), "# local guidance\n")
+        .expect("write workspace guidance");
+
+    let output_path = unique_temp_path("protocol-disable-clears-state-config.toml");
+    let mut existing = mvp::config::LoongClawConfig::default();
+    existing.provider.model = "gpt-4.1".to_owned();
+    existing.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
+        "inline-secret".to_owned(),
+    ));
+    existing.acp.enabled = true;
+    existing.acp.backend = Some("planning_stub".to_owned());
+    existing.acp.dispatch.bootstrap_mcp_servers =
+        vec!["filesystem".to_owned(), "search".to_owned()];
+    mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
+
+    let transcript = run_scripted_onboard_flow(
+        loongclaw_daemon::onboard_cli::OnboardCommandOptions {
+            output: output_path.to_str().map(str::to_owned),
+            force: false,
+            non_interactive: false,
+            accept_risk: true,
+            provider: None,
+            model: None,
+            api_key_env: None,
+            web_search_provider: None,
+            web_search_api_key_env: None,
+            personality: None,
+            memory_profile: None,
+            system_prompt: None,
+            skip_model_probe: true,
+        },
+        vec![
+            "1".to_owned(),
+            "2".to_owned(),
+            provider_choice_input(mvp::config::ProviderKind::Openai),
+            "gpt-4.1".to_owned(),
+            "OPENAI_API_KEY".to_owned(),
+            String::new(),
+            "disable ACP".to_owned(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            "disabled".to_owned(),
+            "y".to_owned(),
+            "y".to_owned(),
+            "o".to_owned(),
+        ],
+        Some(workspace_root),
+        None,
+    )
+    .await
+    .expect("run scripted onboarding while disabling ACP");
+
+    let review_lines = extract_review_section_lines(&transcript, "step 7 of 8 · review and write");
+    assert!(
+        !review_lines
+            .iter()
+            .any(|line| line.contains("ACP backend") || line.contains("bootstrap MCP servers")),
+        "guided review should keep hidden protocol details out once ACP is disabled: {review_lines:#?}"
+    );
+
+    let (_, written_config) =
+        mvp::config::load(output_path.to_str()).expect("load ACP-disabled config");
+    assert!(
+        !written_config.acp.enabled,
+        "protocol step should persist ACP as disabled after selection"
+    );
+    assert_eq!(
+        written_config.acp.backend, None,
+        "disabling ACP should clear any stale backend that review no longer shows"
+    );
+    assert!(
+        written_config.acp.dispatch.bootstrap_mcp_servers.is_empty(),
+        "disabling ACP should clear hidden bootstrap MCP server state from the written config"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn workspace_step_blocks_on_unwritable_paths() {
     let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
     let workspace_root = unique_temp_path("workspace-unwritable-workspace");
