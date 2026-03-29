@@ -563,7 +563,7 @@ pub enum Commands {
     #[command(
         visible_alias = "plugin",
         about = "Author manifest-first plugin packages and inspect shared plugin governance truth",
-        long_about = "Manifest-first plugin namespace for bounded authoring bootstrap, scanning one or more plugin roots, evaluating profile-aware preflight, and consuming the deduplicated operator action plan.\n\nThis command does not introduce a second policy engine. It reuses the existing spec `plugin_preflight` surface for governance and adds one thin authoring scaffold for external package roots."
+        long_about = "Manifest-first plugin namespace for bounded authoring bootstrap, inspecting manifest-first package inventory, evaluating profile-aware preflight, and consuming the deduplicated operator action plan.\n\nThis command does not introduce a second policy engine. It reuses the existing spec `plugin_inventory` and `plugin_preflight` surfaces for shared plugin truth and adds one thin authoring scaffold for external package roots."
     )]
     Plugins {
         #[arg(long, global = true, default_value_t = false)]

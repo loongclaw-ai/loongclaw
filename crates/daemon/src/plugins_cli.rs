@@ -14,15 +14,18 @@ use crate::kernel::{
 };
 use crate::{
     BridgeSupportSpec, CliResult, HumanApprovalMode, HumanApprovalSpec, JsonSchemaDescriptor,
-    MaterializedBridgeSupportDeltaArtifact, OperationSpec,
-    PluginPreflightBridgeProfileRecommendation, PluginPreflightProfile, PluginScanSpec, RunnerSpec,
-    SecurityProfileSignatureSpec, SpecRunReport, execute_spec, json_schema_descriptor,
-    materialize_bridge_support_delta_artifact, materialize_bridge_support_template,
-    resolve_bridge_support_policy, resolve_bridge_support_selection,
+    MaterializedBridgeSupportDeltaArtifact, OperationSpec, PluginInventoryResult,
+    PluginPreflightBridgeProfileRecommendation, PluginPreflightProfile, PluginScanSpec,
+    ResolvedBridgeSupportSelection, RunnerSpec, SecurityProfileSignatureSpec, SpecRunReport,
+    default_plugin_inventory_limit, default_plugin_preflight_limit, execute_spec,
+    json_schema_descriptor, materialize_bridge_support_delta_artifact,
+    materialize_bridge_support_template, resolve_bridge_support_policy,
+    resolve_bridge_support_selection,
 };
 
 pub const PLUGINS_COMMAND_SCHEMA_VERSION: u32 = 1;
 pub const PLUGINS_COMMAND_SCHEMA_SURFACE: &str = "plugin_governance";
+pub const PLUGINS_INVENTORY_SCHEMA_PURPOSE: &str = "package_inventory";
 pub const PLUGINS_BRIDGE_PROFILES_SCHEMA_PURPOSE: &str = "bridge_profiles_catalog";
 pub const PLUGINS_BRIDGE_TEMPLATE_SCHEMA_PURPOSE: &str = "bridge_support_materialization";
 pub const PLUGINS_PREFLIGHT_SCHEMA_PURPOSE: &str = "ecosystem_preflight_evaluation";
@@ -40,6 +43,8 @@ fn plugins_command_schema(purpose: &str) -> JsonSchemaDescriptor {
 pub enum PluginsCommands {
     /// Scaffold a new manifest-first plugin package root for external authors
     Init(PluginInitCommand),
+    /// Inspect manifest-first package truth across one or more plugin roots
+    Inventory(PluginInventoryCommand),
     /// List bundled bridge support profiles for controlled ecosystem compatibility
     BridgeProfiles(PluginBridgeProfilesCommand),
     /// Emit the effective recommended bridge support profile template for the scanned ecosystem
@@ -51,19 +56,16 @@ pub enum PluginsCommands {
 }
 
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
-pub struct PluginGovernanceSourceArgs {
+pub struct PluginScanSourceArgs {
     /// Scan root to inspect for plugins. Repeat the flag for multiple roots.
     #[arg(long = "root", required = true, value_name = "ROOT")]
     pub roots: Vec<String>,
     /// Filter plugins by query before evaluating preflight
     #[arg(long, default_value = "")]
     pub query: String,
-    /// Maximum number of preflight results to return
-    #[arg(long, default_value_t = 200)]
-    pub limit: usize,
-    /// Active governance profile to evaluate
-    #[arg(long, value_enum, default_value_t = PluginPreflightProfileArg::RuntimeActivation)]
-    pub profile: PluginPreflightProfileArg,
+    /// Maximum number of plugins to return
+    #[arg(long)]
+    pub limit: Option<usize>,
     /// Optional JSON file containing a bridge support policy
     #[arg(long, conflicts_with = "bridge_profile")]
     pub bridge_support: Option<String>,
@@ -79,6 +81,15 @@ pub struct PluginGovernanceSourceArgs {
     /// Optional sha256 pin for the bridge support delta artifact
     #[arg(long)]
     pub bridge_support_delta_sha256: Option<String>,
+}
+
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct PluginGovernanceSourceArgs {
+    #[command(flatten)]
+    pub scan: PluginScanSourceArgs,
+    /// Active governance profile to evaluate
+    #[arg(long, value_enum, default_value_t = PluginPreflightProfileArg::RuntimeActivation)]
+    pub profile: PluginPreflightProfileArg,
     /// Optional plugin preflight policy JSON file
     #[arg(long)]
     pub policy_path: Option<String>,
@@ -94,6 +105,24 @@ pub struct PluginGovernanceSourceArgs {
     /// Signature algorithm for the provided policy signature
     #[arg(long, default_value = "ed25519")]
     pub policy_signature_algorithm: String,
+}
+
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct PluginInventoryCommand {
+    #[command(flatten)]
+    pub source: PluginScanSourceArgs,
+    /// Include ready or setup-incomplete plugins in the inventory results
+    #[arg(long, default_value_t = true)]
+    pub include_ready: bool,
+    /// Include blocked plugins in the inventory results
+    #[arg(long, default_value_t = true)]
+    pub include_blocked: bool,
+    /// Include deferred plugins in the inventory results
+    #[arg(long, default_value_t = true)]
+    pub include_deferred: bool,
+    /// Include input/output examples in inventory result rows
+    #[arg(long, default_value_t = false)]
+    pub include_examples: bool,
 }
 
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
@@ -397,6 +426,39 @@ pub struct PluginsBridgeSupportProvenanceView {
     pub delta_sha256: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PluginsInventorySummaryView {
+    pub returned_plugins: usize,
+    pub ready_plugins: usize,
+    pub setup_incomplete_plugins: usize,
+    pub blocked_plugins: usize,
+    pub deferred_plugins: usize,
+    pub loaded_plugins: usize,
+    pub source_kind_distribution: BTreeMap<String, usize>,
+    pub bridge_kind_distribution: BTreeMap<String, usize>,
+    pub source_language_distribution: BTreeMap<String, usize>,
+    pub setup_surface_distribution: BTreeMap<String, usize>,
+    pub activation_status_distribution: BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PluginsInventoryExecution {
+    pub schema_version: u32,
+    pub schema: JsonSchemaDescriptor,
+    pub scan_roots: Vec<String>,
+    pub query: String,
+    pub limit: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bridge_support_provenance: Option<PluginsBridgeSupportProvenanceView>,
+    pub bridge_support_source: Option<String>,
+    pub bridge_support_sha256: Option<String>,
+    pub bridge_support_delta_source: Option<String>,
+    pub bridge_support_delta_sha256: Option<String>,
+    pub summary: PluginsInventorySummaryView,
+    pub returned_results: usize,
+    pub results: Vec<PluginInventoryResult>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PluginsPreflightSummaryView {
     pub schema_version: u32,
@@ -574,6 +636,7 @@ pub struct PluginsInitExecution {
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum PluginsCommandExecution {
     Init(Box<PluginsInitExecution>),
+    Inventory(Box<PluginsInventoryExecution>),
     BridgeProfiles(Box<PluginsBridgeProfilesExecution>),
     BridgeTemplate(Box<PluginsBridgeTemplateExecution>),
     Preflight(Box<PluginsPreflightExecution>),
@@ -601,6 +664,40 @@ pub async fn execute_plugins_command(
         PluginsCommands::Init(command) => {
             let execution = execute_plugins_init(command)?;
             Ok(PluginsCommandExecution::Init(Box::new(execution)))
+        }
+        PluginsCommands::Inventory(command) => {
+            let context = build_plugin_inventory_context(
+                &command.source,
+                command.include_ready,
+                command.include_blocked,
+                command.include_deferred,
+                command.include_examples,
+            )?;
+            let report = execute_spec(&context.spec, false).await;
+            if let Some(reason) = report.blocked_reason.as_deref() {
+                return Err(format!("plugin inventory blocked: {reason}"));
+            }
+            let bridge_support_provenance = context.bridge_support_provenance();
+            let results = decode_plugin_inventory_results(&report)?;
+            let summary = summarize_plugin_inventory_results(&results);
+
+            Ok(PluginsCommandExecution::Inventory(Box::new(
+                PluginsInventoryExecution {
+                    schema_version: PLUGINS_COMMAND_SCHEMA_VERSION,
+                    schema: plugins_command_schema(PLUGINS_INVENTORY_SCHEMA_PURPOSE),
+                    scan_roots: context.scan_roots,
+                    query: context.query,
+                    limit: context.limit,
+                    bridge_support_provenance,
+                    bridge_support_source: context.bridge_support_source,
+                    bridge_support_sha256: context.bridge_support_sha256,
+                    bridge_support_delta_source: context.bridge_support_delta_source,
+                    bridge_support_delta_sha256: context.bridge_support_delta_sha256,
+                    returned_results: results.len(),
+                    summary,
+                    results,
+                },
+            )))
         }
         PluginsCommands::BridgeProfiles(command) => {
             let profiles = load_bridge_profile_views(&command.profiles)?;
@@ -1090,6 +1187,7 @@ fn render_plugin_scaffold_readme(package_root: &str, plugin_id: &str, bridge_kin
 fn render_plugins_cli_text(execution: &PluginsCommandExecution) -> String {
     match execution {
         PluginsCommandExecution::Init(execution) => render_plugins_init_text(execution),
+        PluginsCommandExecution::Inventory(execution) => render_plugins_inventory_text(execution),
         PluginsCommandExecution::BridgeProfiles(execution) => {
             render_plugins_bridge_profiles_text(execution)
         }
@@ -1124,6 +1222,95 @@ fn render_plugins_init_text(execution: &PluginsInitExecution) -> String {
         "- operator_actions=loongclaw plugins actions --root \"{}\" --profile sdk-release",
         execution.package_root
     ));
+    lines.join("\n")
+}
+
+fn render_plugins_inventory_text(execution: &PluginsInventoryExecution) -> String {
+    let mut lines = vec![format!(
+        "plugins inventory query={} roots={} returned_plugins={} ready={} setup_incomplete={} blocked={} deferred={} loaded={}",
+        display_text_or_dash(Some(execution.query.as_str())),
+        execution.scan_roots.join(","),
+        execution.returned_results,
+        execution.summary.ready_plugins,
+        execution.summary.setup_incomplete_plugins,
+        execution.summary.blocked_plugins,
+        execution.summary.deferred_plugins,
+        execution.summary.loaded_plugins
+    )];
+    lines.push(format!(
+        "bridge_support source={} sha256={}",
+        display_text_or_dash(execution.bridge_support_source.as_deref()),
+        display_text_or_dash(execution.bridge_support_sha256.as_deref())
+    ));
+    lines.push(format!(
+        "bridge_support_delta source={} sha256={}",
+        display_text_or_dash(execution.bridge_support_delta_source.as_deref()),
+        display_text_or_dash(execution.bridge_support_delta_sha256.as_deref())
+    ));
+    lines.push(format!(
+        "ecosystem source_kind={} bridge={} language={} setup_surface={} activation_status={}",
+        format_rollup_map(&execution.summary.source_kind_distribution),
+        format_rollup_map(&execution.summary.bridge_kind_distribution),
+        format_rollup_map(&execution.summary.source_language_distribution),
+        format_rollup_map(&execution.summary.setup_surface_distribution),
+        format_rollup_map(&execution.summary.activation_status_distribution)
+    ));
+    for result in &execution.results {
+        let activation_status = inventory_result_status_label(result);
+        let setup_surface = inventory_result_setup_surface_label(result);
+        let source_language = result.source_language.as_deref().unwrap_or("-");
+        let manifest_path = display_text_or_dash(result.package_manifest_path.as_deref());
+        let setup_mode = display_text_or_dash(result.setup_mode.as_deref());
+        let host_api = result
+            .compatibility
+            .as_ref()
+            .and_then(|compatibility| compatibility.host_api.as_deref());
+        let host_version_req = result
+            .compatibility
+            .as_ref()
+            .and_then(|compatibility| compatibility.host_version_req.as_deref());
+        let required_env_vars = format_csv_or_dash(&result.setup_required_env_vars);
+        let required_config_keys = format_csv_or_dash(&result.setup_required_config_keys);
+        let runtime_health = result
+            .runtime_health
+            .as_ref()
+            .map(|health| health.status.as_str());
+        let attestation = result
+            .activation_attestation
+            .as_ref()
+            .map(|attestation| attestation.integrity.as_str());
+        lines.push(format!(
+            "- plugin={} provider={} status={} loaded={} deferred={} bridge={} language={} setup_surface={}",
+            result.plugin_id,
+            result.provider_id,
+            activation_status,
+            result.loaded,
+            result.deferred,
+            result.bridge_kind,
+            source_language,
+            setup_surface
+        ));
+        lines.push(format!(
+            "  manifest={} setup_mode={} required_env={} required_config={} host_api={} host_version_req={}",
+            manifest_path,
+            setup_mode,
+            required_env_vars,
+            required_config_keys,
+            display_text_or_dash(host_api),
+            display_text_or_dash(host_version_req)
+        ));
+        lines.push(format!(
+            "  source={} bootstrap_hint={} runtime_health={} attestation={} summary={}",
+            result.source_path,
+            display_text_or_dash(result.bootstrap_hint.as_deref()),
+            display_text_or_dash(runtime_health),
+            display_text_or_dash(attestation),
+            display_text_or_dash(result.summary.as_deref())
+        ));
+        if let Some(reason) = result.activation_reason.as_deref() {
+            lines.push(format!("  activation_reason={reason}"));
+        }
+    }
     lines.join("\n")
 }
 
@@ -1444,6 +1631,66 @@ fn render_plugins_actions_text(execution: &PluginsActionsExecution) -> String {
 }
 
 #[derive(Debug, Clone)]
+struct ResolvedPluginScanSource {
+    scan_roots: Vec<String>,
+    query: String,
+    limit: usize,
+    bridge_support: Option<ResolvedBridgeSupportSelection>,
+}
+
+impl ResolvedPluginScanSource {
+    fn bridge_support_source(&self) -> Option<String> {
+        self.bridge_support
+            .as_ref()
+            .map(|selection| selection.policy.source.clone())
+    }
+
+    fn bridge_support_sha256(&self) -> Option<String> {
+        self.bridge_support
+            .as_ref()
+            .map(|selection| selection.policy.sha256.clone())
+    }
+
+    fn bridge_support_delta_source(&self) -> Option<String> {
+        self.bridge_support
+            .as_ref()
+            .and_then(|selection| selection.delta_source.clone())
+    }
+
+    fn bridge_support_delta_sha256(&self) -> Option<String> {
+        self.bridge_support.as_ref().and_then(|selection| {
+            selection
+                .delta_artifact
+                .as_ref()
+                .map(|artifact| artifact.sha256.clone())
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PluginInventoryContext {
+    scan_roots: Vec<String>,
+    query: String,
+    limit: usize,
+    bridge_support_source: Option<String>,
+    bridge_support_sha256: Option<String>,
+    bridge_support_delta_source: Option<String>,
+    bridge_support_delta_sha256: Option<String>,
+    spec: RunnerSpec,
+}
+
+impl PluginInventoryContext {
+    fn bridge_support_provenance(&self) -> Option<PluginsBridgeSupportProvenanceView> {
+        PluginsBridgeSupportProvenanceView::from_fields(
+            self.bridge_support_source.as_deref(),
+            self.bridge_support_sha256.as_deref(),
+            self.bridge_support_delta_source.as_deref(),
+            self.bridge_support_delta_sha256.as_deref(),
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
 struct PluginPreflightContext {
     scan_roots: Vec<String>,
     query: String,
@@ -1467,6 +1714,73 @@ impl PluginPreflightContext {
     }
 }
 
+fn build_plugin_inventory_context(
+    source: &PluginScanSourceArgs,
+    include_ready: bool,
+    include_blocked: bool,
+    include_deferred: bool,
+    include_examples: bool,
+) -> CliResult<PluginInventoryContext> {
+    let default_limit = default_plugin_inventory_limit();
+    let resolved = resolve_plugin_scan_source(source, default_limit, 100, "plugins inventory")?;
+
+    let mut spec = RunnerSpec::template();
+    spec.pack = VerticalPackManifest {
+        pack_id: "plugin-inventory".to_owned(),
+        domain: "ops".to_owned(),
+        version: "0.1.0".to_owned(),
+        default_route: ExecutionRoute {
+            harness_kind: HarnessKind::EmbeddedPi,
+            adapter: Some("pi-local".to_owned()),
+        },
+        allowed_connectors: BTreeSet::new(),
+        granted_capabilities: BTreeSet::from([Capability::ObserveTelemetry]),
+        metadata: BTreeMap::from([("operator_surface".to_owned(), "plugin_inventory".to_owned())]),
+    };
+    spec.agent_id = "agent-plugin-inventory".to_owned();
+    spec.ttl_s = 120;
+    spec.approval = Some(HumanApprovalSpec {
+        mode: HumanApprovalMode::Disabled,
+        ..HumanApprovalSpec::default()
+    });
+    spec.defaults = None;
+    spec.self_awareness = None;
+    spec.plugin_scan = Some(PluginScanSpec {
+        enabled: true,
+        roots: resolved.scan_roots.clone(),
+    });
+    spec.bridge_support = resolved
+        .bridge_support
+        .as_ref()
+        .map(|selection| selection.policy.profile.clone());
+    spec.bootstrap = None;
+    spec.auto_provision = None;
+    spec.hotfixes = Vec::new();
+    spec.operation = OperationSpec::PluginInventory {
+        query: resolved.query.clone(),
+        limit: resolved.limit,
+        include_ready,
+        include_blocked,
+        include_deferred,
+        include_examples,
+    };
+    let bridge_support_source = resolved.bridge_support_source();
+    let bridge_support_sha256 = resolved.bridge_support_sha256();
+    let bridge_support_delta_source = resolved.bridge_support_delta_source();
+    let bridge_support_delta_sha256 = resolved.bridge_support_delta_sha256();
+
+    Ok(PluginInventoryContext {
+        scan_roots: resolved.scan_roots,
+        query: resolved.query,
+        limit: resolved.limit,
+        bridge_support_source,
+        bridge_support_sha256,
+        bridge_support_delta_source,
+        bridge_support_delta_sha256,
+        spec,
+    })
+}
+
 fn build_plugin_preflight_context(
     source: &PluginGovernanceSourceArgs,
     include_passed: bool,
@@ -1475,15 +1789,9 @@ fn build_plugin_preflight_context(
     include_deferred: bool,
     include_examples: bool,
 ) -> CliResult<PluginPreflightContext> {
-    let roots = normalize_scan_roots(&source.roots)?;
-    let limit = validate_plugin_limit(source.limit)?;
-    let bridge_support = resolve_bridge_support_selection(
-        source.bridge_support.as_deref(),
-        source.bridge_profile.map(PluginBridgeProfileArg::as_str),
-        source.bridge_support_delta.as_deref(),
-        source.bridge_support_sha256.as_deref(),
-        source.bridge_support_delta_sha256.as_deref(),
-    )?;
+    let default_limit = default_plugin_preflight_limit();
+    let resolved =
+        resolve_plugin_scan_source(&source.scan, default_limit, 500, "plugins governance")?;
     let policy_signature = build_policy_signature_spec(
         source.policy_signature_algorithm.as_str(),
         source.policy_signature_public_key_base64.as_deref(),
@@ -1516,9 +1824,10 @@ fn build_plugin_preflight_context(
     spec.self_awareness = None;
     spec.plugin_scan = Some(PluginScanSpec {
         enabled: true,
-        roots: roots.clone(),
+        roots: resolved.scan_roots.clone(),
     });
-    spec.bridge_support = bridge_support
+    spec.bridge_support = resolved
+        .bridge_support
         .as_ref()
         .map(|selection| selection.policy.profile.clone());
     spec.bootstrap = None;
@@ -1526,8 +1835,8 @@ fn build_plugin_preflight_context(
     spec.hotfixes = Vec::new();
     let profile = source.profile.as_profile();
     spec.operation = OperationSpec::PluginPreflight {
-        query: source.query.clone(),
-        limit,
+        query: resolved.query.clone(),
+        limit: resolved.limit,
         profile,
         policy_path: source.policy_path.clone(),
         policy_sha256: source.policy_sha256.clone(),
@@ -1538,28 +1847,46 @@ fn build_plugin_preflight_context(
         include_deferred,
         include_examples,
     };
+    let bridge_support_source = resolved.bridge_support_source();
+    let bridge_support_sha256 = resolved.bridge_support_sha256();
+    let bridge_support_delta_source = resolved.bridge_support_delta_source();
+    let bridge_support_delta_sha256 = resolved.bridge_support_delta_sha256();
 
     Ok(PluginPreflightContext {
+        scan_roots: resolved.scan_roots,
+        query: resolved.query,
+        limit: resolved.limit,
+        profile: profile.as_str().to_owned(),
+        bridge_support_source,
+        bridge_support_sha256,
+        bridge_support_delta_source,
+        bridge_support_delta_sha256,
+        spec,
+    })
+}
+
+fn resolve_plugin_scan_source(
+    source: &PluginScanSourceArgs,
+    default_limit: usize,
+    max_limit: usize,
+    surface_label: &str,
+) -> CliResult<ResolvedPluginScanSource> {
+    let roots = normalize_scan_roots(&source.roots, surface_label)?;
+    let requested_limit = source.limit.unwrap_or(default_limit);
+    let limit = validate_plugin_limit(requested_limit, max_limit, surface_label)?;
+    let bridge_support = resolve_bridge_support_selection(
+        source.bridge_support.as_deref(),
+        source.bridge_profile.map(PluginBridgeProfileArg::as_str),
+        source.bridge_support_delta.as_deref(),
+        source.bridge_support_sha256.as_deref(),
+        source.bridge_support_delta_sha256.as_deref(),
+    )?;
+
+    Ok(ResolvedPluginScanSource {
         scan_roots: roots,
         query: source.query.clone(),
         limit,
-        profile: profile.as_str().to_owned(),
-        bridge_support_source: bridge_support
-            .as_ref()
-            .map(|selection| selection.policy.source.clone()),
-        bridge_support_sha256: bridge_support
-            .as_ref()
-            .map(|selection| selection.policy.sha256.clone()),
-        bridge_support_delta_source: bridge_support
-            .as_ref()
-            .and_then(|selection| selection.delta_source.clone()),
-        bridge_support_delta_sha256: bridge_support.as_ref().and_then(|selection| {
-            selection
-                .delta_artifact
-                .as_ref()
-                .map(|artifact| artifact.sha256.clone())
-        }),
-        spec,
+        bridge_support,
     })
 }
 
@@ -1687,7 +2014,7 @@ fn load_bridge_profile_views(
     Ok(views)
 }
 
-fn normalize_scan_roots(roots: &[String]) -> CliResult<Vec<String>> {
+fn normalize_scan_roots(roots: &[String], surface_label: &str) -> CliResult<Vec<String>> {
     let mut normalized = Vec::new();
     let mut seen = BTreeSet::new();
     for root in roots {
@@ -1700,14 +2027,18 @@ fn normalize_scan_roots(roots: &[String]) -> CliResult<Vec<String>> {
         }
     }
     if normalized.is_empty() {
-        return Err("plugins governance requires at least one non-empty --root".to_owned());
+        return Err(format!(
+            "{surface_label} requires at least one non-empty --root"
+        ));
     }
     Ok(normalized)
 }
 
-fn validate_plugin_limit(limit: usize) -> CliResult<usize> {
-    if !(1..=500).contains(&limit) {
-        return Err("plugins governance limit must be between 1 and 500".to_owned());
+fn validate_plugin_limit(limit: usize, max_limit: usize, surface_label: &str) -> CliResult<usize> {
+    if !(1..=max_limit).contains(&limit) {
+        return Err(format!(
+            "{surface_label} limit must be between 1 and {max_limit}"
+        ));
     }
     Ok(limit)
 }
@@ -1749,6 +2080,132 @@ fn decode_preflight_bridge_profile_recommendation(
     serde_json::from_value(recommendation_value).map_err(|error| {
         format!("decode plugin preflight bridge profile recommendation failed: {error}")
     })
+}
+
+fn decode_plugin_inventory_results(
+    report: &SpecRunReport,
+) -> CliResult<Vec<PluginInventoryResult>> {
+    let results_value = report
+        .outcome
+        .get("results")
+        .cloned()
+        .unwrap_or(Value::Null);
+
+    serde_json::from_value(results_value)
+        .map_err(|error| format!("decode plugin inventory results failed: {error}"))
+}
+
+fn summarize_plugin_inventory_results(
+    results: &[PluginInventoryResult],
+) -> PluginsInventorySummaryView {
+    let returned_plugins = results.len();
+    let mut ready_plugins = 0;
+    let mut setup_incomplete_plugins = 0;
+    let mut blocked_plugins = 0;
+    let mut deferred_plugins = 0;
+    let mut loaded_plugins = 0;
+    let mut source_kind_distribution = BTreeMap::new();
+    let mut bridge_kind_distribution = BTreeMap::new();
+    let mut source_language_distribution = BTreeMap::new();
+    let mut setup_surface_distribution = BTreeMap::new();
+    let mut activation_status_distribution = BTreeMap::new();
+
+    for result in results {
+        let activation_status = result.activation_status.as_deref();
+
+        if activation_status == Some("ready") {
+            ready_plugins += 1;
+        }
+        if activation_status == Some("setup_incomplete") {
+            setup_incomplete_plugins += 1;
+        }
+        if activation_status.is_some_and(plugin_inventory_status_is_blocked) {
+            blocked_plugins += 1;
+        }
+        if result.deferred {
+            deferred_plugins += 1;
+        }
+        if result.loaded {
+            loaded_plugins += 1;
+        }
+
+        increment_rollup_count(&mut source_kind_distribution, result.source_kind.as_str());
+        increment_rollup_count(&mut bridge_kind_distribution, result.bridge_kind.as_str());
+
+        let source_language = result.source_language.as_deref().unwrap_or("unknown");
+        increment_rollup_count(&mut source_language_distribution, source_language);
+
+        let setup_surface = inventory_result_setup_surface_label(result);
+        increment_rollup_count(&mut setup_surface_distribution, setup_surface);
+
+        let status_label = inventory_result_status_label(result);
+        increment_rollup_count(&mut activation_status_distribution, status_label);
+    }
+
+    PluginsInventorySummaryView {
+        returned_plugins,
+        ready_plugins,
+        setup_incomplete_plugins,
+        blocked_plugins,
+        deferred_plugins,
+        loaded_plugins,
+        source_kind_distribution,
+        bridge_kind_distribution,
+        source_language_distribution,
+        setup_surface_distribution,
+        activation_status_distribution,
+    }
+}
+
+fn plugin_inventory_status_is_blocked(status: &str) -> bool {
+    if status == "ready" {
+        return false;
+    }
+
+    if status == "setup_incomplete" {
+        return false;
+    }
+
+    true
+}
+
+fn inventory_result_status_label(result: &PluginInventoryResult) -> &str {
+    let activation_status = result.activation_status.as_deref();
+    let has_activation_status = activation_status.is_some_and(|status| !status.is_empty());
+
+    if has_activation_status {
+        return activation_status.unwrap_or("unknown");
+    }
+
+    if result.deferred {
+        return "deferred";
+    }
+
+    "unknown"
+}
+
+fn inventory_result_setup_surface_label(result: &PluginInventoryResult) -> &str {
+    let setup_surface = result.setup_surface.as_deref();
+    let has_setup_surface = setup_surface.is_some_and(|value| !value.is_empty());
+
+    if has_setup_surface {
+        return setup_surface.unwrap_or("none");
+    }
+
+    let setup_mode = result.setup_mode.as_deref();
+    let has_setup_mode = setup_mode.is_some_and(|value| !value.is_empty());
+
+    if has_setup_mode {
+        return "unspecified";
+    }
+
+    "none"
+}
+
+fn increment_rollup_count(values: &mut BTreeMap<String, usize>, key: &str) {
+    let entry = values.entry(key.to_owned()).or_default();
+    let next_value = entry.saturating_add(1);
+    *entry = next_value;
 }
 
 impl PluginsBridgeSupportProvenanceView {
@@ -2115,6 +2572,31 @@ mod tests {
         .expect("write setup entry");
     }
 
+    fn plugin_scan_source(plugin_root: &str, query: &str) -> PluginScanSourceArgs {
+        PluginScanSourceArgs {
+            roots: vec![plugin_root.to_owned()],
+            query: query.to_owned(),
+            limit: Some(10),
+            bridge_support: None,
+            bridge_profile: None,
+            bridge_support_delta: None,
+            bridge_support_sha256: None,
+            bridge_support_delta_sha256: None,
+        }
+    }
+
+    fn plugin_governance_source(plugin_root: &str, query: &str) -> PluginGovernanceSourceArgs {
+        PluginGovernanceSourceArgs {
+            scan: plugin_scan_source(plugin_root, query),
+            profile: PluginPreflightProfileArg::RuntimeActivation,
+            policy_path: None,
+            policy_sha256: None,
+            policy_signature_public_key_base64: None,
+            policy_signature_base64: None,
+            policy_signature_algorithm: "ed25519".to_owned(),
+        }
+    }
+
     #[test]
     fn build_policy_signature_spec_requires_complete_pair() {
         let error = build_policy_signature_spec("ed25519", Some("pub"), None)
@@ -2128,16 +2610,20 @@ mod tests {
 
     #[test]
     fn normalize_scan_roots_deduplicates_and_rejects_empty_input() {
-        let roots = normalize_scan_roots(&[
-            " /tmp/a ".to_owned(),
-            "/tmp/a".to_owned(),
-            "  ".to_owned(),
-            "/tmp/b".to_owned(),
-        ])
+        let roots = normalize_scan_roots(
+            &[
+                " /tmp/a ".to_owned(),
+                "/tmp/a".to_owned(),
+                "  ".to_owned(),
+                "/tmp/b".to_owned(),
+            ],
+            "plugins inventory",
+        )
         .expect("roots should normalize");
         assert_eq!(roots, vec!["/tmp/a".to_owned(), "/tmp/b".to_owned()]);
 
-        let error = normalize_scan_roots(&["   ".to_owned()]).expect_err("empty roots should fail");
+        let error = normalize_scan_roots(&["   ".to_owned()], "plugins inventory")
+            .expect_err("empty roots should fail");
         assert!(error.contains("--root"));
     }
 
@@ -2220,6 +2706,99 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_plugins_inventory_surfaces_manifest_first_openclaw_package_truth() {
+        let plugin_root = unique_temp_dir("loongclaw-plugins-cli-inventory-openclaw");
+        write_openclaw_weather_sdk_package(&plugin_root);
+
+        let mut source = plugin_scan_source(&plugin_root, "weather-sdk");
+        source.limit = None;
+        source.bridge_profile = Some(PluginBridgeProfileArg::OpenclawEcosystemBalanced);
+
+        let execution = execute_plugins_command(PluginsCommandOptions {
+            json: false,
+            command: PluginsCommands::Inventory(PluginInventoryCommand {
+                source,
+                include_ready: true,
+                include_blocked: true,
+                include_deferred: true,
+                include_examples: false,
+            }),
+        })
+        .await
+        .expect("plugins inventory should execute");
+
+        let PluginsCommandExecution::Inventory(execution) = execution else {
+            panic!("expected inventory execution");
+        };
+        assert_eq!(execution.schema_version, PLUGINS_COMMAND_SCHEMA_VERSION);
+        assert_eq!(execution.schema.version, PLUGINS_COMMAND_SCHEMA_VERSION);
+        assert_eq!(execution.schema.surface, PLUGINS_COMMAND_SCHEMA_SURFACE);
+        assert_eq!(execution.schema.purpose, PLUGINS_INVENTORY_SCHEMA_PURPOSE);
+        assert_eq!(execution.limit, default_plugin_inventory_limit());
+        assert_eq!(execution.returned_results, 1);
+        assert_eq!(execution.summary.returned_plugins, 1);
+        assert_eq!(execution.summary.ready_plugins, 0);
+        assert_eq!(execution.summary.setup_incomplete_plugins, 1);
+        assert_eq!(execution.summary.blocked_plugins, 0);
+        assert_eq!(execution.summary.deferred_plugins, 1);
+        assert_eq!(execution.summary.loaded_plugins, 0);
+        assert_eq!(
+            execution
+                .summary
+                .bridge_kind_distribution
+                .get("process_stdio")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            execution
+                .summary
+                .source_language_distribution
+                .get("javascript")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            execution
+                .summary
+                .setup_surface_distribution
+                .get("channel")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            execution
+                .summary
+                .activation_status_distribution
+                .get("setup_incomplete")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            execution.bridge_support_source.as_deref(),
+            Some("bundled:bridge-support-openclaw-ecosystem-balanced.json")
+        );
+        let result = &execution.results[0];
+        assert_eq!(result.plugin_id, "weather-sdk");
+        assert_eq!(result.provider_id, "weather-sdk");
+        assert_eq!(result.bridge_kind, "process_stdio");
+        assert_eq!(result.source_language.as_deref(), Some("javascript"));
+        assert_eq!(result.setup_mode.as_deref(), Some("governed_entry"));
+        assert_eq!(result.setup_surface.as_deref(), Some("channel"));
+        assert_eq!(
+            result.activation_status.as_deref(),
+            Some("setup_incomplete")
+        );
+        assert!(result.deferred);
+        assert!(
+            result
+                .setup_required_config_keys
+                .iter()
+                .any(|key| key == "plugins.entries.weather-sdk")
+        );
+    }
+
+    #[tokio::test]
     async fn execute_plugins_actions_filters_operator_action_plan() {
         let plugin_root = unique_temp_dir("loongclaw-plugins-cli-actions");
         fs::create_dir_all(&plugin_root).expect("create plugin root");
@@ -2264,25 +2843,12 @@ mod tests {
         )
         .expect("write plugin b");
 
+        let source = plugin_governance_source(&plugin_root, "");
+
         let execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
             command: PluginsCommands::Actions(PluginActionsCommand {
-                source: PluginGovernanceSourceArgs {
-                    roots: vec![plugin_root.clone()],
-                    query: String::new(),
-                    limit: 10,
-                    profile: PluginPreflightProfileArg::RuntimeActivation,
-                    bridge_support: None,
-                    bridge_profile: None,
-                    bridge_support_delta: None,
-                    bridge_support_sha256: None,
-                    bridge_support_delta_sha256: None,
-                    policy_path: None,
-                    policy_sha256: None,
-                    policy_signature_public_key_base64: None,
-                    policy_signature_base64: None,
-                    policy_signature_algorithm: "ed25519".to_owned(),
-                },
+                source,
                 include_passed: false,
                 include_warned: true,
                 include_blocked: true,
@@ -2341,25 +2907,13 @@ mod tests {
         let plugin_root = unique_temp_dir("loongclaw-plugins-cli-openclaw");
         write_openclaw_weather_sdk_package(&plugin_root);
 
+        let mut source = plugin_governance_source(&plugin_root, "weather-sdk");
+        source.scan.bridge_profile = Some(PluginBridgeProfileArg::OpenclawEcosystemBalanced);
+
         let execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
             command: PluginsCommands::Preflight(PluginPreflightCommand {
-                source: PluginGovernanceSourceArgs {
-                    roots: vec![plugin_root.clone()],
-                    query: "weather-sdk".to_owned(),
-                    limit: 10,
-                    profile: PluginPreflightProfileArg::RuntimeActivation,
-                    bridge_support: None,
-                    bridge_profile: Some(PluginBridgeProfileArg::OpenclawEcosystemBalanced),
-                    bridge_support_delta: None,
-                    bridge_support_sha256: None,
-                    bridge_support_delta_sha256: None,
-                    policy_path: None,
-                    policy_sha256: None,
-                    policy_signature_public_key_base64: None,
-                    policy_signature_base64: None,
-                    policy_signature_algorithm: "ed25519".to_owned(),
-                },
+                source,
                 include_passed: true,
                 include_warned: true,
                 include_blocked: true,
@@ -2510,25 +3064,12 @@ mod tests {
         let plugin_root = unique_temp_dir("loongclaw-plugins-cli-openclaw-recommend");
         write_openclaw_weather_sdk_package(&plugin_root);
 
+        let source = plugin_governance_source(&plugin_root, "weather-sdk");
+
         let execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
             command: PluginsCommands::Preflight(PluginPreflightCommand {
-                source: PluginGovernanceSourceArgs {
-                    roots: vec![plugin_root.clone()],
-                    query: "weather-sdk".to_owned(),
-                    limit: 10,
-                    profile: PluginPreflightProfileArg::RuntimeActivation,
-                    bridge_support: None,
-                    bridge_profile: None,
-                    bridge_support_delta: None,
-                    bridge_support_sha256: None,
-                    bridge_support_delta_sha256: None,
-                    policy_path: None,
-                    policy_sha256: None,
-                    policy_signature_public_key_base64: None,
-                    policy_signature_base64: None,
-                    policy_signature_algorithm: "ed25519".to_owned(),
-                },
+                source,
                 include_passed: true,
                 include_warned: true,
                 include_blocked: true,
@@ -2606,25 +3147,12 @@ mod tests {
         let plugin_root = unique_temp_dir("loongclaw-plugins-cli-openclaw-python-delta");
         write_openclaw_weather_sdk_python_package(&plugin_root);
 
+        let source = plugin_governance_source(&plugin_root, "weather-sdk");
+
         let execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
             command: PluginsCommands::Preflight(PluginPreflightCommand {
-                source: PluginGovernanceSourceArgs {
-                    roots: vec![plugin_root.clone()],
-                    query: "weather-sdk".to_owned(),
-                    limit: 10,
-                    profile: PluginPreflightProfileArg::RuntimeActivation,
-                    bridge_support: None,
-                    bridge_profile: None,
-                    bridge_support_delta: None,
-                    bridge_support_sha256: None,
-                    bridge_support_delta_sha256: None,
-                    policy_path: None,
-                    policy_sha256: None,
-                    policy_signature_public_key_base64: None,
-                    policy_signature_base64: None,
-                    policy_signature_algorithm: "ed25519".to_owned(),
-                },
+                source,
                 include_passed: true,
                 include_warned: true,
                 include_blocked: true,
@@ -2697,25 +3225,14 @@ mod tests {
         )
         .expect("write delta artifact");
 
+        let mut source = plugin_governance_source(&plugin_root, "weather-sdk");
+        source.scan.bridge_support_delta = Some(delta_path.clone());
+        source.scan.bridge_support_delta_sha256 = Some(artifact.sha256.clone());
+
         let execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
             command: PluginsCommands::Preflight(PluginPreflightCommand {
-                source: PluginGovernanceSourceArgs {
-                    roots: vec![plugin_root.clone()],
-                    query: "weather-sdk".to_owned(),
-                    limit: 10,
-                    profile: PluginPreflightProfileArg::RuntimeActivation,
-                    bridge_support: None,
-                    bridge_profile: None,
-                    bridge_support_delta: Some(delta_path.clone()),
-                    bridge_support_sha256: None,
-                    bridge_support_delta_sha256: Some(artifact.sha256.clone()),
-                    policy_path: None,
-                    policy_sha256: None,
-                    policy_signature_public_key_base64: None,
-                    policy_signature_base64: None,
-                    policy_signature_algorithm: "ed25519".to_owned(),
-                },
+                source,
                 include_passed: true,
                 include_warned: true,
                 include_blocked: true,
@@ -2795,25 +3312,13 @@ mod tests {
         let plugin_root = unique_temp_dir("loongclaw-plugins-cli-bridge-template-aligned");
         write_openclaw_weather_sdk_package(&plugin_root);
 
+        let mut source = plugin_governance_source(&plugin_root, "weather-sdk");
+        source.scan.bridge_profile = Some(PluginBridgeProfileArg::OpenclawEcosystemBalanced);
+
         let execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
             command: PluginsCommands::BridgeTemplate(PluginBridgeTemplateCommand {
-                source: PluginGovernanceSourceArgs {
-                    roots: vec![plugin_root.clone()],
-                    query: "weather-sdk".to_owned(),
-                    limit: 10,
-                    profile: PluginPreflightProfileArg::RuntimeActivation,
-                    bridge_support: None,
-                    bridge_profile: Some(PluginBridgeProfileArg::OpenclawEcosystemBalanced),
-                    bridge_support_delta: None,
-                    bridge_support_sha256: None,
-                    bridge_support_delta_sha256: None,
-                    policy_path: None,
-                    policy_sha256: None,
-                    policy_signature_public_key_base64: None,
-                    policy_signature_base64: None,
-                    policy_signature_algorithm: "ed25519".to_owned(),
-                },
+                source,
                 include_passed: true,
                 include_warned: true,
                 include_blocked: true,
@@ -2888,25 +3393,12 @@ mod tests {
         let output_path = format!("{plugin_root}/generated/bridge-support.json");
         let delta_output_path = format!("{plugin_root}/generated/bridge-support.delta.json");
 
+        let source = plugin_governance_source(&plugin_root, "weather-sdk");
+
         let execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
             command: PluginsCommands::BridgeTemplate(PluginBridgeTemplateCommand {
-                source: PluginGovernanceSourceArgs {
-                    roots: vec![plugin_root.clone()],
-                    query: "weather-sdk".to_owned(),
-                    limit: 10,
-                    profile: PluginPreflightProfileArg::RuntimeActivation,
-                    bridge_support: None,
-                    bridge_profile: None,
-                    bridge_support_delta: None,
-                    bridge_support_sha256: None,
-                    bridge_support_delta_sha256: None,
-                    policy_path: None,
-                    policy_sha256: None,
-                    policy_signature_public_key_base64: None,
-                    policy_signature_base64: None,
-                    policy_signature_algorithm: "ed25519".to_owned(),
-                },
+                source,
                 include_passed: true,
                 include_warned: true,
                 include_blocked: true,
