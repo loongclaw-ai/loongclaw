@@ -78,6 +78,8 @@ semver.workspace = true
 ed25519-dalek.workspace = true
 dunce = "1"
 tokio-stream = { version = "0.1", features = ["sync"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 [[bin]]
 name = "loong"

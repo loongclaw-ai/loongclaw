@@ -94,6 +94,7 @@ mod memory_context_benchmark;
 pub mod migrate_cli;
 pub mod migration;
 pub mod next_actions;
+mod observability;
 pub mod onboard_cli;
 mod onboard_finalize;
 mod onboard_preflight;
@@ -121,6 +122,7 @@ pub use loongclaw_spec::programmatic::{
 };
 pub use tlon_cli::TLON_SEND_CLI_SPEC;
 use tlon_cli::{default_tlon_send_target_kind, parse_tlon_send_target_kind};
+pub use observability::init_tracing;
 
 #[allow(
     clippy::expect_used,

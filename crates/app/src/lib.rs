@@ -8,6 +8,7 @@ pub mod conversation;
 pub mod crypto;
 pub mod memory;
 pub mod migration;
+pub(crate) mod observability;
 pub mod presentation;
 pub mod prompt;
 pub mod provider;
