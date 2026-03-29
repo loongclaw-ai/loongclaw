@@ -12,6 +12,7 @@ pub(super) struct WorkspaceStepValues {
     pub sqlite_origin: Option<OnboardValueOrigin>,
     pub file_root: PathBuf,
     pub file_root_origin: Option<OnboardValueOrigin>,
+    pub persist_displayed_file_root: bool,
 }
 
 pub(super) fn derive_workspace_step_values(
@@ -21,13 +22,9 @@ pub(super) fn derive_workspace_step_values(
     let sqlite_path = draft.workspace.sqlite_path.clone();
     let sqlite_origin = draft.origin_for(OnboardDraft::WORKSPACE_SQLITE_PATH_KEY);
 
-    let explicit_file_root = draft
-        .config
-        .tools
-        .file_root
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
+    let explicit_file_root = draft.config.tools.explicit_file_root();
+    let persist_displayed_file_root =
+        explicit_file_root.is_some() || context.workspace_root.is_some();
     let (file_root, file_root_origin) =
         if explicit_file_root.is_none() && context.workspace_root.is_some() {
             (
@@ -49,6 +46,7 @@ pub(super) fn derive_workspace_step_values(
         sqlite_origin,
         file_root,
         file_root_origin,
+        persist_displayed_file_root,
     }
 }
 
@@ -62,11 +60,13 @@ pub(super) fn apply_workspace_step_values(draft: &mut OnboardDraft, values: &Wor
     }
 
     draft.workspace.file_root = values.file_root.clone();
-    draft.config.tools.file_root = Some(values.file_root.display().to_string());
-    if let Some(origin) = values.file_root_origin {
-        draft
-            .origins
-            .insert(OnboardDraft::WORKSPACE_FILE_ROOT_KEY, origin);
+    if values.persist_displayed_file_root {
+        draft.config.tools.file_root = Some(values.file_root.display().to_string());
+        if let Some(origin) = values.file_root_origin {
+            draft
+                .origins
+                .insert(OnboardDraft::WORKSPACE_FILE_ROOT_KEY, origin);
+        }
     }
 }
 
@@ -80,6 +80,7 @@ pub(super) fn selected_workspace_step_values(
         sqlite_origin: displayed_values.sqlite_origin,
         file_root,
         file_root_origin: displayed_values.file_root_origin,
+        persist_displayed_file_root: displayed_values.persist_displayed_file_root,
     }
 }
 

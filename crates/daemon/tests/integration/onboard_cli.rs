@@ -500,10 +500,15 @@ fn extract_review_section_lines(transcript: &[String], progress_line: &str) -> V
         .windows(2)
         .position(|window| window[0] == "review setup" && window[1] == progress_line)
         .expect("transcript should include review section");
-    let end = transcript[start..]
+    let end = transcript[start + 1..]
         .iter()
-        .position(|line| line == "preflight checks")
-        .map(|offset| start + offset)
+        .position(|line| {
+            line == "preflight checks"
+                || line == "ready to write config"
+                || line == "step 8 of 8 · ready"
+                || line == "onboarding complete"
+        })
+        .map(|offset| start + 1 + offset)
         .unwrap_or(transcript.len());
     transcript[start..end].to_vec()
 }
@@ -2179,6 +2184,61 @@ async fn non_interactive_onboard_does_not_synthesize_file_root_from_blank_existi
         std::fs::read_to_string(&output).expect("read config after no-op"),
         original_body,
         "non-interactive onboarding should not synthesize a tool file root when the persisted value is blank and no workspace root exists"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn interactive_onboard_does_not_synthesize_file_root_from_blank_existing_value() {
+    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
+    let root = unique_temp_path("interactive-blank-file-root");
+    std::fs::create_dir_all(&root).expect("create test root");
+    let output = root.join("loongclaw.toml");
+
+    let mut config = mvp::config::LoongClawConfig::default();
+    config.provider.model = "gpt-4.1".to_owned();
+    config.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
+        "inline-secret".to_owned(),
+    ));
+    config.tools.file_root = Some(String::new());
+    mvp::config::write(Some(output.to_string_lossy().as_ref()), &config, true)
+        .expect("write existing config");
+    let original_body = std::fs::read_to_string(&output).expect("read original config");
+
+    let transcript = run_scripted_onboard_flow(
+        loongclaw_daemon::onboard_cli::OnboardCommandOptions {
+            output: output.to_str().map(str::to_owned),
+            force: false,
+            non_interactive: false,
+            accept_risk: true,
+            provider: None,
+            model: None,
+            api_key_env: None,
+            web_search_provider: None,
+            web_search_api_key_env: None,
+            personality: None,
+            memory_profile: None,
+            system_prompt: None,
+            skip_model_probe: true,
+        },
+        [
+            "1", "2", "", "", "", "", "", "", "", "", "", "", "y", "y", "y", "y", "o",
+        ],
+        None,
+        None,
+    )
+    .await
+    .expect("interactive blank file_root rerun should stay a no-op");
+
+    assert_eq!(
+        std::fs::read_to_string(&output).expect("read config after interactive rerun"),
+        original_body,
+        "interactive onboarding should not persist an explicit tool file root when the current config only has a blank value"
+    );
+    assert!(
+        transcript
+            .iter()
+            .all(|line| !line.contains("adjusted now: tools")),
+        "interactive no-op reruns should not claim the tools domain was adjusted: {transcript:#?}"
     );
 }
 
@@ -6593,6 +6653,96 @@ async fn guided_onboard_renders_workspace_and_protocol_steps_before_review() {
             "step 7 of 8 · review and write",
             "step 8 of 8 · ready",
         ],
+    );
+
+    let environment_lines = extract_step_section_lines(
+        &transcript,
+        "step 6 of 8 · environment check",
+        "step 7 of 8 · review and write",
+    );
+    assert!(
+        environment_lines
+            .iter()
+            .any(|line| line == "preflight checks" || line.contains("- status:")),
+        "environment check should render readiness content before review: {environment_lines:#?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn interactive_onboard_fail_level_preflight_blocks_before_write() {
+    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
+    let output_path = unique_temp_path("interactive-fail-preflight-config.toml");
+    let mut existing = mvp::config::LoongClawConfig::default();
+    existing.provider.kind = mvp::config::ProviderKind::KimiCoding;
+    existing.provider.model = "kimi-coding-v1".to_owned();
+    existing.provider.wire_api = mvp::config::ProviderWireApi::Responses;
+    existing.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
+        "inline-secret".to_owned(),
+    ));
+    mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
+    let baseline_contents =
+        std::fs::read_to_string(&output_path).expect("read config before blocked onboarding");
+
+    let (result, transcript) = run_scripted_onboard_flow_collecting_transcript(
+        loongclaw_daemon::onboard_cli::OnboardCommandOptions {
+            output: output_path.to_str().map(str::to_owned),
+            force: false,
+            non_interactive: false,
+            accept_risk: true,
+            provider: None,
+            model: None,
+            api_key_env: None,
+            web_search_provider: None,
+            web_search_api_key_env: None,
+            personality: None,
+            memory_profile: None,
+            system_prompt: None,
+            skip_model_probe: true,
+        },
+        [
+            "1",
+            "2",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "transport should stay blocked",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "y",
+            "y",
+            "o",
+        ],
+        None,
+        None,
+    )
+    .await;
+
+    let error = result.expect_err("fail-level preflight should block interactive writes");
+    assert!(
+        error.contains("provider transport") || error.contains("onboard preflight failed"),
+        "blocked interactive preflight should surface the failing readiness reason: {error}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&output_path).expect("read config after blocked onboarding"),
+        baseline_contents,
+        "interactive onboarding must not write config when fail-level preflight blockers remain"
+    );
+    let environment_lines = extract_step_section_lines(
+        &transcript,
+        "step 6 of 8 · environment check",
+        "step 7 of 8 · review and write",
+    );
+    assert!(
+        environment_lines
+            .iter()
+            .any(|line| line.contains("provider transport") || line.contains("fail")),
+        "blocked environment step should still show the failing readiness check: {environment_lines:#?}"
     );
 }
 

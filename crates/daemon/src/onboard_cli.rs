@@ -1351,8 +1351,7 @@ pub async fn run_onboard_cli_with_ui(
         };
         flow = run_guided_onboard_flow(flow, &mut runner).await?;
     }
-
-    print_guided_step_boundary(ui, OnboardWizardStep::ReviewAndWrite)?;
+    let show_guided_environment_step = !options.non_interactive && !skip_detailed_setup;
 
     let workspace_guidance = context
         .workspace_root
@@ -1364,20 +1363,6 @@ pub async fn run_onboard_cli_with_ui(
         &workspace_guidance,
         starting_selection.review_candidate.as_ref(),
     );
-    if !options.non_interactive {
-        print_lines(
-            ui,
-            render_onboard_review_lines_for_draft_with_guidance_and_style(
-                flow.draft(),
-                starting_selection.import_source.as_deref(),
-                &workspace_guidance,
-                starting_selection.review_candidate.as_ref(),
-                context.render_width,
-                review_flow_style,
-                true,
-            ),
-        )?;
-    }
 
     let checks = run_preflight_checks(&flow.draft().config, options.skip_model_probe).await;
     let config_validation_failure = config_validation_failure_message(&checks);
@@ -1424,19 +1409,36 @@ pub async fn run_onboard_cli_with_ui(
             return Err(warning_message);
         }
     } else {
-        print_lines(
-            ui,
-            render_preflight_summary_screen_lines_with_style(
-                &checks,
-                context.render_width,
-                review_flow_style,
-                true,
-            ),
-        )?;
+        if show_guided_environment_step {
+            let progress_line = guided_step_progress_line(OnboardWizardStep::EnvironmentCheck);
+            print_guided_step_boundary(ui, OnboardWizardStep::EnvironmentCheck)?;
+            print_lines(
+                ui,
+                render_preflight_summary_screen_lines_with_progress(
+                    &checks,
+                    context.render_width,
+                    progress_line.as_str(),
+                    true,
+                ),
+            )?;
+        } else {
+            print_lines(
+                ui,
+                render_preflight_summary_screen_lines_with_style(
+                    &checks,
+                    context.render_width,
+                    review_flow_style,
+                    true,
+                ),
+            )?;
+        }
         if let Some(message) = config_validation_failure {
             return Err(message);
         }
-        if (has_failures || has_warnings)
+        if has_failures {
+            return Err(non_interactive_preflight_failure_message(&checks));
+        }
+        if has_warnings
             && !ui.prompt_confirm(
                 crate::onboard_presentation::preflight_confirm_prompt(),
                 false,
@@ -1445,12 +1447,32 @@ pub async fn run_onboard_cli_with_ui(
             return Err("onboarding cancelled: unresolved preflight warnings".to_owned());
         }
     }
+    if !options.non_interactive {
+        if show_guided_environment_step {
+            if flow.current_step() == OnboardWizardStep::EnvironmentCheck {
+                flow.advance();
+            }
+            print_guided_step_boundary(ui, OnboardWizardStep::ReviewAndWrite)?;
+        }
+        print_lines(
+            ui,
+            render_onboard_review_lines_for_draft_with_guidance_and_style(
+                flow.draft(),
+                starting_selection.import_source.as_deref(),
+                &workspace_guidance,
+                starting_selection.review_candidate.as_ref(),
+                context.render_width,
+                review_flow_style,
+                true,
+            ),
+        )?;
+    }
     if !options.non_interactive && !skip_config_write {
         print_lines(
             ui,
             render_write_confirmation_screen_lines_with_style(
                 &output_path.display().to_string(),
-                has_failures || has_warnings,
+                has_warnings,
                 context.render_width,
                 review_flow_style,
                 true,
@@ -1949,7 +1971,9 @@ where
             OnboardWizardStep::RuntimeDefaults => self.run_runtime_defaults_step(draft).await,
             OnboardWizardStep::Workspace => self.run_workspace_step(draft),
             OnboardWizardStep::Protocols => self.run_protocols_step(draft),
-            OnboardWizardStep::EnvironmentCheck => Ok(OnboardFlowStepAction::Skip),
+            OnboardWizardStep::EnvironmentCheck => {
+                Err("environment check is handled outside the guided step runner".to_owned())
+            }
             OnboardWizardStep::ReviewAndWrite | OnboardWizardStep::Ready => {
                 Ok(OnboardFlowStepAction::Next)
             }

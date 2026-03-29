@@ -83,7 +83,7 @@ pub(crate) async fn run_guided_onboard_flow<R>(
 where
     R: GuidedOnboardFlowStepRunner,
 {
-    while controller.current_step() != OnboardWizardStep::ReviewAndWrite {
+    while controller.current_step() != OnboardWizardStep::EnvironmentCheck {
         let step = controller.current_step();
         let action = runner.run_step(step, controller.draft_mut()).await?;
         match action {
@@ -216,7 +216,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn guided_flow_runner_owns_step_order_until_review_boundary() {
+    async fn guided_flow_runner_owns_step_order_until_environment_boundary() {
         let controller = OnboardFlowController::new(sample_draft());
         let mut runner = RecordingRunner::new();
 
@@ -232,10 +232,12 @@ mod tests {
                 OnboardWizardStep::RuntimeDefaults,
                 OnboardWizardStep::Workspace,
                 OnboardWizardStep::Protocols,
-                OnboardWizardStep::EnvironmentCheck,
             ]
         );
-        assert_eq!(controller.current_step(), OnboardWizardStep::ReviewAndWrite);
+        assert_eq!(
+            controller.current_step(),
+            OnboardWizardStep::EnvironmentCheck
+        );
         assert_eq!(
             controller.draft().workspace.file_root,
             PathBuf::from("/guided/workspace")
