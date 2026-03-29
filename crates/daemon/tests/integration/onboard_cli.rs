@@ -1522,6 +1522,9 @@ async fn interactive_onboard_clear_token_keeps_inline_provider_credential() {
             String::new(),
             String::new(),
             String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
             "y".to_owned(),
             "y".to_owned(),
             "o".to_owned(),
@@ -1580,6 +1583,9 @@ async fn interactive_onboard_clear_token_restores_builtin_system_prompt() {
         "gpt-4.1".to_owned(),
         String::new(),
         ":clear".to_owned(),
+        String::new(),
+        String::new(),
+        String::new(),
         String::new(),
         String::new(),
         "y".to_owned(),
@@ -1662,6 +1668,9 @@ async fn interactive_onboard_web_search_custom_env_persists_explicit_env_referen
             String::new(),
             "tavily".to_owned(),
             "TEAM_TAVILY_KEY".to_owned(),
+            String::new(),
+            String::new(),
+            String::new(),
             "y".to_owned(),
             "y".to_owned(),
             "o".to_owned(),
@@ -1730,6 +1739,9 @@ async fn interactive_onboard_web_search_blank_input_keeps_inline_credential() {
             String::new(),
             "tavily".to_owned(),
             String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
             "y".to_owned(),
             "y".to_owned(),
             "o".to_owned(),
@@ -1784,7 +1796,9 @@ async fn interactive_onboard_only_shows_large_logo_on_the_initial_screen() {
             system_prompt: None,
             skip_model_probe: true,
         },
-        ["y", "1", "2", "", "", "", "", "", "", "", "y"],
+        [
+            "y", "1", "2", "", "", "", "", "", "", "", "", "", "", "y", "y", "o",
+        ],
         None,
         None,
     )
@@ -6329,6 +6343,9 @@ async fn onboard_current_setup_adjustments_preserve_unchanged_domain_actions_in_
             "custom review prompt".to_owned(),
             String::new(),
             String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
             "y".to_owned(),
             "y".to_owned(),
             "o".to_owned(),
@@ -6386,8 +6403,8 @@ async fn onboard_current_setup_adjustments_preserve_unchanged_domain_actions_in_
     assert!(
         success_lines
             .iter()
-            .any(|line| line == "- adjusted now: cli"),
-        "success summary should group domains adjusted during onboarding: {success_lines:#?}"
+            .any(|line| line == "- adjusted now: cli, tools"),
+        "success summary should group domains adjusted during onboarding, including workspace-backed tool defaults: {success_lines:#?}"
     );
 }
 
@@ -6432,6 +6449,9 @@ async fn onboard_current_setup_adjustments_capture_personality_and_memory_profil
             "2".to_owned(),
             String::new(),
             "3".to_owned(),
+            String::new(),
+            String::new(),
+            String::new(),
             String::new(),
             "y".to_owned(),
             "y".to_owned(),
@@ -6513,6 +6533,7 @@ async fn guided_onboard_renders_workspace_and_protocol_steps_before_review() {
             String::new(),
             String::new(),
             String::new(),
+            String::new(),
             "y".to_owned(),
             "y".to_owned(),
             "o".to_owned(),
@@ -6582,6 +6603,7 @@ async fn workspace_step_prefills_existing_memory_and_file_root_paths() {
             "OPENAI_API_KEY".to_owned(),
             String::new(),
             "workspace defaults stay visible".to_owned(),
+            String::new(),
             String::new(),
             String::new(),
             String::new(),
@@ -6678,6 +6700,7 @@ async fn workspace_step_overrides_mark_user_selected_values() {
             String::new(),
             override_sqlite.display().to_string(),
             override_file_root.display().to_string(),
+            String::new(),
             "y".to_owned(),
             "y".to_owned(),
             "o".to_owned(),
@@ -7358,6 +7381,7 @@ async fn guided_onboard_review_labels_current_and_detected_values_differently() 
             String::new(),
             String::new(),
             String::new(),
+            String::new(),
             "y".to_owned(),
             "y".to_owned(),
             "o".to_owned(),
@@ -7423,6 +7447,7 @@ async fn guided_onboard_rerun_keeps_current_values_distinct_from_detected_values
             "OPENAI_API_KEY".to_owned(),
             String::new(),
             "rerun keeps draft values apart".to_owned(),
+            String::new(),
             String::new(),
             String::new(),
             String::new(),
@@ -7500,6 +7525,7 @@ async fn guided_onboard_back_navigation_preserves_draft_state() {
             "OPENAI_API_KEY".to_owned(),
             String::new(),
             "draft state should survive back navigation".to_owned(),
+            String::new(),
             String::new(),
             String::new(),
             String::new(),
@@ -7674,6 +7700,7 @@ async fn guided_onboard_does_not_write_before_review_confirmation() {
             String::new(),
             String::new(),
             String::new(),
+            String::new(),
             "y".to_owned(),
             "y".to_owned(),
             "o".to_owned(),
@@ -7817,6 +7844,9 @@ requires_openai_auth = true
             "",
             "",
             "",
+            "",
+            "",
+            "",
             "y",
             "y",
         ],
@@ -7859,8 +7889,8 @@ requires_openai_auth = true
     assert!(
         success_lines
             .iter()
-            .any(|line| line == "- adjusted now: provider"),
-        "success summary should group manually adjusted domains in the final handoff: {success_lines:#?}"
+            .any(|line| line == "- adjusted now: provider, tools"),
+        "success summary should group manually adjusted domains in the final handoff, including workspace-backed tool defaults: {success_lines:#?}"
     );
     assert!(
         success_lines
@@ -8227,6 +8257,30 @@ fn onboard_should_skip_config_write_when_existing_config_matches_draft() {
     assert!(
         !loongclaw_daemon::onboard_cli::should_skip_config_write(Some(&existing), &changed),
         "a changed draft should still go through the normal write flow"
+    );
+}
+
+#[test]
+fn onboard_should_skip_config_write_when_existing_config_only_differs_by_canonical_persistence() {
+    let mut existing = mvp::config::LoongClawConfig::default();
+    existing.provider.kind = mvp::config::ProviderKind::Deepseek;
+    existing.provider.model = "deepseek-chat".to_owned();
+    existing.provider.wire_api = mvp::config::ProviderWireApi::Responses;
+    existing.provider.api_key_env = Some("DEEPSEEK_API_KEY".to_owned());
+
+    let rendered = mvp::config::render(&existing).expect("render canonical config");
+    let legacy_rendered = rendered.replace(
+        "api_key = \"${DEEPSEEK_API_KEY}\"",
+        "api_key_env = \"DEEPSEEK_API_KEY\"",
+    );
+    let legacy_path = unique_temp_path("should-skip-config-write-legacy.toml");
+    std::fs::write(&legacy_path, legacy_rendered).expect("write legacy-config variant");
+    let (_, loaded_existing) =
+        mvp::config::load(legacy_path.to_str()).expect("load legacy-config variant");
+
+    assert!(
+        loongclaw_daemon::onboard_cli::should_skip_config_write(Some(&loaded_existing), &existing),
+        "legacy auth bindings that normalize to the same persisted config should still count as a no-op"
     );
 }
 

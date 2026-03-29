@@ -1773,11 +1773,13 @@ where
         let workspace_values = onboard_workspace::derive_workspace_step_values(draft, self.context);
 
         if self.options.non_interactive {
-            onboard_workspace::commit_workspace_step_selection(
-                draft,
-                &workspace_values,
-                &workspace_values,
-            );
+            if self.context.workspace_root.is_some() || draft.config.tools.file_root.is_some() {
+                onboard_workspace::commit_workspace_step_selection(
+                    draft,
+                    &workspace_values,
+                    &workspace_values,
+                );
+            }
             return Ok(OnboardFlowStepAction::Next);
         }
         print_lines(
@@ -6609,7 +6611,16 @@ pub fn should_skip_config_write(
     existing_config: Option<&mvp::config::LoongClawConfig>,
     draft: &mvp::config::LoongClawConfig,
 ) -> bool {
-    existing_config.is_some_and(|existing| existing == draft)
+    existing_config.is_some_and(|existing| {
+        if existing == draft {
+            return true;
+        }
+
+        match (mvp::config::render(existing), mvp::config::render(draft)) {
+            (Ok(existing_rendered), Ok(draft_rendered)) => existing_rendered == draft_rendered,
+            _ => false,
+        }
+    })
 }
 
 pub fn parse_provider_kind(raw: &str) -> Option<mvp::config::ProviderKind> {
