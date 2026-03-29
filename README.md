@@ -256,11 +256,12 @@ Guided onboarding now runs as an eight-stage wizard: `welcome`, `authentication`
 and `ready`.
 
 When you rerun onboarding against an existing setup, it keeps the current saved
-values distinct from anything newly detected so you can see what is already
-configured before the draft is written. If rich terminal prompts are not
-available, onboarding falls back to plain prompts instead of blocking the flow.
-When preflight finds a blocker, the local repair path is `loongclaw doctor` or
-`loongclaw doctor --fix`.
+values distinct from the detected starting point so you can see what is already
+configured before the draft is written. The environment check can finish green,
+`ready with warnings`, or blocked. Warn-only runs require explicit confirmation
+before write, while blocked runs stop before write and point to `loongclaw doctor`
+or `loongclaw doctor --fix`. If rich terminal prompts are not available,
+onboarding falls back to plain prompts instead of blocking the flow.
 
 1. Run guided onboarding:
 

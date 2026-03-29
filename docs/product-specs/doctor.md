@@ -23,6 +23,9 @@ can recover a broken setup without reverse-engineering runtime internals.
 - [x] When `onboard`, `ask`, `chat`, or channel setup hits a common health
       failure, the CLI points users toward `doctor`, and onboarding points to
       `doctor --fix` when a blocker has a safe local repair path.
+- [x] Doctor remains the follow-up repair lane when onboarding exits the
+      environment check as blocked or `ready with warnings` and the operator
+      wants to clear warn-level issues after first success.
 - [x] Doctor checks cover the current MVP path: config presence, provider
       readiness, SQLite memory readiness, shipped channel prerequisites, and
       the optional browser preview companion readiness path.

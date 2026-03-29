@@ -14,7 +14,8 @@ next.
 - [x] Onboarding detects reusable provider, channel, or workspace settings when
       available and explains what it found before writing config.
 - [x] Re-running onboarding keeps current values distinct from detected values,
-      so the review step can show what was already saved versus what was found.
+      so the review step can show what was already saved versus what was found
+      in the detected starting point.
 - [x] The happy path ends with explicit next-step guidance for:
       a concrete `loongclaw ask --message "..."` example and `loongclaw chat`.
 - [x] The success summary leads with a runnable `start here` handoff before the
@@ -48,6 +49,10 @@ next.
       surfaces that the runtime uses after setup.
 - [x] When preflight checks fail, onboarding points users to `loongclaw doctor`
       or `loongclaw doctor --fix` as the repair path.
+- [x] The environment-check stage can finish green, `ready with warnings`, or
+      blocked; warning-only outcomes require explicit confirmation before write,
+      and blocked outcomes stop before write and point users to doctor as the
+      repair path.
 - [x] Onboarding preflight reuses the same browser companion diagnostics as
       `loongclaw doctor`, surfacing optional managed-lane blockers before write
       without redefining runtime truth inside onboarding.
