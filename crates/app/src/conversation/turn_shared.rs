@@ -9,6 +9,7 @@ use serde_json::{Map, Value};
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+use unicode_normalization::UnicodeNormalization;
 
 use crate::CliResult;
 
@@ -409,6 +410,22 @@ impl ApprovalPromptView {
         }
     }
 
+    pub fn tool_label(&self) -> String {
+        if self.locale.is_cjk() {
+            "工具".to_owned()
+        } else {
+            "tool".to_owned()
+        }
+    }
+
+    pub fn subtitle(&self) -> String {
+        if self.locale.is_cjk() {
+            "工具确认".to_owned()
+        } else {
+            "tool consent".to_owned()
+        }
+    }
+
     pub fn action_commands_text(&self) -> String {
         self.actions
             .iter()
@@ -574,27 +591,29 @@ impl<'a> ToolDrivenReplyKernel<'a> {
 
 pub fn user_requested_raw_tool_output(user_input: &str) -> bool {
     let normalized = user_input.to_ascii_lowercase();
-    if normalized.contains("[ok]") {
+    let trimmed = normalized.trim();
+
+    if trimmed == "[ok]" {
         return true;
     }
 
-    [
+    let explicit_signals = [
         "raw tool output",
-        "tool output",
+        "raw output",
         "exact output",
         "full output",
         "verbatim",
         "raw json",
-        "json output",
-        "return json",
-        "as json",
-        "in json",
         "raw payload",
         "full payload",
         "exact payload",
-    ]
-    .iter()
-    .any(|signal| normalized.contains(signal))
+        "payload as json",
+        "output as json",
+    ];
+
+    explicit_signals
+        .iter()
+        .any(|signal| normalized.contains(signal))
 }
 
 pub fn compose_assistant_reply(
@@ -674,7 +693,8 @@ pub fn parse_approval_prompt_view(assistant_text: &str) -> Option<ApprovalPrompt
 }
 
 pub fn normalize_approval_prompt_control_input(input: &str) -> String {
-    let trimmed = input.trim().trim_matches(|character: char| {
+    let compatibility = input.nfkc().collect::<String>();
+    let trimmed = compatibility.trim().trim_matches(|character: char| {
         character.is_whitespace()
             || matches!(
                 character,
@@ -694,12 +714,13 @@ pub fn normalize_approval_prompt_control_input(input: &str) -> String {
                     | '？'
             )
     });
+    let lowercased = trimmed.to_lowercase();
 
-    let normalized = trimmed
+    let normalized = lowercased
         .chars()
         .map(|character| match character {
             '_' | '-' => ' ',
-            other => other.to_ascii_lowercase(),
+            other => other,
         })
         .collect::<String>();
 
@@ -1580,6 +1601,14 @@ mod tests {
     }
 
     #[test]
+    fn raw_tool_output_detection_ignores_generic_json_and_tool_output_requests() {
+        assert!(!user_requested_raw_tool_output("summarize the tool output"));
+        assert!(!user_requested_raw_tool_output("answer in json"));
+        assert!(!user_requested_raw_tool_output("format the result as json"));
+        assert!(user_requested_raw_tool_output("[ok]"));
+    }
+
+    #[test]
     fn compose_assistant_reply_keeps_tool_error_inline_reason() {
         let reply = compose_assistant_reply(
             "preface",
@@ -1678,6 +1707,22 @@ mod tests {
             Some(ApprovalPromptActionId::Esc)
         );
         assert_eq!(parse_approval_prompt_action_input("maybe"), None);
+    }
+
+    #[test]
+    fn approval_prompt_action_input_parser_accepts_full_width_aliases() {
+        assert_eq!(
+            parse_approval_prompt_action_input("ｙｅｓ"),
+            Some(ApprovalPromptActionId::Yes)
+        );
+        assert_eq!(
+            parse_approval_prompt_action_input("３"),
+            Some(ApprovalPromptActionId::Full)
+        );
+        assert_eq!(
+            parse_approval_prompt_action_input("ｓｋｉｐ　ｃａｌｌ"),
+            Some(ApprovalPromptActionId::Esc)
+        );
     }
 
     #[test]

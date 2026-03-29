@@ -1314,14 +1314,24 @@ mod tests {
     #[cfg(feature = "config-toml")]
     #[test]
     fn tool_config_parses_tool_consent_mode_from_toml() {
-        let raw = r#"
-[tools.consent]
-default_mode = "full"
-"#;
-        let parsed =
-            toml::from_str::<crate::config::LoongClawConfig>(raw).expect("parse tool config");
+        let test_cases = [
+            ("prompt", ToolConsentMode::Prompt),
+            ("auto", ToolConsentMode::Auto),
+            ("full", ToolConsentMode::Full),
+        ];
 
-        assert_eq!(parsed.tools.consent.default_mode, ToolConsentMode::Full);
+        for (raw_mode, expected_mode) in test_cases {
+            let raw = format!(
+                r#"
+[tools.consent]
+default_mode = "{raw_mode}"
+"#
+            );
+            let parsed =
+                toml::from_str::<crate::config::LoongClawConfig>(&raw).expect("parse tool config");
+
+            assert_eq!(parsed.tools.consent.default_mode, expected_mode);
+        }
     }
 
     #[cfg(feature = "config-toml")]

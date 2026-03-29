@@ -2531,6 +2531,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn full_session_consent_still_requires_approval_for_governed_app_tool() {
+        let memory_config = isolated_memory_config("delegate-app-full");
+        let repo = SessionRepository::new(&memory_config).expect("repository");
+        repo.ensure_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("ensure root session");
+        repo.upsert_session_tool_consent(crate::session::repository::NewSessionToolConsentRecord {
+            scope_session_id: "root-session".to_owned(),
+            mode: ToolConsentMode::Full,
+            updated_by_session_id: Some("root-session".to_owned()),
+        })
+        .expect("persist full session consent");
+
+        let mut tool_config = ToolConfig::default();
+        tool_config.approval.mode = GovernedToolApprovalMode::Strict;
+        let tool_view = runtime_tool_view_for_config(&tool_config);
+        let session_context = SessionContext::root_with_tool_view("root-session", tool_view);
+        let dispatcher = DefaultAppToolDispatcher::new(memory_config.clone(), tool_config);
+
+        let result = TurnEngine::new(4)
+            .execute_turn_in_context(
+                &delegate_async_turn("root-session", "turn-delegate-full", "call-delegate-full"),
+                &session_context,
+                &dispatcher,
+                ConversationRuntimeBinding::direct(),
+                None,
+            )
+            .await;
+
+        let TurnResult::NeedsApproval(requirement) = result else {
+            panic!("expected NeedsApproval, got {result:?}");
+        };
+        assert_eq!(requirement.tool_name.as_deref(), Some("delegate_async"));
+        assert_eq!(
+            requirement.rule_id.as_str(),
+            "governed_tool_requires_approval"
+        );
+    }
+
+    #[tokio::test]
     async fn governed_tool_approval_request_reuses_deterministic_id_for_same_blocked_call() {
         let memory_config = isolated_memory_config("reuse");
         let repo = SessionRepository::new(&memory_config).expect("repository");

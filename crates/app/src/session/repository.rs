@@ -1275,8 +1275,11 @@ impl SessionRepository {
         &self,
         record: NewSessionToolConsentRecord,
     ) -> Result<SessionToolConsentRecord, String> {
-        let scope_session_id =
+        let requested_scope_session_id =
             normalize_required_text(&record.scope_session_id, "scope_session_id")?;
+        let scope_session_id = self
+            .lineage_root_session_id(&requested_scope_session_id)?
+            .ok_or_else(|| format!("session `{requested_scope_session_id}` not found"))?;
         let session_exists = self
             .load_session_summary_with_legacy_fallback(&scope_session_id)?
             .is_some();
@@ -3667,6 +3670,45 @@ mod tests {
             created.updated_by_session_id.as_deref(),
             Some("root-session")
         );
+
+        let loaded = repo
+            .load_session_tool_consent("root-session")
+            .expect("load session tool consent")
+            .expect("session tool consent row");
+        assert_eq!(loaded, created);
+    }
+
+    #[test]
+    fn session_tool_consent_repository_normalizes_delegate_scope_to_root() {
+        let config = isolated_memory_config("session-tool-consent-delegate-root");
+        let repo = SessionRepository::new(&config).expect("repository");
+        repo.create_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create root session");
+        repo.create_session(NewSessionRecord {
+            session_id: "child-session".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Child".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create child session");
+
+        let created = repo
+            .upsert_session_tool_consent(NewSessionToolConsentRecord {
+                scope_session_id: "child-session".to_owned(),
+                mode: ToolConsentMode::Auto,
+                updated_by_session_id: Some("child-session".to_owned()),
+            })
+            .expect("upsert session tool consent");
+
+        assert_eq!(created.scope_session_id, "root-session");
+        assert_eq!(created.mode, ToolConsentMode::Auto);
 
         let loaded = repo
             .load_session_tool_consent("root-session")

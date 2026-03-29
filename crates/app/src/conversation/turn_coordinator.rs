@@ -1728,7 +1728,7 @@ impl ConversationTurnCoordinator {
                 )
                 .await?
             {
-                return Ok((reply, true));
+                return Ok((reply, false));
             }
             let preparing_event = ConversationTurnPhaseEvent::preparing();
             observe_turn_phase(observer.as_ref(), preparing_event);
@@ -1879,6 +1879,10 @@ impl ConversationTurnCoordinator {
             return Ok(None);
         };
 
+        if let Some(kernel_ctx) = binding.kernel_context() {
+            runtime.bootstrap(config, session_id, kernel_ctx).await?;
+        }
+
         let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
         let repo = SessionRepository::new(&memory_config)?;
         let Some(pending_request) = repo
@@ -1892,13 +1896,7 @@ impl ConversationTurnCoordinator {
         let scope_session_id = repo
             .lineage_root_session_id(&pending_request.session_id)?
             .unwrap_or_else(|| pending_request.session_id.clone());
-        if let Some(mode) = control_decision.session_mode() {
-            repo.upsert_session_tool_consent(NewSessionToolConsentRecord {
-                scope_session_id,
-                mode,
-                updated_by_session_id: Some(session_id.to_owned()),
-            })?;
-        }
+        let approval_request_id = pending_request.approval_request_id.clone();
 
         observe_turn_phase(observer, ConversationTurnPhaseEvent::preparing());
         let session_context = runtime.session_context(config, session_id, binding)?;
@@ -1953,6 +1951,22 @@ impl ConversationTurnCoordinator {
             observer,
         )
         .await;
+        if let Some(mode) = control_decision.session_mode() {
+            let resolved_request = repo
+                .load_approval_request(&approval_request_id)?
+                .ok_or_else(|| format!("approval_request_not_found: `{approval_request_id}`"))?;
+            let approval_request_was_resolved = resolved_request.decision
+                == Some(ApprovalDecision::ApproveOnce)
+                && resolved_request.status != ApprovalRequestStatus::Pending;
+
+            if approval_request_was_resolved {
+                repo.upsert_session_tool_consent(NewSessionToolConsentRecord {
+                    scope_session_id,
+                    mode,
+                    updated_by_session_id: Some(session_id.to_owned()),
+                })?;
+            }
+        }
         let reply = apply_resolved_provider_turn(
             config,
             runtime,
@@ -6815,12 +6829,125 @@ mod tests {
     }
 
     #[cfg(feature = "memory-sqlite")]
+    #[derive(Default)]
+    struct ApprovalControlRuntime {
+        bootstrap_calls: StdMutex<usize>,
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[async_trait]
+    impl ConversationRuntime for ApprovalControlRuntime {
+        async fn build_messages(
+            &self,
+            _config: &LoongClawConfig,
+            _session_id: &str,
+            _include_system_prompt: bool,
+            _tool_view: &crate::tools::ToolView,
+            _binding: ConversationRuntimeBinding<'_>,
+        ) -> CliResult<Vec<Value>> {
+            Ok(vec![json!({
+                "role": "system",
+                "content": "approval control test"
+            })])
+        }
+
+        async fn request_completion(
+            &self,
+            _config: &LoongClawConfig,
+            _messages: &[Value],
+            _binding: ConversationRuntimeBinding<'_>,
+        ) -> CliResult<String> {
+            Ok("approval handled".to_owned())
+        }
+
+        async fn request_turn(
+            &self,
+            _config: &LoongClawConfig,
+            _session_id: &str,
+            _turn_id: &str,
+            _messages: &[Value],
+            _tool_view: &crate::tools::ToolView,
+            _binding: ConversationRuntimeBinding<'_>,
+        ) -> CliResult<ProviderTurn> {
+            panic!("request_turn should not run during approval control replay")
+        }
+
+        async fn request_turn_streaming(
+            &self,
+            _config: &LoongClawConfig,
+            _session_id: &str,
+            _turn_id: &str,
+            _messages: &[Value],
+            _tool_view: &crate::tools::ToolView,
+            _binding: ConversationRuntimeBinding<'_>,
+            _on_token: crate::provider::StreamingTokenCallback,
+        ) -> CliResult<ProviderTurn> {
+            panic!("request_turn_streaming should not run during approval control replay")
+        }
+
+        async fn persist_turn(
+            &self,
+            _session_id: &str,
+            _role: &str,
+            _content: &str,
+            _binding: ConversationRuntimeBinding<'_>,
+        ) -> CliResult<()> {
+            Ok(())
+        }
+
+        async fn bootstrap(
+            &self,
+            _config: &LoongClawConfig,
+            _session_id: &str,
+            _kernel_ctx: &KernelContext,
+        ) -> CliResult<crate::conversation::context_engine::ContextEngineBootstrapResult> {
+            let mut bootstrap_calls = self
+                .bootstrap_calls
+                .lock()
+                .expect("bootstrap call lock should not be poisoned");
+            *bootstrap_calls += 1;
+            Ok(Default::default())
+        }
+    }
+
+    #[cfg(feature = "memory-sqlite")]
     fn sqlite_memory_config(label: &str) -> MemoryRuntimeConfig {
         let path = unique_sqlite_path(label);
         let _ = std::fs::remove_file(&path);
         let mut config = LoongClawConfig::default();
         config.memory.sqlite_path = path.display().to_string();
         MemoryRuntimeConfig::from_memory_config(&config.memory)
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    fn seed_pending_approval_request(
+        repo: &SessionRepository,
+        session_id: &str,
+        approval_request_id: &str,
+        tool_name: &str,
+        execution_kind: &str,
+    ) {
+        repo.ensure_approval_request(crate::session::repository::NewApprovalRequestRecord {
+            approval_request_id: approval_request_id.to_owned(),
+            session_id: session_id.to_owned(),
+            turn_id: "turn-pending-approval".to_owned(),
+            tool_call_id: "call-pending-approval".to_owned(),
+            tool_name: tool_name.to_owned(),
+            approval_key: format!("tool:{tool_name}"),
+            request_payload_json: json!({
+                "session_id": session_id,
+                "turn_id": "turn-pending-approval",
+                "tool_call_id": "call-pending-approval",
+                "tool_name": tool_name,
+                "args_json": {},
+                "source": "test",
+                "execution_kind": execution_kind,
+            }),
+            governance_snapshot_json: json!({
+                "rule_id": "governed_tool_requires_approval",
+            }),
+        })
+        .expect("seed approval request");
     }
 
     #[cfg(feature = "memory-sqlite")]
@@ -8349,6 +8476,166 @@ mod tests {
             assert!(entry.get("tags").is_none());
             assert!(entry.get("why").is_none());
         }
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[tokio::test]
+    async fn pending_approval_control_turn_bootstraps_once_and_emits_terminal_phases_once() {
+        let runtime = ApprovalControlRuntime::default();
+        let observer = Arc::new(RecordingTurnObserver::default());
+        let observer_handle: ConversationTurnObserverHandle = observer.clone();
+        let coordinator = ConversationTurnCoordinator::new();
+        let mut config = LoongClawConfig::default();
+        let memory_config = sqlite_memory_config("approval-control-bootstrap");
+        let sqlite_path = memory_config
+            .sqlite_path
+            .as_ref()
+            .expect("sqlite path")
+            .display()
+            .to_string();
+        config.memory.sqlite_path = sqlite_path;
+        let repo = SessionRepository::new(&memory_config).expect("repository");
+        repo.ensure_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("ensure root session");
+        seed_pending_approval_request(&repo, "root-session", "apr-deny-1", "delegate_async", "app");
+
+        let acp_options = AcpConversationTurnOptions::automatic();
+        let address = ConversationSessionAddress::from_session_id("root-session");
+        let kernel_ctx =
+            crate::context::bootstrap_test_kernel_context("approval-control-observer", 60)
+                .expect("kernel context");
+
+        let reply = coordinator
+            .handle_turn_with_runtime_and_address_and_acp_options_and_ingress_and_observer(
+                &config,
+                &address,
+                "esc",
+                ProviderErrorMode::Propagate,
+                &runtime,
+                &acp_options,
+                ConversationRuntimeBinding::kernel(&kernel_ctx),
+                None,
+                Some(observer_handle),
+            )
+            .await
+            .expect("approval control turn should succeed");
+
+        assert_eq!(reply, "approval handled");
+
+        let bootstrap_calls = runtime
+            .bootstrap_calls
+            .lock()
+            .expect("bootstrap call lock should not be poisoned");
+        assert_eq!(*bootstrap_calls, 1);
+
+        let phase_events = observer
+            .phase_events
+            .lock()
+            .expect("phase event lock should not be poisoned");
+        let phase_names = phase_events
+            .iter()
+            .map(|event| event.phase)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            phase_names,
+            vec![
+                ConversationTurnPhase::Preparing,
+                ConversationTurnPhase::ContextReady,
+                ConversationTurnPhase::RunningTools,
+                ConversationTurnPhase::FinalizingReply,
+                ConversationTurnPhase::Completed,
+            ]
+        );
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[tokio::test]
+    async fn pending_approval_control_turn_does_not_persist_session_mode_when_resolution_fails() {
+        let coordinator = ConversationTurnCoordinator::new();
+        let runtime = ApprovalControlRuntime::default();
+        let mut config = LoongClawConfig::default();
+        let memory_config = sqlite_memory_config("approval-control-session-mode");
+        let sqlite_path = memory_config
+            .sqlite_path
+            .as_ref()
+            .expect("sqlite path")
+            .display()
+            .to_string();
+        config.memory.sqlite_path = sqlite_path;
+        let repo = SessionRepository::new(&memory_config).expect("repository");
+        repo.ensure_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("ensure root session");
+        seed_pending_approval_request(
+            &repo,
+            "root-session",
+            "apr-auto-failure",
+            "delegate_async",
+            "app",
+        );
+
+        let db_path = memory_config
+            .sqlite_path
+            .as_ref()
+            .expect("sqlite path")
+            .to_path_buf();
+        let conn = rusqlite::Connection::open(db_path).expect("open sqlite connection");
+        conn.execute_batch(
+            "
+            CREATE TRIGGER fail_pending_approval_update
+            BEFORE UPDATE ON approval_requests
+            BEGIN
+                SELECT RAISE(FAIL, 'forced approval request update failure');
+            END;
+            ",
+        )
+        .expect("create approval failure trigger");
+
+        let acp_options = AcpConversationTurnOptions::automatic();
+        let address = ConversationSessionAddress::from_session_id("root-session");
+        let result = coordinator
+            .handle_turn_with_runtime_and_address_and_acp_options_and_ingress_and_observer(
+                &config,
+                &address,
+                "auto",
+                ProviderErrorMode::Propagate,
+                &runtime,
+                &acp_options,
+                ConversationRuntimeBinding::direct(),
+                None,
+                None,
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "approval control turn should stay user-visible"
+        );
+
+        let stored = repo
+            .load_session_tool_consent("root-session")
+            .expect("load session tool consent");
+        assert!(
+            stored.is_none(),
+            "session mode should not persist on failure"
+        );
+
+        let approval_request = repo
+            .load_approval_request("apr-auto-failure")
+            .expect("load approval request")
+            .expect("approval request row");
+        assert_eq!(approval_request.status, ApprovalRequestStatus::Pending);
     }
 
     #[test]

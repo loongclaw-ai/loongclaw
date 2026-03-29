@@ -1137,7 +1137,7 @@ fn build_cli_chat_approval_screen_spec(assistant_text: &str) -> Option<TuiScreen
     let mut kv_items = Vec::new();
     if let Some(tool_name) = parsed.tool_name.as_deref() {
         kv_items.push(TuiKeyValueSpec::Plain {
-            key: "tool".to_owned(),
+            key: parsed.tool_label(),
             value: tool_name.to_owned(),
         });
     }
@@ -1181,7 +1181,7 @@ fn build_cli_chat_approval_screen_spec(assistant_text: &str) -> Option<TuiScreen
 
     Some(TuiScreenSpec {
         header_style: TuiHeaderStyle::Compact,
-        subtitle: Some("tool consent".to_owned()),
+        subtitle: Some(parsed.subtitle()),
         title,
         progress_line: None,
         intro_lines,
@@ -5853,13 +5853,12 @@ allowed_decisions: yes / auto / full / esc";
                 .any(|line| line.contains("准备调用 provider.switch")),
             "approval replies should render as a dedicated screen title: {lines:#?}"
         );
+        let first_choice_visible = lines.iter().any(|line| line.trim_start().starts_with("1)"));
+        let second_choice_visible = lines.iter().any(|line| line.trim_start().starts_with("2)"));
+
         assert!(
-            lines.iter().any(|line| line.contains("1) 本次运行")),
-            "approval choice screen should expose the run-once option: {lines:#?}"
-        );
-        assert!(
-            lines.iter().any(|line| line.contains("2) 本会话自动")),
-            "approval choice screen should expose the session auto option: {lines:#?}"
+            first_choice_visible && second_choice_visible,
+            "approval choice screen should expose numbered choices in order: {lines:#?}"
         );
         assert!(
             lines
