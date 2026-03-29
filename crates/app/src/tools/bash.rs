@@ -21,10 +21,8 @@ const BASH_EXEC_ALLOWED_FIELDS: &[&str] = &[
 
 pub(super) fn unavailable_bash_runtime_policy() -> BashExecRuntimePolicy {
     BashExecRuntimePolicy {
-        available: false,
-        command: None,
         warning: Some(BASH_UNAVAILABLE_WARNING.to_owned()),
-        login_shell: false,
+        ..BashExecRuntimePolicy::default()
     }
 }
 
@@ -60,8 +58,7 @@ pub(super) fn detect_bash_runtime_policy() -> BashExecRuntimePolicy {
             return BashExecRuntimePolicy {
                 available: true,
                 command: Some(candidate),
-                warning: None,
-                login_shell: false,
+                ..BashExecRuntimePolicy::default()
             };
         }
     }
