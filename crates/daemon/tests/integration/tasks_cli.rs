@@ -87,9 +87,31 @@ const TASKS_RUNTIME_ENV_KEYS: &[&str] = &[
 impl TasksCliEnvironmentGuard {
     fn set(pairs: &[(&str, Option<&str>)]) -> Self {
         let lock = super::lock_daemon_test_environment();
+        Self::set_with_lock(lock, &[], pairs)
+    }
+
+    fn set_with_seeded_env(seeded_pairs: &[(&str, &str)], pairs: &[(&str, Option<&str>)]) -> Self {
+        let lock = super::lock_daemon_test_environment();
+        Self::set_with_lock(lock, seeded_pairs, pairs)
+    }
+
+    fn set_with_lock(
+        lock: MutexGuard<'static, ()>,
+        seeded_pairs: &[(&str, &str)],
+        pairs: &[(&str, Option<&str>)],
+    ) -> Self {
         let mut saved = Vec::new();
-        for key in TASKS_RUNTIME_ENV_KEYS {
+        for (key, value) in seeded_pairs {
             saved.push(((*key).to_owned(), std::env::var_os(key)));
+            unsafe {
+                std::env::set_var(key, value);
+            }
+        }
+        for key in TASKS_RUNTIME_ENV_KEYS {
+            let already_saved = saved.iter().any(|(saved_key, _)| saved_key == key);
+            if !already_saved {
+                saved.push(((*key).to_owned(), std::env::var_os(key)));
+            }
             unsafe {
                 std::env::remove_var(key);
             }
@@ -361,15 +383,12 @@ fn tasks_wait_cli_parses_session_and_timeout_flags() {
 
 #[test]
 fn tasks_cli_environment_guard_clears_tracked_env_vars_before_applying_overrides() {
-    unsafe {
-        std::env::set_var("LOONGCLAW_SQLITE_PATH", "/tmp/host-value.sqlite3");
-    }
-    let _guard = TasksCliEnvironmentGuard::set(&[]);
+    let _guard = TasksCliEnvironmentGuard::set_with_seeded_env(
+        &[("LOONGCLAW_SQLITE_PATH", "/tmp/host-value.sqlite3")],
+        &[],
+    );
     let cleared_value = std::env::var_os("LOONGCLAW_SQLITE_PATH");
     assert_eq!(cleared_value, None);
-    unsafe {
-        std::env::remove_var("LOONGCLAW_SQLITE_PATH");
-    }
 }
 
 #[tokio::test]
