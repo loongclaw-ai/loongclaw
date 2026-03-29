@@ -68,7 +68,7 @@
 <!-- arch-hotspot key=chat_runtime lines=6936 functions=146 -->
 <!-- arch-hotspot key=channel_mod lines=6396 functions=104 -->
 <!-- arch-hotspot key=turn_coordinator lines=10754 functions=97 -->
-<!-- arch-hotspot key=tools_mod lines=14184 functions=54 -->
+<!-- arch-hotspot key=tools_mod lines=14218 functions=54 -->
 <!-- arch-hotspot key=daemon_lib lines=5014 functions=172 -->
 <!-- arch-hotspot key=onboard_cli lines=9256 functions=227 -->
 <!-- arch-boundary key=memory_literals status=PASS -->
