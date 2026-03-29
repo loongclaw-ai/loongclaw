@@ -24,17 +24,19 @@ Read:
 1. Start from the family-owned seam instead of scattered call sites.
 2. Declare canonical identity once.
 3. Attach validation and support facts beside the seam.
-4. Implement runtime behavior after the descriptor or contract is clear.
-5. Project through shared surfaces such as config, doctor, status, catalog, or
+4. Version descriptor documents once they start feeding cross-surface JSON or SDK-facing read models.
+5. Implement runtime behavior after the descriptor or contract is clear.
+6. Project through shared surfaces such as config, doctor, status, catalog, or
    docs.
-6. Add family-specific conformance tests.
-7. Update docs using the same canonical vocabulary.
+7. Add family-specific conformance tests.
+8. Update docs using the same canonical vocabulary.
 
 ## Practical Checklist
 
 - [ ] I started from the family-owned seam.
 - [ ] The surface has one canonical identity.
 - [ ] Validation and support facts live beside the descriptor or contract.
+- [ ] Cross-surface descriptor documents are versioned before they become shared JSON contracts.
 - [ ] Runtime behavior consumes shared metadata instead of redefining it.
 - [ ] Operator surfaces derive from the same family metadata where practical.
 - [ ] Conformance or regression tests were added or extended.

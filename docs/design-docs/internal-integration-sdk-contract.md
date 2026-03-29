@@ -67,6 +67,7 @@ Every mature family should expose:
 
 - canonical identity
 - descriptor or registry ownership
+- versioned descriptor documents once the family feeds shared JSON or SDK-facing read models
 - projections into operator surfaces
 - explicit policy or governance facts when runtime decisions depend on them
 - conformance tests that prove descriptor-to-projection alignment
