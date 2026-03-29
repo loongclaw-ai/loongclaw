@@ -1325,6 +1325,7 @@ fn tool_visibility_gate_enabled_for_delegate_child(
         | ToolVisibilityGate::Sessions
         | ToolVisibilityGate::SessionMutation
         | ToolVisibilityGate::Messages
+        | ToolVisibilityGate::Feishu
         | ToolVisibilityGate::Delegate
         | ToolVisibilityGate::Browser
         | ToolVisibilityGate::BrowserCompanion
