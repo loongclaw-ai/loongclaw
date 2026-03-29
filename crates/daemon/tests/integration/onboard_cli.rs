@@ -6563,14 +6563,7 @@ async fn guided_onboard_back_navigation_preserves_draft_state() {
         None,
     )
     .await;
-
-    let error = result.expect_err(
-        "scripted onboarding should reject a back-navigation round-trip until the wizard supports it",
-    );
-    assert!(
-        error.contains("invalid") || error.contains("missing"),
-        "back-navigation round-trip should fail because the current wizard does not support it yet: {error}"
-    );
+    result.expect("run scripted onboarding with a next/back round-trip");
     let provider_step_count = transcript
         .iter()
         .filter(|line| line.as_str() == "step 1 of 8 · provider")
