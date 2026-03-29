@@ -3083,6 +3083,574 @@ fn runtime_capability_plan_rejects_unknown_family_id() {
 }
 
 #[test]
+fn runtime_capability_apply_materializes_memory_stage_profile_artifact() {
+    let root = unique_temp_dir("loongclaw-runtime-capability-apply-memory-stage-profile");
+    let (run_a_path, _) = finish_runtime_experiment_variant_with_memory_compare_delta(
+        &root,
+        "memory-stage-profile-apply-a",
+        -0.2,
+        &[],
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted,
+    );
+    let (run_b_path, _) = finish_runtime_experiment_variant_with_memory_compare_delta(
+        &root,
+        "memory-stage-profile-apply-b",
+        -0.4,
+        &[],
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted,
+    );
+
+    let candidate_a_path =
+        root.join("artifacts/runtime-capability-memory-stage-profile-apply-a.json");
+    let candidate_b_path =
+        root.join("artifacts/runtime-capability-memory-stage-profile-apply-b.json");
+    propose_runtime_capability_variant_with_target(
+        &root,
+        &run_a_path,
+        "memory-stage-profile-apply-a",
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityTarget::MemoryStageProfile,
+        "Promote governed memory pipeline intent into a reusable profile",
+        "Governed memory pipeline promotion intent only",
+        &["memory_read"],
+        &["memory", "pipeline"],
+    );
+    propose_runtime_capability_variant_with_target(
+        &root,
+        &run_b_path,
+        "memory-stage-profile-apply-b",
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityTarget::MemoryStageProfile,
+        "Promote governed memory pipeline intent into a reusable profile",
+        "Governed memory pipeline promotion intent only",
+        &["memory_read"],
+        &["memory", "pipeline"],
+    );
+    review_runtime_capability_variant(
+        &candidate_a_path,
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityReviewDecision::Accepted,
+        "memory-stage-profile-apply-a",
+    );
+    review_runtime_capability_variant(
+        &candidate_b_path,
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityReviewDecision::Accepted,
+        "memory-stage-profile-apply-b",
+    );
+
+    let index_report =
+        loongclaw_daemon::runtime_capability_cli::execute_runtime_capability_index_command(
+            loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityIndexCommandOptions {
+                root: root.join("artifacts").display().to_string(),
+                json: false,
+            },
+        )
+        .expect("runtime capability index should succeed");
+    let family = index_report
+        .families
+        .first()
+        .expect("one capability family should be reported");
+
+    let report =
+        loongclaw_daemon::runtime_capability_cli::execute_runtime_capability_apply_command(
+            loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityApplyCommandOptions {
+                root: root.join("artifacts").display().to_string(),
+                family_id: family.family_id.clone(),
+                json: false,
+            },
+        )
+        .expect("runtime capability apply should succeed");
+
+    assert_eq!(
+        report.outcome,
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityApplyOutcome::Applied
+    );
+    assert_eq!(
+        report.planned_artifact.target_kind,
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityTarget::MemoryStageProfile
+    );
+    assert!(
+        report.output_path.ends_with(&format!(
+            "memory_stage_profiles/{}.json",
+            report.planned_artifact.artifact_id
+        )),
+        "apply should materialize the memory-stage-profile artifact under the delivery surface"
+    );
+
+    let output_path = PathBuf::from(&report.output_path);
+    assert!(
+        output_path.exists(),
+        "apply should persist the output artifact"
+    );
+
+    let persisted_payload = serde_json::from_str::<Value>(
+        &fs::read_to_string(&output_path).expect("read apply output artifact"),
+    )
+    .expect("decode apply output artifact");
+
+    assert_eq!(
+        persisted_payload
+            .pointer("/schema/surface")
+            .and_then(Value::as_str),
+        Some("memory_stage_profile")
+    );
+    assert_eq!(
+        persisted_payload
+            .pointer("/schema/purpose")
+            .and_then(Value::as_str),
+        Some("runtime_capability_apply_output")
+    );
+    assert_eq!(
+        persisted_payload
+            .pointer("/artifact_id")
+            .and_then(Value::as_str),
+        Some(report.planned_artifact.artifact_id.as_str())
+    );
+    assert_eq!(
+        persisted_payload
+            .pointer("/delivery_surface")
+            .and_then(Value::as_str),
+        Some("memory_stage_profiles")
+    );
+    assert_eq!(
+        persisted_payload
+            .pointer("/profile/summary")
+            .and_then(Value::as_str),
+        Some("Promote governed memory pipeline intent into a reusable profile")
+    );
+
+    let reindexed_report =
+        loongclaw_daemon::runtime_capability_cli::execute_runtime_capability_index_command(
+            loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityIndexCommandOptions {
+                root: root.join("artifacts").display().to_string(),
+                json: false,
+            },
+        )
+        .expect("runtime capability re-index should still succeed");
+
+    assert_eq!(
+        reindexed_report.total_candidate_count, 2,
+        "materialized apply outputs should not be mistaken for runtime-capability candidates"
+    );
+    assert_eq!(
+        reindexed_report.family_count, 1,
+        "materialized apply outputs should stay outside capability-family aggregation"
+    );
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn runtime_capability_apply_rejects_unknown_family_id() {
+    let root = unique_temp_dir("loongclaw-runtime-capability-apply-missing-family");
+    let config_path = write_runtime_capability_config(&root);
+    let (run_path, _) = finish_runtime_experiment(&root, &config_path);
+    propose_runtime_capability_variant(&root, &run_path, "missing");
+
+    let error = loongclaw_daemon::runtime_capability_cli::execute_runtime_capability_apply_command(
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityApplyCommandOptions {
+            root: root.join("artifacts").display().to_string(),
+            family_id: "missing-family".to_owned(),
+            json: false,
+        },
+    )
+    .expect_err("unknown family id should be rejected during apply");
+
+    assert!(
+        error.contains("missing-family"),
+        "error should name the requested family id: {error}"
+    );
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn runtime_capability_apply_rejects_non_promotable_memory_stage_profile_family() {
+    let root = unique_temp_dir("loongclaw-runtime-capability-apply-memory-stage-profile-blocked");
+    let config_path = write_runtime_capability_config(&root);
+
+    let (run_a_path, _) = finish_runtime_experiment_variant(
+        &root,
+        &config_path,
+        "memory-stage-profile-blocked-a",
+        -0.2,
+        &[],
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted,
+    );
+    let (run_b_path, _) = finish_runtime_experiment_variant(
+        &root,
+        &config_path,
+        "memory-stage-profile-blocked-b",
+        -0.4,
+        &[],
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted,
+    );
+
+    let candidate_a_path =
+        root.join("artifacts/runtime-capability-memory-stage-profile-blocked-a.json");
+    let candidate_b_path =
+        root.join("artifacts/runtime-capability-memory-stage-profile-blocked-b.json");
+    propose_runtime_capability_variant_with_target(
+        &root,
+        &run_a_path,
+        "memory-stage-profile-blocked-a",
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityTarget::MemoryStageProfile,
+        "Promote governed memory pipeline intent into a reusable profile",
+        "Governed memory pipeline promotion intent only",
+        &["memory_read"],
+        &["memory", "pipeline"],
+    );
+    propose_runtime_capability_variant_with_target(
+        &root,
+        &run_b_path,
+        "memory-stage-profile-blocked-b",
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityTarget::MemoryStageProfile,
+        "Promote governed memory pipeline intent into a reusable profile",
+        "Governed memory pipeline promotion intent only",
+        &["memory_read"],
+        &["memory", "pipeline"],
+    );
+    review_runtime_capability_variant(
+        &candidate_a_path,
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityReviewDecision::Accepted,
+        "memory-stage-profile-blocked-a",
+    );
+    review_runtime_capability_variant(
+        &candidate_b_path,
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityReviewDecision::Accepted,
+        "memory-stage-profile-blocked-b",
+    );
+
+    let index_report =
+        loongclaw_daemon::runtime_capability_cli::execute_runtime_capability_index_command(
+            loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityIndexCommandOptions {
+                root: root.join("artifacts").display().to_string(),
+                json: false,
+            },
+        )
+        .expect("runtime capability index should succeed");
+    let family = index_report
+        .families
+        .first()
+        .expect("one capability family should be reported");
+
+    let error = loongclaw_daemon::runtime_capability_cli::execute_runtime_capability_apply_command(
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityApplyCommandOptions {
+            root: root.join("artifacts").display().to_string(),
+            family_id: family.family_id.clone(),
+            json: false,
+        },
+    )
+    .expect_err("non-promotable memory-stage-profile family should be rejected");
+
+    assert!(
+        error.contains("not promotable"),
+        "apply should explain why materialization was refused: {error}"
+    );
+    assert!(
+        error.contains("memory_delta_evidence"),
+        "apply should surface the missing readiness dimension: {error}"
+    );
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn runtime_capability_apply_rejects_unsupported_target_kind() {
+    let root = unique_temp_dir("loongclaw-runtime-capability-apply-unsupported-target");
+    let config_path = write_runtime_capability_config(&root);
+
+    let (run_a_path, _) = finish_runtime_experiment_variant(
+        &root,
+        &config_path,
+        "managed-skill-apply-a",
+        -0.2,
+        &[],
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted,
+    );
+    let (run_b_path, _) = finish_runtime_experiment_variant(
+        &root,
+        &config_path,
+        "managed-skill-apply-b",
+        -0.4,
+        &[],
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted,
+    );
+
+    let candidate_a_path = root.join("artifacts/runtime-capability-managed-skill-apply-a.json");
+    let candidate_b_path = root.join("artifacts/runtime-capability-managed-skill-apply-b.json");
+    propose_runtime_capability_variant_with_target(
+        &root,
+        &run_a_path,
+        "managed-skill-apply-a",
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityTarget::ManagedSkill,
+        "Codify browser preview onboarding as a reusable managed skill",
+        "Browser preview onboarding and companion readiness checks only",
+        &["invoke_tool", "memory_read"],
+        &["browser", "onboarding"],
+    );
+    propose_runtime_capability_variant_with_target(
+        &root,
+        &run_b_path,
+        "managed-skill-apply-b",
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityTarget::ManagedSkill,
+        "Codify browser preview onboarding as a reusable managed skill",
+        "Browser preview onboarding and companion readiness checks only",
+        &["invoke_tool", "memory_read"],
+        &["browser", "onboarding"],
+    );
+    review_runtime_capability_variant(
+        &candidate_a_path,
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityReviewDecision::Accepted,
+        "managed-skill-apply-a",
+    );
+    review_runtime_capability_variant(
+        &candidate_b_path,
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityReviewDecision::Accepted,
+        "managed-skill-apply-b",
+    );
+
+    let index_report =
+        loongclaw_daemon::runtime_capability_cli::execute_runtime_capability_index_command(
+            loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityIndexCommandOptions {
+                root: root.join("artifacts").display().to_string(),
+                json: false,
+            },
+        )
+        .expect("runtime capability index should succeed");
+    let family = index_report
+        .families
+        .first()
+        .expect("one capability family should be reported");
+
+    let error = loongclaw_daemon::runtime_capability_cli::execute_runtime_capability_apply_command(
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityApplyCommandOptions {
+            root: root.join("artifacts").display().to_string(),
+            family_id: family.family_id.clone(),
+            json: false,
+        },
+    )
+    .expect_err("unsupported target kinds should be rejected");
+
+    assert!(
+        error.contains("memory_stage_profile"),
+        "apply should state the only supported target kind: {error}"
+    );
+    assert!(
+        error.contains("managed_skill"),
+        "apply should name the unsupported planned target: {error}"
+    );
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn runtime_capability_apply_is_idempotent_when_existing_output_matches() {
+    let root = unique_temp_dir("loongclaw-runtime-capability-apply-idempotent");
+    let (run_a_path, _) = finish_runtime_experiment_variant_with_memory_compare_delta(
+        &root,
+        "memory-stage-profile-idempotent-a",
+        -0.2,
+        &[],
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted,
+    );
+    let (run_b_path, _) = finish_runtime_experiment_variant_with_memory_compare_delta(
+        &root,
+        "memory-stage-profile-idempotent-b",
+        -0.4,
+        &[],
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted,
+    );
+
+    let candidate_a_path =
+        root.join("artifacts/runtime-capability-memory-stage-profile-idempotent-a.json");
+    let candidate_b_path =
+        root.join("artifacts/runtime-capability-memory-stage-profile-idempotent-b.json");
+    propose_runtime_capability_variant_with_target(
+        &root,
+        &run_a_path,
+        "memory-stage-profile-idempotent-a",
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityTarget::MemoryStageProfile,
+        "Promote governed memory pipeline intent into a reusable profile",
+        "Governed memory pipeline promotion intent only",
+        &["memory_read"],
+        &["memory", "pipeline"],
+    );
+    propose_runtime_capability_variant_with_target(
+        &root,
+        &run_b_path,
+        "memory-stage-profile-idempotent-b",
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityTarget::MemoryStageProfile,
+        "Promote governed memory pipeline intent into a reusable profile",
+        "Governed memory pipeline promotion intent only",
+        &["memory_read"],
+        &["memory", "pipeline"],
+    );
+    review_runtime_capability_variant(
+        &candidate_a_path,
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityReviewDecision::Accepted,
+        "memory-stage-profile-idempotent-a",
+    );
+    review_runtime_capability_variant(
+        &candidate_b_path,
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityReviewDecision::Accepted,
+        "memory-stage-profile-idempotent-b",
+    );
+
+    let index_report =
+        loongclaw_daemon::runtime_capability_cli::execute_runtime_capability_index_command(
+            loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityIndexCommandOptions {
+                root: root.join("artifacts").display().to_string(),
+                json: false,
+            },
+        )
+        .expect("runtime capability index should succeed");
+    let family = index_report
+        .families
+        .first()
+        .expect("one capability family should be reported");
+
+    let first_report =
+        loongclaw_daemon::runtime_capability_cli::execute_runtime_capability_apply_command(
+            loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityApplyCommandOptions {
+                root: root.join("artifacts").display().to_string(),
+                family_id: family.family_id.clone(),
+                json: false,
+            },
+        )
+        .expect("first runtime capability apply should succeed");
+
+    let first_output = fs::read_to_string(&first_report.output_path)
+        .expect("read first apply output artifact for idempotence check");
+
+    let second_report =
+        loongclaw_daemon::runtime_capability_cli::execute_runtime_capability_apply_command(
+            loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityApplyCommandOptions {
+                root: root.join("artifacts").display().to_string(),
+                family_id: family.family_id.clone(),
+                json: false,
+            },
+        )
+        .expect("second runtime capability apply should be idempotent");
+
+    let second_output = fs::read_to_string(&second_report.output_path)
+        .expect("read second apply output artifact for idempotence check");
+
+    assert_eq!(
+        second_report.outcome,
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityApplyOutcome::AlreadyApplied
+    );
+    assert_eq!(
+        first_report.output_path, second_report.output_path,
+        "idempotent apply should reuse the same output path"
+    );
+    assert_eq!(
+        first_output, second_output,
+        "idempotent apply should not rewrite matching output content"
+    );
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn runtime_capability_apply_rejects_conflicting_existing_output() {
+    let root = unique_temp_dir("loongclaw-runtime-capability-apply-conflict");
+    let (run_a_path, _) = finish_runtime_experiment_variant_with_memory_compare_delta(
+        &root,
+        "memory-stage-profile-conflict-a",
+        -0.2,
+        &[],
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted,
+    );
+    let (run_b_path, _) = finish_runtime_experiment_variant_with_memory_compare_delta(
+        &root,
+        "memory-stage-profile-conflict-b",
+        -0.4,
+        &[],
+        loongclaw_daemon::runtime_experiment_cli::RuntimeExperimentDecision::Promoted,
+    );
+
+    let candidate_a_path =
+        root.join("artifacts/runtime-capability-memory-stage-profile-conflict-a.json");
+    let candidate_b_path =
+        root.join("artifacts/runtime-capability-memory-stage-profile-conflict-b.json");
+    propose_runtime_capability_variant_with_target(
+        &root,
+        &run_a_path,
+        "memory-stage-profile-conflict-a",
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityTarget::MemoryStageProfile,
+        "Promote governed memory pipeline intent into a reusable profile",
+        "Governed memory pipeline promotion intent only",
+        &["memory_read"],
+        &["memory", "pipeline"],
+    );
+    propose_runtime_capability_variant_with_target(
+        &root,
+        &run_b_path,
+        "memory-stage-profile-conflict-b",
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityTarget::MemoryStageProfile,
+        "Promote governed memory pipeline intent into a reusable profile",
+        "Governed memory pipeline promotion intent only",
+        &["memory_read"],
+        &["memory", "pipeline"],
+    );
+    review_runtime_capability_variant(
+        &candidate_a_path,
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityReviewDecision::Accepted,
+        "memory-stage-profile-conflict-a",
+    );
+    review_runtime_capability_variant(
+        &candidate_b_path,
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityReviewDecision::Accepted,
+        "memory-stage-profile-conflict-b",
+    );
+
+    let index_report =
+        loongclaw_daemon::runtime_capability_cli::execute_runtime_capability_index_command(
+            loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityIndexCommandOptions {
+                root: root.join("artifacts").display().to_string(),
+                json: false,
+            },
+        )
+        .expect("runtime capability index should succeed");
+    let family = index_report
+        .families
+        .first()
+        .expect("one capability family should be reported");
+
+    let first_report =
+        loongclaw_daemon::runtime_capability_cli::execute_runtime_capability_apply_command(
+            loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityApplyCommandOptions {
+                root: root.join("artifacts").display().to_string(),
+                family_id: family.family_id.clone(),
+                json: false,
+            },
+        )
+        .expect("first runtime capability apply should succeed");
+
+    let output_path = PathBuf::from(&first_report.output_path);
+    rewrite_json_file(&output_path, |payload| {
+        let profile_summary = payload
+            .pointer_mut("/profile/summary")
+            .expect("apply output should include profile.summary");
+        *profile_summary = Value::String("conflicting manual edit".to_owned());
+    });
+
+    let error = loongclaw_daemon::runtime_capability_cli::execute_runtime_capability_apply_command(
+        loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityApplyCommandOptions {
+            root: root.join("artifacts").display().to_string(),
+            family_id: family.family_id.clone(),
+            json: false,
+        },
+    )
+    .expect_err("conflicting existing output should be rejected");
+
+    assert!(
+        error.contains("different content"),
+        "apply should reject conflicting materialized output: {error}"
+    );
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
 fn runtime_capability_show_text_renders_snapshot_delta_summary() {
     let root = unique_temp_dir("loongclaw-runtime-capability-show-text-delta-summary");
     let config_path = write_runtime_capability_config(&root);

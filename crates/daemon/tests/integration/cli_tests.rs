@@ -997,7 +997,8 @@ fn runtime_capability_cli_parses_propose_review_show_index_and_plan() {
             )
             | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Show(_)
             | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Index(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)) => {
+            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)
+            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Apply(_)) => {
                 panic!("unexpected runtime-capability subcommand parsed: {other:?}")
             }
         },
@@ -1045,7 +1046,8 @@ fn runtime_capability_cli_parses_propose_review_show_index_and_plan() {
             )
             | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Show(_)
             | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Index(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)) => {
+            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)
+            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Apply(_)) => {
                 panic!("unexpected runtime-capability subcommand parsed: {other:?}")
             }
         },
@@ -1075,7 +1077,8 @@ fn runtime_capability_cli_parses_propose_review_show_index_and_plan() {
                 _,
             )
             | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Index(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)) => {
+            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)
+            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Apply(_)) => {
                 panic!("unexpected runtime-capability subcommand parsed: {other:?}")
             }
         },
@@ -1103,7 +1106,8 @@ fn runtime_capability_cli_parses_propose_review_show_index_and_plan() {
             )
             | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Review(_)
             | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Show(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)) => {
+            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)
+            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Apply(_)) => {
                 panic!("unexpected runtime-capability subcommand parsed: {other:?}")
             }
         },
@@ -1134,7 +1138,42 @@ fn runtime_capability_cli_parses_propose_review_show_index_and_plan() {
             )
             | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Review(_)
             | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Show(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Index(_)) => {
+            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Index(_)
+            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Apply(_)) => {
+                panic!("unexpected runtime-capability subcommand parsed: {other:?}")
+            }
+        },
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+
+    let apply = try_parse_cli([
+        "loongclaw",
+        "runtime-capability",
+        "apply",
+        "--root",
+        "/tmp/runtime-capability",
+        "--family-id",
+        "family-123",
+        "--json",
+    ])
+    .expect("`runtime-capability apply` should parse");
+
+    match apply.command {
+        Some(Commands::RuntimeCapability { command }) => match command {
+            loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Apply(
+                options,
+            ) => {
+                assert_eq!(options.root, "/tmp/runtime-capability");
+                assert_eq!(options.family_id, "family-123");
+                assert!(options.json);
+            }
+            other @ (loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Propose(
+                _,
+            )
+            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Review(_)
+            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Show(_)
+            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Index(_)
+            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)) => {
                 panic!("unexpected runtime-capability subcommand parsed: {other:?}")
             }
         },
@@ -1191,7 +1230,8 @@ fn runtime_capability_cli_parses_memory_stage_profile_target() {
             )
             | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Show(_)
             | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Index(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)) => {
+            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)
+            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Apply(_)) => {
                 panic!("unexpected runtime-capability subcommand parsed: {other:?}")
             }
         },
@@ -1239,7 +1279,8 @@ fn runtime_capability_cli_parses_memory_stage_profile_canonical_spelling() {
             )
             | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Show(_)
             | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Index(_)
-            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)) => {
+            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Plan(_)
+            | loongclaw_daemon::runtime_capability_cli::RuntimeCapabilityCommands::Apply(_)) => {
                 panic!("unexpected runtime-capability subcommand parsed: {other:?}")
             }
         },

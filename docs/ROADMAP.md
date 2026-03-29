@@ -358,6 +358,7 @@ Delivered in current baseline:
   - `runtime-capability propose|review|show` records one run-derived capability candidate, bounded scope, required capabilities, explicit operator review, and any recorded snapshot-backed delta evidence without mutating live runtime state
   - `runtime-capability index` groups matching candidate records into deterministic capability families, emits compact evidence digests including delta-evidence coverage and changed runtime surfaces, and evaluates readiness as `ready`, `not_ready`, or `blocked`
   - `runtime-capability plan` resolves one indexed capability family into a deterministic dry-run promotion plan with artifact identity, blockers, approval checklist, rollback hints, provenance, and the same family-level delta evidence digest
+  - `runtime-capability apply` materializes one deterministic governed `memory_stage_profile` artifact from a promotable capability family, keeps the output idempotent, and rejects conflicting or unsupported apply paths instead of mutating live runtime state directly
 - modular channel/provider architecture for extension-safe evolution:
   - `app/channel/feishu/*` split into adapter/payload/webhook layers
   - Feishu encrypted webhook payload decrypt lane with signature verification
@@ -377,15 +378,15 @@ Remaining deliverables:
   - expand beyond installer scripts into package-manager distribution only after release adoption is stable
 - experiment-state operator surface follow-through:
   - use the shipped snapshot/restore/experiment/capability record layer as the prerequisite for later evaluator pipelines and automated skill-optimization loops
-  - keep the new dry-run promotion planner read-only and use it as the contract for any future promotion executor instead of jumping directly to automatic mutation
+  - keep the new promotion planner as the contract for governed executors; only the explicit `memory_stage_profile` apply lane is shipped today, and other promotion targets stay read-only until their executor contracts exist
 - runtime productization over already-shipped substrate:
   - background task UX on top of session runtime:
     - expose task-shaped create, inspect, wait, follow, cancel, and recover flows over the current async delegate child-session substrate
     - surface approval-pending and tool-narrowing state as task diagnostics instead of raw session-runtime detail only
     - keep cron, heartbeat, and service-owned scheduling out of the first slice
-  - discovery-first managed skills UX:
-    - add search and recommendation over the current managed, user, and project skill inventory
-    - explain eligibility, visibility, shadowing, and first-use guidance rather than requiring operators to know a `skill_id` up front
+  - product-mode managed skills UX:
+    - add search, recommendation, and explicit acquisition guidance over the current managed, user, and project skill inventory
+    - explain eligibility, visibility, shadowing, first-use guidance, and product-mode fit rather than requiring operators to know a `skill_id` up front
     - keep install and invoke explicit and governed instead of drifting into blind auto-install
   - scoped memory retrieval productization:
     - add query-aware retrieval and broaden beyond session-summary-only hydration
