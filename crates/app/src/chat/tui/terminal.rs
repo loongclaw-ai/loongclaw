@@ -11,6 +11,7 @@ pub(crate) struct TerminalSupportSnapshot {
     pub(crate) stderr_is_terminal: bool,
     pub(crate) term: Option<String>,
     pub(crate) color_support: bool,
+    pub(crate) colorfgbg: Option<String>,
 }
 
 impl TerminalSupportSnapshot {
@@ -21,6 +22,7 @@ impl TerminalSupportSnapshot {
             stderr_is_terminal: std::io::stderr().is_terminal(),
             term: std::env::var("TERM").ok(),
             color_support: supports_color::on(supports_color::Stream::Stdout).is_some(),
+            colorfgbg: std::env::var("COLORFGBG").ok(),
         }
     }
 }
@@ -35,16 +37,21 @@ pub(crate) enum TerminalLaunch {
     FallbackToText { reason: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PaletteHint {
+    Dark,
+    Light,
+    Plain,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TerminalPolicy {
     pub(crate) launch: TerminalLaunch,
-    pub(crate) use_plain_palette: bool,
+    pub(crate) palette_hint: PaletteHint,
 }
 
-/// Pure-function launch-mode resolver.  Operates on an explicit snapshot so
-/// callers (including tests) can evaluate the decision deterministically
-/// without probing the live environment.
-pub(crate) fn resolve_launch_mode(snapshot: TerminalSupportSnapshot) -> TerminalLaunch {
+/// Pure-function launch-mode resolver.
+pub(crate) fn resolve_launch_mode(snapshot: &TerminalSupportSnapshot) -> TerminalLaunch {
     if !snapshot.stdin_is_terminal || !snapshot.stdout_is_terminal {
         return TerminalLaunch::FallbackToText {
             reason: "TUI requires stdin/stdout to be terminal-attached".to_owned(),
@@ -64,14 +71,38 @@ pub(crate) fn resolve_launch_mode(snapshot: TerminalSupportSnapshot) -> Terminal
     TerminalLaunch::Tui
 }
 
+/// Detect whether the terminal background is light by inspecting `COLORFGBG`.
+///
+/// `COLORFGBG` is set by many terminal emulators (iTerm2, xterm, rxvt) as
+/// `<fg>;<bg>` where ANSI colors 0-6 are dark and 7-15 are light.
+/// A bg value >= 7 (except 8 which is dark gray) suggests a light background.
+fn detect_light_background(colorfgbg: Option<&str>) -> bool {
+    let Some(val) = colorfgbg else {
+        return false;
+    };
+    let Some(bg_str) = val.rsplit(';').next() else {
+        return false;
+    };
+    let Ok(bg) = bg_str.trim().parse::<u16>() else {
+        return false;
+    };
+    bg >= 7 && bg != 8
+}
+
 /// Combines launch-mode resolution with palette selection.
 pub(crate) fn resolve_terminal_policy(snapshot: TerminalSupportSnapshot) -> TerminalPolicy {
-    let use_plain_palette = !snapshot.color_support;
-    let launch = resolve_launch_mode(snapshot);
+    let palette_hint = if !snapshot.color_support {
+        PaletteHint::Plain
+    } else if detect_light_background(snapshot.colorfgbg.as_deref()) {
+        PaletteHint::Light
+    } else {
+        PaletteHint::Dark
+    };
+    let launch = resolve_launch_mode(&snapshot);
 
     TerminalPolicy {
         launch,
-        use_plain_palette,
+        palette_hint,
     }
 }
 
@@ -104,13 +135,14 @@ mod tests {
             stderr_is_terminal: false,
             term: Some("xterm-256color".to_owned()),
             color_support: false,
+            colorfgbg: None,
         });
 
         assert!(matches!(
             policy.launch,
             TerminalLaunch::FallbackToText { .. }
         ));
-        assert!(policy.use_plain_palette);
+        assert_eq!(policy.palette_hint, PaletteHint::Plain);
     }
 
     #[test]
@@ -121,20 +153,22 @@ mod tests {
             stderr_is_terminal: true,
             term: Some("xterm-256color".to_owned()),
             color_support: true,
+            colorfgbg: None,
         });
 
         assert!(matches!(policy.launch, TerminalLaunch::Tui));
-        assert!(!policy.use_plain_palette);
+        assert_eq!(policy.palette_hint, PaletteHint::Dark);
     }
 
     #[test]
     fn dumb_terminal_falls_back() {
-        let launch = resolve_launch_mode(TerminalSupportSnapshot {
+        let launch = resolve_launch_mode(&TerminalSupportSnapshot {
             stdin_is_terminal: true,
             stdout_is_terminal: true,
             stderr_is_terminal: true,
             term: Some("dumb".to_owned()),
             color_support: false,
+            colorfgbg: None,
         });
 
         assert!(matches!(launch, TerminalLaunch::FallbackToText { .. }));
@@ -142,12 +176,13 @@ mod tests {
 
     #[test]
     fn missing_term_env_does_not_block_launch() {
-        let launch = resolve_launch_mode(TerminalSupportSnapshot {
+        let launch = resolve_launch_mode(&TerminalSupportSnapshot {
             stdin_is_terminal: true,
             stdout_is_terminal: true,
             stderr_is_terminal: true,
             term: None,
             color_support: true,
+            colorfgbg: None,
         });
 
         assert!(matches!(launch, TerminalLaunch::Tui));
@@ -161,9 +196,53 @@ mod tests {
             stderr_is_terminal: true,
             term: Some("xterm".to_owned()),
             color_support: false,
+            colorfgbg: None,
         });
 
         assert!(matches!(policy.launch, TerminalLaunch::Tui));
-        assert!(policy.use_plain_palette);
+        assert_eq!(policy.palette_hint, PaletteHint::Plain);
+    }
+
+    #[test]
+    fn colorfgbg_detects_light_background() {
+        let policy = resolve_terminal_policy(TerminalSupportSnapshot {
+            stdin_is_terminal: true,
+            stdout_is_terminal: true,
+            stderr_is_terminal: true,
+            term: Some("xterm-256color".to_owned()),
+            color_support: true,
+            colorfgbg: Some("0;15".to_owned()),
+        });
+
+        assert_eq!(policy.palette_hint, PaletteHint::Light);
+    }
+
+    #[test]
+    fn colorfgbg_detects_dark_background() {
+        let policy = resolve_terminal_policy(TerminalSupportSnapshot {
+            stdin_is_terminal: true,
+            stdout_is_terminal: true,
+            stderr_is_terminal: true,
+            term: Some("xterm-256color".to_owned()),
+            color_support: true,
+            colorfgbg: Some("15;0".to_owned()),
+        });
+
+        assert_eq!(policy.palette_hint, PaletteHint::Dark);
+    }
+
+    #[test]
+    fn colorfgbg_dark_gray_is_dark() {
+        assert!(!detect_light_background(Some("15;8")));
+    }
+
+    #[test]
+    fn colorfgbg_white_is_light() {
+        assert!(detect_light_background(Some("0;7")));
+    }
+
+    #[test]
+    fn colorfgbg_missing_is_dark() {
+        assert!(!detect_light_background(None));
     }
 }

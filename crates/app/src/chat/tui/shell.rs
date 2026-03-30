@@ -424,7 +424,7 @@ fn handle_slash_command(shell: &mut state::Shell, cmd: SlashCommand) {
 
 pub(super) async fn run(
     runtime: &super::runtime::TuiRuntime,
-    use_plain_palette: bool,
+    palette_hint: super::terminal::PaletteHint,
 ) -> CliResult<()> {
     let mut guard = TerminalGuard::enter()?;
 
@@ -438,10 +438,10 @@ pub(super) async fn run(
         .pane
         .add_system_message("Welcome to LoongClaw TUI. Type a message and press Enter.");
 
-    let palette = if use_plain_palette {
-        Palette::plain()
-    } else {
-        Palette::dark()
+    let palette = match palette_hint {
+        super::terminal::PaletteHint::Dark => Palette::dark(),
+        super::terminal::PaletteHint::Light => Palette::light(),
+        super::terminal::PaletteHint::Plain => Palette::plain(),
     };
 
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(50));

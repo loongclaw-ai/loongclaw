@@ -4189,12 +4189,13 @@ mod tests {
     #[cfg(feature = "channel-cli")]
     #[test]
     fn tui_terminal_policy_degrades_without_full_terminal_support() {
-        let policy = tui::terminal::resolve_launch_mode(tui::terminal::TerminalSupportSnapshot {
+        let policy = tui::terminal::resolve_launch_mode(&tui::terminal::TerminalSupportSnapshot {
             stdin_is_terminal: false,
             stdout_is_terminal: false,
             stderr_is_terminal: false,
             term: Some("xterm-256color".to_owned()),
             color_support: false,
+            colorfgbg: None,
         });
 
         assert!(

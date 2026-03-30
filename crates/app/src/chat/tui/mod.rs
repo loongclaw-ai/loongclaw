@@ -55,7 +55,7 @@ pub(super) async fn run_tui_chat(
                     .filter(|m| !m.trim().is_empty())
                     .unwrap_or_else(|| "unknown".to_owned()),
             };
-            shell::run(&tui_rt, policy.use_plain_palette).await?;
+            shell::run(&tui_rt, policy.palette_hint).await?;
             Ok(CliTuiLaunchResult::Entered)
         }
         terminal::TerminalLaunch::FallbackToText { reason } => {
@@ -80,5 +80,5 @@ pub async fn run_tui(config_path: Option<&str>, session_hint: Option<&str>) -> C
     }
 
     let rt = runtime::initialize(config_path, session_hint)?;
-    shell::run(&rt, policy.use_plain_palette).await
+    shell::run(&rt, policy.palette_hint).await
 }
