@@ -86,6 +86,9 @@ impl StatusBarView for state::Pane {
     fn session_id(&self) -> &str {
         &self.session_id
     }
+    fn status_message(&self) -> Option<(&str, &Instant)> {
+        self.status_message.as_ref().map(|(s, i)| (s.as_str(), i))
+    }
 }
 
 impl InputView for state::Pane {
@@ -347,6 +350,12 @@ fn apply_terminal_event(
             shell.running = false;
             return;
         }
+        KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            shell.show_thinking = !shell.show_thinking;
+            let label = if shell.show_thinking { "on" } else { "off" };
+            shell.pane.set_status(format!("Thinking display: {label}"));
+            return;
+        }
         KeyCode::PageUp => {
             shell.pane.scroll_offset = shell.pane.scroll_offset.saturating_add(5);
             return;
@@ -387,7 +396,7 @@ fn apply_terminal_event(
         if shell.pane.agent_running {
             // Agent is busy — stage the message (depth-1, last-wins).
             shell.pane.staged_message = Some(trimmed.to_owned());
-            shell.pane.add_user_message(trimmed);
+            shell.pane.add_user_message(&format!("[queued] {trimmed}"));
             shell.pane.scroll_offset = 0;
         } else {
             // Agent is idle — submit immediately.
@@ -546,6 +555,9 @@ pub(super) async fn run(
                 shell.dirty = true;
                 // Auto-submit staged message if one was queued.
                 if let Some(staged) = shell.pane.staged_message.take() {
+                    shell
+                        .pane
+                        .set_status("Sending queued message...".to_string());
                     submit_text = Some(staged);
                 }
             }
@@ -632,6 +644,7 @@ pub(super) async fn run(
                 shell.dirty = true;
                 // Auto-submit staged message if one was queued.
                 if let Some(staged) = shell.pane.staged_message.take() {
+                    shell.pane.set_status("Sending queued message...".to_string());
                     submit_text = Some(staged);
                 }
             }

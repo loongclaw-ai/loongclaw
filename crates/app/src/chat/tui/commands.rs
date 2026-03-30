@@ -13,8 +13,8 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/help", "Show available commands"),
     ("/clear", "Clear conversation history"),
     ("/model", "Show current model info"),
-    ("/think-on", "Enable thinking blocks"),
-    ("/think-off", "Disable thinking blocks"),
+    ("/think-on", "Enable thinking blocks (or Ctrl+T)"),
+    ("/think-off", "Disable thinking blocks (or Ctrl+T)"),
     ("/exit", "Exit the TUI"),
 ];
 

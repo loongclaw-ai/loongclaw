@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use ratatui::{
     Frame,
     layout::Rect,
@@ -18,6 +20,11 @@ pub(super) trait StatusBarView {
     fn output_tokens(&self) -> u32;
     fn context_length(&self) -> u32;
     fn session_id(&self) -> &str;
+    /// Returns the current status message and the instant it was set.
+    /// Defaults to `None` so existing implementations don't break.
+    fn status_message(&self) -> Option<(&str, &Instant)> {
+        None
+    }
 }
 
 pub(super) fn render_status_bar(
@@ -37,20 +44,56 @@ pub(super) fn render_status_bar(
         (total as f32 / ctx as f32) * 100.0
     };
 
-    let pct_style = context_percent_style(pct, palette);
+    let token_spans = if ctx == 0 {
+        // Unknown context window — show dash instead of misleading 0%
+        vec![
+            Span::styled(format!("{total}"), Style::default().fg(palette.info)),
+            Span::styled(" tokens".to_string(), Style::default().fg(palette.dim)),
+            Span::styled(" (\u{2014})".to_string(), Style::default().fg(palette.dim)),
+        ]
+    } else {
+        let pct_style = context_percent_style(pct, palette);
+        vec![
+            Span::styled(format!("{total}"), Style::default().fg(palette.info)),
+            Span::styled(" tokens".to_string(), Style::default().fg(palette.dim)),
+            Span::styled(format!(" ({pct:.0}%)"), pct_style),
+        ]
+    };
 
-    let line = Line::from(vec![
+    // Check for a non-expired status message (3-second window).
+    let status_span: Option<Span<'_>> = pane
+        .status_message()
+        .filter(|(_, when)| when.elapsed() < Duration::from_secs(3))
+        .map(|(msg, _)| {
+            Span::styled(
+                format!(" | {msg}"),
+                Style::default()
+                    .fg(palette.dim)
+                    .add_modifier(Modifier::ITALIC),
+            )
+        });
+
+    let mut spans = vec![
         Span::styled(
             format!(" {model_display}"),
             Style::default().fg(palette.dim),
         ),
         Span::styled(" | ".to_string(), Style::default().fg(palette.separator)),
-        Span::styled(format!("{total}"), Style::default().fg(palette.info)),
-        Span::styled(" tokens".to_string(), Style::default().fg(palette.dim)),
-        Span::styled(format!(" ({pct:.0}%)"), pct_style),
-        Span::styled(" | ".to_string(), Style::default().fg(palette.separator)),
-        Span::styled(session_display, Style::default().fg(palette.dim)),
-    ]);
+    ];
+    spans.extend(token_spans);
+    spans.push(Span::styled(
+        " | ".to_string(),
+        Style::default().fg(palette.separator),
+    ));
+    spans.push(Span::styled(
+        session_display,
+        Style::default().fg(palette.dim),
+    ));
+    if let Some(s) = status_span {
+        spans.push(s);
+    }
+
+    let line = Line::from(spans);
 
     frame.render_widget(Paragraph::new(line), area);
 }
@@ -101,6 +144,7 @@ mod tests {
         output_tokens: u32,
         context_length: u32,
         session_id: String,
+        status_message: Option<(String, Instant)>,
     }
 
     impl StatusBarView for TestBar {
@@ -118,6 +162,9 @@ mod tests {
         }
         fn session_id(&self) -> &str {
             &self.session_id
+        }
+        fn status_message(&self) -> Option<(&str, &Instant)> {
+            self.status_message.as_ref().map(|(s, i)| (s.as_str(), i))
         }
     }
 
@@ -145,6 +192,7 @@ mod tests {
             output_tokens: 234,
             context_length: 10000,
             session_id: "sess-abc123".into(),
+            status_message: None,
         };
         let palette = Palette::dark();
 
@@ -213,6 +261,7 @@ mod tests {
             output_tokens: 100,
             context_length: 0,
             session_id: "s1".into(),
+            status_message: None,
         };
         let palette = Palette::dark();
 
@@ -224,6 +273,6 @@ mod tests {
 
         let text = buffer_text(&terminal);
         assert!(text.contains("gpt-4"));
-        assert!(text.contains("(0%)")); // 0 context means 0%
+        assert!(text.contains("\u{2014}")); // 0 context shows em-dash instead of 0%
     }
 }
