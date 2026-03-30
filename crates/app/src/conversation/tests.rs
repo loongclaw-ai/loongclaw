@@ -11266,6 +11266,7 @@ async fn autonomy_policy_turn_engine_discovery_only_denies_capability_install() 
         assistant_text: String::new(),
         tool_intents: vec![tool_intent],
         raw_meta: Value::Null,
+        usage: Default::default(),
     };
     let engine = TurnEngine::new(5);
     let binding = ConversationRuntimeBinding::kernel(&kernel_ctx);
@@ -11350,6 +11351,7 @@ async fn autonomy_policy_turn_engine_guided_acquisition_requires_approval_for_ca
         assistant_text: String::new(),
         tool_intents: vec![tool_intent],
         raw_meta: Value::Null,
+        usage: Default::default(),
     };
     let engine = TurnEngine::new(5);
     let binding = ConversationRuntimeBinding::kernel(&kernel_ctx);
@@ -11460,6 +11462,7 @@ async fn autonomy_policy_turn_engine_bounded_autonomous_allows_capability_instal
         assistant_text: String::new(),
         tool_intents: vec![tool_intent],
         raw_meta: Value::Null,
+        usage: Default::default(),
     };
     let engine = TurnEngine::new(5);
     let binding = ConversationRuntimeBinding::kernel(&kernel_ctx);
@@ -11574,6 +11577,7 @@ async fn autonomy_policy_turn_engine_bounded_autonomous_enforces_capability_budg
         assistant_text: String::new(),
         tool_intents: vec![first_intent, second_intent, third_intent],
         raw_meta: Value::Null,
+        usage: Default::default(),
     };
     let engine = TurnEngine::new(5);
     let binding = ConversationRuntimeBinding::kernel(&kernel_ctx);
@@ -11696,6 +11700,7 @@ async fn autonomy_policy_turn_engine_bounded_autonomous_requires_approval_for_pr
         assistant_text: String::new(),
         tool_intents: vec![tool_intent],
         raw_meta: Value::Null,
+        usage: Default::default(),
     };
     let engine = TurnEngine::new(5);
     let binding = ConversationRuntimeBinding::kernel(&kernel_ctx);
@@ -11792,6 +11797,7 @@ async fn autonomy_policy_turn_engine_discovery_only_denies_topology_expand() {
         assistant_text: String::new(),
         tool_intents: vec![tool_intent],
         raw_meta: Value::Null,
+        usage: Default::default(),
     };
     let engine = TurnEngine::new(5);
     let binding = ConversationRuntimeBinding::kernel(&kernel_ctx);
@@ -11855,6 +11861,7 @@ async fn autonomy_policy_turn_engine_guided_acquisition_requires_approval_for_po
         assistant_text: String::new(),
         tool_intents: vec![tool_intent],
         raw_meta: Value::Null,
+        usage: Default::default(),
     };
     let engine = TurnEngine::new(5);
     let binding = ConversationRuntimeBinding::kernel(&kernel_ctx);
@@ -11945,6 +11952,7 @@ async fn autonomy_policy_turn_engine_bounded_autonomous_requires_approval_for_se
         assistant_text: String::new(),
         tool_intents: vec![tool_intent],
         raw_meta: Value::Null,
+        usage: Default::default(),
     };
     let engine = TurnEngine::new(5);
     let binding = ConversationRuntimeBinding::kernel(&kernel_ctx);

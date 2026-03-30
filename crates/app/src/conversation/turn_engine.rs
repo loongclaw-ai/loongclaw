@@ -2391,6 +2391,7 @@ mod tests {
                 tool_call_id: tool_call_id.to_owned(),
             }],
             raw_meta: json!({}),
+            usage: ProviderUsage::default(),
         }
     }
 
