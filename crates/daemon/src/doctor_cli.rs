@@ -76,6 +76,7 @@ pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
     config_mutated |= maybe_apply_channel_env_fix(&mut config, options.fix, &mut fixes);
 
     let has_provider_credentials = mvp::provider::provider_auth_ready(&config).await;
+    let provider_requires_explicit_auth = config.provider.requires_explicit_auth_configuration();
     checks.push(provider_credentials_doctor_check(
         &config,
         has_provider_credentials,
@@ -89,7 +90,7 @@ pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
             level: DoctorCheckLevel::Warn,
             detail: "skipped by --skip-model-probe".to_owned(),
         });
-    } else if !has_provider_credentials {
+    } else if !has_provider_credentials && provider_requires_explicit_auth {
         checks.push(DoctorCheck {
             name: "provider model probe".to_owned(),
             level: DoctorCheckLevel::Warn,

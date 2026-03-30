@@ -4913,6 +4913,13 @@ fn onboard_api_key_env_screen_redacts_invalid_current_source_and_keeps_clear_hin
         !current_source_line.contains(secret),
         "credential-env screen must never echo the invalid secret-like configured env pointer in the current source line: {lines:#?}"
     );
+    assert!(
+        lines
+            .iter()
+            .filter(|line| !line.starts_with("- example: "))
+            .all(|line| !line.contains(secret)),
+        "credential-env screen must never echo the invalid secret-like configured env pointer in any rendered line: {lines:#?}"
+    );
 }
 
 #[test]

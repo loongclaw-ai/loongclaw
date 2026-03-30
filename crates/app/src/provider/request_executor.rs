@@ -1249,7 +1249,7 @@ mod tests {
             &provider,
             ProviderFailoverReason::AuthRejected,
             401,
-            "doubao-seed-1-6-thinking",
+            "doubao-seed-1-6-thinking-250715",
             1,
             3,
             &json!({
