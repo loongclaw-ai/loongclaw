@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use super::dialog::ClarifyDialog;
+use super::focus::{FocusLayer, FocusStack};
 use super::history::{self, PaneView};
 use super::input::{self, InputView};
 use super::layout;
@@ -26,7 +27,7 @@ pub(super) trait ShellView {
 
     fn pane(&self) -> &Self::Pane;
     fn show_thinking(&self) -> bool;
-    fn show_help(&self) -> bool;
+    fn focus(&self) -> &FocusStack;
     fn clarify_dialog(&self) -> Option<&ClarifyDialog>;
 }
 
@@ -68,12 +69,14 @@ pub(super) fn draw(
     // 6. Status bar
     status_bar::render_status_bar(frame, areas.status_bar, state.pane(), palette);
 
-    // 7. Overlays (rendered last, on top of everything)
-    if let Some(dialog) = state.clarify_dialog() {
+    // 7. Overlays
+    if let Some(dialog) = state.clarify_dialog()
+        && state.focus().has(FocusLayer::ClarifyDialog)
+    {
         render_clarify_dialog(dialog, frame, area, palette);
     }
 
-    if state.show_help() {
+    if state.focus().has(FocusLayer::Help) {
         render_help_overlay(frame, area, palette);
     }
 }
@@ -401,7 +404,7 @@ mod tests {
     struct TestShell {
         pane: TestPane,
         show_thinking: bool,
-        show_help: bool,
+        focus: FocusStack,
         clarify_dialog: Option<ClarifyDialog>,
     }
 
@@ -410,7 +413,7 @@ mod tests {
             Self {
                 pane: TestPane::default_idle(),
                 show_thinking: false,
-                show_help: false,
+                focus: FocusStack::new(),
                 clarify_dialog: None,
             }
         }
@@ -425,8 +428,8 @@ mod tests {
         fn show_thinking(&self) -> bool {
             self.show_thinking
         }
-        fn show_help(&self) -> bool {
-            self.show_help
+        fn focus(&self) -> &FocusStack {
+            &self.focus
         }
         fn clarify_dialog(&self) -> Option<&ClarifyDialog> {
             self.clarify_dialog.as_ref()
@@ -466,8 +469,10 @@ mod tests {
     fn draw_with_help_overlay() {
         let backend = TestBackend::new(80, 30);
         let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut focus = FocusStack::new();
+        focus.push(FocusLayer::Help);
         let shell = TestShell {
-            show_help: true,
+            focus,
             ..TestShell::idle()
         };
         let palette = Palette::dark();
@@ -487,7 +492,10 @@ mod tests {
     fn draw_with_clarify_dialog() {
         let backend = TestBackend::new(80, 30);
         let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut focus = FocusStack::new();
+        focus.push(FocusLayer::ClarifyDialog);
         let shell = TestShell {
+            focus,
             clarify_dialog: Some(ClarifyDialog::new(
                 "Pick a tool".into(),
                 vec!["bash".into(), "read".into()],

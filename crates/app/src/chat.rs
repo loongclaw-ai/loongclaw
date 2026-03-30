@@ -4179,11 +4179,7 @@ mod tests {
         let bootstrap = tui::app_shell::build_shell_bootstrap_state("default");
 
         assert_eq!(bootstrap.session_id, "default");
-        assert_eq!(bootstrap.focus_target, tui::focus::FocusTarget::Composer);
-        assert!(
-            bootstrap.drawer.is_none(),
-            "initial TUI shell bootstrap should start with the drawer collapsed"
-        );
+        assert_eq!(bootstrap.focus.top(), tui::focus::FocusLayer::Composer);
     }
 
     #[cfg(feature = "channel-cli")]
@@ -4209,11 +4205,7 @@ mod tests {
     fn tui_state_defaults_to_closed_drawer_and_composer_focus() {
         let state = tui::state::UiState::default();
 
-        assert!(
-            state.drawer.is_none(),
-            "default TUI state should start with the drawer collapsed"
-        );
-        assert_eq!(state.focus_target, tui::focus::FocusTarget::Composer);
+        assert_eq!(state.focus.top(), tui::focus::FocusLayer::Composer);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use super::dialog::ClarifyDialog;
-use super::focus::FocusTarget;
+use super::focus::FocusStack;
 use super::message::{Message, MessagePart, ToolStatus};
 
 const SPINNER_INTERVAL_MS: u128 = 80;
@@ -191,7 +191,7 @@ pub(super) struct Shell {
     pub(super) pane: Pane,
     pub(super) running: bool,
     pub(super) show_thinking: bool,
-    pub(super) show_help: bool,
+    pub(super) focus: FocusStack,
 }
 
 impl Shell {
@@ -200,7 +200,7 @@ impl Shell {
             pane: Pane::new(session_id),
             running: true,
             show_thinking: true,
-            show_help: false,
+            focus: FocusStack::new(),
         }
     }
 }
@@ -209,14 +209,11 @@ impl Shell {
 // UiState: top-level TUI state combining pane with focus and drawer
 // ---------------------------------------------------------------------------
 
-/// Top-level TUI state combining pane state with focus and drawer visibility.
-/// Used as the single source of truth for the render loop.
 #[derive(Debug, Clone)]
 pub(crate) struct UiState {
     pub(crate) session_id: String,
     pub(super) pane: Pane,
-    pub(crate) focus_target: FocusTarget,
-    pub(crate) drawer: Option<String>,
+    pub(crate) focus: FocusStack,
 }
 
 impl Default for UiState {
@@ -224,8 +221,7 @@ impl Default for UiState {
         Self {
             session_id: String::new(),
             pane: Pane::new("default"),
-            focus_target: FocusTarget::Composer,
-            drawer: None,
+            focus: FocusStack::new(),
         }
     }
 }
@@ -364,7 +360,7 @@ mod tests {
         let shell = Shell::new("s1");
         assert!(shell.running);
         assert!(shell.show_thinking);
-        assert!(!shell.show_help);
+        assert_eq!(shell.focus.top(), super::super::focus::FocusLayer::Composer);
         assert_eq!(shell.pane.session_id, "s1");
     }
 }

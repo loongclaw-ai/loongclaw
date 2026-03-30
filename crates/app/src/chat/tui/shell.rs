@@ -22,6 +22,7 @@ use crate::conversation::{
 use super::commands::{self, SlashCommand};
 use super::dialog::ClarifyDialog;
 use super::events::UiEvent;
+use super::focus::{FocusLayer, FocusStack};
 use super::history::PaneView;
 use super::input::InputView;
 use super::message::Message;
@@ -102,8 +103,8 @@ impl ShellView for state::Shell {
     fn show_thinking(&self) -> bool {
         self.show_thinking
     }
-    fn show_help(&self) -> bool {
-        self.show_help
+    fn focus(&self) -> &FocusStack {
+        &self.focus
     }
     fn clarify_dialog(&self) -> Option<&ClarifyDialog> {
         self.pane.clarify_dialog.as_ref()
@@ -276,6 +277,7 @@ fn apply_ui_event(shell: &mut state::Shell, event: UiEvent) {
         }
         UiEvent::ClarifyRequest { question, choices } => {
             shell.pane.clarify_dialog = Some(ClarifyDialog::new(question, choices));
+            shell.focus.push(FocusLayer::ClarifyDialog);
         }
         UiEvent::TurnError(msg) => {
             shell.pane.agent_running = false;
@@ -295,39 +297,44 @@ fn apply_terminal_event(
         return;
     };
 
-    // --- Dialog mode --------------------------------------------------
-    if let Some(ref mut dialog) = shell.pane.clarify_dialog {
-        #[allow(clippy::wildcard_enum_match_arm)]
-        match key.code {
-            KeyCode::Enter => {
-                let response = dialog.response();
-                shell.pane.clarify_dialog = None;
-                let _ = tx.send(UiEvent::Token {
-                    content: format!("\n[user chose: {response}]\n"),
-                    is_thinking: false,
-                });
+    match shell.focus.top() {
+        FocusLayer::ClarifyDialog => {
+            if let Some(ref mut dialog) = shell.pane.clarify_dialog {
+                #[allow(clippy::wildcard_enum_match_arm)]
+                match key.code {
+                    KeyCode::Enter => {
+                        let response = dialog.response();
+                        shell.pane.clarify_dialog = None;
+                        shell.focus.pop();
+                        let _ = tx.send(UiEvent::Token {
+                            content: format!("\n[user chose: {response}]\n"),
+                            is_thinking: false,
+                        });
+                    }
+                    KeyCode::Esc => {
+                        shell.pane.clarify_dialog = None;
+                        shell.focus.pop();
+                    }
+                    KeyCode::Up => dialog.select_up(),
+                    KeyCode::Down => dialog.select_down(),
+                    KeyCode::Left => dialog.move_cursor_left(),
+                    KeyCode::Right => dialog.move_cursor_right(),
+                    KeyCode::Backspace => dialog.delete_back(),
+                    KeyCode::Char(ch) => dialog.insert_char(ch),
+                    _ => {}
+                }
             }
-            KeyCode::Esc => {
-                shell.pane.clarify_dialog = None;
+            return;
+        }
+        FocusLayer::Help => {
+            if key.code == KeyCode::Esc || key.code == KeyCode::Char('q') {
+                shell.focus.pop();
             }
-            KeyCode::Up => dialog.select_up(),
-            KeyCode::Down => dialog.select_down(),
-            KeyCode::Left => dialog.move_cursor_left(),
-            KeyCode::Right => dialog.move_cursor_right(),
-            KeyCode::Backspace => dialog.delete_back(),
-            KeyCode::Char(ch) => dialog.insert_char(ch),
-            _ => {}
+            return;
         }
-        return;
-    }
-
-    // --- Help overlay captures Esc to dismiss -------------------------
-    if shell.show_help {
-        if key.code == KeyCode::Esc || key.code == KeyCode::Char('q') {
-            shell.show_help = false;
+        FocusLayer::Composer => {
+            // Fall through to global shortcuts + textarea below
         }
-        // Swallow all other keys while help is open.
-        return;
     }
 
     // --- Global shortcuts ---------------------------------------------
@@ -411,7 +418,11 @@ fn handle_slash_command(shell: &mut state::Shell, cmd: SlashCommand) {
             shell.pane.add_system_message("Conversation cleared.");
         }
         SlashCommand::Help => {
-            shell.show_help = !shell.show_help;
+            if shell.focus.has(FocusLayer::Help) {
+                shell.focus.pop();
+            } else {
+                shell.focus.push(FocusLayer::Help);
+            }
             // Help is rendered as an overlay — no transcript message needed.
         }
         SlashCommand::Model => {
