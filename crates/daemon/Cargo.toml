@@ -12,7 +12,7 @@ path = "src/lib.rs"
 
 [features]
 default = ["mvp"]
-mvp = ["loongclaw-app/default", "memory-sqlite"]
+mvp = ["loongclaw-app/default", "memory-sqlite", "channel-cli"]
 test-support = []
 channel-cli = ["loongclaw-app/channel-cli"]
 channel-telegram = ["loongclaw-app/channel-telegram"]
@@ -89,8 +89,11 @@ path = "src/main.rs"
 
 [dev-dependencies]
 loongclaw-spec = { path = "../spec", features = ["test-hooks"] }
+portable-pty = "0.9"
 sha2.workspace = true
+strip-ansi-escapes = "0.2"
 tower = { version = "0.5", features = ["util"] }
+vt100 = "0.15"
 wat = "1"
 
 [lints]

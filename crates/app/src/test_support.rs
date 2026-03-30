@@ -205,6 +205,7 @@ impl FakeProviderBuilder {
             assistant_text: self.text,
             tool_intents,
             raw_meta: serde_json::Value::Null,
+            usage: Default::default(),
         }
     }
 }

@@ -218,6 +218,24 @@ cargo install --path crates/daemon
 
 </details>
 
+### Interactive Chat UI
+
+`loongclaw chat` keeps the line-oriented REPL as the default:
+
+```bash
+loongclaw chat --ui text
+```
+
+You can also request the balanced transcript-first TUI path:
+
+```bash
+loongclaw chat --ui tui
+```
+
+`--ui tui` is currently a guarded preview flag. LoongClaw falls back to the text UI with a warning
+when stdin or stdout are piped, when the terminal is `TERM=dumb`, when the build omits the
+`channel-cli` feature, or while the runtime-backed full-screen shell remains disabled.
+
 ### Shell Completion
 
 `loong completions <shell>` prints a completion script to stdout. GitHub

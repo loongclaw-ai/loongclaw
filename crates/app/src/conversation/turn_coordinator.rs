@@ -94,9 +94,9 @@ use super::turn_checkpoint::{
     turn_checkpoint_result_kind,
 };
 use super::turn_engine::{
-    AppToolDispatcher, DefaultAppToolDispatcher, ProviderTurn, ToolBatchExecutionIntentStatus,
-    ToolBatchExecutionTrace, ToolIntent, TurnEngine, TurnFailure, TurnFailureKind, TurnResult,
-    TurnValidation, effective_result_tool_name,
+    AppToolDispatcher, DefaultAppToolDispatcher, ProviderTurn, ProviderUsage,
+    ToolBatchExecutionIntentStatus, ToolBatchExecutionTrace, ToolIntent, TurnEngine, TurnFailure,
+    TurnFailureKind, TurnResult, TurnValidation, effective_result_tool_name,
 };
 use super::turn_observer::{
     ConversationTurnObserverHandle, ConversationTurnPhase, ConversationTurnPhaseEvent,
@@ -834,11 +834,29 @@ enum ResolvedProviderTurn {
 
 impl ResolvedProviderTurn {
     fn persist_reply(reply: String, checkpoint: TurnCheckpointSnapshot) -> Self {
-        Self::PersistReply(ResolvedProviderReply { reply, checkpoint })
+        Self::PersistReply(ResolvedProviderReply {
+            reply,
+            checkpoint,
+            usage: ProviderUsage::default(),
+        })
     }
 
     fn return_error(error: String, checkpoint: TurnCheckpointSnapshot) -> Self {
         Self::ReturnError(ResolvedProviderError { error, checkpoint })
+    }
+
+    fn with_usage(mut self, usage: ProviderUsage) -> Self {
+        if let Self::PersistReply(ref mut reply) = self {
+            reply.usage = usage;
+        }
+        self
+    }
+
+    fn usage(&self) -> ProviderUsage {
+        match self {
+            Self::PersistReply(reply) => reply.usage.clone(),
+            Self::ReturnError(_) => ProviderUsage::default(),
+        }
     }
 
     #[cfg(test)]
@@ -885,6 +903,7 @@ impl ResolvedProviderTurn {
 struct ResolvedProviderReply {
     reply: String,
     checkpoint: TurnCheckpointSnapshot,
+    usage: ProviderUsage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1944,6 +1963,7 @@ impl ConversationTurnCoordinator {
                 ),
             }],
             raw_meta: Value::Null,
+            usage: ProviderUsage::default(),
         };
 
         let resolved_turn = resolve_provider_turn(
@@ -2378,6 +2398,8 @@ fn observe_non_provider_turn_terminal_success_phases(
         tool_call_count: 0,
         message_count: None,
         estimated_tokens: None,
+        actual_input_tokens: None,
+        actual_output_tokens: None,
     };
     observe_turn_phase(observer, finalizing_event);
 
@@ -2388,6 +2410,8 @@ fn observe_non_provider_turn_terminal_success_phases(
         tool_call_count: 0,
         message_count: None,
         estimated_tokens: None,
+        actual_input_tokens: None,
+        actual_output_tokens: None,
     };
     observe_turn_phase(observer, completed_event);
 }
@@ -2595,6 +2619,7 @@ async fn resolve_provider_turn<R: ConversationRuntime + ?Sized>(
         ProviderTurnRequestAction::Continue { turn } => {
             let turn =
                 scope_provider_turn_tool_intents(turn, session_id, preparation.turn_id.as_str());
+            let initial_usage = turn.usage.clone();
             if let Some(reply) =
                 turn_loop_state.circuit_breaker_reply(&turn_loop_policy, turn.tool_intents.len())
             {
@@ -2603,7 +2628,8 @@ async fn resolve_provider_turn<R: ConversationRuntime + ?Sized>(
                     user_input,
                     turn.tool_intents.len(),
                     reply,
-                );
+                )
+                .with_usage(initial_usage);
             }
             let continue_phase = prepare_provider_turn_continue_phase(
                 config,
@@ -2636,6 +2662,7 @@ async fn resolve_provider_turn<R: ConversationRuntime + ?Sized>(
                     observer,
                 )
                 .await
+                .with_usage(initial_usage)
         }
         ProviderTurnRequestAction::FinalizeInlineProviderError { reply } => {
             ProviderTurnRequestTerminalPhase::persist_inline_provider_error(reply)
@@ -3613,6 +3640,7 @@ async fn apply_resolved_provider_turn<R: ConversationRuntime + ?Sized>(
     binding: ConversationRuntimeBinding<'_>,
     observer: Option<&ConversationTurnObserverHandle>,
 ) -> CliResult<String> {
+    let usage = resolved.usage();
     let terminal_phase = resolved.terminal_phase(&preparation.session);
     let completion_event = match &terminal_phase {
         ProviderTurnTerminalPhase::PersistReply(phase) => {
@@ -3624,6 +3652,8 @@ async fn apply_resolved_provider_turn<R: ConversationRuntime + ?Sized>(
             Some(ConversationTurnPhaseEvent::completed(
                 message_count,
                 estimated_tokens,
+                usage.input_tokens,
+                usage.output_tokens,
             ))
         }
         ProviderTurnTerminalPhase::ReturnError(_) => None,
@@ -6739,6 +6769,7 @@ async fn execute_single_tool_intent(
         assistant_text: String::new(),
         tool_intents: vec![intent.clone()],
         raw_meta: Value::Null,
+        usage: ProviderUsage::default(),
     };
 
     match engine
@@ -7207,6 +7238,7 @@ mod tests {
                 assistant_text: "final reply".to_owned(),
                 tool_intents: Vec::new(),
                 raw_meta: Value::Null,
+                usage: ProviderUsage::default(),
             })
         }
 
@@ -7271,6 +7303,7 @@ mod tests {
                 assistant_text: "final reply".to_owned(),
                 tool_intents: Vec::new(),
                 raw_meta: Value::Null,
+                usage: ProviderUsage::default(),
             })
         }
 
@@ -7622,6 +7655,7 @@ mod tests {
                 },
             ],
             raw_meta: Value::Null,
+            usage: ProviderUsage::default(),
         };
         let turn_result = TurnResult::ToolError(TurnFailure::retryable(
             "tool_execution_failed",
@@ -9012,6 +9046,7 @@ mod tests {
                 tool_call_id: "call-safe".to_owned(),
             }],
             raw_meta: Value::Null,
+            usage: ProviderUsage::default(),
         };
 
         assert_eq!(safe_plan.decision.lane, ExecutionLane::Safe);
@@ -9146,6 +9181,7 @@ mod tests {
                 },
             ],
             raw_meta: Value::Null,
+            usage: ProviderUsage::default(),
         };
 
         let scoped = scope_provider_turn_tool_intents(turn, "session-a", "turn-a");
@@ -9180,6 +9216,7 @@ mod tests {
                 },
             ],
             raw_meta: Value::Null,
+            usage: ProviderUsage::default(),
         };
 
         let scoped = scope_provider_turn_tool_intents(turn, "session-a", "turn-a");
@@ -9238,6 +9275,7 @@ mod tests {
                 tool_call_id: "call-1".to_owned(),
             }],
             raw_meta: Value::Null,
+            usage: ProviderUsage::default(),
         };
 
         let reloaded = ConversationTurnCoordinator::reload_followup_provider_config_after_tool_turn(
@@ -9361,6 +9399,7 @@ mod tests {
                     attempts_context_compaction: true,
                 },
             },
+            usage: ProviderUsage::default(),
         });
         let snapshot = resolved.checkpoint();
 
@@ -9454,6 +9493,7 @@ mod tests {
                     attempts_context_compaction: true,
                 },
             },
+            usage: ProviderUsage::default(),
         });
         let snapshot = resolved.checkpoint();
 
@@ -9527,6 +9567,7 @@ mod tests {
         );
         let resolved = ResolvedProviderTurn::PersistReply(ResolvedProviderReply {
             reply: "done".to_owned(),
+            usage: ProviderUsage::default(),
             checkpoint: TurnCheckpointSnapshot {
                 identity: Some(TurnCheckpointIdentity::from_turn("say hello", "done")),
                 preparation: ProviderTurnPreparation::from_assembled_context(
@@ -9738,6 +9779,7 @@ mod tests {
                 assistant_text: "preface".to_owned(),
                 tool_intents: Vec::new(),
                 raw_meta: Value::Null,
+                usage: ProviderUsage::default(),
             }),
             ProviderErrorMode::Propagate,
         );

@@ -21,8 +21,30 @@ use crate::acp::{
 use crate::context::{DEFAULT_TOKEN_TTL_S, bootstrap_kernel_context_with_config};
 
 mod cli_input;
+mod live_surface;
+mod text_surface;
+#[cfg(feature = "channel-cli")]
+mod tui;
+#[cfg(feature = "channel-cli")]
+pub use self::tui::run_tui;
+mod ui_mode;
 
 use self::cli_input::ConcurrentCliInputReader;
+use self::live_surface::build_cli_chat_live_surface_observer;
+#[cfg(test)]
+use self::live_surface::{
+    CliChatLiveSurfaceObserver, CliChatLiveSurfaceSink, CliChatLiveSurfaceSnapshot,
+    render_cli_chat_live_surface_lines_with_width,
+};
+#[cfg(test)]
+use self::text_surface::{CliChatStartupSummary, render_cli_chat_startup_lines_with_width};
+use self::text_surface::{
+    print_cli_chat_startup, render_cli_chat_assistant_lines_with_width,
+    render_cli_chat_help_lines_with_width, render_cli_chat_history_lines_with_width,
+    render_cli_chat_missing_config_decline_lines_with_width,
+    render_cli_chat_missing_config_lines_with_width,
+};
+pub use self::ui_mode::CliChatUiMode;
 
 use super::config::{self, ConversationConfig, LoongClawConfig};
 #[cfg(test)]
@@ -68,6 +90,7 @@ const CLI_CHAT_LIVE_TOOL_ARGS_MAX_BUFFER_CHARS: usize = 1024;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CliChatOptions {
+    pub ui_mode: CliChatUiMode,
     pub acp_requested: bool,
     pub acp_event_stream: bool,
     pub acp_bootstrap_mcp_servers: Vec<String>,
@@ -219,80 +242,6 @@ enum CliChatLoopControl {
     AssistantText(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CliChatStartupSummary {
-    config_path: String,
-    memory_label: String,
-    session_id: String,
-    context_engine_id: String,
-    context_engine_source: String,
-    acp_enabled: bool,
-    dispatch_enabled: bool,
-    conversation_routing: String,
-    allowed_channels: Vec<String>,
-    acp_backend_id: String,
-    acp_backend_source: String,
-    explicit_acp_request: bool,
-    event_stream_enabled: bool,
-    bootstrap_mcp_servers: Vec<String>,
-    working_directory: Option<String>,
-}
-
-type CliChatLiveSurfaceSink = Arc<dyn Fn(Vec<String>) + Send + Sync>;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CliChatLiveSurfaceSnapshot {
-    phase: ConversationTurnPhase,
-    provider_round: Option<usize>,
-    lane: Option<ExecutionLane>,
-    tool_call_count: usize,
-    message_count: Option<usize>,
-    estimated_tokens: Option<usize>,
-    draft_preview: Option<String>,
-    tool_activity_lines: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CliChatLiveToolState {
-    tool_call_id: String,
-    display_order: usize,
-    name: Option<String>,
-    args: String,
-    status: ConversationTurnToolState,
-    detail: Option<String>,
-}
-
-impl CliChatLiveToolState {
-    fn new(tool_call_id: String, display_order: usize) -> Self {
-        Self {
-            tool_call_id,
-            display_order,
-            name: None,
-            args: String::new(),
-            status: ConversationTurnToolState::Running,
-            detail: None,
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-struct CliChatLiveSurfaceState {
-    latest_phase_event: Option<ConversationTurnPhaseEvent>,
-    draft_preview: String,
-    tool_states: BTreeMap<String, CliChatLiveToolState>,
-    tool_call_index_map: BTreeMap<usize, String>,
-    next_tool_display_order: usize,
-    total_text_chars_seen: usize,
-    last_preview_emit_chars_seen: usize,
-    last_emitted_snapshot: Option<CliChatLiveSurfaceSnapshot>,
-}
-
-struct CliChatLiveSurfaceObserver {
-    render_width: usize,
-    render_sink: CliChatLiveSurfaceSink,
-    state: StdMutex<CliChatLiveSurfaceState>,
-}
-
 #[allow(clippy::print_stdout)] // CLI REPL output
 pub async fn run_cli_chat(
     config_path: Option<&str>,
@@ -347,6 +296,29 @@ pub async fn run_cli_chat(
     }
 
     let runtime = initialize_cli_turn_runtime(config_path, session_hint, options, "cli-chat")?;
+    if options.ui_mode == CliChatUiMode::Tui {
+        #[cfg(feature = "channel-cli")]
+        {
+            match tui::run_tui_chat(&runtime, options).await? {
+                tui::CliTuiLaunchResult::Entered => return Ok(()),
+                tui::CliTuiLaunchResult::FallbackToText { reason } => {
+                    #[allow(clippy::print_stderr)]
+                    {
+                        eprintln!("warning: {reason}; falling back to text ui");
+                    }
+                }
+            }
+        }
+        #[cfg(not(feature = "channel-cli"))]
+        {
+            #[allow(clippy::print_stderr)]
+            {
+                eprintln!(
+                    "warning: tui ui requires the channel-cli feature; falling back to text ui"
+                );
+            }
+        }
+    }
     print_cli_chat_startup(&runtime, options)?;
     print_turn_checkpoint_startup_health(&runtime).await;
     let acp_event_printer = options
@@ -743,54 +715,6 @@ async fn process_cli_chat_input(
     ))
 }
 
-#[allow(clippy::print_stdout)] // CLI output
-fn print_cli_chat_startup(runtime: &CliTurnRuntime, options: &CliChatOptions) -> CliResult<()> {
-    let summary = build_cli_chat_startup_summary(runtime, options)?;
-    for line in render_cli_chat_startup_lines(&summary) {
-        println!("{line}");
-    }
-    Ok(())
-}
-
-fn build_cli_chat_startup_summary(
-    runtime: &CliTurnRuntime,
-    options: &CliChatOptions,
-) -> CliResult<CliChatStartupSummary> {
-    let context_engine_selection = resolve_context_engine_selection(&runtime.config);
-    let acp_selection = resolve_acp_backend_selection(&runtime.config);
-    Ok(CliChatStartupSummary {
-        config_path: runtime.resolved_path.display().to_string(),
-        memory_label: runtime.memory_label.clone(),
-        session_id: runtime.session_id.clone(),
-        context_engine_id: context_engine_selection.id.to_owned(),
-        context_engine_source: context_engine_selection.source.as_str().to_owned(),
-        acp_enabled: runtime.config.acp.enabled,
-        dispatch_enabled: runtime.config.acp.dispatch_enabled(),
-        conversation_routing: runtime
-            .config
-            .acp
-            .dispatch
-            .conversation_routing
-            .as_str()
-            .to_owned(),
-        allowed_channels: runtime.config.acp.dispatch.allowed_channel_ids()?,
-        acp_backend_id: acp_selection.id.to_owned(),
-        acp_backend_source: acp_selection.source.as_str().to_owned(),
-        explicit_acp_request: runtime.explicit_acp_request,
-        event_stream_enabled: options.acp_event_stream,
-        bootstrap_mcp_servers: runtime.effective_bootstrap_mcp_servers.clone(),
-        working_directory: runtime
-            .effective_working_directory
-            .as_ref()
-            .map(|path| path.display().to_string()),
-    })
-}
-
-fn render_cli_chat_startup_lines(summary: &CliChatStartupSummary) -> Vec<String> {
-    let render_width = detect_cli_chat_render_width();
-    render_cli_chat_startup_lines_with_width(summary, render_width)
-}
-
 fn should_run_missing_config_onboard(read: usize, input: &str) -> bool {
     if read == 0 {
         return false;
@@ -805,97 +729,6 @@ fn should_run_missing_config_onboard(read: usize, input: &str) -> bool {
     matches!(normalized_input.as_str(), "y" | "yes")
 }
 
-fn render_cli_chat_missing_config_lines_with_width(
-    onboard_hint: &str,
-    width: usize,
-) -> Vec<String> {
-    let screen_spec = build_cli_chat_missing_config_screen_spec(onboard_hint);
-    render_tui_screen_spec(&screen_spec, width, false)
-}
-
-fn build_cli_chat_missing_config_screen_spec(onboard_hint: &str) -> TuiScreenSpec {
-    let intro_lines = vec![
-        format!("Welcome to {}!", config::PRODUCT_DISPLAY_NAME),
-        "No configuration found for interactive chat.".to_owned(),
-    ];
-    let sections = vec![TuiSectionSpec::ActionGroup {
-        title: Some("setup command".to_owned()),
-        inline_title_when_wide: true,
-        items: vec![TuiActionSpec {
-            label: "start setup".to_owned(),
-            command: onboard_hint.to_owned(),
-        }],
-    }];
-    let choices = vec![
-        TuiChoiceSpec {
-            key: "y".to_owned(),
-            label: "run setup wizard".to_owned(),
-            detail_lines: vec!["Create a config now and return to interactive chat.".to_owned()],
-            recommended: true,
-        },
-        TuiChoiceSpec {
-            key: "n".to_owned(),
-            label: "skip for now".to_owned(),
-            detail_lines: vec!["Exit chat now and keep the setup command for later.".to_owned()],
-            recommended: false,
-        },
-    ];
-    let footer_lines = vec!["Press Enter to accept y.".to_owned()];
-
-    TuiScreenSpec {
-        header_style: TuiHeaderStyle::Compact,
-        subtitle: Some("interactive chat".to_owned()),
-        title: Some("setup required".to_owned()),
-        progress_line: None,
-        intro_lines,
-        sections,
-        choices,
-        footer_lines,
-    }
-}
-
-fn render_cli_chat_missing_config_decline_lines_with_width(
-    onboard_hint: &str,
-    width: usize,
-) -> Vec<String> {
-    let message_spec = build_cli_chat_missing_config_decline_message_spec(onboard_hint);
-    render_tui_message_spec(&message_spec, width)
-}
-
-fn build_cli_chat_missing_config_decline_message_spec(onboard_hint: &str) -> TuiMessageSpec {
-    let setup_hint = format!("You can run '{onboard_hint}' later to get started.");
-    let sections = vec![
-        TuiSectionSpec::Callout {
-            tone: TuiCalloutTone::Info,
-            title: Some("setup skipped".to_owned()),
-            lines: vec![setup_hint],
-        },
-        TuiSectionSpec::ActionGroup {
-            title: Some("start later".to_owned()),
-            inline_title_when_wide: true,
-            items: vec![TuiActionSpec {
-                label: "setup command".to_owned(),
-                command: onboard_hint.to_owned(),
-            }],
-        },
-    ];
-
-    TuiMessageSpec {
-        role: "chat".to_owned(),
-        caption: Some("setup required".to_owned()),
-        sections,
-        footer_lines: Vec::new(),
-    }
-}
-
-fn render_cli_chat_startup_lines_with_width(
-    summary: &CliChatStartupSummary,
-    width: usize,
-) -> Vec<String> {
-    let screen_spec = build_cli_chat_startup_screen_spec(summary);
-    render_tui_screen_spec(&screen_spec, width, false)
-}
-
 fn detect_cli_chat_render_width() -> usize {
     crate::presentation::detect_render_width()
 }
@@ -905,1130 +738,6 @@ fn print_rendered_cli_chat_lines(lines: &[String]) {
     for line in lines {
         println!("{line}");
     }
-}
-
-fn build_cli_chat_startup_screen_spec(summary: &CliChatStartupSummary) -> TuiScreenSpec {
-    let allowed_channels = if summary.allowed_channels.is_empty() {
-        "-".to_owned()
-    } else {
-        summary.allowed_channels.join(",")
-    };
-    let runtime_line = format!(
-        "ACP enabled={} dispatch_enabled={} routing={} backend={} ({}) allowed_channels={allowed_channels}",
-        summary.acp_enabled,
-        summary.dispatch_enabled,
-        summary.conversation_routing,
-        summary.acp_backend_id,
-        summary.acp_backend_source,
-    );
-    let mut sections = vec![
-        TuiSectionSpec::ActionGroup {
-            title: Some("start here".to_owned()),
-            inline_title_when_wide: true,
-            items: vec![TuiActionSpec {
-                label: "first prompt".to_owned(),
-                command: DEFAULT_FIRST_PROMPT.to_owned(),
-            }],
-        },
-        TuiSectionSpec::Narrative {
-            title: None,
-            lines: vec!["- type your request, or use /help for commands".to_owned()],
-        },
-        TuiSectionSpec::KeyValues {
-            title: Some("session details".to_owned()),
-            items: vec![
-                TuiKeyValueSpec::Plain {
-                    key: "session".to_owned(),
-                    value: summary.session_id.clone(),
-                },
-                TuiKeyValueSpec::Plain {
-                    key: "config".to_owned(),
-                    value: summary.config_path.clone(),
-                },
-                TuiKeyValueSpec::Plain {
-                    key: "memory".to_owned(),
-                    value: summary.memory_label.clone(),
-                },
-            ],
-        },
-        TuiSectionSpec::KeyValues {
-            title: Some("runtime details".to_owned()),
-            items: vec![
-                TuiKeyValueSpec::Plain {
-                    key: "context engine".to_owned(),
-                    value: format!(
-                        "{} ({})",
-                        summary.context_engine_id, summary.context_engine_source
-                    ),
-                },
-                TuiKeyValueSpec::Plain {
-                    key: "acp".to_owned(),
-                    value: runtime_line,
-                },
-            ],
-        },
-    ];
-
-    if summary.explicit_acp_request
-        || summary.event_stream_enabled
-        || !summary.bootstrap_mcp_servers.is_empty()
-        || summary.working_directory.is_some()
-    {
-        let bootstrap_label = if summary.bootstrap_mcp_servers.is_empty() {
-            "-".to_owned()
-        } else {
-            summary.bootstrap_mcp_servers.join(",")
-        };
-        let cwd_label = summary.working_directory.as_deref().unwrap_or("-");
-        let override_lines = vec![
-            format!("explicit request: {}", summary.explicit_acp_request),
-            format!("event stream: {}", summary.event_stream_enabled),
-            format!("bootstrap MCP servers: {bootstrap_label}"),
-            format!("working directory: {cwd_label}"),
-        ];
-        sections.push(TuiSectionSpec::Callout {
-            tone: TuiCalloutTone::Info,
-            title: Some("acp overrides".to_owned()),
-            lines: override_lines,
-        });
-    }
-
-    TuiScreenSpec {
-        header_style: TuiHeaderStyle::Compact,
-        subtitle: Some("interactive chat".to_owned()),
-        title: Some("chat ready".to_owned()),
-        progress_line: None,
-        intro_lines: Vec::new(),
-        sections,
-        choices: Vec::new(),
-        footer_lines: Vec::new(),
-    }
-}
-
-fn render_cli_chat_help_lines_with_width(width: usize) -> Vec<String> {
-    let message_spec = build_cli_chat_help_message_spec();
-    render_tui_message_spec(&message_spec, width)
-}
-
-fn build_cli_chat_help_message_spec() -> TuiMessageSpec {
-    let command_items = vec![
-        TuiKeyValueSpec::Plain {
-            key: "/help".to_owned(),
-            value: "show chat commands".to_owned(),
-        },
-        TuiKeyValueSpec::Plain {
-            key: "/history".to_owned(),
-            value: "print the current session sliding window".to_owned(),
-        },
-        TuiKeyValueSpec::Plain {
-            key: "/fast_lane_summary [limit]".to_owned(),
-            value: "summarize fast-lane batch execution events".to_owned(),
-        },
-        TuiKeyValueSpec::Plain {
-            key: "/safe_lane_summary [limit]".to_owned(),
-            value: "summarize safe-lane runtime events".to_owned(),
-        },
-        TuiKeyValueSpec::Plain {
-            key: "/turn_checkpoint_summary [limit]".to_owned(),
-            value: "summarize durable turn finalization state".to_owned(),
-        },
-        TuiKeyValueSpec::Plain {
-            key: "/turn_checkpoint_repair".to_owned(),
-            value: "repair durable turn finalization tail when safe".to_owned(),
-        },
-        TuiKeyValueSpec::Plain {
-            key: "/exit".to_owned(),
-            value: "quit chat".to_owned(),
-        },
-    ];
-    let note_lines = vec![
-        "Type any non-command text to send a normal assistant turn.".to_owned(),
-        "Use /history to inspect the active memory window when a reply feels off.".to_owned(),
-    ];
-
-    TuiMessageSpec {
-        role: "chat".to_owned(),
-        caption: Some("commands".to_owned()),
-        sections: vec![
-            TuiSectionSpec::KeyValues {
-                title: Some("slash commands".to_owned()),
-                items: command_items,
-            },
-            TuiSectionSpec::Callout {
-                tone: TuiCalloutTone::Info,
-                title: Some("usage notes".to_owned()),
-                lines: note_lines,
-            },
-        ],
-        footer_lines: Vec::new(),
-    }
-}
-
-fn render_cli_chat_history_lines_with_width(
-    session_id: &str,
-    limit: usize,
-    history_lines: &[String],
-    width: usize,
-) -> Vec<String> {
-    let message_spec = build_cli_chat_history_message_spec(session_id, limit, history_lines);
-    render_tui_message_spec(&message_spec, width)
-}
-
-fn build_cli_chat_history_message_spec(
-    session_id: &str,
-    limit: usize,
-    history_lines: &[String],
-) -> TuiMessageSpec {
-    let caption = format!("session={session_id} limit={limit}");
-    let history_section = TuiSectionSpec::Narrative {
-        title: Some("sliding window".to_owned()),
-        lines: history_lines.to_vec(),
-    };
-
-    TuiMessageSpec {
-        role: "history".to_owned(),
-        caption: Some(caption),
-        sections: vec![history_section],
-        footer_lines: Vec::new(),
-    }
-}
-
-fn render_cli_chat_assistant_lines_with_width(assistant_text: &str, width: usize) -> Vec<String> {
-    if let Some(screen_spec) = build_cli_chat_approval_screen_spec(assistant_text) {
-        return render_tui_screen_spec(&screen_spec, width, false);
-    }
-    let message_spec = build_cli_chat_assistant_message_spec(assistant_text);
-    render_tui_message_spec(&message_spec, width)
-}
-
-fn build_cli_chat_assistant_message_spec(assistant_text: &str) -> TuiMessageSpec {
-    let sections = parse_cli_chat_markdown_sections(assistant_text);
-
-    TuiMessageSpec {
-        role: config::CLI_COMMAND_NAME.to_owned(),
-        caption: Some("reply".to_owned()),
-        sections,
-        footer_lines: Vec::new(),
-    }
-}
-
-fn build_cli_chat_approval_screen_spec(assistant_text: &str) -> Option<TuiScreenSpec> {
-    let parsed = parse_approval_prompt_view(assistant_text)?;
-    let mut intro_lines = Vec::new();
-    if let Some(preface) = parsed
-        .preface
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        intro_lines.extend(preface.lines().map(|line| line.to_owned()));
-    }
-
-    let title = parsed.title();
-
-    let mut sections = Vec::new();
-    if let Some(reason) = parsed.reason.as_deref() {
-        sections.push(TuiSectionSpec::Callout {
-            tone: TuiCalloutTone::Warning,
-            title: Some(parsed.pause_reason_title()),
-            lines: vec![reason.to_owned()],
-        });
-    }
-
-    let mut kv_items = Vec::new();
-    if let Some(tool_name) = parsed.tool_name.as_deref() {
-        kv_items.push(TuiKeyValueSpec::Plain {
-            key: parsed.tool_label(),
-            value: tool_name.to_owned(),
-        });
-    }
-    if let Some(request_id) = parsed.request_id.as_deref() {
-        kv_items.push(TuiKeyValueSpec::Plain {
-            key: parsed.request_id_label(),
-            value: request_id.to_owned(),
-        });
-    }
-    if !kv_items.is_empty() {
-        sections.push(TuiSectionSpec::KeyValues {
-            title: Some(parsed.request_section_title()),
-            items: kv_items,
-        });
-    }
-
-    let choices = parsed
-        .actions
-        .iter()
-        .map(|action| TuiChoiceSpec {
-            key: action.numeric_alias.clone(),
-            label: action.label.clone(),
-            detail_lines: action.detail_lines.clone(),
-            recommended: action.recommended,
-        })
-        .collect::<Vec<_>>();
-
-    let footer_lines = if parsed.actions.is_empty() {
-        Vec::new()
-    } else if parsed.locale.is_cjk() {
-        vec![
-            format!("也可以直接回复：{}", parsed.action_commands_text()),
-            format!("数字别名：{}", parsed.action_numeric_aliases_text()),
-        ]
-    } else {
-        vec![
-            format!("You can also reply with: {}", parsed.action_commands_text()),
-            format!("Numeric aliases: {}", parsed.action_numeric_aliases_text()),
-        ]
-    };
-
-    Some(TuiScreenSpec {
-        header_style: TuiHeaderStyle::Compact,
-        subtitle: Some(parsed.subtitle()),
-        title,
-        progress_line: None,
-        intro_lines,
-        sections,
-        choices,
-        footer_lines,
-    })
-}
-
-fn build_cli_chat_live_surface_observer(render_width: usize) -> ConversationTurnObserverHandle {
-    let render_sink: CliChatLiveSurfaceSink = Arc::new(|lines| {
-        print_rendered_cli_chat_lines(&lines);
-    });
-    let observer = CliChatLiveSurfaceObserver::new(render_width, render_sink);
-    Arc::new(observer)
-}
-
-impl CliChatLiveSurfaceObserver {
-    fn new(render_width: usize, render_sink: CliChatLiveSurfaceSink) -> Self {
-        Self {
-            render_width,
-            render_sink,
-            state: StdMutex::new(CliChatLiveSurfaceState::default()),
-        }
-    }
-
-    fn lock_state(&self) -> std::sync::MutexGuard<'_, CliChatLiveSurfaceState> {
-        match self.state.lock() {
-            Ok(state) => state,
-            Err(poisoned_state) => poisoned_state.into_inner(),
-        }
-    }
-
-    fn record_phase_event(&self, event: ConversationTurnPhaseEvent) {
-        let lines_to_render = {
-            let mut state = self.lock_state();
-            if cli_chat_live_phase_starts_provider_request(event.phase) {
-                reset_cli_chat_live_request_state(&mut state);
-            }
-            state.latest_phase_event = Some(event.clone());
-            reconcile_cli_chat_live_tool_states_for_phase(&mut state.tool_states, event.phase);
-            if !should_render_cli_chat_live_phase(event.phase) {
-                None
-            } else {
-                self.prepare_live_surface_lines(&mut state)
-            }
-        };
-
-        if let Some(lines) = lines_to_render {
-            (self.render_sink)(lines);
-        }
-    }
-
-    fn record_tool_event(&self, event: ConversationTurnToolEvent) {
-        let lines_to_render = {
-            let mut state = self.lock_state();
-            apply_cli_chat_live_tool_event(&mut state, &event, self.render_width);
-            let current_phase = match state.latest_phase_event.as_ref() {
-                Some(phase_event) => phase_event.phase,
-                None => return,
-            };
-            if should_render_cli_chat_live_phase(current_phase) {
-                self.prepare_live_surface_lines(&mut state)
-            } else {
-                None
-            }
-        };
-
-        if let Some(lines) = lines_to_render {
-            (self.render_sink)(lines);
-        }
-    }
-
-    fn record_streaming_token_event(&self, event: crate::acp::StreamingTokenEvent) {
-        let lines_to_render = {
-            let mut state = self.lock_state();
-            let current_phase = match state.latest_phase_event.as_ref() {
-                Some(phase_event) => phase_event.phase,
-                None => return,
-            };
-
-            let text_delta = event.delta.text;
-            let tool_call_delta = event.delta.tool_call;
-            let tool_call_index = event.index;
-            let mut should_render = false;
-
-            if let Some(text_delta) = text_delta {
-                let preview_char_limit = cli_chat_live_preview_char_limit(self.render_width);
-                append_cli_chat_live_buffer(
-                    &mut state.draft_preview,
-                    text_delta.as_str(),
-                    preview_char_limit,
-                );
-                let delta_chars = text_delta.chars().count();
-                state.total_text_chars_seen =
-                    state.total_text_chars_seen.saturating_add(delta_chars);
-
-                if should_emit_cli_chat_live_preview(&state, self.render_width)
-                    && phase_supports_cli_chat_live_preview(current_phase)
-                {
-                    should_render = true;
-                }
-            }
-
-            let tool_call_update = match (tool_call_delta, tool_call_index) {
-                (Some(tool_call_delta), Some(index)) => Some((tool_call_delta, index)),
-                (Some(_), None) | (None, Some(_)) | (None, None) => None,
-            };
-
-            if let Some((tool_call_delta, index)) = tool_call_update {
-                update_cli_chat_live_tool_state(
-                    &mut state,
-                    index,
-                    &tool_call_delta,
-                    self.render_width,
-                );
-
-                let render_tool_activity_now = event.event_type == "tool_call_start"
-                    && current_phase == ConversationTurnPhase::RunningTools;
-                if render_tool_activity_now {
-                    should_render = true;
-                }
-            }
-
-            if should_render {
-                self.prepare_live_surface_lines(&mut state)
-            } else {
-                None
-            }
-        };
-
-        if let Some(lines) = lines_to_render {
-            (self.render_sink)(lines);
-        }
-    }
-
-    fn prepare_live_surface_lines(
-        &self,
-        state: &mut CliChatLiveSurfaceState,
-    ) -> Option<Vec<String>> {
-        let snapshot = build_cli_chat_live_surface_snapshot(state)?;
-        if state.last_emitted_snapshot.as_ref() == Some(&snapshot) {
-            return None;
-        }
-
-        let lines = render_cli_chat_live_surface_lines_with_width(&snapshot, self.render_width);
-        state.last_preview_emit_chars_seen = state.total_text_chars_seen;
-        state.last_emitted_snapshot = Some(snapshot);
-        Some(lines)
-    }
-}
-
-impl ConversationTurnObserver for CliChatLiveSurfaceObserver {
-    fn on_phase(&self, event: ConversationTurnPhaseEvent) {
-        self.record_phase_event(event);
-    }
-
-    fn on_tool(&self, event: ConversationTurnToolEvent) {
-        self.record_tool_event(event);
-    }
-
-    fn on_streaming_token(&self, event: crate::acp::StreamingTokenEvent) {
-        self.record_streaming_token_event(event);
-    }
-}
-
-fn cli_chat_live_phase_starts_provider_request(phase: ConversationTurnPhase) -> bool {
-    matches!(
-        phase,
-        ConversationTurnPhase::RequestingProvider
-            | ConversationTurnPhase::RequestingFollowupProvider
-    )
-}
-
-fn reset_cli_chat_live_request_state(state: &mut CliChatLiveSurfaceState) {
-    state.draft_preview.clear();
-    state.tool_states.clear();
-    state.tool_call_index_map.clear();
-    state.next_tool_display_order = 0;
-    state.total_text_chars_seen = 0;
-    state.last_preview_emit_chars_seen = 0;
-}
-
-fn should_render_cli_chat_live_phase(phase: ConversationTurnPhase) -> bool {
-    match phase {
-        ConversationTurnPhase::Preparing
-        | ConversationTurnPhase::RequestingProvider
-        | ConversationTurnPhase::RunningTools
-        | ConversationTurnPhase::RequestingFollowupProvider
-        | ConversationTurnPhase::FinalizingReply
-        | ConversationTurnPhase::Failed => true,
-        ConversationTurnPhase::ContextReady | ConversationTurnPhase::Completed => false,
-    }
-}
-
-fn phase_supports_cli_chat_live_preview(phase: ConversationTurnPhase) -> bool {
-    match phase {
-        ConversationTurnPhase::RequestingProvider
-        | ConversationTurnPhase::RequestingFollowupProvider => true,
-        ConversationTurnPhase::Preparing
-        | ConversationTurnPhase::ContextReady
-        | ConversationTurnPhase::RunningTools
-        | ConversationTurnPhase::FinalizingReply
-        | ConversationTurnPhase::Completed
-        | ConversationTurnPhase::Failed => false,
-    }
-}
-
-fn should_emit_cli_chat_live_preview(state: &CliChatLiveSurfaceState, render_width: usize) -> bool {
-    if state.total_text_chars_seen == 0 {
-        return false;
-    }
-
-    if state.last_preview_emit_chars_seen == 0 {
-        return true;
-    }
-
-    let emit_stride = cli_chat_live_preview_emit_stride(render_width);
-    let unseen_chars = state
-        .total_text_chars_seen
-        .saturating_sub(state.last_preview_emit_chars_seen);
-    unseen_chars >= emit_stride
-}
-
-fn cli_chat_live_preview_emit_stride(render_width: usize) -> usize {
-    let doubled_width = render_width.saturating_mul(2);
-    doubled_width.clamp(
-        CLI_CHAT_LIVE_PREVIEW_MIN_EMIT_CHARS,
-        CLI_CHAT_LIVE_PREVIEW_MAX_EMIT_CHARS,
-    )
-}
-
-fn cli_chat_live_preview_char_limit(render_width: usize) -> usize {
-    let expanded_width = render_width.saturating_mul(16);
-    expanded_width.clamp(
-        CLI_CHAT_LIVE_PREVIEW_MIN_BUFFER_CHARS,
-        CLI_CHAT_LIVE_PREVIEW_MAX_BUFFER_CHARS,
-    )
-}
-
-fn cli_chat_live_tool_args_char_limit(render_width: usize) -> usize {
-    let expanded_width = render_width.saturating_mul(8);
-    expanded_width.clamp(
-        CLI_CHAT_LIVE_TOOL_ARGS_MIN_BUFFER_CHARS,
-        CLI_CHAT_LIVE_TOOL_ARGS_MAX_BUFFER_CHARS,
-    )
-}
-
-fn append_cli_chat_live_buffer(buffer: &mut String, chunk: &str, char_limit: usize) {
-    buffer.push_str(chunk);
-    trim_cli_chat_live_buffer(buffer, char_limit);
-}
-
-fn trim_cli_chat_live_buffer(buffer: &mut String, char_limit: usize) {
-    let current_char_count = buffer.chars().count();
-    if current_char_count <= char_limit {
-        return;
-    }
-
-    let retained_char_count = char_limit.saturating_sub(1);
-    let skipped_char_count = current_char_count.saturating_sub(retained_char_count);
-    let trimmed_tail = buffer.chars().skip(skipped_char_count).collect::<String>();
-
-    buffer.clear();
-    buffer.push('…');
-    buffer.push_str(trimmed_tail.as_str());
-}
-
-fn truncate_cli_chat_live_text(value: &str, char_limit: usize) -> String {
-    let mut truncated = value.to_owned();
-    trim_cli_chat_live_buffer(&mut truncated, char_limit);
-    truncated
-}
-
-fn cli_chat_live_pending_tool_call_id(index: usize) -> String {
-    format!("pending-stream-tool-{index}")
-}
-
-fn ensure_cli_chat_live_tool_state<'a>(
-    state: &'a mut CliChatLiveSurfaceState,
-    tool_call_id: &str,
-) -> &'a mut CliChatLiveToolState {
-    let tool_call_key = tool_call_id.to_owned();
-    let entry = state.tool_states.entry(tool_call_key.clone());
-
-    match entry {
-        std::collections::btree_map::Entry::Occupied(occupied_entry) => occupied_entry.into_mut(),
-        std::collections::btree_map::Entry::Vacant(vacant_entry) => {
-            let display_order = state.next_tool_display_order;
-            let tool_state = CliChatLiveToolState::new(tool_call_key, display_order);
-            state.next_tool_display_order = state.next_tool_display_order.saturating_add(1);
-            vacant_entry.insert(tool_state)
-        }
-    }
-}
-
-fn merge_cli_chat_live_pending_tool_state(
-    state: &mut CliChatLiveSurfaceState,
-    pending_tool_call_id: &str,
-    tool_call_id: &str,
-) {
-    if pending_tool_call_id == tool_call_id {
-        return;
-    }
-
-    let pending_state = match state.tool_states.remove(pending_tool_call_id) {
-        Some(pending_state) => pending_state,
-        None => return,
-    };
-    let target_state = ensure_cli_chat_live_tool_state(state, tool_call_id);
-
-    if target_state.name.is_none() {
-        target_state.name = pending_state.name;
-    }
-    if target_state.args.is_empty() {
-        target_state.args = pending_state.args;
-    }
-    if target_state.detail.is_none() {
-        target_state.detail = pending_state.detail;
-    }
-    if target_state.status == ConversationTurnToolState::Running {
-        target_state.status = pending_state.status;
-    }
-}
-
-fn update_cli_chat_live_tool_state(
-    state: &mut CliChatLiveSurfaceState,
-    index: usize,
-    delta: &crate::acp::ToolCallDelta,
-    render_width: usize,
-) {
-    let pending_tool_call_id = cli_chat_live_pending_tool_call_id(index);
-    let tool_call_id = delta.id.clone().unwrap_or_else(|| {
-        state
-            .tool_call_index_map
-            .get(&index)
-            .cloned()
-            .unwrap_or_else(|| pending_tool_call_id.clone())
-    });
-    let args_char_limit = cli_chat_live_tool_args_char_limit(render_width);
-
-    state
-        .tool_call_index_map
-        .insert(index, tool_call_id.clone());
-    merge_cli_chat_live_pending_tool_state(
-        state,
-        pending_tool_call_id.as_str(),
-        tool_call_id.as_str(),
-    );
-
-    let tool_state = ensure_cli_chat_live_tool_state(state, tool_call_id.as_str());
-    tool_state.status = ConversationTurnToolState::Running;
-    tool_state.detail = None;
-
-    if let Some(name) = delta.name.as_ref() {
-        tool_state.name = Some(name.clone());
-    }
-
-    if let Some(args) = delta.args.as_ref() {
-        append_cli_chat_live_buffer(&mut tool_state.args, args.as_str(), args_char_limit);
-    }
-}
-
-fn apply_cli_chat_live_tool_event(
-    state: &mut CliChatLiveSurfaceState,
-    event: &ConversationTurnToolEvent,
-    render_width: usize,
-) {
-    let tool_state = ensure_cli_chat_live_tool_state(state, event.tool_call_id.as_str());
-    let detail_char_limit = cli_chat_live_tool_args_char_limit(render_width);
-
-    tool_state.name = Some(event.tool_name.clone());
-    tool_state.status = event.state;
-    tool_state.detail = event
-        .detail
-        .as_deref()
-        .map(|detail| truncate_cli_chat_live_text(detail, detail_char_limit));
-}
-
-fn reconcile_cli_chat_live_tool_states_for_phase(
-    tool_states: &mut BTreeMap<String, CliChatLiveToolState>,
-    phase: ConversationTurnPhase,
-) {
-    let fallback_status = match phase {
-        ConversationTurnPhase::RequestingFollowupProvider
-        | ConversationTurnPhase::FinalizingReply
-        | ConversationTurnPhase::Completed => Some(ConversationTurnToolState::Completed),
-        ConversationTurnPhase::Failed => Some(ConversationTurnToolState::Interrupted),
-        ConversationTurnPhase::Preparing
-        | ConversationTurnPhase::ContextReady
-        | ConversationTurnPhase::RequestingProvider
-        | ConversationTurnPhase::RunningTools => None,
-    };
-    let Some(fallback_status) = fallback_status else {
-        return;
-    };
-
-    for tool_state in tool_states.values_mut() {
-        if tool_state.status != ConversationTurnToolState::Running {
-            continue;
-        }
-
-        tool_state.status = fallback_status;
-        if fallback_status == ConversationTurnToolState::Interrupted && tool_state.detail.is_none()
-        {
-            tool_state.detail =
-                Some("turn failed before a terminal tool result was recorded".to_owned());
-        }
-    }
-}
-
-fn build_cli_chat_live_surface_snapshot(
-    state: &CliChatLiveSurfaceState,
-) -> Option<CliChatLiveSurfaceSnapshot> {
-    let phase_event = state.latest_phase_event.as_ref()?;
-    let draft_preview = if state.draft_preview.trim().is_empty() {
-        None
-    } else {
-        Some(state.draft_preview.clone())
-    };
-    let tool_activity_lines = format_cli_chat_live_tool_activity_lines(&state.tool_states);
-
-    Some(CliChatLiveSurfaceSnapshot {
-        phase: phase_event.phase,
-        provider_round: phase_event.provider_round,
-        lane: phase_event.lane,
-        tool_call_count: phase_event.tool_call_count,
-        message_count: phase_event.message_count,
-        estimated_tokens: phase_event.estimated_tokens,
-        draft_preview,
-        tool_activity_lines,
-    })
-}
-
-fn format_cli_chat_live_tool_activity_lines(
-    tool_states: &BTreeMap<String, CliChatLiveToolState>,
-) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut ordered_states = tool_states.values().collect::<Vec<_>>();
-    ordered_states.sort_by_key(|tool_state| tool_state.display_order);
-
-    for tool_state in ordered_states {
-        let status = tool_state.status.as_str().replace('_', " ");
-        let name = tool_state.name.as_deref().unwrap_or("pending");
-        let tool_call_id = tool_state.tool_call_id.as_str();
-        let tool_line = if let Some(detail) = tool_state.detail.as_deref() {
-            format!("[{status}] {name} (id={tool_call_id}) - {detail}")
-        } else {
-            format!("[{status}] {name} (id={tool_call_id})")
-        };
-        lines.push(tool_line);
-
-        if !tool_state.args.is_empty() {
-            let args_line = format!("args: {}", tool_state.args);
-            lines.push(args_line);
-        }
-    }
-
-    lines
-}
-
-fn render_cli_chat_live_surface_lines_with_width(
-    snapshot: &CliChatLiveSurfaceSnapshot,
-    width: usize,
-) -> Vec<String> {
-    let message_spec = build_cli_chat_live_surface_message_spec(snapshot);
-    render_tui_message_spec(&message_spec, width)
-}
-
-fn build_cli_chat_live_surface_message_spec(
-    snapshot: &CliChatLiveSurfaceSnapshot,
-) -> TuiMessageSpec {
-    let phase_tone = cli_chat_live_surface_tone(snapshot.phase);
-    let phase_title = cli_chat_live_surface_title(snapshot.phase);
-    let phase_detail = cli_chat_live_surface_detail(snapshot);
-    let phase_section = TuiSectionSpec::Callout {
-        tone: phase_tone,
-        title: Some(phase_title.to_owned()),
-        lines: vec![phase_detail],
-    };
-    let pipeline_items = build_cli_chat_live_pipeline_items(snapshot);
-    let pipeline_section = TuiSectionSpec::Checklist {
-        title: Some("turn pipeline".to_owned()),
-        items: pipeline_items,
-    };
-    let status_items = build_cli_chat_live_status_items(snapshot);
-    let mut sections = vec![phase_section, pipeline_section];
-
-    if !status_items.is_empty() {
-        let status_section = TuiSectionSpec::KeyValues {
-            title: Some("status".to_owned()),
-            items: status_items,
-        };
-        sections.push(status_section);
-    }
-
-    if let Some(preview_section) = build_cli_chat_live_preview_section(snapshot) {
-        sections.push(preview_section);
-    }
-
-    if let Some(tool_section) = build_cli_chat_live_tool_section(snapshot) {
-        sections.push(tool_section);
-    }
-
-    TuiMessageSpec {
-        role: config::CLI_COMMAND_NAME.to_owned(),
-        caption: Some("live".to_owned()),
-        sections,
-        footer_lines: Vec::new(),
-    }
-}
-
-fn cli_chat_live_surface_tone(phase: ConversationTurnPhase) -> TuiCalloutTone {
-    match phase {
-        ConversationTurnPhase::Preparing
-        | ConversationTurnPhase::ContextReady
-        | ConversationTurnPhase::RequestingProvider
-        | ConversationTurnPhase::RunningTools
-        | ConversationTurnPhase::RequestingFollowupProvider
-        | ConversationTurnPhase::FinalizingReply => TuiCalloutTone::Info,
-        ConversationTurnPhase::Completed => TuiCalloutTone::Success,
-        ConversationTurnPhase::Failed => TuiCalloutTone::Warning,
-    }
-}
-
-fn cli_chat_live_surface_title(phase: ConversationTurnPhase) -> &'static str {
-    match phase {
-        ConversationTurnPhase::Preparing => "assembling context",
-        ConversationTurnPhase::ContextReady => "context ready",
-        ConversationTurnPhase::RequestingProvider => "querying model",
-        ConversationTurnPhase::RunningTools => "running tools",
-        ConversationTurnPhase::RequestingFollowupProvider => "requesting follow-up",
-        ConversationTurnPhase::FinalizingReply => "finalizing reply",
-        ConversationTurnPhase::Completed => "reply ready",
-        ConversationTurnPhase::Failed => "turn failed",
-    }
-}
-
-fn cli_chat_live_surface_detail(snapshot: &CliChatLiveSurfaceSnapshot) -> String {
-    match snapshot.phase {
-        ConversationTurnPhase::Preparing => {
-            "Building the session context and preparing the next provider turn.".to_owned()
-        }
-        ConversationTurnPhase::ContextReady => {
-            "Context is ready for the next provider round.".to_owned()
-        }
-        ConversationTurnPhase::RequestingProvider => {
-            let provider_round = snapshot.provider_round.unwrap_or(1);
-            format!("Requesting provider round {provider_round} and waiting for the reply.")
-        }
-        ConversationTurnPhase::RunningTools => {
-            let lane_label = snapshot
-                .lane
-                .map(format_cli_chat_live_lane)
-                .unwrap_or_else(|| "-".to_owned());
-            format!(
-                "Executing {} tool call(s) in the {lane_label} lane.",
-                snapshot.tool_call_count
-            )
-        }
-        ConversationTurnPhase::RequestingFollowupProvider => {
-            let provider_round = snapshot.provider_round.unwrap_or(1);
-            format!("Sending tool results back for provider round {provider_round}.")
-        }
-        ConversationTurnPhase::FinalizingReply => {
-            "Persisting the assistant reply and finishing after-turn work.".to_owned()
-        }
-        ConversationTurnPhase::Completed => "The assistant reply is ready.".to_owned(),
-        ConversationTurnPhase::Failed => {
-            "The turn failed before a stable reply could be finalized.".to_owned()
-        }
-    }
-}
-
-fn build_cli_chat_live_pipeline_items(
-    snapshot: &CliChatLiveSurfaceSnapshot,
-) -> Vec<TuiChecklistItemSpec> {
-    let prepare_item = TuiChecklistItemSpec {
-        status: cli_chat_live_prepare_status(snapshot.phase),
-        label: "prepare context".to_owned(),
-        detail: cli_chat_live_prepare_detail(snapshot.phase),
-    };
-    let model_item = TuiChecklistItemSpec {
-        status: cli_chat_live_model_status(snapshot.phase),
-        label: "call model".to_owned(),
-        detail: cli_chat_live_model_detail(snapshot),
-    };
-    let tools_item = TuiChecklistItemSpec {
-        status: cli_chat_live_tools_status(snapshot),
-        label: "run tools".to_owned(),
-        detail: cli_chat_live_tools_detail(snapshot),
-    };
-    let finalize_item = TuiChecklistItemSpec {
-        status: cli_chat_live_finalize_status(snapshot.phase),
-        label: "finalize reply".to_owned(),
-        detail: cli_chat_live_finalize_detail(snapshot.phase),
-    };
-
-    vec![prepare_item, model_item, tools_item, finalize_item]
-}
-
-fn cli_chat_live_prepare_status(phase: ConversationTurnPhase) -> TuiChecklistStatus {
-    match phase {
-        ConversationTurnPhase::Preparing => TuiChecklistStatus::Warn,
-        ConversationTurnPhase::ContextReady
-        | ConversationTurnPhase::RequestingProvider
-        | ConversationTurnPhase::RunningTools
-        | ConversationTurnPhase::RequestingFollowupProvider
-        | ConversationTurnPhase::FinalizingReply
-        | ConversationTurnPhase::Completed
-        | ConversationTurnPhase::Failed => TuiChecklistStatus::Pass,
-    }
-}
-
-fn cli_chat_live_prepare_detail(phase: ConversationTurnPhase) -> String {
-    match phase {
-        ConversationTurnPhase::Preparing => "assembling the next turn context".to_owned(),
-        ConversationTurnPhase::ContextReady
-        | ConversationTurnPhase::RequestingProvider
-        | ConversationTurnPhase::RunningTools
-        | ConversationTurnPhase::RequestingFollowupProvider
-        | ConversationTurnPhase::FinalizingReply
-        | ConversationTurnPhase::Completed
-        | ConversationTurnPhase::Failed => "context assembled".to_owned(),
-    }
-}
-
-fn cli_chat_live_model_status(phase: ConversationTurnPhase) -> TuiChecklistStatus {
-    match phase {
-        ConversationTurnPhase::Preparing | ConversationTurnPhase::ContextReady => {
-            TuiChecklistStatus::Warn
-        }
-        ConversationTurnPhase::RequestingProvider
-        | ConversationTurnPhase::RequestingFollowupProvider => TuiChecklistStatus::Warn,
-        ConversationTurnPhase::RunningTools
-        | ConversationTurnPhase::FinalizingReply
-        | ConversationTurnPhase::Completed => TuiChecklistStatus::Pass,
-        ConversationTurnPhase::Failed => TuiChecklistStatus::Fail,
-    }
-}
-
-fn cli_chat_live_model_detail(snapshot: &CliChatLiveSurfaceSnapshot) -> String {
-    match snapshot.phase {
-        ConversationTurnPhase::Preparing => "waiting for a provider round".to_owned(),
-        ConversationTurnPhase::ContextReady => "provider request is about to start".to_owned(),
-        ConversationTurnPhase::RequestingProvider
-        | ConversationTurnPhase::RequestingFollowupProvider => {
-            let provider_round = snapshot.provider_round.unwrap_or(1);
-            format!("provider round {provider_round} in progress")
-        }
-        ConversationTurnPhase::RunningTools
-        | ConversationTurnPhase::FinalizingReply
-        | ConversationTurnPhase::Completed => "provider reply resolved".to_owned(),
-        ConversationTurnPhase::Failed => "provider step did not finish cleanly".to_owned(),
-    }
-}
-
-fn cli_chat_live_tools_status(snapshot: &CliChatLiveSurfaceSnapshot) -> TuiChecklistStatus {
-    let tools_needed = snapshot.tool_call_count > 0;
-    if !tools_needed {
-        return match snapshot.phase {
-            ConversationTurnPhase::FinalizingReply
-            | ConversationTurnPhase::Completed
-            | ConversationTurnPhase::Failed => TuiChecklistStatus::Pass,
-            ConversationTurnPhase::Preparing
-            | ConversationTurnPhase::ContextReady
-            | ConversationTurnPhase::RequestingProvider
-            | ConversationTurnPhase::RunningTools
-            | ConversationTurnPhase::RequestingFollowupProvider => TuiChecklistStatus::Warn,
-        };
-    }
-
-    match snapshot.phase {
-        ConversationTurnPhase::RunningTools => TuiChecklistStatus::Warn,
-        ConversationTurnPhase::RequestingFollowupProvider
-        | ConversationTurnPhase::FinalizingReply
-        | ConversationTurnPhase::Completed => TuiChecklistStatus::Pass,
-        ConversationTurnPhase::Failed => TuiChecklistStatus::Fail,
-        ConversationTurnPhase::Preparing
-        | ConversationTurnPhase::ContextReady
-        | ConversationTurnPhase::RequestingProvider => TuiChecklistStatus::Warn,
-    }
-}
-
-fn cli_chat_live_tools_detail(snapshot: &CliChatLiveSurfaceSnapshot) -> String {
-    let tools_needed = snapshot.tool_call_count > 0;
-    if !tools_needed {
-        return match snapshot.phase {
-            ConversationTurnPhase::FinalizingReply | ConversationTurnPhase::Completed => {
-                "no tool calls were needed for this turn".to_owned()
-            }
-            ConversationTurnPhase::Failed => "no tool step was completed".to_owned(),
-            ConversationTurnPhase::Preparing
-            | ConversationTurnPhase::ContextReady
-            | ConversationTurnPhase::RequestingProvider
-            | ConversationTurnPhase::RunningTools
-            | ConversationTurnPhase::RequestingFollowupProvider => {
-                "waiting to see whether tools are needed".to_owned()
-            }
-        };
-    }
-
-    let lane_label = snapshot
-        .lane
-        .map(format_cli_chat_live_lane)
-        .unwrap_or_else(|| "-".to_owned());
-    match snapshot.phase {
-        ConversationTurnPhase::RunningTools => {
-            format!(
-                "{} tool call(s) currently running in the {lane_label} lane",
-                snapshot.tool_call_count
-            )
-        }
-        ConversationTurnPhase::RequestingFollowupProvider
-        | ConversationTurnPhase::FinalizingReply
-        | ConversationTurnPhase::Completed => {
-            format!(
-                "{} tool call(s) finished in the {lane_label} lane",
-                snapshot.tool_call_count
-            )
-        }
-        ConversationTurnPhase::Failed => {
-            format!(
-                "{} tool call(s) did not converge cleanly",
-                snapshot.tool_call_count
-            )
-        }
-        ConversationTurnPhase::Preparing
-        | ConversationTurnPhase::ContextReady
-        | ConversationTurnPhase::RequestingProvider => {
-            format!(
-                "{} tool call(s) are queued if the provider asks for them",
-                snapshot.tool_call_count
-            )
-        }
-    }
-}
-
-fn cli_chat_live_finalize_status(phase: ConversationTurnPhase) -> TuiChecklistStatus {
-    match phase {
-        ConversationTurnPhase::FinalizingReply => TuiChecklistStatus::Warn,
-        ConversationTurnPhase::Completed => TuiChecklistStatus::Pass,
-        ConversationTurnPhase::Failed => TuiChecklistStatus::Fail,
-        ConversationTurnPhase::Preparing
-        | ConversationTurnPhase::ContextReady
-        | ConversationTurnPhase::RequestingProvider
-        | ConversationTurnPhase::RunningTools
-        | ConversationTurnPhase::RequestingFollowupProvider => TuiChecklistStatus::Warn,
-    }
-}
-
-fn cli_chat_live_finalize_detail(phase: ConversationTurnPhase) -> String {
-    match phase {
-        ConversationTurnPhase::FinalizingReply => {
-            "persisting reply state and final runtime side effects".to_owned()
-        }
-        ConversationTurnPhase::Completed => "reply finalized".to_owned(),
-        ConversationTurnPhase::Failed => "reply finalization did not complete".to_owned(),
-        ConversationTurnPhase::Preparing
-        | ConversationTurnPhase::ContextReady
-        | ConversationTurnPhase::RequestingProvider
-        | ConversationTurnPhase::RunningTools
-        | ConversationTurnPhase::RequestingFollowupProvider => {
-            "waiting for a final reply".to_owned()
-        }
-    }
-}
-
-fn build_cli_chat_live_status_items(snapshot: &CliChatLiveSurfaceSnapshot) -> Vec<TuiKeyValueSpec> {
-    let mut items = Vec::new();
-
-    items.push(TuiKeyValueSpec::Plain {
-        key: "phase".to_owned(),
-        value: snapshot.phase.as_str().to_owned(),
-    });
-
-    if let Some(provider_round) = snapshot.provider_round {
-        items.push(TuiKeyValueSpec::Plain {
-            key: "round".to_owned(),
-            value: provider_round.to_string(),
-        });
-    }
-
-    if let Some(lane) = snapshot.lane {
-        items.push(TuiKeyValueSpec::Plain {
-            key: "lane".to_owned(),
-            value: format_cli_chat_live_lane(lane),
-        });
-    }
-
-    if snapshot.tool_call_count > 0 {
-        items.push(TuiKeyValueSpec::Plain {
-            key: "tool calls".to_owned(),
-            value: snapshot.tool_call_count.to_string(),
-        });
-    }
-
-    if let Some(message_count) = snapshot.message_count {
-        items.push(TuiKeyValueSpec::Plain {
-            key: "context messages".to_owned(),
-            value: message_count.to_string(),
-        });
-    }
-
-    if let Some(estimated_tokens) = snapshot.estimated_tokens {
-        items.push(TuiKeyValueSpec::Plain {
-            key: "estimated tokens".to_owned(),
-            value: estimated_tokens.to_string(),
-        });
-    }
-
-    items
-}
-
-fn format_cli_chat_live_lane(lane: ExecutionLane) -> String {
-    match lane {
-        ExecutionLane::Fast => "fast".to_owned(),
-        ExecutionLane::Safe => "safe".to_owned(),
-    }
-}
-
-fn build_cli_chat_live_preview_section(
-    snapshot: &CliChatLiveSurfaceSnapshot,
-) -> Option<TuiSectionSpec> {
-    let preview = snapshot.draft_preview.as_ref()?;
-    let preview_lines = preview
-        .lines()
-        .map(|line| line.to_owned())
-        .collect::<Vec<_>>();
-
-    Some(TuiSectionSpec::Narrative {
-        title: Some("draft preview".to_owned()),
-        lines: preview_lines,
-    })
-}
-
-fn build_cli_chat_live_tool_section(
-    snapshot: &CliChatLiveSurfaceSnapshot,
-) -> Option<TuiSectionSpec> {
-    if snapshot.tool_activity_lines.is_empty() {
-        return None;
-    }
-
-    Some(TuiSectionSpec::Narrative {
-        title: Some("tool activity".to_owned()),
-        lines: snapshot.tool_activity_lines.clone(),
-    })
 }
 
 fn parse_cli_chat_markdown_sections(text: &str) -> Vec<TuiSectionSpec> {
@@ -5431,6 +4140,75 @@ mod tests {
     }
 
     #[test]
+    fn text_surface_module_renders_startup_lines() {
+        let lines = text_surface::render_cli_chat_startup_lines_with_width(
+            &CliChatStartupSummary {
+                config_path: "/tmp/loongclaw.toml".to_owned(),
+                memory_label: "/tmp/loongclaw.db".to_owned(),
+                session_id: "default".to_owned(),
+                context_engine_id: "threaded".to_owned(),
+                context_engine_source: "config".to_owned(),
+                acp_enabled: true,
+                dispatch_enabled: true,
+                conversation_routing: "automatic".to_owned(),
+                allowed_channels: vec!["cli".to_owned()],
+                acp_backend_id: "builtin".to_owned(),
+                acp_backend_source: "default".to_owned(),
+                explicit_acp_request: false,
+                event_stream_enabled: false,
+                bootstrap_mcp_servers: Vec::new(),
+                working_directory: None,
+            },
+            80,
+        );
+
+        assert!(
+            lines.iter().any(|line| line
+                == "start here: Summarize this repository and suggest the best next step."),
+            "text surface module should preserve the startup action block: {lines:#?}"
+        );
+        assert!(
+            lines.iter().any(|line| line == "session details"),
+            "text surface module should preserve the session details section: {lines:#?}"
+        );
+    }
+
+    #[cfg(feature = "channel-cli")]
+    #[test]
+    fn tui_shell_bootstrap_builds_initial_state() {
+        let bootstrap = tui::app_shell::build_shell_bootstrap_state("default");
+
+        assert_eq!(bootstrap.session_id, "default");
+        assert_eq!(bootstrap.focus.top(), tui::focus::FocusLayer::Composer);
+    }
+
+    #[cfg(feature = "channel-cli")]
+    #[test]
+    fn tui_terminal_policy_degrades_without_full_terminal_support() {
+        let policy = tui::terminal::resolve_launch_mode(&tui::terminal::TerminalSupportSnapshot {
+            stdin_is_terminal: false,
+            stdout_is_terminal: false,
+            stderr_is_terminal: false,
+            term: Some("xterm-256color".to_owned()),
+            color_support: false,
+            colorfgbg: None,
+        });
+
+        assert!(
+            matches!(policy, tui::terminal::TerminalLaunch::FallbackToText { .. }),
+            "non-terminal stdio should force text fallback: {policy:?}"
+        );
+    }
+
+    #[cfg(feature = "channel-cli")]
+    #[test]
+    fn tui_state_defaults_to_closed_drawer_and_composer_focus() {
+        let state = tui::state::UiState::default();
+
+        assert_eq!(state.focus.top(), tui::focus::FocusLayer::Composer);
+    }
+
+    #[test]
     fn should_run_missing_config_onboard_uses_default_yes_and_respects_decline() {
         assert!(should_run_missing_config_onboard(1, "\n"));
         assert!(should_run_missing_config_onboard(1, "yes\n"));
@@ -5913,6 +4691,30 @@ allowed_decisions: yes / auto / full / esc";
                 .iter()
                 .any(|line| line == "Inspecting the repo layout..."),
             "live surface should preserve the partial preview text: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn live_surface_module_renders_snapshot_sections() {
+        let snapshot = CliChatLiveSurfaceSnapshot {
+            phase: ConversationTurnPhase::RequestingProvider,
+            provider_round: Some(1),
+            lane: None,
+            tool_call_count: 0,
+            message_count: Some(4),
+            estimated_tokens: Some(128),
+            draft_preview: Some("Inspecting the repo layout...".to_owned()),
+            tool_activity_lines: Vec::new(),
+        };
+        let lines = live_surface::render_cli_chat_live_surface_lines_with_width(&snapshot, 72);
+
+        assert!(
+            lines.iter().any(|line| line == "turn pipeline"),
+            "live surface module should preserve the pipeline checklist: {lines:#?}"
+        );
+        assert!(
+            lines.iter().any(|line| line == "draft preview"),
+            "live surface module should preserve the draft preview section: {lines:#?}"
         );
     }
 

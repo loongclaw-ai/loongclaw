@@ -390,6 +390,7 @@ async fn main() {
         Commands::Chat {
             config,
             session,
+            ui,
             acp,
             acp_event_stream,
             acp_bootstrap_mcp_server,
@@ -398,6 +399,7 @@ async fn main() {
             run_chat_cli(
                 config.as_deref(),
                 session.as_deref(),
+                ui,
                 acp,
                 acp_event_stream,
                 &acp_bootstrap_mcp_server,
@@ -405,6 +407,12 @@ async fn main() {
             )
             .await
         }
+        #[cfg(feature = "channel-cli")]
+        Commands::Tui { config, session } => {
+            tui_cli::run_tui_cli(config.as_deref(), session.as_deref()).await
+        }
+        #[cfg(not(feature = "channel-cli"))]
+        Commands::Tui { .. } => Err("tui subcommand requires the channel-cli feature".to_owned()),
         Commands::SafeLaneSummary {
             config,
             session,

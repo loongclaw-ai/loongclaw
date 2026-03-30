@@ -39,6 +39,8 @@ pub struct ConversationTurnPhaseEvent {
     pub tool_call_count: usize,
     pub message_count: Option<usize>,
     pub estimated_tokens: Option<usize>,
+    pub actual_input_tokens: Option<u32>,
+    pub actual_output_tokens: Option<u32>,
 }
 
 impl ConversationTurnPhaseEvent {
@@ -50,6 +52,8 @@ impl ConversationTurnPhaseEvent {
             tool_call_count: 0,
             message_count: None,
             estimated_tokens: None,
+            actual_input_tokens: None,
+            actual_output_tokens: None,
         }
     }
 
@@ -61,6 +65,8 @@ impl ConversationTurnPhaseEvent {
             tool_call_count: 0,
             message_count: Some(message_count),
             estimated_tokens,
+            actual_input_tokens: None,
+            actual_output_tokens: None,
         }
     }
 
@@ -76,6 +82,8 @@ impl ConversationTurnPhaseEvent {
             tool_call_count: 0,
             message_count: Some(message_count),
             estimated_tokens,
+            actual_input_tokens: None,
+            actual_output_tokens: None,
         }
     }
 
@@ -91,6 +99,8 @@ impl ConversationTurnPhaseEvent {
             tool_call_count,
             message_count: None,
             estimated_tokens: None,
+            actual_input_tokens: None,
+            actual_output_tokens: None,
         }
     }
 
@@ -108,6 +118,8 @@ impl ConversationTurnPhaseEvent {
             tool_call_count,
             message_count: Some(message_count),
             estimated_tokens,
+            actual_input_tokens: None,
+            actual_output_tokens: None,
         }
     }
 
@@ -119,10 +131,17 @@ impl ConversationTurnPhaseEvent {
             tool_call_count: 0,
             message_count: Some(message_count),
             estimated_tokens,
+            actual_input_tokens: None,
+            actual_output_tokens: None,
         }
     }
 
-    pub fn completed(message_count: usize, estimated_tokens: Option<usize>) -> Self {
+    pub fn completed(
+        message_count: usize,
+        estimated_tokens: Option<usize>,
+        actual_input_tokens: Option<u32>,
+        actual_output_tokens: Option<u32>,
+    ) -> Self {
         Self {
             phase: ConversationTurnPhase::Completed,
             provider_round: None,
@@ -130,6 +149,8 @@ impl ConversationTurnPhaseEvent {
             tool_call_count: 0,
             message_count: Some(message_count),
             estimated_tokens,
+            actual_input_tokens,
+            actual_output_tokens,
         }
     }
 
@@ -141,6 +162,8 @@ impl ConversationTurnPhaseEvent {
             tool_call_count: 0,
             message_count: None,
             estimated_tokens: None,
+            actual_input_tokens: None,
+            actual_output_tokens: None,
         }
     }
 }

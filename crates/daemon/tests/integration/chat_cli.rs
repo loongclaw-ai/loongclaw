@@ -90,7 +90,7 @@ impl ChatCliFixture {
     }
 
     fn run_chat_command(&self, config_path: Option<&Path>, stdin_bytes: Option<&[u8]>) -> Output {
-        self.run_chat_command_with_fake_onboard(config_path, stdin_bytes, None)
+        self.run_chat_command_with_args(&[], config_path, stdin_bytes, None)
     }
 
     fn run_chat_command_with_fake_onboard(
@@ -99,9 +99,20 @@ impl ChatCliFixture {
         stdin_bytes: Option<&[u8]>,
         fake_onboard_exit_code: Option<i32>,
     ) -> Output {
+        self.run_chat_command_with_args(&[], config_path, stdin_bytes, fake_onboard_exit_code)
+    }
+
+    fn run_chat_command_with_args(
+        &self,
+        extra_args: &[&str],
+        config_path: Option<&Path>,
+        stdin_bytes: Option<&[u8]>,
+        fake_onboard_exit_code: Option<i32>,
+    ) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_loongclaw"));
         command
             .arg("chat")
+            .args(extra_args)
             .current_dir(&self.root)
             .env("HOME", &self.home_dir)
             .env_remove("LOONGCLAW_CONFIG_PATH")
@@ -133,6 +144,15 @@ impl ChatCliFixture {
         child.wait_with_output().expect("wait for chat cli output")
     }
 
+    fn write_default_config(&self, file_name: &str) -> PathBuf {
+        let config_path = self.root.join(file_name);
+        let path_string = config_path.to_string_lossy().into_owned();
+        let config = loongclaw_app::config::LoongClawConfig::default();
+        loongclaw_app::config::write(Some(&path_string), &config, true)
+            .expect("write default chat config");
+        config_path
+    }
+
     fn onboard_log(&self) -> String {
         std::fs::read_to_string(&self.onboard_log_path).unwrap_or_default()
     }
@@ -142,6 +162,113 @@ impl Drop for ChatCliFixture {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);
     }
+}
+
+#[test]
+fn chat_cli_accepts_tui_ui_flag() {
+    let cli = try_parse_cli(["loongclaw", "chat", "--ui", "tui"])
+        .expect("chat CLI should parse --ui tui");
+
+    match cli.command {
+        Some(Commands::Chat { ui, .. }) => assert_eq!(ui, CliChatUiModeArg::Tui),
+        other => panic!("unexpected command parse result: {other:?}"),
+    }
+}
+
+#[test]
+fn chat_cli_accepts_text_ui_flag() {
+    let cli = try_parse_cli(["loongclaw", "chat", "--ui", "text"])
+        .expect("chat CLI should parse --ui text");
+
+    match cli.command {
+        Some(Commands::Chat { ui, .. }) => assert_eq!(ui, CliChatUiModeArg::Text),
+        other => panic!("unexpected command parse result: {other:?}"),
+    }
+}
+
+#[test]
+fn chat_cli_help_mentions_ui_selector() {
+    let help = render_cli_help(["chat"]);
+
+    assert!(
+        help.contains("--ui <UI>"),
+        "chat help should mention the UI selector: {help}"
+    );
+    assert!(
+        help.contains("tui"),
+        "chat help should mention the tui UI value: {help}"
+    );
+    assert!(
+        help.contains("text"),
+        "chat help should mention the text UI value: {help}"
+    );
+}
+
+#[test]
+fn chat_ui_tui_degrades_without_tty() {
+    let fixture = ChatCliFixture::new("tui-degrades-without-tty");
+    let config_path = fixture.write_default_config("loongclaw.toml");
+    let output =
+        fixture.run_chat_command_with_args(&["--ui", "tui"], Some(&config_path), None, None);
+    let stdout = render_output(&output.stdout);
+    let stderr = render_output(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "chat tui fallback should still exit cleanly, stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stderr.contains("falling back to text ui"),
+        "chat tui fallback should explain the degraded terminal policy on stderr: {stderr:?}"
+    );
+    assert!(
+        stdout.contains("start here: Summarize this repository and suggest the best next step."),
+        "chat tui fallback should continue through the text startup surface: {stdout:?}"
+    );
+}
+
+#[test]
+#[cfg(feature = "channel-cli")]
+fn tui_subcommand_rejects_non_tty_with_terminal_error() {
+    let fixture = ChatCliFixture::new("tui-subcommand-non-tty");
+    let config_path = fixture.write_default_config("loongclaw.toml");
+
+    // Run `loong tui` instead of `loong chat` — uses a dedicated method
+    // that invokes the `tui` subcommand directly.
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_loongclaw"));
+    command
+        .arg("tui")
+        .arg("--config")
+        .arg(&config_path)
+        .current_dir(&fixture.root)
+        .env("HOME", &fixture.home_dir)
+        .env_remove("LOONGCLAW_CONFIG_PATH")
+        .env_remove("USERPROFILE")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    let mut child = command.spawn().expect("spawn tui subcommand");
+    drop(child.stdin.take());
+    let output = child.wait_with_output().expect("wait for tui output");
+    let stderr = render_output(&output.stderr);
+
+    // The `loong tui` command should fail because stdin is piped (not a TTY).
+    // Critically, the error should be about terminal requirements, NOT about
+    // the channel-cli feature being missing — that would mean the feature gate
+    // is broken.
+    assert!(
+        !output.status.success(),
+        "loong tui with piped stdin should exit with error"
+    );
+    assert!(
+        !stderr.contains("channel-cli"),
+        "feature gate should not fire with default features: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("terminal") || stderr.contains("TUI requires") || stderr.contains("stdin"),
+        "error should mention terminal/TTY requirements, not feature gates: {stderr:?}"
+    );
 }
 
 #[test]

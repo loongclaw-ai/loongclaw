@@ -4921,6 +4921,7 @@ mod tests {
                     assistant_text: String::new(),
                     tool_intents: vec![tool_intent],
                     raw_meta: Value::Null,
+                    usage: Default::default(),
                 });
             }
 
@@ -4928,6 +4929,7 @@ mod tests {
                 assistant_text: "final reply".to_owned(),
                 tool_intents: Vec::new(),
                 raw_meta: Value::Null,
+                usage: Default::default(),
             })
         }
 

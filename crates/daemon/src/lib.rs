@@ -114,6 +114,8 @@ pub mod source_presentation;
 pub mod supervisor;
 pub mod tasks_cli;
 mod tlon_cli;
+#[cfg(feature = "channel-cli")]
+pub mod tui_cli;
 
 pub use gateway::read_models::{ChannelsCliJsonPayload, ChannelsCliJsonSchema};
 pub use loongclaw_spec::programmatic::{
@@ -208,6 +210,22 @@ impl BridgeSupportProfileArg {
         match self {
             Self::NativeBalanced => "native-balanced",
             Self::OpenclawEcosystemBalanced => "openclaw-ecosystem-balanced",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum CliChatUiModeArg {
+    #[default]
+    Text,
+    Tui,
+}
+
+impl From<CliChatUiModeArg> for mvp::chat::CliChatUiMode {
+    fn from(value: CliChatUiModeArg) -> Self {
+        match value {
+            CliChatUiModeArg::Text => Self::Text,
+            CliChatUiModeArg::Tui => Self::Tui,
         }
     }
 }
@@ -779,12 +797,21 @@ pub enum Commands {
         #[arg(long = "acp-cwd")]
         acp_cwd: Option<String>,
     },
-    /// Start interactive CLI chat channel with sliding-window memory
+    #[command(
+        long_about = "Start interactive CLI chat with sliding-window memory.\n\nUse `--ui text` for the line-oriented chat surface or `--ui tui` for the balanced full-screen transcript shell. When LoongClaw cannot enter a full-screen terminal safely, it falls back to text mode automatically."
+    )]
     Chat {
         #[arg(long)]
         config: Option<String>,
         #[arg(long)]
         session: Option<String>,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = CliChatUiModeArg::Text,
+            help = "Choose the interactive chat UI (`text` or `tui`)"
+        )]
+        ui: CliChatUiModeArg,
         #[arg(long, default_value_t = false)]
         acp: bool,
         #[arg(long, default_value_t = false)]
@@ -793,6 +820,18 @@ pub enum Commands {
         acp_bootstrap_mcp_server: Vec<String>,
         #[arg(long = "acp-cwd")]
         acp_cwd: Option<String>,
+    },
+    /// Launch the full-screen interactive TUI chat shell
+    #[command(
+        long_about = "Start an interactive full-screen TUI chat session.\n\nThe TUI provides a rich terminal interface with live execution display,\ntool call visualization, and streaming token rendering.\n\nRequires a terminal-attached stdin/stdout. Falls back with an error\nif terminal requirements are not met."
+    )]
+    Tui {
+        /// Path to configuration file
+        #[arg(long)]
+        config: Option<String>,
+        /// Session ID to use or resume
+        #[arg(long)]
+        session: Option<String>,
     },
     /// Print safe-lane runtime event summary for a session
     SafeLaneSummary {
@@ -4087,12 +4126,14 @@ pub fn resolve_acp_status_session_key(
 pub async fn run_chat_cli(
     config_path: Option<&str>,
     session: Option<&str>,
+    ui: CliChatUiModeArg,
     acp: bool,
     acp_event_stream: bool,
     acp_bootstrap_mcp_server: &[String],
     acp_cwd: Option<&str>,
 ) -> CliResult<()> {
-    let options = build_cli_chat_options(acp, acp_event_stream, acp_bootstrap_mcp_server, acp_cwd);
+    let options =
+        build_cli_chat_options(ui, acp, acp_event_stream, acp_bootstrap_mcp_server, acp_cwd);
     mvp::chat::run_cli_chat(config_path, session, &options).await
 }
 
@@ -4105,17 +4146,25 @@ pub async fn run_ask_cli(
     acp_bootstrap_mcp_server: &[String],
     acp_cwd: Option<&str>,
 ) -> CliResult<()> {
-    let options = build_cli_chat_options(acp, acp_event_stream, acp_bootstrap_mcp_server, acp_cwd);
+    let options = build_cli_chat_options(
+        CliChatUiModeArg::Text,
+        acp,
+        acp_event_stream,
+        acp_bootstrap_mcp_server,
+        acp_cwd,
+    );
     mvp::chat::run_cli_ask(config_path, session, message, &options).await
 }
 
 pub fn build_cli_chat_options(
+    ui: CliChatUiModeArg,
     acp: bool,
     acp_event_stream: bool,
     acp_bootstrap_mcp_server: &[String],
     acp_cwd: Option<&str>,
 ) -> mvp::chat::CliChatOptions {
     mvp::chat::CliChatOptions {
+        ui_mode: ui.into(),
         acp_requested: acp,
         acp_event_stream,
         acp_bootstrap_mcp_servers: acp_bootstrap_mcp_server.to_vec(),

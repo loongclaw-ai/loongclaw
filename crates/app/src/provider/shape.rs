@@ -5,7 +5,7 @@ use std::{
 
 use serde_json::{Value, json};
 
-use crate::conversation::turn_engine::{ProviderTurn, ToolIntent};
+use crate::conversation::turn_engine::{ProviderTurn, ProviderUsage, ToolIntent};
 use crate::tools;
 
 pub fn extract_provider_turn(body: &Value) -> Option<ProviderTurn> {
@@ -89,6 +89,7 @@ pub fn extract_provider_turn_with_scope_and_messages(
             assistant_text,
             tool_intents,
             raw_meta,
+            usage: extract_usage(body),
         });
     }
 
@@ -102,6 +103,7 @@ pub fn extract_provider_turn_with_scope_and_messages(
                 &bridge_context,
             ),
             raw_meta: normalize_bedrock_message(message),
+            usage: extract_usage(body),
         });
     }
 
@@ -115,6 +117,7 @@ pub fn extract_provider_turn_with_scope_and_messages(
         assistant_text,
         tool_intents,
         raw_meta: body.clone(),
+        usage: extract_usage(body),
     })
 }
 
@@ -228,6 +231,36 @@ fn openai_message(body: &Value) -> Option<&Value> {
 
 fn bedrock_message(body: &Value) -> Option<&Value> {
     body.get("output").and_then(|output| output.get("message"))
+}
+
+/// Extract usage/token counts from a provider response body.
+///
+/// Handles OpenAI (`prompt_tokens`/`completion_tokens`), Anthropic/Responses API
+/// (`input_tokens`/`output_tokens`), and Bedrock (`inputTokens`/`outputTokens`).
+fn extract_usage(body: &Value) -> ProviderUsage {
+    let usage = match body.get("usage") {
+        Some(u) => u,
+        None => return ProviderUsage::default(),
+    };
+
+    let input = usage
+        .get("prompt_tokens")
+        .or_else(|| usage.get("input_tokens"))
+        .or_else(|| usage.get("inputTokens"))
+        .and_then(Value::as_u64)
+        .map(|v| v.min(u32::MAX as u64) as u32);
+
+    let output = usage
+        .get("completion_tokens")
+        .or_else(|| usage.get("output_tokens"))
+        .or_else(|| usage.get("outputTokens"))
+        .and_then(Value::as_u64)
+        .map(|v| v.min(u32::MAX as u64) as u32);
+
+    ProviderUsage {
+        input_tokens: input,
+        output_tokens: output,
+    }
 }
 
 fn extract_body_content_text(body: &Value) -> Option<String> {
@@ -460,6 +493,7 @@ fn extract_responses_provider_turn(
         assistant_text,
         tool_intents,
         raw_meta: body.clone(),
+        usage: extract_usage(body),
     })
 }
 
