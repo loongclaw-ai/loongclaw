@@ -2057,7 +2057,9 @@ async fn load_onboarding_model_catalog(
     if options.non_interactive || options.skip_model_probe {
         return Vec::new();
     }
-    if !mvp::provider::provider_auth_ready(config).await {
+    let has_provider_credentials = mvp::provider::provider_auth_ready(config).await;
+    let provider_requires_explicit_auth = config.provider.requires_explicit_auth_configuration();
+    if !has_provider_credentials && provider_requires_explicit_auth {
         return Vec::new();
     }
     mvp::provider::fetch_available_models(config)

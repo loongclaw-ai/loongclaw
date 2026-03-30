@@ -103,10 +103,12 @@ pub(crate) fn apply_provider_credential_env_binding(
 
     match binding.field {
         ProviderCredentialEnvField::ApiKey => {
+            provider.oauth_access_token = None;
             provider.clear_oauth_access_token_env_binding();
             provider.set_api_key_env_binding(env_name);
         }
         ProviderCredentialEnvField::OAuthAccessToken => {
+            provider.api_key = None;
             provider.clear_api_key_env_binding();
             provider.set_oauth_access_token_env_binding(env_name);
         }
@@ -129,6 +131,14 @@ pub(crate) fn provider_has_locally_available_credentials(
     }
 
     false
+}
+
+pub(crate) fn provider_is_credential_ready(provider: &mvp::config::ProviderConfig) -> bool {
+    if !provider.requires_explicit_auth_configuration() {
+        return true;
+    }
+
+    provider_has_locally_available_credentials(provider)
 }
 
 pub(crate) fn provider_has_inline_credential(provider: &mvp::config::ProviderConfig) -> bool {
@@ -316,6 +326,54 @@ mod tests {
         let has_credentials = provider_has_locally_available_credentials(&provider);
 
         assert!(has_credentials);
+    }
+
+    #[test]
+    fn provider_has_locally_available_credentials_accepts_header_only_x_api_key_providers() {
+        let mut provider =
+            mvp::config::ProviderConfig::fresh_for_kind(mvp::config::ProviderKind::Anthropic);
+        provider.api_key = None;
+        provider.headers.insert(
+            "x-api-key".to_owned(),
+            "test-anthropic-header-key".to_owned(),
+        );
+
+        let has_credentials = provider_has_locally_available_credentials(&provider);
+
+        assert!(has_credentials);
+    }
+
+    #[test]
+    fn provider_available_credential_env_binding_preserves_oauth_env_bindings() {
+        let mut env = mvp::test_support::ScopedEnv::new();
+        env.set("OPENAI_SESSION_TOKEN", "test-openai-session-token");
+        let provider = mvp::config::ProviderConfig {
+            kind: mvp::config::ProviderKind::Openai,
+            oauth_access_token: Some(SecretRef::Env {
+                env: "OPENAI_SESSION_TOKEN".to_owned(),
+            }),
+            ..mvp::config::ProviderConfig::default()
+        };
+
+        let binding = provider_available_credential_env_binding(&provider);
+
+        assert_eq!(
+            binding,
+            Some(ProviderCredentialEnvBinding {
+                field: ProviderCredentialEnvField::OAuthAccessToken,
+                env_name: "OPENAI_SESSION_TOKEN".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn provider_is_credential_ready_accepts_auth_optional_providers() {
+        let provider =
+            mvp::config::ProviderConfig::fresh_for_kind(mvp::config::ProviderKind::Ollama);
+
+        let is_ready = provider_is_credential_ready(&provider);
+
+        assert!(is_ready);
     }
 
     #[test]

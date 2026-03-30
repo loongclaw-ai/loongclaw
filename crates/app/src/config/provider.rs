@@ -595,7 +595,8 @@ pub enum ProviderKind {
         alias = "cloudflare_ai",
         alias = "cloudflare-ai",
         alias = "cloudflare_ai_gateway",
-        alias = "cloudflare-ai-gateway"
+        alias = "cloudflare-ai-gateway",
+        alias = "cloudflare"
     )]
     CloudflareAiGateway,
     #[serde(alias = "cohere_compatible")]
@@ -616,7 +617,7 @@ pub enum ProviderKind {
     KimiCoding,
     #[serde(alias = "groq_compatible")]
     Groq,
-    #[serde(alias = "fireworks_compatible")]
+    #[serde(alias = "fireworks_compatible", alias = "fireworks-ai")]
     Fireworks,
     #[serde(alias = "mistral_compatible")]
     Mistral,
@@ -624,7 +625,12 @@ pub enum ProviderKind {
     Minimax,
     #[serde(alias = "novita_compatible")]
     Novita,
-    #[serde(alias = "nvidia_compatible", alias = "nvidia_nim")]
+    #[serde(
+        alias = "nvidia_compatible",
+        alias = "nvidia_nim",
+        alias = "nvidia-nim",
+        alias = "build.nvidia.com"
+    )]
     Nvidia,
     #[serde(alias = "llama.cpp", alias = "llama_cpp")]
     Llamacpp,
@@ -655,7 +661,11 @@ pub enum ProviderKind {
     Stepfun,
     #[serde(alias = "stepfun_step_plan", alias = "step_plan")]
     StepPlan,
-    #[serde(alias = "together_compatible", alias = "together_ai")]
+    #[serde(
+        alias = "together_compatible",
+        alias = "together_ai",
+        alias = "together-ai"
+    )]
     Together,
     #[serde(alias = "venice_compatible")]
     Venice,
@@ -663,18 +673,24 @@ pub enum ProviderKind {
         alias = "vercel_ai",
         alias = "vercel-ai",
         alias = "vercel_ai_gateway",
-        alias = "vercel-ai-gateway"
+        alias = "vercel-ai-gateway",
+        alias = "vercel"
     )]
     VercelAiGateway,
-    #[serde(alias = "volcengine_custom", alias = "volcengine_compatible")]
+    #[serde(
+        alias = "volcengine_custom",
+        alias = "volcengine_compatible",
+        alias = "doubao",
+        alias = "ark"
+    )]
     Volcengine,
     #[serde(alias = "volcengine_coding_compatible")]
     VolcengineCoding,
-    #[serde(alias = "xai_compatible")]
+    #[serde(alias = "xai_compatible", alias = "grok")]
     Xai,
-    #[serde(alias = "zai_compatible")]
+    #[serde(alias = "zai_compatible", alias = "z.ai")]
     Zai,
-    #[serde(alias = "zhipu_compatible")]
+    #[serde(alias = "zhipu_compatible", alias = "glm", alias = "bigmodel")]
     Zhipu,
     #[serde(alias = "deepseek_compatible")]
     Deepseek,
@@ -1349,10 +1365,14 @@ impl ProviderConfig {
 
     pub fn auth_hint_env_names(&self) -> Vec<String> {
         let mut env_names = Vec::new();
-        push_secret_ref_env_name(&mut env_names, self.oauth_access_token.as_ref());
-        push_secret_ref_env_name(&mut env_names, self.api_key.as_ref());
-        for env_name in self.credential_env_names() {
-            push_unique_env_key(&mut env_names, Some(env_name.as_str()));
+        match self.kind.auth_scheme() {
+            ProviderAuthScheme::Bearer => {
+                self.push_oauth_access_token_hint_env_names(&mut env_names);
+                self.push_api_key_hint_env_names(&mut env_names);
+            }
+            ProviderAuthScheme::XApiKey => {
+                self.push_api_key_hint_env_names(&mut env_names);
+            }
         }
         env_names
     }
@@ -1511,6 +1531,30 @@ impl ProviderConfig {
     fn build_auth_guidance_hint(&self) -> Option<String> {
         let profile = self.kind.profile();
         profile.auth_guidance_hint()
+    }
+
+    fn push_oauth_access_token_hint_env_names(&self, env_names: &mut Vec<String>) {
+        push_secret_ref_env_name(env_names, self.oauth_access_token.as_ref());
+        if has_configured_secret_ref(self.oauth_access_token.as_ref()) {
+            return;
+        }
+
+        let oauth_env_names = self.oauth_access_token_env_names();
+        for oauth_env_name in oauth_env_names {
+            push_unique_env_key(env_names, Some(oauth_env_name.as_str()));
+        }
+    }
+
+    fn push_api_key_hint_env_names(&self, env_names: &mut Vec<String>) {
+        push_secret_ref_env_name(env_names, self.api_key.as_ref());
+        if has_configured_secret_ref(self.api_key.as_ref()) {
+            return;
+        }
+
+        let api_key_env_names = self.api_key_env_names();
+        for api_key_env_name in api_key_env_names {
+            push_unique_env_key(env_names, Some(api_key_env_name.as_str()));
+        }
     }
 
     fn build_alternative_auth_configuration_hint(&self) -> Option<String> {
@@ -4141,6 +4185,30 @@ mod tests {
     }
 
     #[test]
+    fn provider_profile_aliases_round_trip_through_provider_kind_deserialization() {
+        for kind in ProviderKind::all_sorted() {
+            let profile = kind.profile();
+            let canonical_id = format!("\"{}\"", profile.id);
+            let parsed_canonical = serde_json::from_str::<ProviderKind>(canonical_id.as_str())
+                .expect("canonical provider id should deserialize");
+            assert_eq!(
+                parsed_canonical, *kind,
+                "canonical provider id should deserialize to its matching provider kind"
+            );
+
+            for alias in profile.aliases {
+                let raw_alias = format!("\"{alias}\"");
+                let parsed_alias = serde_json::from_str::<ProviderKind>(raw_alias.as_str())
+                    .expect("provider alias should deserialize");
+                assert_eq!(
+                    parsed_alias, *kind,
+                    "provider alias `{alias}` should deserialize to the same provider kind as parse_provider_kind_id"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn provider_feature_family_gate_messages_are_stable() {
         let anthropic_message = ProviderFeatureFamily::Anthropic.disabled_message();
         let bedrock_message = ProviderFeatureFamily::Bedrock.disabled_message();
@@ -4248,6 +4316,39 @@ mod tests {
             auth_support
                 .missing_configuration_message
                 .contains("BytePlus")
+        );
+    }
+
+    #[test]
+    fn auth_hint_env_names_respect_explicit_api_key_env_binding_precedence() {
+        let provider = ProviderConfig {
+            kind: ProviderKind::Openai,
+            api_key: Some(SecretRef::Env {
+                env: "TEAM_OPENAI_KEY".to_owned(),
+            }),
+            ..ProviderConfig::default()
+        };
+
+        let env_names = provider.auth_hint_env_names();
+
+        assert_eq!(env_names, vec!["TEAM_OPENAI_KEY".to_owned()]);
+    }
+
+    #[test]
+    fn auth_hint_env_names_keep_api_key_fallback_after_explicit_oauth_env_binding() {
+        let provider = ProviderConfig {
+            kind: ProviderKind::Openai,
+            oauth_access_token: Some(SecretRef::Env {
+                env: "TEAM_OPENAI_OAUTH".to_owned(),
+            }),
+            ..ProviderConfig::default()
+        };
+
+        let env_names = provider.auth_hint_env_names();
+
+        assert_eq!(
+            env_names,
+            vec!["TEAM_OPENAI_OAUTH".to_owned(), "OPENAI_API_KEY".to_owned(),]
         );
     }
 

@@ -189,9 +189,8 @@ fn compose_provider_domain(
 
     Some(DomainPreview {
         kind: SetupDomainKind::Provider,
-        status: if provider_credential_policy::provider_has_locally_available_credentials(
-            &merged_config.provider,
-        ) {
+        status: if provider_credential_policy::provider_is_credential_ready(&merged_config.provider)
+        {
             PreviewStatus::Ready
         } else {
             PreviewStatus::NeedsReview
@@ -298,8 +297,7 @@ fn supplement_provider_config(
     }
     let target_missing_auth_config =
         target.api_key.is_none() && target.oauth_access_token.is_none();
-    let should_materialize_source_env_binding =
-        source_has_auth && (target_missing_auth_config || !target_has_auth);
+    let should_materialize_source_env_binding = source_has_auth && target_missing_auth_config;
     if should_materialize_source_env_binding {
         let source_binding =
             provider_credential_policy::provider_available_credential_env_binding(&source);
@@ -470,6 +468,30 @@ mod tests {
                 env: "ANTHROPIC_API_KEY".to_owned(),
             })
         );
+    }
+
+    #[test]
+    fn supplement_provider_config_preserves_explicit_target_auth_bindings() {
+        let mut env = crate::test_support::ScopedEnv::new();
+        env.set("OPENAI_API_KEY", "test-openai-key");
+
+        let mut target =
+            mvp::config::ProviderConfig::fresh_for_kind(mvp::config::ProviderKind::Openai);
+        target.api_key = Some(loongclaw_contracts::SecretRef::Env {
+            env: "TEAM_OPENAI_KEY".to_owned(),
+        });
+
+        let source = mvp::config::ProviderConfig::fresh_for_kind(mvp::config::ProviderKind::Openai);
+
+        let _changed = supplement_provider_config(&mut target, &source);
+
+        assert_eq!(
+            target.api_key,
+            Some(loongclaw_contracts::SecretRef::Env {
+                env: "TEAM_OPENAI_KEY".to_owned(),
+            })
+        );
+        assert_eq!(target.oauth_access_token, None);
     }
 }
 
