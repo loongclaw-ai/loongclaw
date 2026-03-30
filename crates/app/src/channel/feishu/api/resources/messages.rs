@@ -749,7 +749,14 @@ pub fn parse_message_detail_response(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned),
-        body: item,
+        // Extract and parse message body content
+        // Feishu returns content as a stringified JSON at item["body"]["content"]
+        body: object
+            .get("body")
+            .and_then(|b| b.get("content"))
+            .and_then(Value::as_str)
+            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+            .unwrap_or(Value::Object(serde_json::Map::new())),
     })
 }
 
@@ -1168,6 +1175,32 @@ mod tests {
             }
             _ => panic!("expected error for empty message_id"),
         }
+    }
+
+    #[test]
+    fn parse_message_detail_extracts_body_content() {
+        let payload = json!({
+            "data": {
+                "items": [{
+                    "message_id": "om_test",
+                    "msg_type": "text",
+                    "chat_id": "oc_test",
+                    "create_time": "1704067200000",
+                    "body": {
+                        "content": "{\"text\":\"hello world\"}"
+                    },
+                    "sender": {
+                        "id": "ou_sender",
+                        "sender_type": "user"
+                    }
+                }]
+            }
+        });
+        let detail = parse_message_detail_response("om_test", &payload).unwrap();
+        assert_eq!(
+            detail.body.get("text").and_then(Value::as_str),
+            Some("hello world")
+        );
     }
 
     #[tokio::test]
