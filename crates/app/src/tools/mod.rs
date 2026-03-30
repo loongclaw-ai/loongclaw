@@ -9173,7 +9173,7 @@ mod tests {
         )
         .expect_err("missing Feishu grant should fail");
 
-        assert!(error.contains("loongclaw feishu auth start --account feishu_main"));
+        assert!(error.contains("loong feishu auth start --account feishu_main"));
     }
 
     #[cfg(all(feature = "feishu-integration", feature = "channel-feishu"))]
@@ -9223,7 +9223,7 @@ mod tests {
         )
         .expect_err("missing Feishu grant should fail");
 
-        assert!(error.contains("loongclaw feishu auth start --account work"));
+        assert!(error.contains("loong feishu auth start --account work"));
         assert!(!error.contains("--account feishu_secondary"));
     }
 
@@ -9296,8 +9296,7 @@ mod tests {
         .expect_err("ambiguous Feishu grant selection should fail");
 
         assert!(
-            error
-                .contains("loongclaw feishu auth select --account feishu_main --open-id <open_id>")
+            error.contains("loong feishu auth select --account feishu_main --open-id <open_id>")
         );
         assert!(error.contains("ou_123"));
         assert!(error.contains("ou_456"));
@@ -9376,8 +9375,7 @@ mod tests {
         assert!(error.contains("open_id `ou_missing`"));
         assert!(error.contains("available open_ids: ou_456, ou_123"));
         assert!(
-            error
-                .contains("loongclaw feishu auth select --account feishu_main --open-id <open_id>")
+            error.contains("loong feishu auth select --account feishu_main --open-id <open_id>")
         );
     }
 
@@ -13259,7 +13257,7 @@ mod tests {
                 .expect("next_step should be present")
                 .split_whitespace()
                 .next(),
-            Some("loongclaw")
+            Some("loong")
         );
         assert_eq!(
             outcome.payload["output_path"]
