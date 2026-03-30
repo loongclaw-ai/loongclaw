@@ -100,7 +100,9 @@ impl StatefulWidget for SelectionCardWidget {
             // Top border
             let border = "\u{2500}".repeat((area.width as usize).saturating_sub(3));
             let top = format!(" \u{250c}{border}\u{2510}");
-            let top_truncated = &top[..top.len().min(area.width as usize)];
+            let max_byte = top.len().min(area.width as usize);
+            let truncated_end = top.floor_char_boundary(max_byte);
+            let top_truncated = &top[..truncated_end];
             buf.set_string(area.x, y, top_truncated, border_style);
 
             // Content line
