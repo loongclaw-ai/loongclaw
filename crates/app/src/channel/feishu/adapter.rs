@@ -305,17 +305,15 @@ impl MessagingApi for FeishuAdapter {
             .await,
         )?;
 
-        // Fetch the sent message to get full details
-        self.get_message(&receipt.message_id).await.map(|opt| {
-            opt.unwrap_or_else(|| Message {
-                id: receipt.message_id,
-                session: ChannelSession::new(ChannelPlatform::Feishu, receive_id),
-                sender_id: String::new(),
-                content: content.clone(),
-                timestamp: Utc::now(),
-                parent_id: None,
-                raw: None,
-            })
+        // Build message from receipt data directly
+        Ok(Message {
+            id: receipt.message_id,
+            session: ChannelSession::new(ChannelPlatform::Feishu, receive_id),
+            sender_id: String::new(),
+            content: content.clone(),
+            timestamp: Utc::now(),
+            parent_id: None,
+            raw: None,
         })
     }
 
@@ -552,17 +550,15 @@ impl MessagingApi for FeishuAdapter {
             }
         }
 
-        // Return the updated message
-        self.get_message(message_id).await.map(|opt| {
-            opt.unwrap_or_else(|| Message {
-                id: message_id.to_owned(),
-                session: ChannelSession::new(ChannelPlatform::Feishu, String::new()),
-                sender_id: String::new(),
-                content: content.clone(),
-                timestamp: Utc::now(),
-                parent_id: None,
-                raw: None,
-            })
+        // Return message with updated content
+        Ok(Message {
+            id: message_id.to_owned(),
+            session: ChannelSession::new(ChannelPlatform::Feishu, String::new()),
+            sender_id: String::new(),
+            content: content.clone(),
+            timestamp: Utc::now(),
+            parent_id: None,
+            raw: None,
         })
     }
 
