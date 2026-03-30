@@ -1404,7 +1404,11 @@ pub struct ResolvedWhatsappChannelConfig {
 }
 
 fn resolve_trimmed_or_default(value: Option<&str>, default: fn() -> String) -> String {
-    value.map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned).unwrap_or_else(default)
+    value
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(default)
 }
 
 impl ResolvedWhatsappChannelConfig {

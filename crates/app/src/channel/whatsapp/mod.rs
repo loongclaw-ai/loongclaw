@@ -11,7 +11,8 @@ use super::{
     ChannelServeCommandSpec, ChannelServeStopHandle, WHATSAPP_COMMAND_FAMILY_DESCRIPTOR,
     build_whatsapp_command_context,
     http::{ChannelOutboundHttpPolicy, build_outbound_http_client, validate_outbound_http_target},
-    run_channel_serve_command_with_stop, runtime_state::ChannelOperationRuntimeTracker,
+    run_channel_serve_command_with_stop,
+    runtime_state::ChannelOperationRuntimeTracker,
 };
 use crate::config::{ChannelDefaultAccountSelectionSource, LoongClawConfig};
 use crate::{CliResult, KernelContext, config::ResolvedWhatsappChannelConfig};
