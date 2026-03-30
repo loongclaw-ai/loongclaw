@@ -33,7 +33,13 @@ pub(super) fn render_history(
     let width = area.width as usize;
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    if pane.messages().is_empty() {
+    let show_welcome = pane.messages().is_empty()
+        || (pane.messages().len() == 1
+            && pane
+                .messages()
+                .first()
+                .is_some_and(|m| m.role == Role::User));
+    if show_welcome {
         lines.extend(render_welcome(width, palette));
     }
 
@@ -277,7 +283,8 @@ fn render_tool_call_line<'a>(
             };
             let dur = *duration_ms as f32 / 1000.0;
             let preview = truncate_output(output, 40);
-            Line::from(vec![
+            let truncated = preview.ends_with('\u{2026}');
+            let mut spans = vec![
                 Span::styled("  | ".to_string(), Style::default().fg(palette.dim)),
                 Span::styled(format!("{icon} "), Style::default().fg(color)),
                 Span::styled(
@@ -285,8 +292,18 @@ fn render_tool_call_line<'a>(
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(format!("  {preview}"), Style::default().fg(palette.dim)),
-                Span::styled(format!("  ({dur:.1}s)"), Style::default().fg(palette.dim)),
-            ])
+            ];
+            if truncated {
+                spans.push(Span::styled(
+                    " [...]".to_string(),
+                    Style::default().fg(palette.dim).add_modifier(Modifier::DIM),
+                ));
+            }
+            spans.push(Span::styled(
+                format!("  ({dur:.1}s)"),
+                Style::default().fg(palette.dim),
+            ));
+            Line::from(spans)
         }
     }
 }

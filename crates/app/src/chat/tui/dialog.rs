@@ -83,6 +83,22 @@ impl ClarifyDialog {
         });
     }
 
+    /// Return the input text with a block cursor character (`\u{2588}`) inserted
+    /// at the current cursor position. Renderers can call this instead of reading
+    /// `self.input` directly to show a visible cursor in the freeform input area.
+    pub(super) fn input_with_cursor(&self) -> String {
+        let byte_idx = self
+            .input
+            .char_indices()
+            .nth(self.cursor)
+            .map_or(self.input.len(), |(i, _)| i);
+        let mut out = String::with_capacity(self.input.len() + 3);
+        out.push_str(&self.input[..byte_idx]);
+        out.push('\u{2588}'); // block cursor
+        out.push_str(&self.input[byte_idx..]);
+        out
+    }
+
     pub(super) fn response(&self) -> String {
         if let Some(idx) = self.selected_choice {
             self.choices.get(idx).cloned().unwrap_or_default()
