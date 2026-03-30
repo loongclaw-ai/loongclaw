@@ -166,11 +166,15 @@ fn render_message(
             for part in &msg.parts {
                 match part {
                     MessagePart::Text(text) => {
-                        for line_str in text.lines() {
-                            lines.push(Line::styled(
-                                format!("  {line_str}"),
-                                Style::default().fg(palette.text),
-                            ));
+                        let md_text = tui_markdown::from_str(text);
+                        for line in md_text.lines {
+                            let mut indented_spans: Vec<Span<'static>> = vec![Span::raw("  ")];
+                            indented_spans.extend(
+                                line.spans
+                                    .into_iter()
+                                    .map(|s| Span::styled(s.content.into_owned(), s.style)),
+                            );
+                            lines.push(Line::from(indented_spans));
                         }
                     }
                     MessagePart::ThinkBlock(text) => {
