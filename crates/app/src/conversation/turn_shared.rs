@@ -3,7 +3,10 @@ use super::ProviderErrorMode;
 use super::persistence::format_provider_error_reply;
 use super::runtime::ConversationRuntime;
 use super::runtime_binding::ConversationRuntimeBinding;
-use super::turn_engine::{ApprovalRequirement, ApprovalRequirementKind, ProviderTurn, TurnResult};
+use super::turn_engine::{
+    ApprovalRequirement, ApprovalRequirementKind, ProviderTurn, ToolResultPayloadSemantics,
+    TurnResult,
+};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::borrow::Cow;
@@ -14,6 +17,7 @@ use unicode_normalization::UnicodeNormalization;
 use crate::CliResult;
 
 pub const TOOL_FOLLOWUP_PROMPT: &str = "Use the tool result above to answer the original user request in natural language. Do not include raw JSON, payload wrappers, or status markers unless the user explicitly asks for raw output.";
+pub const DISCOVERY_RESULT_FOLLOWUP_PROMPT: &str = "The tool result above is a discovery result, not the final evidence. Choose the best matching discovered tool, reuse its lease when invoking it, continue with the next tool call needed to satisfy the original user request, and only answer directly if the discovery results already contain the final user-facing information.";
 pub const TOOL_TRUNCATION_HINT_PROMPT: &str = "One or more tool results were truncated for context safety. If exact missing details are needed, explicitly state the truncation and request a narrower rerun.";
 pub const EXTERNAL_SKILL_FOLLOWUP_PROMPT: &str = "An external skill has been loaded into runtime context. Follow its instructions while answering the original user request. Do not restate the skill verbatim unless the user explicitly asks for it.";
 pub const TOOL_LOOP_GUARD_PROMPT: &str = "Detected tool-loop behavior across rounds. Do not repeat identical or cyclical tool calls without new evidence. Adjust strategy (different tool, arguments, or decomposition) or provide the best possible final answer and clearly state remaining gaps.";
@@ -946,9 +950,19 @@ pub fn tool_result_contains_truncation_signal(tool_result_text: &str) -> bool {
 }
 
 fn line_contains_structured_truncation_signal(line: &str) -> bool {
+    let Some(envelope) = parse_tool_result_envelope(line) else {
+        return false;
+    };
+    envelope
+        .get("payload_truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn parse_tool_result_envelope(line: &str) -> Option<Value> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
-        return false;
+        return None;
     }
     let candidate = if trimmed.starts_with('[') {
         trimmed
@@ -959,16 +973,9 @@ fn line_contains_structured_truncation_signal(line: &str) -> bool {
         trimmed
     };
     if !(candidate.starts_with('{') || candidate.starts_with('[')) {
-        return false;
+        return None;
     }
-    let envelope = match serde_json::from_str::<Value>(candidate) {
-        Ok(value) => value,
-        Err(_) => return false,
-    };
-    envelope
-        .get("payload_truncated")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
+    serde_json::from_str::<Value>(candidate).ok()
 }
 
 pub fn build_tool_followup_user_prompt(
@@ -977,7 +984,14 @@ pub fn build_tool_followup_user_prompt(
     tool_result_text: Option<&str>,
     rendered_tool_result_text: Option<&str>,
 ) -> String {
-    let mut sections = vec![TOOL_FOLLOWUP_PROMPT.to_owned()];
+    let prompt =
+        if followup_prompt_uses_discovery_guidance(tool_result_text, rendered_tool_result_text) {
+            DISCOVERY_RESULT_FOLLOWUP_PROMPT
+        } else {
+            TOOL_FOLLOWUP_PROMPT
+        };
+
+    let mut sections = vec![prompt.to_owned()];
     if let Some(reason) = loop_warning_reason {
         sections.push(format!(
             "Loop warning:\n{reason}\nAvoid repeating the same tool call with unchanged results. Try a different tool, adjust arguments, or provide a best-effort final answer if evidence is sufficient."
@@ -999,6 +1013,18 @@ fn followup_prompt_needs_truncation_hint(
         .unwrap_or(false)
         || rendered_tool_result_text
             .map(tool_result_contains_truncation_signal)
+            .unwrap_or(false)
+}
+
+fn followup_prompt_uses_discovery_guidance(
+    tool_result_text: Option<&str>,
+    rendered_tool_result_text: Option<&str>,
+) -> bool {
+    tool_result_text
+        .map(tool_result_contains_discovery_payload)
+        .unwrap_or(false)
+        || rendered_tool_result_text
+            .map(tool_result_contains_discovery_payload)
             .unwrap_or(false)
 }
 
@@ -1044,6 +1070,84 @@ fn reduce_tool_result_text_for_model(text: &str) -> Option<String> {
     Some(reduced)
 }
 
+fn tool_result_contains_discovery_payload(tool_result_text: &str) -> bool {
+    tool_result_text
+        .lines()
+        .filter_map(parse_tool_result_envelope)
+        .any(|envelope| envelope_uses_discovery_semantics(&envelope))
+}
+
+fn envelope_uses_discovery_semantics(envelope: &Value) -> bool {
+    let uses_explicit_semantics =
+        envelope_has_payload_semantics(envelope, ToolResultPayloadSemantics::DiscoveryResult);
+    if uses_explicit_semantics {
+        return true;
+    }
+    envelope_contains_discovery_payload(envelope)
+}
+
+fn envelope_uses_external_skill_context(envelope: &Value) -> bool {
+    let uses_explicit_semantics =
+        envelope_has_payload_semantics(envelope, ToolResultPayloadSemantics::ExternalSkillContext);
+    if uses_explicit_semantics {
+        return true;
+    }
+
+    envelope_uses_legacy_external_skill_tool(envelope)
+}
+
+fn envelope_uses_legacy_external_skill_tool(envelope: &Value) -> bool {
+    let tool_name = envelope.get("tool").and_then(Value::as_str);
+    tool_name == Some("external_skills.invoke")
+}
+
+fn envelope_contains_discovery_payload(envelope: &Value) -> bool {
+    let Some(payload_summary) = envelope.get("payload_summary").and_then(Value::as_str) else {
+        return false;
+    };
+    let Ok(payload_json) = serde_json::from_str::<Value>(payload_summary) else {
+        return false;
+    };
+    payload_summary_looks_like_discovery_result(&payload_json)
+}
+
+fn payload_summary_looks_like_discovery_result(payload: &Value) -> bool {
+    let Some(payload_object) = payload.as_object() else {
+        return false;
+    };
+    let Some(results) = payload_object.get("results").and_then(Value::as_array) else {
+        return false;
+    };
+
+    if results.is_empty() {
+        return payload_object.contains_key("query");
+    }
+
+    results.iter().any(|result| {
+        let Some(result_object) = result.as_object() else {
+            return false;
+        };
+        result_object
+            .get("tool_id")
+            .and_then(Value::as_str)
+            .is_some()
+            && result_object.get("lease").and_then(Value::as_str).is_some()
+    })
+}
+
+fn envelope_payload_semantics(envelope: &Value) -> Option<ToolResultPayloadSemantics> {
+    let payload_semantics_value = envelope.get("payload_semantics")?;
+    serde_json::from_value(payload_semantics_value.clone()).ok()
+}
+
+fn envelope_has_payload_semantics(
+    envelope: &Value,
+    expected_semantics: ToolResultPayloadSemantics,
+) -> bool {
+    let payload_semantics = envelope_payload_semantics(envelope);
+    payload_semantics == Some(expected_semantics)
+}
+
 fn reduce_tool_result_line_for_model(line: &str) -> String {
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -1058,10 +1162,6 @@ fn reduce_tool_result_line_for_model(line: &str) -> String {
     let Ok(mut envelope) = serde_json::from_str::<Value>(payload) else {
         return line.to_owned();
     };
-    let Some(tool) = envelope.get("tool").and_then(Value::as_str) else {
-        return line.to_owned();
-    };
-
     let payload_truncated = envelope
         .get("payload_truncated")
         .and_then(Value::as_bool)
@@ -1070,21 +1170,23 @@ fn reduce_tool_result_line_for_model(line: &str) -> String {
         return line.to_owned();
     };
 
-    let reduction = match tool {
-        "file.read" => {
+    let reduction = match envelope.get("tool").and_then(Value::as_str) {
+        Some("file.read") => {
             let Ok(payload_json) = serde_json::from_str::<Value>(payload_summary) else {
                 return line.to_owned();
             };
             reduce_file_read_payload_summary(&payload_json).map(|summary| (summary, true))
         }
-        "shell.exec" => {
+        Some("shell.exec") => {
             let Ok(mut payload_json) = serde_json::from_str::<Value>(payload_summary) else {
                 return line.to_owned();
             };
             reduce_shell_payload_summary(&mut payload_json).map(|summary| (summary, true))
         }
-        "tool.search" if !payload_truncated => {
-            compact_tool_search_payload_summary_str(payload_summary).map(|summary| (summary, false))
+        _ if !payload_truncated => {
+            let payload_semantics = envelope_payload_semantics(&envelope);
+            compact_discovery_payload_summary_str(payload_summary, payload_semantics)
+                .map(|summary| (summary, false))
         }
         _ => None,
     };
@@ -1229,14 +1331,26 @@ pub fn build_external_skill_followup_user_prompt(
     sections.join("\n\n")
 }
 
-fn compact_tool_search_payload_summary_str(payload_summary: &str) -> Option<String> {
+fn compact_discovery_payload_summary_str(
+    payload_summary: &str,
+    payload_semantics: Option<ToolResultPayloadSemantics>,
+) -> Option<String> {
     let payload_json = serde_json::from_str::<Value>(payload_summary).ok()?;
-    let compacted_summary = compact_tool_search_payload_summary(&payload_json)?;
+    let compacted_summary = compact_discovery_payload_summary(&payload_json, payload_semantics)?;
     let compacted_summary_str = serde_json::to_string(&compacted_summary).ok()?;
     (compacted_summary_str.len() < payload_summary.len()).then_some(compacted_summary_str)
 }
 
-fn compact_tool_search_payload_summary(payload: &Value) -> Option<Value> {
+fn compact_discovery_payload_summary(
+    payload: &Value,
+    payload_semantics: Option<ToolResultPayloadSemantics>,
+) -> Option<Value> {
+    let use_discovery_compaction = payload_semantics
+        == Some(ToolResultPayloadSemantics::DiscoveryResult)
+        || payload_summary_looks_like_discovery_result(payload);
+    if !use_discovery_compaction {
+        return None;
+    }
     let payload_object = payload.as_object()?;
     let results = payload_object.get("results")?.as_array()?;
 
@@ -1249,7 +1363,7 @@ fn compact_tool_search_payload_summary(payload: &Value) -> Option<Value> {
         Value::Array(
             results
                 .iter()
-                .map(compact_tool_search_payload_result)
+                .map(compact_discovery_payload_result)
                 .collect(),
         ),
     );
@@ -1257,7 +1371,7 @@ fn compact_tool_search_payload_summary(payload: &Value) -> Option<Value> {
     Some(Value::Object(compacted))
 }
 
-fn compact_tool_search_payload_result(result: &Value) -> Value {
+fn compact_discovery_payload_result(result: &Value) -> Value {
     let Some(result_object) = result.as_object() else {
         return result.clone();
     };
@@ -1504,7 +1618,8 @@ fn parse_external_skill_invoke_context_line(line: &str) -> Option<ExternalSkillI
     }
     let payload = trimmed.strip_prefix("[ok] ")?;
     let envelope: Value = serde_json::from_str(payload).ok()?;
-    if envelope.get("tool")?.as_str()? != "external_skills.invoke" {
+    let uses_external_skill_context = envelope_uses_external_skill_context(&envelope);
+    if !uses_external_skill_context {
         return None;
     }
     if envelope
@@ -2092,6 +2207,33 @@ mod tests {
     }
 
     #[test]
+    fn tool_result_followup_tail_promotes_external_skill_from_semantic_envelope() {
+        let tail = build_tool_result_followup_tail(
+            "preface",
+            r#"[ok] {"status":"ok","tool":"file.read","tool_call_id":"call-1","payload_semantics":"external_skill_context","payload_summary":"{\"skill_id\":\"demo-skill\",\"display_name\":\"Demo Skill\",\"instructions\":\"Follow the managed skill instruction before answering.\"}","payload_chars":180,"payload_truncated":false}"#,
+            "summarize note.md",
+            Some("warning"),
+            |_, _| panic!("external skill payload should bypass payload mapper"),
+        );
+
+        assert!(tail.iter().any(|message| {
+            message.get("role") == Some(&Value::String("system".to_owned()))
+                && message
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .map(|content| {
+                        content.contains("Follow the managed skill instruction before answering.")
+                    })
+                    .unwrap_or(false)
+        }));
+        assert!(
+            tail.iter()
+                .filter_map(|message| message.get("content").and_then(Value::as_str))
+                .all(|content| !content.contains("[tool_result]\n[ok]"))
+        );
+    }
+
+    #[test]
     fn tool_result_followup_tail_uses_payload_mapper_and_keeps_truncation_hint() {
         let tail = build_tool_result_followup_tail(
             "preface",
@@ -2354,6 +2496,41 @@ mod tests {
     }
 
     #[test]
+    fn followup_prompt_uses_discovery_guidance_for_discovery_shaped_results() {
+        let payload_summary = json!({
+            "query": "latest ai news",
+            "results": [
+                {
+                    "tool_id": "web.search",
+                    "lease": "lease-web-search"
+                }
+            ]
+        })
+        .to_string();
+        let tool_result = format!(
+            "[ok] {}",
+            json!({
+                "status": "ok",
+                "tool": "file.read",
+                "tool_call_id": "call-search",
+                "payload_summary": payload_summary,
+                "payload_chars": 512,
+                "payload_truncated": false
+            })
+        );
+
+        let prompt = build_tool_followup_user_prompt(
+            "查询 AI 新闻，聚合返回",
+            None,
+            Some(tool_result.as_str()),
+            None,
+        );
+
+        assert!(prompt.contains(DISCOVERY_RESULT_FOLLOWUP_PROMPT));
+        assert!(prompt.contains("Original request:\n查询 AI 新闻，聚合返回"));
+    }
+
+    #[test]
     fn reduce_followup_payload_for_model_preserves_shell_payload_metadata() {
         let payload = json!({
             "adapter": "core-tools",
@@ -2516,7 +2693,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_external_skill_invoke_context_extracts_full_instructions() {
+    fn parse_external_skill_invoke_context_extracts_full_instructions_from_semantic_envelope() {
         let instructions = format!("prefix {}\nsuffix-marker", "x".repeat(256));
         let payload = json!({
             "skill_id": "demo-skill",
@@ -2527,8 +2704,9 @@ mod tests {
             "[ok] {}",
             json!({
                 "status": "ok",
-                "tool": "external_skills.invoke",
+                "tool": "file.read",
                 "tool_call_id": "call-1",
+                "payload_semantics": "external_skill_context",
                 "payload_summary": serde_json::to_string(&payload).expect("encode payload"),
                 "payload_chars": 512,
                 "payload_truncated": false
@@ -2540,6 +2718,31 @@ mod tests {
         assert_eq!(parsed.skill_id, "demo-skill");
         assert_eq!(parsed.display_name, "Demo Skill");
         assert!(parsed.instructions.contains("suffix-marker"));
+    }
+
+    #[test]
+    fn parse_external_skill_invoke_context_requires_semantics_or_legacy_tool_name() {
+        let payload = json!({
+            "skill_id": "demo-skill",
+            "display_name": "Demo Skill",
+            "instructions": "Follow the managed skill instruction before answering.",
+        });
+        let line = format!(
+            "[ok] {}",
+            json!({
+                "status": "ok",
+                "tool": "file.read",
+                "tool_call_id": "call-1",
+                "payload_summary": serde_json::to_string(&payload).expect("encode payload"),
+                "payload_chars": 512,
+                "payload_truncated": false
+            })
+        );
+
+        assert!(
+            parse_external_skill_invoke_context(line.as_str()).is_none(),
+            "skill-shaped payloads should not activate managed skill context without semantics or the legacy tool name"
+        );
     }
 
     #[test]
