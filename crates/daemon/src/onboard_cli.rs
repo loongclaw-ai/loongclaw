@@ -793,6 +793,134 @@ pub async fn run_onboard_cli(options: OnboardCommandOptions) -> CliResult<()> {
     run_onboard_cli_inner(options, &context).await
 }
 
+/// Test-only entrypoint that accepts an explicit runtime context, bypassing
+/// terminal detection and real filesystem defaults.
+#[doc(hidden)]
+pub async fn run_onboard_cli_with_context(
+    options: OnboardCommandOptions,
+    context: &OnboardRuntimeContext,
+) -> CliResult<()> {
+    run_onboard_cli_inner(options, context).await
+}
+
+/// Apply CLI flag overrides to the draft config for non-interactive mode.
+///
+/// In non-interactive mode the TUI guided flow does not run, so CLI flags
+/// (`--provider`, `--model`, `--api-key-env`, `--personality`,
+/// `--memory-profile`, `--system-prompt`, `--web-search-provider`,
+/// `--web-search-api-key-env`) must be applied directly to the draft.
+fn apply_non_interactive_overrides(
+    options: &OnboardCommandOptions,
+    draft: &mut OnboardDraft,
+    context: &OnboardRuntimeContext,
+) -> CliResult<()> {
+    // --- provider ---
+    if let Some(provider_raw) = options.provider.as_deref() {
+        let kind = parse_provider_kind(provider_raw).ok_or_else(|| {
+            format!(
+                "unsupported provider value \"{provider_raw}\". accepted: {}",
+                supported_provider_list()
+            )
+        })?;
+        let profile = kind.profile();
+        let mut provider = draft.config.provider.clone();
+        provider.kind = kind;
+        provider.base_url = profile.base_url.to_owned();
+        provider.chat_completions_path = profile.chat_completions_path.to_owned();
+        draft.set_provider_config(provider);
+    }
+
+    // --- model ---
+    let resolved_model = onboarding_model_policy::resolve_onboarding_model_prompt_default(
+        &draft.config.provider,
+        options.model.as_deref(),
+    )?;
+    draft.set_provider_model(resolved_model);
+
+    // --- credential env ---
+    if let Some(api_key_env) = options.api_key_env.as_deref() {
+        if is_explicit_onboard_clear_input(api_key_env) {
+            // :clear removes env bindings but preserves inline credentials
+            draft.set_provider_credential_env(String::new());
+        } else {
+            let trimmed = api_key_env.trim();
+            if !trimmed.is_empty() {
+                draft.set_provider_credential_env(trimmed.to_owned());
+            }
+        }
+    } else {
+        // No explicit --api-key-env flag: apply default credential routing.
+        // `preferred_api_key_env_default` respects already-configured env
+        // bindings and inline credentials — it returns an empty string when
+        // an inline literal is present, avoiding accidental clearing.
+        let default_env = preferred_api_key_env_default(&draft.config);
+        draft.set_provider_credential_env(default_env);
+    }
+
+    // --- personality ---
+    if let Some(personality_raw) = options.personality.as_deref() {
+        let personality = parse_prompt_personality(personality_raw).ok_or_else(|| {
+            format!(
+                "unsupported --personality value \"{personality_raw}\". supported: {}",
+                supported_personality_list()
+            )
+        })?;
+        draft.use_native_prompt_pack(personality, draft.config.cli.system_prompt_addendum.clone());
+    }
+
+    // --- memory profile ---
+    if let Some(profile_raw) = options.memory_profile.as_deref() {
+        let profile = parse_memory_profile(profile_raw).ok_or_else(|| {
+            format!(
+                "unsupported --memory-profile value \"{profile_raw}\". supported: {}",
+                supported_memory_profile_list()
+            )
+        })?;
+        draft.set_memory_profile(profile);
+    }
+
+    // --- system prompt ---
+    if let Some(system_prompt) = options.system_prompt.as_deref() {
+        if is_explicit_onboard_clear_input(system_prompt) {
+            draft.restore_built_in_prompt();
+        } else {
+            let trimmed = system_prompt.trim();
+            if !trimmed.is_empty() {
+                draft.set_inline_system_prompt(trimmed.to_owned());
+            }
+        }
+    }
+
+    // --- web search provider ---
+    if let Some(web_search_provider) = options.web_search_provider.as_deref() {
+        let trimmed = web_search_provider.trim();
+        if !trimmed.is_empty() {
+            draft.set_web_search_default_provider(trimmed.to_owned());
+        }
+    }
+
+    // --- web search credential env ---
+    if let Some(env_name) = options.web_search_api_key_env.as_deref() {
+        let provider = draft.config.tools.web_search.default_provider.clone();
+        if is_explicit_onboard_clear_input(env_name) {
+            draft.clear_web_search_credential(&provider);
+        } else {
+            let trimmed = env_name.trim();
+            if !trimmed.is_empty() {
+                draft.set_web_search_credential_env(&provider, trimmed.to_owned());
+            }
+        }
+    }
+
+    // --- workspace defaults ---
+    // Derive workspace step values (sqlite path, file_root) from the runtime
+    // context and apply them to the draft, matching the guided-flow workspace step.
+    let workspace_values = onboard_workspace::derive_workspace_step_values(draft, context);
+    onboard_workspace::apply_workspace_step_values(draft, &workspace_values);
+
+    Ok(())
+}
+
 async fn run_onboard_cli_inner(
     options: OnboardCommandOptions,
     context: &OnboardRuntimeContext,
@@ -844,11 +972,13 @@ async fn run_onboard_cli_inner(
         ReviewFlowStyle::Guided(resolve_guided_prompt_path(&options, &flow.draft().config))
     };
 
-    if !skip_detailed_setup {
+    if !skip_detailed_setup && !options.non_interactive {
         let mut runner = crate::onboard_tui::RatatuiOnboardRunner::new()
             .map_err(|e| format!("failed to initialize TUI: {e}"))?;
         flow = run_guided_onboard_flow(flow, &mut runner).await?;
         drop(runner); // restore terminal before printing
+    } else if !skip_detailed_setup && options.non_interactive {
+        apply_non_interactive_overrides(&options, flow.draft_mut(), context)?;
     }
     let show_guided_environment_step = !options.non_interactive && !skip_detailed_setup;
 
