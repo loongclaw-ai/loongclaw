@@ -228,6 +228,7 @@ fn chat_ui_tui_degrades_without_tty() {
 }
 
 #[test]
+#[cfg(feature = "channel-cli")]
 fn tui_subcommand_rejects_non_tty_with_terminal_error() {
     let fixture = ChatCliFixture::new("tui-subcommand-non-tty");
     let config_path = fixture.write_default_config("loongclaw.toml");

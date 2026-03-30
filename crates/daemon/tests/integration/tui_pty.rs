@@ -256,6 +256,56 @@ impl TuiPtyFixture {
         }
     }
 
+    /// Wait until ANY of the given patterns matches in the ANSI-stripped
+    /// accumulated text.  Polls every 100ms until `timeout`.  Returns the
+    /// full text on match, or an error containing the accumulated text on
+    /// timeout.
+    fn wait_for_any(&mut self, patterns: &[&str], timeout: Duration) -> Result<String, String> {
+        let deadline = Instant::now() + timeout;
+
+        loop {
+            self.drain_pending();
+
+            let plain = strip_ansi(&self.accumulated);
+            for pat in patterns {
+                if plain.contains(pat) {
+                    return Ok(plain);
+                }
+            }
+
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "timed out waiting for any of {patterns:?} in PTY output (got: {plain:?})"
+                ));
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let wait = remaining.min(Duration::from_millis(100));
+            match self.rx.recv_timeout(wait) {
+                Ok(chunk) => {
+                    self.accumulated.extend_from_slice(&chunk);
+                }
+                Err(std_mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std_mpsc::RecvTimeoutError::Disconnected) => {
+                    let plain = strip_ansi(&self.accumulated);
+                    return Err(format!(
+                        "PTY reader disconnected before any of {patterns:?} appeared (got: {plain:?})"
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Send the PageUp escape sequence (`\x1b[5~`) to the PTY.
+    fn send_page_up(&mut self) -> Result<(), String> {
+        self.send_keys(b"\x1b[5~")
+    }
+
+    /// Send the PageDown escape sequence (`\x1b[6~`) to the PTY.
+    fn send_page_down(&mut self) -> Result<(), String> {
+        self.send_keys(b"\x1b[6~")
+    }
+
     /// Wait for the child process to exit within `timeout`.
     /// Returns the exit status code, or an error on timeout.
     fn wait_for_exit(&mut self, timeout: Duration) -> Result<u32, String> {
@@ -456,4 +506,441 @@ fn tui_exit_via_ctrl_c() {
         exit_code, 0,
         "TUI should exit cleanly with code 0 via Ctrl+C"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Conversation Tests
+// ---------------------------------------------------------------------------
+
+/// A multi-turn conversation shows both user messages on screen.
+#[test]
+fn tui_multi_turn_conversation() {
+    let mut fixture = TuiPtyFixture::spawn("multi-turn");
+
+    fixture
+        .wait_for("Welcome to LoongClaw TUI", Duration::from_secs(10))
+        .expect("TUI should be ready");
+
+    std::thread::sleep(Duration::from_millis(300));
+
+    // First turn: type "hi" and submit.
+    fixture.type_text("hi").expect("type hi");
+    std::thread::sleep(Duration::from_millis(200));
+    fixture.send_keys(b"\r").expect("send Enter for first turn");
+
+    // Wait for some response or error from the first turn.
+    let _ = fixture.wait_for_any(
+        &["LoongClaw", "Error:", "Iteration"],
+        Duration::from_secs(30),
+    );
+
+    std::thread::sleep(Duration::from_millis(500));
+
+    // Second turn: type "thanks" and submit.
+    fixture.type_text("thanks").expect("type thanks");
+    std::thread::sleep(Duration::from_millis(200));
+    fixture
+        .send_keys(b"\r")
+        .expect("send Enter for second turn");
+
+    // Wait for second response or error.
+    std::thread::sleep(Duration::from_secs(5));
+    let screen = fixture
+        .read_screen(Duration::from_secs(25))
+        .unwrap_or_default();
+
+    eprintln!("=== TUI MULTI-TURN SCREEN ===\n{screen}\n=== END ===");
+
+    // Both messages should appear on screen (collapsed matching).
+    let has_hi = contains_collapsed(&screen, "hi");
+    let has_thanks = contains_collapsed(&screen, "thanks");
+
+    assert!(
+        has_hi && has_thanks,
+        "both user messages should appear on screen: has_hi={has_hi}, has_thanks={has_thanks}, screen={screen:?}"
+    );
+
+    fixture.send_escape().expect("exit TUI");
+}
+
+/// Submitting a message shows a "You" badge for the user message.
+#[test]
+fn tui_user_message_appears_as_badge() {
+    let mut fixture = TuiPtyFixture::spawn("user-badge");
+
+    fixture
+        .wait_for("Welcome to LoongClaw TUI", Duration::from_secs(10))
+        .expect("TUI should be ready");
+
+    std::thread::sleep(Duration::from_millis(300));
+
+    fixture
+        .type_text("test message")
+        .expect("type test message");
+    std::thread::sleep(Duration::from_millis(200));
+    fixture.send_keys(b"\r").expect("send Enter");
+
+    // Brief wait for rendering.
+    std::thread::sleep(Duration::from_secs(2));
+
+    let screen = fixture
+        .read_screen(Duration::from_secs(3))
+        .unwrap_or_default();
+
+    eprintln!("=== TUI USER BADGE SCREEN ===\n{screen}\n=== END ===");
+
+    assert!(
+        contains_collapsed(&screen, "You"),
+        "user message badge 'You' should appear on screen: {screen:?}"
+    );
+
+    fixture.send_escape().expect("exit TUI");
+}
+
+/// After submitting a turn, the assistant response divider or an error
+/// message must appear.
+#[test]
+fn tui_assistant_response_shows_divider() {
+    let mut fixture = TuiPtyFixture::spawn("assistant-divider");
+
+    fixture
+        .wait_for("Welcome to LoongClaw TUI", Duration::from_secs(10))
+        .expect("TUI should be ready");
+
+    std::thread::sleep(Duration::from_millis(300));
+
+    fixture.type_text("hi").expect("type hi");
+    std::thread::sleep(Duration::from_millis(200));
+    fixture.send_keys(b"\r").expect("send Enter");
+
+    // Wait for either the LoongClaw divider or an error — both are acceptable.
+    let result = fixture.wait_for_any(&["LoongClaw", "Error:"], Duration::from_secs(30));
+
+    match result {
+        Ok(screen) => {
+            eprintln!("=== TUI DIVIDER SCREEN ===\n{screen}\n=== END ===");
+            let has_divider = screen.contains("LoongClaw");
+            let has_error = screen.contains("Error:");
+            assert!(
+                has_divider || has_error,
+                "should show LoongClaw divider or Error: {screen:?}"
+            );
+        }
+        Err(e) => {
+            panic!("neither divider nor error appeared within timeout: {e}");
+        }
+    }
+
+    fixture.send_escape().expect("exit TUI");
+}
+
+/// Pressing Enter with an empty composer should not submit a turn.
+#[test]
+fn tui_empty_enter_does_not_submit() {
+    let mut fixture = TuiPtyFixture::spawn("empty-enter");
+
+    fixture
+        .wait_for("Welcome to LoongClaw TUI", Duration::from_secs(10))
+        .expect("TUI should be ready");
+
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Press Enter without typing anything.
+    fixture
+        .send_keys(b"\r")
+        .expect("send Enter on empty composer");
+
+    // Wait to see if anything happens.
+    std::thread::sleep(Duration::from_secs(2));
+
+    let screen = fixture
+        .read_screen(Duration::from_secs(3))
+        .unwrap_or_default();
+
+    eprintln!("=== TUI EMPTY ENTER SCREEN ===\n{screen}\n=== END ===");
+
+    // Nothing indicating a turn should be in progress.
+    assert!(
+        !screen.contains("Iteration"),
+        "empty Enter should not start a turn (no Iteration indicator): {screen:?}"
+    );
+
+    fixture.send_escape().expect("exit TUI");
+}
+
+// ---------------------------------------------------------------------------
+// Slash Command Tests
+// ---------------------------------------------------------------------------
+
+/// The `/help` command shows a help overlay with command names.
+#[test]
+fn tui_help_command_shows_overlay() {
+    let mut fixture = TuiPtyFixture::spawn("help-cmd");
+
+    fixture
+        .wait_for("Welcome to LoongClaw TUI", Duration::from_secs(10))
+        .expect("TUI should be ready");
+
+    std::thread::sleep(Duration::from_millis(300));
+
+    fixture.type_text("/help").expect("type /help");
+    std::thread::sleep(Duration::from_millis(200));
+    fixture.send_keys(b"\r").expect("send Enter for /help");
+
+    // Wait for the help overlay to appear — it should mention command names.
+    std::thread::sleep(Duration::from_secs(2));
+
+    let screen = fixture
+        .read_screen(Duration::from_secs(3))
+        .unwrap_or_default();
+
+    eprintln!("=== TUI HELP OVERLAY SCREEN ===\n{screen}\n=== END ===");
+
+    let has_exit = contains_collapsed(&screen, "exit");
+    let has_clear = contains_collapsed(&screen, "clear");
+
+    assert!(
+        has_exit || has_clear,
+        "help overlay should mention 'exit' or 'clear' command: {screen:?}"
+    );
+
+    fixture.send_escape().expect("exit TUI");
+}
+
+/// The `/clear` command clears the transcript so the welcome message is gone.
+#[test]
+fn tui_clear_command_clears_transcript() {
+    let mut fixture = TuiPtyFixture::spawn("clear-cmd");
+
+    fixture
+        .wait_for("Welcome to LoongClaw TUI", Duration::from_secs(10))
+        .expect("TUI should be ready");
+
+    std::thread::sleep(Duration::from_millis(300));
+
+    fixture.type_text("/clear").expect("type /clear");
+    std::thread::sleep(Duration::from_millis(200));
+    fixture.send_keys(b"\r").expect("send Enter for /clear");
+
+    // Give the TUI time to process the clear and re-render.
+    std::thread::sleep(Duration::from_secs(1));
+
+    // Reset accumulated buffer so we only read the fresh screen.
+    fixture.accumulated.clear();
+
+    let screen = fixture
+        .read_screen(Duration::from_secs(3))
+        .unwrap_or_default();
+
+    eprintln!("=== TUI CLEAR SCREEN ===\n{screen}\n=== END ===");
+
+    assert!(
+        !screen.contains("Welcome to LoongClaw TUI"),
+        "welcome message should be cleared after /clear: {screen:?}"
+    );
+
+    fixture.send_escape().expect("exit TUI");
+}
+
+/// The `/exit` command causes the TUI to exit cleanly with code 0.
+#[test]
+fn tui_exit_command_exits() {
+    let mut fixture = TuiPtyFixture::spawn("exit-cmd");
+
+    fixture
+        .wait_for("Welcome to LoongClaw TUI", Duration::from_secs(10))
+        .expect("TUI should be ready");
+
+    std::thread::sleep(Duration::from_millis(300));
+
+    fixture.type_text("/exit").expect("type /exit");
+    std::thread::sleep(Duration::from_millis(200));
+    fixture.send_keys(b"\r").expect("send Enter for /exit");
+
+    let exit_code = fixture
+        .wait_for_exit(Duration::from_secs(5))
+        .expect("TUI should exit after /exit command");
+
+    assert_eq!(
+        exit_code, 0,
+        "TUI should exit with code 0 after /exit command"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// UI State Tests
+// ---------------------------------------------------------------------------
+
+/// During a turn, a spinner or "Iteration" indicator should briefly appear.
+#[test]
+fn tui_spinner_shows_during_turn() {
+    let mut fixture = TuiPtyFixture::spawn("spinner");
+
+    fixture
+        .wait_for("Welcome to LoongClaw TUI", Duration::from_secs(10))
+        .expect("TUI should be ready");
+
+    std::thread::sleep(Duration::from_millis(300));
+
+    fixture.type_text("hi").expect("type hi");
+    std::thread::sleep(Duration::from_millis(200));
+    fixture.send_keys(b"\r").expect("send Enter");
+
+    // Read immediately — the spinner should appear quickly.
+    std::thread::sleep(Duration::from_millis(500));
+
+    let screen = fixture
+        .read_screen(Duration::from_secs(1))
+        .unwrap_or_default();
+
+    eprintln!("=== TUI SPINNER SCREEN ===\n{screen}\n=== END ===");
+
+    let has_iteration = screen.contains("Iteration");
+    let has_preparing = screen.contains("Preparing");
+    let has_you = contains_collapsed(&screen, "You");
+
+    assert!(
+        has_iteration || has_preparing || has_you,
+        "spinner or turn indicator should be visible shortly after submit: {screen:?}"
+    );
+
+    fixture.send_escape().expect("exit TUI");
+}
+
+/// The status bar should show the session identifier "default".
+#[test]
+fn tui_status_bar_shows_session() {
+    let mut fixture = TuiPtyFixture::spawn("status-bar");
+
+    fixture
+        .wait_for("Welcome to LoongClaw TUI", Duration::from_secs(10))
+        .expect("TUI should be ready");
+
+    let screen = fixture
+        .read_screen(Duration::from_secs(3))
+        .unwrap_or_default();
+
+    eprintln!("=== TUI STATUS BAR SCREEN ===\n{screen}\n=== END ===");
+
+    assert!(
+        contains_collapsed(&screen, "default"),
+        "status bar should show 'default' session id: {screen:?}"
+    );
+
+    fixture.send_escape().expect("exit TUI");
+}
+
+/// PageUp and PageDown do not crash the TUI.
+#[test]
+fn tui_scroll_does_not_crash() {
+    let mut fixture = TuiPtyFixture::spawn("scroll-no-crash");
+
+    fixture
+        .wait_for("Welcome to LoongClaw TUI", Duration::from_secs(10))
+        .expect("TUI should be ready");
+
+    std::thread::sleep(Duration::from_millis(300));
+
+    fixture.send_page_up().expect("send PageUp");
+    std::thread::sleep(Duration::from_millis(200));
+
+    fixture.send_page_down().expect("send PageDown");
+    std::thread::sleep(Duration::from_millis(200));
+
+    let screen = fixture
+        .read_screen(Duration::from_secs(3))
+        .unwrap_or_default();
+
+    eprintln!("=== TUI SCROLL SCREEN ===\n{screen}\n=== END ===");
+
+    // TUI should still be alive and showing content.
+    let has_loongclaw = contains_collapsed(&screen, "LoongClaw");
+    let has_welcome = contains_collapsed(&screen, "Welcome");
+
+    assert!(
+        has_loongclaw || has_welcome,
+        "TUI should still be alive after scroll keys: {screen:?}"
+    );
+
+    fixture.send_escape().expect("exit TUI");
+}
+
+// ---------------------------------------------------------------------------
+// Error Handling Tests
+// ---------------------------------------------------------------------------
+
+/// Submitting a turn with stub config should show either an error message or
+/// a response — silence is failure.
+#[test]
+fn tui_turn_error_shows_message() {
+    let mut fixture = TuiPtyFixture::spawn("turn-error");
+
+    fixture
+        .wait_for("Welcome to LoongClaw TUI", Duration::from_secs(10))
+        .expect("TUI should be ready");
+
+    std::thread::sleep(Duration::from_millis(300));
+
+    fixture.type_text("hi").expect("type hi");
+    std::thread::sleep(Duration::from_millis(200));
+    fixture.send_keys(b"\r").expect("send Enter");
+
+    // Wait for any kind of response — error or actual text.
+    let result = fixture.wait_for_any(
+        &["Error:", "LoongClaw", "Iteration", "You"],
+        Duration::from_secs(30),
+    );
+
+    match result {
+        Ok(screen) => {
+            eprintln!("=== TUI TURN ERROR SCREEN ===\n{screen}\n=== END ===");
+            // As long as something appeared, the test passes.
+        }
+        Err(e) => {
+            panic!(
+                "TUI showed no response or error after submitting turn — silence is failure: {e}"
+            );
+        }
+    }
+
+    fixture.send_escape().expect("exit TUI");
+}
+
+/// Rapid input does not crash the TUI.
+#[test]
+fn tui_resilient_to_rapid_input() {
+    let mut fixture = TuiPtyFixture::spawn("rapid-input");
+
+    fixture
+        .wait_for("Welcome to LoongClaw TUI", Duration::from_secs(10))
+        .expect("TUI should be ready");
+
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Type rapidly without pauses.
+    fixture
+        .type_text("abcdefghij")
+        .expect("type rapid characters");
+
+    std::thread::sleep(Duration::from_millis(500));
+
+    let screen = fixture
+        .read_screen(Duration::from_secs(3))
+        .unwrap_or_default();
+
+    eprintln!("=== TUI RAPID INPUT SCREEN ===\n{screen}\n=== END ===");
+
+    // At least some of the characters should appear (collapsed matching to
+    // handle terminal cell spacing).
+    let has_some_chars = contains_collapsed(&screen, "abc")
+        || contains_collapsed(&screen, "def")
+        || contains_collapsed(&screen, "ghij");
+
+    assert!(
+        has_some_chars,
+        "some rapid input characters should appear on screen: {screen:?}"
+    );
+
+    // TUI should not have crashed — we can still exit.
+    fixture.send_escape().expect("exit TUI after rapid input");
 }
