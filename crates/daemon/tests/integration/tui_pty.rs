@@ -954,3 +954,199 @@ fn tui_resilient_to_rapid_input() {
         .send_ctrl_c()
         .expect("Ctrl-C to exit after rapid input");
 }
+
+// ---------------------------------------------------------------------------
+// Comprehensive Diagnostic Test
+// ---------------------------------------------------------------------------
+
+/// Comprehensive TUI diagnostic that captures and validates the full
+/// screen state at multiple points. Designed for autonomous verify-fix
+/// loops — the output tells an AI agent exactly what is wrong.
+#[test]
+fn tui_diagnostic_full_screen_validation() {
+    let mut fixture = TuiPtyFixture::spawn("diagnostic");
+
+    // === PHASE 1: Welcome screen ===
+    fixture
+        .wait_for("Welcome to LoongClaw TUI", Duration::from_secs(10))
+        .expect("TUI should start");
+    std::thread::sleep(Duration::from_millis(500));
+    let welcome_screen = fixture
+        .read_screen(Duration::from_secs(2))
+        .unwrap_or_default();
+
+    eprintln!("=== DIAGNOSTIC: WELCOME SCREEN ===");
+    for (i, line) in welcome_screen.lines().enumerate() {
+        eprintln!("  L{i:03}: {line}");
+    }
+    eprintln!("=== END WELCOME SCREEN ===\n");
+
+    // Validate welcome screen regions
+    let mut issues: Vec<String> = Vec::new();
+
+    // Check header region
+    if !welcome_screen.contains("LoongClaw") {
+        issues.push("HEADER: Missing 'LoongClaw' branding".into());
+    }
+
+    // Check status bar (should be near bottom)
+    let has_model = welcome_screen.contains("auto")
+        || welcome_screen.contains("anthropic")
+        || welcome_screen.contains("openai")
+        || welcome_screen.contains("unknown");
+    if !has_model {
+        issues.push(
+            "STATUS_BAR: No model name visible (expected 'auto', provider name, or 'unknown')"
+                .into(),
+        );
+    }
+
+    let has_tokens = welcome_screen.contains("tokens");
+    if !has_tokens {
+        issues.push("STATUS_BAR: 'tokens' label not visible".into());
+    }
+
+    let has_session = welcome_screen.contains("default");
+    if !has_session {
+        issues.push("STATUS_BAR: Session ID 'default' not visible".into());
+    }
+
+    // Check spinner region
+    let has_ready = welcome_screen.contains("Ready");
+    if !has_ready {
+        issues.push("SPINNER: 'Ready' indicator not visible on welcome screen".into());
+    }
+
+    // Check composer region
+    let has_composer_hint =
+        welcome_screen.contains("Enter to send") || welcome_screen.contains("/help");
+    if !has_composer_hint {
+        issues.push("COMPOSER: No input hint visible ('Enter to send' or '/help')".into());
+    }
+
+    // === PHASE 2: Submit turn ===
+    fixture.type_text("hi").expect("type hi");
+    std::thread::sleep(Duration::from_millis(200));
+    fixture.send_keys(b"\r").expect("send Enter");
+
+    // Capture during turn execution (spinner should be active)
+    std::thread::sleep(Duration::from_secs(1));
+    let during_turn = fixture
+        .read_screen(Duration::from_secs(2))
+        .unwrap_or_default();
+
+    eprintln!("=== DIAGNOSTIC: DURING TURN ===");
+    for (i, line) in during_turn.lines().enumerate() {
+        eprintln!("  L{i:03}: {line}");
+    }
+    eprintln!("=== END DURING TURN ===\n");
+
+    // Check user message appeared
+    if !contains_collapsed(&during_turn, "You") && !contains_collapsed(&during_turn, "hi") {
+        issues.push("TRANSCRIPT: User message 'hi' not visible after submit".into());
+    }
+
+    // Check spinner is active (not still "Ready")
+    let has_activity = during_turn.contains("Iteration")
+        || during_turn.contains("Preparing")
+        || during_turn.contains("interrupt");
+    if !has_activity {
+        issues.push(
+            "SPINNER: No turn activity visible (expected 'Iteration', 'Preparing', or 'interrupt')"
+                .into(),
+        );
+    }
+
+    // === PHASE 3: After turn completes ===
+    std::thread::sleep(Duration::from_secs(8));
+    let after_turn = fixture
+        .read_screen(Duration::from_secs(5))
+        .unwrap_or_default();
+
+    eprintln!("=== DIAGNOSTIC: AFTER TURN ===");
+    for (i, line) in after_turn.lines().enumerate() {
+        eprintln!("  L{i:03}: {line}");
+    }
+    eprintln!("=== END AFTER TURN ===\n");
+
+    // Check response appeared
+    let has_response = after_turn.contains("LoongClaw") || after_turn.contains("Error:");
+    if !has_response {
+        issues.push(
+            "TRANSCRIPT: No assistant response visible (no 'LoongClaw' divider or 'Error:')".into(),
+        );
+    }
+
+    // Check status bar updated after turn
+    // Token count should be > 0 if turn succeeded
+    let has_nonzero_tokens = after_turn.contains("1 token")
+        || after_turn.contains("2 token")
+        || (after_turn.contains("tokens (") && !after_turn.contains("0 tokens (0%)"));
+    if !has_nonzero_tokens && has_response && !after_turn.contains("Error:") {
+        // Note: stub/default providers may not report estimated_tokens.
+        // This is a soft warning, not a hard failure.
+        eprintln!(
+            "  WARN: STATUS_BAR: Token count is 0 after successful turn (expected with stub provider)"
+        );
+    }
+
+    // Check model is no longer "no model"
+    if after_turn.contains("no model") {
+        issues
+            .push("STATUS_BAR: Still showing 'no model' — model label not set from runtime".into());
+    }
+
+    // === PHASE 4: Slash command (/help) ===
+    fixture.type_text("/help").expect("type /help");
+    std::thread::sleep(Duration::from_millis(200));
+    fixture.send_keys(b"\r").expect("send Enter for /help");
+    std::thread::sleep(Duration::from_millis(500));
+    let help_screen = fixture
+        .read_screen(Duration::from_secs(2))
+        .unwrap_or_default();
+
+    eprintln!("=== DIAGNOSTIC: HELP SCREEN ===");
+    for (i, line) in help_screen.lines().enumerate() {
+        eprintln!("  L{i:03}: {line}");
+    }
+    eprintln!("=== END HELP SCREEN ===\n");
+
+    let has_help_content = help_screen.contains("/exit")
+        || help_screen.contains("/clear")
+        || help_screen.contains("Available");
+    if !has_help_content {
+        issues.push("HELP: /help command did not show help overlay or command list".into());
+    }
+
+    // Dismiss help with Esc
+    fixture.send_escape().expect("dismiss help");
+    std::thread::sleep(Duration::from_millis(300));
+
+    // === REPORT ===
+    eprintln!("\n=== TUI DIAGNOSTIC REPORT ===");
+    if issues.is_empty() {
+        eprintln!("  ALL CHECKS PASSED");
+    } else {
+        eprintln!("  {} ISSUES FOUND:", issues.len());
+        for (i, issue) in issues.iter().enumerate() {
+            eprintln!("  [{}] {}", i + 1, issue);
+        }
+    }
+    eprintln!("=== END REPORT ===\n");
+
+    // Exit
+    fixture.send_ctrl_c().expect("exit TUI");
+
+    // Fail if any issues found
+    assert!(
+        issues.is_empty(),
+        "TUI diagnostic found {} issues:\n{}",
+        issues.len(),
+        issues
+            .iter()
+            .enumerate()
+            .map(|(i, s)| format!("  [{}] {}", i + 1, s))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}

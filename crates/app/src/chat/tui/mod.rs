@@ -53,7 +53,7 @@ pub(super) async fn run_tui_chat(
                     .provider
                     .resolved_model()
                     .filter(|m| !m.trim().is_empty())
-                    .unwrap_or_else(|| "unknown".to_owned()),
+                    .unwrap_or_else(|| "auto".to_owned()),
             };
             shell::run(&tui_rt, policy.palette_hint).await?;
             Ok(CliTuiLaunchResult::Entered)
