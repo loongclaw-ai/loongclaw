@@ -342,12 +342,12 @@ impl MessagingApi for FeishuAdapter {
         let token = convert_cli_result(self.client.get_tenant_access_token().await)?;
 
         // Fetch parent message to get session info
-        let parent_session = match fetch_message_detail(&self.client, &token, message_id).await {
-            Ok(detail) => {
-                ChannelSession::new(ChannelPlatform::Feishu, detail.chat_id.unwrap_or_default())
-            }
-            Err(_) => ChannelSession::new(ChannelPlatform::Feishu, String::new()),
-        };
+        let parent_detail =
+            convert_cli_result(fetch_message_detail(&self.client, &token, message_id).await)?;
+        let parent_session = ChannelSession::new(
+            ChannelPlatform::Feishu,
+            parent_detail.chat_id.unwrap_or_default(),
+        );
 
         // Convert content to Feishu format
         let body = convert_message_content_to_feishu(content)?;
