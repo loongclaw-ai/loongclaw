@@ -64,15 +64,21 @@ pub(super) fn render_history(
     }
 
     // Count wrapped visual rows for scroll math.
-    let wrap_width = area.width as usize;
+    // We deliberately overestimate by using ceiling division plus a small
+    // buffer.  Ratatui's Paragraph with Wrap may produce more visual rows
+    // than a simple width÷viewport formula predicts (grapheme boundaries,
+    // CJK double-width, styled span joins).  Underestimating causes the
+    // auto-scroll to stop short of the true bottom — a P0 UX bug.
+    let wrap_width = (area.width as usize).max(1);
     let total_lines: u16 = lines
         .iter()
         .map(|line| {
             let w = line.width();
-            if w == 0 || wrap_width == 0 {
+            if w == 0 {
                 1u16
             } else {
-                (w as u16).saturating_sub(1) / (wrap_width as u16).max(1) + 1
+                let rows = w.div_ceil(wrap_width);
+                (rows as u16).max(1)
             }
         })
         .sum();
@@ -81,8 +87,10 @@ pub(super) fn render_history(
     let max_scroll = total_lines.saturating_sub(visible);
 
     // scroll_offset == 0 means "follow tail" (auto-scroll to bottom).
+    // Add a small buffer (+2) to compensate for any remaining wrapping
+    // mismatch between our line-count and ratatui's actual rendering.
     let scroll = if pane.scroll_offset() == 0 {
-        max_scroll
+        max_scroll.saturating_add(2)
     } else {
         max_scroll.saturating_sub(pane.scroll_offset())
     };
