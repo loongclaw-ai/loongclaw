@@ -468,17 +468,6 @@ fn authorize_request(headers: &HeaderMap, expected_token: &str) -> CliResult<()>
     Ok(())
 }
 
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut result = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        result |= x ^ y;
-    }
-    result == 0
-}
-
 fn build_gateway_channel_inventory_read_model(
     loaded_config: &LoadedSupervisorConfig,
 ) -> CliResult<GatewayChannelInventoryReadModel> {

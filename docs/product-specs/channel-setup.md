@@ -358,7 +358,6 @@ iMessage is shipped through a BlueBubbles bridge send surface:
 - `imessage-serve` remains planned until LoongClaw owns the inbound bridge
   synchronization contract
 
-<<<<<<< HEAD
 ### Nostr
 
 Nostr is shipped as a signed relay-publish surface:
