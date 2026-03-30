@@ -6,9 +6,23 @@ The format follows Keep a Changelog and semantic versioning intent.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-03-29
+
+### Added
+
+- Added the first stable LoongClaw baseline after the `0.1.0-alpha.*` prerelease line, carrying forward the frozen `dev` slice for promotion into `main`.
+- Added Feishu channel delivery follow-through including Messaging API integration plus bitable list, create, and search support.
+- Added background task CLI flows, discovery-first external skills guidance, doctor security audit coverage, session-scoped tool consent handling, manifest-first plugin packaging, and plugin inventory plus doctor CLI surfaces.
+
+### Changed
+
+- Changed the default CLI command path to `loong`, expanded channel send surfaces and trust enforcement, and added governed runtime-capability apply execution for promotion readiness.
+- Refined release governance, architecture drift evidence, and cargo-deny policy coverage so the stable line can be promoted from `dev` into `main` with the same strict local gates used in prerelease validation.
+
 ### Fixed
 
 - Restored provider-side tool execution when OpenAI-compatible responses emit standalone JSON tool blocks or Ollama-style `<tool_call>...</tool_call>` fallbacks instead of native `tool_calls`.
+- Hardened plugin scaffold file writes before freezing the first stable slice.
 
 ## [0.1.0-alpha.2] - 2026-03-19
 
