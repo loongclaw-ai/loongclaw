@@ -1402,15 +1402,6 @@ pub struct ResolvedWhatsappChannelConfig {
     pub webhook_bind: Option<String>,
     pub webhook_path: Option<String>,
 }
-
-fn resolve_trimmed_or_default(value: Option<&str>, default: fn() -> String) -> String {
-    value
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(default)
-}
-
 impl ResolvedWhatsappChannelConfig {
     pub fn access_token(&self) -> Option<String> {
         resolve_secret_with_legacy_env(self.access_token.as_ref(), self.access_token_env.as_deref())
@@ -1435,17 +1426,27 @@ impl ResolvedWhatsappChannelConfig {
         self.api_base_url
             .as_deref()
             .map(str::trim)
-            .filter(|value| !value.is_empty())
+            .filter(|v| !v.is_empty())
             .map(str::to_owned)
             .unwrap_or_else(default_whatsapp_api_base_url)
     }
 
     pub fn resolved_webhook_bind(&self) -> String {
-        resolve_trimmed_or_default(self.webhook_bind.as_deref(), default_whatsapp_webhook_bind)
+        self.webhook_bind
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| "127.0.0.1:8080".to_owned())
     }
 
     pub fn resolved_webhook_path(&self) -> String {
-        resolve_trimmed_or_default(self.webhook_path.as_deref(), default_whatsapp_webhook_path)
+        self.webhook_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| "/webhook".to_owned())
     }
 }
 
@@ -6541,14 +6542,6 @@ fn default_slack_bot_token_env() -> Option<String> {
 
 fn default_whatsapp_api_base_url() -> String {
     "https://graph.facebook.com/v25.0".to_owned()
-}
-
-fn default_whatsapp_webhook_bind() -> String {
-    "127.0.0.1:8080".to_owned()
-}
-
-fn default_whatsapp_webhook_path() -> String {
-    "/webhook".to_owned()
 }
 
 fn default_whatsapp_access_token_env() -> Option<String> {
