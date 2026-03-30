@@ -15,7 +15,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::event_source::{CrosstermEventSource, OnboardEventSource};
-use super::layout::{self, OnboardLayoutAreas};
+use super::layout;
 use super::widgets::*;
 use crate::CliResult;
 use crate::onboard_flow::{GuidedOnboardFlowStepRunner, OnboardFlowStepAction};
@@ -63,11 +63,13 @@ impl RatatuiOnboardRunner<CrosstermEventSource> {
         }));
 
         terminal::enable_raw_mode()?;
+        let (_, rows) = terminal::size().unwrap_or((80, 24));
+        let viewport_height = rows.saturating_sub(2).min(30);
         let backend = CrosstermBackend::new(io::stdout());
         let terminal = Terminal::with_options(
             backend,
             ratatui::TerminalOptions {
-                viewport: ratatui::Viewport::Inline(20),
+                viewport: ratatui::Viewport::Inline(viewport_height),
             },
         )?;
 
@@ -118,7 +120,7 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
         let inner = Rect::new(
             x + 3,
             y + 1,
-            max_inner_width.saturating_sub(2),
+            max_inner_width.saturating_sub(1),
             content_lines.min(area.height.saturating_sub(2)),
         );
         (outer, inner)
@@ -178,58 +180,6 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
         }
 
         inner
-    }
-
-    // -----------------------------------------------------------------------
-    // Chrome (header + spine + footer)
-    // -----------------------------------------------------------------------
-
-    #[allow(dead_code)]
-    fn render_chrome(
-        &mut self,
-        step: OnboardWizardStep,
-        title: &str,
-        footer_hint: &str,
-    ) -> io::Result<OnboardLayoutAreas> {
-        let mut captured_areas: Option<OnboardLayoutAreas> = None;
-
-        let step_number = step_ordinal(step);
-        let total_steps = 8;
-
-        self.terminal.draw(|frame| {
-            let areas = layout::compute_layout(frame.area(), false);
-
-            // Header bar
-            let header_line = Line::from(vec![
-                Span::styled(
-                    " LOONGCLAW ",
-                    Style::default()
-                        .fg(Color::Rgb(245, 169, 127))
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(format!(" {title} "), Style::default().fg(Color::White)),
-                Span::styled("  Esc cancel", Style::default().fg(Color::DarkGray)),
-            ]);
-            frame.render_widget(Paragraph::new(header_line), areas.header);
-
-            // Footer
-            let footer_line =
-                Line::from(vec![
-                    Span::styled(format!(" {footer_hint} "), Style::default().fg(Color::Gray)),
-                    Span::raw(" ".repeat(
-                        (areas.footer.width as usize).saturating_sub(footer_hint.len() + 10),
-                    )),
-                    Span::styled(
-                        format!(" {step_number}/{total_steps} "),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ]);
-            frame.render_widget(Paragraph::new(footer_line), areas.footer);
-
-            captured_areas = Some(areas);
-        })?;
-
-        captured_areas.ok_or_else(|| io::Error::other("draw callback skipped"))
     }
 
     // -----------------------------------------------------------------------
@@ -302,7 +252,10 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
                     let footer_line = Line::from(vec![
                         Span::styled(" Press Enter to begin ", Style::default().fg(Color::Gray)),
                         Span::raw(" ".repeat((areas.footer.width as usize).saturating_sub(26))),
-                        Span::styled(" 1/8 ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            format!(" 1/{} ", total_step_count()),
+                            Style::default().fg(Color::DarkGray),
+                        ),
                     ]);
                     frame.render_widget(Paragraph::new(footer_line), areas.footer);
                 })
@@ -315,7 +268,7 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
                 }) => return Ok(OnboardFlowStepAction::Next),
                 Event::Key(KeyEvent {
                     code: KeyCode::Esc, ..
-                }) => return Ok(OnboardFlowStepAction::Back),
+                }) => return Err("onboarding cancelled".to_owned()),
                 Event::Key(KeyEvent {
                     code: KeyCode::Char('c'),
                     modifiers,
@@ -412,11 +365,14 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
                     // Footer
                     let footer_line = Line::from(vec![
                         Span::styled(format!(" {hint_owned} "), Style::default().fg(Color::Gray)),
-                        Span::raw(" ".repeat(
-                            (areas.footer.width as usize).saturating_sub(hint_owned.len() + 10),
-                        )),
+                        Span::raw(
+                            " ".repeat(
+                                (areas.footer.width as usize)
+                                    .saturating_sub(hint_owned.chars().count() + 10),
+                            ),
+                        ),
                         Span::styled(
-                            format!(" {step_number}/8 "),
+                            format!(" {step_number}/{} ", total_step_count()),
                             Style::default().fg(Color::DarkGray),
                         ),
                     ]);
@@ -530,11 +486,14 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
                     // Footer
                     let footer_line = Line::from(vec![
                         Span::styled(format!(" {hint_owned} "), Style::default().fg(Color::Gray)),
-                        Span::raw(" ".repeat(
-                            (areas.footer.width as usize).saturating_sub(hint_owned.len() + 10),
-                        )),
+                        Span::raw(
+                            " ".repeat(
+                                (areas.footer.width as usize)
+                                    .saturating_sub(hint_owned.chars().count() + 10),
+                            ),
+                        ),
                         Span::styled(
-                            format!(" {step_number}/8 "),
+                            format!(" {step_number}/{} ", total_step_count()),
                             Style::default().fg(Color::DarkGray),
                         ),
                     ]);
@@ -554,6 +513,25 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
                     code: KeyCode::Backspace,
                     ..
                 }) => input_state.backspace(),
+                Event::Key(KeyEvent {
+                    code: KeyCode::Delete,
+                    ..
+                }) => input_state.delete(),
+                Event::Key(KeyEvent {
+                    code: KeyCode::Left,
+                    ..
+                }) => input_state.move_left(),
+                Event::Key(KeyEvent {
+                    code: KeyCode::Right,
+                    ..
+                }) => input_state.move_right(),
+                Event::Key(KeyEvent {
+                    code: KeyCode::Home,
+                    ..
+                }) => input_state.move_home(),
+                Event::Key(KeyEvent {
+                    code: KeyCode::End, ..
+                }) => input_state.move_end(),
                 Event::Key(KeyEvent {
                     code: KeyCode::Char(c),
                     modifiers,
@@ -582,57 +560,79 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
         &mut self,
         draft: &mut OnboardDraft,
     ) -> CliResult<OnboardFlowStepAction> {
-        // Sub-step 1: Provider selection (show current provider kind)
-        let provider_kind = draft.config.provider.kind;
-        let provider_label = provider_kind.display_name().to_owned();
-        let items = vec![SelectionItem::new(
-            &provider_label,
-            Some("current provider"),
-        )];
-        match self.run_selection_loop(
-            OnboardWizardStep::Authentication,
-            "Provider",
-            items,
-            0,
-            "Enter to confirm provider",
-        )? {
-            SelectionLoopResult::Back => return Ok(OnboardFlowStepAction::Back),
-            SelectionLoopResult::Selected(_) => { /* continue */ }
-        }
-
-        // Sub-step 2: Model (text input with current model as default)
-        let current_model = draft.config.provider.model.clone();
-        match self.run_input_loop(
-            OnboardWizardStep::Authentication,
-            "Model:",
-            &current_model,
-            "Enter to confirm model, or type a custom model",
-        )? {
-            InputLoopResult::Back => return Ok(OnboardFlowStepAction::Back),
-            InputLoopResult::Submitted(model) => {
-                if !model.is_empty() {
-                    draft.set_provider_model(model);
+        let mut sub_step: u8 = 0;
+        loop {
+            match sub_step {
+                0 => {
+                    // Sub-step 1: Provider confirmation (read-only, single item)
+                    let provider_kind = draft.config.provider.kind;
+                    let provider_label = provider_kind.display_name().to_owned();
+                    let items = vec![SelectionItem::new(
+                        &provider_label,
+                        Some("current provider"),
+                    )];
+                    match self.run_selection_loop(
+                        OnboardWizardStep::Authentication,
+                        "Provider",
+                        items,
+                        0,
+                        "Enter to continue with current provider",
+                    )? {
+                        SelectionLoopResult::Back => return Ok(OnboardFlowStepAction::Back),
+                        SelectionLoopResult::Selected(_) => {
+                            sub_step = 1;
+                        }
+                    }
+                }
+                1 => {
+                    // Sub-step 2: Model (text input with current model as default)
+                    let current_model = draft.config.provider.model.clone();
+                    match self.run_input_loop(
+                        OnboardWizardStep::Authentication,
+                        "Model:",
+                        &current_model,
+                        "Enter to confirm model, or type a custom model",
+                    )? {
+                        InputLoopResult::Back => {
+                            sub_step = 0;
+                        }
+                        InputLoopResult::Submitted(model) => {
+                            if !model.is_empty() {
+                                draft.set_provider_model(model);
+                            }
+                            sub_step = 2;
+                        }
+                    }
+                }
+                2 => {
+                    // Sub-step 3: Credential environment variable
+                    let current_credential_env =
+                        provider_credential_policy::provider_credential_env_hint(
+                            &draft.config.provider,
+                        )
+                        .unwrap_or_default();
+                    match self.run_input_loop(
+                        OnboardWizardStep::Authentication,
+                        "API key env:",
+                        &current_credential_env,
+                        "Enter to confirm, or type a custom env var name",
+                    )? {
+                        InputLoopResult::Back => {
+                            sub_step = 1;
+                        }
+                        InputLoopResult::Submitted(env_name) => {
+                            draft.set_provider_credential_env(env_name);
+                            return Ok(OnboardFlowStepAction::Next);
+                        }
+                    }
+                }
+                _ => {
+                    return Err(format!(
+                        "internal error: unexpected auth sub-step {sub_step}"
+                    ));
                 }
             }
         }
-
-        // Sub-step 3: Credential environment variable
-        let current_credential_env =
-            provider_credential_policy::provider_credential_env_hint(&draft.config.provider)
-                .unwrap_or_default();
-        match self.run_input_loop(
-            OnboardWizardStep::Authentication,
-            "API key env:",
-            &current_credential_env,
-            "Enter to confirm, or type a custom env var name",
-        )? {
-            InputLoopResult::Back => return Ok(OnboardFlowStepAction::Back),
-            InputLoopResult::Submitted(env_name) => {
-                draft.set_provider_credential_env(env_name);
-            }
-        }
-
-        Ok(OnboardFlowStepAction::Next)
     }
 
     // -----------------------------------------------------------------------
@@ -685,39 +685,54 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
     // -----------------------------------------------------------------------
 
     fn run_workspace_step(&mut self, draft: &mut OnboardDraft) -> CliResult<OnboardFlowStepAction> {
-        // Sub-step 1: SQLite path
-        let current_sqlite = draft.workspace.sqlite_path.display().to_string();
-        match self.run_input_loop(
-            OnboardWizardStep::Workspace,
-            "SQLite path:",
-            &current_sqlite,
-            "Enter to confirm, or type a custom path",
-        )? {
-            InputLoopResult::Back => return Ok(OnboardFlowStepAction::Back),
-            InputLoopResult::Submitted(path) => {
-                if !path.is_empty() {
-                    draft.set_workspace_sqlite_path(PathBuf::from(path));
+        let mut sub_step: u8 = 0;
+        loop {
+            match sub_step {
+                0 => {
+                    // Sub-step 1: SQLite path
+                    let current_sqlite = draft.workspace.sqlite_path.display().to_string();
+                    match self.run_input_loop(
+                        OnboardWizardStep::Workspace,
+                        "SQLite path:",
+                        &current_sqlite,
+                        "Enter to confirm, or type a custom path",
+                    )? {
+                        InputLoopResult::Back => return Ok(OnboardFlowStepAction::Back),
+                        InputLoopResult::Submitted(path) => {
+                            if !path.is_empty() {
+                                draft.set_workspace_sqlite_path(PathBuf::from(path));
+                            }
+                            sub_step = 1;
+                        }
+                    }
+                }
+                1 => {
+                    // Sub-step 2: File root
+                    let current_file_root = draft.workspace.file_root.display().to_string();
+                    match self.run_input_loop(
+                        OnboardWizardStep::Workspace,
+                        "File root:",
+                        &current_file_root,
+                        "Enter to confirm, or type a custom path",
+                    )? {
+                        InputLoopResult::Back => {
+                            sub_step = 0;
+                        }
+                        InputLoopResult::Submitted(path) => {
+                            if !path.is_empty() {
+                                draft.set_workspace_file_root(PathBuf::from(path));
+                            }
+                            return Ok(OnboardFlowStepAction::Next);
+                        }
+                    }
+                }
+                _ => {
+                    return Err(format!(
+                        "internal error: unexpected workspace sub-step {sub_step}"
+                    ));
                 }
             }
         }
-
-        // Sub-step 2: File root
-        let current_file_root = draft.workspace.file_root.display().to_string();
-        match self.run_input_loop(
-            OnboardWizardStep::Workspace,
-            "File root:",
-            &current_file_root,
-            "Enter to confirm, or type a custom path",
-        )? {
-            InputLoopResult::Back => return Ok(OnboardFlowStepAction::Back),
-            InputLoopResult::Submitted(path) => {
-                if !path.is_empty() {
-                    draft.set_workspace_file_root(PathBuf::from(path));
-                }
-            }
-        }
-
-        Ok(OnboardFlowStepAction::Next)
     }
 
     // -----------------------------------------------------------------------
@@ -801,6 +816,7 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
     ) -> CliResult<()> {
         let mut scroll_offset: u16 = 0;
         let total_lines = body_lines.len() as u16;
+        let mut captured_visible_height: u16 = total_lines;
 
         loop {
             let title_owned = title.to_owned();
@@ -831,6 +847,7 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
                     // Content inside dialog box (scrollable)
                     let max_dialog_height = areas.content.height.saturating_sub(2);
                     let visible_lines = total_lines.min(max_dialog_height);
+                    captured_visible_height = visible_lines;
                     let (outer, inner) = Self::dialog_box_rect(areas.content, visible_lines);
                     Self::draw_dialog_border(frame.buffer_mut(), outer, Color::DarkGray);
 
@@ -860,12 +877,12 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
                 }) => return Ok(()),
                 Event::Key(KeyEvent {
                     code: KeyCode::Esc, ..
-                }) => return Err("onboarding cancelled".to_owned()),
+                }) => return Ok(()),
                 Event::Key(KeyEvent {
                     code: KeyCode::Down | KeyCode::Char('j'),
                     ..
                 }) => {
-                    if scroll_offset < total_lines.saturating_sub(1) {
+                    if scroll_offset < total_lines.saturating_sub(captured_visible_height) {
                         scroll_offset += 1;
                     }
                 }
@@ -1023,18 +1040,8 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
     pub fn run_shortcut_choice_screen(
         &mut self,
         primary_label: &str,
-        snapshot_lines: &[String],
+        _snapshot_lines: &[String],
     ) -> CliResult<bool> {
-        let mut _body_lines: Vec<Line<'static>> = Vec::new();
-        _body_lines.push(Line::from(""));
-        for line in snapshot_lines {
-            _body_lines.push(Line::from(Span::styled(
-                line.to_owned(),
-                Style::default().fg(Color::Gray),
-            )));
-        }
-        _body_lines.push(Line::from(""));
-
         let items = vec![
             SelectionItem::new(primary_label, Some("skip detailed edits")),
             SelectionItem::new("Adjust settings", Some("go through full setup")),
@@ -1321,67 +1328,83 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
     // -----------------------------------------------------------------------
 
     fn run_protocols_step(&mut self, draft: &mut OnboardDraft) -> CliResult<OnboardFlowStepAction> {
-        // Sub-step 1: ACP enabled/disabled
-        let current_enabled = draft.protocols.acp_enabled;
-        let default_idx = if current_enabled { 0 } else { 1 };
-        let items = vec![
-            SelectionItem::new("Enabled", Some("connect to ACP agents")),
-            SelectionItem::new("Disabled", Some("standalone mode")),
-        ];
+        let mut sub_step: u8 = 0;
+        loop {
+            match sub_step {
+                0 => {
+                    // Sub-step 1: ACP enabled/disabled
+                    let current_enabled = draft.protocols.acp_enabled;
+                    let default_idx = if current_enabled { 0 } else { 1 };
+                    let items = vec![
+                        SelectionItem::new("Enabled", Some("connect to ACP agents")),
+                        SelectionItem::new("Disabled", Some("standalone mode")),
+                    ];
 
-        match self.run_selection_loop(
-            OnboardWizardStep::Protocols,
-            "ACP Protocol",
-            items,
-            default_idx,
-            "Up/Down to select, Enter to confirm",
-        )? {
-            SelectionLoopResult::Back => return Ok(OnboardFlowStepAction::Back),
-            SelectionLoopResult::Selected(idx) => {
-                let enabled = idx == 0;
-                draft.set_acp_enabled(enabled);
-                if !enabled {
-                    return Ok(OnboardFlowStepAction::Next);
+                    match self.run_selection_loop(
+                        OnboardWizardStep::Protocols,
+                        "ACP Protocol",
+                        items,
+                        default_idx,
+                        "Up/Down to select, Enter to confirm",
+                    )? {
+                        SelectionLoopResult::Back => return Ok(OnboardFlowStepAction::Back),
+                        SelectionLoopResult::Selected(idx) => {
+                            let enabled = idx == 0;
+                            draft.set_acp_enabled(enabled);
+                            if !enabled {
+                                return Ok(OnboardFlowStepAction::Next);
+                            }
+                            sub_step = 1;
+                        }
+                    }
+                }
+                1 => {
+                    // Sub-step 2: ACP backend selection (only if enabled)
+                    let backends = ["builtin", "jsonrpc"];
+                    let current_backend =
+                        draft.protocols.acp_backend.as_deref().unwrap_or("builtin");
+                    let default_backend_idx = backends
+                        .iter()
+                        .position(|b| *b == current_backend)
+                        .unwrap_or(0);
+
+                    let items: Vec<SelectionItem> = backends
+                        .iter()
+                        .map(|b| {
+                            let hint = match *b {
+                                "builtin" => "in-process backend",
+                                "jsonrpc" => "JSON-RPC remote backend",
+                                _ => "",
+                            };
+                            SelectionItem::new(*b, Some(hint))
+                        })
+                        .collect();
+
+                    match self.run_selection_loop(
+                        OnboardWizardStep::Protocols,
+                        "ACP Backend",
+                        items,
+                        default_backend_idx,
+                        "Up/Down to select, Enter to confirm",
+                    )? {
+                        SelectionLoopResult::Back => {
+                            sub_step = 0;
+                        }
+                        SelectionLoopResult::Selected(idx) => {
+                            if let Some(backend) = backends.get(idx) {
+                                draft.set_acp_backend(Some((*backend).to_owned()));
+                            }
+                            return Ok(OnboardFlowStepAction::Next);
+                        }
+                    }
+                }
+                _ => {
+                    return Err(format!(
+                        "internal error: unexpected protocols sub-step {sub_step}"
+                    ));
                 }
             }
         }
-
-        // Sub-step 2: ACP backend selection (only if enabled)
-        let backends = ["builtin", "jsonrpc"];
-        let current_backend = draft.protocols.acp_backend.as_deref().unwrap_or("builtin");
-        let default_backend_idx = backends
-            .iter()
-            .position(|b| *b == current_backend)
-            .unwrap_or(0);
-
-        let items: Vec<SelectionItem> = backends
-            .iter()
-            .map(|b| {
-                let hint = match *b {
-                    "builtin" => "in-process backend",
-                    "jsonrpc" => "JSON-RPC remote backend",
-                    _ => "",
-                };
-                SelectionItem::new(*b, Some(hint))
-            })
-            .collect();
-
-        match self.run_selection_loop(
-            OnboardWizardStep::Protocols,
-            "ACP Backend",
-            items,
-            default_backend_idx,
-            "Up/Down to select, Enter to confirm",
-        )? {
-            SelectionLoopResult::Back => return Ok(OnboardFlowStepAction::Back),
-            SelectionLoopResult::Selected(idx) => {
-                if let Some(backend) = backends.get(idx) {
-                    draft.set_acp_backend(Some((*backend).to_owned()));
-                }
-            }
-        }
-
-        Ok(OnboardFlowStepAction::Next)
     }
 }
 
@@ -1434,6 +1457,11 @@ fn step_ordinal(step: OnboardWizardStep) -> usize {
         .unwrap_or(1)
 }
 
+fn total_step_count() -> usize {
+    use crate::onboard_flow::OnboardFlowController;
+    OnboardFlowController::ordered_steps().len()
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1479,12 +1507,13 @@ mod tests {
     }
 
     #[test]
-    fn welcome_step_returns_back_on_esc() {
+    fn welcome_step_returns_error_on_esc() {
         let events = vec![key(KeyCode::Esc)];
         let source = ScriptedEventSource::new(events);
         let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         let result = runner.run_welcome_step();
-        assert_eq!(result.unwrap(), OnboardFlowStepAction::Back);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "onboarding cancelled");
     }
 
     #[test]

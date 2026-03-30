@@ -988,21 +988,30 @@ async fn run_onboard_cli_inner(
             let warning_message = non_interactive_preflight_warning_message(&checks, &options);
             return Err(warning_message);
         }
-    } else if let Some(runner) = &mut tui_runner {
+    } else if tui_runner.is_some() {
         // --- Post-flow: preflight results (TUI) ---
+        // For hard failures, drop the TUI runner first so raw mode is
+        // restored before the error string is printed to stderr.
         if let Some(message) = config_validation_failure {
+            drop(tui_runner);
             return Err(message);
         }
         if has_failures {
-            return Err(non_interactive_preflight_failure_message(&checks));
+            let message = non_interactive_preflight_failure_message(&checks);
+            drop(tui_runner);
+            return Err(message);
         }
-        if !runner.run_preflight_screen(&checks)? {
+        if let Some(runner) = &mut tui_runner
+            && !runner.run_preflight_screen(&checks)?
+        {
             return Err("onboarding cancelled: unresolved preflight warnings".to_owned());
         }
     }
 
     // --- Post-flow: review screen ---
-    if let Some(runner) = &mut tui_runner {
+    if let Some(runner) = &mut tui_runner
+        && !skip_config_write
+    {
         if show_guided_environment_step
             && flow.current_step() == OnboardWizardStep::EnvironmentCheck
         {
@@ -1029,6 +1038,7 @@ async fn run_onboard_cli_inner(
         return Err("onboarding cancelled: review declined before write".to_owned());
     }
 
+    let mut deferred_backup_message: Option<String> = None;
     let (path, config_status, write_recovery) = if skip_config_write {
         (
             output_path.clone(),
@@ -1044,8 +1054,10 @@ async fn run_onboard_cli_inner(
             None
         };
         if let Some(backup_path) = backup_path {
-            let backup_message = format!("Backed up existing config to: {}", backup_path.display());
-            print_stdout_message(backup_message)?;
+            deferred_backup_message = Some(format!(
+                "Backed up existing config to: {}",
+                backup_path.display()
+            ));
         }
         let path = match mvp::config::write(
             options.output.as_deref(),
@@ -1195,6 +1207,12 @@ async fn run_onboard_cli_inner(
 
     // Drop the TUI runner to restore the terminal before returning.
     drop(tui_runner);
+
+    // Print deferred messages now that raw mode is restored.
+    if let Some(msg) = deferred_backup_message {
+        print_stdout_message(msg)?;
+    }
+
     Ok(())
 }
 
