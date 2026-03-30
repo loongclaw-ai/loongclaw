@@ -12,7 +12,7 @@ path = "src/lib.rs"
 
 [features]
 default = ["mvp"]
-mvp = ["loongclaw-app/default", "memory-sqlite"]
+mvp = ["loongclaw-app/default", "memory-sqlite", "channel-cli"]
 test-support = []
 channel-cli = ["loongclaw-app/channel-cli"]
 channel-telegram = ["loongclaw-app/channel-telegram"]
