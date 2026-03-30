@@ -57,8 +57,7 @@ struct TuiPtyFixture {
     writer: Box<dyn Write + Send>,
     /// Receives byte chunks from the background reader thread.
     rx: std_mpsc::Receiver<Vec<u8>>,
-    /// Accumulated raw bytes read so far (including previous calls).
-    accumulated: Vec<u8>,
+    parser: vt100::Parser,
     _root: PathBuf,
 }
 
@@ -144,7 +143,7 @@ impl TuiPtyFixture {
             child,
             writer,
             rx,
-            accumulated: Vec::new(),
+            parser: vt100::Parser::new(24, 80, 0),
             _root: root,
         }
     }
@@ -180,116 +179,99 @@ impl TuiPtyFixture {
         self.send_keys(b"\x03")
     }
 
-    /// Drain any pending data from the reader channel into `accumulated`.
+    /// Drain any pending data from the reader channel into the vt100 parser.
     fn drain_pending(&mut self) {
         while let Ok(chunk) = self.rx.try_recv() {
-            self.accumulated.extend_from_slice(&chunk);
+            self.parser.process(&chunk);
         }
     }
 
-    /// Read all available output from the PTY, stripping ANSI escape
-    /// sequences and returning plain text.  Waits up to `timeout` for
-    /// data to arrive, then returns everything accumulated so far.
+    /// Read the current visible screen contents from the vt100 parser.
+    /// Waits up to `timeout` for non-empty content to appear.
     fn read_screen(&mut self, timeout: Duration) -> Result<String, String> {
         let deadline = Instant::now() + timeout;
-
         loop {
             self.drain_pending();
-
-            if !self.accumulated.is_empty() {
-                // Give a short grace period for more data to arrive.
+            let contents = self.parser.screen().contents();
+            if !contents.trim().is_empty() {
                 std::thread::sleep(Duration::from_millis(100));
                 self.drain_pending();
-                break;
+                return Ok(self.parser.screen().contents());
             }
-
             if Instant::now() >= deadline {
-                break;
+                return Ok(self.parser.screen().contents());
             }
-
-            // Wait for the first chunk with a bounded recv_timeout.
             let remaining = deadline.saturating_duration_since(Instant::now());
             let wait = remaining.min(Duration::from_millis(100));
             if let Ok(chunk) = self.rx.recv_timeout(wait) {
-                self.accumulated.extend_from_slice(&chunk);
+                self.parser.process(&chunk);
             }
         }
-
-        Ok(strip_ansi(&self.accumulated))
     }
 
-    /// Wait until the screen output contains `pattern`, returning the full
-    /// accumulated text.  Polls every 100ms until `timeout`.
+    /// Wait until the current screen contains `pattern`, returning the full
+    /// screen text.  Polls every 100ms until `timeout`.
     fn wait_for(&mut self, pattern: &str, timeout: Duration) -> Result<String, String> {
         let deadline = Instant::now() + timeout;
-
         loop {
             self.drain_pending();
-
-            let plain = strip_ansi(&self.accumulated);
-            if plain.contains(pattern) {
-                return Ok(plain);
+            let screen = self.parser.screen().contents();
+            if screen.contains(pattern) {
+                return Ok(screen);
             }
-
             if Instant::now() >= deadline {
                 return Err(format!(
-                    "timed out waiting for pattern {:?} in PTY output (got: {:?})",
-                    pattern, plain
+                    "timed out waiting for pattern {:?} in PTY screen (got: {:?})",
+                    pattern, screen
                 ));
             }
-
             let remaining = deadline.saturating_duration_since(Instant::now());
             let wait = remaining.min(Duration::from_millis(100));
             match self.rx.recv_timeout(wait) {
                 Ok(chunk) => {
-                    self.accumulated.extend_from_slice(&chunk);
+                    self.parser.process(&chunk);
                 }
                 Err(std_mpsc::RecvTimeoutError::Timeout) => {}
                 Err(std_mpsc::RecvTimeoutError::Disconnected) => {
-                    let plain = strip_ansi(&self.accumulated);
+                    let screen = self.parser.screen().contents();
                     return Err(format!(
                         "PTY reader disconnected before pattern {:?} appeared (got: {:?})",
-                        pattern, plain,
+                        pattern, screen,
                     ));
                 }
             }
         }
     }
 
-    /// Wait until ANY of the given patterns matches in the ANSI-stripped
-    /// accumulated text.  Polls every 100ms until `timeout`.  Returns the
-    /// full text on match, or an error containing the accumulated text on
-    /// timeout.
+    /// Wait until ANY of the given patterns matches in the current screen
+    /// contents.  Polls every 100ms until `timeout`.  Returns the full
+    /// screen text on match, or an error on timeout.
     fn wait_for_any(&mut self, patterns: &[&str], timeout: Duration) -> Result<String, String> {
         let deadline = Instant::now() + timeout;
-
         loop {
             self.drain_pending();
-
-            let plain = strip_ansi(&self.accumulated);
+            let screen = self.parser.screen().contents();
             for pat in patterns {
-                if plain.contains(pat) {
-                    return Ok(plain);
+                if screen.contains(pat) {
+                    return Ok(screen);
                 }
             }
-
             if Instant::now() >= deadline {
                 return Err(format!(
-                    "timed out waiting for any of {patterns:?} in PTY output (got: {plain:?})"
+                    "timed out waiting for any of {patterns:?} in PTY screen (got: {screen:?})"
                 ));
             }
-
             let remaining = deadline.saturating_duration_since(Instant::now());
             let wait = remaining.min(Duration::from_millis(100));
             match self.rx.recv_timeout(wait) {
                 Ok(chunk) => {
-                    self.accumulated.extend_from_slice(&chunk);
+                    self.parser.process(&chunk);
                 }
                 Err(std_mpsc::RecvTimeoutError::Timeout) => {}
                 Err(std_mpsc::RecvTimeoutError::Disconnected) => {
-                    let plain = strip_ansi(&self.accumulated);
+                    let screen = self.parser.screen().contents();
                     return Err(format!(
-                        "PTY reader disconnected before any of {patterns:?} appeared (got: {plain:?})"
+                        "PTY reader disconnected before any of {patterns:?} appeared (got: {screen:?})"
                     ));
                 }
             }
@@ -733,9 +715,8 @@ fn tui_clear_command_clears_transcript() {
     // Give the TUI time to process the clear and re-render.
     std::thread::sleep(Duration::from_secs(1));
 
-    // Reset accumulated buffer so we only read the fresh screen.
-    fixture.accumulated.clear();
-
+    // With vt100, the screen reflects current visible state — no need to
+    // reset any buffer; /clear already removed the welcome text.
     let screen = fixture
         .read_screen(Duration::from_secs(3))
         .unwrap_or_default();
