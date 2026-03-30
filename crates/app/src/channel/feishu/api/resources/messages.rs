@@ -592,8 +592,9 @@ pub async fn update_card(
 ) -> CliResult<()> {
     let message_id = require_non_empty("feishu card update", "message_id", message_id)?;
 
+    let content_str = encode_feishu_content(card_content)?;
     let request_body = json!({
-        "content": card_content
+        "content": content_str
     });
 
     client
