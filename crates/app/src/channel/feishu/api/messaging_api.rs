@@ -9,7 +9,7 @@ use crate::channel::{
 };
 
 use super::resources::messages::FeishuOutboundMessageBody;
-use super::resources::types::{FeishuMessageDetail, FeishuMessageSummary};
+use super::resources::types::FeishuMessageDetail;
 
 /// Generate a UUID-like string for idempotency
 ///
@@ -365,26 +365,6 @@ pub(crate) fn extract_receive_params(
             )))
         }
     }
-}
-
-/// Create a minimal Message from FeishuMessageSummary
-pub(crate) fn create_message_from_summary(
-    summary: FeishuMessageSummary,
-    session: &ChannelSession,
-) -> Option<Message> {
-    let timestamp = parse_feishu_timestamp(summary.create_time.as_deref()).unwrap_or_else(Utc::now);
-
-    Some(Message {
-        id: summary.message_id,
-        session: session.clone(),
-        sender_id: String::new(),
-        content: MessageContent::Text {
-            text: String::new(),
-        },
-        timestamp,
-        parent_id: summary.parent_id,
-        raw: None,
-    })
 }
 
 #[cfg(test)]

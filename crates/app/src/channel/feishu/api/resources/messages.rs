@@ -6,7 +6,7 @@ use crate::CliResult;
 use super::super::client::FeishuClient;
 use super::cards;
 use super::types::{
-    FeishuMessageDetail, FeishuMessageHistoryPage, FeishuMessageSummary, FeishuMessageWriteReceipt,
+    FeishuMessageDetail, FeishuMessageHistoryPage, FeishuMessageWriteReceipt,
     FeishuSearchMessagePage,
 };
 
@@ -692,7 +692,7 @@ pub fn parse_message_history_response(payload: &Value) -> CliResult<FeishuMessag
         .map(|items| {
             items
                 .iter()
-                .filter_map(parse_message_summary)
+                .filter_map(parse_message_detail_from_item)
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
@@ -721,43 +721,9 @@ pub fn parse_message_detail_response(
         .and_then(|items| items.first())
         .cloned()
         .unwrap_or(Value::Object(serde_json::Map::new()));
-    let object = item
-        .as_object()
-        .ok_or_else(|| "feishu message detail item is not an object".to_owned())?;
 
-    Ok(FeishuMessageDetail {
-        message_id: opt_string(object.get("message_id"))
-            .unwrap_or_else(|| message_id.trim().to_owned()),
-        chat_id: opt_string(object.get("chat_id")),
-        root_id: opt_string(object.get("root_id")),
-        parent_id: opt_string(object.get("parent_id")),
-        message_type: opt_string(object.get("msg_type")),
-        create_time: opt_string(object.get("create_time")),
-        update_time: opt_string(object.get("update_time")),
-        deleted: object.get("deleted").and_then(Value::as_bool),
-        updated: object.get("updated").and_then(Value::as_bool),
-        sender_id: object
-            .get("sender")
-            .and_then(|value| value.get("id"))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned),
-        sender_type: object
-            .get("sender")
-            .and_then(|value| value.get("sender_type"))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned),
-        // Extract and parse message body content
-        // Feishu returns content as a stringified JSON at item["body"]["content"]
-        body: object
-            .get("body")
-            .and_then(|b| b.get("content"))
-            .and_then(Value::as_str)
-            .and_then(|s| serde_json::from_str::<Value>(s).ok())
-            .unwrap_or(Value::Object(serde_json::Map::new())),
+    parse_message_detail_from_item(&item).ok_or_else(|| {
+        format!("feishu message detail response missing message_id for {message_id}")
     })
 }
 
@@ -805,16 +771,45 @@ pub fn parse_message_write_response(payload: &Value) -> CliResult<FeishuMessageW
     })
 }
 
-fn parse_message_summary(item: &Value) -> Option<FeishuMessageSummary> {
+/// Parse a single message item into FeishuMessageDetail
+fn parse_message_detail_from_item(item: &Value) -> Option<FeishuMessageDetail> {
     let object = item.as_object()?;
-    Some(FeishuMessageSummary {
-        message_id: opt_string(object.get("message_id"))?,
+    let message_id = opt_string(object.get("message_id"))?;
+
+    // Extract and parse message body content
+    // Feishu returns content as a stringified JSON at item["body"]["content"]
+    let body = object
+        .get("body")
+        .and_then(|b| b.get("content"))
+        .and_then(Value::as_str)
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .unwrap_or(Value::Object(serde_json::Map::new()));
+
+    Some(FeishuMessageDetail {
+        message_id,
         chat_id: opt_string(object.get("chat_id")),
         root_id: opt_string(object.get("root_id")),
         parent_id: opt_string(object.get("parent_id")),
         message_type: opt_string(object.get("msg_type")),
         create_time: opt_string(object.get("create_time")),
         update_time: opt_string(object.get("update_time")),
+        deleted: object.get("deleted").and_then(Value::as_bool),
+        updated: object.get("updated").and_then(Value::as_bool),
+        sender_id: object
+            .get("sender")
+            .and_then(|value| value.get("id"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
+        sender_type: object
+            .get("sender")
+            .and_then(|value| value.get("sender_type"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
+        body,
     })
 }
 

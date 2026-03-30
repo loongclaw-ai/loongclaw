@@ -5,8 +5,7 @@ use crate::CliResult;
 use crate::channel::feishu::api::FeishuClient;
 use crate::channel::feishu::api::messaging_api::{
     convert_cli_result, convert_feishu_message_to_generic, convert_message_content_to_feishu,
-    convert_string_error_to_api_error, create_message_from_summary, extract_receive_params,
-    generate_uuid,
+    convert_string_error_to_api_error, extract_receive_params, generate_uuid,
 };
 use crate::channel::feishu::api::resources::messages::{
     self, FeishuMessageHistoryQuery, FeishuOutboundMessageBody, fetch_message_detail,
@@ -456,24 +455,12 @@ impl MessagingApi for FeishuAdapter {
 
         let page = convert_cli_result(fetch_message_history(&self.client, &token, &query).await)?;
 
-        let mut messages = Vec::new();
-        for summary in page.items {
-            match fetch_message_detail(&self.client, &token, &summary.message_id).await {
-                Ok(detail) => match convert_feishu_message_to_generic(detail) {
-                    Ok(message) => messages.push(message),
-                    Err(_) => {
-                        if let Some(msg) = create_message_from_summary(summary, session) {
-                            messages.push(msg);
-                        }
-                    }
-                },
-                Err(_) => {
-                    if let Some(msg) = create_message_from_summary(summary, session) {
-                        messages.push(msg);
-                    }
-                }
-            }
-        }
+        // Convert directly from history items — no individual detail fetches needed
+        let messages: Vec<Message> = page
+            .items
+            .into_iter()
+            .filter_map(|detail| convert_feishu_message_to_generic(detail).ok())
+            .collect();
 
         Ok(PaginatedResult {
             items: messages,
