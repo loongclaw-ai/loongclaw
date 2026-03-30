@@ -174,16 +174,7 @@ fn render_message(
             for part in &msg.parts {
                 match part {
                     MessagePart::Text(text) => {
-                        let md_text = tui_markdown::from_str(text);
-                        for line in md_text.lines {
-                            let mut indented_spans: Vec<Span<'static>> = vec![Span::raw("  ")];
-                            indented_spans.extend(
-                                line.spans
-                                    .into_iter()
-                                    .map(|s| Span::styled(s.content.into_owned(), s.style)),
-                            );
-                            lines.push(Line::from(indented_spans));
-                        }
+                        lines.extend(render_markdown(text, palette));
                     }
                     MessagePart::ThinkBlock(text) => {
                         if show_thinking {
@@ -368,6 +359,167 @@ fn render_welcome(width: usize, palette: &Palette) -> Vec<Line<'static>> {
     ));
     lines.push(Line::default());
     lines
+}
+
+// ---------------------------------------------------------------------------
+// Markdown → ratatui Lines
+// ---------------------------------------------------------------------------
+
+/// Render a markdown string into indented, styled `Line`s using `pulldown-cmark`.
+///
+/// Strips raw markdown syntax and applies terminal-friendly formatting:
+/// - `# Header` → bold + brand colour (no `#` prefix)
+/// - `**bold**` → `Modifier::BOLD`
+/// - `*italic*` → `Modifier::ITALIC`
+/// - `` `code` `` → dim colour
+/// - `- item` → `  • item` (bullet)
+/// - `> quote` → `  │ ` prefix + italic
+/// - Code blocks → dim + indent
+#[allow(clippy::wildcard_enum_match_arm)]
+fn render_markdown(src: &str, palette: &Palette) -> Vec<Line<'static>> {
+    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+
+    let parser = Parser::new_ext(src, Options::ENABLE_STRIKETHROUGH);
+
+    let text_style = Style::default().fg(palette.text);
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut style_stack: Vec<Style> = vec![text_style];
+    let mut in_code_block = false;
+    let mut list_depth: usize = 0;
+    let mut in_blockquote = false;
+
+    for event in parser {
+        match event {
+            Event::Start(tag) => match tag {
+                Tag::Heading { .. } => {
+                    style_stack.push(
+                        Style::default()
+                            .fg(palette.brand)
+                            .add_modifier(Modifier::BOLD),
+                    );
+                }
+                Tag::Emphasis => {
+                    let base = *style_stack.last().unwrap_or(&text_style);
+                    style_stack.push(base.add_modifier(Modifier::ITALIC));
+                }
+                Tag::Strong => {
+                    let base = *style_stack.last().unwrap_or(&text_style);
+                    style_stack.push(base.add_modifier(Modifier::BOLD));
+                }
+                Tag::Strikethrough => {
+                    let base = *style_stack.last().unwrap_or(&text_style);
+                    style_stack.push(base.add_modifier(Modifier::CROSSED_OUT));
+                }
+                Tag::CodeBlock(_) => {
+                    in_code_block = true;
+                    md_flush(&mut spans, &mut out, in_blockquote, list_depth);
+                }
+                Tag::List(_) => {
+                    list_depth += 1;
+                }
+                Tag::Item => {
+                    md_flush(&mut spans, &mut out, in_blockquote, list_depth);
+                    spans.push(Span::styled("• ", Style::default().fg(palette.dim)));
+                }
+                Tag::BlockQuote(_) => {
+                    in_blockquote = true;
+                }
+                Tag::Link { .. } => {
+                    style_stack.push(
+                        Style::default()
+                            .fg(palette.info)
+                            .add_modifier(Modifier::UNDERLINED),
+                    );
+                }
+                _ => {}
+            },
+            Event::End(tag_end) => match tag_end {
+                TagEnd::Heading(_) => {
+                    style_stack.pop();
+                    md_flush(&mut spans, &mut out, in_blockquote, list_depth);
+                    out.push(Line::default());
+                }
+                TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link => {
+                    style_stack.pop();
+                }
+                TagEnd::CodeBlock => {
+                    in_code_block = false;
+                    md_flush(&mut spans, &mut out, in_blockquote, list_depth);
+                }
+                TagEnd::List(_) => {
+                    list_depth = list_depth.saturating_sub(1);
+                    if list_depth == 0 {
+                        out.push(Line::default());
+                    }
+                }
+                TagEnd::Item => {
+                    md_flush(&mut spans, &mut out, in_blockquote, list_depth);
+                }
+                TagEnd::BlockQuote(_) => {
+                    in_blockquote = false;
+                }
+                TagEnd::Paragraph => {
+                    md_flush(&mut spans, &mut out, in_blockquote, list_depth);
+                    out.push(Line::default());
+                }
+                _ => {}
+            },
+            Event::Text(text) => {
+                if in_code_block {
+                    let s = Style::default().fg(palette.dim);
+                    for line_str in text.as_ref().lines() {
+                        spans.push(Span::styled(format!("    {line_str}"), s));
+                        md_flush(&mut spans, &mut out, in_blockquote, list_depth);
+                    }
+                } else {
+                    let s = *style_stack.last().unwrap_or(&text_style);
+                    spans.push(Span::styled(text.into_string(), s));
+                }
+            }
+            Event::Code(code) => {
+                spans.push(Span::styled(
+                    format!("`{code}`"),
+                    Style::default().fg(palette.dim),
+                ));
+            }
+            Event::SoftBreak => spans.push(Span::raw(" ")),
+            Event::HardBreak => md_flush(&mut spans, &mut out, in_blockquote, list_depth),
+            Event::Rule => {
+                md_flush(&mut spans, &mut out, in_blockquote, list_depth);
+                out.push(Line::styled(
+                    "  ────────────────────────────────────────",
+                    Style::default().fg(palette.separator),
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    md_flush(&mut spans, &mut out, in_blockquote, list_depth);
+    out
+}
+
+/// Flush accumulated spans into a single indented `Line`.
+fn md_flush(
+    spans: &mut Vec<Span<'static>>,
+    out: &mut Vec<Line<'static>>,
+    in_blockquote: bool,
+    list_depth: usize,
+) {
+    if spans.is_empty() {
+        return;
+    }
+    let indent = if in_blockquote {
+        "  │ ".to_string()
+    } else if list_depth > 0 {
+        format!("{}  ", "  ".repeat(list_depth.saturating_sub(1)))
+    } else {
+        "  ".to_string()
+    };
+    let mut line_spans = vec![Span::raw(indent)];
+    line_spans.append(spans);
+    out.push(Line::from(line_spans));
 }
 
 // ---------------------------------------------------------------------------
