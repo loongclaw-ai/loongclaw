@@ -11,7 +11,7 @@ The format follows Keep a Changelog and semantic versioning intent.
 ### Added
 
 - Added the first stable LoongClaw baseline after the `0.1.0-alpha.*` prerelease line, carrying forward the frozen `dev` slice for promotion into `main`.
-- Added Feishu channel delivery follow-through including Messaging API integration plus bitable list, create, and search support.
+- Expanded Feishu channel delivery follow-through including Messaging API integration plus bitable list, create, and search support.
 - Added background task CLI flows, discovery-first external skills guidance, doctor security audit coverage, session-scoped tool consent handling, manifest-first plugin packaging, and plugin inventory plus doctor CLI surfaces.
 
 ### Changed
