@@ -7,7 +7,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use futures_util::StreamExt;
+use futures_util::{FutureExt as _, StreamExt};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::style::Style;
@@ -486,55 +486,55 @@ pub(super) async fn run(
     let mut turn_active = false;
 
     loop {
-        // Render
-        guard.draw(&shell, &textarea, &palette)?;
-
-        // Tick spinners
-        shell.pane.tick_spinner();
+        // ── Phase 1: Drain all pending events (non-blocking) ──────────
 
         let mut submit_text: Option<String> = None;
 
-        tokio::select! {
-            biased;
+        // Drain observer channel
+        while let Ok(event) = rx.try_recv() {
+            apply_ui_event(&mut shell, event);
+            shell.dirty = true;
+        }
 
-            // Observer/turn events from channel
-            Some(event) = rx.recv() => {
-                apply_ui_event(&mut shell, event);
-            }
-
-            // Crossterm terminal events
-            maybe_event = crossterm_events.next() => {
-                if let Some(Ok(event)) = maybe_event {
+        // Drain crossterm terminal events
+        {
+            while let Some(maybe_event) = crossterm_events.next().now_or_never().flatten() {
+                if let Ok(event) = maybe_event {
+                    let mut submit_text_drain: Option<String> = None;
                     apply_terminal_event(
                         &mut shell,
                         &mut textarea,
                         event,
                         &tx,
-                        &mut submit_text,
+                        &mut submit_text_drain,
                     );
+                    shell.dirty = true;
+
+                    if submit_text_drain.is_some() {
+                        submit_text = submit_text_drain;
+                    }
                 }
-            }
-
-            // Awaiting the in-flight turn to complete
-            _ = &mut turn_future, if turn_active => {
-                turn_active = false;
-                turn_future = Box::pin(std::future::pending());
-                shell.pane.agent_running = false;
-            }
-
-            // Tick timer
-            _ = tick.tick() => {
-                // spinner animation already handled above
             }
         }
 
-        // Submit turn after select! releases borrows.
-        if let Some(text) = submit_text.take() {
+        // Check turn completion (non-blocking)
+        if turn_active {
+            let waker = futures_util::task::noop_waker();
+            let mut cx = std::task::Context::from_waker(&waker);
+            if turn_future.as_mut().poll(&mut cx).is_ready() {
+                turn_active = false;
+                turn_future = Box::pin(std::future::pending());
+                shell.pane.agent_running = false;
+                shell.dirty = true;
+            }
+        }
+
+        // Submit turn if drain phase produced one
+        if let Some(ref text) = submit_text.take() {
             let obs = build_tui_observer(tx.clone());
             let tx2 = tx.clone();
             let streamed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let streamed_flag = streamed.clone();
-            // Wrap observer to track whether tokens were streamed
             let tracking_obs = TrackingObserver {
                 inner: obs,
                 streamed: streamed_flag,
@@ -542,13 +542,11 @@ pub(super) async fn run(
             let tracking_handle: crate::conversation::ConversationTurnObserverHandle =
                 std::sync::Arc::new(tracking_obs);
 
+            let text_owned = text.to_string();
             turn_future = Box::pin(async move {
-                let result = run_turn(runtime, &text, Some(tracking_handle)).await;
+                let result = run_turn(runtime, &text_owned, Some(tracking_handle)).await;
                 match result {
                     Ok(reply) => {
-                        // If the observer streamed tokens, the transcript
-                        // already has the reply. Only send a fallback Token
-                        // for non-streaming providers.
                         if !streamed.load(std::sync::atomic::Ordering::Relaxed) && !reply.is_empty()
                         {
                             let _ = tx2.send(UiEvent::Token {
@@ -570,8 +568,90 @@ pub(super) async fn run(
             shell.pane.agent_running = true;
         }
 
+        // ── Phase 2: Render (only when dirty) ─────────────────────────
+        if shell.dirty {
+            shell.pane.tick_spinner();
+            guard.draw(&shell, &textarea, &palette)?;
+            shell.dirty = false;
+        }
+
         if !shell.running {
             break;
+        }
+
+        // ── Phase 3: Sleep until next event or tick ───────────────────
+        let mut submit_text: Option<String> = None;
+
+        tokio::select! {
+            biased;
+
+            Some(event) = rx.recv() => {
+                apply_ui_event(&mut shell, event);
+                shell.dirty = true;
+            }
+
+            maybe_event = crossterm_events.next() => {
+                if let Some(Ok(event)) = maybe_event {
+                    apply_terminal_event(
+                        &mut shell,
+                        &mut textarea,
+                        event,
+                        &tx,
+                        &mut submit_text,
+                    );
+                    shell.dirty = true;
+                }
+            }
+
+            _ = &mut turn_future, if turn_active => {
+                turn_active = false;
+                turn_future = Box::pin(std::future::pending());
+                shell.pane.agent_running = false;
+                shell.dirty = true;
+            }
+
+            _ = tick.tick() => {
+                shell.dirty = true; // tick always triggers render
+            }
+        }
+
+        // Submit turn after select! releases borrows
+        if let Some(ref text) = submit_text.take() {
+            let obs = build_tui_observer(tx.clone());
+            let tx2 = tx.clone();
+            let streamed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let streamed_flag = streamed.clone();
+            let tracking_obs = TrackingObserver {
+                inner: obs,
+                streamed: streamed_flag,
+            };
+            let tracking_handle: crate::conversation::ConversationTurnObserverHandle =
+                std::sync::Arc::new(tracking_obs);
+
+            let text_owned = text.to_string();
+            turn_future = Box::pin(async move {
+                let result = run_turn(runtime, &text_owned, Some(tracking_handle)).await;
+                match result {
+                    Ok(reply) => {
+                        if !streamed.load(std::sync::atomic::Ordering::Relaxed) && !reply.is_empty()
+                        {
+                            let _ = tx2.send(UiEvent::Token {
+                                content: reply,
+                                is_thinking: false,
+                            });
+                            let _ = tx2.send(UiEvent::ResponseDone {
+                                input_tokens: 0,
+                                output_tokens: 0,
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx2.send(UiEvent::TurnError(e));
+                    }
+                }
+            });
+            turn_active = true;
+            shell.pane.agent_running = true;
         }
     }
 

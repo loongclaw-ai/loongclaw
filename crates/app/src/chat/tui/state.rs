@@ -192,6 +192,7 @@ pub(super) struct Shell {
     pub(super) running: bool,
     pub(super) show_thinking: bool,
     pub(super) focus: FocusStack,
+    pub(super) dirty: bool,
 }
 
 impl Shell {
@@ -201,6 +202,7 @@ impl Shell {
             running: true,
             show_thinking: true,
             focus: FocusStack::new(),
+            dirty: true,
         }
     }
 }
@@ -360,6 +362,7 @@ mod tests {
         let shell = Shell::new("s1");
         assert!(shell.running);
         assert!(shell.show_thinking);
+        assert!(shell.dirty);
         assert_eq!(shell.focus.top(), super::super::focus::FocusLayer::Composer);
         assert_eq!(shell.pane.session_id, "s1");
     }
