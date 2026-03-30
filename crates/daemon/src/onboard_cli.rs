@@ -2018,8 +2018,24 @@ fn resolve_model_selection(
         ),
     )?;
     if !available_models.is_empty() {
+        // When we render the model catalog choices from a static provider list,
+        // we still compute `prompt_default` (often `auto`) for the prompt UI.
+        // Hide `auto` from the selectable catalog to match operator expectations.
+        let is_static_volcengine_coding_plan_catalog = available_models
+            .iter()
+            .any(|m| m.ends_with("doubao-seed-2.0-code"));
+
+        let hide_prompt_default_from_catalog = prompt_default.trim().eq_ignore_ascii_case("auto")
+            && is_static_volcengine_coding_plan_catalog;
+
+        let effective_prompt_default = if hide_prompt_default_from_catalog {
+            ""
+        } else {
+            prompt_default.as_str()
+        };
+
         let catalog_choices = onboarding_model_policy::onboarding_model_catalog_choices(
-            prompt_default.as_str(),
+            effective_prompt_default,
             available_models,
         );
         let (select_options, default_idx) = build_model_selection_options(&catalog_choices);
@@ -2054,6 +2070,26 @@ async fn load_onboarding_model_catalog(
     options: &OnboardCommandOptions,
     config: &mvp::config::LoongClawConfig,
 ) -> Vec<String> {
+    // Volcano Engine "Coding Plan" domestic endpoint has a stable, operator-provided model list.
+    // Using it avoids an interactive onboarding dependency on `GET /models`.
+    if config.provider.kind == mvp::config::ProviderKind::VolcengineCoding {
+        let base_url = config.provider.base_url.trim_end_matches('/');
+        if base_url.contains("ark.cn-beijing.volces.com/api/coding/v3") {
+            return vec![
+                // Keep the historical default model id as an explicit choice.
+                "ark-code-latest".to_owned(),
+                "doubao-seed-2.0-code".to_owned(),
+                "doubao-seed-2.0-pro".to_owned(),
+                "doubao-seed-2.0-lite".to_owned(),
+                "doubao-seed-code".to_owned(),
+                "minimax-m2.5".to_owned(),
+                "glm-4.7".to_owned(),
+                "deepseek-v3.2".to_owned(),
+                "kimi-k2.5".to_owned(),
+            ];
+        }
+    }
+
     if options.non_interactive || options.skip_model_probe {
         return Vec::new();
     }
