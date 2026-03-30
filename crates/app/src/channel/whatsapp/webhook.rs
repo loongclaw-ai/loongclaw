@@ -18,8 +18,11 @@ use crate::CliResult;
 use crate::KernelContext;
 use crate::channel::{
     ChannelDelivery, ChannelInboundMessage, ChannelOutboundTarget, ChannelOutboundTargetKind,
-    ChannelPlatform, ChannelSession, ChannelTurnFeedbackPolicy, process_inbound_with_provider,
-    http::{build_outbound_http_client, validate_outbound_http_target, outbound_http_policy_from_config},
+    ChannelPlatform, ChannelSession, ChannelTurnFeedbackPolicy,
+    http::{
+        build_outbound_http_client, outbound_http_policy_from_config, validate_outbound_http_target,
+    },
+    process_inbound_with_provider,
     runtime_state::ChannelOperationRuntimeTracker,
 };
 use crate::config::{LoongClawConfig, ResolvedWhatsappChannelConfig};
