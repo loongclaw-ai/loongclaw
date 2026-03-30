@@ -172,6 +172,36 @@ impl Drop for TerminalGuard {
 }
 
 // ---------------------------------------------------------------------------
+// Streaming-tracking observer wrapper
+// ---------------------------------------------------------------------------
+
+/// Wraps a `ConversationTurnObserver` to track whether streaming tokens
+/// were delivered, so the shell can send a fallback reply for non-streaming
+/// providers.
+struct TrackingObserver {
+    inner: ConversationTurnObserverHandle,
+    streamed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl crate::conversation::ConversationTurnObserver for TrackingObserver {
+    fn on_phase(&self, event: crate::conversation::ConversationTurnPhaseEvent) {
+        self.inner.on_phase(event);
+    }
+
+    fn on_tool(&self, event: crate::conversation::ConversationTurnToolEvent) {
+        self.inner.on_tool(event);
+    }
+
+    fn on_streaming_token(&self, event: crate::acp::StreamingTokenEvent) {
+        if event.event_type == "text_delta" {
+            self.streamed
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.inner.on_streaming_token(event);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Turn runner
 // ---------------------------------------------------------------------------
 
@@ -434,6 +464,7 @@ pub(super) async fn run(
     textarea.set_cursor_line_style(Style::default());
 
     let mut shell = state::Shell::new(&runtime.session_id);
+    shell.pane.model = runtime.model_label.clone();
     shell
         .pane
         .add_system_message("Welcome to LoongClaw TUI. Type a message and press Enter.");
@@ -500,24 +531,34 @@ pub(super) async fn run(
         if let Some(text) = submit_text.take() {
             let obs = build_tui_observer(tx.clone());
             let tx2 = tx.clone();
+            let streamed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let streamed_flag = streamed.clone();
+            // Wrap observer to track whether tokens were streamed
+            let tracking_obs = TrackingObserver {
+                inner: obs,
+                streamed: streamed_flag,
+            };
+            let tracking_handle: crate::conversation::ConversationTurnObserverHandle =
+                std::sync::Arc::new(tracking_obs);
+
             turn_future = Box::pin(async move {
-                let result = run_turn(runtime, &text, Some(obs)).await;
+                let result = run_turn(runtime, &text, Some(tracking_handle)).await;
                 match result {
                     Ok(reply) => {
-                        // The observer streams tokens live, but if the provider
-                        // returned a non-streaming response, or the final text
-                        // differs from what was streamed, ensure the reply is
-                        // captured as a token event so it appears in the transcript.
-                        if !reply.is_empty() {
+                        // If the observer streamed tokens, the transcript
+                        // already has the reply. Only send a fallback Token
+                        // for non-streaming providers.
+                        if !streamed.load(std::sync::atomic::Ordering::Relaxed) && !reply.is_empty()
+                        {
                             let _ = tx2.send(UiEvent::Token {
                                 content: reply,
                                 is_thinking: false,
                             });
+                            let _ = tx2.send(UiEvent::ResponseDone {
+                                input_tokens: 0,
+                                output_tokens: 0,
+                            });
                         }
-                        let _ = tx2.send(UiEvent::ResponseDone {
-                            input_tokens: 0,
-                            output_tokens: 0,
-                        });
                     }
                     Err(e) => {
                         let _ = tx2.send(UiEvent::TurnError(e));
