@@ -1,8 +1,8 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
-#[allow(dead_code)] // consumed by runner in later tasks
 pub(crate) struct OnboardLayoutAreas {
     pub header: Rect,
+    #[allow(dead_code)] // used in tests; will be rendered when wide spine is enabled
     pub spine: Rect,
     pub content: Rect,
     pub footer: Rect,
@@ -12,7 +12,6 @@ pub(crate) struct OnboardLayoutAreas {
 ///
 /// `wide_spine = true` allocates an 18-column spine on the left; otherwise the
 /// spine is `Rect::ZERO` and the full body width goes to `content`.
-#[allow(dead_code)] // consumed by runner in later tasks
 #[allow(clippy::indexing_slicing)] // Layout::split returns exactly as many Rects as constraints
 pub(crate) fn compute_layout(area: Rect, wide_spine: bool) -> OnboardLayoutAreas {
     let vertical = Layout::default()

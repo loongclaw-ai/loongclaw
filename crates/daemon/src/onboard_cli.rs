@@ -868,10 +868,13 @@ async fn run_onboard_cli_inner(
 
     // Create the TUI runner at the start for the entire interactive session.
     let mut tui_runner = if !options.non_interactive {
-        Some(
-            crate::onboard_tui::RatatuiOnboardRunner::new()
-                .map_err(|e| format!("failed to initialize TUI: {e}"))?,
-        )
+        match crate::onboard_tui::RatatuiOnboardRunner::new() {
+            Ok(runner) => Some(runner),
+            Err(e) => {
+                eprintln!("warning: TUI unavailable ({e}), falling back to basic prompts");
+                None
+            }
+        }
     } else {
         None
     };

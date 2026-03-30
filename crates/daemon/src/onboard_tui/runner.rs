@@ -53,7 +53,6 @@ pub(crate) struct RatatuiOnboardRunner<E: OnboardEventSource = CrosstermEventSou
 
 impl RatatuiOnboardRunner<CrosstermEventSource> {
     /// Create a new runner that renders inline at the current cursor position.
-    #[allow(dead_code)]
     pub fn new() -> io::Result<Self> {
         // Install a panic hook that restores the terminal before printing.
         let original_hook = std::panic::take_hook();

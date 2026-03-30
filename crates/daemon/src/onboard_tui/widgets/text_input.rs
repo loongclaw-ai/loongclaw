@@ -5,7 +5,6 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
-#[allow(dead_code)] // consumed by later tasks (screen / runner)
 pub(crate) struct TextInputState {
     value: String,
     default: Option<String>,
@@ -14,7 +13,6 @@ pub(crate) struct TextInputState {
     error: Option<String>,
 }
 
-#[allow(dead_code)] // consumed by later tasks (screen / runner)
 impl TextInputState {
     pub fn new() -> Self {
         Self {
@@ -26,6 +24,7 @@ impl TextInputState {
         }
     }
 
+    #[allow(dead_code)] // used in tests
     pub fn with_value(value: impl Into<String>) -> Self {
         let v: String = value.into();
         let len = v.len();
@@ -150,21 +149,25 @@ impl TextInputState {
         }
     }
 
+    #[allow(dead_code)] // used in tests
     pub fn set_error(&mut self, error: Option<String>) {
         self.error = error;
     }
 
+    #[allow(dead_code)] // used in tests
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
     }
+
+    pub fn cursor_position(&self) -> usize {
+        self.cursor
+    }
 }
 
-#[allow(dead_code)] // consumed by later tasks (screen / runner)
 pub(crate) struct TextInputWidget {
     label: String,
 }
 
-#[allow(dead_code)] // consumed by later tasks (screen / runner)
 impl TextInputWidget {
     pub fn new(label: impl Into<String>) -> Self {
         Self {
@@ -182,13 +185,22 @@ impl TextInputWidget {
         } else {
             Style::default().fg(Color::White)
         };
-        let value_span = Span::styled(state.display_value(), value_style);
         let cursor_span = Span::styled("\u{258f}", Style::default().fg(Color::Cyan));
         let line = if state.default_active {
             // Show cursor before placeholder to indicate "start typing to replace"
+            let value_span = Span::styled(state.display_value(), value_style);
             Line::from(vec![label_span, Span::raw(" "), cursor_span, value_span])
         } else {
-            Line::from(vec![label_span, Span::raw(" "), value_span, cursor_span])
+            let (before, after) = state.value().split_at(state.cursor_position());
+            let before_span = Span::styled(before, value_style);
+            let after_span = Span::styled(after, value_style);
+            Line::from(vec![
+                label_span,
+                Span::raw(" "),
+                before_span,
+                cursor_span,
+                after_span,
+            ])
         };
         buf.set_line(area.x, area.y, &line, area.width);
 

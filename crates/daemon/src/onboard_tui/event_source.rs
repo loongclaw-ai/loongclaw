@@ -2,13 +2,10 @@ use std::collections::VecDeque;
 
 use crossterm::event::{self, Event};
 
-// These types are consumed by later tasks (runner, layout, widgets).
-#[allow(dead_code)]
 pub(crate) trait OnboardEventSource {
     fn next_event(&mut self) -> std::io::Result<Event>;
 }
 
-#[allow(dead_code)]
 pub(crate) struct CrosstermEventSource;
 
 impl OnboardEventSource for CrosstermEventSource {

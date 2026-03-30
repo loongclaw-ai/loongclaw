@@ -6,13 +6,11 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::StatefulWidget;
 
-#[allow(dead_code)] // consumed by later tasks (screen / runner)
 pub(crate) struct SelectionItem {
     pub label: String,
     pub hint: Option<String>,
 }
 
-#[allow(dead_code)] // consumed by later tasks (screen / runner)
 impl SelectionItem {
     pub fn new(label: impl Into<String>, hint: Option<impl Into<String>>) -> Self {
         Self {
@@ -22,13 +20,11 @@ impl SelectionItem {
     }
 }
 
-#[allow(dead_code)] // consumed by later tasks (screen / runner)
 pub(crate) struct SelectionCardState {
     selected: usize,
     count: usize,
 }
 
-#[allow(dead_code)] // consumed by later tasks (screen / runner)
 impl SelectionCardState {
     pub fn new(count: usize) -> Self {
         Self { selected: 0, count }
@@ -61,12 +57,10 @@ impl SelectionCardState {
     }
 }
 
-#[allow(dead_code)] // consumed by later tasks (screen / runner)
 pub(crate) struct SelectionCardWidget {
     items: Vec<SelectionItem>,
 }
 
-#[allow(dead_code)] // consumed by later tasks (screen / runner)
 impl SelectionCardWidget {
     pub fn new(items: Vec<SelectionItem>) -> Self {
         Self { items }
