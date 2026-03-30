@@ -3359,6 +3359,7 @@ fn resolve_channel_acp_turn_hints(
                 working_directory,
             })
         }
+        ChannelPlatform::WhatsApp => Ok(ChannelResolvedAcpTurnHints::default()),
         ChannelPlatform::Irc => Ok(ChannelResolvedAcpTurnHints::default()),
     }
 }
