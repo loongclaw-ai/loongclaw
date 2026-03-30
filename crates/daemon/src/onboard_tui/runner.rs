@@ -4,8 +4,7 @@ use std::io::{self, Stdout};
 use std::path::PathBuf;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use crossterm::execute;
-use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal;
 use loongclaw_app as mvp;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -22,32 +21,6 @@ use crate::CliResult;
 use crate::onboard_flow::{GuidedOnboardFlowStepRunner, OnboardFlowStepAction};
 use crate::onboard_state::{OnboardDraft, OnboardWizardStep};
 use crate::provider_credential_policy;
-
-// ---------------------------------------------------------------------------
-// TUI mode
-// ---------------------------------------------------------------------------
-
-#[allow(dead_code)]
-pub(crate) enum OnboardTuiMode {
-    FullScreen,
-    Inline,
-}
-
-impl OnboardTuiMode {
-    #[allow(dead_code)]
-    pub fn detect() -> Self {
-        let (cols, rows) = terminal::size().unwrap_or((80, 24));
-        if cols >= 40 && rows >= 15 {
-            Self::FullScreen
-        } else {
-            Self::Inline
-        }
-    }
-
-    const fn is_fullscreen(&self) -> bool {
-        matches!(self, Self::FullScreen)
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Loop result types
@@ -75,53 +48,43 @@ enum StandaloneSelectionResult {
 pub(crate) struct RatatuiOnboardRunner<E: OnboardEventSource = CrosstermEventSource> {
     terminal: Terminal<CrosstermBackend<Stdout>>,
     event_source: E,
-    mode: OnboardTuiMode,
     owns_tty: bool,
 }
 
 impl RatatuiOnboardRunner<CrosstermEventSource> {
-    /// Create a new runner with real terminal events and auto-detected mode.
+    /// Create a new runner that renders inline at the current cursor position.
     #[allow(dead_code)]
     pub fn new() -> io::Result<Self> {
-        Self::with_event_source(CrosstermEventSource, OnboardTuiMode::detect())
-    }
-}
-
-impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
-    /// Create a runner with a custom event source and explicit mode.
-    ///
-    /// When a real terminal is available this acquires raw mode and (for
-    /// full-screen) an alternate screen buffer.
-    pub fn with_event_source(event_source: E, mode: OnboardTuiMode) -> io::Result<Self> {
         // Install a panic hook that restores the terminal before printing.
         let original_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             let _ = terminal::disable_raw_mode();
-            let _ = execute!(io::stdout(), LeaveAlternateScreen);
             original_hook(info);
         }));
 
         terminal::enable_raw_mode()?;
-        let mut stdout = io::stdout();
-        if mode.is_fullscreen() {
-            execute!(stdout, EnterAlternateScreen)?;
-        }
-        let backend = CrosstermBackend::new(stdout);
-        let terminal = Terminal::new(backend)?;
+        let backend = CrosstermBackend::new(io::stdout());
+        let terminal = Terminal::with_options(
+            backend,
+            ratatui::TerminalOptions {
+                viewport: ratatui::Viewport::Inline(20),
+            },
+        )?;
 
         Ok(Self {
             terminal,
-            event_source,
-            mode,
+            event_source: CrosstermEventSource,
             owns_tty: true,
         })
     }
+}
 
+impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
     /// Create a runner without touching the real terminal.
     ///
-    /// Used in tests where raw-mode / alternate-screen is unavailable.
+    /// Used in tests where raw-mode is unavailable.
     #[cfg(test)]
-    fn headless(event_source: E, mode: OnboardTuiMode) -> io::Result<Self> {
+    fn headless(event_source: E) -> io::Result<Self> {
         let backend = CrosstermBackend::new(io::stdout());
         let terminal = Terminal::with_options(
             backend,
@@ -132,7 +95,6 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
         Ok(Self {
             terminal,
             event_source,
-            mode,
             owns_tty: false,
         })
     }
@@ -229,14 +191,13 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
         title: &str,
         footer_hint: &str,
     ) -> io::Result<OnboardLayoutAreas> {
-        let wide_spine = self.mode.is_fullscreen();
         let mut captured_areas: Option<OnboardLayoutAreas> = None;
 
         let step_number = step_ordinal(step);
         let total_steps = 8;
 
         self.terminal.draw(|frame| {
-            let areas = layout::compute_layout(frame.area(), wide_spine);
+            let areas = layout::compute_layout(frame.area(), false);
 
             // Header bar
             let header_line = Line::from(vec![
@@ -250,12 +211,6 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
                 Span::styled("  Esc cancel", Style::default().fg(Color::DarkGray)),
             ]);
             frame.render_widget(Paragraph::new(header_line), areas.header);
-
-            // Spine sidebar
-            if wide_spine {
-                let spine = ProgressSpineWidget::new(step);
-                frame.render_widget(spine, areas.spine);
-            }
 
             // Footer
             let footer_line =
@@ -284,11 +239,10 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
     fn run_welcome_step(&mut self) -> CliResult<OnboardFlowStepAction> {
         let version = format!("v{}", env!("CARGO_PKG_VERSION"));
         loop {
-            let wide = self.mode.is_fullscreen();
             let ver = version.clone();
             self.terminal
                 .draw(|frame| {
-                    let areas = layout::compute_layout(frame.area(), wide);
+                    let areas = layout::compute_layout(frame.area(), false);
 
                     // Header
                     let header_line = Line::from(vec![
@@ -302,11 +256,6 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
                         Span::styled("  Esc cancel", Style::default().fg(Color::DarkGray)),
                     ]);
                     frame.render_widget(Paragraph::new(header_line), areas.header);
-
-                    if wide {
-                        let spine = ProgressSpineWidget::new(OnboardWizardStep::Welcome);
-                        frame.render_widget(spine, areas.spine);
-                    }
 
                     // Welcome content inside dialog box
                     let dialog_lines: Vec<Line<'_>> = vec![
@@ -394,7 +343,6 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
     ) -> CliResult<SelectionLoopResult> {
         let mut state = SelectionCardState::new(items.len());
         state.select(default_index);
-        let wide = self.mode.is_fullscreen();
 
         loop {
             let step_number = step_ordinal(step);
@@ -403,7 +351,7 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
 
             self.terminal
                 .draw(|frame| {
-                    let areas = layout::compute_layout(frame.area(), wide);
+                    let areas = layout::compute_layout(frame.area(), false);
 
                     // Header
                     let header_line = Line::from(vec![
@@ -420,11 +368,6 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
                         Span::styled("  Esc back", Style::default().fg(Color::DarkGray)),
                     ]);
                     frame.render_widget(Paragraph::new(header_line), areas.header);
-
-                    // Spine
-                    if wide {
-                        frame.render_widget(ProgressSpineWidget::new(step), areas.spine);
-                    }
 
                     // Content: title line + selection cards inside dialog box
                     // Compute dialog box for selection items
@@ -526,7 +469,6 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
         } else {
             TextInputState::with_default(default_value)
         };
-        let wide = self.mode.is_fullscreen();
 
         loop {
             let step_number = step_ordinal(step);
@@ -535,7 +477,7 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
 
             self.terminal
                 .draw(|frame| {
-                    let areas = layout::compute_layout(frame.area(), wide);
+                    let areas = layout::compute_layout(frame.area(), false);
 
                     // Header
                     let header_line = Line::from(vec![
@@ -552,11 +494,6 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
                         Span::styled("  Esc back", Style::default().fg(Color::DarkGray)),
                     ]);
                     frame.render_widget(Paragraph::new(header_line), areas.header);
-
-                    // Spine
-                    if wide {
-                        frame.render_widget(ProgressSpineWidget::new(step), areas.spine);
-                    }
 
                     // Content: text input inside dialog box
                     // Dialog: title + blank + input + error = 4 lines
@@ -795,7 +732,6 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
         body_lines: Vec<Line<'static>>,
         footer_hint: &str,
     ) -> CliResult<bool> {
-        let wide = self.mode.is_fullscreen();
         loop {
             let title_owned = title.to_owned();
             let hint_owned = footer_hint.to_owned();
@@ -821,9 +757,6 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
                         Span::styled("  Esc cancel", Style::default().fg(Color::DarkGray)),
                     ]);
                     frame.render_widget(Paragraph::new(header_line), areas.header);
-
-                    // No spine for pre/post screens.
-                    let _ = wide;
 
                     // Content inside dialog box
                     Self::render_dialog(frame.buffer_mut(), areas.content, &lines, Color::DarkGray);
@@ -866,7 +799,6 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
         body_lines: Vec<Line<'static>>,
         footer_hint: &str,
     ) -> CliResult<()> {
-        let wide = self.mode.is_fullscreen();
         let mut scroll_offset: u16 = 0;
         let total_lines = body_lines.len() as u16;
 
@@ -895,8 +827,6 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
                         Span::styled("  Esc cancel", Style::default().fg(Color::DarkGray)),
                     ]);
                     frame.render_widget(Paragraph::new(header_line), areas.header);
-
-                    let _ = wide;
 
                     // Content inside dialog box (scrollable)
                     let max_dialog_height = areas.content.height.saturating_sub(2);
@@ -1487,9 +1417,6 @@ impl<E: OnboardEventSource> Drop for RatatuiOnboardRunner<E> {
     fn drop(&mut self) {
         if self.owns_tty {
             let _ = terminal::disable_raw_mode();
-            if self.mode.is_fullscreen() {
-                let _ = execute!(io::stdout(), LeaveAlternateScreen);
-            }
         }
     }
 }
@@ -1546,7 +1473,7 @@ mod tests {
     fn welcome_step_returns_next_on_enter() {
         let events = vec![key(KeyCode::Enter)];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         let result = runner.run_welcome_step();
         assert_eq!(result.unwrap(), OnboardFlowStepAction::Next);
     }
@@ -1555,7 +1482,7 @@ mod tests {
     fn welcome_step_returns_back_on_esc() {
         let events = vec![key(KeyCode::Esc)];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         let result = runner.run_welcome_step();
         assert_eq!(result.unwrap(), OnboardFlowStepAction::Back);
     }
@@ -1564,7 +1491,7 @@ mod tests {
     fn welcome_step_returns_error_on_ctrl_c() {
         let events = vec![ctrl_c()];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         let result = runner.run_welcome_step();
         assert!(result.is_err());
     }
@@ -1573,7 +1500,7 @@ mod tests {
     fn selection_loop_returns_selected_index() {
         let events = vec![key(KeyCode::Down), key(KeyCode::Enter)];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         let items = vec![
             SelectionItem::new("A", None::<&str>),
             SelectionItem::new("B", None::<&str>),
@@ -1589,7 +1516,7 @@ mod tests {
         // Start at 0, go up (wraps to last), then enter
         let events = vec![key(KeyCode::Up), key(KeyCode::Enter)];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         let items = vec![
             SelectionItem::new("A", None::<&str>),
             SelectionItem::new("B", None::<&str>),
@@ -1609,7 +1536,7 @@ mod tests {
             key(KeyCode::Enter),
         ];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         let result = runner
             .run_input_loop(OnboardWizardStep::Workspace, "Label:", "", "hint")
             .unwrap();
@@ -1623,7 +1550,7 @@ mod tests {
     fn input_loop_returns_default_on_immediate_enter() {
         let events = vec![key(KeyCode::Enter)];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         let result = runner
             .run_input_loop(OnboardWizardStep::Workspace, "Label:", "/default", "hint")
             .unwrap();
@@ -1642,7 +1569,7 @@ mod tests {
             key(KeyCode::Enter),
         ];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         let result = runner
             .run_input_loop(OnboardWizardStep::Workspace, "Label:", "", "hint")
             .unwrap();
@@ -1657,7 +1584,7 @@ mod tests {
         // Down once to select window_plus_summary, then Enter
         let events = vec![key(KeyCode::Down), key(KeyCode::Enter)];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         let mut draft = sample_draft();
         let result = runner.run_runtime_defaults_step(&mut draft).unwrap();
         assert_eq!(result, OnboardFlowStepAction::Next);
@@ -1677,7 +1604,7 @@ mod tests {
             key(KeyCode::Enter),
         ];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         let mut draft = sample_draft();
         let result = runner.run_workspace_step(&mut draft).unwrap();
         assert_eq!(result, OnboardFlowStepAction::Next);
@@ -1689,7 +1616,7 @@ mod tests {
         // Select "Disabled" (Down once), then Enter
         let events = vec![key(KeyCode::Down), key(KeyCode::Enter)];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         let mut draft = sample_draft();
         draft.set_acp_enabled(true);
         let result = runner.run_protocols_step(&mut draft).unwrap();
@@ -1703,7 +1630,7 @@ mod tests {
         // Enter confirms Enabled, then Down selects "jsonrpc", Enter confirms.
         let events = vec![key(KeyCode::Enter), key(KeyCode::Down), key(KeyCode::Enter)];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         let mut draft = sample_draft();
         draft.set_acp_enabled(true);
         let result = runner.run_protocols_step(&mut draft).unwrap();
@@ -1716,7 +1643,7 @@ mod tests {
     fn run_step_dispatches_post_boundary_steps_as_next() {
         let events: Vec<Event> = vec![];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         let mut draft = sample_draft();
 
         let env_check = tokio::runtime::Builder::new_current_thread()
@@ -1734,7 +1661,7 @@ mod tests {
     fn risk_screen_accepts_on_enter() {
         let events = vec![key(KeyCode::Enter)];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         assert!(runner.run_risk_screen().unwrap());
     }
 
@@ -1742,7 +1669,7 @@ mod tests {
     fn risk_screen_accepts_on_y() {
         let events = vec![key(KeyCode::Char('y'))];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         assert!(runner.run_risk_screen().unwrap());
     }
 
@@ -1750,7 +1677,7 @@ mod tests {
     fn risk_screen_declines_on_n() {
         let events = vec![key(KeyCode::Char('n'))];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         assert!(!runner.run_risk_screen().unwrap());
     }
 
@@ -1758,7 +1685,7 @@ mod tests {
     fn risk_screen_declines_on_esc() {
         let events = vec![key(KeyCode::Esc)];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         assert!(!runner.run_risk_screen().unwrap());
     }
 
@@ -1766,7 +1693,7 @@ mod tests {
     fn entry_choice_screen_selects_default() {
         let events = vec![key(KeyCode::Enter)];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         let options = vec![
             ("Current".to_owned(), "use existing".to_owned()),
             ("Fresh".to_owned(), "start fresh".to_owned()),
@@ -1779,7 +1706,7 @@ mod tests {
     fn entry_choice_screen_selects_second() {
         let events = vec![key(KeyCode::Down), key(KeyCode::Enter)];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         let options = vec![
             ("Current".to_owned(), "use existing".to_owned()),
             ("Fresh".to_owned(), "start fresh".to_owned()),
@@ -1792,7 +1719,7 @@ mod tests {
     fn shortcut_choice_screen_returns_true_for_primary() {
         let events = vec![key(KeyCode::Enter)];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         let result = runner
             .run_shortcut_choice_screen("Use current setup", &["provider: openai".to_owned()])
             .unwrap();
@@ -1803,7 +1730,7 @@ mod tests {
     fn shortcut_choice_screen_returns_false_for_adjust() {
         let events = vec![key(KeyCode::Down), key(KeyCode::Enter)];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         let result = runner
             .run_shortcut_choice_screen("Use current setup", &["provider: openai".to_owned()])
             .unwrap();
@@ -1821,7 +1748,7 @@ mod tests {
         }];
         let events = vec![key(KeyCode::Enter)];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         assert!(runner.run_preflight_screen(&checks).unwrap());
     }
 
@@ -1836,7 +1763,7 @@ mod tests {
         }];
         let events = vec![key(KeyCode::Enter)];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         assert!(runner.run_preflight_screen(&checks).unwrap());
     }
 
@@ -1851,7 +1778,7 @@ mod tests {
         }];
         let events = vec![key(KeyCode::Char('n'))];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         assert!(!runner.run_preflight_screen(&checks).unwrap());
     }
 
@@ -1859,7 +1786,7 @@ mod tests {
     fn review_screen_continues_on_enter() {
         let events = vec![key(KeyCode::Enter)];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         runner
             .run_review_screen(&["provider: openai".to_owned(), "model: gpt-4".to_owned()])
             .unwrap();
@@ -1869,7 +1796,7 @@ mod tests {
     fn write_confirmation_screen_accepts_on_enter() {
         let events = vec![key(KeyCode::Enter)];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         assert!(
             runner
                 .run_write_confirmation_screen("/tmp/loongclaw.toml", false)
@@ -1881,7 +1808,7 @@ mod tests {
     fn write_confirmation_screen_declines_on_n() {
         let events = vec![key(KeyCode::Char('n'))];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         assert!(
             !runner
                 .run_write_confirmation_screen("/tmp/loongclaw.toml", false)
@@ -1893,7 +1820,7 @@ mod tests {
     fn success_screen_exits_on_enter() {
         let events = vec![key(KeyCode::Enter)];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         runner
             .run_success_screen(&["config written".to_owned()])
             .unwrap();
@@ -1903,7 +1830,7 @@ mod tests {
     fn import_candidate_screen_selects_first() {
         let events = vec![key(KeyCode::Enter)];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         let candidates = vec![("codex config".to_owned(), "~/.codex/config.json".to_owned())];
         let result = runner.run_import_candidate_screen(&candidates, 0).unwrap();
         assert_eq!(result, Some(0));
@@ -1914,7 +1841,7 @@ mod tests {
         // Navigate past all candidates to the "Start fresh" item
         let events = vec![key(KeyCode::Down), key(KeyCode::Enter)];
         let source = ScriptedEventSource::new(events);
-        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
         let candidates = vec![("codex config".to_owned(), "~/.codex/config.json".to_owned())];
         let result = runner.run_import_candidate_screen(&candidates, 0).unwrap();
         assert_eq!(result, None);
