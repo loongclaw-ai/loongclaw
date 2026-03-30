@@ -9,7 +9,7 @@ experiment should be crystallized into a reusable lower-layer capability.
 ## Acceptance Criteria
 
 - [ ] LoongClaw exposes a `runtime-capability` command family with `propose`,
-      `review`, `show`, `index`, and `plan` subcommands.
+      `review`, `show`, `index`, `plan`, and `apply` subcommands.
 - [ ] `runtime-capability propose` creates a persisted capability-candidate
       artifact from one finished `runtime-experiment` run.
 - [ ] The candidate artifact records one explicit target type:
@@ -43,16 +43,30 @@ experiment should be crystallized into a reusable lower-layer capability.
       artifact id, blockers, approval checklist, rollback hints, provenance
       references, and the aggregated delta-evidence digest without mutating
       runtime state.
+- [ ] `runtime-capability apply` reuses the existing `plan` contract and
+      materializes one deterministic lower-layer artifact only when the chosen
+      family is currently promotable.
+- [ ] In v1, `runtime-capability apply` supports only the
+      `memory_stage_profile` target kind and persists one governed artifact
+      under the family root's `memory_stage_profiles/` delivery surface.
+- [ ] Re-applying the same promotable `memory_stage_profile` family is
+      idempotent when the existing materialized artifact already matches the
+      deterministic expected content.
+- [ ] `runtime-capability apply` fails closed for unknown family ids,
+      non-promotable families, unsupported target kinds, or conflicting
+      existing materialized output.
 - [ ] Product docs describe `runtime-capability` as the governed review layer
       above `runtime-experiment`, with `index`/readiness and `plan` forming the
-      dry-run planning ladder below any future promotion executor or automated
-      promotion loop.
+      planning ladder below explicit promotion executors or any future
+      automated promotion loop.
 
 ## Out of Scope
 
 - Automatically generating or applying managed skills
 - Automatically generating or applying programmatic flows
 - Automatically mutating `profile_note` or runtime config
+- `runtime-capability apply` support for targets other than
+  `memory_stage_profile`
 - Automatic promotion, rollback, or optimizer orchestration
 - Persisted capability-family state or background indexing daemons
 - Persisted promotion-plan artifacts or plan caches
@@ -124,3 +138,54 @@ That compact digest is narrower than the broader family-level plan evidence.
 Rejected-only or undecided-only delta surfaces may still appear under the main
 report `evidence.changed_surfaces`, but they are excluded from
 `planned_payload.memory_stage_profile.provenance.evidence_digest.changed_surfaces`.
+
+## Apply v1 Materialization
+
+`runtime-capability apply` is the first explicit governed promotion executor.
+It does not mutate live runtime configuration. Instead, it materializes one
+runtime-owned `memory_stage_profile` artifact from the existing dry-run plan
+contract.
+
+For v1:
+
+- `apply` calls the same indexed-family planner internally instead of building a
+  second planning path.
+- The persisted artifact content is deterministic and excludes volatile
+  execution-time timestamps.
+- Execution-time details such as whether the file was newly written or already
+  matched are reported in the apply result, not baked into the artifact body.
+- The materialized artifact uses the non-`runtime_capability` schema surface
+  `memory_stage_profile`, so future capability scans ignore it safely even when
+  it lives under the same root.
+
+The persisted JSON shape is:
+
+```json
+{
+  "schema": {
+    "version": 1,
+    "surface": "memory_stage_profile",
+    "purpose": "runtime_capability_apply_output"
+  },
+  "artifact_kind": "memory_stage_profile",
+  "artifact_id": "memory-stage-profile-...",
+  "delivery_surface": "memory_stage_profiles",
+  "profile": {
+    "id": "memory-stage-profile-...",
+    "summary": "Promote governed memory pipeline intent into a reusable profile",
+    "review_scope": "Governed memory pipeline promotion intent only",
+    "required_capabilities": ["memory_read"],
+    "tags": ["memory", "pipeline"]
+  },
+  "provenance": {
+    "family_id": "8f5c2d1a4b7e...",
+    "accepted_candidate_ids": ["capability-candidate-..."],
+    "evidence_digest": {
+      "changed_surfaces": [
+        "context_engine_compaction",
+        "memory_policy"
+      ]
+    }
+  }
+}
+```

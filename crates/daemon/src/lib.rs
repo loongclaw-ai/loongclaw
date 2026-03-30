@@ -617,8 +617,8 @@ pub enum Commands {
     },
     #[command(
         visible_alias = "plugin",
-        about = "Inspect plugin governance truth and deduplicated operator action plans",
-        long_about = "Operator-facing plugin governance namespace for scanning one or more plugin roots, evaluating profile-aware preflight, and consuming the deduplicated operator action plan.\n\nThis command does not introduce a second policy engine. It reuses the existing spec `plugin_preflight` surface and exposes one thin CLI over the same governance contract."
+        about = "Author manifest-first plugin packages and inspect shared plugin governance truth",
+        long_about = "Manifest-first plugin namespace for bounded authoring bootstrap, inspecting manifest-first package inventory, diagnosing package-author contract issues, evaluating profile-aware preflight, and consuming the deduplicated operator action plan.\n\nThis command does not introduce a second policy engine. It reuses the existing spec `plugin_inventory` and `plugin_preflight` surfaces for shared plugin truth and adds thin author-facing surfaces for external package roots."
     )]
     Plugins {
         #[arg(long, global = true, default_value_t = false)]
@@ -674,7 +674,7 @@ pub enum Commands {
         #[command(subcommand)]
         command: runtime_experiment_cli::RuntimeExperimentCommands,
     },
-    /// Manage run-derived capability candidates, family readiness, and dry-run promotion plans
+    /// Manage run-derived capability candidates, family readiness, promotion plans, and governed apply outputs
     RuntimeCapability {
         #[command(subcommand)]
         command: runtime_capability_cli::RuntimeCapabilityCommands,

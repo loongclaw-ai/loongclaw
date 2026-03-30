@@ -2324,6 +2324,7 @@ dependencies = [
  "ratatui",
  "reqwest",
  "rusqlite",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
