@@ -119,9 +119,18 @@ pub struct ToolResultEnvelope {
     pub status: String,
     pub tool: String,
     pub tool_call_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload_semantics: Option<ToolResultPayloadSemantics>,
     pub payload_summary: String,
     pub payload_chars: usize,
     pub payload_truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolResultPayloadSemantics {
+    DiscoveryResult,
+    ExternalSkillContext,
 }
 
 const TOOL_RESULT_PAYLOAD_SUMMARY_LIMIT_CHARS: usize = 2048;
@@ -1155,11 +1164,13 @@ fn build_tool_result_envelope(
     payload_summary_limit_chars: usize,
 ) -> ToolResultEnvelope {
     let effective_tool_name = effective_result_tool_name(intent);
-    let normalized_limit = effective_payload_summary_limit(intent, payload_summary_limit_chars)
-        .clamp(
-            MIN_TOOL_RESULT_PAYLOAD_SUMMARY_LIMIT_CHARS,
-            MAX_TOOL_RESULT_PAYLOAD_SUMMARY_LIMIT_CHARS,
-        );
+    let payload_semantics = detect_tool_result_payload_semantics(&outcome.payload);
+    let effective_limit =
+        effective_payload_summary_limit(payload_semantics, payload_summary_limit_chars);
+    let normalized_limit = effective_limit.clamp(
+        MIN_TOOL_RESULT_PAYLOAD_SUMMARY_LIMIT_CHARS,
+        MAX_TOOL_RESULT_PAYLOAD_SUMMARY_LIMIT_CHARS,
+    );
     let payload_text = serde_json::to_string(&outcome.payload)
         .unwrap_or_else(|_| "[tool_payload_unserializable]".to_owned());
     let (payload_summary, payload_chars, payload_truncated) =
@@ -1169,17 +1180,85 @@ fn build_tool_result_envelope(
         status: outcome.status.clone(),
         tool: effective_tool_name,
         tool_call_id: intent.tool_call_id.clone(),
+        payload_semantics,
         payload_summary,
         payload_chars,
         payload_truncated,
     }
 }
 
-fn effective_payload_summary_limit(intent: &ToolIntent, default_limit: usize) -> usize {
-    if effective_result_tool_name(intent) == "external_skills.invoke" {
+fn effective_payload_summary_limit(
+    payload_semantics: Option<ToolResultPayloadSemantics>,
+    default_limit: usize,
+) -> usize {
+    if payload_semantics.is_some() {
         return MAX_TOOL_RESULT_PAYLOAD_SUMMARY_LIMIT_CHARS;
     }
     default_limit
+}
+
+fn detect_tool_result_payload_semantics(
+    payload: &serde_json::Value,
+) -> Option<ToolResultPayloadSemantics> {
+    let looks_like_discovery_result = payload_looks_like_discovery_result(payload);
+    if looks_like_discovery_result {
+        return Some(ToolResultPayloadSemantics::DiscoveryResult);
+    }
+
+    let looks_like_external_skill_context = payload_looks_like_external_skill_context(payload);
+    if looks_like_external_skill_context {
+        return Some(ToolResultPayloadSemantics::ExternalSkillContext);
+    }
+
+    None
+}
+
+fn payload_looks_like_discovery_result(payload: &serde_json::Value) -> bool {
+    let Some(payload_object) = payload.as_object() else {
+        return false;
+    };
+    let Some(results) = payload_object
+        .get("results")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return false;
+    };
+
+    if results.is_empty() {
+        return payload_object.contains_key("query");
+    }
+
+    results.iter().any(|result| {
+        let Some(result_object) = result.as_object() else {
+            return false;
+        };
+        result_object
+            .get("tool_id")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+            && result_object
+                .get("lease")
+                .and_then(serde_json::Value::as_str)
+                .is_some()
+    })
+}
+
+fn payload_looks_like_external_skill_context(payload: &serde_json::Value) -> bool {
+    let Some(payload_object) = payload.as_object() else {
+        return false;
+    };
+    payload_object
+        .get("skill_id")
+        .and_then(serde_json::Value::as_str)
+        .is_some()
+        && payload_object
+            .get("display_name")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+        && payload_object
+            .get("instructions")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
 }
 
 pub(crate) fn effective_result_tool_name(intent: &ToolIntent) -> String {
