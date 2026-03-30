@@ -415,14 +415,7 @@ fn handle_slash_command(shell: &mut state::Shell, cmd: SlashCommand) {
         }
         SlashCommand::Help => {
             shell.show_help = !shell.show_help;
-            if shell.show_help {
-                let completions = commands::completions("/");
-                let mut help_text = String::from("Available commands:\n");
-                for (name, desc) in completions {
-                    help_text.push_str(&format!("  {name:<14} {desc}\n"));
-                }
-                shell.pane.add_system_message(&help_text);
-            }
+            // Help is rendered as an overlay — no transcript message needed.
         }
         SlashCommand::Model => {
             let model = if shell.pane.model.is_empty() {
@@ -430,7 +423,7 @@ fn handle_slash_command(shell: &mut state::Shell, cmd: SlashCommand) {
             } else {
                 shell.pane.model.clone()
             };
-            shell.pane.add_system_message(&format!("Model: {model}"));
+            shell.pane.set_status(format!("Model: {model}"));
         }
         SlashCommand::ThinkOn => {
             shell.show_thinking = true;
