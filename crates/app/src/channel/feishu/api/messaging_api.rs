@@ -121,15 +121,13 @@ pub(crate) fn convert_feishu_body_to_content(
     match msg_type {
         Some("text") => {
             let text = body
-                .get("content")
-                .and_then(|c| c.get("text"))
+                .get("text")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
             Ok(MessageContent::Text { text })
         }
         Some("interactive") => {
-            // For interactive/card messages, try to extract markdown text
             let text = extract_markdown_from_card(body);
             Ok(MessageContent::Markdown { text })
         }
@@ -138,8 +136,7 @@ pub(crate) fn convert_feishu_body_to_content(
         }),
         Some("image") => {
             let url = body
-                .get("content")
-                .and_then(|c| c.get("image_key"))
+                .get("image_key")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
@@ -151,14 +148,12 @@ pub(crate) fn convert_feishu_body_to_content(
         }
         Some("file") => {
             let name = body
-                .get("content")
-                .and_then(|c| c.get("file_name"))
+                .get("file_name")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
             let url = body
-                .get("content")
-                .and_then(|c| c.get("file_key"))
+                .get("file_key")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
@@ -170,8 +165,7 @@ pub(crate) fn convert_feishu_body_to_content(
         }
         Some("audio") => {
             let url = body
-                .get("content")
-                .and_then(|c| c.get("file_key"))
+                .get("file_key")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
@@ -182,14 +176,12 @@ pub(crate) fn convert_feishu_body_to_content(
         }
         Some("media") => {
             let url = body
-                .get("content")
-                .and_then(|c| c.get("file_key"))
+                .get("file_key")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
             let cover_url = body
-                .get("content")
-                .and_then(|c| c.get("cover_key"))
+                .get("cover_key")
                 .and_then(Value::as_str)
                 .map(|s| s.to_owned());
             Ok(MessageContent::Media {
@@ -200,8 +192,7 @@ pub(crate) fn convert_feishu_body_to_content(
         }
         Some("share_chat") => {
             let chat_id = body
-                .get("content")
-                .and_then(|c| c.get("chat_id"))
+                .get("chat_id")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
@@ -209,32 +200,31 @@ pub(crate) fn convert_feishu_body_to_content(
         }
         Some("share_user") => {
             let user_id = body
-                .get("content")
-                .and_then(|c| c.get("user_id"))
+                .get("user_id")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
             Ok(MessageContent::ShareUser { user_id })
         }
-        _ => {
-            // For unknown types, return as rich content
-            Ok(MessageContent::Rich {
-                content: body.clone(),
-            })
-        }
+        _ => Ok(MessageContent::Rich {
+            content: body.clone(),
+        }),
     }
 }
 
 /// Extract markdown text from a Feishu card/interactive message
 pub(crate) fn extract_markdown_from_card(body: &Value) -> String {
-    body.get("content")
-        .and_then(|c| c.get("card"))
+    body.get("card")
         .and_then(|card| card.get("elements"))
         .and_then(Value::as_array)
         .map(|elements| {
             elements
                 .iter()
-                .filter_map(|el| el.get("content").and_then(Value::as_str))
+                .filter_map(|el| {
+                    el.get("text")
+                        .and_then(|t| t.get("content"))
+                        .and_then(Value::as_str)
+                })
                 .collect::<Vec<_>>()
                 .join("\n")
         })
@@ -400,6 +390,7 @@ pub(crate) fn create_message_from_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn convert_text_content() {
@@ -440,6 +431,38 @@ mod tests {
         let dt = parse_feishu_timestamp(Some(ts));
         assert!(dt.is_some());
         assert_eq!(dt.unwrap().timestamp(), 1704067200);
+    }
+
+    #[test]
+    fn convert_text_body_to_content() {
+        let body = json!({"text": "hello world"});
+        let content = convert_feishu_body_to_content(Some("text"), &body).unwrap();
+        assert!(
+            matches!(&content, MessageContent::Text { text } if text == "hello world"),
+            "expected Text with 'hello world', got {content:?}"
+        );
+    }
+
+    #[test]
+    fn convert_interactive_body_to_markdown() {
+        let body = json!({
+            "card": {
+                "elements": [
+                    {
+                        "tag": "div",
+                        "text": {
+                            "tag": "lark_md",
+                            "content": "**bold** text"
+                        }
+                    }
+                ]
+            }
+        });
+        let content = convert_feishu_body_to_content(Some("interactive"), &body).unwrap();
+        assert!(
+            matches!(&content, MessageContent::Markdown { text } if text == "**bold** text"),
+            "expected Markdown with '**bold** text', got {content:?}"
+        );
     }
 
     #[test]
