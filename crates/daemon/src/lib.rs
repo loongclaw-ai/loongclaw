@@ -109,7 +109,6 @@ mod provider_route_diagnostics;
 pub mod runtime_capability_cli;
 pub mod runtime_experiment_cli;
 pub mod runtime_restore_cli;
-mod runtime_snapshot_support;
 pub mod skills_cli;
 pub mod source_presentation;
 pub mod supervisor;
@@ -120,7 +119,6 @@ pub use gateway::read_models::{ChannelsCliJsonPayload, ChannelsCliJsonSchema};
 pub use loongclaw_spec::programmatic::{
     acquire_programmatic_circuit_slot, record_programmatic_circuit_outcome,
 };
-pub use runtime_snapshot_support::*;
 pub use tlon_cli::TLON_SEND_CLI_SPEC;
 use tlon_cli::{default_tlon_send_target_kind, parse_tlon_send_target_kind};
 
@@ -2168,8 +2166,6 @@ pub async fn run_list_models_cli(config_path: Option<&str>, as_json: bool) -> Cl
 pub const RUNTIME_SNAPSHOT_CLI_JSON_SCHEMA_VERSION: u32 = 1;
 pub const RUNTIME_SNAPSHOT_ARTIFACT_JSON_SCHEMA_VERSION: u32 = 2;
 
-<<<<<<< HEAD
-=======
 #[derive(Debug, Clone)]
 pub struct RuntimeSnapshotCliState {
     pub config: String,
@@ -3381,8 +3377,6 @@ fn render_runtime_snapshot_artifact_text(
     ]
     .join("\n")
 }
-
->>>>>>> d6c1196b (feat: extract gateway read models)
 pub fn run_channels_cli(config_path: Option<&str>, as_json: bool) -> CliResult<()> {
     let (resolved_path, config) = mvp::config::load(config_path)?;
     let inventory = mvp::channel::channel_inventory(&config);
