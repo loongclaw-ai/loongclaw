@@ -24,7 +24,7 @@
 | channel_mod | `structural_size,operational_density` | `crates/app/src/channel/mod.rs` | 6398 | 6400 | 2 | 104 | 110 | 6 | 100.0% | TIGHT |
 | turn_coordinator | `structural_size,operational_density` | `crates/app/src/conversation/turn_coordinator.rs` | 10815 | 11200 | 385 | 97 | 120 | 23 | 96.6% | TIGHT |
 | tools_mod | `structural_size` | `crates/app/src/tools/mod.rs` | 14216 | 15000 | 784 | 54 | 70 | 16 | 94.8% | WATCH |
-| daemon_lib | `structural_size` | `crates/daemon/src/lib.rs` | 6293 | 6500 | 207 | 209 | 210 | 1 | 99.5% | TIGHT |
+| daemon_lib | `structural_size` | `crates/daemon/src/lib.rs` | 6342 | 6500 | 158 | 209 | 210 | 1 | 99.5% | TIGHT |
 | onboard_cli | `structural_size` | `crates/daemon/src/onboard_cli.rs` | 9494 | 9800 | 306 | 228 | 250 | 22 | 96.9% | TIGHT |
 
 ## Prioritization Signals
@@ -69,7 +69,7 @@
 <!-- arch-hotspot key=channel_mod lines=6398 functions=104 -->
 <!-- arch-hotspot key=turn_coordinator lines=10815 functions=97 -->
 <!-- arch-hotspot key=tools_mod lines=14216 functions=54 -->
-<!-- arch-hotspot key=daemon_lib lines=6293 functions=209 -->
+<!-- arch-hotspot key=daemon_lib lines=6342 functions=209 -->
 <!-- arch-hotspot key=onboard_cli lines=9494 functions=228 -->
 <!-- arch-boundary key=memory_literals status=PASS -->
 <!-- arch-boundary key=provider_mod_helper_definitions status=PASS -->
