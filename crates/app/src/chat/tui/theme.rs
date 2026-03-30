@@ -41,19 +41,19 @@ impl Palette {
 
     pub(super) fn light() -> Self {
         Self {
-            brand: Color::Rgb(253, 172, 172),
-            text: Color::DarkGray,
-            dim: Color::Rgb(252, 245, 226),
-            separator: Color::Rgb(180, 180, 180),
+            brand: Color::Rgb(200, 60, 80),
+            text: Color::Rgb(40, 40, 40),
+            dim: Color::Rgb(120, 120, 120),
+            separator: Color::Rgb(200, 200, 200),
             user_msg: Color::Rgb(30, 100, 200),
-            think_block: Color::Rgb(100, 100, 120),
-            tool_running: Color::Rgb(180, 140, 0),
-            tool_done: Color::Rgb(40, 140, 40),
-            tool_fail: Color::Rgb(180, 40, 40),
-            success: Color::Rgb(40, 140, 40),
-            warning: Color::Rgb(180, 120, 0),
-            error: Color::Rgb(180, 40, 40),
-            info: Color::Rgb(30, 140, 160),
+            think_block: Color::Rgb(80, 80, 100),
+            tool_running: Color::Rgb(160, 120, 0),
+            tool_done: Color::Rgb(30, 120, 30),
+            tool_fail: Color::Rgb(180, 30, 30),
+            success: Color::Rgb(30, 120, 30),
+            warning: Color::Rgb(160, 100, 0),
+            error: Color::Rgb(180, 30, 30),
+            info: Color::Rgb(20, 120, 140),
         }
     }
 
