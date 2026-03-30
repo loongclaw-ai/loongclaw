@@ -32,7 +32,7 @@ pub(super) fn render_input(
     } else if pane.agent_running() {
         " Enter to queue | Esc to cancel queue "
     } else {
-        " Enter to send | /help for commands "
+        " Enter send | Shift+Enter newline | /help "
     };
 
     let block = Block::default()
@@ -105,8 +105,8 @@ mod tests {
 
         let text = buffer_text(&terminal);
         assert!(
-            text.contains("Enter to send"),
-            "idle hint should mention Enter to send"
+            text.contains("Enter send"),
+            "idle hint should mention Enter send"
         );
     }
 

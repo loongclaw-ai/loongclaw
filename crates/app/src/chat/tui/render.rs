@@ -231,6 +231,7 @@ fn render_help_overlay(frame: &mut Frame<'_>, area: Rect, palette: &Palette) {
             "Shortcuts",
             &[
                 ("Enter", "Send message"),
+                ("Shift+Enter", "New line"),
                 ("Ctrl+C", "Interrupt / cancel"),
                 ("PageUp/Dn", "Scroll history"),
                 ("Esc", "Close dialogs"),
@@ -257,7 +258,7 @@ fn render_help_overlay(frame: &mut Frame<'_>, area: Rect, palette: &Palette) {
         }
     }
 
-    let popup_width = 46u16.min(area.width.saturating_sub(4));
+    let popup_width = 60u16.min(area.width.saturating_sub(4));
     let popup_height = (content_lines.len() as u16 + 2).min(area.height.saturating_sub(2));
 
     let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
