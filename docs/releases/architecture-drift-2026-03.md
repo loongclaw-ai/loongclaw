@@ -1,7 +1,7 @@
 # Architecture Drift Report 2026-03
 
 ## Summary
-- Generated at: 2026-03-30T01:38:19Z
+- Generated at: 2026-03-30T05:32:39Z
 - Report month: `2026-03`
 - Baseline report: none
 - Hotspots tracked: 14
@@ -24,13 +24,13 @@
 | channel_mod | `structural_size,operational_density` | `crates/app/src/channel/mod.rs` | 6396 | 6400 | 4 | 104 | 110 | 6 | 99.9% | TIGHT |
 | turn_coordinator | `structural_size,operational_density` | `crates/app/src/conversation/turn_coordinator.rs` | 10754 | 11200 | 446 | 97 | 120 | 23 | 96.0% | TIGHT |
 | tools_mod | `structural_size` | `crates/app/src/tools/mod.rs` | 14216 | 15000 | 784 | 54 | 70 | 16 | 94.8% | WATCH |
-| daemon_lib | `structural_size` | `crates/daemon/src/lib.rs` | 5066 | 6000 | 934 | 179 | 190 | 11 | 94.2% | WATCH |
-| onboard_cli | `structural_size` | `crates/daemon/src/onboard_cli.rs` | 9256 | 9800 | 544 | 227 | 250 | 23 | 94.4% | WATCH |
+| daemon_lib | `structural_size` | `crates/daemon/src/lib.rs` | 5069 | 6000 | 931 | 179 | 190 | 11 | 94.2% | WATCH |
+| onboard_cli | `structural_size` | `crates/daemon/src/onboard_cli.rs` | 2694 | 9800 | 7106 | 92 | 250 | 158 | 36.8% | HEALTHY |
 
 ## Prioritization Signals
 - BREACH hotspots (>100% of any tracked budget): none
 - TIGHT hotspots (>=95% of any tracked budget): spec_execution (95.8%), acpx_runtime (96.4%), channel_registry (97.8%), channel_config (100.0%), chat_runtime (95.0%), channel_mod (99.9%), turn_coordinator (96.0%)
-- WATCH hotspots (>=85% and <95% of any tracked budget): spec_runtime (90.8%), memory_mod (87.5%), acp_manager (92.4%), tools_mod (94.8%), daemon_lib (94.2%), onboard_cli (94.4%)
+- WATCH hotspots (>=85% and <95% of any tracked budget): spec_runtime (90.8%), memory_mod (87.5%), acp_manager (92.4%), tools_mod (94.8%), daemon_lib (94.2%)
 - Mixed-class hotspots (size plus operational density): chat_runtime, channel_mod, turn_coordinator
 
 ## Boundary Checks
@@ -69,8 +69,8 @@
 <!-- arch-hotspot key=channel_mod lines=6396 functions=104 -->
 <!-- arch-hotspot key=turn_coordinator lines=10754 functions=97 -->
 <!-- arch-hotspot key=tools_mod lines=14216 functions=54 -->
-<!-- arch-hotspot key=daemon_lib lines=5066 functions=179 -->
-<!-- arch-hotspot key=onboard_cli lines=9256 functions=227 -->
+<!-- arch-hotspot key=daemon_lib lines=5069 functions=179 -->
+<!-- arch-hotspot key=onboard_cli lines=2694 functions=92 -->
 <!-- arch-boundary key=memory_literals status=PASS -->
 <!-- arch-boundary key=provider_mod_helper_definitions status=PASS -->
 <!-- arch-boundary key=conversation_provider_optional_binding_roundtrip status=PASS -->
