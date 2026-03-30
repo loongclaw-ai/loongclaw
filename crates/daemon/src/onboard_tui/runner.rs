@@ -61,6 +61,11 @@ enum InputLoopResult {
     Back,
 }
 
+enum StandaloneSelectionResult {
+    Selected(usize),
+    Cancel,
+}
+
 // ---------------------------------------------------------------------------
 // RatatuiOnboardRunner
 // ---------------------------------------------------------------------------
@@ -600,6 +605,559 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
     }
 
     // -----------------------------------------------------------------------
+    // Pre/post-flow screens (no spine, full-width content)
+    // -----------------------------------------------------------------------
+
+    /// Generic confirmation screen: renders lines of content with a yes/no
+    /// key binding.  Returns `true` when the user accepts.
+    fn run_confirm_screen(
+        &mut self,
+        title: &str,
+        body_lines: Vec<Line<'static>>,
+        footer_hint: &str,
+    ) -> CliResult<bool> {
+        let wide = self.mode.is_fullscreen();
+        loop {
+            let title_owned = title.to_owned();
+            let hint_owned = footer_hint.to_owned();
+            let lines = body_lines.clone();
+
+            self.terminal
+                .draw(|frame| {
+                    // No spine for pre/post screens — pass `false`.
+                    let areas = layout::compute_layout(frame.area(), false);
+
+                    // Header
+                    let header_line = Line::from(vec![
+                        Span::styled(
+                            " LOONGCLAW ",
+                            Style::default()
+                                .fg(Color::Rgb(245, 169, 127))
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!(" {title_owned} "),
+                            Style::default().fg(Color::White),
+                        ),
+                        Span::styled("  Esc cancel", Style::default().fg(Color::DarkGray)),
+                    ]);
+                    frame.render_widget(Paragraph::new(header_line), areas.header);
+
+                    // No spine for pre/post screens.
+                    // Even if `wide` is true, we already passed `false` above.
+                    let _ = wide;
+
+                    // Content
+                    frame.render_widget(Paragraph::new(lines), areas.content);
+
+                    // Footer
+                    let footer_line = Line::from(vec![Span::styled(
+                        format!(" {hint_owned} "),
+                        Style::default().fg(Color::Gray),
+                    )]);
+                    frame.render_widget(Paragraph::new(footer_line), areas.footer);
+                })
+                .map_err(|e| e.to_string())?;
+
+            match self.event_source.next_event().map_err(|e| e.to_string())? {
+                Event::Key(KeyEvent {
+                    code: KeyCode::Enter | KeyCode::Char('y' | 'Y'),
+                    ..
+                }) => return Ok(true),
+                Event::Key(KeyEvent {
+                    code: KeyCode::Char('n' | 'N') | KeyCode::Esc,
+                    ..
+                }) => return Ok(false),
+                Event::Key(KeyEvent {
+                    code: KeyCode::Char('c'),
+                    modifiers,
+                    ..
+                }) if modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Err("interrupted by user".to_owned());
+                }
+                Event::Resize(..) | Event::FocusGained | Event::FocusLost => { /* redraw */ }
+                Event::Key(_) | Event::Mouse(_) | Event::Paste(_) => {}
+            }
+        }
+    }
+
+    /// Generic "press Enter to continue" screen with scrollable content.
+    fn run_info_screen(
+        &mut self,
+        title: &str,
+        body_lines: Vec<Line<'static>>,
+        footer_hint: &str,
+    ) -> CliResult<()> {
+        let wide = self.mode.is_fullscreen();
+        let mut scroll_offset: u16 = 0;
+        let total_lines = body_lines.len() as u16;
+
+        loop {
+            let title_owned = title.to_owned();
+            let hint_owned = footer_hint.to_owned();
+            let lines = body_lines.clone();
+            let offset = scroll_offset;
+
+            self.terminal
+                .draw(|frame| {
+                    let areas = layout::compute_layout(frame.area(), false);
+
+                    // Header
+                    let header_line = Line::from(vec![
+                        Span::styled(
+                            " LOONGCLAW ",
+                            Style::default()
+                                .fg(Color::Rgb(245, 169, 127))
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!(" {title_owned} "),
+                            Style::default().fg(Color::White),
+                        ),
+                        Span::styled("  Esc cancel", Style::default().fg(Color::DarkGray)),
+                    ]);
+                    frame.render_widget(Paragraph::new(header_line), areas.header);
+
+                    let _ = wide;
+
+                    // Content (scrollable)
+                    let paragraph = Paragraph::new(lines).scroll((offset, 0));
+                    frame.render_widget(paragraph, areas.content);
+
+                    // Footer
+                    let footer_line = Line::from(vec![Span::styled(
+                        format!(" {hint_owned} "),
+                        Style::default().fg(Color::Gray),
+                    )]);
+                    frame.render_widget(Paragraph::new(footer_line), areas.footer);
+                })
+                .map_err(|e| e.to_string())?;
+
+            match self.event_source.next_event().map_err(|e| e.to_string())? {
+                Event::Key(KeyEvent {
+                    code: KeyCode::Enter,
+                    ..
+                }) => return Ok(()),
+                Event::Key(KeyEvent {
+                    code: KeyCode::Esc, ..
+                }) => return Err("onboarding cancelled".to_owned()),
+                Event::Key(KeyEvent {
+                    code: KeyCode::Down | KeyCode::Char('j'),
+                    ..
+                }) => {
+                    if scroll_offset < total_lines.saturating_sub(1) {
+                        scroll_offset += 1;
+                    }
+                }
+                Event::Key(KeyEvent {
+                    code: KeyCode::Up | KeyCode::Char('k'),
+                    ..
+                }) => {
+                    scroll_offset = scroll_offset.saturating_sub(1);
+                }
+                Event::Key(KeyEvent {
+                    code: KeyCode::Char('c'),
+                    modifiers,
+                    ..
+                }) if modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Err("interrupted by user".to_owned());
+                }
+                Event::Resize(..) | Event::FocusGained | Event::FocusLost => { /* redraw */ }
+                Event::Key(_) | Event::Mouse(_) | Event::Paste(_) => {}
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Pre-flow: risk acknowledgement screen
+    // -----------------------------------------------------------------------
+
+    pub fn run_risk_screen(&mut self) -> CliResult<bool> {
+        let body_lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  SECURITY CHECK",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Review the trust boundary before writing any config.",
+                Style::default().fg(Color::White),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  What onboarding can do:",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "  \u{2022} LoongClaw can invoke tools and read local files when enabled.",
+                Style::default().fg(Color::White),
+            )),
+            Line::from(Span::styled(
+                "  \u{2022} Keep credentials in environment variables, not in prompts.",
+                Style::default().fg(Color::White),
+            )),
+            Line::from(Span::styled(
+                "  \u{2022} Prefer allowlist-style tool policy for shared environments.",
+                Style::default().fg(Color::White),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Recommended baseline:",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "  Start with the narrowest tool scope that lets you verify first success.",
+                Style::default().fg(Color::Gray),
+            )),
+            Line::from(Span::styled(
+                "  You can widen channels, models, and local automation after doctor and review.",
+                Style::default().fg(Color::Gray),
+            )),
+            Line::from(""),
+        ];
+
+        self.run_confirm_screen(
+            "security check",
+            body_lines,
+            "Enter/y accept  n/Esc decline",
+        )
+    }
+
+    // -----------------------------------------------------------------------
+    // Pre-flow: entry choice (current / detected / start fresh)
+    // -----------------------------------------------------------------------
+
+    pub fn run_entry_choice_screen(
+        &mut self,
+        options: &[(String, String)],
+        default_index: usize,
+    ) -> CliResult<usize> {
+        let items: Vec<SelectionItem> = options
+            .iter()
+            .map(|(label, detail)| SelectionItem::new(label.as_str(), Some(detail.as_str())))
+            .collect();
+
+        match self.run_standalone_selection_loop(
+            "setup path",
+            items,
+            default_index,
+            "Up/Down to select, Enter to confirm",
+        )? {
+            StandaloneSelectionResult::Selected(idx) => Ok(idx),
+            StandaloneSelectionResult::Cancel => {
+                Err("onboarding cancelled: entry choice declined".to_owned())
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Pre-flow: import candidate selection
+    // -----------------------------------------------------------------------
+
+    pub fn run_import_candidate_screen(
+        &mut self,
+        candidates: &[(String, String)],
+        default_index: usize,
+    ) -> CliResult<Option<usize>> {
+        let mut items: Vec<SelectionItem> = candidates
+            .iter()
+            .map(|(label, detail)| SelectionItem::new(label.as_str(), Some(detail.as_str())))
+            .collect();
+        items.push(SelectionItem::new(
+            "Start fresh",
+            Some("begin with default config"),
+        ));
+
+        match self.run_standalone_selection_loop(
+            "starting point",
+            items,
+            default_index,
+            "Up/Down to select, Enter to confirm",
+        )? {
+            StandaloneSelectionResult::Selected(idx) if idx < candidates.len() => Ok(Some(idx)),
+            StandaloneSelectionResult::Selected(_) => Ok(None),
+            StandaloneSelectionResult::Cancel => {
+                Err("onboarding cancelled: import selection cancelled".to_owned())
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Pre-flow: shortcut choice (use detected/current vs full setup)
+    // -----------------------------------------------------------------------
+
+    pub fn run_shortcut_choice_screen(
+        &mut self,
+        primary_label: &str,
+        snapshot_lines: &[String],
+    ) -> CliResult<bool> {
+        let mut body_lines: Vec<Line<'static>> = Vec::new();
+        body_lines.push(Line::from(""));
+        for line in snapshot_lines {
+            body_lines.push(Line::from(Span::styled(
+                format!("  {line}"),
+                Style::default().fg(Color::Gray),
+            )));
+        }
+        body_lines.push(Line::from(""));
+
+        let items = vec![
+            SelectionItem::new(primary_label, Some("skip detailed edits")),
+            SelectionItem::new("Adjust settings", Some("go through full setup")),
+        ];
+
+        match self.run_standalone_selection_loop(
+            "quick setup",
+            items,
+            0,
+            "Up/Down to select, Enter to confirm",
+        )? {
+            StandaloneSelectionResult::Selected(0) => Ok(true),
+            StandaloneSelectionResult::Selected(_) => Ok(false),
+            StandaloneSelectionResult::Cancel => {
+                Err("onboarding cancelled: shortcut choice cancelled".to_owned())
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Post-flow: preflight check results screen
+    // -----------------------------------------------------------------------
+
+    pub fn run_preflight_screen(
+        &mut self,
+        checks: &[crate::onboard_preflight::OnboardCheck],
+    ) -> CliResult<bool> {
+        let mut body_lines: Vec<Line<'static>> = Vec::new();
+        body_lines.push(Line::from(""));
+        body_lines.push(Line::from(Span::styled(
+            "  Preflight checks:",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )));
+        body_lines.push(Line::from(""));
+
+        let mut has_warnings = false;
+        for check in checks {
+            let (icon, color) = match check.level {
+                crate::onboard_preflight::OnboardCheckLevel::Pass => ("\u{2713}", Color::Green),
+                crate::onboard_preflight::OnboardCheckLevel::Warn => {
+                    has_warnings = true;
+                    ("\u{26a0}", Color::Yellow)
+                }
+                crate::onboard_preflight::OnboardCheckLevel::Fail => ("\u{2717}", Color::Red),
+            };
+            body_lines.push(Line::from(vec![
+                Span::styled(format!("  {icon} "), Style::default().fg(color)),
+                Span::styled(
+                    check.name.to_owned(),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("  {}", check.detail),
+                    Style::default().fg(Color::Gray),
+                ),
+            ]));
+        }
+        body_lines.push(Line::from(""));
+
+        if has_warnings {
+            self.run_confirm_screen(
+                "preflight results",
+                body_lines,
+                "Enter/y continue with warnings  n/Esc cancel",
+            )
+        } else {
+            // All green — just show the results and continue.
+            self.run_info_screen("preflight results", body_lines, "Enter to continue")?;
+            Ok(true)
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Post-flow: review screen (scrollable config summary)
+    // -----------------------------------------------------------------------
+
+    pub fn run_review_screen(&mut self, review_lines: &[String]) -> CliResult<()> {
+        let body_lines: Vec<Line<'static>> = review_lines
+            .iter()
+            .map(|line| {
+                Line::from(Span::styled(
+                    format!("  {line}"),
+                    Style::default().fg(Color::Gray),
+                ))
+            })
+            .collect();
+
+        self.run_info_screen(
+            "review config",
+            body_lines,
+            "Up/Down scroll  Enter continue",
+        )
+    }
+
+    // -----------------------------------------------------------------------
+    // Post-flow: write confirmation screen
+    // -----------------------------------------------------------------------
+
+    pub fn run_write_confirmation_screen(
+        &mut self,
+        config_path: &str,
+        warnings_kept: bool,
+    ) -> CliResult<bool> {
+        let status = if warnings_kept {
+            "warnings were kept by choice"
+        } else {
+            "all checks green"
+        };
+        let body_lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("  Config path: {config_path}"),
+                Style::default().fg(Color::White),
+            )),
+            Line::from(Span::styled(
+                format!("  Status: {status}"),
+                Style::default().fg(if warnings_kept {
+                    Color::Yellow
+                } else {
+                    Color::Green
+                }),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Write this configuration?",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+        ];
+
+        self.run_confirm_screen("write config", body_lines, "Enter/y write  n/Esc cancel")
+    }
+
+    // -----------------------------------------------------------------------
+    // Post-flow: success summary screen
+    // -----------------------------------------------------------------------
+
+    pub fn run_success_screen(&mut self, summary_lines: &[String]) -> CliResult<()> {
+        let mut body_lines: Vec<Line<'static>> = Vec::new();
+        body_lines.push(Line::from(""));
+        body_lines.push(Line::from(Span::styled(
+            "  Setup complete!",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )));
+        body_lines.push(Line::from(""));
+        for line in summary_lines {
+            body_lines.push(Line::from(Span::styled(
+                format!("  {line}"),
+                Style::default().fg(Color::Gray),
+            )));
+        }
+        body_lines.push(Line::from(""));
+
+        self.run_info_screen("setup complete", body_lines, "Enter to exit")
+    }
+
+    // -----------------------------------------------------------------------
+    // Standalone selection loop (no spine, for pre/post flow)
+    // -----------------------------------------------------------------------
+
+    fn run_standalone_selection_loop(
+        &mut self,
+        title: &str,
+        items: Vec<SelectionItem>,
+        default_index: usize,
+        footer_hint: &str,
+    ) -> CliResult<StandaloneSelectionResult> {
+        let mut state = SelectionCardState::new(items.len());
+        state.select(default_index);
+
+        loop {
+            let title_owned = title.to_owned();
+            let hint_owned = footer_hint.to_owned();
+
+            self.terminal
+                .draw(|frame| {
+                    let areas = layout::compute_layout(frame.area(), false);
+
+                    // Header
+                    let header_line = Line::from(vec![
+                        Span::styled(
+                            " LOONGCLAW ",
+                            Style::default()
+                                .fg(Color::Rgb(245, 169, 127))
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!(" {title_owned} "),
+                            Style::default().fg(Color::White),
+                        ),
+                        Span::styled("  Esc cancel", Style::default().fg(Color::DarkGray)),
+                    ]);
+                    frame.render_widget(Paragraph::new(header_line), areas.header);
+
+                    // Content: selection cards
+                    let widget = SelectionCardWidget::new(
+                        items
+                            .iter()
+                            .map(|i| SelectionItem::new(i.label.as_str(), i.hint.as_deref()))
+                            .collect(),
+                    );
+                    frame.render_stateful_widget(widget, areas.content, &mut state);
+
+                    // Footer
+                    let footer_line = Line::from(vec![Span::styled(
+                        format!(" {hint_owned} "),
+                        Style::default().fg(Color::Gray),
+                    )]);
+                    frame.render_widget(Paragraph::new(footer_line), areas.footer);
+                })
+                .map_err(|e| e.to_string())?;
+
+            match self.event_source.next_event().map_err(|e| e.to_string())? {
+                Event::Key(KeyEvent {
+                    code: KeyCode::Enter,
+                    ..
+                }) => return Ok(StandaloneSelectionResult::Selected(state.selected())),
+                Event::Key(KeyEvent {
+                    code: KeyCode::Down | KeyCode::Char('j'),
+                    ..
+                }) => state.next(),
+                Event::Key(KeyEvent {
+                    code: KeyCode::Up | KeyCode::Char('k'),
+                    ..
+                }) => state.previous(),
+                Event::Key(KeyEvent {
+                    code: KeyCode::Esc, ..
+                }) => return Ok(StandaloneSelectionResult::Cancel),
+                Event::Key(KeyEvent {
+                    code: KeyCode::Char('c'),
+                    modifiers,
+                    ..
+                }) if modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Err("interrupted by user".to_owned());
+                }
+                Event::Resize(..) | Event::FocusGained | Event::FocusLost => { /* redraw */ }
+                Event::Key(_) | Event::Mouse(_) | Event::Paste(_) => {}
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Protocols step
     // -----------------------------------------------------------------------
 
@@ -937,5 +1495,199 @@ mod tests {
             .unwrap()
             .block_on(runner.run_step(OnboardWizardStep::EnvironmentCheck, &mut draft));
         assert_eq!(env_check.unwrap(), OnboardFlowStepAction::Next);
+    }
+
+    // -----------------------------------------------------------------------
+    // Pre/post-flow screen tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn risk_screen_accepts_on_enter() {
+        let events = vec![key(KeyCode::Enter)];
+        let source = ScriptedEventSource::new(events);
+        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        assert!(runner.run_risk_screen().unwrap());
+    }
+
+    #[test]
+    fn risk_screen_accepts_on_y() {
+        let events = vec![key(KeyCode::Char('y'))];
+        let source = ScriptedEventSource::new(events);
+        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        assert!(runner.run_risk_screen().unwrap());
+    }
+
+    #[test]
+    fn risk_screen_declines_on_n() {
+        let events = vec![key(KeyCode::Char('n'))];
+        let source = ScriptedEventSource::new(events);
+        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        assert!(!runner.run_risk_screen().unwrap());
+    }
+
+    #[test]
+    fn risk_screen_declines_on_esc() {
+        let events = vec![key(KeyCode::Esc)];
+        let source = ScriptedEventSource::new(events);
+        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        assert!(!runner.run_risk_screen().unwrap());
+    }
+
+    #[test]
+    fn entry_choice_screen_selects_default() {
+        let events = vec![key(KeyCode::Enter)];
+        let source = ScriptedEventSource::new(events);
+        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let options = vec![
+            ("Current".to_owned(), "use existing".to_owned()),
+            ("Fresh".to_owned(), "start fresh".to_owned()),
+        ];
+        let idx = runner.run_entry_choice_screen(&options, 0).unwrap();
+        assert_eq!(idx, 0);
+    }
+
+    #[test]
+    fn entry_choice_screen_selects_second() {
+        let events = vec![key(KeyCode::Down), key(KeyCode::Enter)];
+        let source = ScriptedEventSource::new(events);
+        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let options = vec![
+            ("Current".to_owned(), "use existing".to_owned()),
+            ("Fresh".to_owned(), "start fresh".to_owned()),
+        ];
+        let idx = runner.run_entry_choice_screen(&options, 0).unwrap();
+        assert_eq!(idx, 1);
+    }
+
+    #[test]
+    fn shortcut_choice_screen_returns_true_for_primary() {
+        let events = vec![key(KeyCode::Enter)];
+        let source = ScriptedEventSource::new(events);
+        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let result = runner
+            .run_shortcut_choice_screen("Use current setup", &["provider: openai".to_owned()])
+            .unwrap();
+        assert!(result);
+    }
+
+    #[test]
+    fn shortcut_choice_screen_returns_false_for_adjust() {
+        let events = vec![key(KeyCode::Down), key(KeyCode::Enter)];
+        let source = ScriptedEventSource::new(events);
+        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let result = runner
+            .run_shortcut_choice_screen("Use current setup", &["provider: openai".to_owned()])
+            .unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn preflight_screen_passes_all_green() {
+        let checks = vec![crate::onboard_preflight::OnboardCheck {
+            name: "provider credentials",
+            level: crate::onboard_preflight::OnboardCheckLevel::Pass,
+            detail: "env binding found".to_owned(),
+            non_interactive_warning_policy:
+                crate::onboard_preflight::OnboardNonInteractiveWarningPolicy::default(),
+        }];
+        let events = vec![key(KeyCode::Enter)];
+        let source = ScriptedEventSource::new(events);
+        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        assert!(runner.run_preflight_screen(&checks).unwrap());
+    }
+
+    #[test]
+    fn preflight_screen_with_warning_accepts_on_enter() {
+        let checks = vec![crate::onboard_preflight::OnboardCheck {
+            name: "model probe",
+            level: crate::onboard_preflight::OnboardCheckLevel::Warn,
+            detail: "model not verified".to_owned(),
+            non_interactive_warning_policy:
+                crate::onboard_preflight::OnboardNonInteractiveWarningPolicy::default(),
+        }];
+        let events = vec![key(KeyCode::Enter)];
+        let source = ScriptedEventSource::new(events);
+        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        assert!(runner.run_preflight_screen(&checks).unwrap());
+    }
+
+    #[test]
+    fn preflight_screen_with_warning_declines_on_n() {
+        let checks = vec![crate::onboard_preflight::OnboardCheck {
+            name: "model probe",
+            level: crate::onboard_preflight::OnboardCheckLevel::Warn,
+            detail: "model not verified".to_owned(),
+            non_interactive_warning_policy:
+                crate::onboard_preflight::OnboardNonInteractiveWarningPolicy::default(),
+        }];
+        let events = vec![key(KeyCode::Char('n'))];
+        let source = ScriptedEventSource::new(events);
+        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        assert!(!runner.run_preflight_screen(&checks).unwrap());
+    }
+
+    #[test]
+    fn review_screen_continues_on_enter() {
+        let events = vec![key(KeyCode::Enter)];
+        let source = ScriptedEventSource::new(events);
+        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        runner
+            .run_review_screen(&["provider: openai".to_owned(), "model: gpt-4".to_owned()])
+            .unwrap();
+    }
+
+    #[test]
+    fn write_confirmation_screen_accepts_on_enter() {
+        let events = vec![key(KeyCode::Enter)];
+        let source = ScriptedEventSource::new(events);
+        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        assert!(
+            runner
+                .run_write_confirmation_screen("/tmp/loongclaw.toml", false)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn write_confirmation_screen_declines_on_n() {
+        let events = vec![key(KeyCode::Char('n'))];
+        let source = ScriptedEventSource::new(events);
+        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        assert!(
+            !runner
+                .run_write_confirmation_screen("/tmp/loongclaw.toml", false)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn success_screen_exits_on_enter() {
+        let events = vec![key(KeyCode::Enter)];
+        let source = ScriptedEventSource::new(events);
+        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        runner
+            .run_success_screen(&["config written".to_owned()])
+            .unwrap();
+    }
+
+    #[test]
+    fn import_candidate_screen_selects_first() {
+        let events = vec![key(KeyCode::Enter)];
+        let source = ScriptedEventSource::new(events);
+        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let candidates = vec![("codex config".to_owned(), "~/.codex/config.json".to_owned())];
+        let result = runner.run_import_candidate_screen(&candidates, 0).unwrap();
+        assert_eq!(result, Some(0));
+    }
+
+    #[test]
+    fn import_candidate_screen_selects_start_fresh() {
+        // Navigate past all candidates to the "Start fresh" item
+        let events = vec![key(KeyCode::Down), key(KeyCode::Enter)];
+        let source = ScriptedEventSource::new(events);
+        let mut runner = RatatuiOnboardRunner::headless(source, OnboardTuiMode::Inline).unwrap();
+        let candidates = vec![("codex config".to_owned(), "~/.codex/config.json".to_owned())];
+        let result = runner.run_import_candidate_screen(&candidates, 0).unwrap();
+        assert_eq!(result, None);
     }
 }

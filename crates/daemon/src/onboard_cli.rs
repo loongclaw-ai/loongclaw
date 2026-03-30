@@ -199,6 +199,7 @@ fn read_stdin_line() -> CliResult<String> {
     Ok(line)
 }
 
+#[allow(dead_code)] // retained for non-TUI fallback and future use
 fn prompt_stdin_confirm(message: &str, default: bool) -> CliResult<bool> {
     let suffix = if default { "[Y/n]" } else { "[y/N]" };
     print!("{message} {suffix}: ");
@@ -865,14 +866,23 @@ async fn run_onboard_cli_inner(
 ) -> CliResult<()> {
     validate_non_interactive_risk_gate(options.non_interactive, options.accept_risk)?;
 
-    if !options.non_interactive && !options.accept_risk {
-        print_stdout_lines(render_onboarding_risk_screen_lines_with_style(
-            context.render_width,
-            true,
-        ))?;
-        if !prompt_stdin_confirm(presentation::risk_screen_copy().confirm_prompt, false)? {
-            return Err("onboarding cancelled: risk acknowledgement declined".to_owned());
-        }
+    // Create the TUI runner at the start for the entire interactive session.
+    let mut tui_runner = if !options.non_interactive {
+        Some(
+            crate::onboard_tui::RatatuiOnboardRunner::new()
+                .map_err(|e| format!("failed to initialize TUI: {e}"))?,
+        )
+    } else {
+        None
+    };
+
+    // --- Pre-flow: risk acknowledgement ---
+    if !options.non_interactive
+        && !options.accept_risk
+        && let Some(runner) = &mut tui_runner
+        && !runner.run_risk_screen()?
+    {
+        return Err("onboarding cancelled: risk acknowledgement declined".to_owned());
     }
 
     let output_path = options
@@ -880,28 +890,31 @@ async fn run_onboard_cli_inner(
         .as_deref()
         .map(mvp::config::expand_path)
         .unwrap_or_else(mvp::config::default_config_path);
-    let starting_selection = load_import_starting_config(&output_path, &options, context)?;
+
+    // --- Pre-flow: entry choice + import selection ---
+    let starting_selection =
+        load_import_starting_config_with_tui(&output_path, &options, context, &mut tui_runner)?;
+
     let mut flow = OnboardFlowController::new(OnboardDraft::from_config(
         starting_selection.config.clone(),
         output_path.clone(),
         initial_draft_origin(starting_selection.entry_choice),
     ));
+
+    // --- Pre-flow: shortcut choice ---
     let shortcut_kind = resolve_onboard_shortcut_kind(&options, &starting_selection);
     let skip_detailed_setup = if let Some(shortcut_kind) = shortcut_kind {
-        print_stdout_lines(render_onboard_shortcut_header_lines_with_style(
-            shortcut_kind,
-            &flow.draft().config,
-            starting_selection.import_source.as_deref(),
-            context.render_width,
-            true,
-        ))?;
-        matches!(
-            prompt_onboard_shortcut_choice(shortcut_kind)?,
-            OnboardShortcutChoice::UseShortcut
-        )
+        if let Some(runner) = &mut tui_runner {
+            let snapshot_lines = build_onboard_review_digest_display_lines(&flow.draft().config);
+            runner.run_shortcut_choice_screen(shortcut_kind.primary_label(), &snapshot_lines)?
+        } else {
+            // non-interactive fallback (should not happen, but defensive)
+            false
+        }
     } else {
         false
     };
+
     let review_flow_style = if skip_detailed_setup {
         shortcut_kind
             .map(OnboardShortcutKind::review_flow_style)
@@ -910,11 +923,11 @@ async fn run_onboard_cli_inner(
         ReviewFlowStyle::Guided(resolve_guided_prompt_path(&options, &flow.draft().config))
     };
 
+    // --- Guided wizard flow ---
     if !skip_detailed_setup && !options.non_interactive {
-        let mut runner = crate::onboard_tui::RatatuiOnboardRunner::new()
-            .map_err(|e| format!("failed to initialize TUI: {e}"))?;
-        flow = run_guided_onboard_flow(flow, &mut runner).await?;
-        drop(runner); // restore terminal before printing
+        if let Some(runner) = &mut tui_runner {
+            flow = run_guided_onboard_flow(flow, runner).await?;
+        }
     } else if !skip_detailed_setup && options.non_interactive {
         apply_non_interactive_overrides(&options, flow.draft_mut(), context)?;
     }
@@ -975,64 +988,45 @@ async fn run_onboard_cli_inner(
             let warning_message = non_interactive_preflight_warning_message(&checks, &options);
             return Err(warning_message);
         }
-    } else {
-        if show_guided_environment_step {
-            let progress_line = guided_step_progress_line(OnboardWizardStep::EnvironmentCheck);
-            print_guided_step_boundary(OnboardWizardStep::EnvironmentCheck)?;
-            print_stdout_lines(render_preflight_summary_screen_lines_with_progress(
-                &checks,
-                context.render_width,
-                progress_line.as_str(),
-                true,
-            ))?;
-        } else {
-            print_stdout_lines(render_preflight_summary_screen_lines_with_style(
-                &checks,
-                context.render_width,
-                review_flow_style,
-                true,
-            ))?;
-        }
+    } else if let Some(runner) = &mut tui_runner {
+        // --- Post-flow: preflight results (TUI) ---
         if let Some(message) = config_validation_failure {
             return Err(message);
         }
         if has_failures {
             return Err(non_interactive_preflight_failure_message(&checks));
         }
-        if has_warnings && !prompt_stdin_confirm(presentation::preflight_confirm_prompt(), false)? {
+        if !runner.run_preflight_screen(&checks)? {
             return Err("onboarding cancelled: unresolved preflight warnings".to_owned());
         }
     }
-    if !options.non_interactive {
-        if show_guided_environment_step {
-            if flow.current_step() == OnboardWizardStep::EnvironmentCheck {
-                flow.advance();
-            }
-            print_guided_step_boundary(OnboardWizardStep::ReviewAndWrite)?;
+
+    // --- Post-flow: review screen ---
+    if let Some(runner) = &mut tui_runner {
+        if show_guided_environment_step
+            && flow.current_step() == OnboardWizardStep::EnvironmentCheck
+        {
+            flow.advance();
         }
-        print_stdout_lines(
-            render_onboard_review_lines_for_draft_with_guidance_and_style(
-                flow.draft(),
-                starting_selection.import_source.as_deref(),
-                &workspace_guidance,
-                starting_selection.review_candidate.as_ref(),
-                context.render_width,
-                review_flow_style,
-                true,
-            ),
-        )?;
-    }
-    if !options.non_interactive && !skip_config_write {
-        print_stdout_lines(render_write_confirmation_screen_lines_with_style(
-            &output_path.display().to_string(),
-            has_warnings,
+        let review_lines = render_onboard_review_lines_for_draft_with_guidance_and_style(
+            flow.draft(),
+            starting_selection.import_source.as_deref(),
+            &workspace_guidance,
+            starting_selection.review_candidate.as_ref(),
             context.render_width,
             review_flow_style,
-            true,
-        ))?;
-        if !prompt_stdin_confirm(presentation::write_confirmation_prompt(), true)? {
-            return Err("onboarding cancelled: review declined before write".to_owned());
-        }
+            false,
+        );
+        runner.run_review_screen(&review_lines)?;
+    }
+
+    // --- Post-flow: write confirmation ---
+    if let Some(runner) = &mut tui_runner
+        && !skip_config_write
+        && !runner
+            .run_write_confirmation_screen(&output_path.display().to_string(), has_warnings)?
+    {
+        return Err("onboarding cancelled: review declined before write".to_owned());
     }
 
     let (path, config_status, write_recovery) = if skip_config_write {
@@ -1133,7 +1127,6 @@ async fn run_onboard_cli_inner(
                     let verification_check =
                         post_write_verification_failure_check(verification_detail.as_str());
                     let blocked_outcome = onboard_check_outcome(&checks, Some(&verification_check));
-                    print_guided_step_boundary(OnboardWizardStep::Ready)?;
                     let blocked_summary = build_onboarding_success_summary_with_outcome(
                         &output_path,
                         summary_config,
@@ -1147,9 +1140,19 @@ async fn run_onboard_cli_inner(
                     let blocked_lines = render_onboarding_success_summary_lines(
                         &blocked_summary,
                         context.render_width,
-                        true,
+                        false,
                     );
-                    print_stdout_lines(blocked_lines)?;
+                    if let Some(runner) = &mut tui_runner {
+                        let _ = runner.run_success_screen(&blocked_lines);
+                    } else {
+                        print_guided_step_boundary(OnboardWizardStep::Ready)?;
+                        let styled_blocked_lines = render_onboarding_success_summary_lines(
+                            &blocked_summary,
+                            context.render_width,
+                            true,
+                        );
+                        print_stdout_lines(styled_blocked_lines)?;
+                    }
                     return Err(failure);
                 }
                 return Err(verification_detail);
@@ -1164,8 +1167,6 @@ async fn run_onboard_cli_inner(
     if let Some(write_recovery) = write_recovery.as_ref() {
         write_recovery.finish_success();
     }
-    print_guided_step_boundary(OnboardWizardStep::Ready)?;
-
     let success_summary = build_onboarding_success_summary_with_outcome(
         &path,
         &flow.draft().config,
@@ -1181,8 +1182,19 @@ async fn run_onboard_cli_inner(
         }),
     );
     let success_summary_lines =
-        render_onboarding_success_summary_lines(&success_summary, context.render_width, true);
-    print_stdout_lines(success_summary_lines)?;
+        render_onboarding_success_summary_lines(&success_summary, context.render_width, false);
+
+    if let Some(runner) = &mut tui_runner {
+        runner.run_success_screen(&success_summary_lines)?;
+    } else {
+        print_guided_step_boundary(OnboardWizardStep::Ready)?;
+        let styled_lines =
+            render_onboarding_success_summary_lines(&success_summary, context.render_width, true);
+        print_stdout_lines(styled_lines)?;
+    }
+
+    // Drop the TUI runner to restore the terminal before returning.
+    drop(tui_runner);
     Ok(())
 }
 
@@ -1652,6 +1664,137 @@ fn load_import_starting_config(
             &all_candidates,
         ),
         OnboardEntryChoice::StartFresh => Ok(default_starting_config_selection()),
+    }
+}
+
+/// TUI-aware version of `load_import_starting_config`.
+///
+/// When `tui_runner` is `Some`, the entry choice and import candidate selection
+/// are rendered via ratatui screens; otherwise falls back to plain stdin.
+fn load_import_starting_config_with_tui(
+    output_path: &Path,
+    options: &OnboardCommandOptions,
+    context: &OnboardRuntimeContext,
+    tui_runner: &mut Option<crate::onboard_tui::RatatuiOnboardRunner>,
+) -> CliResult<StartingConfigSelection> {
+    let default_config = mvp::config::LoongClawConfig::default();
+    let readiness = resolve_channel_import_readiness(&default_config);
+    let current_setup_state = crate::migration::classify_current_setup(output_path);
+    let candidates = collect_import_candidates_with_context(output_path, context, readiness)?;
+    let all_candidates = candidates.clone();
+    let entry_options = build_onboard_entry_options(current_setup_state, &candidates);
+    let (current_candidate, import_candidates) = split_onboard_candidates(candidates);
+
+    if current_candidate.is_none() && import_candidates.is_empty() {
+        return Ok(default_starting_config_selection());
+    }
+
+    if options.non_interactive {
+        return Ok(select_non_interactive_starting_config(
+            current_setup_state,
+            &entry_options,
+            current_candidate,
+            import_candidates,
+            &all_candidates,
+        ));
+    }
+
+    if entry_options
+        .first()
+        .is_some_and(|option| option.choice == OnboardEntryChoice::StartFresh)
+    {
+        return Ok(default_starting_config_selection());
+    }
+
+    // TUI path: use the runner for the entry choice if available.
+    if let Some(runner) = tui_runner {
+        let tui_options: Vec<(String, String)> = entry_options
+            .iter()
+            .map(|opt| (opt.label.to_owned(), opt.detail.clone()))
+            .collect();
+        let default_idx = entry_options
+            .iter()
+            .position(|opt| opt.recommended)
+            .unwrap_or(0);
+        let idx = runner.run_entry_choice_screen(&tui_options, default_idx)?;
+        let choice = entry_options
+            .get(idx)
+            .map(|opt| opt.choice)
+            .ok_or_else(|| format!("entry selection index {idx} out of range"))?;
+        return match choice {
+            OnboardEntryChoice::ContinueCurrentSetup => Ok(current_candidate
+                .map(|candidate| {
+                    starting_config_selection_from_current_candidate(candidate, current_setup_state)
+                })
+                .unwrap_or_else(default_starting_config_selection)),
+            OnboardEntryChoice::ImportDetectedSetup => {
+                select_interactive_import_starting_config_with_tui(
+                    runner,
+                    current_setup_state,
+                    import_candidates,
+                    &all_candidates,
+                )
+            }
+            OnboardEntryChoice::StartFresh => Ok(default_starting_config_selection()),
+        };
+    }
+
+    // Fallback to plain stdin (should not reach here for interactive mode
+    // since `tui_runner` is always `Some`, but kept for completeness).
+    load_import_starting_config(output_path, options, context)
+}
+
+fn select_interactive_import_starting_config_with_tui(
+    runner: &mut crate::onboard_tui::RatatuiOnboardRunner,
+    current_setup_state: crate::migration::CurrentSetupState,
+    import_candidates: Vec<ImportCandidate>,
+    all_candidates: &[ImportCandidate],
+) -> CliResult<StartingConfigSelection> {
+    let import_candidates = sort_starting_point_candidates(import_candidates);
+    if import_candidates.is_empty() {
+        return Ok(default_starting_config_selection());
+    }
+    if import_candidates.len() == 1 {
+        if let Some(candidate) = import_candidates.first() {
+            return Ok(starting_config_selection_from_import_candidate(
+                candidate.clone(),
+                all_candidates,
+                current_setup_state,
+            ));
+        }
+        return Ok(default_starting_config_selection());
+    }
+
+    let tui_candidates: Vec<(String, String)> = import_candidates
+        .iter()
+        .map(|c| {
+            let label = onboard_starting_point_label(Some(c.source_kind), &c.source);
+            let detail = if c.surfaces.is_empty() {
+                String::new()
+            } else {
+                c.surfaces
+                    .iter()
+                    .map(|s| s.detail.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            (label, detail)
+        })
+        .collect();
+
+    match runner.run_import_candidate_screen(&tui_candidates, 0)? {
+        Some(idx) => {
+            if let Some(candidate) = import_candidates.get(idx) {
+                Ok(starting_config_selection_from_import_candidate(
+                    candidate.clone(),
+                    all_candidates,
+                    current_setup_state,
+                ))
+            } else {
+                Ok(default_starting_config_selection())
+            }
+        }
+        None => Ok(default_starting_config_selection()),
     }
 }
 
