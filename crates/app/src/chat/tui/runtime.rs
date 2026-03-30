@@ -42,15 +42,12 @@ pub(crate) fn initialize(
 
     let session_address = ConversationSessionAddress::from_session_id(session_id.clone());
 
-    // Model label for the status bar -- derive from the active provider's
-    // model field, falling back to "unknown" when unset.
-    let model_label = {
-        let raw = config.provider.resolved_model();
-        match raw {
-            Some(m) if !m.trim().is_empty() => m,
-            _ => "unknown".to_owned(),
-        }
-    };
+    // Model label for the status bar — explicit model or "auto".
+    let model_label = config
+        .provider
+        .resolved_model()
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| "auto".to_owned());
 
     Ok(TuiRuntime {
         resolved_path,

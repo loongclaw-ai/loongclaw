@@ -294,14 +294,19 @@ fn apply_terminal_event(
         return;
     }
 
+    // --- Help overlay captures Esc to dismiss -------------------------
+    if shell.show_help {
+        if key.code == KeyCode::Esc || key.code == KeyCode::Char('q') {
+            shell.show_help = false;
+        }
+        // Swallow all other keys while help is open.
+        return;
+    }
+
     // --- Global shortcuts ---------------------------------------------
     #[allow(clippy::wildcard_enum_match_arm)]
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            shell.running = false;
-            return;
-        }
-        KeyCode::Esc => {
             shell.running = false;
             return;
         }

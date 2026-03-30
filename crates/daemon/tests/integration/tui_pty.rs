@@ -363,7 +363,7 @@ fn tui_enters_fullscreen_in_pty() {
     );
 
     // Exit cleanly via Escape.
-    fixture.send_escape().expect("send Escape key to exit TUI");
+    fixture.send_ctrl_c().expect("Ctrl-C to exit TUI");
 
     let exit_code = fixture
         .wait_for_exit(Duration::from_secs(5))
@@ -385,7 +385,7 @@ fn tui_shows_welcome_message() {
         "Welcome message should include input instructions: {screen:?}"
     );
 
-    fixture.send_escape().expect("send Escape to exit");
+    fixture.send_ctrl_c().expect("Ctrl-C to exit");
 }
 
 /// Typing text into the TUI composer area makes it visible on the screen.
@@ -418,28 +418,36 @@ fn tui_composer_accepts_input() {
         "typed text should appear on the screen: {screen:?}"
     );
 
-    fixture.send_escape().expect("send Escape to exit");
+    fixture.send_ctrl_c().expect("Ctrl-C to exit");
 }
 
-/// Pressing Escape exits the TUI cleanly with exit code 0.
+/// Pressing Escape does NOT exit the TUI — only Ctrl-C or /exit does.
 #[test]
-fn tui_exit_via_escape() {
-    let mut fixture = TuiPtyFixture::spawn("exit-escape");
+fn tui_escape_does_not_exit() {
+    let mut fixture = TuiPtyFixture::spawn("escape-no-exit");
 
     fixture
         .wait_for("Welcome to LoongClaw TUI", Duration::from_secs(10))
-        .expect("TUI should be ready before exit");
+        .expect("TUI should be ready");
 
-    fixture.send_escape().expect("send Escape to exit");
+    fixture.send_escape().expect("send Escape");
 
+    // TUI should still be running after Escape
+    std::thread::sleep(Duration::from_millis(500));
+    let screen = fixture
+        .read_screen(Duration::from_secs(2))
+        .unwrap_or_default();
+    assert!(
+        !screen.is_empty(),
+        "TUI should still be rendering after Escape"
+    );
+
+    // Now exit with Ctrl-C
+    fixture.send_ctrl_c().expect("Ctrl-C to exit");
     let exit_code = fixture
         .wait_for_exit(Duration::from_secs(5))
-        .expect("process should exit after Escape");
-
-    assert_eq!(
-        exit_code, 0,
-        "TUI should exit cleanly with code 0 via Escape"
-    );
+        .expect("process should exit after Ctrl-C");
+    assert_eq!(exit_code, 0);
 }
 
 /// Submitting a turn shows a response or an error message (not silence).
@@ -484,7 +492,7 @@ fn tui_submit_turn_shows_response_or_error() {
         "TUI should show user message, progress, or error after Enter: {screen:?}"
     );
 
-    fixture.send_escape().expect("exit TUI");
+    fixture.send_ctrl_c().expect("Ctrl-C to exit");
 }
 
 /// Pressing Ctrl+C exits the TUI cleanly with exit code 0.
@@ -560,7 +568,7 @@ fn tui_multi_turn_conversation() {
         "both user messages should appear on screen: has_hi={has_hi}, has_thanks={has_thanks}, screen={screen:?}"
     );
 
-    fixture.send_escape().expect("exit TUI");
+    fixture.send_ctrl_c().expect("Ctrl-C to exit");
 }
 
 /// Submitting a message shows a "You" badge for the user message.
@@ -594,7 +602,7 @@ fn tui_user_message_appears_as_badge() {
         "user message badge 'You' should appear on screen: {screen:?}"
     );
 
-    fixture.send_escape().expect("exit TUI");
+    fixture.send_ctrl_c().expect("Ctrl-C to exit");
 }
 
 /// After submitting a turn, the assistant response divider or an error
@@ -631,7 +639,7 @@ fn tui_assistant_response_shows_divider() {
         }
     }
 
-    fixture.send_escape().expect("exit TUI");
+    fixture.send_ctrl_c().expect("Ctrl-C to exit");
 }
 
 /// Pressing Enter with an empty composer should not submit a turn.
@@ -665,7 +673,7 @@ fn tui_empty_enter_does_not_submit() {
         "empty Enter should not start a turn (no Iteration indicator): {screen:?}"
     );
 
-    fixture.send_escape().expect("exit TUI");
+    fixture.send_ctrl_c().expect("Ctrl-C to exit");
 }
 
 // ---------------------------------------------------------------------------
@@ -704,7 +712,7 @@ fn tui_help_command_shows_overlay() {
         "help overlay should mention 'exit' or 'clear' command: {screen:?}"
     );
 
-    fixture.send_escape().expect("exit TUI");
+    fixture.send_ctrl_c().expect("Ctrl-C to exit");
 }
 
 /// The `/clear` command clears the transcript so the welcome message is gone.
@@ -739,7 +747,7 @@ fn tui_clear_command_clears_transcript() {
         "welcome message should be cleared after /clear: {screen:?}"
     );
 
-    fixture.send_escape().expect("exit TUI");
+    fixture.send_ctrl_c().expect("Ctrl-C to exit");
 }
 
 /// The `/exit` command causes the TUI to exit cleanly with code 0.
@@ -804,7 +812,7 @@ fn tui_spinner_shows_during_turn() {
         "spinner or turn indicator should be visible shortly after submit: {screen:?}"
     );
 
-    fixture.send_escape().expect("exit TUI");
+    fixture.send_ctrl_c().expect("Ctrl-C to exit");
 }
 
 /// The status bar should show the session identifier "default".
@@ -827,7 +835,7 @@ fn tui_status_bar_shows_session() {
         "status bar should show 'default' session id: {screen:?}"
     );
 
-    fixture.send_escape().expect("exit TUI");
+    fixture.send_ctrl_c().expect("Ctrl-C to exit");
 }
 
 /// PageUp and PageDown do not crash the TUI.
@@ -862,7 +870,7 @@ fn tui_scroll_does_not_crash() {
         "TUI should still be alive after scroll keys: {screen:?}"
     );
 
-    fixture.send_escape().expect("exit TUI");
+    fixture.send_ctrl_c().expect("Ctrl-C to exit");
 }
 
 // ---------------------------------------------------------------------------
@@ -903,7 +911,7 @@ fn tui_turn_error_shows_message() {
         }
     }
 
-    fixture.send_escape().expect("exit TUI");
+    fixture.send_ctrl_c().expect("Ctrl-C to exit");
 }
 
 /// Rapid input does not crash the TUI.
@@ -942,5 +950,7 @@ fn tui_resilient_to_rapid_input() {
     );
 
     // TUI should not have crashed — we can still exit.
-    fixture.send_escape().expect("exit TUI after rapid input");
+    fixture
+        .send_ctrl_c()
+        .expect("Ctrl-C to exit after rapid input");
 }
