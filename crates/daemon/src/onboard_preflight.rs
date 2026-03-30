@@ -9,6 +9,8 @@ use mvp::tui_surface::{
     TuiSectionSpec, render_onboard_screen_spec,
 };
 
+use crate::onboard_state::OnboardOutcome;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnboardCheckLevel {
     Pass,
@@ -42,6 +44,38 @@ pub struct OnboardCheck {
     pub non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum OnboardCheckSubsystem {
+    ProviderAuth,
+    WorkspaceStorage,
+    Protocols,
+    BrowserChannelRuntimeExtras,
+}
+
+impl OnboardCheckSubsystem {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::ProviderAuth => "provider/auth",
+            Self::WorkspaceStorage => "workspace/storage",
+            Self::Protocols => "protocols",
+            Self::BrowserChannelRuntimeExtras => "browser/channel/runtime extras",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OnboardCheckGroup {
+    pub(crate) subsystem: OnboardCheckSubsystem,
+    pub(crate) checks: Vec<OnboardCheck>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct OnboardGroupedChecks {
+    pub(crate) ready: Vec<OnboardCheckGroup>,
+    pub(crate) warnings: Vec<OnboardCheckGroup>,
+    pub(crate) blocked: Vec<OnboardCheckGroup>,
+}
+
 pub(crate) async fn run_preflight_checks(
     config: &mvp::config::LoongClawConfig,
     skip_model_probe: bool,
@@ -57,6 +91,7 @@ pub(crate) async fn run_preflight_checks(
     checks.push(credential_check);
     checks.push(provider_transport_check(config));
     checks.push(web_search_provider_check(config));
+    checks.extend(collect_protocol_preflight_checks(config));
 
     if skip_model_probe {
         checks.push(OnboardCheck {
@@ -363,6 +398,70 @@ pub fn collect_channel_preflight_checks(
         .collect()
 }
 
+fn collect_protocol_preflight_checks(config: &mvp::config::LoongClawConfig) -> Vec<OnboardCheck> {
+    let mut checks = Vec::new();
+
+    if !config.acp.enabled {
+        checks.push(OnboardCheck {
+            name: "acp backend",
+            level: OnboardCheckLevel::Pass,
+            detail: "ACP is disabled for this draft".to_owned(),
+            non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+        });
+        return checks;
+    }
+
+    match config.acp.backend_id() {
+        Some(backend_id) => match mvp::acp::describe_acp_backend(Some(backend_id.as_str())) {
+            Ok(metadata) => checks.push(OnboardCheck {
+                name: "acp backend",
+                level: OnboardCheckLevel::Pass,
+                detail: format!("ACP is enabled with backend `{}`", metadata.id),
+                non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+            }),
+            Err(error) => checks.push(OnboardCheck {
+                name: "acp backend",
+                level: OnboardCheckLevel::Fail,
+                detail: format!("ACP backend `{backend_id}` is invalid: {error}"),
+                non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+            }),
+        },
+        None => checks.push(OnboardCheck {
+            name: "acp backend",
+            level: OnboardCheckLevel::Warn,
+            detail: "ACP is enabled but no backend is configured yet".to_owned(),
+            non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+        }),
+    }
+
+    match config.acp.dispatch.bootstrap_mcp_server_names() {
+        Ok(bootstrap_mcp_servers) => {
+            let detail = if bootstrap_mcp_servers.is_empty() {
+                "no bootstrap MCP servers configured".to_owned()
+            } else {
+                format!(
+                    "bootstrap MCP servers: {}",
+                    bootstrap_mcp_servers.join(", ")
+                )
+            };
+            checks.push(OnboardCheck {
+                name: "bootstrap mcp servers",
+                level: OnboardCheckLevel::Pass,
+                detail,
+                non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+            });
+        }
+        Err(error) => checks.push(OnboardCheck {
+            name: "bootstrap mcp servers",
+            level: OnboardCheckLevel::Fail,
+            detail: format!("bootstrap MCP servers are invalid: {error}"),
+            non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+        }),
+    }
+
+    checks
+}
+
 pub(crate) fn render_preflight_summary_screen_lines_with_progress(
     checks: &[OnboardCheck],
     width: usize,
@@ -374,8 +473,8 @@ pub(crate) fn render_preflight_summary_screen_lines_with_progress(
 }
 
 pub fn render_preflight_summary_screen_lines(checks: &[OnboardCheck], width: usize) -> Vec<String> {
-    let progress_line = crate::onboard_presentation::review_flow_copy(
-        crate::onboard_presentation::ReviewFlowKind::Guided,
+    let progress_line = crate::onboard_cli::presentation::review_flow_copy(
+        crate::onboard_cli::presentation::ReviewFlowKind::Guided,
     )
     .progress_line;
 
@@ -386,8 +485,8 @@ pub fn render_current_setup_preflight_summary_screen_lines(
     checks: &[OnboardCheck],
     width: usize,
 ) -> Vec<String> {
-    let progress_line = crate::onboard_presentation::review_flow_copy(
-        crate::onboard_presentation::ReviewFlowKind::QuickCurrentSetup,
+    let progress_line = crate::onboard_cli::presentation::review_flow_copy(
+        crate::onboard_cli::presentation::ReviewFlowKind::QuickCurrentSetup,
     )
     .progress_line;
 
@@ -398,8 +497,8 @@ pub fn render_detected_setup_preflight_summary_screen_lines(
     checks: &[OnboardCheck],
     width: usize,
 ) -> Vec<String> {
-    let progress_line = crate::onboard_presentation::review_flow_copy(
-        crate::onboard_presentation::ReviewFlowKind::QuickDetectedSetup,
+    let progress_line = crate::onboard_cli::presentation::review_flow_copy(
+        crate::onboard_cli::presentation::ReviewFlowKind::QuickDetectedSetup,
     )
     .progress_line;
 
@@ -543,51 +642,162 @@ fn summarize_onboard_checks(checks: &[OnboardCheck]) -> OnboardCheckCounts {
     counts
 }
 
+pub(crate) fn onboard_check_outcome(
+    checks: &[OnboardCheck],
+    post_write_verification: Option<&OnboardCheck>,
+) -> OnboardOutcome {
+    let grouped = group_onboard_checks_by_status_and_subsystem(checks);
+    outcome_from_grouped_checks(&grouped, post_write_verification)
+}
+
+pub(crate) fn post_write_verification_failure_check(detail: impl Into<String>) -> OnboardCheck {
+    OnboardCheck {
+        name: "post-write verification",
+        level: OnboardCheckLevel::Fail,
+        detail: detail.into(),
+        non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+    }
+}
+
+fn outcome_from_grouped_checks(
+    grouped: &OnboardGroupedChecks,
+    post_write_verification: Option<&OnboardCheck>,
+) -> OnboardOutcome {
+    if post_write_verification.is_some_and(|check| check.level == OnboardCheckLevel::Fail)
+        || !grouped.blocked.is_empty()
+    {
+        return OnboardOutcome::Blocked;
+    }
+
+    if post_write_verification.is_some_and(|check| check.level == OnboardCheckLevel::Warn)
+        || !grouped.warnings.is_empty()
+    {
+        return OnboardOutcome::SuccessWithWarnings;
+    }
+
+    OnboardOutcome::Success
+}
+
+fn group_onboard_checks_by_status_and_subsystem(checks: &[OnboardCheck]) -> OnboardGroupedChecks {
+    let mut grouped = OnboardGroupedChecks::default();
+
+    for subsystem in [
+        OnboardCheckSubsystem::ProviderAuth,
+        OnboardCheckSubsystem::WorkspaceStorage,
+        OnboardCheckSubsystem::Protocols,
+        OnboardCheckSubsystem::BrowserChannelRuntimeExtras,
+    ] {
+        let ready_checks = checks_for_group(checks, subsystem, OnboardCheckLevel::Pass);
+        if !ready_checks.is_empty() {
+            grouped.ready.push(OnboardCheckGroup {
+                subsystem,
+                checks: ready_checks,
+            });
+        }
+
+        let warning_checks = checks_for_group(checks, subsystem, OnboardCheckLevel::Warn);
+        if !warning_checks.is_empty() {
+            grouped.warnings.push(OnboardCheckGroup {
+                subsystem,
+                checks: warning_checks,
+            });
+        }
+
+        let blocked_checks = checks_for_group(checks, subsystem, OnboardCheckLevel::Fail);
+        if !blocked_checks.is_empty() {
+            grouped.blocked.push(OnboardCheckGroup {
+                subsystem,
+                checks: blocked_checks,
+            });
+        }
+    }
+
+    grouped
+}
+
+fn checks_for_group(
+    checks: &[OnboardCheck],
+    subsystem: OnboardCheckSubsystem,
+    level: OnboardCheckLevel,
+) -> Vec<OnboardCheck> {
+    checks
+        .iter()
+        .filter(|check| check.level == level && subsystem_for_check(check.name) == subsystem)
+        .cloned()
+        .collect()
+}
+
+fn subsystem_for_check(name: &str) -> OnboardCheckSubsystem {
+    match name {
+        "config validation"
+        | "provider credentials"
+        | "provider transport"
+        | "provider model probe"
+        | crate::provider_route_diagnostics::PROVIDER_ROUTE_PROBE_CHECK_NAME
+        | "web search provider" => OnboardCheckSubsystem::ProviderAuth,
+        "memory path" | "tool file root" | "workspace guidance" => {
+            OnboardCheckSubsystem::WorkspaceStorage
+        }
+        "acp backend" | "bootstrap mcp servers" => OnboardCheckSubsystem::Protocols,
+        _ => OnboardCheckSubsystem::BrowserChannelRuntimeExtras,
+    }
+}
+
 fn build_preflight_summary_screen_spec(
     checks: &[OnboardCheck],
     progress_line: &str,
 ) -> TuiScreenSpec {
     let counts = summarize_onboard_checks(checks);
+    let grouped = group_onboard_checks_by_status_and_subsystem(checks);
+    let outcome = outcome_from_grouped_checks(&grouped, None);
     let has_attention = counts.warn > 0 || counts.fail > 0;
     let mut summary_lines = vec![format!(
         "- status: {} pass · {} warn · {} fail",
         counts.pass, counts.warn, counts.fail
     )];
+    summary_lines.push(format!("- outcome: {}", outcome.summary_label()));
 
     if has_attention {
         summary_lines
-            .push(crate::onboard_presentation::preflight_attention_summary_line().to_owned());
+            .push(crate::onboard_cli::presentation::preflight_attention_summary_line().to_owned());
 
         if let Some(hint) = preflight_attention_hint_line(checks) {
             summary_lines.push(hint.to_owned());
         }
     } else {
-        summary_lines.push(crate::onboard_presentation::preflight_green_summary_line().to_owned());
+        summary_lines
+            .push(crate::onboard_cli::presentation::preflight_green_summary_line().to_owned());
     }
 
     let mut sections = Vec::new();
-    if !checks.is_empty() {
-        sections.push(TuiSectionSpec::Checklist {
-            title: None,
-            items: tui_checklist_items_from_preflight_checks(checks),
-        });
+    for (status_title, groups) in [
+        ("blocked", &grouped.blocked),
+        ("warnings", &grouped.warnings),
+        ("ready", &grouped.ready),
+    ] {
+        for group in groups.iter() {
+            sections.push(TuiSectionSpec::Checklist {
+                title: Some(format!("{status_title} · {}", group.subsystem.label())),
+                items: tui_checklist_items_from_preflight_checks(&group.checks),
+            });
+        }
     }
 
     let choices = if has_attention {
         vec![
             TuiChoiceSpec {
                 key: "y".to_owned(),
-                label: crate::onboard_presentation::preflight_continue_label().to_owned(),
+                label: crate::onboard_cli::presentation::preflight_continue_label().to_owned(),
                 detail_lines: vec![
-                    crate::onboard_presentation::preflight_continue_detail().to_owned(),
+                    crate::onboard_cli::presentation::preflight_continue_detail().to_owned(),
                 ],
                 recommended: false,
             },
             TuiChoiceSpec {
                 key: "n".to_owned(),
-                label: crate::onboard_presentation::preflight_cancel_label().to_owned(),
+                label: crate::onboard_cli::presentation::preflight_cancel_label().to_owned(),
                 detail_lines: vec![
-                    crate::onboard_presentation::preflight_cancel_detail().to_owned(),
+                    crate::onboard_cli::presentation::preflight_cancel_detail().to_owned(),
                 ],
                 recommended: false,
             },
@@ -600,7 +810,7 @@ fn build_preflight_summary_screen_spec(
         crate::onboard_cli::append_escape_cancel_hint(vec![
             crate::onboard_cli::render_default_choice_footer_line(
                 "n",
-                crate::onboard_presentation::preflight_default_choice_description(),
+                crate::onboard_cli::presentation::preflight_default_choice_description(),
             ),
         ])
     } else {
@@ -609,8 +819,8 @@ fn build_preflight_summary_screen_spec(
 
     TuiScreenSpec {
         header_style: TuiHeaderStyle::Compact,
-        subtitle: Some(crate::onboard_presentation::preflight_header_title().to_owned()),
-        title: Some(crate::onboard_presentation::preflight_section_title().to_owned()),
+        subtitle: Some(crate::onboard_cli::presentation::preflight_header_title().to_owned()),
+        title: Some(crate::onboard_cli::presentation::preflight_section_title().to_owned()),
         progress_line: Some(progress_line.to_owned()),
         intro_lines: summary_lines,
         sections,
@@ -645,7 +855,7 @@ fn preflight_attention_hint_line(checks: &[OnboardCheck]) -> Option<&'static str
             OnboardNonInteractiveWarningPolicy::RequiresExplicitModel
         )
     }) {
-        return Some(crate::onboard_presentation::preflight_explicit_model_rerun_hint());
+        return Some(crate::onboard_cli::presentation::preflight_explicit_model_rerun_hint());
     }
 
     if checks.iter().any(|check| {
@@ -654,7 +864,7 @@ fn preflight_attention_hint_line(checks: &[OnboardCheck]) -> Option<&'static str
             OnboardNonInteractiveWarningPolicy::RequiresExplicitModelWithoutReviewedDefault
         )
     }) {
-        return Some(crate::onboard_presentation::preflight_explicit_model_only_rerun_hint());
+        return Some(crate::onboard_cli::presentation::preflight_explicit_model_only_rerun_hint());
     }
 
     None
@@ -666,4 +876,212 @@ fn secret_ref_has_inline_literal(secret_ref: Option<&SecretRef>) -> bool {
     };
 
     secret_ref.inline_literal_value().is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn warn_only_checks() -> Vec<OnboardCheck> {
+        vec![
+            OnboardCheck {
+                name: "provider credentials",
+                level: OnboardCheckLevel::Pass,
+                detail: "provider is configured".to_owned(),
+                non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+            },
+            OnboardCheck {
+                name: "workspace guidance",
+                level: OnboardCheckLevel::Warn,
+                detail: "workspace guidance still needs review".to_owned(),
+                non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+            },
+        ]
+    }
+
+    fn blocked_checks() -> Vec<OnboardCheck> {
+        vec![OnboardCheck {
+            name: "post-write verification",
+            level: OnboardCheckLevel::Fail,
+            detail: "verification failed after the write completed".to_owned(),
+            non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+        }]
+    }
+
+    #[test]
+    fn environment_check_groups_results_by_status_and_subsystem() {
+        let grouped = group_onboard_checks_by_status_and_subsystem(&[
+            OnboardCheck {
+                name: "provider credentials",
+                level: OnboardCheckLevel::Pass,
+                detail: "inline api key configured".to_owned(),
+                non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+            },
+            OnboardCheck {
+                name: "memory path",
+                level: OnboardCheckLevel::Warn,
+                detail: "would create under /tmp".to_owned(),
+                non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+            },
+            OnboardCheck {
+                name: "acp backend",
+                level: OnboardCheckLevel::Fail,
+                detail: "ACP is enabled but no backend is configured yet".to_owned(),
+                non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+            },
+            OnboardCheck {
+                name: "browser companion install",
+                level: OnboardCheckLevel::Pass,
+                detail: "runtime is ready".to_owned(),
+                non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
+            },
+        ]);
+
+        assert_eq!(
+            grouped.blocked.len(),
+            1,
+            "blocked checks should be grouped separately from warnings and ready checks: {grouped:#?}"
+        );
+        assert_eq!(
+            grouped.warnings.len(),
+            1,
+            "warning checks should be grouped separately from blocked and ready checks: {grouped:#?}"
+        );
+        assert_eq!(
+            grouped.ready.len(),
+            2,
+            "ready checks should preserve all green subsystems: {grouped:#?}"
+        );
+        assert_eq!(
+            grouped.blocked[0].subsystem.label(),
+            "protocols",
+            "ACP/backend failures should group under the protocols subsystem: {grouped:#?}"
+        );
+        assert_eq!(
+            grouped.warnings[0].subsystem.label(),
+            "workspace/storage",
+            "workspace path checks should group under workspace/storage: {grouped:#?}"
+        );
+        assert!(
+            grouped
+                .ready
+                .iter()
+                .any(|group| group.subsystem.label() == "provider/auth"),
+            "provider/auth checks should stay visible in the ready group: {grouped:#?}"
+        );
+        assert!(
+            grouped
+                .ready
+                .iter()
+                .any(|group| group.subsystem.label() == "browser/channel/runtime extras"),
+            "runtime extras should stay visible in the ready group: {grouped:#?}"
+        );
+    }
+
+    #[test]
+    fn final_outcome_is_success_with_warnings_when_only_warn_checks_remain() {
+        let lines = render_preflight_summary_screen_lines_with_progress(
+            &warn_only_checks(),
+            80,
+            "step 7 of 8 · review and write",
+            true,
+        );
+
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.as_str() == "- outcome: SuccessWithWarnings")
+                .count(),
+            1,
+            "warn-only preflight should surface the success-with-warnings outcome label once the new status model lands: {lines:#?}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.as_str() == "- outcome: Blocked")
+                .count(),
+            0,
+            "warn-only preflight should not be classified as blocked: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn final_outcome_is_blocked_before_write_when_checks_fail() {
+        let lines = render_preflight_summary_screen_lines_with_progress(
+            &blocked_checks(),
+            80,
+            "step 6 of 8 · environment check",
+            true,
+        );
+
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.as_str() == "- outcome: Blocked")
+                .count(),
+            1,
+            "pre-write blockers should stay blocked before write: {lines:#?}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.as_str() == "- outcome: SuccessWithWarnings")
+                .count(),
+            0,
+            "pre-write blockers should not be labeled as success with warnings: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn final_outcome_is_blocked_when_post_write_verification_fails() {
+        let lines = render_preflight_summary_screen_lines_with_progress(
+            &blocked_checks(),
+            80,
+            "step 8 of 8 · ready",
+            true,
+        );
+
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.as_str() == "- outcome: Blocked")
+                .count(),
+            1,
+            "post-write verification failures should map to blocked without claiming success: {lines:#?}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.as_str() == "- outcome: SuccessWithWarnings")
+                .count(),
+            0,
+            "post-write verification failures should not be labeled as success with warnings: {lines:#?}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn protocol_preflight_flags_missing_acp_backend() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.provider.model = "gpt-4.1".to_owned();
+        config.provider.api_key = Some(SecretRef::Inline("inline-secret".to_owned()));
+        config.acp.enabled = true;
+        config.acp.backend = None;
+
+        let checks = run_preflight_checks(&config, true).await;
+        let protocol_check = checks.iter().find(|check| check.name == "acp backend");
+
+        let protocol_check = protocol_check.unwrap_or_else(|| {
+            panic!("protocol preflight should report ACP backend readiness once the protocol step lands: {checks:#?}")
+        });
+        assert_eq!(
+            protocol_check.level,
+            OnboardCheckLevel::Warn,
+            "missing ACP backend should be flagged as a protocol warning before write: {checks:#?}"
+        );
+        assert!(
+            protocol_check.detail.contains("ACP is enabled")
+                && protocol_check.detail.contains("backend"),
+            "missing ACP backend warning should explain the ACP/backend mismatch: {checks:#?}"
+        );
+    }
 }

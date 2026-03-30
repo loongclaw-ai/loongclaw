@@ -57,7 +57,8 @@ libc = "0.2"
 axum.workspace = true
 clap.workspace = true
 clap_complete = "4.5"
-dialoguer.workspace = true
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+crossterm = "0.28"
 kernel = { package = "loongclaw-kernel", path = "../kernel" }
 loongclaw-bench = { path = "../bench" }
 loongclaw-app = { path = "../app", default-features = false }

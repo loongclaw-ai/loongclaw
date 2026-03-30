@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use crate::migration::{CurrentSetupState, ImportSourceKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,7 +17,7 @@ pub struct ReviewFlowCopy {
 pub const fn review_flow_copy(kind: ReviewFlowKind) -> ReviewFlowCopy {
     match kind {
         ReviewFlowKind::Guided => ReviewFlowCopy {
-            progress_line: "step 8 of 8 · review",
+            progress_line: "step 7 of 8 · review and write",
             header_subtitle: "review setup",
         },
         ReviewFlowKind::QuickCurrentSetup => ReviewFlowCopy {
@@ -259,6 +260,42 @@ pub const fn preflight_default_choice_description() -> &'static str {
 
 pub const fn preflight_confirm_prompt() -> &'static str {
     "Continue anyway"
+}
+
+pub const fn workspace_step_title() -> &'static str {
+    "workspace defaults"
+}
+
+pub const fn workspace_step_subtitle() -> &'static str {
+    "review local storage paths"
+}
+
+pub const fn workspace_step_summary_line() -> &'static str {
+    "these are the local paths LoongClaw will use for config, sqlite memory, and tool file access"
+}
+
+pub const fn protocol_step_title() -> &'static str {
+    "protocol defaults"
+}
+
+pub const fn protocol_step_subtitle() -> &'static str {
+    "review ACP and bootstrap MCP state"
+}
+
+pub const fn protocol_step_summary_line() -> &'static str {
+    "this step reflects the ACP backend and any bootstrap MCP servers already configured for this draft"
+}
+
+pub const fn current_value_label() -> &'static str {
+    "current value"
+}
+
+pub const fn detected_value_label() -> &'static str {
+    "detected value"
+}
+
+pub const fn user_override_label() -> &'static str {
+    "user override"
 }
 
 pub const fn write_confirmation_title() -> &'static str {

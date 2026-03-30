@@ -7,8 +7,6 @@
 )]
 
 use super::*;
-use std::collections::VecDeque;
-use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
@@ -46,54 +44,6 @@ fn unique_temp_path(label: &str) -> PathBuf {
         "loongclaw-onboard-{label}-{}-{nanos}-{counter}",
         std::process::id(),
     ))
-}
-
-fn provider_choice_input(kind: mvp::config::ProviderKind) -> String {
-    let mut options = mvp::config::ProviderKind::all_sorted()
-        .iter()
-        .copied()
-        .filter(|candidate| {
-            *candidate != mvp::config::ProviderKind::Kimi
-                && *candidate != mvp::config::ProviderKind::KimiCoding
-                && *candidate != mvp::config::ProviderKind::Stepfun
-                && *candidate != mvp::config::ProviderKind::StepPlan
-        })
-        .map(|candidate| {
-            let label =
-                loongclaw_daemon::onboard_cli::provider_kind_display_name(candidate).to_owned();
-            let slug = loongclaw_daemon::onboard_cli::provider_kind_id(candidate).to_owned();
-            (label, slug)
-        })
-        .collect::<Vec<_>>();
-    options.push(("Kimi".to_owned(), "kimi".to_owned()));
-    options.push(("Stepfun".to_owned(), "stepfun".to_owned()));
-    options.sort_by(|left, right| left.0.cmp(&right.0));
-
-    let target_slug = if matches!(
-        kind,
-        mvp::config::ProviderKind::Kimi | mvp::config::ProviderKind::KimiCoding
-    ) {
-        "kimi"
-    } else if matches!(
-        kind,
-        mvp::config::ProviderKind::Stepfun | mvp::config::ProviderKind::StepPlan
-    ) {
-        "stepfun"
-    } else {
-        loongclaw_daemon::onboard_cli::provider_kind_id(kind)
-    };
-    let index = options
-        .iter()
-        .position(|(_, slug)| slug == target_slug)
-        .expect("provider kind should exist in the interactive onboarding order");
-    (index + 1).to_string()
-}
-
-fn scripted_input_not_cancelled(raw: String) -> loongclaw_daemon::CliResult<String> {
-    if raw.trim() == "\u{1b}" {
-        return Err("onboarding cancelled: escape input received".to_owned());
-    }
-    Ok(raw)
 }
 
 struct DetectedEnvironmentGuard {
@@ -260,164 +210,6 @@ fn import_candidate_with_provider(
     candidate
 }
 
-struct ScriptedOnboardUi {
-    inputs: VecDeque<String>,
-    outputs: Vec<String>,
-}
-
-impl ScriptedOnboardUi {
-    fn new(inputs: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        Self {
-            inputs: inputs.into_iter().map(Into::into).collect(),
-            outputs: Vec::new(),
-        }
-    }
-
-    fn transcript(self) -> Vec<String> {
-        self.outputs
-    }
-
-    fn next_input(&mut self, label: &str) -> loongclaw_daemon::CliResult<String> {
-        self.inputs.pop_front().ok_or_else(|| {
-            format!(
-                "missing scripted input for {label}; transcript so far:\n{}",
-                self.outputs.join("\n")
-            )
-        })
-    }
-}
-
-impl loongclaw_daemon::onboard_cli::OnboardUi for ScriptedOnboardUi {
-    fn print_line(&mut self, line: &str) -> loongclaw_daemon::CliResult<()> {
-        self.outputs.push(line.to_owned());
-        Ok(())
-    }
-
-    fn prompt_with_default(
-        &mut self,
-        label: &str,
-        default: &str,
-    ) -> loongclaw_daemon::CliResult<String> {
-        self.outputs
-            .push(format!("PROMPT {label} (default: {default})"));
-        let value = self.next_input(label)?;
-        if value.trim().is_empty() {
-            return Ok(default.to_owned());
-        }
-        Ok(value)
-    }
-
-    fn prompt_required(&mut self, label: &str) -> loongclaw_daemon::CliResult<String> {
-        self.outputs.push(format!("PROMPT {label}"));
-        self.next_input(label)
-    }
-
-    fn prompt_confirm(
-        &mut self,
-        message: &str,
-        default: bool,
-    ) -> loongclaw_daemon::CliResult<bool> {
-        self.outputs.push(format!(
-            "PROMPT {message} {}",
-            if default { "[Y/n]" } else { "[y/N]" }
-        ));
-        let value = self.next_input(message)?;
-        let trimmed = value.trim().to_ascii_lowercase();
-        if trimmed.is_empty() {
-            return Ok(default);
-        }
-        Ok(matches!(trimmed.as_str(), "y" | "yes"))
-    }
-
-    fn select_one(
-        &mut self,
-        label: &str,
-        options: &[loongclaw_daemon::onboard_cli::SelectOption],
-        default: Option<usize>,
-        _interaction_mode: loongclaw_daemon::onboard_cli::SelectInteractionMode,
-    ) -> loongclaw_daemon::CliResult<usize> {
-        if options.is_empty() {
-            return Err("no selection options available".to_owned());
-        }
-        if let Some(idx) = default
-            && idx >= options.len()
-        {
-            return Err(format!(
-                "default selection index {idx} out of range 0..{}",
-                options.len() - 1
-            ));
-        }
-        self.outputs.push(format!("SELECT {label}"));
-        let value = scripted_input_not_cancelled(self.next_input(label)?)?;
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            return default.ok_or_else(|| "no default for required selection".to_owned());
-        }
-        if let Ok(n) = trimmed.parse::<usize>() {
-            if n >= 1 && n <= options.len() {
-                return Ok(n - 1);
-            }
-            return Err(format!(
-                "scripted selection {n} out of range 1..={}",
-                options.len()
-            ));
-        }
-        options
-            .iter()
-            .position(|option| option.slug.eq_ignore_ascii_case(trimmed))
-            .ok_or_else(|| format!("invalid scripted selection input: {trimmed}"))
-    }
-}
-
-async fn run_scripted_onboard_flow(
-    options: loongclaw_daemon::onboard_cli::OnboardCommandOptions,
-    inputs: impl IntoIterator<Item = impl Into<String>>,
-    workspace_root: Option<PathBuf>,
-    codex_config_path: Option<PathBuf>,
-) -> loongclaw_daemon::CliResult<Vec<String>> {
-    run_scripted_onboard_flow_with_context(
-        options,
-        inputs,
-        loongclaw_daemon::onboard_cli::OnboardRuntimeContext::new_for_tests(
-            80,
-            workspace_root,
-            codex_config_path,
-        ),
-    )
-    .await
-}
-
-async fn run_scripted_onboard_flow_with_context(
-    options: loongclaw_daemon::onboard_cli::OnboardCommandOptions,
-    inputs: impl IntoIterator<Item = impl Into<String>>,
-    context: loongclaw_daemon::onboard_cli::OnboardRuntimeContext,
-) -> loongclaw_daemon::CliResult<Vec<String>> {
-    let mut ui = ScriptedOnboardUi::new(inputs);
-    loongclaw_daemon::onboard_cli::run_onboard_cli_with_ui(options, &mut ui, &context).await?;
-    Ok(ui.transcript())
-}
-
-fn extract_review_section_lines(transcript: &[String], progress_line: &str) -> Vec<String> {
-    let start = transcript
-        .windows(2)
-        .position(|window| window[0] == "review setup" && window[1] == progress_line)
-        .expect("transcript should include review section");
-    let end = transcript[start..]
-        .iter()
-        .position(|line| line == "preflight checks")
-        .map(|offset| start + offset)
-        .unwrap_or(transcript.len());
-    transcript[start..end].to_vec()
-}
-
-fn extract_success_section_lines(transcript: &[String]) -> Vec<String> {
-    let start = transcript
-        .iter()
-        .position(|line| line == "onboarding complete")
-        .expect("transcript should include success section");
-    transcript[start..].to_vec()
-}
-
 fn start_local_model_probe_server(
     expected_requests: usize,
 ) -> (SocketAddr, std::thread::JoinHandle<Vec<String>>) {
@@ -487,37 +279,6 @@ fn default_non_interactive_onboard_options(
         system_prompt: None,
         skip_model_probe: false,
     }
-}
-
-#[test]
-fn scripted_onboard_ui_select_one_accepts_slug_input() {
-    let mut ui = ScriptedOnboardUi::new(["friendly_collab"]);
-    let options = vec![
-        loongclaw_daemon::onboard_cli::SelectOption {
-            label: "calm engineering".to_owned(),
-            slug: "calm_engineering".to_owned(),
-            description: String::new(),
-            recommended: true,
-        },
-        loongclaw_daemon::onboard_cli::SelectOption {
-            label: "friendly collab".to_owned(),
-            slug: "friendly_collab".to_owned(),
-            description: String::new(),
-            recommended: false,
-        },
-    ];
-
-    let index = loongclaw_daemon::onboard_cli::OnboardUi::select_one(
-        &mut ui,
-        "Personality",
-        &options,
-        Some(0),
-        loongclaw_daemon::onboard_cli::SelectInteractionMode::List,
-    )
-    .expect("scripted selection should accept slug input so integration tests stay aligned");
-
-    assert_eq!(index, 1);
-    assert_eq!(ui.transcript(), vec!["SELECT Personality".to_owned()]);
 }
 
 #[test]
@@ -721,7 +482,9 @@ async fn non_interactive_personality_and_memory_profile_are_persisted() {
     }
 
     let output_path = unique_temp_path("non-interactive-personality-memory-config.toml");
-    let transcript = run_scripted_onboard_flow(
+    let context =
+        loongclaw_daemon::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, None);
+    loongclaw_daemon::onboard_cli::run_onboard_cli_with_context(
         crate::onboard_cli::OnboardCommandOptions {
             output: output_path.to_str().map(str::to_owned),
             force: false,
@@ -737,19 +500,10 @@ async fn non_interactive_personality_and_memory_profile_are_persisted() {
             system_prompt: None,
             skip_model_probe: true,
         },
-        std::iter::empty::<String>(),
-        None,
-        None,
+        &context,
     )
     .await
     .expect("run non-interactive onboarding with personality and memory profile");
-
-    assert!(
-        transcript
-            .iter()
-            .any(|line| line.contains("onboarding complete")),
-        "non-interactive personality/memory path should still complete successfully: {transcript:#?}"
-    );
 
     let (_, config) = mvp::config::load(output_path.to_str())
         .expect("load non-interactive personality/memory config");
@@ -771,7 +525,9 @@ async fn non_interactive_system_prompt_override_disables_prompt_pack() {
     }
 
     let output_path = unique_temp_path("non-interactive-inline-prompt-config.toml");
-    let transcript = run_scripted_onboard_flow(
+    let context =
+        loongclaw_daemon::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, None);
+    loongclaw_daemon::onboard_cli::run_onboard_cli_with_context(
         crate::onboard_cli::OnboardCommandOptions {
             output: output_path.to_str().map(str::to_owned),
             force: false,
@@ -787,19 +543,10 @@ async fn non_interactive_system_prompt_override_disables_prompt_pack() {
             system_prompt: Some("Stay concise and technical.".to_owned()),
             skip_model_probe: true,
         },
-        std::iter::empty::<String>(),
-        None,
-        None,
+        &context,
     )
     .await
     .expect("run non-interactive onboarding with an inline system prompt override");
-
-    assert!(
-        transcript
-            .iter()
-            .any(|line| line.contains("onboarding complete")),
-        "non-interactive inline override path should still complete successfully: {transcript:#?}"
-    );
 
     let (_, config) = mvp::config::load(output_path.to_str()).expect("load inline override config");
 
@@ -835,10 +582,9 @@ async fn non_interactive_onboard_rejects_unresolved_preflight_warnings() {
 
     let mut options = default_non_interactive_onboard_options(&output);
     options.system_prompt = Some("force a pending write".to_owned());
-    let mut ui = ScriptedOnboardUi::new(std::iter::empty::<String>());
     let context =
         loongclaw_daemon::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, None);
-    let error = loongclaw_daemon::onboard_cli::run_onboard_cli_with_ui(options, &mut ui, &context)
+    let error = loongclaw_daemon::onboard_cli::run_onboard_cli_with_context(options, &context)
         .await
         .expect_err("non-interactive onboarding should stop on unresolved warnings");
 
@@ -868,7 +614,9 @@ async fn non_interactive_explicit_web_search_provider_does_not_silently_fall_bac
     let output = unique_temp_path("non-interactive-explicit-web-search.toml");
     let _openai_env = unsafe { EnvVarGuard::set_unlocked("OPENAI_API_KEY", "openai-test-token") };
 
-    let error = run_scripted_onboard_flow(
+    let context =
+        loongclaw_daemon::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, None);
+    let error = loongclaw_daemon::onboard_cli::run_onboard_cli_with_context(
         crate::onboard_cli::OnboardCommandOptions {
             output: output.to_str().map(str::to_owned),
             force: false,
@@ -884,9 +632,7 @@ async fn non_interactive_explicit_web_search_provider_does_not_silently_fall_bac
             system_prompt: None,
             skip_model_probe: true,
         },
-        std::iter::empty::<String>(),
-        None,
-        None,
+        &context,
     )
     .await
     .expect_err("missing Tavily credentials should fail instead of silently falling back");
@@ -930,10 +676,9 @@ async fn non_interactive_onboard_keeps_matching_existing_config_despite_persiste
     let mut options = default_non_interactive_onboard_options(&output);
     options.skip_model_probe = true;
 
-    let mut ui = ScriptedOnboardUi::new(std::iter::empty::<String>());
     let context =
         loongclaw_daemon::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, None);
-    loongclaw_daemon::onboard_cli::run_onboard_cli_with_ui(options, &mut ui, &context)
+    loongclaw_daemon::onboard_cli::run_onboard_cli_with_context(options, &context)
         .await
         .expect("matching existing config should stay a successful no-op even when persistent warnings remain");
 
@@ -941,14 +686,6 @@ async fn non_interactive_onboard_keeps_matching_existing_config_despite_persiste
         std::fs::read_to_string(&output).expect("read config after no-op"),
         original_body,
         "no-op onboarding should not rewrite the existing config just to re-encode the same settings"
-    );
-    let transcript = ui.transcript();
-    assert!(
-        transcript
-            .iter()
-            .any(|line| line.contains("existing config kept; no changes were needed")),
-        "successful no-op path should still report that the existing config was reused: {:#?}",
-        transcript
     );
 }
 
@@ -966,10 +703,9 @@ async fn non_interactive_onboard_allows_explicit_skip_model_probe_warning() {
     options.skip_model_probe = true;
     options.model = Some("openai/gpt-5.1-codex".to_owned());
 
-    let mut ui = ScriptedOnboardUi::new(std::iter::empty::<String>());
     let context =
         loongclaw_daemon::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, None);
-    loongclaw_daemon::onboard_cli::run_onboard_cli_with_ui(options, &mut ui, &context)
+    loongclaw_daemon::onboard_cli::run_onboard_cli_with_context(options, &context)
         .await
         .expect("explicitly skipped model probe should not block non-interactive onboarding");
 
@@ -1023,10 +759,9 @@ async fn non_interactive_onboard_applies_reviewed_default_when_probe_is_skipped(
     options.provider = Some("deepseek".to_owned());
     options.skip_model_probe = true;
 
-    let mut ui = ScriptedOnboardUi::new(std::iter::empty::<String>());
     let context =
         loongclaw_daemon::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, None);
-    loongclaw_daemon::onboard_cli::run_onboard_cli_with_ui(options, &mut ui, &context)
+    loongclaw_daemon::onboard_cli::run_onboard_cli_with_context(options, &context)
         .await
         .expect("skip-model-probe should allow non-interactive onboarding to materialize the reviewed default model");
 
@@ -1070,9 +805,8 @@ async fn non_interactive_onboard_allows_explicit_model_probe_warning() {
     options.system_prompt = Some("force a pending write".to_owned());
     options.force = true;
 
-    let mut ui = ScriptedOnboardUi::new(std::iter::empty::<String>());
     let context = crate::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, None);
-    crate::onboard_cli::run_onboard_cli_with_ui(options, &mut ui, &context)
+    loongclaw_daemon::onboard_cli::run_onboard_cli_with_context(options, &context)
         .await
         .expect("explicit-model probe warnings should not block non-interactive onboarding");
 
@@ -1114,9 +848,8 @@ async fn non_interactive_onboard_applies_reviewed_default_when_probe_fails() {
     options.force = true;
     options.system_prompt = Some("force a pending write".to_owned());
 
-    let mut ui = ScriptedOnboardUi::new(std::iter::empty::<String>());
     let context = crate::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, None);
-    crate::onboard_cli::run_onboard_cli_with_ui(options, &mut ui, &context)
+    loongclaw_daemon::onboard_cli::run_onboard_cli_with_context(options, &context)
         .await
         .expect("reviewed onboarding defaults should let non-interactive onboarding pin a usable explicit model even when catalog probing fails");
 
@@ -1164,10 +897,9 @@ async fn non_interactive_api_key_env_override_clears_existing_oauth_credentials(
     options.api_key_env = Some("OPENAI_API_KEY".to_owned());
     options.model = Some("openai/gpt-5.1-codex".to_owned());
 
-    let mut ui = ScriptedOnboardUi::new(std::iter::empty::<String>());
     let context =
         loongclaw_daemon::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, None);
-    loongclaw_daemon::onboard_cli::run_onboard_cli_with_ui(options, &mut ui, &context)
+    loongclaw_daemon::onboard_cli::run_onboard_cli_with_context(options, &context)
         .await
         .expect("explicit api key env override should succeed");
 
@@ -1222,10 +954,9 @@ async fn non_interactive_api_key_env_override_clears_existing_inline_api_key() {
     options.api_key_env = Some("OPENAI_API_KEY".to_owned());
     options.model = Some("openai/gpt-5.1-codex".to_owned());
 
-    let mut ui = ScriptedOnboardUi::new(std::iter::empty::<String>());
     let context =
         loongclaw_daemon::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, None);
-    loongclaw_daemon::onboard_cli::run_onboard_cli_with_ui(options, &mut ui, &context)
+    loongclaw_daemon::onboard_cli::run_onboard_cli_with_context(options, &context)
         .await
         .expect("explicit api key env override should succeed");
 
@@ -1276,10 +1007,9 @@ async fn non_interactive_api_key_env_clear_keeps_existing_inline_credential() {
     options.model = Some("openai/gpt-5.1-codex".to_owned());
     options.api_key_env = Some(":clear".to_owned());
 
-    let mut ui = ScriptedOnboardUi::new(std::iter::empty::<String>());
     let context =
         loongclaw_daemon::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, None);
-    loongclaw_daemon::onboard_cli::run_onboard_cli_with_ui(options, &mut ui, &context)
+    loongclaw_daemon::onboard_cli::run_onboard_cli_with_context(options, &context)
         .await
         .expect("explicit clear token should keep the existing inline credential");
 
@@ -1325,10 +1055,9 @@ async fn non_interactive_system_prompt_clear_restores_builtin_prompt() {
     options.model = Some("openai/gpt-5.1-codex".to_owned());
     options.system_prompt = Some(":clear".to_owned());
 
-    let mut ui = ScriptedOnboardUi::new(std::iter::empty::<String>());
     let context =
         loongclaw_daemon::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, None);
-    loongclaw_daemon::onboard_cli::run_onboard_cli_with_ui(options, &mut ui, &context)
+    loongclaw_daemon::onboard_cli::run_onboard_cli_with_context(options, &context)
         .await
         .expect("explicit clear token should restore the built-in system prompt");
 
@@ -1342,298 +1071,30 @@ async fn non_interactive_system_prompt_clear_restores_builtin_prompt() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn interactive_onboard_clear_token_keeps_inline_provider_credential() {
-    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
-    let output_path = unique_temp_path("interactive-clear-inline-credential.toml");
-    let mut existing = mvp::config::LoongClawConfig::default();
-    existing.provider.model = "gpt-4.1".to_owned();
-    existing.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
-        "inline-secret".to_owned(),
-    ));
-    existing.provider.api_key_env = Some("OPENAI_API_KEY".to_owned());
-    mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
-
-    let transcript = run_scripted_onboard_flow(
-        loongclaw_daemon::onboard_cli::OnboardCommandOptions {
-            output: output_path.to_str().map(str::to_owned),
-            force: false,
-            non_interactive: false,
-            accept_risk: true,
-            provider: None,
-            model: None,
-            api_key_env: None,
-            web_search_provider: None,
-            web_search_api_key_env: None,
-            personality: None,
-            memory_profile: None,
-            system_prompt: None,
-            skip_model_probe: true,
-        },
-        vec![
-            "1".to_owned(),
-            "2".to_owned(),
-            provider_choice_input(mvp::config::ProviderKind::Openai),
-            "gpt-4.1".to_owned(),
-            ":clear".to_owned(),
-            String::new(),
-            String::new(),
-            String::new(),
-            String::new(),
-            "y".to_owned(),
-            "y".to_owned(),
-            "o".to_owned(),
-        ],
-        None,
-        None,
-    )
-    .await
-    .expect("run scripted onboarding with explicit credential clear token");
-
-    let joined = transcript.join("\n");
-    assert!(
-        joined.contains("SELECT Provider"),
-        "provider fallback should use numbered selection even without detected provider choices: {transcript:#?}"
-    );
-    assert!(
-        !joined.contains("PROMPT Provider"),
-        "provider fallback should no longer ask for free-form provider text input: {transcript:#?}"
-    );
-
-    let raw = std::fs::read_to_string(&output_path).expect("read written onboarding config");
-    assert!(
-        !raw.contains("OPENAI_API_KEY"),
-        "explicit :clear should remove the api-key env binding instead of persisting it: {raw}"
-    );
-
-    let (_, config) =
-        mvp::config::load(output_path.to_str()).expect("load interactive onboarding config");
-    assert_eq!(
-        config
-            .provider
-            .api_key
-            .as_ref()
-            .and_then(|value| value.inline_literal_value()),
-        Some("inline-secret"),
-        "explicit :clear should keep the existing inline provider credential in the saved config: {transcript:#?}"
-    );
-    assert_eq!(config.provider.api_key_env, None);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn interactive_onboard_clear_token_restores_builtin_system_prompt() {
-    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
-    let output_path = unique_temp_path("interactive-clear-system-prompt.toml");
-    let mut existing = mvp::config::LoongClawConfig::default();
-    existing.provider.model = "gpt-4.1".to_owned();
-    existing.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
-        "inline-secret".to_owned(),
-    ));
-    existing.cli.system_prompt = "custom review prompt".to_owned();
-    mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
-
-    let mut ui = ScriptedOnboardUi::new(vec![
-        "1".to_owned(),
-        provider_choice_input(mvp::config::ProviderKind::Openai),
-        "gpt-4.1".to_owned(),
-        String::new(),
-        ":clear".to_owned(),
-        String::new(),
-        String::new(),
-        "y".to_owned(),
-        "y".to_owned(),
-        "o".to_owned(),
-    ]);
-    let context =
-        loongclaw_daemon::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, None);
-    loongclaw_daemon::onboard_cli::run_onboard_cli_with_ui(
-        loongclaw_daemon::onboard_cli::OnboardCommandOptions {
-            output: output_path.to_str().map(str::to_owned),
-            force: false,
-            non_interactive: false,
-            accept_risk: true,
-            provider: None,
-            model: None,
-            api_key_env: None,
-            web_search_provider: None,
-            web_search_api_key_env: None,
-            personality: None,
-            memory_profile: None,
-            system_prompt: Some(existing.cli.system_prompt.clone()),
-            skip_model_probe: true,
-        },
-        &mut ui,
-        &context,
-    )
-    .await
-    .unwrap_or_else(|error| {
-        panic!(
-            "run scripted onboarding with explicit system-prompt clear token: {error}; transcript: {:#?}",
-            ui.transcript()
-        )
-    });
-
-    let (_, config) =
-        mvp::config::load(output_path.to_str()).expect("load interactive onboarding config");
-    assert_eq!(
-        config.cli.system_prompt,
-        mvp::config::CliChannelConfig::default().system_prompt,
-        "explicit :clear should restore the built-in CLI system prompt"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn interactive_onboard_web_search_custom_env_persists_explicit_env_reference() {
-    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
-    let _openai_env = unsafe { EnvVarGuard::set_unlocked("OPENAI_API_KEY", "openai-test-token") };
-    let _tavily_env = unsafe { EnvVarGuard::set_unlocked("TEAM_TAVILY_KEY", "tavily-test-token") };
-    let output_path = unique_temp_path("interactive-web-search-env.toml");
-    let mut existing = mvp::config::LoongClawConfig::default();
-    existing.provider.model = "gpt-4.1".to_owned();
-    existing.provider.api_key_env = Some("OPENAI_API_KEY".to_owned());
-    mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
-
-    let transcript = run_scripted_onboard_flow(
-        loongclaw_daemon::onboard_cli::OnboardCommandOptions {
-            output: output_path.to_str().map(str::to_owned),
-            force: false,
-            non_interactive: false,
-            accept_risk: true,
-            provider: None,
-            model: None,
-            api_key_env: None,
-            web_search_provider: None,
-            web_search_api_key_env: None,
-            personality: None,
-            memory_profile: None,
-            system_prompt: None,
-            skip_model_probe: true,
-        },
-        vec![
-            "1".to_owned(),
-            "2".to_owned(),
-            provider_choice_input(mvp::config::ProviderKind::Openai),
-            "gpt-4.1".to_owned(),
-            "OPENAI_API_KEY".to_owned(),
-            String::new(),
-            String::new(),
-            String::new(),
-            "tavily".to_owned(),
-            "TEAM_TAVILY_KEY".to_owned(),
-            "y".to_owned(),
-            "y".to_owned(),
-            "o".to_owned(),
-        ],
-        None,
-        None,
-    )
-    .await
-    .expect("run scripted onboarding with custom web search env");
-
-    let joined = transcript.join("\n");
-    assert!(
-        joined.contains("choose web search credential"),
-        "interactive onboarding should prompt for a web-search credential source when the selected provider requires one: {transcript:#?}"
-    );
-
-    let (_, config) =
-        mvp::config::load(output_path.to_str()).expect("load onboarding config with web search");
-    assert_eq!(
-        config.tools.web_search.default_provider,
-        mvp::config::WEB_SEARCH_PROVIDER_TAVILY
-    );
-    assert_eq!(
-        config.tools.web_search.tavily_api_key.as_deref(),
-        Some("${TEAM_TAVILY_KEY}"),
-        "interactive onboarding should persist the selected web-search env as an explicit env reference"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn interactive_onboard_web_search_blank_input_keeps_inline_credential() {
-    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
-    let _openai_env = unsafe { EnvVarGuard::set_unlocked("OPENAI_API_KEY", "openai-test-token") };
-    let output_path = unique_temp_path("interactive-web-search-inline.toml");
-    let mut existing = mvp::config::LoongClawConfig::default();
-    existing.provider.model = "gpt-4.1".to_owned();
-    existing.provider.api_key_env = Some("OPENAI_API_KEY".to_owned());
-    existing.tools.web_search.default_provider = mvp::config::WEB_SEARCH_PROVIDER_TAVILY.to_owned();
-    existing.tools.web_search.tavily_api_key = Some("inline-web-search-secret".to_owned());
-    mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
-
-    let transcript = run_scripted_onboard_flow(
-        loongclaw_daemon::onboard_cli::OnboardCommandOptions {
-            output: output_path.to_str().map(str::to_owned),
-            force: false,
-            non_interactive: false,
-            accept_risk: true,
-            provider: None,
-            model: None,
-            api_key_env: None,
-            web_search_provider: None,
-            web_search_api_key_env: None,
-            personality: None,
-            memory_profile: None,
-            system_prompt: None,
-            skip_model_probe: true,
-        },
-        vec![
-            "1".to_owned(),
-            "2".to_owned(),
-            provider_choice_input(mvp::config::ProviderKind::Openai),
-            "gpt-4.1".to_owned(),
-            "OPENAI_API_KEY".to_owned(),
-            String::new(),
-            String::new(),
-            String::new(),
-            "tavily".to_owned(),
-            String::new(),
-            "y".to_owned(),
-            "y".to_owned(),
-            "o".to_owned(),
-        ],
-        None,
-        None,
-    )
-    .await
-    .expect("run scripted onboarding while keeping inline web search credential");
-
-    let joined = transcript.join("\n");
-    assert!(
-        joined.contains("leave this blank to keep inline credentials"),
-        "web-search credential onboarding should explain how blank input preserves inline credentials: {transcript:#?}"
-    );
-
-    let (_, config) = mvp::config::load(output_path.to_str())
-        .expect("load onboarding config with inline web search credential");
-    assert_eq!(
-        config.tools.web_search.tavily_api_key.as_deref(),
-        Some("inline-web-search-secret"),
-        "blank web-search credential input should preserve the existing inline credential"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn interactive_onboard_only_shows_large_logo_on_the_initial_screen() {
+async fn non_interactive_onboard_derives_workspace_root_backed_file_root_defaults() {
     let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
     unsafe {
         std::env::set_var("OPENAI_API_KEY", "openai-test-token");
     }
 
-    let output_path = unique_temp_path("interactive-single-banner.toml");
-    let mut existing = mvp::config::LoongClawConfig::default();
-    existing.provider.model = "gpt-4.1".to_owned();
-    existing.provider.api_key_env = Some("OPENAI_API_KEY".to_owned());
-    mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
+    let workspace_root = unique_temp_path("non-interactive-workspace-root");
+    std::fs::create_dir_all(&workspace_root).expect("create workspace root");
+    let output_path = unique_temp_path("non-interactive-workspace-root-config.toml");
 
-    let transcript = run_scripted_onboard_flow(
+    let context = loongclaw_daemon::onboard_cli::OnboardRuntimeContext::new_for_tests(
+        80,
+        Some(workspace_root.clone()),
+        None,
+    );
+    loongclaw_daemon::onboard_cli::run_onboard_cli_with_context(
         crate::onboard_cli::OnboardCommandOptions {
             output: output_path.to_str().map(str::to_owned),
             force: false,
-            non_interactive: false,
-            accept_risk: false,
-            provider: None,
-            model: None,
-            api_key_env: None,
+            non_interactive: true,
+            accept_risk: true,
+            provider: Some("openai".to_owned()),
+            model: Some("openai/gpt-5.1".to_owned()),
+            api_key_env: Some("OPENAI_API_KEY".to_owned()),
             web_search_provider: None,
             web_search_api_key_env: None,
             personality: None,
@@ -1641,231 +1102,53 @@ async fn interactive_onboard_only_shows_large_logo_on_the_initial_screen() {
             system_prompt: None,
             skip_model_probe: true,
         },
-        ["y", "1", "2", "", "", "", "", "", "", "", "y"],
-        None,
-        None,
+        &context,
     )
     .await
-    .expect("run interactive onboarding with the risk gate enabled");
+    .expect("run non-interactive onboarding with workspace root context");
 
+    let (_, config) =
+        mvp::config::load(output_path.to_str()).expect("load non-interactive workspace config");
     assert_eq!(
-        transcript
-            .iter()
-            .filter(|line| line.contains("██╗      ██████╗"))
-            .count(),
-        1,
-        "interactive onboarding should show the large LOONGCLAW banner only once, on the initial risk screen: {transcript:#?}"
-    );
-    assert!(
-        transcript
-            .iter()
-            .filter(|line| line.contains("LOONGCLAW"))
-            .count()
-            >= 3,
-        "follow-up screens should keep using the compact LOONGCLAW header instead of dropping branding entirely: {transcript:#?}"
-    );
-    assert!(
-        transcript.iter().any(|line| line == "choose personality"),
-        "regression flow should still reach the later onboarding steps where repeated banner reports came from: {transcript:#?}"
+        config.tools.file_root.as_deref(),
+        Some(workspace_root.to_string_lossy().as_ref()),
+        "non-interactive onboarding should still derive and persist the workspace-root-backed file_root default"
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn non_interactive_onboard_uses_the_same_detected_starting_point_order_as_interactive_default()
- {
+async fn non_interactive_onboard_does_not_synthesize_file_root_from_blank_existing_value() {
     let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
-    unsafe {
-        std::env::set_var("OPENAI_API_KEY", "openai-test-token");
-        std::env::set_var("DEEPSEEK_API_KEY", "deepseek-test-token");
-    }
-
-    let root = unique_temp_path("non-interactive-starting-point-order");
-    std::fs::create_dir_all(&root).expect("create test root");
-    let interactive_output = root.join("interactive.toml");
-    let non_interactive_output = root.join("non-interactive.toml");
-
-    let (addr, server) = start_local_model_probe_server(2);
-
-    let z_openai_codex = root.join("z-openai.toml");
-    std::fs::write(
-        &z_openai_codex,
-        format!(
-            r#"
-model_provider = "openai"
-model = "openai/gpt-5.1-codex"
-
-[model_providers.openai]
-base_url = "http://{addr}"
-wire_api = "chat_completions"
-requires_openai_auth = true
-"#
-        ),
-    )
-    .expect("write openai codex config");
-
-    let a_deepseek_codex = root.join("a-deepseek.toml");
-    std::fs::write(
-        &a_deepseek_codex,
-        format!(
-            r#"
-model_provider = "deepseek"
-model = "deepseek-chat"
-
-[model_providers.deepseek]
-base_url = "http://{addr}"
-wire_api = "chat_completions"
-requires_openai_auth = true
-"#
-        ),
-    )
-    .expect("write deepseek codex config");
-
-    let codex_paths = vec![z_openai_codex.clone(), a_deepseek_codex.clone()];
-    let interactive_context = loongclaw_daemon::onboard_cli::OnboardRuntimeContext::new_for_tests(
-        80,
-        None,
-        codex_paths.clone(),
-    );
-    let interactive_transcript = run_scripted_onboard_flow_with_context(
-        loongclaw_daemon::onboard_cli::OnboardCommandOptions {
-            output: Some(interactive_output.display().to_string()),
-            force: false,
-            non_interactive: false,
-            accept_risk: true,
-            provider: None,
-            model: None,
-            api_key_env: None,
-            web_search_provider: None,
-            web_search_api_key_env: None,
-            personality: None,
-            memory_profile: None,
-            system_prompt: None,
-            skip_model_probe: false,
-        },
-        vec![
-            "1".to_owned(),
-            "1".to_owned(),
-            "1".to_owned(),
-            "y".to_owned(),
-        ],
-        interactive_context,
-    )
-    .await
-    .expect("run interactive onboarding");
-
-    let (_, interactive_config) = mvp::config::load(Some(
-        interactive_output
-            .to_str()
-            .expect("interactive output path should be valid utf-8"),
-    ))
-    .expect("load interactive onboarding config");
-    assert_eq!(
-        interactive_config.provider.kind,
-        mvp::config::ProviderKind::Deepseek,
-        "interactive default should follow the sorted starting-point order and pick the alphabetically first detected source: {interactive_transcript:#?}"
-    );
-    assert_eq!(interactive_config.provider.model, "deepseek-chat");
-
-    let non_interactive_context =
-        loongclaw_daemon::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, codex_paths);
-    let mut ui = ScriptedOnboardUi::new(std::iter::empty::<String>());
-    loongclaw_daemon::onboard_cli::run_onboard_cli_with_ui(
-        loongclaw_daemon::onboard_cli::OnboardCommandOptions {
-            output: Some(non_interactive_output.display().to_string()),
-            force: false,
-            non_interactive: true,
-            accept_risk: true,
-            provider: None,
-            model: None,
-            api_key_env: None,
-            web_search_provider: None,
-            web_search_api_key_env: None,
-            personality: None,
-            memory_profile: None,
-            system_prompt: None,
-            skip_model_probe: false,
-        },
-        &mut ui,
-        &non_interactive_context,
-    )
-    .await
-    .expect("run non-interactive onboarding");
-
-    let (_, non_interactive_config) = mvp::config::load(Some(
-        non_interactive_output
-            .to_str()
-            .expect("non-interactive output path should be valid utf-8"),
-    ))
-    .expect("load non-interactive onboarding config");
-    assert_eq!(
-        non_interactive_config.provider.kind, interactive_config.provider.kind,
-        "non-interactive onboarding should reuse the same detected starting-point ordering as the interactive default"
-    );
-    assert_eq!(
-        non_interactive_config.provider.model,
-        interactive_config.provider.model
-    );
-
-    let requests = server.join().expect("join local provider server");
-    assert_eq!(
-        requests
-            .iter()
-            .filter(|request| request.starts_with("GET /v1/models "))
-            .count(),
-        2,
-        "both onboarding runs should probe exactly one selected provider each: {requests:#?}"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn onboard_restores_original_config_when_memory_bootstrap_fails_after_write() {
-    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
-    let root = unique_temp_path("memory-bootstrap-rollback-root");
+    let root = unique_temp_path("non-interactive-blank-file-root");
     std::fs::create_dir_all(&root).expect("create test root");
     let output = root.join("loongclaw.toml");
-    let invalid_sqlite_dir = root.join("memory-dir");
-    std::fs::create_dir_all(&invalid_sqlite_dir).expect("create invalid sqlite directory");
-
-    let (addr, server) = start_local_model_probe_server(1);
+    unsafe {
+        std::env::set_var("DEEPSEEK_API_KEY", "test-deepseek-key");
+    }
 
     let mut config = mvp::config::LoongClawConfig::default();
-    config.provider.base_url = format!("http://{addr}");
-    config.provider.model = "openai/gpt-5.1-codex".to_owned();
-    config.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
-        "test-openai-key".to_owned(),
-    ));
-    config.memory.sqlite_path = invalid_sqlite_dir.display().to_string();
+    config.provider.kind = mvp::config::ProviderKind::Deepseek;
+    config.provider.model = "deepseek-chat".to_owned();
+    config.provider.wire_api = mvp::config::ProviderWireApi::Responses;
+    config.provider.api_key_env = Some("DEEPSEEK_API_KEY".to_owned());
+    config.tools.file_root = Some(String::new());
     mvp::config::write(Some(output.to_string_lossy().as_ref()), &config, true)
         .expect("write existing config");
     let original_body = std::fs::read_to_string(&output).expect("read original config");
 
     let mut options = default_non_interactive_onboard_options(&output);
-    options.force = true;
-    options.model = Some("gpt-4.1-mini".to_owned());
+    options.skip_model_probe = true;
 
-    let mut ui = ScriptedOnboardUi::new(std::iter::empty::<String>());
     let context =
         loongclaw_daemon::onboard_cli::OnboardRuntimeContext::new_for_tests(80, None, None);
-    let error = loongclaw_daemon::onboard_cli::run_onboard_cli_with_ui(options, &mut ui, &context)
+    loongclaw_daemon::onboard_cli::run_onboard_cli_with_context(options, &context)
         .await
-        .expect_err("memory bootstrap failure should abort onboarding");
+        .expect("blank file_root without a workspace root should remain a no-op");
 
-    assert!(
-        error.contains("failed to bootstrap sqlite memory"),
-        "unexpected bootstrap failure error: {error}"
-    );
     assert_eq!(
-        std::fs::read_to_string(&output).expect("read config after rollback"),
+        std::fs::read_to_string(&output).expect("read config after no-op"),
         original_body,
-        "onboarding should restore the original config when post-write bootstrap fails"
-    );
-
-    let requests = server.join().expect("join local provider server");
-    assert!(
-        requests
-            .iter()
-            .any(|request| request.starts_with("GET /v1/models ")),
-        "post-write rollback path should still reach the provider model probe before bootstrap: {requests:#?}"
+        "non-interactive onboarding should not synthesize a tool file root when the persisted value is blank and no workspace root exists"
     );
 }
 
@@ -2565,20 +1848,20 @@ fn onboard_entry_prefers_import_when_current_setup_is_repairable_and_sources_exi
 
 #[test]
 fn onboard_presentation_review_and_shortcut_copy_stays_canonical() {
-    let guided = loongclaw_daemon::onboard_presentation::review_flow_copy(
-        loongclaw_daemon::onboard_presentation::ReviewFlowKind::Guided,
+    let guided = loongclaw_daemon::onboard_cli::presentation::review_flow_copy(
+        loongclaw_daemon::onboard_cli::presentation::ReviewFlowKind::Guided,
     );
-    assert_eq!(guided.progress_line, "step 8 of 8 · review");
+    assert_eq!(guided.progress_line, "step 7 of 8 · review and write");
     assert_eq!(guided.header_subtitle, "review setup");
 
-    let quick_current = loongclaw_daemon::onboard_presentation::review_flow_copy(
-        loongclaw_daemon::onboard_presentation::ReviewFlowKind::QuickCurrentSetup,
+    let quick_current = loongclaw_daemon::onboard_cli::presentation::review_flow_copy(
+        loongclaw_daemon::onboard_cli::presentation::ReviewFlowKind::QuickCurrentSetup,
     );
     assert_eq!(quick_current.progress_line, "quick review · current setup");
     assert_eq!(quick_current.header_subtitle, "review current setup");
 
-    let quick_detected = loongclaw_daemon::onboard_presentation::review_flow_copy(
-        loongclaw_daemon::onboard_presentation::ReviewFlowKind::QuickDetectedSetup,
+    let quick_detected = loongclaw_daemon::onboard_cli::presentation::review_flow_copy(
+        loongclaw_daemon::onboard_cli::presentation::ReviewFlowKind::QuickDetectedSetup,
     );
     assert_eq!(
         quick_detected.progress_line,
@@ -2589,8 +1872,8 @@ fn onboard_presentation_review_and_shortcut_copy_stays_canonical() {
         "review detected starting point"
     );
 
-    let current_shortcut = loongclaw_daemon::onboard_presentation::shortcut_copy(
-        loongclaw_daemon::onboard_presentation::ShortcutKind::CurrentSetup,
+    let current_shortcut = loongclaw_daemon::onboard_cli::presentation::shortcut_copy(
+        loongclaw_daemon::onboard_cli::presentation::ShortcutKind::CurrentSetup,
     );
     assert_eq!(
         current_shortcut.subtitle,
@@ -2607,8 +1890,8 @@ fn onboard_presentation_review_and_shortcut_copy_stays_canonical() {
         "keep current setup"
     );
 
-    let detected_shortcut = loongclaw_daemon::onboard_presentation::shortcut_copy(
-        loongclaw_daemon::onboard_presentation::ShortcutKind::DetectedSetup,
+    let detected_shortcut = loongclaw_daemon::onboard_cli::presentation::shortcut_copy(
+        loongclaw_daemon::onboard_cli::presentation::ShortcutKind::DetectedSetup,
     );
     assert_eq!(
         detected_shortcut.subtitle,
@@ -2631,15 +1914,16 @@ fn onboard_presentation_review_and_shortcut_copy_stays_canonical() {
         "the detected starting point"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::single_detected_starting_point_preview_subtitle(),
+        loongclaw_daemon::onboard_cli::presentation::single_detected_starting_point_preview_subtitle(),
         "review the detected starting point"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::single_detected_starting_point_preview_title(),
+        loongclaw_daemon::onboard_cli::presentation::single_detected_starting_point_preview_title(),
         "review detected starting point"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::single_detected_starting_point_preview_footer(),
+        loongclaw_daemon::onboard_cli::presentation::single_detected_starting_point_preview_footer(
+        ),
         "continuing with the only detected starting point"
     );
 }
@@ -2647,120 +1931,120 @@ fn onboard_presentation_review_and_shortcut_copy_stays_canonical() {
 #[test]
 fn onboard_presentation_entry_and_digest_copy_stays_canonical() {
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::current_setup_option_label(),
+        loongclaw_daemon::onboard_cli::presentation::current_setup_option_label(),
         "Continue current setup"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::detected_setup_option_label(),
+        loongclaw_daemon::onboard_cli::presentation::detected_setup_option_label(),
         "Use detected starting point"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::start_fresh_option_label(),
+        loongclaw_daemon::onboard_cli::presentation::start_fresh_option_label(),
         "Start fresh"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::start_fresh_option_detail(),
+        loongclaw_daemon::onboard_cli::presentation::start_fresh_option_detail(),
         "Configure provider, channels, and local behavior from scratch."
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::current_setup_state_label(
+        loongclaw_daemon::onboard_cli::presentation::current_setup_state_label(
             loongclaw_daemon::migration::types::CurrentSetupState::LegacyOrIncomplete,
         ),
         "legacy or incomplete"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::current_setup_option_detail(
+        loongclaw_daemon::onboard_cli::presentation::current_setup_option_detail(
             loongclaw_daemon::migration::types::CurrentSetupState::Repairable,
         ),
         "Current config exists, but a few settings should be reviewed."
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::import_option_detail(true, true, 1),
+        loongclaw_daemon::onboard_cli::presentation::import_option_detail(true, true, 1),
         "A suggested starting point can supplement the current config with 1 reusable source."
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::import_option_detail(false, true, 2),
+        loongclaw_daemon::onboard_cli::presentation::import_option_detail(false, true, 2),
         "A suggested starting point is ready, built from 2 reusable sources."
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::import_option_detail(false, false, 1),
+        loongclaw_daemon::onboard_cli::presentation::import_option_detail(false, false, 1),
         "1 reusable source was detected for provider, channels, or guidance."
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::import_option_detail(false, false, 2),
+        loongclaw_daemon::onboard_cli::presentation::import_option_detail(false, false, 2),
         "2 reusable sources were detected for provider, channels, or guidance."
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::detected_coverage_prefix(true),
+        loongclaw_daemon::onboard_cli::presentation::detected_coverage_prefix(true),
         "- suggested starting point covers: "
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::detected_coverage_prefix(false),
+        loongclaw_daemon::onboard_cli::presentation::detected_coverage_prefix(false),
         "- detected coverage: "
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::suggested_starting_point_ready_line(),
+        loongclaw_daemon::onboard_cli::presentation::suggested_starting_point_ready_line(),
         "- suggested starting point: ready"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::entry_default_choice_description(
-            loongclaw_daemon::onboard_presentation::EntryChoiceKind::CurrentSetup,
+        loongclaw_daemon::onboard_cli::presentation::entry_default_choice_description(
+            loongclaw_daemon::onboard_cli::presentation::EntryChoiceKind::CurrentSetup,
         ),
         "continue current setup"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::entry_default_choice_description(
-            loongclaw_daemon::onboard_presentation::EntryChoiceKind::DetectedSetup,
+        loongclaw_daemon::onboard_cli::presentation::entry_default_choice_description(
+            loongclaw_daemon::onboard_cli::presentation::EntryChoiceKind::DetectedSetup,
         ),
         "the detected starting point"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::entry_default_choice_description(
-            loongclaw_daemon::onboard_presentation::EntryChoiceKind::StartFresh,
+        loongclaw_daemon::onboard_cli::presentation::entry_default_choice_description(
+            loongclaw_daemon::onboard_cli::presentation::EntryChoiceKind::StartFresh,
         ),
         "start fresh"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::starting_point_footer_description(
+        loongclaw_daemon::onboard_cli::presentation::starting_point_footer_description(
             loongclaw_daemon::migration::types::ImportSourceKind::RecommendedPlan,
         ),
         "the suggested starting point"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::starting_point_footer_description(
+        loongclaw_daemon::onboard_cli::presentation::starting_point_footer_description(
             loongclaw_daemon::migration::types::ImportSourceKind::CodexConfig,
         ),
         "the first starting point"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::starting_point_selection_subtitle(),
+        loongclaw_daemon::onboard_cli::presentation::starting_point_selection_subtitle(),
         "choose the starting point for this setup"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::starting_point_selection_title(),
+        loongclaw_daemon::onboard_cli::presentation::starting_point_selection_title(),
         "choose detected starting point"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::starting_point_selection_hint(),
+        loongclaw_daemon::onboard_cli::presentation::starting_point_selection_hint(),
         "detected settings can still supplement the chosen starting point when they do not conflict"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::detected_settings_section_heading(),
+        loongclaw_daemon::onboard_cli::presentation::detected_settings_section_heading(),
         "Detected settings"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::entry_choice_section_heading(),
+        loongclaw_daemon::onboard_cli::presentation::entry_choice_section_heading(),
         "Choose how to start"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::adjust_settings_label(),
+        loongclaw_daemon::onboard_cli::presentation::adjust_settings_label(),
         "Adjust settings"
     );
 }
 
 #[test]
 fn onboard_presentation_risk_preflight_and_write_copy_stays_canonical() {
-    let risk = loongclaw_daemon::onboard_presentation::risk_screen_copy();
+    let risk = loongclaw_daemon::onboard_cli::presentation::risk_screen_copy();
     assert_eq!(risk.subtitle, "security check before setup");
     assert_eq!(risk.title, "security check");
     assert_eq!(risk.continue_label, "Continue onboarding");
@@ -2777,92 +2061,93 @@ fn onboard_presentation_risk_preflight_and_write_copy_stays_canonical() {
     assert_eq!(risk.confirm_prompt, "Continue");
 
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::preflight_header_title(),
+        loongclaw_daemon::onboard_cli::presentation::preflight_header_title(),
         "verify before write"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::preflight_section_title(),
+        loongclaw_daemon::onboard_cli::presentation::preflight_section_title(),
         "preflight checks"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::preflight_attention_summary_line(),
+        loongclaw_daemon::onboard_cli::presentation::preflight_attention_summary_line(),
         "- some checks need attention before write"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::preflight_green_summary_line(),
+        loongclaw_daemon::onboard_cli::presentation::preflight_green_summary_line(),
         "- all checks are green for this draft"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::preflight_probe_rerun_hint(),
+        loongclaw_daemon::onboard_cli::presentation::preflight_probe_rerun_hint(),
         "- rerun with --skip-model-probe if your provider blocks model listing during setup"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::preflight_explicit_model_rerun_hint(),
+        loongclaw_daemon::onboard_cli::presentation::preflight_explicit_model_rerun_hint(),
         "- rerun onboarding to choose a reviewed model, or set provider.model / preferred_models explicitly"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::preflight_explicit_model_only_rerun_hint(),
+        loongclaw_daemon::onboard_cli::presentation::preflight_explicit_model_only_rerun_hint(),
         "- set provider.model / preferred_models explicitly before retrying"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::preflight_continue_label(),
+        loongclaw_daemon::onboard_cli::presentation::preflight_continue_label(),
         "Continue anyway"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::preflight_continue_detail(),
+        loongclaw_daemon::onboard_cli::presentation::preflight_continue_detail(),
         "accept the remaining warnings and continue with this draft"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::preflight_cancel_label(),
+        loongclaw_daemon::onboard_cli::presentation::preflight_cancel_label(),
         "Cancel"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::preflight_cancel_detail(),
+        loongclaw_daemon::onboard_cli::presentation::preflight_cancel_detail(),
         "stop here and return without writing any config"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::preflight_default_choice_description(),
+        loongclaw_daemon::onboard_cli::presentation::preflight_default_choice_description(),
         "cancel"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::preflight_confirm_prompt(),
+        loongclaw_daemon::onboard_cli::presentation::preflight_confirm_prompt(),
         "Continue anyway"
     );
 
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::write_confirmation_title(),
+        loongclaw_daemon::onboard_cli::presentation::write_confirmation_title(),
         "ready to write config"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::write_confirmation_status_line(true),
+        loongclaw_daemon::onboard_cli::presentation::write_confirmation_status_line(true),
         "- warnings were kept by choice"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::write_confirmation_status_line(false),
+        loongclaw_daemon::onboard_cli::presentation::write_confirmation_status_line(false),
         "- preflight is green for this draft"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::write_confirmation_label(),
+        loongclaw_daemon::onboard_cli::presentation::write_confirmation_label(),
         "Write config"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::write_confirmation_detail(),
+        loongclaw_daemon::onboard_cli::presentation::write_confirmation_detail(),
         "persist this onboarding draft to the target path"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::write_confirmation_cancel_label(),
+        loongclaw_daemon::onboard_cli::presentation::write_confirmation_cancel_label(),
         "Cancel"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::write_confirmation_cancel_detail(),
+        loongclaw_daemon::onboard_cli::presentation::write_confirmation_cancel_detail(),
         "return without writing any config"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::write_confirmation_default_choice_description(),
+        loongclaw_daemon::onboard_cli::presentation::write_confirmation_default_choice_description(
+        ),
         "write config"
     );
     assert_eq!(
-        loongclaw_daemon::onboard_presentation::write_confirmation_prompt(),
+        loongclaw_daemon::onboard_cli::presentation::write_confirmation_prompt(),
         "Write config"
     );
 }
@@ -5426,7 +4711,9 @@ fn onboard_preflight_screen_summarizes_status_counts_and_guidance() {
         "preflight screen should use a focused title: {lines:#?}"
     );
     assert!(
-        lines.iter().any(|line| line == "step 8 of 8 · review"),
+        lines
+            .iter()
+            .any(|line| line == "step 7 of 8 · review and write"),
         "preflight screen should stay anchored to the review step: {lines:#?}"
     );
     assert!(
@@ -5547,7 +4834,9 @@ fn current_setup_preflight_screen_uses_quick_review_progress_copy() {
         "current-setup preflight should use quick-review progress copy: {lines:#?}"
     );
     assert!(
-        lines.iter().all(|line| line != "step 8 of 8 · review"),
+        lines
+            .iter()
+            .all(|line| line != "step 7 of 8 · review and write"),
         "current-setup preflight should not reuse the guided step progress copy: {lines:#?}"
     );
 }
@@ -5573,7 +4862,9 @@ fn detected_setup_preflight_screen_uses_quick_review_progress_copy() {
         "detected-setup preflight should use quick-review progress copy: {lines:#?}"
     );
     assert!(
-        lines.iter().all(|line| line != "step 8 of 8 · review"),
+        lines
+            .iter()
+            .all(|line| line != "step 7 of 8 · review and write"),
         "detected-setup preflight should not reuse the guided step progress copy: {lines:#?}"
     );
 }
@@ -5590,6 +4881,10 @@ fn onboard_write_confirmation_screen_shows_target_path_and_write_choice() {
     assert!(
         lines.iter().any(|line| line == "ready to write config"),
         "write-confirm screen should use a focused title: {lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|line| line == "step 8 of 8 · ready"),
+        "guided write-confirm screen should use the distinct ready-step boundary: {lines:#?}"
     );
     assert!(
         lines
@@ -5660,7 +4955,9 @@ fn current_setup_write_confirmation_screen_uses_quick_review_progress_copy() {
         "current-setup write-confirm should use quick-review progress copy: {lines:#?}"
     );
     assert!(
-        lines.iter().all(|line| line != "step 8 of 8 · review"),
+        lines
+            .iter()
+            .all(|line| line != "step 7 of 8 · review and write"),
         "current-setup write-confirm should not reuse the guided step progress copy: {lines:#?}"
     );
 }
@@ -5681,526 +4978,10 @@ fn detected_setup_write_confirmation_screen_uses_quick_review_progress_copy() {
         "detected-setup write-confirm should use quick-review progress copy: {lines:#?}"
     );
     assert!(
-        lines.iter().all(|line| line != "step 8 of 8 · review"),
+        lines
+            .iter()
+            .all(|line| line != "step 7 of 8 · review and write"),
         "detected-setup write-confirm should not reuse the guided step progress copy: {lines:#?}"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn onboard_current_setup_shortcut_flow_skips_detailed_edit_screens() {
-    let workspace_root = unique_temp_path("current-shortcut-workspace");
-    std::fs::create_dir_all(&workspace_root).expect("create workspace root");
-    std::fs::write(workspace_root.join("AGENTS.md"), "# local guidance\n")
-        .expect("write workspace guidance");
-
-    let output_path = unique_temp_path("current-shortcut-config.toml");
-    let mut existing = mvp::config::LoongClawConfig::default();
-    existing.provider.model = "gpt-4.1".to_owned();
-    existing.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
-        "inline-secret".to_owned(),
-    ));
-    existing.telegram.enabled = true;
-    existing.telegram.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
-        "123456:test-token".to_owned(),
-    ));
-    mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
-
-    let transcript = run_scripted_onboard_flow(
-        loongclaw_daemon::onboard_cli::OnboardCommandOptions {
-            output: output_path.to_str().map(str::to_owned),
-            force: false,
-            non_interactive: false,
-            accept_risk: true,
-            provider: None,
-            model: None,
-            api_key_env: None,
-            web_search_provider: None,
-            web_search_api_key_env: None,
-            personality: None,
-            memory_profile: None,
-            system_prompt: None,
-            skip_model_probe: true,
-        },
-        ["1", "1", "y"],
-        Some(workspace_root),
-        None,
-    )
-    .await
-    .expect("run scripted current-setup onboarding");
-
-    let joined = transcript.join("\n");
-    let review_index = joined
-        .find("review setup\nquick review · current setup")
-        .expect("current-setup flow should include a quick-review section");
-    let review_section = &joined[review_index..];
-    assert!(
-        joined.contains("continue current setup"),
-        "current-setup fast lane should render its shortcut screen: {transcript:#?}"
-    );
-    assert!(
-        joined.contains("quick review · current setup"),
-        "current-setup fast lane should stay on quick-review copy: {transcript:#?}"
-    );
-    assert!(
-        review_section.contains("keep current value"),
-        "current-setup review should preserve how detected domains are being handled: {transcript:#?}"
-    );
-    assert!(
-        joined.contains("existing config kept; no changes were needed"),
-        "current-setup fast lane should reuse the current config when nothing changed: {transcript:#?}"
-    );
-    assert!(
-        !joined.contains("choose active provider"),
-        "current-setup fast lane should skip the provider screen: {transcript:#?}"
-    );
-    assert!(
-        !joined.contains("choose model"),
-        "current-setup fast lane should skip the model screen: {transcript:#?}"
-    );
-    assert!(
-        !joined.contains("choose credential env"),
-        "current-setup fast lane should skip the credential env screen: {transcript:#?}"
-    );
-    assert!(
-        !joined.contains("adjust cli behavior"),
-        "current-setup fast lane should skip the CLI behavior screen: {transcript:#?}"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn onboard_detected_setup_shortcut_flow_skips_detailed_edit_screens() {
-    let workspace_root = unique_temp_path("detected-shortcut-workspace");
-    std::fs::create_dir_all(&workspace_root).expect("create workspace root");
-    std::fs::write(workspace_root.join("AGENTS.md"), "# local guidance\n")
-        .expect("write workspace guidance");
-
-    let output_path = unique_temp_path("detected-shortcut-config.toml");
-    let codex_path = unique_temp_path("detected-shortcut-codex.toml");
-    std::fs::write(
-        &codex_path,
-        r#"
-model_provider = "sub2api"
-model = "openai/gpt-5.1-codex"
-
-[model_providers.sub2api]
-base_url = "https://codex.example.com/v1"
-requires_openai_auth = true
-"#,
-    )
-    .expect("write codex config");
-
-    let screen_candidates = loongclaw_daemon::onboard_cli::collect_import_candidates_with_paths(
-        &output_path,
-        Some(&codex_path),
-        loongclaw_daemon::onboard_cli::ChannelImportReadiness::default().with_state(
-            "telegram",
-            loongclaw_daemon::migration::ChannelCredentialState::Ready,
-        ),
-    )
-    .expect("collect import candidates for screen ordering");
-    let screen_lines = loongclaw_daemon::onboard_cli::render_starting_point_selection_screen_lines(
-        &screen_candidates,
-        80,
-    );
-    assert!(
-        screen_lines
-            .iter()
-            .any(|line| line.contains("2) Codex config at")),
-        "the rendered starting-point screen should keep the Codex candidate at index 2: {screen_lines:#?}"
-    );
-
-    let transcript = run_scripted_onboard_flow(
-        loongclaw_daemon::onboard_cli::OnboardCommandOptions {
-            output: output_path.to_str().map(str::to_owned),
-            force: false,
-            non_interactive: false,
-            accept_risk: true,
-            provider: None,
-            model: None,
-            api_key_env: None,
-            web_search_provider: None,
-            web_search_api_key_env: None,
-            personality: None,
-            memory_profile: None,
-            system_prompt: None,
-            skip_model_probe: true,
-        },
-        ["1", "1", "1", "y", "y"],
-        Some(workspace_root),
-        Some(codex_path),
-    )
-    .await
-    .expect("run scripted detected-setup onboarding");
-
-    let joined = transcript.join("\n");
-    let review_index = joined
-        .find("review setup\nquick review · detected starting point")
-        .expect("detected-setup flow should include a quick-review section");
-    let review_section = &joined[review_index..];
-    assert!(
-        joined.contains("choose detected starting point"),
-        "detected-setup flow should still show the starting-point chooser before the shortcut: {transcript:#?}"
-    );
-    assert!(
-        joined.contains("continue with detected starting point"),
-        "detected-setup fast lane should render its shortcut screen: {transcript:#?}"
-    );
-    assert!(
-        joined.contains("quick review · detected starting point"),
-        "detected-setup fast lane should stay on quick-review copy: {transcript:#?}"
-    );
-    assert!(
-        joined.contains("starting point: suggested starting point"),
-        "detected-setup fast lane should keep the selected starting point visible through review: {transcript:#?}"
-    );
-    assert!(
-        review_section.contains("use detected value"),
-        "detected-setup review should preserve how detected domains are being applied: {transcript:#?}"
-    );
-    assert!(
-        !joined.contains("choose active provider"),
-        "detected-setup fast lane should skip the provider screen when the provider is already resolved: {transcript:#?}"
-    );
-    assert!(
-        !joined.contains("choose model"),
-        "detected-setup fast lane should skip the model screen: {transcript:#?}"
-    );
-    assert!(
-        !joined.contains("choose credential env"),
-        "detected-setup fast lane should skip the credential env screen: {transcript:#?}"
-    );
-    assert!(
-        !joined.contains("adjust cli behavior"),
-        "detected-setup fast lane should skip the CLI behavior screen: {transcript:#?}"
-    );
-    assert!(
-        output_path.exists(),
-        "detected-setup fast lane should still write the config after quick review: {}",
-        output_path.display()
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn onboard_detected_setup_selection_uses_the_same_order_the_screen_shows() {
-    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
-    unsafe {
-        std::env::set_var("DEEPSEEK_API_KEY", "deepseek-test-token");
-        std::env::set_var("TELEGRAM_BOT_TOKEN", "123456:test-token");
-    }
-
-    let workspace_root = unique_temp_path("detected-selection-order-workspace");
-    std::fs::create_dir_all(&workspace_root).expect("create workspace root");
-    std::fs::write(workspace_root.join("AGENTS.md"), "# local guidance\n")
-        .expect("write workspace guidance");
-
-    let output_path = unique_temp_path("detected-selection-order-config.toml");
-    let codex_path = unique_temp_path("detected-selection-order-codex.toml");
-    std::fs::write(
-        &codex_path,
-        r#"
-model_provider = "sub2api"
-model = "openai/gpt-5.1-codex"
-
-[model_providers.sub2api]
-base_url = "https://codex.example.com/v1"
-requires_openai_auth = true
-"#,
-    )
-    .expect("write codex config");
-
-    let transcript = run_scripted_onboard_flow(
-        loongclaw_daemon::onboard_cli::OnboardCommandOptions {
-            output: output_path.to_str().map(str::to_owned),
-            force: false,
-            non_interactive: false,
-            accept_risk: true,
-            provider: None,
-            model: None,
-            api_key_env: None,
-            web_search_provider: None,
-            web_search_api_key_env: None,
-            personality: None,
-            memory_profile: None,
-            system_prompt: None,
-            skip_model_probe: true,
-        },
-        ["1", "2", "1", "y", "y"],
-        Some(workspace_root),
-        Some(codex_path),
-    )
-    .await
-    .expect("run scripted detected-setup onboarding with explicit starting-point selection");
-
-    let joined = transcript.join("\n");
-    let (_, written_config) = mvp::config::load(Some(output_path.to_string_lossy().as_ref()))
-        .expect("load written config");
-    assert!(
-        joined.contains("choose detected starting point")
-            && joined.contains("SELECT Starting point"),
-        "the interactive flow should still show the starting-point selection stage before applying the chosen path: {transcript:#?}"
-    );
-    assert!(
-        joined.contains("starting point: Codex config at"),
-        "after choosing [2], the rest of onboarding should carry the displayed Codex option forward, not some internal candidate order: {transcript:#?}"
-    );
-    assert!(
-        !joined.contains("starting point: your current environment"),
-        "selection should stay aligned with the on-screen numbering when candidates are reordered for UX: {transcript:#?}"
-    );
-    assert_eq!(
-        written_config.provider.kind,
-        mvp::config::ProviderKind::Openai,
-        "choosing the second starting-point entry should apply the displayed Codex provider candidate"
-    );
-    assert_eq!(
-        written_config.provider.model, "openai/gpt-5.1-codex",
-        "choosing the second starting-point entry should keep the Codex model from the displayed candidate"
-    );
-    assert_eq!(
-        written_config.provider.base_url, "https://codex.example.com/v1",
-        "choosing the second starting-point entry should keep the Codex-compatible base url from the displayed candidate"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn onboard_single_detected_setup_flow_uses_preview_screen_instead_of_plain_label() {
-    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
-    let output_path = unique_temp_path("single-detected-config.toml");
-    let codex_path = unique_temp_path("single-detected-codex.toml");
-    std::fs::write(
-        &codex_path,
-        r#"
-model_provider = "sub2api"
-model = "openai/gpt-5.1-codex"
-
-[model_providers.sub2api]
-base_url = "https://codex.example.com/v1"
-requires_openai_auth = true
-"#,
-    )
-    .expect("write codex config");
-
-    let transcript = run_scripted_onboard_flow(
-        loongclaw_daemon::onboard_cli::OnboardCommandOptions {
-            output: output_path.to_str().map(str::to_owned),
-            force: false,
-            non_interactive: false,
-            accept_risk: true,
-            provider: None,
-            model: None,
-            api_key_env: None,
-            web_search_provider: None,
-            web_search_api_key_env: None,
-            personality: None,
-            memory_profile: None,
-            system_prompt: None,
-            skip_model_probe: true,
-        },
-        ["1", "1", "y", "y"],
-        None,
-        Some(codex_path),
-    )
-    .await
-    .expect("run scripted onboarding with a single detected setup");
-
-    let joined = transcript.join("\n");
-    assert!(
-        joined.contains("review detected starting point"),
-        "single detected-setup flow should render a branded preview screen before continuing: {transcript:#?}"
-    );
-    assert!(
-        joined.contains("continuing with the only detected starting point"),
-        "single detected-setup flow should explain why it skips the starting-point chooser: {transcript:#?}"
-    );
-    assert!(
-        !joined.contains("\nDetected setup:\n"),
-        "single detected-setup flow should no longer fall back to the old plain inline preview label: {transcript:#?}"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn onboard_current_setup_adjustments_preserve_unchanged_domain_actions_in_review() {
-    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
-    let workspace_root = unique_temp_path("current-adjusted-review-workspace");
-    std::fs::create_dir_all(&workspace_root).expect("create workspace root");
-    std::fs::write(workspace_root.join("AGENTS.md"), "# local guidance\n")
-        .expect("write workspace guidance");
-
-    let output_path = unique_temp_path("current-adjusted-review-config.toml");
-    let mut existing = mvp::config::LoongClawConfig::default();
-    existing.provider.model = "gpt-4.1".to_owned();
-    existing.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
-        "inline-secret".to_owned(),
-    ));
-    existing.telegram.enabled = true;
-    existing.telegram.bot_token = Some(loongclaw_contracts::SecretRef::Inline(
-        "123456:test-token".to_owned(),
-    ));
-    mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
-
-    let transcript = run_scripted_onboard_flow(
-        loongclaw_daemon::onboard_cli::OnboardCommandOptions {
-            output: output_path.to_str().map(str::to_owned),
-            force: false,
-            non_interactive: false,
-            accept_risk: true,
-            provider: None,
-            model: None,
-            api_key_env: None,
-            web_search_provider: None,
-            web_search_api_key_env: None,
-            personality: None,
-            memory_profile: None,
-            system_prompt: None,
-            skip_model_probe: true,
-        },
-        vec![
-            "1".to_owned(),
-            "2".to_owned(),
-            provider_choice_input(mvp::config::ProviderKind::Openai),
-            "gpt-4.1".to_owned(),
-            "OPENAI_API_KEY".to_owned(),
-            String::new(),
-            "custom review prompt".to_owned(),
-            String::new(),
-            String::new(),
-            "y".to_owned(),
-            "y".to_owned(),
-            "o".to_owned(),
-        ],
-        Some(workspace_root),
-        None,
-    )
-    .await
-    .expect("run scripted current-setup onboarding with adjustments");
-
-    let review_lines = extract_review_section_lines(&transcript, "step 8 of 8 · review");
-    let has_domain_action = |domain_label: &str, action_label: &str| {
-        review_lines.iter().enumerate().any(|(index, line)| {
-            line.contains(&format!("- {domain_label} ["))
-                && review_lines[index + 1..review_lines.len().min(index + 4)]
-                    .iter()
-                    .any(|candidate| candidate.contains(action_label))
-        })
-    };
-
-    assert!(
-        review_lines
-            .iter()
-            .any(|line| line == "source: current onboarding draft"),
-        "after edits, review should present the whole draft as a current onboarding draft: {review_lines:#?}"
-    );
-    assert!(
-        has_domain_action("provider", "keep current value"),
-        "unchanged provider settings should keep their current-setup action label in review: {review_lines:#?}"
-    );
-    assert!(
-        has_domain_action("channels", "keep current value"),
-        "unchanged channels should keep their current-setup action label in review: {review_lines:#?}"
-    );
-    assert!(
-        has_domain_action("workspace guidance", "keep current value"),
-        "unchanged workspace guidance should keep its current-setup action label in review: {review_lines:#?}"
-    );
-    assert!(
-        has_domain_action("cli", "adjusted in this setup"),
-        "the edited cli domain should be called out as manually adjusted in this setup: {review_lines:#?}"
-    );
-
-    let success_lines = extract_success_section_lines(&transcript);
-    assert!(
-        success_lines.iter().any(|line| line == "setup outcome"),
-        "success summary should include a compact setup outcome section when decision context exists: {success_lines:#?}"
-    );
-    assert!(
-        success_lines
-            .iter()
-            .any(|line| line == "- kept current: provider, channels, workspace guidance"),
-        "success summary should group unchanged current-setup domains into a readable outcome line: {success_lines:#?}"
-    );
-    assert!(
-        success_lines
-            .iter()
-            .any(|line| line == "- adjusted now: cli"),
-        "success summary should group domains adjusted during onboarding: {success_lines:#?}"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn onboard_current_setup_adjustments_capture_personality_and_memory_profile() {
-    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
-    let workspace_root = unique_temp_path("current-adjusted-personality-memory-workspace");
-    std::fs::create_dir_all(&workspace_root).expect("create workspace root");
-    std::fs::write(workspace_root.join("AGENTS.md"), "# local guidance\n")
-        .expect("write workspace guidance");
-
-    let output_path = unique_temp_path("current-adjusted-personality-memory-config.toml");
-    let mut existing = mvp::config::LoongClawConfig::default();
-    existing.provider.model = "gpt-4.1".to_owned();
-    existing.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
-        "inline-secret".to_owned(),
-    ));
-    mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
-
-    let transcript = run_scripted_onboard_flow(
-        crate::onboard_cli::OnboardCommandOptions {
-            output: output_path.to_str().map(str::to_owned),
-            force: false,
-            non_interactive: false,
-            accept_risk: true,
-            provider: None,
-            model: None,
-            api_key_env: None,
-            web_search_provider: None,
-            web_search_api_key_env: None,
-            personality: None,
-            memory_profile: None,
-            system_prompt: None,
-            skip_model_probe: true,
-        },
-        vec![
-            "1".to_owned(),
-            "2".to_owned(),
-            provider_choice_input(mvp::config::ProviderKind::Openai),
-            "gpt-4.1".to_owned(),
-            "OPENAI_API_KEY".to_owned(),
-            "2".to_owned(),
-            String::new(),
-            "3".to_owned(),
-            String::new(),
-            "y".to_owned(),
-            "y".to_owned(),
-            "o".to_owned(),
-        ],
-        Some(workspace_root),
-        None,
-    )
-    .await
-    .expect("run scripted current-setup onboarding with personality and memory profile changes");
-
-    let joined = transcript.join("\n");
-    assert!(
-        joined.contains("step 4 of 8 · personality"),
-        "guided current-setup adjustments should expose a dedicated personality step: {transcript:#?}"
-    );
-    assert!(
-        joined.contains("step 5 of 8 · prompt addendum"),
-        "guided current-setup adjustments should expose a dedicated prompt-addendum step: {transcript:#?}"
-    );
-    assert!(
-        joined.contains("step 6 of 8 · memory profile"),
-        "guided current-setup adjustments should expose a dedicated memory-profile step: {transcript:#?}"
-    );
-
-    let (_, config) = mvp::config::load(output_path.to_str())
-        .expect("load current-setup personality/memory config");
-    assert_eq!(
-        config.cli.personality,
-        Some(mvp::prompt::PromptPersonality::FriendlyCollab)
-    );
-    assert_eq!(
-        config.memory.profile,
-        mvp::config::MemoryProfile::ProfilePlusWindow
     );
 }
 
@@ -6234,109 +5015,6 @@ fn onboard_interactive_flow_defaults_back_to_native_prompt_pack_even_from_inline
     assert_eq!(
         path, "native",
         "interactive onboarding should default back to the native prompt-pack path even when the current config uses an inline override"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn onboard_detected_setup_adjustments_preserve_unchanged_detected_actions_in_review() {
-    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
-    let workspace_root = unique_temp_path("detected-adjusted-review-workspace");
-    std::fs::create_dir_all(&workspace_root).expect("create workspace root");
-    std::fs::write(workspace_root.join("AGENTS.md"), "# local guidance\n")
-        .expect("write workspace guidance");
-
-    let output_path = unique_temp_path("detected-adjusted-review-config.toml");
-    let codex_path = unique_temp_path("detected-adjusted-review-codex.toml");
-    std::fs::write(
-        &codex_path,
-        r#"
-model_provider = "sub2api"
-model = "openai/gpt-5.1-codex"
-
-[model_providers.sub2api]
-base_url = "https://codex.example.com/v1"
-requires_openai_auth = true
-"#,
-    )
-    .expect("write codex config");
-
-    let transcript = run_scripted_onboard_flow(
-        loongclaw_daemon::onboard_cli::OnboardCommandOptions {
-            output: output_path.to_str().map(str::to_owned),
-            force: false,
-            non_interactive: false,
-            accept_risk: true,
-            provider: None,
-            model: None,
-            api_key_env: None,
-            web_search_provider: None,
-            web_search_api_key_env: None,
-            personality: None,
-            memory_profile: None,
-            system_prompt: None,
-            skip_model_probe: true,
-        },
-        [
-            "1",
-            "1",
-            "2",
-            "1",
-            "openai/gpt-5.1-codex-preview",
-            "OPENAI_API_KEY",
-            "",
-            "",
-            "",
-            "",
-            "y",
-            "y",
-        ],
-        Some(workspace_root),
-        Some(codex_path),
-    )
-    .await
-    .expect("run scripted detected-setup onboarding with adjustments");
-
-    let review_lines = extract_review_section_lines(&transcript, "step 8 of 8 · review");
-    let has_domain_action = |domain_label: &str, action_label: &str| {
-        review_lines.iter().enumerate().any(|(index, line)| {
-            line.contains(&format!("- {domain_label} ["))
-                && review_lines[index + 1..review_lines.len().min(index + 4)]
-                    .iter()
-                    .any(|candidate| candidate.contains(action_label))
-        })
-    };
-
-    assert!(
-        review_lines
-            .iter()
-            .any(|line| line == "source: current onboarding draft"),
-        "after edits, guided review should present the whole draft as a current onboarding draft: {review_lines:#?}"
-    );
-    assert!(
-        has_domain_action("workspace guidance", "use detected value"),
-        "unchanged workspace guidance should keep its detected action label in review: {review_lines:#?}"
-    );
-    assert!(
-        has_domain_action("provider", "adjusted in this setup"),
-        "the edited provider domain should be called out as manually adjusted in this setup: {review_lines:#?}"
-    );
-
-    let success_lines = extract_success_section_lines(&transcript);
-    assert!(
-        success_lines.iter().any(|line| line == "setup outcome"),
-        "success summary should include a compact setup outcome section when detected decisions exist: {success_lines:#?}"
-    );
-    assert!(
-        success_lines
-            .iter()
-            .any(|line| line == "- adjusted now: provider"),
-        "success summary should group manually adjusted domains in the final handoff: {success_lines:#?}"
-    );
-    assert!(
-        success_lines
-            .iter()
-            .any(|line| line == "- used detected: workspace guidance"),
-        "success summary should group unchanged detected domains into a readable outcome line: {success_lines:#?}"
     );
 }
 
@@ -6429,7 +5107,9 @@ fn onboard_review_lines_use_compact_header() {
         "review screen should retain a clear review heading under the brand block: {lines:#?}"
     );
     assert!(
-        lines.iter().any(|line| line == "step 8 of 8 · review"),
+        lines
+            .iter()
+            .any(|line| line == "step 7 of 8 · review and write"),
         "review screen should include guided progress context inside the screen: {lines:#?}"
     );
 }
@@ -6574,7 +5254,9 @@ fn current_setup_review_lines_use_quick_review_progress_copy() {
         "current-setup review should use quick-review progress copy: {lines:#?}"
     );
     assert!(
-        lines.iter().all(|line| line != "step 8 of 8 · review"),
+        lines
+            .iter()
+            .all(|line| line != "step 7 of 8 · review and write"),
         "current-setup review should not reuse the guided step progress copy: {lines:#?}"
     );
 }
@@ -6595,7 +5277,9 @@ fn detected_setup_review_lines_use_quick_review_progress_copy() {
         "detected-setup review should use quick-review progress copy: {lines:#?}"
     );
     assert!(
-        lines.iter().all(|line| line != "step 8 of 8 · review"),
+        lines
+            .iter()
+            .all(|line| line != "step 7 of 8 · review and write"),
         "detected-setup review should not reuse the guided step progress copy: {lines:#?}"
     );
 }
@@ -6691,6 +5375,30 @@ fn onboard_should_skip_config_write_when_existing_config_matches_draft() {
     assert!(
         !loongclaw_daemon::onboard_cli::should_skip_config_write(Some(&existing), &changed),
         "a changed draft should still go through the normal write flow"
+    );
+}
+
+#[test]
+fn onboard_should_skip_config_write_when_existing_config_only_differs_by_canonical_persistence() {
+    let mut existing = mvp::config::LoongClawConfig::default();
+    existing.provider.kind = mvp::config::ProviderKind::Deepseek;
+    existing.provider.model = "deepseek-chat".to_owned();
+    existing.provider.wire_api = mvp::config::ProviderWireApi::Responses;
+    existing.provider.api_key_env = Some("DEEPSEEK_API_KEY".to_owned());
+
+    let rendered = mvp::config::render(&existing).expect("render canonical config");
+    let legacy_rendered = rendered.replace(
+        "api_key = \"${DEEPSEEK_API_KEY}\"",
+        "api_key_env = \"DEEPSEEK_API_KEY\"",
+    );
+    let legacy_path = unique_temp_path("should-skip-config-write-legacy.toml");
+    std::fs::write(&legacy_path, legacy_rendered).expect("write legacy-config variant");
+    let (_, loaded_existing) =
+        mvp::config::load(legacy_path.to_str()).expect("load legacy-config variant");
+
+    assert!(
+        loongclaw_daemon::onboard_cli::should_skip_config_write(Some(&loaded_existing), &existing),
+        "legacy auth bindings that normalize to the same persisted config should still count as a no-op"
     );
 }
 
@@ -6890,9 +5598,11 @@ fn onboarding_success_summary_prefers_oauth_env_over_api_key_env_when_both_are_c
 #[test]
 fn onboarding_success_summary_reports_existing_config_kept() {
     let summary = loongclaw_daemon::onboard_cli::OnboardingSuccessSummary {
+        outcome: loongclaw_daemon::onboard_state::OnboardOutcome::Success,
         import_source: None,
         config_path: "/tmp/loongclaw-config.toml".to_owned(),
         config_status: Some("existing config kept; no changes were needed".to_owned()),
+        verification_status: None,
         provider: "openai".to_owned(),
         saved_provider_profiles: Vec::new(),
         model: "auto".to_owned(),
@@ -6997,9 +5707,11 @@ fn onboarding_success_summary_reports_web_search_provider_and_credential() {
 #[test]
 fn onboarding_success_summary_groups_domain_outcomes_by_decision() {
     let summary = loongclaw_daemon::onboard_cli::OnboardingSuccessSummary {
+        outcome: loongclaw_daemon::onboard_state::OnboardOutcome::Success,
         import_source: Some("suggested starting point".to_owned()),
         config_path: "/tmp/loongclaw-config.toml".to_owned(),
         config_status: None,
+        verification_status: None,
         provider: "openai".to_owned(),
         saved_provider_profiles: Vec::new(),
         model: "openai/gpt-5.1-codex".to_owned(),
@@ -7068,9 +5780,11 @@ fn onboarding_success_summary_groups_domain_outcomes_by_decision() {
 #[test]
 fn onboarding_success_summary_wraps_domain_outcomes_for_narrow_width() {
     let summary = loongclaw_daemon::onboard_cli::OnboardingSuccessSummary {
+        outcome: loongclaw_daemon::onboard_state::OnboardOutcome::Success,
         import_source: Some("suggested starting point".to_owned()),
         config_path: "/tmp/loongclaw-config.toml".to_owned(),
         config_status: None,
+        verification_status: None,
         provider: "openai".to_owned(),
         saved_provider_profiles: Vec::new(),
         model: "openai/gpt-5.1-codex".to_owned(),

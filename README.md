@@ -252,6 +252,18 @@ loong completions elvish >> ~/.config/elvish/rc.elv
 
 ### First Success Path
 
+Guided onboarding now runs as an eight-stage wizard: `welcome`, `authentication`,
+`runtime defaults`, `workspace`, `protocols`, `environment check`, `review and write`,
+and `ready`.
+
+When you rerun onboarding against an existing setup, it keeps the current saved
+values distinct from the detected starting point so you can see what is already
+configured before the draft is written. The environment check can finish green,
+`ready with warnings`, or blocked. Warn-only runs require explicit confirmation
+before write, while blocked runs stop before write and point to `loongclaw doctor`
+or `loongclaw doctor --fix`. If rich terminal prompts are not available,
+onboarding falls back to plain prompts instead of blocking the flow.
+
 1. Run guided onboarding:
 
    ```bash
@@ -654,6 +666,7 @@ LoongClaw does not assume teams should start from zero.
 Today there are two migration-facing paths:
 
 - `onboard` already folds current setup, Codex config, environment settings, and workspace guidance into starting-point detection, then suggests a reusable starting point.
+- rerunning `onboard` keeps current values and detected values labeled separately, so operators can choose to continue the existing setup, use the detected starting point, or start fresh without losing the distinction.
 - when you want explicit control, the public migration entrypoint is now `loong migrate`, which handles discovery, planning, selective apply, and rollback.
 
 Its value is broader than copying a config file. LoongClaw distinguishes sources, recommends a primary source, and keeps migration split into narrower lanes such as prompt, profile, and external-skills state instead of blindly overwriting everything at once.
