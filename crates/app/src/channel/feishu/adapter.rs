@@ -5,7 +5,7 @@ use crate::CliResult;
 use crate::channel::feishu::api::FeishuClient;
 use crate::channel::feishu::api::messaging_api::{
     convert_cli_result, convert_feishu_message_to_generic, convert_message_content_to_feishu,
-    convert_string_error_to_api_error, extract_receive_params, generate_uuid,
+    convert_string_error_to_api_error, extract_receive_params, generate_idempotency_key,
 };
 use crate::channel::feishu::api::resources::messages::{
     self, FeishuMessageHistoryQuery, FeishuOutboundMessageBody, fetch_message_detail,
@@ -289,7 +289,7 @@ impl MessagingApi for FeishuAdapter {
             .idempotency_key()
             .filter(|key| !key.is_empty())
             .map(|key| key.to_owned())
-            .or_else(|| Some(generate_uuid()));
+            .or_else(|| Some(generate_idempotency_key()));
 
         // Send the message
         let receipt = convert_cli_result(
@@ -363,7 +363,7 @@ impl MessagingApi for FeishuAdapter {
             .idempotency_key()
             .filter(|key| !key.is_empty())
             .map(|key| key.to_owned())
-            .or_else(|| Some(generate_uuid()));
+            .or_else(|| Some(generate_idempotency_key()));
 
         // Send the reply
         let receipt = convert_cli_result(

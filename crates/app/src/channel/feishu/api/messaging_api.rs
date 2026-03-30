@@ -11,11 +11,11 @@ use crate::channel::{
 use super::resources::messages::FeishuOutboundMessageBody;
 use super::resources::types::FeishuMessageDetail;
 
-/// Generate a UUID-like string for idempotency
+/// Generate an idempotency key for Feishu API requests
 ///
 /// Format: `{timestamp_hex}-{pid_hex}-{counter_hex}`
 /// This ensures uniqueness across multiple process instances.
-pub(crate) fn generate_uuid() -> String {
+pub(crate) fn generate_idempotency_key() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
