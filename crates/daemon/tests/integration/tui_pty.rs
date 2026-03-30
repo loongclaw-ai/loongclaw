@@ -35,6 +35,16 @@ fn strip_ansi(raw: &[u8]) -> String {
     String::from_utf8_lossy(&stripped).into_owned()
 }
 
+/// Check whether `text` appears in `haystack` when both are collapsed
+/// (all whitespace removed).  Terminal cell rendering often inserts spaces
+/// between characters, so a direct `contains("hello world")` can fail
+/// even though the characters are visually present.
+fn contains_collapsed(haystack: &str, text: &str) -> bool {
+    let h: String = haystack.chars().filter(|c| !c.is_whitespace()).collect();
+    let t: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    h.contains(&t)
+}
+
 // ---------------------------------------------------------------------------
 // TuiPtyFixture
 // ---------------------------------------------------------------------------
@@ -351,8 +361,10 @@ fn tui_composer_accepts_input() {
         .read_screen(Duration::from_secs(3))
         .expect("read screen after typing");
 
+    // TUI cell rendering may insert spaces between characters (e.g.
+    // "h e l l o   w o r l d"), so we use whitespace-collapsed matching.
     assert!(
-        screen.contains("hello world"),
+        contains_collapsed(&screen, "helloworld"),
         "typed text should appear on the screen: {screen:?}"
     );
 
