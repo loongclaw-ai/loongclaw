@@ -2047,7 +2047,7 @@ fn resolve_model_selection(
         if selected.slug != ONBOARD_CUSTOM_MODEL_OPTION_SLUG {
             return Ok(selected.slug.clone());
         }
-        let custom_model = ui.prompt_with_default("Custom model id", prompt_default.as_str())?;
+        let custom_model = ui.prompt_with_default("Custom model id", effective_prompt_default)?;
         let trimmed = custom_model.trim();
         if trimmed.is_empty() {
             return Err("model cannot be empty".to_owned());
@@ -2086,7 +2086,9 @@ async fn load_onboarding_model_catalog(
     if options.non_interactive || options.skip_model_probe {
         return Vec::new();
     }
-    if !mvp::provider::provider_auth_ready(config).await {
+    let has_provider_credentials = mvp::provider::provider_auth_ready(config).await;
+    let provider_requires_explicit_auth = config.provider.requires_explicit_auth_configuration();
+    if !has_provider_credentials && provider_requires_explicit_auth {
         return Vec::new();
     }
     mvp::provider::fetch_available_models(config)
@@ -7019,6 +7021,40 @@ mod tests {
     }
 
     #[test]
+    fn provider_credential_check_accepts_x_api_key_provider_env_credentials() {
+        let mut env = ScopedEnv::new();
+        env.set("ANTHROPIC_API_KEY", "test-anthropic-key");
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.provider.kind = mvp::config::ProviderKind::Anthropic;
+        config.provider.api_key = None;
+        config.provider.api_key_env = None;
+        config.provider.oauth_access_token = None;
+        config.provider.oauth_access_token_env = None;
+
+        let check = provider_credential_check(&config);
+
+        assert_eq!(check.name, "provider credentials");
+        assert_eq!(check.level, OnboardCheckLevel::Pass);
+        assert!(check.detail.contains("ANTHROPIC_API_KEY is available"));
+    }
+
+    #[test]
+    fn provider_credential_check_passes_for_auth_optional_provider() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.provider.kind = mvp::config::ProviderKind::Ollama;
+        config.provider.api_key = None;
+        config.provider.api_key_env = None;
+        config.provider.oauth_access_token = None;
+        config.provider.oauth_access_token_env = None;
+
+        let check = provider_credential_check(&config);
+
+        assert_eq!(check.name, "provider credentials");
+        assert_eq!(check.level, OnboardCheckLevel::Pass);
+        assert!(check.detail.contains("optional for this provider"));
+    }
+
+    #[test]
     fn preferred_api_key_env_default_ignores_invalid_configured_secret_literal() {
         let secret = "sk-live-direct-secret-value";
         let mut config = mvp::config::LoongClawConfig::default();
@@ -8405,6 +8441,33 @@ mod tests {
             selected, "auto",
             "noncanonical Volcengine endpoints should not hide the `auto` choice just because the returned models contain a static-catalog model id"
         );
+    }
+
+    #[test]
+    fn resolve_model_selection_rejects_blank_custom_override_when_auto_is_hidden() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.provider = mvp::config::ProviderConfig::fresh_for_kind(
+            mvp::config::ProviderKind::VolcengineCoding,
+        );
+        config.provider.model = "auto".to_owned();
+        let mut ui = TestOnboardUi::with_inputs(["3", ""]);
+        let context = onboard_test_context();
+        let available_models = vec![
+            "ark-code-latest".to_owned(),
+            "doubao-seed-2.0-code".to_owned(),
+        ];
+
+        let error = resolve_model_selection(
+            &interactive_onboard_options(),
+            &config,
+            GuidedPromptPath::NativePromptPack,
+            &available_models,
+            &mut ui,
+            &context,
+        )
+        .expect_err("blank custom entry should not round-trip hidden auto");
+
+        assert_eq!(error, "model cannot be empty");
     }
 
     #[tokio::test(flavor = "current_thread")]
