@@ -1616,6 +1616,7 @@ mod tests {
                 assistant_text: "preface".to_owned(),
                 tool_intents: Vec::new(),
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
             ProviderErrorMode::Propagate,
         );

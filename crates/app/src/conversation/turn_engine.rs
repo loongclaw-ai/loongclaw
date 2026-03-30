@@ -37,11 +37,33 @@ use super::runtime_binding::ConversationRuntimeBinding;
 
 use super::ingress::{ConversationIngressContext, inject_internal_tool_ingress};
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderUsage {
+    pub input_tokens: Option<u32>,
+    pub output_tokens: Option<u32>,
+}
+
+impl ProviderUsage {
+    pub fn accumulate(&mut self, other: &ProviderUsage) {
+        fn add_opt(a: Option<u32>, b: Option<u32>) -> Option<u32> {
+            match (a, b) {
+                (Some(x), Some(y)) => Some(x.saturating_add(y)),
+                (Some(x), None) | (None, Some(x)) => Some(x),
+                (None, None) => None,
+            }
+        }
+        self.input_tokens = add_opt(self.input_tokens, other.input_tokens);
+        self.output_tokens = add_opt(self.output_tokens, other.output_tokens);
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProviderTurn {
     pub assistant_text: String,
     pub tool_intents: Vec<ToolIntent>,
     pub raw_meta: serde_json::Value,
+    #[serde(default)]
+    pub usage: ProviderUsage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2332,6 +2354,7 @@ mod tests {
                 tool_call_id: tool_call_id.to_owned(),
             }],
             raw_meta: json!({}),
+            usage: Default::default(),
         }
     }
 
@@ -2397,6 +2420,7 @@ mod tests {
                 tool_call_id: tool_call_id.to_owned(),
             }],
             raw_meta: json!({}),
+            usage: Default::default(),
         }
     }
 
@@ -2424,6 +2448,7 @@ mod tests {
                 tool_call_id: tool_call_id.to_owned(),
             }],
             raw_meta: json!({}),
+            usage: Default::default(),
         }
     }
 
@@ -2495,6 +2520,7 @@ mod tests {
                 ),
             ],
             raw_meta: json!({}),
+            usage: Default::default(),
         }
     }
 
@@ -2544,6 +2570,7 @@ mod tests {
                 ),
             ],
             raw_meta: json!({}),
+            usage: Default::default(),
         }
     }
 

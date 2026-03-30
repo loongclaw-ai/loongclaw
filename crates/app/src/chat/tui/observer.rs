@@ -54,9 +54,13 @@ impl ConversationTurnObserver for TuiObserver {
         });
 
         if event.phase == ConversationTurnPhase::Completed {
+            let input_tokens = event
+                .actual_input_tokens
+                .unwrap_or_else(|| event.estimated_tokens.unwrap_or(0) as u32);
+            let output_tokens = event.actual_output_tokens.unwrap_or(0);
             let _ = self.tx.send(UiEvent::ResponseDone {
-                input_tokens: event.estimated_tokens.unwrap_or(0) as u32,
-                output_tokens: 0,
+                input_tokens,
+                output_tokens,
             });
         }
     }
@@ -206,16 +210,47 @@ mod tests {
     }
 
     #[test]
-    fn completed_phase_sends_response_done() {
+    fn completed_phase_sends_response_done_with_actual_tokens() {
         let (mut rx, observer) = setup();
 
-        observer.on_phase(ConversationTurnPhaseEvent::completed(12, Some(1500)));
+        observer.on_phase(ConversationTurnPhaseEvent::completed(
+            12,
+            Some(1500),
+            Some(1200),
+            Some(350),
+        ));
 
         let phase_event = rx.try_recv().expect("should receive PhaseChange");
         match phase_event {
             UiEvent::PhaseChange { phase, .. } => assert_eq!(phase, "Completed"),
             other => panic!("expected PhaseChange, got {:?}", other),
         }
+
+        let done_event = rx.try_recv().expect("should receive ResponseDone");
+        match done_event {
+            UiEvent::ResponseDone {
+                input_tokens,
+                output_tokens,
+            } => {
+                assert_eq!(input_tokens, 1200);
+                assert_eq!(output_tokens, 350);
+            }
+            other => panic!("expected ResponseDone, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn completed_phase_falls_back_to_estimated_when_no_actual() {
+        let (mut rx, observer) = setup();
+
+        observer.on_phase(ConversationTurnPhaseEvent::completed(
+            12,
+            Some(1500),
+            None,
+            None,
+        ));
+
+        let _ = rx.try_recv(); // consume PhaseChange
 
         let done_event = rx.try_recv().expect("should receive ResponseDone");
         match done_event {
@@ -478,7 +513,7 @@ mod tests {
     fn completed_phase_without_estimated_tokens_defaults_to_zero() {
         let (mut rx, observer) = setup();
 
-        observer.on_phase(ConversationTurnPhaseEvent::completed(5, None));
+        observer.on_phase(ConversationTurnPhaseEvent::completed(5, None, None, None));
 
         let _ = rx.try_recv(); // PhaseChange
 

@@ -1084,6 +1084,7 @@ where
         assistant_text: accumulator.text,
         tool_intents,
         raw_meta: accumulator.meta,
+        usage: Default::default(),
     })
 }
 

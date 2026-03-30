@@ -737,6 +737,7 @@ impl FakeRuntime {
                     assistant_text: content.to_owned(),
                     tool_intents: Vec::new(),
                     raw_meta: Value::Null,
+                    usage: Default::default(),
                 })
             },
         );
@@ -5871,6 +5872,7 @@ async fn handle_turn_with_runtime_tool_turn_uses_natural_language_completion_by_
                 "call-tool",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("Summary: the note says hello from coordinator test.".to_owned()),
     );
@@ -5934,6 +5936,7 @@ async fn handle_turn_with_runtime_tool_search_requests_a_followup_provider_turn(
                     "call-tool-search",
                 )],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
             Ok(ProviderTurn {
                 assistant_text: "Now I'll read the file.".to_owned(),
@@ -5945,6 +5948,7 @@ async fn handle_turn_with_runtime_tool_search_requests_a_followup_provider_turn(
                     "call-tool-invoke",
                 )],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
         ],
         vec![Ok(
@@ -6015,6 +6019,7 @@ async fn handle_turn_with_runtime_blocks_only_when_next_round_would_exceed_max_t
                     "call-tool-search-breaker",
                 )],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
             Ok(ProviderTurn {
                 assistant_text: "I should search one more time before continuing.".to_owned(),
@@ -6026,6 +6031,7 @@ async fn handle_turn_with_runtime_blocks_only_when_next_round_would_exceed_max_t
                     "call-tool-search-breaker-2",
                 )],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
         ],
         vec![],
@@ -6094,6 +6100,7 @@ async fn handle_turn_with_runtime_includes_same_tool_warning_in_followup_provide
                     "call-tool-search-warning-1",
                 )],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
             Ok(ProviderTurn {
                 assistant_text: "I should search again before continuing.".to_owned(),
@@ -6105,11 +6112,13 @@ async fn handle_turn_with_runtime_includes_same_tool_warning_in_followup_provide
                     "call-tool-search-warning-2",
                 )],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
             Ok(ProviderTurn {
                 assistant_text: "I should stop and ask before continuing.".to_owned(),
                 tool_intents: Vec::new(),
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
         ],
         vec![],
@@ -6178,6 +6187,7 @@ async fn handle_turn_with_runtime_tool_search_raw_request_still_uses_followup_pr
                     "call-tool-search-raw",
                 )],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
             Ok(ProviderTurn {
                 assistant_text: "Now I'll read the file.".to_owned(),
@@ -6189,6 +6199,7 @@ async fn handle_turn_with_runtime_tool_search_raw_request_still_uses_followup_pr
                     "call-tool-invoke-raw",
                 )],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
         ],
         vec![Ok("this must not be used".to_owned())],
@@ -6613,6 +6624,7 @@ async fn handle_turn_with_runtime_tool_turn_raw_request_skips_second_pass_comple
                 "call-tool-raw",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("this must not be used".to_owned()),
     );
@@ -6668,6 +6680,7 @@ async fn handle_turn_with_runtime_tool_search_followup_checkpoint_uses_visible_c
                     "call-tool-search-checkpoint",
                 )],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
             Ok(ProviderTurn {
                 assistant_text: "Now I'll read the file.".to_owned(),
@@ -6679,6 +6692,7 @@ async fn handle_turn_with_runtime_tool_search_followup_checkpoint_uses_visible_c
                     "call-tool-invoke-checkpoint",
                 )],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
         ],
         vec![Ok(
@@ -6799,6 +6813,7 @@ async fn handle_turn_with_runtime_provider_switch_tool_updates_provider_for_foll
                 "call-provider-switch",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         })],
         vec![Ok("DeepSeek is now active.".to_owned())],
     );
@@ -6859,6 +6874,7 @@ async fn handle_turn_with_runtime_honors_configured_tool_result_summary_limit_on
                 "call-fast-limit",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("unused".to_owned()),
     );
@@ -6984,6 +7000,7 @@ async fn handle_turn_with_runtime_persists_fast_lane_tool_batch_event_for_mixed_
                 ),
             ],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("unused".to_owned()),
     );
@@ -7131,6 +7148,7 @@ async fn handle_turn_with_runtime_fast_lane_batch_persist_failure_surfaces_runti
                 ),
             ],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("unused".to_owned()),
     )
@@ -7217,6 +7235,7 @@ async fn handle_turn_with_runtime_honors_configured_tool_result_summary_limit_on
                 "call-safe-limit",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("unused".to_owned()),
     );
@@ -7292,6 +7311,7 @@ async fn handle_turn_with_runtime_safe_lane_honors_configured_tool_step_budget()
                 ),
             ],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("unused".to_owned()),
     );
@@ -7418,6 +7438,7 @@ async fn handle_turn_with_runtime_safe_lane_does_not_parallelize_fast_lane_batch
                 ),
             ],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("unused".to_owned()),
     );
@@ -7489,6 +7510,7 @@ async fn handle_turn_with_runtime_safe_lane_plan_path_bypasses_turn_step_limit()
                 ),
             ],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("unused".to_owned()),
     );
@@ -7534,6 +7556,7 @@ async fn handle_turn_with_runtime_safe_lane_plan_persists_runtime_events_when_en
                 "call-safe-events-1",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("unused".to_owned()),
     );
@@ -7659,6 +7682,7 @@ async fn handle_turn_with_runtime_safe_lane_plan_skips_runtime_events_when_disab
                 "call-safe-events-off-1",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("unused".to_owned()),
     );
@@ -7717,6 +7741,7 @@ async fn handle_turn_with_runtime_safe_lane_plan_emits_kernel_runtime_audit_even
                 "call-safe-audit-on-1",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("unused".to_owned()),
     );
@@ -7807,6 +7832,7 @@ async fn handle_turn_with_runtime_safe_lane_plan_does_not_emit_kernel_runtime_au
                 "call-safe-audit-off-1",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("unused".to_owned()),
     );
@@ -7931,6 +7957,7 @@ async fn handle_turn_with_runtime_safe_lane_plan_replans_after_transient_tool_fa
                 "call-safe-replan-1",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("unused".to_owned()),
     );
@@ -8143,6 +8170,7 @@ async fn handle_turn_with_runtime_safe_lane_backpressure_guard_blocks_retry_stor
                 "call-safe-backpressure-1",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("unused".to_owned()),
     );
@@ -8284,6 +8312,7 @@ async fn handle_turn_with_runtime_safe_lane_verify_non_retryable_failure_skips_r
                 "call-safe-verify-nonretryable-1",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("unused".to_owned()),
     );
@@ -8509,6 +8538,7 @@ async fn handle_turn_with_runtime_safe_lane_session_governor_forces_no_replan() 
                 "call-safe-governor-1",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("unused".to_owned()),
     );
@@ -8754,6 +8784,7 @@ async fn handle_turn_with_runtime_safe_lane_session_governor_requests_extended_h
                 "call-safe-governor-window-1",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("unused".to_owned()),
     );
@@ -8965,6 +8996,7 @@ async fn handle_turn_with_runtime_safe_lane_session_governor_does_not_reuse_sqli
                 "call-safe-governor-fallback-1",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("unused".to_owned()),
     );
@@ -9135,6 +9167,7 @@ async fn handle_turn_with_runtime_safe_lane_replans_failed_subgraph_only() {
                 ),
             ],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("unused".to_owned()),
     );
@@ -9189,6 +9222,7 @@ async fn handle_turn_with_runtime_tool_denial_returns_inline_reply_even_in_propa
                 "call-denied",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("MODEL_DENIED_REPLY".to_owned()),
     );
@@ -9247,6 +9281,7 @@ async fn handle_turn_with_runtime_tool_error_returns_natural_language_fallback()
                 "call-tool-error",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("MODEL_ERROR_REPLY".to_owned()),
     );
@@ -9303,6 +9338,7 @@ async fn handle_turn_with_runtime_tool_failure_completion_error_uses_raw_reason_
                 "call-denied-fallback",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Err("completion_unavailable".to_owned()),
     );
@@ -9376,6 +9412,7 @@ fn turn_engine_no_tool_intents_returns_final_text() {
         assistant_text: "Hello!".to_owned(),
         tool_intents: vec![],
         raw_meta: serde_json::Value::Null,
+        usage: Default::default(),
     };
     let result = engine.validate_turn(&turn);
     match result {
@@ -9445,6 +9482,7 @@ fn provider_hidden_tool_denial_does_not_leak_name() {
             tool_call_id: "call-hidden".to_owned(),
         }],
         raw_meta: Value::Null,
+        usage: Default::default(),
     };
 
     let engine = TurnEngine::new(1);
@@ -9488,6 +9526,7 @@ fn turn_engine_unknown_tool_returns_tool_denied() {
             tool_call_id: "c1".to_owned(),
         }],
         raw_meta: serde_json::Value::Null,
+        usage: Default::default(),
     };
     let result = engine.validate_turn(&turn);
     match result {
@@ -9511,6 +9550,7 @@ fn turn_engine_unknown_tool_exposes_structured_policy_denial() {
             tool_call_id: "c1".to_owned(),
         }],
         raw_meta: serde_json::Value::Null,
+        usage: Default::default(),
     };
 
     let result = engine.validate_turn(&turn);
@@ -9537,6 +9577,7 @@ fn turn_engine_exceeding_max_steps_returns_denied() {
         assistant_text: "".to_owned(),
         tool_intents: vec![intent.clone(), intent],
         raw_meta: serde_json::Value::Null,
+        usage: Default::default(),
     };
     let result = engine.validate_turn(&turn);
     match result {
@@ -9562,6 +9603,7 @@ fn turn_engine_known_tool_validates_to_execution_required() {
             "c1",
         )],
         raw_meta: serde_json::Value::Null,
+        usage: Default::default(),
     };
     let result = engine.validate_turn(&turn);
     match result {
@@ -9588,6 +9630,7 @@ fn turn_engine_denies_known_tool_outside_restricted_view() {
             tool_call_id: "c-hidden".to_owned(),
         }],
         raw_meta: serde_json::Value::Null,
+        usage: Default::default(),
     };
 
     let result = engine.evaluate_turn_in_view(
@@ -9663,6 +9706,7 @@ async fn turn_engine_routes_app_tools_through_dispatcher() {
             "call-app-1",
         )],
         raw_meta: Value::Null,
+        usage: Default::default(),
     };
     let session_context = crate::conversation::SessionContext::root_with_tool_view(
         "root-session",
@@ -9765,6 +9809,7 @@ async fn turn_engine_routes_direct_binding_to_app_dispatcher() {
             "call-app-direct",
         )],
         raw_meta: Value::Null,
+        usage: Default::default(),
     };
     let session_context = crate::conversation::SessionContext::root_with_tool_view(
         "root-session",
@@ -9896,6 +9941,7 @@ async fn turn_engine_fails_closed_before_governed_approval_for_later_app_intent(
             ),
         ],
         raw_meta: Value::Null,
+        usage: Default::default(),
     };
     let session_context = crate::conversation::SessionContext::root_with_tool_view(
         "root-session",
@@ -9994,6 +10040,7 @@ async fn turn_engine_fails_closed_before_kernel_binding_error_for_later_core_int
             ),
         ],
         raw_meta: Value::Null,
+        usage: Default::default(),
     };
     let session_context = crate::conversation::SessionContext::root_with_tool_view(
         "root-session",
@@ -10104,6 +10151,7 @@ async fn turn_engine_parallel_safe_app_batch_executes_concurrently_in_source_ord
             ),
         ],
         raw_meta: Value::Null,
+        usage: Default::default(),
     };
     let session_context = crate::conversation::SessionContext::root_with_tool_view(
         "root-session",
@@ -10249,6 +10297,7 @@ async fn turn_engine_parallel_safe_app_batch_returns_failure_without_waiting_for
             ),
         ],
         raw_meta: Value::Null,
+        usage: Default::default(),
     };
     let session_context = crate::conversation::SessionContext::root_with_tool_view(
         "root-session",
@@ -10443,6 +10492,7 @@ async fn turn_engine_mixed_batch_parallelizes_parallel_safe_segments_without_cro
             ),
         ],
         raw_meta: Value::Null,
+        usage: Default::default(),
     };
     let session_context = crate::conversation::SessionContext::root_with_tool_view(
         "root-session",
@@ -10862,6 +10912,7 @@ async fn turn_engine_tool_execution_error_is_marked_retryable() {
             "c1",
         )],
         raw_meta: serde_json::Value::Null,
+        usage: Default::default(),
     };
 
     let result = engine.execute_turn(&turn, &ctx).await;
@@ -11010,6 +11061,7 @@ async fn turn_engine_executes_known_tool_with_kernel() {
             "c1",
         )],
         raw_meta: serde_json::Value::Null,
+        usage: Default::default(),
     };
 
     let result = engine.execute_turn(&turn, &ctx).await;
@@ -11131,6 +11183,7 @@ async fn turn_engine_truncates_oversized_tool_payload_summary() {
             "c-large",
         )],
         raw_meta: serde_json::Value::Null,
+        usage: Default::default(),
     };
 
     let result = engine.execute_turn(&turn, &ctx).await;
@@ -12028,6 +12081,7 @@ async fn turn_engine_keeps_external_skill_invoke_payloads_intact() {
             "c-skill",
         )],
         raw_meta: serde_json::Value::Null,
+        usage: Default::default(),
     };
     let result = engine
         .execute_turn_in_context(
@@ -12166,6 +12220,7 @@ async fn turn_engine_injects_browser_scope_into_kernel_request() {
             tool_call_id: "c-browser".to_owned(),
         }],
         raw_meta: serde_json::Value::Null,
+        usage: Default::default(),
     };
 
     let result = engine
@@ -12270,6 +12325,7 @@ async fn turn_engine_execute_turn_denied_without_capability() {
             "c1",
         )],
         raw_meta: serde_json::Value::Null,
+        usage: Default::default(),
     };
 
     let result = engine.execute_turn(&turn, &ctx).await;
@@ -15716,6 +15772,7 @@ async fn handle_turn_with_runtime_child_session_injects_runtime_narrowing_into_k
             "call-child-runtime",
         )],
         raw_meta: Value::Null,
+        usage: Default::default(),
     };
 
     let result = TurnEngine::new(5)
@@ -15958,6 +16015,7 @@ async fn handle_turn_with_runtime_executes_session_tools_via_default_dispatcher(
                 "call-session-tools",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("unused".to_owned()),
     );
@@ -16045,6 +16103,7 @@ async fn handle_turn_with_runtime_executes_sessions_send_via_default_dispatcher(
                 "call-sessions-send",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("unused".to_owned()),
     );
@@ -16147,11 +16206,13 @@ async fn handle_turn_with_runtime_requires_approval_before_delegate_execution() 
                     "call-delegate-parent",
                 )],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
             Ok(ProviderTurn {
                 assistant_text: "Child final output".to_owned(),
                 tool_intents: vec![],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
         ],
         vec![],
@@ -16248,11 +16309,13 @@ async fn handle_turn_with_runtime_executes_delegate_via_coordinator() {
                     "call-delegate-parent",
                 )],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
             Ok(ProviderTurn {
                 assistant_text: "Child final output".to_owned(),
                 tool_intents: vec![],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
         ],
         vec![],
@@ -16385,11 +16448,13 @@ async fn handle_turn_with_runtime_kernel_delegate_calls_subagent_lifecycle_hooks
                     "call-delegate-parent",
                 )],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
             Ok(ProviderTurn {
                 assistant_text: "Child final output".to_owned(),
                 tool_intents: vec![],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
         ],
         vec![],
@@ -16489,6 +16554,7 @@ async fn handle_turn_with_runtime_delegate_rejects_spawn_when_prepare_subagent_s
                 "call-delegate-parent",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         })],
         vec![],
     )
@@ -16572,11 +16638,13 @@ async fn handle_turn_with_runtime_delegate_reports_end_hook_failure_after_child_
                     "call-delegate-parent",
                 )],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
             Ok(ProviderTurn {
                 assistant_text: "Child final output".to_owned(),
                 tool_intents: vec![],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
         ],
         vec![],
@@ -16705,11 +16773,13 @@ async fn handle_turn_with_runtime_approval_request_resolve_replays_delegate_for_
                     "call-approval-resolve",
                 )],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
             Ok(ProviderTurn {
                 assistant_text: "Child final output".to_owned(),
                 tool_intents: vec![],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
         ],
         vec![],
@@ -16848,11 +16918,13 @@ async fn handle_turn_with_runtime_approval_request_resolve_approve_always_reuses
                     "call-approval-resolve",
                 )],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
             Ok(ProviderTurn {
                 assistant_text: "approval resolved".to_owned(),
                 tool_intents: vec![],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
         ],
         vec![],
@@ -16912,11 +16984,13 @@ async fn handle_turn_with_runtime_approval_request_resolve_approve_always_reuses
                     "call-after-grant",
                 )],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
             Ok(ProviderTurn {
                 assistant_text: "granted child output".to_owned(),
                 tool_intents: vec![],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
         ],
         vec![],
@@ -17022,11 +17096,13 @@ async fn handle_turn_with_runtime_approval_request_resolve_deny_does_not_replay_
                     "call-approval-deny",
                 )],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
             Ok(ProviderTurn {
                 assistant_text: "denied".to_owned(),
                 tool_intents: vec![],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
         ],
         vec![],
@@ -17300,6 +17376,7 @@ async fn handle_turn_with_runtime_delegate_async_queue_failure_rolls_back_child_
                 "call-delegate-async-parent",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         })],
         vec![],
     )
@@ -17390,6 +17467,7 @@ async fn handle_turn_with_runtime_delegate_async_rejects_when_active_child_limit
                 "call-delegate-async-parent",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         })],
         vec![],
     )
@@ -17476,6 +17554,7 @@ async fn handle_turn_with_runtime_executes_delegate_async_via_coordinator_withou
                 "call-delegate-async-parent",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         })],
         vec![],
     )
@@ -17616,6 +17695,7 @@ async fn handle_turn_with_runtime_delegate_async_preserves_kernel_binding_in_spa
                 "call-delegate-async-parent",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         })],
         vec![],
     )
@@ -17714,6 +17794,7 @@ async fn handle_turn_with_runtime_delegate_async_spawn_failure_is_observable_aft
                 "call-delegate-async-parent",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         })],
         vec![],
     )
@@ -17834,6 +17915,7 @@ async fn handle_turn_with_runtime_kernel_delegate_async_spawn_failure_closes_lif
                     "call-delegate-async-parent",
                 )],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             })],
             vec![],
         )
@@ -17939,6 +18021,7 @@ async fn handle_turn_with_runtime_delegate_async_spawn_panic_is_observable_after
                 "call-delegate-async-parent",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         })],
         vec![],
     )
@@ -18065,6 +18148,7 @@ async fn handle_turn_with_runtime_delegate_async_spawn_failure_persistence_recov
                 "call-delegate-async-parent",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         })],
         vec![],
     )
@@ -18191,6 +18275,7 @@ async fn handle_turn_with_runtime_delegate_child_cannot_reenter_delegate_by_defa
                     "call-delegate-parent",
                 )],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
             Ok(ProviderTurn {
                 assistant_text: "Trying nested delegate.".to_owned(),
@@ -18204,6 +18289,7 @@ async fn handle_turn_with_runtime_delegate_child_cannot_reenter_delegate_by_defa
                     "call-delegate-child",
                 )],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
         ],
         vec![],
@@ -18281,6 +18367,7 @@ async fn handle_turn_with_runtime_delegate_child_cannot_reenter_delegate_async_b
                         "call-delegate-async-parent",
                     )],
                     raw_meta: Value::Null,
+                    usage: Default::default(),
                 }),
                 Ok(ProviderTurn {
                     assistant_text: "Trying nested async delegate.".to_owned(),
@@ -18294,6 +18381,7 @@ async fn handle_turn_with_runtime_delegate_child_cannot_reenter_delegate_async_b
                         "call-delegate-async-child",
                     )],
                     raw_meta: Value::Null,
+                    usage: Default::default(),
                 }),
             ],
             vec![],
@@ -18426,6 +18514,7 @@ async fn handle_turn_with_runtime_delegate_child_can_reenter_when_max_depth_allo
                     "call-root",
                 )],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
             Ok(ProviderTurn {
                 assistant_text: "Delegating from child.".to_owned(),
@@ -18440,11 +18529,13 @@ async fn handle_turn_with_runtime_delegate_child_can_reenter_when_max_depth_allo
                     "call-child",
                 )],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
             Ok(ProviderTurn {
                 assistant_text: "Grandchild final output".to_owned(),
                 tool_intents: vec![],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
         ],
         vec![],
@@ -18551,6 +18642,7 @@ async fn handle_turn_with_runtime_executes_session_wait_via_default_dispatcher()
                 "call-session-wait",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("unused".to_owned()),
     );
@@ -18626,6 +18718,7 @@ async fn handle_turn_with_runtime_safe_lane_executes_session_tools_via_default_d
                 "call-safe-session-tools",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("unused".to_owned()),
     );
@@ -18710,6 +18803,7 @@ async fn handle_turn_with_runtime_safe_lane_executes_sessions_send_via_default_d
                 "call-safe-sessions-send",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("unused".to_owned()),
     );
@@ -18809,6 +18903,7 @@ async fn handle_turn_with_runtime_safe_lane_executes_session_wait_via_default_di
                 "call-safe-session-wait",
             )],
             raw_meta: Value::Null,
+            usage: Default::default(),
         }),
         Ok("unused".to_owned()),
     );
@@ -19626,6 +19721,7 @@ async fn repair_turn_checkpoint_tail_with_runtime_recovers_discovery_followup_ch
                     "call-search-repair",
                 )],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
             Ok(ProviderTurn {
                 assistant_text: "Now I'll read the file.".to_owned(),
@@ -19637,6 +19733,7 @@ async fn repair_turn_checkpoint_tail_with_runtime_recovers_discovery_followup_ch
                     "call-invoke-repair",
                 )],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             }),
         ],
         vec![Ok(final_reply.to_owned())],
@@ -20819,6 +20916,7 @@ async fn handle_turn_with_runtime_persists_completed_compaction_checkpoint_when_
                 assistant_text: "fresh reply".to_owned(),
                 tool_intents: vec![],
                 raw_meta: Value::Null,
+                usage: Default::default(),
             })],
             vec![],
         )
@@ -20915,6 +21013,7 @@ async fn handle_turn_with_runtime_persists_failed_open_compaction_checkpoint_whe
             assistant_text: "assistant-reply-2".to_owned(),
             tool_intents: vec![],
             raw_meta: Value::Null,
+            usage: Default::default(),
         })],
         vec![],
     )
