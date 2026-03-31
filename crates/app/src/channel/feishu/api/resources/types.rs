@@ -185,6 +185,7 @@ pub struct FeishuBitableField {
     pub field_name: Option<String>,
     #[serde(rename = "type")]
     pub r#type: Option<i64>,
+    pub ui_type: Option<String>,
     pub property: Option<Value>,
 }
 
@@ -285,6 +286,7 @@ mod tests {
             "field_id": "fld_123",
             "field_name": "Status",
             "type": 3,
+            "ui_type": "SingleSelect",
             "property": {
                 "options": [{"name": "Open"}]
             }
@@ -294,6 +296,7 @@ mod tests {
         assert_eq!(field.field_id.as_deref(), Some("fld_123"));
         assert_eq!(field.field_name.as_deref(), Some("Status"));
         assert_eq!(field.r#type, Some(3));
+        assert_eq!(field.ui_type.as_deref(), Some("SingleSelect"));
         assert_eq!(field.property, Some(json!({"options": [{"name": "Open"}]})));
     }
 

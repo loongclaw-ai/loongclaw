@@ -4951,6 +4951,78 @@ mod tests {
             search["function"]["parameters"]["properties"]["sort"]["items"]["type"],
             "object"
         );
+        assert_eq!(
+            search["function"]["parameters"]["properties"]["automatic_fields"]["type"],
+            "boolean"
+        );
+    }
+
+    #[cfg(all(feature = "feishu-integration", feature = "channel-feishu"))]
+    #[test]
+    fn feishu_bitable_batch_record_tools_reject_more_than_500_items_before_network() {
+        let temp_dir = unique_feishu_tool_temp_dir("bitable-batch-limit");
+        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+        let sqlite_path = temp_dir.join("feishu.sqlite3");
+        let _store = seed_feishu_tool_grant(
+            &sqlite_path,
+            "u-token-batch-limit",
+            &["offline_access", "base:record:write"],
+        );
+        let config =
+            build_feishu_tool_runtime_config("http://127.0.0.1:9".to_owned(), &sqlite_path);
+
+        let create_records = (0..501)
+            .map(|index| json!({ "fields": { "Name": format!("row-{index}") } }))
+            .collect::<Vec<_>>();
+        let create_error = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "feishu.bitable.record.batch_create".to_owned(),
+                payload: json!({
+                    "app_token": "app_demo",
+                    "table_id": "tbl_demo",
+                    "records": create_records,
+                }),
+            },
+            &config,
+        )
+        .expect_err("tool should reject >500 batch create items");
+        assert!(create_error.contains("batch size must be <= 500"), "error={create_error}");
+
+        let update_records = (0..501)
+            .map(|index| {
+                json!({ "record_id": format!("rec_{index}"), "fields": { "Name": format!("row-{index}") } })
+            })
+            .collect::<Vec<_>>();
+        let update_error = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "feishu.bitable.record.batch_update".to_owned(),
+                payload: json!({
+                    "app_token": "app_demo",
+                    "table_id": "tbl_demo",
+                    "records": update_records,
+                }),
+            },
+            &config,
+        )
+        .expect_err("tool should reject >500 batch update items");
+        assert!(update_error.contains("batch size must be <= 500"), "error={update_error}");
+
+        let delete_records = (0..501)
+            .map(|index| format!("rec_{index}"))
+            .collect::<Vec<_>>();
+        let delete_error = execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "feishu.bitable.record.batch_delete".to_owned(),
+                payload: json!({
+                    "app_token": "app_demo",
+                    "table_id": "tbl_demo",
+                    "records": delete_records,
+                }),
+            },
+            &config,
+        )
+        .expect_err("tool should reject >500 batch delete items");
+        assert!(delete_error.contains("batch size must be <= 500"), "error={delete_error}");
     }
 
     #[cfg(feature = "feishu-integration")]

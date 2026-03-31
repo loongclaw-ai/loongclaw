@@ -1066,6 +1066,7 @@ struct FeishuBitableRecordSearchPayload {
     filter: Option<Value>,
     sort: Option<Value>,
     field_names: Option<Vec<String>>,
+    automatic_fields: Option<bool>,
     #[serde(default, rename = "_loongclaw")]
     internal: LoongclawInternalToolPayload,
 }
@@ -1854,6 +1855,10 @@ pub(super) fn feishu_provider_tool_definitions() -> Vec<Value> {
                         "type": "string"
                     },
                     "description": "Optional subset of field names to return."
+                },
+                "automatic_fields": {
+                    "type": "boolean",
+                    "description": "Whether to return automatic fields such as created_time and last_modified_time."
                 },
                 "page_size": {
                     "type": "integer",
@@ -3250,6 +3255,7 @@ fn execute_feishu_bitable_record_search_tool_with_config(
         filter: payload.filter,
         sort: payload.sort,
         field_names: payload.field_names,
+        automatic_fields: payload.automatic_fields,
     };
     let tool_name = request.tool_name;
 
@@ -3431,6 +3437,7 @@ fn execute_feishu_bitable_record_batch_create_tool_with_config(
         &payload.table_id,
     )?;
     let records = payload.records;
+    bitable::ensure_bitable_batch_limit("feishu.bitable.record.batch_create", records.len())?;
     let tool_name = request.tool_name;
 
     run_feishu_future(async move {
@@ -3484,6 +3491,7 @@ fn execute_feishu_bitable_record_batch_update_tool_with_config(
         &payload.table_id,
     )?;
     let records = payload.records;
+    bitable::ensure_bitable_batch_limit("feishu.bitable.record.batch_update", records.len())?;
     let tool_name = request.tool_name;
 
     run_feishu_future(async move {
@@ -3537,6 +3545,7 @@ fn execute_feishu_bitable_record_batch_delete_tool_with_config(
         &payload.table_id,
     )?;
     let records = payload.records;
+    bitable::ensure_bitable_batch_limit("feishu.bitable.record.batch_delete", records.len())?;
     let tool_name = request.tool_name;
 
     run_feishu_future(async move {
@@ -3668,7 +3677,12 @@ fn execute_feishu_bitable_field_list_tool_with_config(
             context.configured_account_label.as_str(),
             context.account_id.as_str(),
             &grant.principal,
-            json!({ "result": result }),
+            json!({
+                "fields": result.items,
+                "page_token": result.page_token,
+                "has_more": result.has_more,
+                "total": result.total,
+            }),
         ))
     })
 }
@@ -3923,7 +3937,12 @@ fn execute_feishu_bitable_view_list_tool_with_config(
             context.configured_account_label.as_str(),
             context.account_id.as_str(),
             &grant.principal,
-            json!({ "result": result }),
+            json!({
+                "views": result.items,
+                "page_token": result.page_token,
+                "has_more": result.has_more,
+                "total": result.total,
+            }),
         ))
     })
 }

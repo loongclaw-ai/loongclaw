@@ -18,6 +18,7 @@ pub struct BitableRecordSearchQuery {
     pub filter: Option<Value>,
     pub sort: Option<Value>,
     pub field_names: Option<Vec<String>>,
+    pub automatic_fields: Option<bool>,
 }
 
 impl BitableRecordSearchQuery {
@@ -45,6 +46,9 @@ impl BitableRecordSearchQuery {
         }
         if let Some(value) = self.field_names.as_ref() {
             body.insert("field_names".to_owned(), json!(value));
+        }
+        if let Some(value) = self.automatic_fields {
+            body.insert("automatic_fields".to_owned(), json!(value));
         }
         Value::Object(body)
     }
@@ -348,6 +352,7 @@ pub async fn batch_create_bitable_records(
     table_id: &str,
     records: Vec<Value>,
 ) -> CliResult<Value> {
+    ensure_bitable_batch_limit("feishu.bitable.record.batch_create", records.len())?;
     let path =
         format!("/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_create");
     let payload = client
@@ -368,6 +373,7 @@ pub async fn batch_update_bitable_records(
     table_id: &str,
     records: Vec<Value>,
 ) -> CliResult<Value> {
+    ensure_bitable_batch_limit("feishu.bitable.record.batch_update", records.len())?;
     let path =
         format!("/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_update");
     let payload = client
@@ -388,6 +394,7 @@ pub async fn batch_delete_bitable_records(
     table_id: &str,
     records: Vec<String>,
 ) -> CliResult<Value> {
+    ensure_bitable_batch_limit("feishu.bitable.record.batch_delete", records.len())?;
     let path =
         format!("/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_delete");
     let payload = client
@@ -691,6 +698,16 @@ fn create_record_query_pairs() -> Vec<(String, String)> {
     vec![("user_id_type".to_owned(), "open_id".to_owned())]
 }
 
+pub fn ensure_bitable_batch_limit(tool_name: &str, actual: usize) -> CliResult<()> {
+    if actual <= 500 {
+        return Ok(());
+    }
+
+    Err(format!(
+        "{tool_name}: batch size must be <= 500, got {actual}"
+    ))
+}
+
 #[allow(dead_code)]
 fn omit_field_property_for_unsupported_types(
     field_type: i64,
@@ -824,6 +841,7 @@ mod tests {
             filter: None,
             sort: None,
             field_names: None,
+            automatic_fields: None,
         };
 
         assert_eq!(
@@ -854,6 +872,24 @@ mod tests {
 
         let body = query.request_body();
         assert_eq!(body["filter"]["conditions"][0]["value"], json!([]));
+    }
+
+    #[test]
+    fn search_request_body_includes_automatic_fields_when_requested() {
+        let query = BitableRecordSearchQuery {
+            automatic_fields: Some(true),
+            ..BitableRecordSearchQuery::default()
+        };
+
+        let body = query.request_body();
+        assert_eq!(body["automatic_fields"], json!(true));
+    }
+
+    #[test]
+    fn ensure_bitable_batch_limit_rejects_more_than_500_items() {
+        let error = ensure_bitable_batch_limit("feishu.bitable.record.batch_create", 501)
+            .expect_err("batch limit should reject values above 500");
+        assert!(error.contains("batch size must be <= 500"), "error={error}");
     }
 
     #[test]

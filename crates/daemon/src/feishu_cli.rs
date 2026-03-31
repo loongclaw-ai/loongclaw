@@ -531,6 +531,8 @@ pub struct FeishuBitableSearchRecordsArgs {
     #[arg(long)]
     pub sort: Option<String>,
     #[arg(long)]
+    pub automatic_fields: bool,
+    #[arg(long)]
     pub page_size: Option<usize>,
     #[arg(long)]
     pub page_token: Option<String>,
@@ -2074,6 +2076,12 @@ pub async fn execute_feishu_bitable_search_records(
     args: &FeishuBitableSearchRecordsArgs,
 ) -> CliResult<Value> {
     let (context, grant) = load_context_and_fresh_grant(&args.grant).await?;
+    ensure_grant_has_any_scope(
+        &grant,
+        context.resolved.configured_account_id.as_str(),
+        &["base:record:retrieve"],
+        "loongclaw feishu bitable search-records",
+    )?;
     let client = context.build_client()?;
     let filter = args
         .filter
@@ -2099,6 +2107,7 @@ pub async fn execute_feishu_bitable_search_records(
             filter,
             sort,
             field_names: (!args.field_names.is_empty()).then(|| args.field_names.clone()),
+            automatic_fields: args.automatic_fields.then_some(true),
         },
     )
     .await?;
@@ -2371,7 +2380,10 @@ pub async fn execute_feishu_bitable_list_fields(
         "account_id": context.account_id(),
         "configured_account": context.resolved.configured_account_label,
         "principal": grant.principal,
-        "result": result,
+        "fields": result.items,
+        "page_token": result.page_token,
+        "has_more": result.has_more,
+        "total": result.total,
     }))
 }
 
@@ -2531,7 +2543,10 @@ pub async fn execute_feishu_bitable_list_views(
         "account_id": context.account_id(),
         "configured_account": context.resolved.configured_account_label,
         "principal": grant.principal,
-        "result": result,
+        "views": result.items,
+        "page_token": result.page_token,
+        "has_more": result.has_more,
+        "total": result.total,
     }))
 }
 
@@ -4253,9 +4268,6 @@ fn render_bitable_field_text(payload: &Value) -> CliResult<String> {
 }
 
 fn render_bitable_field_list_text(payload: &Value) -> CliResult<String> {
-    let result = payload
-        .get("result")
-        .ok_or_else(|| "feishu bitable field list payload missing result".to_owned())?;
     let mut lines = vec![
         "feishu bitable list-fields".to_owned(),
         format!("account: {}", required_json_string(payload, "account_id")?),
@@ -4265,8 +4277,8 @@ fn render_bitable_field_list_text(payload: &Value) -> CliResult<String> {
     }
     lines.push(format!(
         "fields: {}",
-        result
-            .get("items")
+        payload
+            .get("fields")
             .and_then(Value::as_array)
             .map_or(0, std::vec::Vec::len)
     ));
@@ -4325,9 +4337,6 @@ fn render_bitable_view_text(payload: &Value) -> CliResult<String> {
 }
 
 fn render_bitable_view_list_text(payload: &Value) -> CliResult<String> {
-    let result = payload
-        .get("result")
-        .ok_or_else(|| "feishu bitable view list payload missing result".to_owned())?;
     let mut lines = vec![
         "feishu bitable list-views".to_owned(),
         format!("account: {}", required_json_string(payload, "account_id")?),
@@ -4337,8 +4346,8 @@ fn render_bitable_view_list_text(payload: &Value) -> CliResult<String> {
     }
     lines.push(format!(
         "views: {}",
-        result
-            .get("items")
+        payload
+            .get("views")
             .and_then(Value::as_array)
             .map_or(0, std::vec::Vec::len)
     ));
