@@ -4663,7 +4663,7 @@ fn schema_descriptor(value: &Value) -> Value {
 fn sha256_hex(input: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(input.as_bytes());
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 fn normalize_ratio_tolerance(value: f64) -> f64 {

@@ -65,6 +65,7 @@ loongclaw-contracts = { path = "../contracts" }
 loongclaw-spec = { path = "../spec" }
 serde.workspace = true
 serde_json.workspace = true
+hex.workspace = true
 reqwest.workspace = true
 rusqlite.workspace = true
 tokio.workspace = true

@@ -839,7 +839,7 @@ fn verify_feishu_signature(
     hasher.update(nonce.as_bytes());
     hasher.update(encrypt_key.as_bytes());
     hasher.update(raw_body.as_bytes());
-    let expected = format!("{:x}", hasher.finalize());
+    let expected = hex::encode(hasher.finalize());
 
     if !timing_safe_eq(expected.as_bytes(), signature.as_bytes()) {
         return Err((
@@ -1466,7 +1466,7 @@ mod tests {
         hasher.update(nonce.as_bytes());
         hasher.update(encrypt_key.as_bytes());
         hasher.update(body.as_bytes());
-        let signature = format!("{:x}", hasher.finalize());
+        let signature = hex::encode(hasher.finalize());
 
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -1542,7 +1542,7 @@ mod tests {
         hasher.update(nonce.as_bytes());
         hasher.update(encrypt_key.as_bytes());
         hasher.update(body.as_bytes());
-        let signature = format!("{:x}", hasher.finalize());
+        let signature = hex::encode(hasher.finalize());
 
         let mut headers = HeaderMap::new();
         headers.insert(

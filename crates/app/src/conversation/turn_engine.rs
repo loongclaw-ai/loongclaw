@@ -900,7 +900,7 @@ fn governed_approval_request_id(
     hasher.update(intent.tool_call_id.as_bytes());
     hasher.update([0]);
     hasher.update(tool_name.as_bytes());
-    format!("apr_{:x}", hasher.finalize())
+    format!("apr_{}", hex::encode(hasher.finalize()))
 }
 
 fn tool_is_session_consent_exempt(tool_name: &str) -> bool {

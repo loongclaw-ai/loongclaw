@@ -2680,7 +2680,7 @@ fn runtime_snapshot_tool_digest(
         "capability_snapshot": capability_snapshot,
     }))
     .map_err(|error| format!("serialize runtime snapshot tool digest input failed: {error}"))?;
-    Ok(format!("{:x}", Sha256::digest(serialized)))
+    Ok(hex::encode(Sha256::digest(serialized)))
 }
 
 fn json_array_len(value: Option<&Value>) -> usize {
@@ -3345,7 +3345,7 @@ fn runtime_snapshot_artifact_lineage(
     }))
     .map_err(|error| format!("serialize runtime snapshot lineage input failed: {error}"))?;
     Ok(RuntimeSnapshotArtifactLineage {
-        snapshot_id: format!("{:x}", Sha256::digest(serialized)),
+        snapshot_id: hex::encode(Sha256::digest(serialized)),
         created_at: metadata.created_at.clone(),
         label: metadata.label.clone(),
         experiment_id: metadata.experiment_id.clone(),

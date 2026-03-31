@@ -1434,13 +1434,13 @@ fn sign_tool_lease(encoded_claims: &str) -> String {
     hasher.update(b":");
     hasher.update(encoded_claims.as_bytes());
     let digest = hasher.finalize();
-    format!("{digest:x}")
+    hex::encode(digest)
 }
 
 fn tool_catalog_digest() -> String {
     let payload = serde_json::to_vec(&catalog::all_tool_catalog()).unwrap_or_default();
     let digest = Sha256::digest(payload);
-    format!("{digest:x}")
+    hex::encode(digest)
 }
 
 fn tool_lease_secret() -> &'static str {
@@ -1460,7 +1460,7 @@ fn tool_lease_secret() -> &'static str {
             random_state.build_hasher().finish()
         );
         let digest = Sha256::digest(seed.as_bytes());
-        format!("{digest:x}")
+        hex::encode(digest)
     })
 }
 

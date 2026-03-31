@@ -1114,8 +1114,8 @@ fn persisted_visible_turns(
 
 fn test_turn_checkpoint_identity(user_input: &str, assistant_reply: &str) -> Value {
     json!({
-        "user_input_sha256": format!("{:x}", Sha256::digest(user_input.as_bytes())),
-        "assistant_reply_sha256": format!("{:x}", Sha256::digest(assistant_reply.as_bytes())),
+        "user_input_sha256": hex::encode(Sha256::digest(user_input.as_bytes())),
+        "assistant_reply_sha256": hex::encode(Sha256::digest(assistant_reply.as_bytes())),
         "user_input_chars": user_input.chars().count(),
         "assistant_reply_chars": assistant_reply.chars().count(),
     })
@@ -1124,7 +1124,7 @@ fn test_turn_checkpoint_identity(user_input: &str, assistant_reply: &str) -> Val
 fn test_turn_preparation_context_fingerprint(messages: &[Value]) -> String {
     let serialized =
         serde_json::to_vec(messages).expect("serializing test preparation messages should work");
-    format!("{:x}", Sha256::digest(serialized))
+    hex::encode(Sha256::digest(serialized))
 }
 
 fn unique_memory_sqlite_path(suffix: &str) -> String {

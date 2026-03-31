@@ -515,7 +515,7 @@ pub(super) fn execute_external_skills_fetch_tool_with_config(
         )
     })?;
 
-    let sha256 = format!("{:x}", Sha256::digest(&body));
+    let sha256 = hex::encode(Sha256::digest(&body));
 
     Ok(ToolCoreOutcome {
         status: "ok".to_owned(),
@@ -622,7 +622,7 @@ pub(super) fn execute_external_skills_install_tool_with_config(
                     installed_skill_md_path.display()
                 )
             })?;
-            let digest = format!("{:x}", Sha256::digest(bundled.instructions.as_bytes()));
+            let digest = hex::encode(Sha256::digest(bundled.instructions.as_bytes()));
             incoming_cleanup.disarm();
             (
                 skill_id,
@@ -707,7 +707,7 @@ pub(super) fn execute_external_skills_install_tool_with_config(
                         installed_skill_md_path.display()
                     )
                 })?;
-            let digest = format!("{:x}", Sha256::digest(installed_skill_markdown.as_bytes()));
+            let digest = hex::encode(Sha256::digest(installed_skill_markdown.as_bytes()));
             incoming_cleanup.disarm();
             (
                 skill_id,
@@ -2265,7 +2265,7 @@ fn build_discovered_skill_entry(
         source_kind,
         source_path,
         skill_md_path,
-        sha256: format!("{:x}", Sha256::digest(skill_markdown.as_bytes())),
+        sha256: hex::encode(Sha256::digest(skill_markdown.as_bytes())),
         active,
         install_path,
         model_visibility: frontmatter.model_visibility,
@@ -3261,7 +3261,7 @@ fn rehydrate_installed_skill_entry(
     entry.display_name =
         derive_skill_display_name(skill_markdown.as_str(), entry.skill_id.as_str());
     entry.summary = derive_skill_summary(skill_markdown.as_str());
-    entry.sha256 = format!("{:x}", Sha256::digest(skill_markdown.as_bytes()));
+    entry.sha256 = hex::encode(Sha256::digest(skill_markdown.as_bytes()));
     Ok(entry)
 }
 
