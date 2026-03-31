@@ -1,33 +1,5 @@
 #[cfg(feature = "channel-telegram")]
 use std::time::Duration;
-#[cfg(any(
-    feature = "channel-telegram",
-    feature = "channel-discord",
-    feature = "channel-dingtalk",
-    feature = "channel-email",
-    feature = "channel-feishu",
-    feature = "channel-google-chat",
-    feature = "channel-webhook",
-    feature = "channel-nostr",
-    feature = "channel-line",
-    feature = "channel-matrix",
-    feature = "channel-mattermost",
-    feature = "channel-nextcloud-talk",
-    feature = "channel-signal",
-    feature = "channel-twitch",
-    feature = "channel-slack",
-    feature = "channel-synology-chat",
-    feature = "channel-irc",
-    feature = "channel-teams",
-    feature = "channel-wecom",
-    feature = "channel-whatsapp",
-    feature = "channel-imessage",
-))]
-use std::{
-    future::Future,
-    pin::Pin,
-    time::{SystemTime, UNIX_EPOCH},
-};
 use std::{path::PathBuf, sync::Arc};
 
 use tokio::sync::Notify;
@@ -215,8 +187,8 @@ use super::nextcloud_talk;
 #[cfg(feature = "channel-nostr")]
 use super::nostr;
 use super::registry::{
-    CHANNEL_OPERATION_SERVE_ID, ChannelCommandFamilyDescriptor, FEISHU_COMMAND_FAMILY_DESCRIPTOR,
-    MATRIX_COMMAND_FAMILY_DESCRIPTOR, WECOM_COMMAND_FAMILY_DESCRIPTOR,
+    CHANNEL_OPERATION_SERVE_ID, FEISHU_COMMAND_FAMILY_DESCRIPTOR, MATRIX_COMMAND_FAMILY_DESCRIPTOR,
+    WECOM_COMMAND_FAMILY_DESCRIPTOR,
 };
 use super::runtime_state;
 use super::runtime_state::ChannelOperationRuntimeTracker;
@@ -250,8 +222,6 @@ use super::turn_feedback::ChannelTurnFeedbackCapture;
     feature = "channel-wecom",
 ))]
 use super::turn_feedback::ChannelTurnFeedbackPolicy;
-#[cfg(feature = "channel-twitch")]
-use super::twitch;
 #[cfg(feature = "channel-webhook")]
 use super::webhook;
 #[cfg(feature = "channel-wecom")]
@@ -261,10 +231,9 @@ use super::whatsapp;
 
 use super::runtime_state::ChannelOperationRuntime;
 use super::types::{
-    ChannelAdapter, ChannelDelivery, ChannelDeliveryFeishuCallback, ChannelDeliveryResource,
-    ChannelInboundMessage, ChannelOutboundDeliveryOptions, ChannelOutboundMessage,
-    ChannelOutboundTarget, ChannelOutboundTargetKind, ChannelPlatform, ChannelSendReceipt,
-    ChannelSession, ChannelStreamingMode, FeishuChannelSendRequest,
+    ChannelAdapter, ChannelDeliveryFeishuCallback, ChannelDeliveryResource, ChannelInboundMessage,
+    ChannelOutboundTargetKind, ChannelPlatform, ChannelSendReceipt, ChannelSession,
+    FeishuChannelSendRequest,
 };
 #[cfg(any(
     feature = "channel-telegram",
@@ -273,8 +242,8 @@ use super::types::{
     feature = "channel-wecom",
 ))]
 use super::types::{
-    ChannelCommandFuture, ChannelProcessFuture, ChannelResolvedAcpTurnHints,
-    KnownChannelSessionSendTarget, parse_known_channel_session_send_target, process_channel_batch,
+    ChannelCommandFuture, ChannelResolvedAcpTurnHints, KnownChannelSessionSendTarget,
+    parse_known_channel_session_send_target, process_channel_batch,
 };
 
 #[cfg(any(

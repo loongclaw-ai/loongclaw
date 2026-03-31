@@ -107,18 +107,10 @@ pub use tlon_command::run_tlon_send;
     feature = "channel-matrix",
     feature = "channel-wecom"
 ))]
-use turn_feedback::ChannelTurnFeedbackCapture;
-#[cfg(any(
-    feature = "channel-telegram",
-    feature = "channel-feishu",
-    feature = "channel-matrix",
-    feature = "channel-wecom"
-))]
 pub use turn_feedback::ChannelTurnFeedbackPolicy;
 
 mod types;
 pub use types::ChannelOutboundTargetKind as ChannelCatalogTargetKind;
-pub(crate) use types::ChannelSendReceipt;
 pub use types::{
     ChannelAdapter, ChannelDelivery, ChannelDeliveryFeishuCallback, ChannelDeliveryResource,
     ChannelInboundMessage, ChannelOutboundDeliveryOptions, ChannelOutboundMessage,
@@ -167,7 +159,7 @@ use dispatch::{
     build_feishu_command_context, build_telegram_command_context, channel_message_ingress_context,
     process_inbound_with_runtime_and_feedback, reload_channel_turn_config,
     render_channel_route_notice, validate_feishu_security_config, validate_matrix_security_config,
-    validate_telegram_security_config, validate_wecom_security_config,
+    validate_telegram_security_config,
 };
 pub use dispatch::{
     load_channel_operation_runtime_for_account_from_dir_for_test, run_background_channel_with_stop,
