@@ -206,6 +206,10 @@ mod tests {
         ids.iter().map(|value| value.to_string()).collect()
     }
 
+    fn btree_set(ids: &[&str]) -> std::collections::BTreeSet<String> {
+        ids.iter().map(|value| value.to_string()).collect()
+    }
+
     #[test]
     fn allowlist_allows_all_when_wildcard_present() {
         assert!(feishu_allowlist_allows_all(&set(&["oc_demo", "*"])));
@@ -221,6 +225,25 @@ mod tests {
         assert!(!feishu_allowlist_allows_chat(&exact_only, " "));
 
         let wildcard = set(&["*"]);
+        assert!(feishu_allowlist_allows_chat(&wildcard, "oc_other"));
+    }
+
+    /// Regression tests with BTreeSet to ensure container-agnostic behavior.
+    #[test]
+    fn btree_set_allowlist_allows_all_when_wildcard_present() {
+        assert!(feishu_allowlist_allows_all(&btree_set(&["oc_demo", "*"])));
+        assert!(feishu_allowlist_allows_all(&btree_set(&["  *  "])));
+        assert!(!feishu_allowlist_allows_all(&btree_set(&["oc_demo"])));
+    }
+
+    #[test]
+    fn btree_set_allowlist_allows_chat_for_exact_and_wildcard_matches() {
+        let exact_only = btree_set(&["oc_demo"]);
+        assert!(feishu_allowlist_allows_chat(&exact_only, "oc_demo"));
+        assert!(!feishu_allowlist_allows_chat(&exact_only, "oc_other"));
+        assert!(!feishu_allowlist_allows_chat(&exact_only, " "));
+
+        let wildcard = btree_set(&["*"]);
         assert!(feishu_allowlist_allows_chat(&wildcard, "oc_other"));
     }
 
