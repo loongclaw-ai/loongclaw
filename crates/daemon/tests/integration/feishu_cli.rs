@@ -1290,6 +1290,85 @@ async fn feishu_bitable_list_tables_requires_table_read_scope() {
 }
 
 #[tokio::test]
+async fn feishu_bitable_list_tables_returns_top_level_tables_page() {
+    let temp_dir = temp_feishu_cli_dir("bitable-list-tables-page");
+    let requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+    let state = MockServerState {
+        requests: requests.clone(),
+    };
+    let router = Router::new().route(
+        "/open-apis/bitable/v1/apps/app_demo/tables",
+        get({
+            let state = state.clone();
+            move |request| {
+                let state = state.clone();
+                async move {
+                    record_request(State(state), request).await;
+                    Json(json!({
+                        "code": 0,
+                        "data": {
+                            "items": [
+                                {
+                                    "table_id": "tbl_1",
+                                    "name": "Tasks",
+                                    "revision": 3
+                                }
+                            ],
+                            "has_more": true,
+                            "page_token": "page_next"
+                        }
+                    }))
+                }
+            }
+        }),
+    );
+    let (base_url, server) = spawn_mock_feishu_server(router).await;
+    let config_path = write_sample_feishu_config_with_base_url(&temp_dir, &base_url);
+    let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
+    let store = mvp::channel::feishu::api::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
+    let mut grant = sample_grant("feishu_main", "ou_123", "u-token", "r-token", now_s);
+    grant.scopes = mvp::channel::feishu::api::FeishuGrantScopeSet::from_scopes([
+        "offline_access",
+        "base:table:read",
+    ]);
+    store.save_grant(&grant).expect("seed list tables grant");
+
+    let payload = loongclaw_daemon::feishu_cli::execute_feishu_bitable_list_tables(
+        &loongclaw_daemon::feishu_cli::FeishuBitableListTablesArgs {
+            grant: loongclaw_daemon::feishu_cli::FeishuGrantArgs {
+                common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
+                    config: Some(config_path.display().to_string()),
+                    account: Some("feishu_main".to_owned()),
+                    json: true,
+                },
+                open_id: Some("ou_123".to_owned()),
+            },
+            app_token: "app_demo".to_owned(),
+            page_size: Some(20),
+            page_token: Some("page_current".to_owned()),
+        },
+    )
+    .await
+    .expect("execute list tables");
+
+    assert_eq!(payload["tables"].as_array().map(Vec::len), Some(1));
+    assert_eq!(payload["tables"][0]["table_id"], "tbl_1");
+    assert_eq!(payload["has_more"], true);
+    assert_eq!(payload["page_token"], "page_next");
+    assert!(payload.get("result").is_none());
+
+    let requests = requests.lock().await.clone();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].path, "/open-apis/bitable/v1/apps/app_demo/tables");
+    assert!(requests[0].query.as_deref().is_some_and(
+        |query| query.contains("page_size=20") && query.contains("page_token=page_current")
+    ));
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn feishu_bitable_app_get_fetches_expected_path() {
     let temp_dir = temp_feishu_cli_dir("bitable-app-get");
     let requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));

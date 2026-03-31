@@ -1805,7 +1805,9 @@ pub async fn execute_feishu_bitable_list_tables(
         "account_id": context.account_id(),
         "configured_account": context.resolved.configured_account_label,
         "principal": grant.principal,
-        "result": result,
+        "tables": result.items,
+        "has_more": result.has_more,
+        "page_token": result.page_token,
     }))
 }
 
@@ -3989,9 +3991,6 @@ fn render_calendar_freebusy_text(payload: &Value) -> CliResult<String> {
 }
 
 fn render_bitable_list_tables_text(payload: &Value) -> CliResult<String> {
-    let result = payload
-        .get("result")
-        .ok_or_else(|| "feishu bitable list payload missing result".to_owned())?;
     let mut lines = vec![
         "feishu bitable list-tables".to_owned(),
         format!("account: {}", required_json_string(payload, "account_id")?),
@@ -4002,21 +4001,21 @@ fn render_bitable_list_tables_text(payload: &Value) -> CliResult<String> {
     lines.extend([
         format!(
             "tables: {}",
-            result
-                .get("items")
+            payload
+                .get("tables")
                 .and_then(Value::as_array)
                 .map_or(0, std::vec::Vec::len)
         ),
         format!(
             "has_more: {}",
-            result
+            payload
                 .get("has_more")
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
         ),
         format!(
             "page_token: {}",
-            result
+            payload
                 .get("page_token")
                 .and_then(Value::as_str)
                 .unwrap_or("-")

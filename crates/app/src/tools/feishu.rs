@@ -2804,7 +2804,9 @@ fn execute_feishu_bitable_list_tool_with_config(
             context.account_id.as_str(),
             &grant.principal,
             json!({
-                "result": result,
+                "tables": result.items,
+                "has_more": result.has_more,
+                "page_token": result.page_token,
             }),
         ))
     })
