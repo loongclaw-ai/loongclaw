@@ -2833,7 +2833,7 @@ async fn execute_spec_enriches_plugin_bridge_metadata_and_emits_bridge_execution
 }
 
 #[tokio::test]
-async fn execute_spec_wasm_component_bridge_executes_when_runtime_enabled() {
+async fn execute_spec_wasm_component_bridge_exchanges_request_output_when_runtime_enabled() {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let unique = SystemTime::now()
@@ -2843,7 +2843,35 @@ async fn execute_spec_wasm_component_bridge_executes_when_runtime_enabled() {
     let plugin_root = std::env::temp_dir().join(format!("loongclaw-wasm-runtime-run-{unique}"));
     fs::create_dir_all(&plugin_root).expect("create plugin root");
 
-    let wasm_bytes = wat::parse_str(r#"(module (func (export "run")))"#).expect("compile wasm");
+    let wasm_bytes = wat::parse_str(
+        r#"
+            (module
+              (import "loongclaw" "input_len" (func $input_len (result i32)))
+              (import "loongclaw" "read_input" (func $read_input (param i32 i32) (result i32)))
+              (import "loongclaw" "write_output" (func $write_output (param i32 i32) (result i32)))
+              (import "loongclaw" "log" (func $log (param i32 i32) (result i32)))
+              (func (export "run") (result i32)
+                (local $input_len i32)
+                i32.const 0
+                i32.const 5
+                call $log
+                drop
+                call $input_len
+                local.set $input_len
+                i32.const 32
+                local.get $input_len
+                call $read_input
+                drop
+                i32.const 32
+                local.get $input_len
+                call $write_output
+                drop
+                i32.const 0)
+              (memory (export "memory") 1)
+              (data (i32.const 0) "hello"))
+        "#,
+    )
+    .expect("compile wasm");
     let digest = Sha256::digest(&wasm_bytes);
     let digest_hex = hex_lower(&digest);
 
@@ -2919,6 +2947,7 @@ async fn execute_spec_wasm_component_bridge_executes_when_runtime_enabled() {
                     execute_wasm_component: true,
                     allowed_path_prefixes: vec![plugin_root.display().to_string()],
                     max_component_bytes: Some(128 * 1024),
+                    max_output_bytes: None,
                     fuel_limit: Some(200_000),
                     bridge_circuit_breaker: ConnectorCircuitBreakerPolicy::default(),
                     timeout_ms: None,
@@ -2960,6 +2989,15 @@ async fn execute_spec_wasm_component_bridge_executes_when_runtime_enabled() {
     };
 
     let report = execute_spec(&spec, true).await;
+    let expected_request = json!({
+        "provider_id": "wasm-runtime-provider",
+        "channel_id": "primary",
+        "operation": "invoke",
+        "payload": {
+            "input": "ping",
+        },
+    });
+
     assert_eq!(report.operation_kind, "connector_legacy");
     assert_eq!(report.outcome["outcome"]["status"], "ok");
     assert_eq!(
@@ -2973,6 +3011,26 @@ async fn execute_spec_wasm_component_bridge_executes_when_runtime_enabled() {
     assert_eq!(
         report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["export"],
         "run"
+    );
+    assert_eq!(
+        report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["host_abi_enabled"],
+        true
+    );
+    assert_eq!(
+        report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["entrypoint_signature"],
+        "() -> i32"
+    );
+    assert_eq!(
+        report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["guest_exit_code"],
+        0
+    );
+    assert_eq!(
+        report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["guest_logs"],
+        json!(["hello"])
+    );
+    assert_eq!(
+        report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["output_json"],
+        expected_request
     );
     assert_eq!(
         report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["fuel_limit"],
@@ -3153,6 +3211,7 @@ async fn execute_spec_wasm_component_bridge_executes_with_timeout_guard_and_no_c
                     execute_wasm_component: true,
                     allowed_path_prefixes: vec![plugin_root.display().to_string()],
                     max_component_bytes: Some(128 * 1024),
+                    max_output_bytes: None,
                     fuel_limit: Some(50_000),
                     timeout_ms: Some(250),
                 },
@@ -3307,6 +3366,7 @@ async fn execute_spec_wasm_component_bridge_times_out_and_reports_timeout_eviden
                     execute_wasm_component: true,
                     allowed_path_prefixes: vec![plugin_root.display().to_string()],
                     max_component_bytes: Some(128 * 1024),
+                    max_output_bytes: None,
                     fuel_limit: None,
                     timeout_ms: Some(100),
                 },
@@ -3467,6 +3527,7 @@ async fn execute_spec_wasm_component_bridge_blocks_when_component_sha256_mismatc
                     execute_wasm_component: true,
                     allowed_path_prefixes: vec![plugin_root.display().to_string()],
                     max_component_bytes: Some(128 * 1024),
+                    max_output_bytes: None,
                     fuel_limit: Some(200_000),
                     bridge_circuit_breaker: ConnectorCircuitBreakerPolicy::default(),
                     timeout_ms: None,
@@ -3609,6 +3670,7 @@ async fn execute_spec_wasm_component_bridge_blocks_when_metadata_pin_conflicts_w
                     execute_wasm_component: true,
                     allowed_path_prefixes: vec![plugin_root.display().to_string()],
                     max_component_bytes: Some(128 * 1024),
+                    max_output_bytes: None,
                     fuel_limit: Some(200_000),
                     bridge_circuit_breaker: ConnectorCircuitBreakerPolicy::default(),
                     timeout_ms: None,
@@ -3753,6 +3815,7 @@ async fn execute_spec_wasm_component_bridge_blocks_when_hash_pin_required_but_mi
                     execute_wasm_component: true,
                     allowed_path_prefixes: vec![plugin_root.display().to_string()],
                     max_component_bytes: Some(128 * 1024),
+                    max_output_bytes: None,
                     fuel_limit: Some(200_000),
                     bridge_circuit_breaker: ConnectorCircuitBreakerPolicy::default(),
                     timeout_ms: None,
@@ -3899,6 +3962,7 @@ async fn execute_spec_wasm_component_bridge_blocks_artifact_outside_runtime_pref
                     execute_wasm_component: true,
                     allowed_path_prefixes: vec![disallowed_root.display().to_string()],
                     max_component_bytes: Some(128 * 1024),
+                    max_output_bytes: None,
                     fuel_limit: Some(100_000),
                     bridge_circuit_breaker: ConnectorCircuitBreakerPolicy::default(),
                     timeout_ms: None,
@@ -4049,6 +4113,7 @@ async fn execute_spec_wasm_component_bridge_blocks_symlink_escape_under_allowed_
                     execute_wasm_component: true,
                     allowed_path_prefixes: vec![plugin_root.display().to_string()],
                     max_component_bytes: Some(128 * 1024),
+                    max_output_bytes: None,
                     fuel_limit: Some(100_000),
                     bridge_circuit_breaker: ConnectorCircuitBreakerPolicy::default(),
                     timeout_ms: None,
@@ -4190,6 +4255,7 @@ async fn execute_spec_wasm_component_bridge_blocks_non_regular_artifact_path() {
                     execute_wasm_component: true,
                     allowed_path_prefixes: vec![plugin_root.display().to_string()],
                     max_component_bytes: Some(128 * 1024),
+                    max_output_bytes: None,
                     fuel_limit: Some(100_000),
                     bridge_circuit_breaker: ConnectorCircuitBreakerPolicy::default(),
                     timeout_ms: None,
@@ -4332,6 +4398,7 @@ async fn execute_spec_wasm_component_bridge_blocks_when_module_size_exceeds_runt
                     execute_wasm_component: true,
                     allowed_path_prefixes: vec![plugin_root.display().to_string()],
                     max_component_bytes: Some(8),
+                    max_output_bytes: None,
                     fuel_limit: Some(100_000),
                     bridge_circuit_breaker: ConnectorCircuitBreakerPolicy::default(),
                     timeout_ms: None,
@@ -4442,6 +4509,7 @@ async fn execute_spec_blocks_when_wasm_runtime_enabled_without_allowed_prefixes(
                     execute_wasm_component: true,
                     allowed_path_prefixes: Vec::new(),
                     max_component_bytes: Some(1024),
+                    max_output_bytes: None,
                     fuel_limit: Some(10_000),
                     bridge_circuit_breaker: ConnectorCircuitBreakerPolicy::default(),
                     timeout_ms: None,

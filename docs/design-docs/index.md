@@ -95,7 +95,7 @@ All decisions from the research repository. Status reflects implementation reali
 | ID | Decision | Implementation Status |
 |----|----------|---------------------|
 | D-023 | WebAssembly Component Model for all plugins | Research (v0.2) |
-| D-024 | Wasmtime as runtime engine | Partial — wasmtime integrated |
+| D-024 | Wasmtime as runtime engine | Partial — wasmtime integrated with core-module host ABI v0 request/output/logging lane |
 | D-025 | Per-invocation plugin isolation | Research |
 | D-026 | OCI artifact distribution | Research |
 | D-027 | WIT plugin contracts | Research |

@@ -90,9 +90,16 @@ Focus: runtime-grade isolation for untrusted extension execution.
 Delivered in current baseline:
 
 - WASM runtime execution lane wired into `bridge_execution` with Wasmtime backend.
+- Core-module WASM host ABI v0 for plugin data exchange:
+  - request payload delivery into guest memory
+  - structured JSON output capture from guest memory
+  - bounded guest logging surfaced in runtime evidence
+  - explicit guest abort propagation
+  - backward-compatible fallback to legacy `run() -> ()`
 - Policy-driven runtime guardrails in `bridge_support.security_scan.runtime`:
   - required `allowed_path_prefixes` when `execute_wasm_component=true` (fail closed)
   - `max_component_bytes`
+  - optional `max_output_bytes` for host ABI output capture
   - optional `fuel_limit`
   - optional `timeout_ms` enforced through Wasmtime epoch interruption
 - Runtime isolation tests for:

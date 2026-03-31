@@ -1530,6 +1530,7 @@ fn bridge_runtime_policy(
         bridge_circuit_breaker,
         wasm_allowed_path_prefixes,
         wasm_max_component_bytes: runtime.max_component_bytes,
+        wasm_max_output_bytes: runtime.max_output_bytes,
         wasm_fuel_limit: runtime.fuel_limit,
         wasm_timeout_ms: runtime.timeout_ms,
         wasm_require_hash_pin,
