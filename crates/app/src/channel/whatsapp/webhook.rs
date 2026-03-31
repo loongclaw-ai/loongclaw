@@ -93,9 +93,17 @@ impl RecentIdCache {
 
     fn trim_to_max(&mut self) {
         while self.queue.len() > self.max_len {
-            if let Some(removed) = self.queue.pop_front() {
-                self.states.remove(&removed);
-            }
+            let removable_index = self.queue.iter().position(|id| {
+                let state = self.states.get(id.as_str());
+                matches!(state, Some(RecentIdState::Completed))
+            });
+            let Some(removable_index) = removable_index else {
+                break;
+            };
+            let Some(removed) = self.queue.remove(removable_index) else {
+                break;
+            };
+            self.states.remove(&removed);
         }
     }
 }
@@ -241,7 +249,12 @@ pub(super) async fn whatsapp_webhook_handler(
     body: Bytes,
 ) -> impl IntoResponse {
     // Verify HMAC-SHA256 signature
-    if let Some(app_secret) = state.app_secret.as_deref() {
+    let app_secret = state
+        .app_secret
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(app_secret) = app_secret {
         let signature = headers
             .get("x-hub-signature-256")
             .and_then(|value| value.to_str().ok())
@@ -256,10 +269,11 @@ pub(super) async fn whatsapp_webhook_handler(
                 .into_response();
         }
     } else {
-        log_whatsapp_warning(
-            "signature verification skipped",
-            "app_secret is not configured; set whatsapp.app_secret for production use",
-        );
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "missing app_secret"})),
+        )
+            .into_response();
     }
 
     let payload: Value = match serde_json::from_slice(&body) {
@@ -520,8 +534,105 @@ async fn send_whatsapp_text_reply(
 }
 
 fn log_whatsapp_warning(context: &str, error: &str) {
-    #[allow(clippy::print_stderr)]
-    {
-        eprintln!("warning: whatsapp {context}: {error}");
+    tracing::warn!(context = %context, error = %error, "whatsapp warning");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use axum::extract::State;
+    use axum::response::IntoResponse;
+    use serde_json::{Value, json};
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::channel::ChannelPlatform;
+    use crate::channel::runtime_state::start_channel_operation_runtime_tracker_for_test;
+    use crate::context::{DEFAULT_TOKEN_TTL_S, bootstrap_test_kernel_context};
+
+    fn temp_webhook_test_dir(label: &str) -> PathBuf {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!("loongclaw-whatsapp-webhook-{label}-{timestamp}"))
+    }
+
+    async fn build_test_state(app_secret: Option<&str>) -> WhatsappWebhookState {
+        let runtime_dir = temp_webhook_test_dir("state");
+        let runtime = start_channel_operation_runtime_tracker_for_test(
+            runtime_dir.as_path(),
+            ChannelPlatform::WhatsApp,
+            "serve",
+            "whatsapp-test",
+            "whatsapp:test",
+            std::process::id(),
+        )
+        .await
+        .expect("start runtime tracker");
+        let kernel_ctx =
+            bootstrap_test_kernel_context("whatsapp-webhook-test", DEFAULT_TOKEN_TTL_S)
+                .expect("bootstrap kernel context");
+
+        WhatsappWebhookState {
+            config: LoongClawConfig::default(),
+            resolved_path: None,
+            configured_account_id: "default".to_owned(),
+            account_id: "whatsapp-test".to_owned(),
+            verify_token: Some("verify-token".to_owned()),
+            app_secret: app_secret.map(str::to_owned),
+            access_token: "access-token".to_owned(),
+            phone_number_id: "1234567890".to_owned(),
+            api_base_url: "https://graph.facebook.com/v25.0".to_owned(),
+            allowed_phone_numbers: BTreeSet::new(),
+            seen_messages: Arc::new(Mutex::new(RecentIdCache::new(32))),
+            kernel_ctx: Arc::new(kernel_ctx),
+            runtime: Arc::new(runtime),
+        }
+    }
+
+    #[test]
+    fn recent_id_cache_keeps_processing_entries_while_over_capacity() {
+        let mut cache = RecentIdCache::new(1);
+
+        let first = cache.begin_processing("first");
+        let second = cache.begin_processing("second");
+        let duplicate = cache.begin_processing("first");
+
+        assert_eq!(first, RecentIdReservation::Accepted);
+        assert_eq!(second, RecentIdReservation::Accepted);
+        assert_eq!(duplicate, RecentIdReservation::InProgressDuplicate);
+    }
+
+    #[test]
+    fn recent_id_cache_evicts_completed_entries_first() {
+        let mut cache = RecentIdCache::new(1);
+
+        let first = cache.begin_processing("first");
+        cache.mark_completed("first");
+        let second = cache.begin_processing("second");
+        let recycled = cache.begin_processing("first");
+
+        assert_eq!(first, RecentIdReservation::Accepted);
+        assert_eq!(second, RecentIdReservation::Accepted);
+        assert_eq!(recycled, RecentIdReservation::Accepted);
+    }
+
+    #[tokio::test]
+    async fn whatsapp_webhook_handler_rejects_missing_app_secret() {
+        let state = build_test_state(None).await;
+        let response =
+            whatsapp_webhook_handler(State(state), HeaderMap::new(), Bytes::from_static(br#"{}"#))
+                .await
+                .into_response();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let payload: Value = serde_json::from_slice(&body).expect("parse response body");
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(payload, json!({"error": "missing app_secret"}));
     }
 }

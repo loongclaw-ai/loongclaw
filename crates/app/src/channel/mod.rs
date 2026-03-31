@@ -157,6 +157,8 @@ pub use dispatch::run_matrix_channel_with_stop;
 pub use dispatch::run_telegram_channel_with_stop;
 #[cfg(feature = "channel-wecom")]
 pub use dispatch::run_wecom_channel_with_stop;
+#[cfg(feature = "channel-whatsapp")]
+pub use dispatch::run_whatsapp_channel_with_stop;
 pub(crate) use dispatch::send_text_to_known_session;
 use dispatch::{ChannelCommandContext, ChannelSendCommandSpec, run_channel_send_command};
 #[cfg(test)]
@@ -172,11 +174,9 @@ pub use dispatch::{
     run_google_chat_send, run_imessage_send, run_irc_send, run_line_send, run_matrix_channel,
     run_matrix_send, run_mattermost_send, run_nextcloud_talk_send, run_nostr_send, run_signal_send,
     run_slack_send, run_synology_chat_send, run_teams_send, run_telegram_channel,
-    run_telegram_send, run_webhook_send, run_wecom_channel, run_wecom_send,
-    run_whatsapp_channel, run_whatsapp_send,
+    run_telegram_send, run_webhook_send, run_wecom_channel, run_wecom_send, run_whatsapp_channel,
+    run_whatsapp_send,
 };
-#[cfg(feature = "channel-whatsapp")]
-pub use dispatch::run_whatsapp_channel_with_stop;
 #[cfg(test)]
 use serve_runtime::ChannelServeRuntimeSpec;
 #[cfg(test)]

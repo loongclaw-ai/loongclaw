@@ -190,7 +190,7 @@ use super::nextcloud_talk;
 use super::nostr;
 use super::registry::{
     CHANNEL_OPERATION_SERVE_ID, FEISHU_COMMAND_FAMILY_DESCRIPTOR, MATRIX_COMMAND_FAMILY_DESCRIPTOR,
-    WECOM_COMMAND_FAMILY_DESCRIPTOR, WHATSAPP_COMMAND_FAMILY_DESCRIPTOR,
+    WECOM_COMMAND_FAMILY_DESCRIPTOR,
 };
 use super::runtime_state;
 use super::runtime_state::ChannelOperationRuntimeTracker;
@@ -765,7 +765,7 @@ fn load_whatsapp_command_context(
 }
 
 #[cfg(feature = "channel-whatsapp")]
-fn build_whatsapp_command_context(
+pub(super) fn build_whatsapp_command_context(
     resolved_path: PathBuf,
     config: LoongClawConfig,
     account_id: Option<&str>,
@@ -1153,7 +1153,7 @@ pub(super) struct ChannelSendCommandSpec {
     feature = "channel-wecom",
     feature = "channel-whatsapp"
 ))]
-async fn run_channel_serve_command_with_stop<R, V, F>(
+pub(super) async fn run_channel_serve_command_with_stop<R, V, F>(
     context: ChannelCommandContext<R>,
     spec: ChannelServeCommandSpec,
     validate: V,
@@ -1734,7 +1734,7 @@ pub async fn run_whatsapp_channel(
     #[cfg(feature = "channel-whatsapp")]
     {
         let context = load_whatsapp_command_context(config_path, account_id)?;
-        run_whatsapp_channel_with_context(
+        whatsapp::run_whatsapp_channel_with_context(
             context,
             bind_override,
             path_override,
@@ -1746,52 +1746,6 @@ pub async fn run_whatsapp_channel(
 }
 
 #[cfg(feature = "channel-whatsapp")]
-#[allow(clippy::print_stdout)] // CLI startup banner
-async fn run_whatsapp_channel_with_context(
-    context: ChannelCommandContext<ResolvedWhatsappChannelConfig>,
-    bind_override: Option<&str>,
-    path_override: Option<&str>,
-    stop: ChannelServeStopHandle,
-    initialize_runtime_environment: bool,
-) -> CliResult<()> {
-    let bind_override = bind_override.map(str::to_owned);
-    let path_override = path_override.map(str::to_owned);
-    run_channel_serve_command_with_stop(
-        context,
-        ChannelServeCommandSpec {
-            family: WHATSAPP_COMMAND_FAMILY_DESCRIPTOR,
-        },
-        validate_whatsapp_security_config,
-        stop,
-        initialize_runtime_environment,
-        move |context, kernel_ctx, runtime, stop| {
-            Box::pin(async move {
-                let route = context.route.clone();
-                let resolved_path = context.resolved_path.clone();
-                let resolved = context.resolved.clone();
-                let config = context.config.clone();
-
-                let _ = bind_override.as_deref();
-                let _ = path_override.as_deref();
-
-                whatsapp::run_whatsapp_channel(
-                    &config,
-                    &resolved,
-                    &resolved_path,
-                    route.selected_by_default(),
-                    route.default_account_source,
-                    kernel_ctx,
-                    runtime,
-                    stop,
-                )
-                .await
-            })
-        },
-    )
-    .await
-}
-
-#[cfg(feature = "channel-whatsapp")]
 pub async fn run_whatsapp_channel_with_stop(
     resolved_path: PathBuf,
     config: LoongClawConfig,
@@ -1799,9 +1753,14 @@ pub async fn run_whatsapp_channel_with_stop(
     stop: ChannelServeStopHandle,
     initialize_runtime_environment: bool,
 ) -> CliResult<()> {
-    let context = build_whatsapp_command_context(resolved_path, config, account_id)?;
-    run_whatsapp_channel_with_context(context, None, None, stop, initialize_runtime_environment)
-        .await
+    whatsapp::run_whatsapp_channel_with_stop(
+        resolved_path,
+        config,
+        account_id,
+        stop,
+        initialize_runtime_environment,
+    )
+    .await
 }
 
 #[allow(clippy::print_stdout)] // CLI output
@@ -3089,8 +3048,7 @@ pub async fn run_background_channel_with_stop(
     feature = "channel-telegram",
     feature = "channel-feishu",
     feature = "channel-matrix",
-    feature = "channel-wecom",
-    feature = "channel-whatsapp"
+    feature = "channel-wecom"
 ))]
 pub(crate) async fn send_text_to_known_session(
     config: &LoongClawConfig,
@@ -3305,8 +3263,7 @@ pub(crate) async fn send_text_to_known_session(
     feature = "channel-telegram",
     feature = "channel-feishu",
     feature = "channel-matrix",
-    feature = "channel-wecom",
-    feature = "channel-whatsapp"
+    feature = "channel-wecom"
 )))]
 pub(crate) async fn send_text_to_known_session(
     _config: &crate::config::LoongClawConfig,
@@ -3797,35 +3754,6 @@ pub(super) fn validate_wecom_security_config(config: &ResolvedWecomChannelConfig
         .unwrap_or(false);
     if !has_secret {
         return Err("wecom.secret is missing; configure secret or secret_env".to_owned());
-    }
-
-    Ok(())
-}
-
-#[cfg(feature = "channel-whatsapp")]
-pub(super) fn validate_whatsapp_security_config(
-    config: &ResolvedWhatsappChannelConfig,
-) -> CliResult<()> {
-    let has_verify_token = config
-        .verify_token()
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false);
-    if !has_verify_token {
-        return Err(
-            "whatsapp verify_token is required for webhook verification (set whatsapp.verify_token or env)"
-                .to_owned(),
-        );
-    }
-
-    let has_app_secret = config
-        .app_secret()
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false);
-    if !has_app_secret {
-        return Err(
-            "whatsapp app_secret is required for payload signature verification (set whatsapp.app_secret or env)"
-                .to_owned(),
-        );
     }
 
     Ok(())

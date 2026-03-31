@@ -9417,6 +9417,20 @@ mod tests {
 
         assert_eq!(send.health, ChannelOperationHealth::Ready);
         assert_eq!(serve.health, ChannelOperationHealth::Misconfigured);
+        assert!(
+            serve
+                .issues
+                .iter()
+                .any(|issue| issue.contains("verify_token")),
+            "serve issues should mention the missing verify token"
+        );
+        assert!(
+            serve
+                .issues
+                .iter()
+                .any(|issue| issue.contains("app_secret")),
+            "serve issues should mention the missing app secret"
+        );
         assert_eq!(
             whatsapp.api_base_url.as_deref(),
             Some("https://graph.facebook.com/v25.0")

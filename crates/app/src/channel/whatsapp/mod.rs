@@ -6,12 +6,14 @@ use std::sync::Arc;
 use axum::{Router, routing::get};
 use serde_json::{Value, json};
 
-use super::{
-    ChannelCommandContext, ChannelOutboundTargetKind, ChannelResolvedRuntimeAccount,
-    ChannelServeCommandSpec, ChannelServeStopHandle, WHATSAPP_COMMAND_FAMILY_DESCRIPTOR,
-    build_whatsapp_command_context,
-    http::{ChannelOutboundHttpPolicy, build_outbound_http_client, validate_outbound_http_target},
+use super::dispatch::{
+    ChannelCommandContext, ChannelResolvedRuntimeAccount, build_whatsapp_command_context,
     run_channel_serve_command_with_stop,
+};
+use super::serve_runtime::{ChannelServeCommandSpec, ChannelServeStopHandle};
+use super::{ChannelOutboundTargetKind, WHATSAPP_COMMAND_FAMILY_DESCRIPTOR};
+use super::{
+    http::{ChannelOutboundHttpPolicy, build_outbound_http_client, validate_outbound_http_target},
     runtime_state::ChannelOperationRuntimeTracker,
 };
 use crate::config::{ChannelDefaultAccountSelectionSource, LoongClawConfig};
@@ -250,13 +252,21 @@ pub(super) async fn run_whatsapp_channel_with_stop(
 }
 
 fn validate_whatsapp_security_config(config: &ResolvedWhatsappChannelConfig) -> CliResult<()> {
-    if config.verify_token().is_none() {
+    let has_verify_token = config
+        .verify_token()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    if !has_verify_token {
         return Err(
             "whatsapp verify_token is required for webhook verification (set whatsapp.verify_token or env)"
                 .to_owned(),
         );
     }
-    if config.app_secret().is_none() {
+    let has_app_secret = config
+        .app_secret()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    if !has_app_secret {
         return Err(
             "whatsapp app_secret is required for payload signature verification (set whatsapp.app_secret or env)"
                 .to_owned(),

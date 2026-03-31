@@ -69,7 +69,8 @@ impl ChannelServeStopHandle {
         feature = "channel-telegram",
         feature = "channel-feishu",
         feature = "channel-matrix",
-        feature = "channel-wecom"
+        feature = "channel-wecom",
+        feature = "channel-whatsapp"
     ))]
     pub(super) async fn wait(&self) {
         if self.is_requested() {

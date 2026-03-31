@@ -584,8 +584,7 @@ pub(super) type ChannelCommandFuture<'a> = Pin<Box<dyn Future<Output = CliResult
     feature = "channel-telegram",
     feature = "channel-feishu",
     feature = "channel-matrix",
-    feature = "channel-wecom",
-    feature = "channel-whatsapp"
+    feature = "channel-wecom"
 ))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum KnownChannelSessionSendTarget {
@@ -614,8 +613,7 @@ pub(super) enum KnownChannelSessionSendTarget {
     feature = "channel-telegram",
     feature = "channel-feishu",
     feature = "channel-matrix",
-    feature = "channel-wecom",
-    feature = "channel-whatsapp"
+    feature = "channel-wecom"
 ))]
 pub(super) fn parse_known_channel_session_send_target(
     config: &LoongClawConfig,
@@ -639,8 +637,7 @@ pub(super) fn parse_known_channel_session_send_target(
     feature = "channel-telegram",
     feature = "channel-feishu",
     feature = "channel-matrix",
-    feature = "channel-wecom",
-    feature = "channel-whatsapp"
+    feature = "channel-wecom"
 ))]
 fn parse_telegram_session_send_target(
     config: &LoongClawConfig,
@@ -685,8 +682,7 @@ fn parse_telegram_session_send_target(
     feature = "channel-telegram",
     feature = "channel-feishu",
     feature = "channel-matrix",
-    feature = "channel-wecom",
-    feature = "channel-whatsapp"
+    feature = "channel-wecom"
 ))]
 fn parse_feishu_session_send_target(
     config: &LoongClawConfig,
@@ -736,8 +732,7 @@ fn parse_feishu_session_send_target(
     feature = "channel-telegram",
     feature = "channel-feishu",
     feature = "channel-matrix",
-    feature = "channel-wecom",
-    feature = "channel-whatsapp"
+    feature = "channel-wecom"
 ))]
 fn parse_matrix_session_send_target(
     config: &LoongClawConfig,
@@ -777,8 +772,7 @@ fn parse_matrix_session_send_target(
     feature = "channel-telegram",
     feature = "channel-feishu",
     feature = "channel-matrix",
-    feature = "channel-wecom",
-    feature = "channel-whatsapp"
+    feature = "channel-wecom"
 ))]
 fn parse_wecom_session_send_target(
     config: &LoongClawConfig,
@@ -824,8 +818,7 @@ fn parse_wecom_session_send_target(
     feature = "channel-telegram",
     feature = "channel-feishu",
     feature = "channel-matrix",
-    feature = "channel-wecom",
-    feature = "channel-whatsapp"
+    feature = "channel-wecom"
 ))]
 fn configured_runtime_account_ids(
     configured_account_ids: &[String],
@@ -851,8 +844,7 @@ fn configured_runtime_account_ids(
     feature = "channel-telegram",
     feature = "channel-feishu",
     feature = "channel-matrix",
-    feature = "channel-wecom",
-    feature = "channel-whatsapp"
+    feature = "channel-wecom"
 ))]
 fn split_known_channel_account_and_scope<'a>(
     scope: &'a [String],
@@ -892,8 +884,7 @@ fn split_known_channel_account_and_scope<'a>(
     feature = "channel-telegram",
     feature = "channel-feishu",
     feature = "channel-matrix",
-    feature = "channel-wecom",
-    feature = "channel-whatsapp"
+    feature = "channel-wecom"
 ))]
 fn looks_like_feishu_message_id(value: &str) -> bool {
     let trimmed = value.trim();
