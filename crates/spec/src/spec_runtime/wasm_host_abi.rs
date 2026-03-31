@@ -6,6 +6,11 @@ use wasmtime::{
 };
 
 const WASM_HOST_ABI_IMPORT_MODULE: &str = "loongclaw";
+const WASM_HOST_ABI_IMPORT_INPUT_LEN: &str = "input_len";
+const WASM_HOST_ABI_IMPORT_READ_INPUT: &str = "read_input";
+const WASM_HOST_ABI_IMPORT_WRITE_OUTPUT: &str = "write_output";
+const WASM_HOST_ABI_IMPORT_LOG: &str = "log";
+const WASM_HOST_ABI_IMPORT_ABORT: &str = "abort";
 const WASM_HOST_ABI_ERROR_CODE: i32 = -1;
 const WASM_HOST_ABI_LOG_DROPPED_CODE: i32 = 0;
 const DEFAULT_WASM_HOST_ABI_MAX_OUTPUT_BYTES: usize = 256 * 1024;
@@ -100,38 +105,71 @@ pub(super) fn module_uses_wasm_host_abi(module: &WasmtimeModule) -> bool {
     false
 }
 
+pub(super) fn module_requires_wasm_host_abi_memory(module: &WasmtimeModule) -> bool {
+    for import in module.imports() {
+        let import_module = import.module();
+        if import_module != WASM_HOST_ABI_IMPORT_MODULE {
+            continue;
+        }
+
+        let import_name = import.name();
+        if wasm_host_abi_import_uses_guest_memory(import_name) {
+            return true;
+        }
+    }
+
+    false
+}
+
 pub(super) fn link_wasm_host_abi(
     linker: &mut WasmtimeLinker<WasmHostAbiStoreData>,
 ) -> Result<(), String> {
     linker
         .func_wrap(
             WASM_HOST_ABI_IMPORT_MODULE,
-            "input_len",
+            WASM_HOST_ABI_IMPORT_INPUT_LEN,
             wasm_host_input_len,
         )
         .map_err(|error| format!("failed to define wasm host function input_len: {error}"))?;
     linker
         .func_wrap(
             WASM_HOST_ABI_IMPORT_MODULE,
-            "read_input",
+            WASM_HOST_ABI_IMPORT_READ_INPUT,
             wasm_host_read_input,
         )
         .map_err(|error| format!("failed to define wasm host function read_input: {error}"))?;
     linker
         .func_wrap(
             WASM_HOST_ABI_IMPORT_MODULE,
-            "write_output",
+            WASM_HOST_ABI_IMPORT_WRITE_OUTPUT,
             wasm_host_write_output,
         )
         .map_err(|error| format!("failed to define wasm host function write_output: {error}"))?;
     linker
-        .func_wrap(WASM_HOST_ABI_IMPORT_MODULE, "log", wasm_host_log)
+        .func_wrap(
+            WASM_HOST_ABI_IMPORT_MODULE,
+            WASM_HOST_ABI_IMPORT_LOG,
+            wasm_host_log,
+        )
         .map_err(|error| format!("failed to define wasm host function log: {error}"))?;
     linker
-        .func_wrap(WASM_HOST_ABI_IMPORT_MODULE, "abort", wasm_host_abort)
+        .func_wrap(
+            WASM_HOST_ABI_IMPORT_MODULE,
+            WASM_HOST_ABI_IMPORT_ABORT,
+            wasm_host_abort,
+        )
         .map_err(|error| format!("failed to define wasm host function abort: {error}"))?;
 
     Ok(())
+}
+
+fn wasm_host_abi_import_uses_guest_memory(import_name: &str) -> bool {
+    matches!(
+        import_name,
+        WASM_HOST_ABI_IMPORT_READ_INPUT
+            | WASM_HOST_ABI_IMPORT_WRITE_OUTPUT
+            | WASM_HOST_ABI_IMPORT_LOG
+    )
 }
 
 fn resolve_wasm_host_abi_max_output_bytes(
@@ -188,7 +226,14 @@ fn wasm_host_read_input(mut caller: Caller<'_, WasmHostAbiStoreData>, ptr: i32, 
 }
 
 fn wasm_host_write_output(mut caller: Caller<'_, WasmHostAbiStoreData>, ptr: i32, len: i32) -> i32 {
-    let output_bytes = match copy_guest_bytes(&mut caller, ptr, len) {
+    let output_limit = caller.data().max_output_bytes;
+    let output_bytes = match copy_guest_bytes_with_limit(
+        &mut caller,
+        ptr,
+        len,
+        output_limit,
+        "wasm guest output exceeds host ABI limit of",
+    ) {
         Ok(bytes) => bytes,
         Err(reason) => {
             let store_data = caller.data_mut();
@@ -198,15 +243,6 @@ fn wasm_host_write_output(mut caller: Caller<'_, WasmHostAbiStoreData>, ptr: i32
     };
 
     let output_len = output_bytes.len();
-    let output_limit = caller.data().max_output_bytes;
-    if output_len > output_limit {
-        let store_data = caller.data_mut();
-        store_data.output_error = Some(format!(
-            "wasm guest output exceeds host ABI limit of {output_limit} bytes"
-        ));
-        return WASM_HOST_ABI_ERROR_CODE;
-    }
-
     let store_data = caller.data_mut();
     if store_data.output_bytes.is_some() {
         store_data.output_error =
@@ -220,17 +256,18 @@ fn wasm_host_write_output(mut caller: Caller<'_, WasmHostAbiStoreData>, ptr: i32
 }
 
 fn wasm_host_log(mut caller: Caller<'_, WasmHostAbiStoreData>, ptr: i32, len: i32) -> i32 {
-    let log_bytes = match copy_guest_bytes(&mut caller, ptr, len) {
+    let log_bytes = match copy_guest_bytes_with_limit(
+        &mut caller,
+        ptr,
+        len,
+        WASM_HOST_ABI_MAX_LOG_ENTRY_BYTES,
+        "wasm guest log exceeds host ABI limit of",
+    ) {
         Ok(bytes) => bytes,
         Err(_) => {
             return WASM_HOST_ABI_ERROR_CODE;
         }
     };
-
-    let log_len = log_bytes.len();
-    if log_len > WASM_HOST_ABI_MAX_LOG_ENTRY_BYTES {
-        return WASM_HOST_ABI_ERROR_CODE;
-    }
 
     let log_entry = match String::from_utf8(log_bytes) {
         Ok(entry) => entry,
@@ -295,6 +332,22 @@ fn copy_guest_bytes(
         .get(memory_range)
         .ok_or_else(|| "wasm guest memory access is out of bounds".to_owned())?;
     Ok(guest_slice.to_vec())
+}
+
+fn copy_guest_bytes_with_limit(
+    caller: &mut Caller<'_, WasmHostAbiStoreData>,
+    ptr: i32,
+    len: i32,
+    byte_limit: usize,
+    limit_subject: &str,
+) -> Result<Vec<u8>, String> {
+    let requested_len =
+        checked_len(len).ok_or_else(|| "wasm guest provided invalid length".to_owned())?;
+    if requested_len > byte_limit {
+        return Err(format!("{limit_subject} {byte_limit} bytes"));
+    }
+
+    copy_guest_bytes(caller, ptr, len)
 }
 
 fn checked_len(len: i32) -> Option<usize> {

@@ -51,8 +51,6 @@ mod dynamic_catalog;
 mod http_json_bridge;
 mod plugin_contract_types;
 mod process_stdio_bridge;
-#[cfg(test)]
-mod tests;
 mod wasm_cache;
 mod wasm_host_abi;
 mod wasm_runtime_policy;
@@ -74,7 +72,8 @@ use wasm_cache::{
     wasm_artifact_file_identity, wasm_module_cache_capacity, wasm_module_cache_max_bytes,
 };
 use wasm_host_abi::{
-    WasmHostAbiSnapshot, WasmHostAbiStoreData, link_wasm_host_abi, module_uses_wasm_host_abi,
+    WasmHostAbiSnapshot, WasmHostAbiStoreData, link_wasm_host_abi,
+    module_requires_wasm_host_abi_memory, module_uses_wasm_host_abi,
 };
 use wasm_runtime_policy::wasm_signals_based_traps_enabled_from_env;
 
@@ -1964,17 +1963,23 @@ fn wasm_timeout_reason(timeout_ms: u64) -> String {
     format!("wasm execution timed out after {timeout_ms}ms")
 }
 
-fn wasm_call_failure_reason(error: &wasmtime::Error, timeout_ms: Option<u64>) -> (String, bool) {
+fn wasm_runtime_failure_reason(
+    error: &wasmtime::Error,
+    timeout_ms: Option<u64>,
+    context: &str,
+) -> (String, bool) {
     let is_interrupt_trap = matches!(
         error.downcast_ref::<WasmtimeTrap>(),
         Some(trap) if *trap == WasmtimeTrap::Interrupt
     );
+
     let Some(timeout_ms) = timeout_ms else {
-        return (format!("wasm function call failed: {error}"), false);
+        return (format!("{context}: {error}"), false);
     };
     if !is_interrupt_trap {
-        return (format!("wasm function call failed: {error}"), false);
+        return (format!("{context}: {error}"), false);
     }
+
     (wasm_timeout_reason(timeout_ms), true)
 }
 
@@ -2715,21 +2720,51 @@ pub fn execute_wasm_component_bridge(
             store.set_epoch_deadline(1);
         }
         let host_abi_enabled = module_uses_wasm_host_abi(&cached_module.module);
+        let host_abi_requires_memory = module_requires_wasm_host_abi_memory(&cached_module.module);
         let mut linker = WasmtimeLinker::new(&cached_module.engine);
         link_wasm_host_abi(&mut linker).map_err(|reason| {
             boxed_wasm_run_failure(reason, false, None, WasmRunEvidence::default())
         })?;
-        let instance = linker
-            .instantiate(&mut store, &cached_module.module)
-            .map_err(|error| {
-                boxed_wasm_run_failure(
-                    format!("failed to instantiate wasm module: {error}"),
-                    false,
+        let timeout_controller = match timeout_ms {
+            Some(timeout_ms) => Some(
+                WasmEpochDeadlineController::start(&cached_module.engine, timeout_ms).map_err(
+                    |reason| {
+                        boxed_wasm_run_failure(reason, false, None, WasmRunEvidence::default())
+                    },
+                )?,
+            ),
+            None => None,
+        };
+        let instance_result = linker.instantiate(&mut store, &cached_module.module);
+        let instance = match instance_result {
+            Ok(instance) => instance,
+            Err(error) => {
+                let store_data = store.data().clone();
+                let abort_code = store_data.abort_code;
+                let host_abi = store_data.snapshot(host_abi_enabled);
+                let evidence = WasmRunEvidence {
+                    host_abi,
+                    ..WasmRunEvidence::default()
+                };
+                let (instantiate_reason, timeout_triggered) = wasm_runtime_failure_reason(
+                    &error,
+                    timeout_ms,
+                    "failed to instantiate wasm module",
+                );
+                let reason = if let Some(code) = abort_code {
+                    format!("wasm guest aborted with code {code}")
+                } else {
+                    instantiate_reason
+                };
+                return Err(boxed_wasm_run_failure(
+                    reason,
+                    timeout_triggered,
                     None,
-                    WasmRunEvidence::default(),
-                )
-            })?;
-        if host_abi_enabled && instance.get_memory(&mut store, "memory").is_none() {
+                    evidence,
+                ));
+            }
+        };
+        if host_abi_requires_memory && instance.get_memory(&mut store, "memory").is_none() {
             let evidence = WasmRunEvidence {
                 host_abi: wasm_snapshot_from_store(&store, host_abi_enabled),
                 ..WasmRunEvidence::default()
@@ -2746,16 +2781,6 @@ pub fn execute_wasm_component_bridge(
             WasmEntrypointSignature::I32
         } else {
             WasmEntrypointSignature::Unit
-        };
-        let timeout_controller = match timeout_ms {
-            Some(timeout_ms) => Some(
-                WasmEpochDeadlineController::start(&cached_module.engine, timeout_ms).map_err(
-                    |reason| {
-                        boxed_wasm_run_failure(reason, false, None, WasmRunEvidence::default())
-                    },
-                )?,
-            ),
-            None => None,
         };
         let mut evidence = WasmRunEvidence {
             entrypoint_signature: Some(entrypoint_signature.as_str()),
@@ -2793,7 +2818,8 @@ pub fn execute_wasm_component_bridge(
             let store_data = store.data().clone();
             let abort_code = store_data.abort_code;
             evidence.host_abi = store_data.snapshot(host_abi_enabled);
-            let (call_reason, timeout_triggered) = wasm_call_failure_reason(&error, timeout_ms);
+            let (call_reason, timeout_triggered) =
+                wasm_runtime_failure_reason(&error, timeout_ms, "wasm function call failed");
             let reason = if let Some(code) = abort_code {
                 format!("wasm guest aborted with code {code}")
             } else {
@@ -3731,12 +3757,46 @@ mod tests {
     }
 
     #[test]
-    fn execute_wasm_component_bridge_fails_when_host_abi_memory_is_missing() {
+    fn execute_wasm_component_bridge_allows_scalar_host_abi_imports_without_memory() {
         let wat_source = r#"
             (module
               (import "loongclaw" "input_len" (func $input_len (result i32)))
               (func (export "run") (result i32)
                 call $input_len
+                drop
+                i32.const 0))
+        "#;
+        let (root, wasm_path) = temp_wasm_fixture("loongclaw-wasm-host-abi-no-memory", wat_source);
+        let component_path = wasm_path.display().to_string();
+        let provider =
+            provider_with_metadata(BTreeMap::from([("component".to_owned(), component_path)]));
+        let channel = test_wasm_channel(&provider);
+        let command = test_wasm_command(json!({"input":"ping"}));
+        let runtime_policy = test_wasm_runtime_policy(&root);
+
+        let execution = super::execute_wasm_component_bridge(
+            json!({"status": "planned"}),
+            &provider,
+            &channel,
+            &command,
+            &runtime_policy,
+        );
+
+        assert_eq!(execution["status"], json!("executed"));
+        assert_eq!(execution["runtime"]["guest_exit_code"], json!(0));
+        assert_eq!(execution["runtime"]["host_abi_enabled"], json!(true));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn execute_wasm_component_bridge_fails_when_memory_backed_host_abi_is_missing_memory() {
+        let wat_source = r#"
+            (module
+              (import "loongclaw" "read_input" (func $read_input (param i32 i32) (result i32)))
+              (func (export "run") (result i32)
+                i32.const 0
+                i32.const 0
+                call $read_input
                 drop
                 i32.const 0))
         "#;
@@ -3762,6 +3822,45 @@ mod tests {
             json!("wasm host ABI requires exported memory")
         );
         assert_eq!(execution["runtime"]["host_abi_enabled"], json!(true));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn execute_wasm_component_bridge_times_out_during_instantiation_start_function() {
+        let wat_source = r#"
+            (module
+              (func $start
+                (loop
+                  br 0))
+              (func (export "run") (result i32)
+                i32.const 0)
+              (start $start))
+        "#;
+        let (root, wasm_path) = temp_wasm_fixture("loongclaw-wasm-instantiate-timeout", wat_source);
+        let component_path = wasm_path.display().to_string();
+        let provider =
+            provider_with_metadata(BTreeMap::from([("component".to_owned(), component_path)]));
+        let channel = test_wasm_channel(&provider);
+        let command = test_wasm_command(json!({"input":"ping"}));
+        let mut runtime_policy = test_wasm_runtime_policy(&root);
+        runtime_policy.wasm_fuel_limit = None;
+        runtime_policy.wasm_timeout_ms = Some(50);
+
+        let execution = super::execute_wasm_component_bridge(
+            json!({"status": "planned"}),
+            &provider,
+            &channel,
+            &command,
+            &runtime_policy,
+        );
+
+        assert_eq!(execution["status"], json!("failed"));
+        assert_eq!(
+            execution["reason"],
+            json!("wasm execution timed out after 50ms")
+        );
+        assert_eq!(execution["runtime"]["timeout_ms"], json!(50));
+        assert_eq!(execution["runtime"]["timeout_triggered"], json!(true));
         let _ = fs::remove_dir_all(root);
     }
 

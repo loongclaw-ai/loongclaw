@@ -3192,6 +3192,9 @@ async fn execute_spec_wasm_component_bridge_executes_with_timeout_guard_and_no_c
             enabled: true,
             supported_bridges: vec![PluginBridgeKind::WasmComponent],
             supported_adapter_families: Vec::new(),
+            supported_compatibility_modes: vec![PluginCompatibilityMode::Native],
+            supported_compatibility_shims: Vec::new(),
+            supported_compatibility_shim_profiles: Vec::new(),
             enforce_supported: true,
             policy_version: None,
             expected_checksum: None,
@@ -3213,6 +3216,7 @@ async fn execute_spec_wasm_component_bridge_executes_with_timeout_guard_and_no_c
                     max_component_bytes: Some(128 * 1024),
                     max_output_bytes: None,
                     fuel_limit: Some(50_000),
+                    bridge_circuit_breaker: ConnectorCircuitBreakerPolicy::default(),
                     timeout_ms: Some(250),
                 },
                 high_risk_metadata_keywords: Vec::new(),
@@ -3236,6 +3240,7 @@ async fn execute_spec_wasm_component_bridge_executes_with_timeout_guard_and_no_c
             allow_mcp_server_auto_apply: Some(false),
             allow_acp_bridge_auto_apply: Some(false),
             allow_acp_runtime_auto_apply: Some(false),
+            block_unverified_high_risk_auto_apply: None,
             enforce_ready_execution: Some(true),
             max_tasks: Some(5),
         }),
@@ -3279,6 +3284,38 @@ async fn execute_spec_wasm_component_bridge_executes_with_timeout_guard_and_no_c
     );
     assert_eq!(
         report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["cache_inserted"],
+        false
+    );
+
+    let second_report = execute_spec(&spec, true).await;
+    assert_eq!(second_report.operation_kind, "connector_legacy");
+    assert_eq!(second_report.outcome["outcome"]["status"], "ok");
+    assert_eq!(
+        second_report.outcome["outcome"]["payload"]["bridge_execution"]["status"],
+        "executed"
+    );
+    assert_eq!(
+        second_report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["timeout_ms"],
+        250
+    );
+    assert_eq!(
+        second_report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["timeout_triggered"],
+        false
+    );
+    assert_eq!(
+        second_report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["cache_enabled"],
+        false
+    );
+    assert_eq!(
+        second_report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["cache_hit"],
+        false
+    );
+    assert_eq!(
+        second_report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["cache_miss"],
+        false
+    );
+    assert_eq!(
+        second_report.outcome["outcome"]["payload"]["bridge_execution"]["runtime"]["cache_inserted"],
         false
     );
 }
@@ -3347,6 +3384,9 @@ async fn execute_spec_wasm_component_bridge_times_out_and_reports_timeout_eviden
             enabled: true,
             supported_bridges: vec![PluginBridgeKind::WasmComponent],
             supported_adapter_families: Vec::new(),
+            supported_compatibility_modes: vec![PluginCompatibilityMode::Native],
+            supported_compatibility_shims: Vec::new(),
+            supported_compatibility_shim_profiles: Vec::new(),
             enforce_supported: true,
             policy_version: None,
             expected_checksum: None,
@@ -3368,6 +3408,7 @@ async fn execute_spec_wasm_component_bridge_times_out_and_reports_timeout_eviden
                     max_component_bytes: Some(128 * 1024),
                     max_output_bytes: None,
                     fuel_limit: None,
+                    bridge_circuit_breaker: ConnectorCircuitBreakerPolicy::default(),
                     timeout_ms: Some(100),
                 },
                 high_risk_metadata_keywords: Vec::new(),
@@ -3391,6 +3432,7 @@ async fn execute_spec_wasm_component_bridge_times_out_and_reports_timeout_eviden
             allow_mcp_server_auto_apply: Some(false),
             allow_acp_bridge_auto_apply: Some(false),
             allow_acp_runtime_auto_apply: Some(false),
+            block_unverified_high_risk_auto_apply: None,
             enforce_ready_execution: Some(true),
             max_tasks: Some(5),
         }),
