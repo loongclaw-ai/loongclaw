@@ -54,6 +54,7 @@ mod process_stdio_bridge;
 #[cfg(test)]
 mod tests;
 mod wasm_cache;
+mod wasm_host_abi;
 mod wasm_runtime_policy;
 pub use dynamic_catalog::{DynamicCatalogConnector, bridge_execution_payload};
 pub(crate) use dynamic_catalog::{
@@ -71,6 +72,9 @@ use wasm_cache::{
     CachedWasmModule, WasmArtifactFileIdentity, WasmModuleCacheLookup, build_wasm_module_cache_key,
     insert_cached_wasm_module, lookup_cached_wasm_module, modified_unix_nanos,
     wasm_artifact_file_identity, wasm_module_cache_capacity, wasm_module_cache_max_bytes,
+};
+use wasm_host_abi::{
+    WasmHostAbiSnapshot, WasmHostAbiStoreData, link_wasm_host_abi, module_uses_wasm_host_abi,
 };
 use wasm_runtime_policy::wasm_signals_based_traps_enabled_from_env;
 
@@ -999,6 +1003,7 @@ pub struct BridgeRuntimePolicy {
     pub bridge_circuit_breaker: ConnectorCircuitBreakerPolicy,
     pub wasm_allowed_path_prefixes: Vec<PathBuf>,
     pub wasm_max_component_bytes: Option<usize>,
+    pub wasm_max_output_bytes: Option<usize>,
     pub wasm_fuel_limit: Option<u64>,
     pub wasm_timeout_ms: Option<u64>,
     pub wasm_require_hash_pin: bool,
@@ -1537,6 +1542,8 @@ pub struct SecurityRuntimeExecutionSpec {
     #[serde(default)]
     pub max_component_bytes: Option<usize>,
     #[serde(default)]
+    pub max_output_bytes: Option<usize>,
+    #[serde(default)]
     pub fuel_limit: Option<u64>,
     #[serde(default)]
     pub bridge_circuit_breaker: ConnectorCircuitBreakerPolicy,
@@ -1986,16 +1993,142 @@ fn wasm_cache_lookup_disabled(
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum WasmEntrypointSignature {
+    I32,
+    Unit,
+}
+
+impl WasmEntrypointSignature {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::I32 => "() -> i32",
+            Self::Unit => "() -> ()",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct WasmRunEvidence {
+    entrypoint_signature: Option<&'static str>,
+    guest_exit_code: Option<i32>,
+    host_abi: WasmHostAbiSnapshot,
+}
+
+#[derive(Debug, Clone)]
+struct WasmRuntimeExecutionContext {
+    artifact_path: String,
+    export_name: String,
+    operation: String,
+    payload: Value,
+    request: Value,
+    module_size_bytes: usize,
+    fuel_limit: Option<u64>,
+    max_output_bytes: Option<usize>,
+    timeout_ms: Option<u64>,
+    cache_enabled: bool,
+    cache_lookup: WasmModuleCacheLookup,
+    cache_miss: bool,
+    expected_sha256: Option<String>,
+    artifact_sha256: Option<String>,
+}
+
 #[derive(Debug)]
 struct WasmRunOutcome {
     consumed_fuel: Option<u64>,
     timeout_triggered: bool,
+    evidence: WasmRunEvidence,
 }
 
 #[derive(Debug)]
 struct WasmRunFailure {
     reason: String,
     timeout_triggered: bool,
+    consumed_fuel: Option<u64>,
+    evidence: WasmRunEvidence,
+}
+
+type WasmRunResult<T> = Result<T, Box<WasmRunFailure>>;
+
+fn boxed_wasm_run_failure(
+    reason: impl Into<String>,
+    timeout_triggered: bool,
+    consumed_fuel: Option<u64>,
+    evidence: WasmRunEvidence,
+) -> Box<WasmRunFailure> {
+    Box::new(WasmRunFailure {
+        reason: reason.into(),
+        timeout_triggered,
+        consumed_fuel,
+        evidence,
+    })
+}
+
+fn wasm_bridge_request_payload(
+    provider: &kernel::ProviderConfig,
+    channel: &kernel::ChannelConfig,
+    command: &ConnectorCommand,
+) -> Value {
+    json!({
+        "provider_id": provider.provider_id,
+        "channel_id": channel.channel_id,
+        "operation": command.operation,
+        "payload": command.payload,
+    })
+}
+
+fn wasm_runtime_execution_evidence(
+    context: &WasmRuntimeExecutionContext,
+    timeout_triggered: bool,
+    fuel_consumed: Option<u64>,
+    evidence: &WasmRunEvidence,
+) -> Value {
+    let expected_sha256 = context.expected_sha256.clone();
+    let artifact_sha256 = context.artifact_sha256.clone();
+    let integrity_check_required = expected_sha256.is_some();
+    let integrity_check_passed = expected_sha256.is_none() || artifact_sha256.is_some();
+
+    json!({
+        "executor": "wasmtime_module",
+        "artifact_path": context.artifact_path,
+        "export": context.export_name,
+        "operation": context.operation,
+        "payload": context.payload,
+        "request": context.request,
+        "module_size_bytes": context.module_size_bytes,
+        "fuel_limit": context.fuel_limit,
+        "max_output_bytes": evidence.host_abi.max_output_bytes.or(context.max_output_bytes),
+        "timeout_ms": context.timeout_ms,
+        "timeout_triggered": timeout_triggered,
+        "fuel_consumed": fuel_consumed,
+        "cache_enabled": context.cache_enabled,
+        "cache_hit": context.cache_lookup.hit,
+        "cache_miss": context.cache_miss,
+        "cache_evicted_entries": context.cache_lookup.evicted_entries,
+        "cache_entries": context.cache_lookup.cache_len,
+        "cache_capacity": context.cache_lookup.cache_capacity,
+        "cache_total_module_bytes": context.cache_lookup.cache_total_module_bytes,
+        "cache_max_bytes": context.cache_lookup.cache_max_bytes,
+        "cache_inserted": context.cache_lookup.inserted,
+        "expected_sha256": expected_sha256,
+        "artifact_sha256": artifact_sha256,
+        "integrity_check_required": integrity_check_required,
+        "integrity_check_passed": integrity_check_passed,
+        "host_abi_enabled": evidence.host_abi.host_abi_enabled,
+        "entrypoint_signature": evidence.entrypoint_signature,
+        "guest_exit_code": evidence.guest_exit_code,
+        "guest_logs": evidence.host_abi.guest_logs,
+        "guest_logs_truncated": evidence.host_abi.guest_logs_truncated,
+        "output_text": evidence.host_abi.output_text,
+        "output_json": evidence.host_abi.output_json,
+    })
+}
+
+fn wasm_snapshot_from_store(
+    store: &WasmtimeStore<WasmHostAbiStoreData>,
+    host_abi_enabled: bool,
+) -> WasmHostAbiSnapshot {
+    store.data().snapshot(host_abi_enabled)
 }
 
 #[allow(clippy::indexing_slicing)] // serde_json::Value string-keyed IndexMut is infallible
@@ -2535,51 +2668,144 @@ pub fn execute_wasm_component_bridge(
     } else {
         false
     };
-    let run_result = (|| -> Result<WasmRunOutcome, WasmRunFailure> {
-        let mut store = WasmtimeStore::new(&cached_module.engine, ());
+    let request_payload = wasm_bridge_request_payload(provider, channel, command);
+    let runtime_execution_context = WasmRuntimeExecutionContext {
+        artifact_path: artifact_path.display().to_string(),
+        export_name: export_name.clone(),
+        operation: command.operation.clone(),
+        payload: command.payload.clone(),
+        request: request_payload.clone(),
+        module_size_bytes,
+        fuel_limit: runtime_policy.wasm_fuel_limit,
+        max_output_bytes: runtime_policy.wasm_max_output_bytes,
+        timeout_ms,
+        cache_enabled,
+        cache_lookup,
+        cache_miss,
+        expected_sha256,
+        artifact_sha256: cached_module.artifact_sha256.clone(),
+    };
+    let run_result = (|| -> WasmRunResult<WasmRunOutcome> {
+        let input_bytes = serde_json::to_vec(&request_payload).map_err(|error| {
+            boxed_wasm_run_failure(
+                format!("failed to serialize wasm bridge request payload: {error}"),
+                false,
+                None,
+                WasmRunEvidence::default(),
+            )
+        })?;
+        let store_data =
+            WasmHostAbiStoreData::try_new(input_bytes, runtime_policy.wasm_max_output_bytes)
+                .map_err(|reason| {
+                    boxed_wasm_run_failure(reason, false, None, WasmRunEvidence::default())
+                })?;
+        let mut store = WasmtimeStore::new(&cached_module.engine, store_data);
         if let Some(limit) = runtime_policy.wasm_fuel_limit {
-            store.set_fuel(limit).map_err(|error| WasmRunFailure {
-                reason: format!("failed to set wasm fuel limit: {error}"),
-                timeout_triggered: false,
+            store.set_fuel(limit).map_err(|error| {
+                boxed_wasm_run_failure(
+                    format!("failed to set wasm fuel limit: {error}"),
+                    false,
+                    None,
+                    WasmRunEvidence::default(),
+                )
             })?;
         }
         if timeout_ms.is_some() {
             store.epoch_deadline_trap();
             store.set_epoch_deadline(1);
         }
-        let linker = WasmtimeLinker::new(&cached_module.engine);
+        let host_abi_enabled = module_uses_wasm_host_abi(&cached_module.module);
+        let mut linker = WasmtimeLinker::new(&cached_module.engine);
+        link_wasm_host_abi(&mut linker).map_err(|reason| {
+            boxed_wasm_run_failure(reason, false, None, WasmRunEvidence::default())
+        })?;
         let instance = linker
             .instantiate(&mut store, &cached_module.module)
-            .map_err(|error| WasmRunFailure {
-                reason: format!("failed to instantiate wasm module: {error}"),
-                timeout_triggered: false,
+            .map_err(|error| {
+                boxed_wasm_run_failure(
+                    format!("failed to instantiate wasm module: {error}"),
+                    false,
+                    None,
+                    WasmRunEvidence::default(),
+                )
             })?;
-        let func = instance
-            .get_typed_func::<(), ()>(&mut store, export_name.as_str())
-            .map_err(|error| WasmRunFailure {
-                reason: format!("failed to resolve exported wasm function {export_name}: {error}"),
-                timeout_triggered: false,
-            })?;
+        if host_abi_enabled && instance.get_memory(&mut store, "memory").is_none() {
+            let evidence = WasmRunEvidence {
+                host_abi: wasm_snapshot_from_store(&store, host_abi_enabled),
+                ..WasmRunEvidence::default()
+            };
+            return Err(boxed_wasm_run_failure(
+                "wasm host ABI requires exported memory",
+                false,
+                None,
+                evidence,
+            ));
+        }
+        let resolved_i32 = instance.get_typed_func::<(), i32>(&mut store, export_name.as_str());
+        let entrypoint_signature = if resolved_i32.is_ok() {
+            WasmEntrypointSignature::I32
+        } else {
+            WasmEntrypointSignature::Unit
+        };
         let timeout_controller = match timeout_ms {
             Some(timeout_ms) => Some(
                 WasmEpochDeadlineController::start(&cached_module.engine, timeout_ms).map_err(
-                    |reason| WasmRunFailure {
-                        reason,
-                        timeout_triggered: false,
+                    |reason| {
+                        boxed_wasm_run_failure(reason, false, None, WasmRunEvidence::default())
                     },
                 )?,
             ),
             None => None,
         };
-        let call_result = func.call(&mut store, ());
+        let mut evidence = WasmRunEvidence {
+            entrypoint_signature: Some(entrypoint_signature.as_str()),
+            ..WasmRunEvidence::default()
+        };
+        let call_result = match resolved_i32 {
+            Ok(func) => {
+                let call_result = func.call(&mut store, ());
+                match call_result {
+                    Ok(code) => {
+                        evidence.guest_exit_code = Some(code);
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+            Err(first_error) => {
+                let func = instance
+                    .get_typed_func::<(), ()>(&mut store, export_name.as_str())
+                    .map_err(|second_error| {
+                        boxed_wasm_run_failure(
+                            format!(
+                                "failed to resolve exported wasm function {export_name}: {first_error}; fallback to () -> () also failed: {second_error}"
+                            ),
+                            false,
+                            None,
+                            WasmRunEvidence::default(),
+                        )
+                    })?;
+                func.call(&mut store, ())
+            }
+        };
         drop(timeout_controller);
-        call_result.map_err(|error| {
-            let (reason, timeout_triggered) = wasm_call_failure_reason(&error, timeout_ms);
-            WasmRunFailure {
+        if let Err(error) = call_result {
+            let store_data = store.data().clone();
+            let abort_code = store_data.abort_code;
+            evidence.host_abi = store_data.snapshot(host_abi_enabled);
+            let (call_reason, timeout_triggered) = wasm_call_failure_reason(&error, timeout_ms);
+            let reason = if let Some(code) = abort_code {
+                format!("wasm guest aborted with code {code}")
+            } else {
+                call_reason
+            };
+            return Err(boxed_wasm_run_failure(
                 reason,
                 timeout_triggered,
-            }
-        })?;
+                None,
+                evidence,
+            ));
+        }
         let consumed_fuel = runtime_policy
             .wasm_fuel_limit
             .map(|limit| {
@@ -2588,13 +2814,42 @@ pub fn execute_wasm_component_bridge(
                     .map(|remaining| limit.saturating_sub(remaining))
             })
             .transpose()
-            .map_err(|error| WasmRunFailure {
-                reason: format!("failed to query wasm fuel: {error}"),
-                timeout_triggered: false,
+            .map_err(|error| {
+                boxed_wasm_run_failure(
+                    format!("failed to query wasm fuel: {error}"),
+                    false,
+                    None,
+                    evidence.clone(),
+                )
             })?;
+        let store_data = store.data().clone();
+        evidence.host_abi = store_data.snapshot(host_abi_enabled);
+        if let Some(reason) = store_data.output_error.clone() {
+            return Err(boxed_wasm_run_failure(
+                reason,
+                false,
+                consumed_fuel,
+                evidence,
+            ));
+        }
+        let output_json = store_data.parse_output_json().map_err(|reason| {
+            boxed_wasm_run_failure(reason, false, consumed_fuel, evidence.clone())
+        })?;
+        evidence.host_abi.output_json = output_json;
+        if let Some(code) = evidence.guest_exit_code
+            && code != 0
+        {
+            return Err(boxed_wasm_run_failure(
+                format!("wasm guest returned non-zero exit code {code}"),
+                false,
+                consumed_fuel,
+                evidence,
+            ));
+        }
         Ok(WasmRunOutcome {
             consumed_fuel,
             timeout_triggered: false,
+            evidence,
         })
     })();
 
@@ -2602,65 +2857,29 @@ pub fn execute_wasm_component_bridge(
         Ok(outcome) => {
             execution["status"] = Value::String("executed".to_owned());
             execution["runtime"] = with_execution_security_tier(
-                json!({
-                    "executor": "wasmtime_module",
-                    "artifact_path": artifact_path.display().to_string(),
-                    "export": export_name,
-                    "operation": command.operation,
-                    "payload": command.payload,
-                    "module_size_bytes": module_size_bytes,
-                    "fuel_limit": runtime_policy.wasm_fuel_limit,
-                    "timeout_ms": timeout_ms,
-                    "timeout_triggered": outcome.timeout_triggered,
-                    "fuel_consumed": outcome.consumed_fuel,
-                    "cache_enabled": cache_enabled,
-                    "cache_hit": cache_lookup.hit,
-                    "cache_miss": cache_miss,
-                    "cache_evicted_entries": cache_lookup.evicted_entries,
-                    "cache_entries": cache_lookup.cache_len,
-                    "cache_capacity": cache_lookup.cache_capacity,
-                    "cache_total_module_bytes": cache_lookup.cache_total_module_bytes,
-                    "cache_max_bytes": cache_lookup.cache_max_bytes,
-                    "cache_inserted": cache_lookup.inserted,
-                    "expected_sha256": expected_sha256,
-                    "artifact_sha256": cached_module.artifact_sha256.clone(),
-                    "integrity_check_required": expected_sha256.is_some(),
-                    "integrity_check_passed": expected_sha256.is_none() || cached_module.artifact_sha256.is_some(),
-                }),
+                wasm_runtime_execution_evidence(
+                    &runtime_execution_context,
+                    outcome.timeout_triggered,
+                    outcome.consumed_fuel,
+                    &outcome.evidence,
+                ),
                 execution_tier,
             );
             execution
         }
         Err(failure) => {
+            let failure = *failure;
             let failure_reason = failure.reason;
             let timeout_triggered = failure.timeout_triggered;
             execution["status"] = Value::String("failed".to_owned());
             execution["reason"] = Value::String(failure_reason);
             execution["runtime"] = with_execution_security_tier(
-                json!({
-                    "executor": "wasmtime_module",
-                    "artifact_path": artifact_path.display().to_string(),
-                    "export": export_name,
-                    "operation": command.operation,
-                    "payload": command.payload,
-                    "module_size_bytes": module_size_bytes,
-                    "fuel_limit": runtime_policy.wasm_fuel_limit,
-                    "timeout_ms": timeout_ms,
-                    "timeout_triggered": timeout_triggered,
-                    "cache_enabled": cache_enabled,
-                    "cache_hit": cache_lookup.hit,
-                    "cache_miss": cache_miss,
-                    "cache_evicted_entries": cache_lookup.evicted_entries,
-                    "cache_entries": cache_lookup.cache_len,
-                    "cache_capacity": cache_lookup.cache_capacity,
-                    "cache_total_module_bytes": cache_lookup.cache_total_module_bytes,
-                    "cache_max_bytes": cache_lookup.cache_max_bytes,
-                    "cache_inserted": cache_lookup.inserted,
-                    "expected_sha256": expected_sha256,
-                    "artifact_sha256": cached_module.artifact_sha256.clone(),
-                    "integrity_check_required": expected_sha256.is_some(),
-                    "integrity_check_passed": expected_sha256.is_none() || cached_module.artifact_sha256.is_some(),
-                }),
+                wasm_runtime_execution_evidence(
+                    &runtime_execution_context,
+                    timeout_triggered,
+                    failure.consumed_fuel,
+                    &failure.evidence,
+                ),
                 execution_tier,
             );
             execution
@@ -3213,12 +3432,9 @@ impl MemoryExtensionAdapter for VectorIndexMemoryExtension {
 mod tests {
     use std::{
         collections::{BTreeMap, BTreeSet},
-        path::Path,
-        sync::Arc,
-    };
-    #[cfg(unix)]
-    use std::{
         fs,
+        path::{Path, PathBuf},
+        sync::Arc,
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -3237,7 +3453,7 @@ mod tests {
         process_stdio_runtime_evidence, resolve_expected_wasm_sha256,
     };
     use kernel::{CoreToolAdapter, ToolCoreOutcome, ToolCoreRequest};
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     const EMPTY_WASM_MODULE: [u8; 8] = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
 
@@ -3377,6 +3593,295 @@ mod tests {
             version: "1.0.0".to_owned(),
             metadata,
         }
+    }
+
+    fn temp_wasm_fixture(prefix: &str, wat_source: &str) -> (PathBuf, PathBuf) {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be monotonic")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("{prefix}-{unique}"));
+        fs::create_dir_all(&root).expect("create temp wasm root");
+        let wasm_path = root.join("fixture.wasm");
+        let wasm_bytes = wat::parse_str(wat_source).expect("compile wasm fixture");
+        fs::write(&wasm_path, wasm_bytes).expect("write wasm fixture");
+        (root, wasm_path)
+    }
+
+    fn test_wasm_channel(provider: &kernel::ProviderConfig) -> kernel::ChannelConfig {
+        kernel::ChannelConfig {
+            channel_id: "channel-wasm".to_owned(),
+            endpoint: "local://fixture".to_owned(),
+            provider_id: provider.provider_id.clone(),
+            enabled: true,
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    fn test_wasm_command(payload: Value) -> kernel::ConnectorCommand {
+        kernel::ConnectorCommand {
+            connector_name: "connector-x".to_owned(),
+            operation: "invoke".to_owned(),
+            required_capabilities: BTreeSet::from([kernel::Capability::InvokeConnector]),
+            payload,
+        }
+    }
+
+    fn test_wasm_runtime_policy(root: &Path) -> BridgeRuntimePolicy {
+        BridgeRuntimePolicy {
+            execute_wasm_component: true,
+            wasm_allowed_path_prefixes: vec![root.to_path_buf()],
+            wasm_fuel_limit: Some(200_000),
+            ..BridgeRuntimePolicy::default()
+        }
+    }
+
+    #[test]
+    fn execute_wasm_component_bridge_exchanges_request_output_and_logs() {
+        let wat_source = r#"
+            (module
+              (import "loongclaw" "input_len" (func $input_len (result i32)))
+              (import "loongclaw" "read_input" (func $read_input (param i32 i32) (result i32)))
+              (import "loongclaw" "write_output" (func $write_output (param i32 i32) (result i32)))
+              (import "loongclaw" "log" (func $log (param i32 i32) (result i32)))
+              (func (export "run") (result i32)
+                (local $input_len i32)
+                i32.const 0
+                i32.const 5
+                call $log
+                drop
+                call $input_len
+                local.set $input_len
+                i32.const 32
+                local.get $input_len
+                call $read_input
+                drop
+                i32.const 32
+                local.get $input_len
+                call $write_output
+                drop
+                i32.const 0)
+              (memory (export "memory") 1)
+              (data (i32.const 0) "hello"))
+        "#;
+        let (root, wasm_path) = temp_wasm_fixture("loongclaw-wasm-host-abi-ok", wat_source);
+        let component_path = wasm_path.display().to_string();
+        let provider =
+            provider_with_metadata(BTreeMap::from([("component".to_owned(), component_path)]));
+        let channel = test_wasm_channel(&provider);
+        let command = test_wasm_command(json!({
+            "input": "ping",
+            "nested": {
+                "ok": true,
+            },
+        }));
+        let runtime_policy = test_wasm_runtime_policy(&root);
+        let expected_request = super::wasm_bridge_request_payload(&provider, &channel, &command);
+
+        let execution = super::execute_wasm_component_bridge(
+            json!({"status": "planned"}),
+            &provider,
+            &channel,
+            &command,
+            &runtime_policy,
+        );
+
+        assert_eq!(execution["status"], json!("executed"));
+        assert_eq!(execution["runtime"]["host_abi_enabled"], json!(true));
+        assert_eq!(
+            execution["runtime"]["entrypoint_signature"],
+            json!("() -> i32")
+        );
+        assert_eq!(execution["runtime"]["guest_exit_code"], json!(0));
+        assert_eq!(execution["runtime"]["guest_logs"], json!(["hello"]));
+        assert_eq!(execution["runtime"]["guest_logs_truncated"], json!(false));
+        assert_eq!(execution["runtime"]["output_json"], expected_request);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn execute_wasm_component_bridge_preserves_legacy_unit_signature() {
+        let wat_source = r#"(module (func (export "run")))"#;
+        let (root, wasm_path) = temp_wasm_fixture("loongclaw-wasm-legacy-ok", wat_source);
+        let component_path = wasm_path.display().to_string();
+        let provider =
+            provider_with_metadata(BTreeMap::from([("component".to_owned(), component_path)]));
+        let channel = test_wasm_channel(&provider);
+        let command = test_wasm_command(json!({"input":"ping"}));
+        let runtime_policy = test_wasm_runtime_policy(&root);
+
+        let execution = super::execute_wasm_component_bridge(
+            json!({"status": "planned"}),
+            &provider,
+            &channel,
+            &command,
+            &runtime_policy,
+        );
+
+        assert_eq!(execution["status"], json!("executed"));
+        assert_eq!(execution["runtime"]["host_abi_enabled"], json!(false));
+        assert_eq!(
+            execution["runtime"]["entrypoint_signature"],
+            json!("() -> ()")
+        );
+        assert_eq!(execution["runtime"]["guest_exit_code"], Value::Null);
+        assert_eq!(execution["runtime"]["guest_logs"], json!([]));
+        assert_eq!(execution["runtime"]["output_json"], Value::Null);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn execute_wasm_component_bridge_fails_when_host_abi_memory_is_missing() {
+        let wat_source = r#"
+            (module
+              (import "loongclaw" "input_len" (func $input_len (result i32)))
+              (func (export "run") (result i32)
+                call $input_len
+                drop
+                i32.const 0))
+        "#;
+        let (root, wasm_path) = temp_wasm_fixture("loongclaw-wasm-host-abi-no-memory", wat_source);
+        let component_path = wasm_path.display().to_string();
+        let provider =
+            provider_with_metadata(BTreeMap::from([("component".to_owned(), component_path)]));
+        let channel = test_wasm_channel(&provider);
+        let command = test_wasm_command(json!({"input":"ping"}));
+        let runtime_policy = test_wasm_runtime_policy(&root);
+
+        let execution = super::execute_wasm_component_bridge(
+            json!({"status": "planned"}),
+            &provider,
+            &channel,
+            &command,
+            &runtime_policy,
+        );
+
+        assert_eq!(execution["status"], json!("failed"));
+        assert_eq!(
+            execution["reason"],
+            json!("wasm host ABI requires exported memory")
+        );
+        assert_eq!(execution["runtime"]["host_abi_enabled"], json!(true));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn execute_wasm_component_bridge_fails_when_guest_output_is_not_json() {
+        let wat_source = r#"
+            (module
+              (import "loongclaw" "write_output" (func $write_output (param i32 i32) (result i32)))
+              (func (export "run") (result i32)
+                i32.const 0
+                i32.const 8
+                call $write_output
+                drop
+                i32.const 0)
+              (memory (export "memory") 1)
+              (data (i32.const 0) "not-json"))
+        "#;
+        let (root, wasm_path) = temp_wasm_fixture("loongclaw-wasm-host-abi-bad-output", wat_source);
+        let component_path = wasm_path.display().to_string();
+        let provider =
+            provider_with_metadata(BTreeMap::from([("component".to_owned(), component_path)]));
+        let channel = test_wasm_channel(&provider);
+        let command = test_wasm_command(json!({"input":"ping"}));
+        let runtime_policy = test_wasm_runtime_policy(&root);
+
+        let execution = super::execute_wasm_component_bridge(
+            json!({"status": "planned"}),
+            &provider,
+            &channel,
+            &command,
+            &runtime_policy,
+        );
+
+        assert_eq!(execution["status"], json!("failed"));
+        assert!(
+            execution["reason"]
+                .as_str()
+                .expect("reason should be a string")
+                .contains("wasm guest output is not valid JSON")
+        );
+        assert_eq!(execution["runtime"]["output_text"], json!("not-json"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn execute_wasm_component_bridge_respects_configured_output_limit() {
+        let wat_source = r#"
+            (module
+              (import "loongclaw" "write_output" (func $write_output (param i32 i32) (result i32)))
+              (func (export "run") (result i32)
+                i32.const 0
+                i32.const 8
+                call $write_output
+                drop
+                i32.const 0)
+              (memory (export "memory") 1)
+              (data (i32.const 0) "not-json"))
+        "#;
+        let (root, wasm_path) =
+            temp_wasm_fixture("loongclaw-wasm-host-abi-output-limit", wat_source);
+        let component_path = wasm_path.display().to_string();
+        let provider =
+            provider_with_metadata(BTreeMap::from([("component".to_owned(), component_path)]));
+        let channel = test_wasm_channel(&provider);
+        let command = test_wasm_command(json!({"input":"ping"}));
+        let mut runtime_policy = test_wasm_runtime_policy(&root);
+        runtime_policy.wasm_max_output_bytes = Some(4);
+
+        let execution = super::execute_wasm_component_bridge(
+            json!({"status": "planned"}),
+            &provider,
+            &channel,
+            &command,
+            &runtime_policy,
+        );
+
+        assert_eq!(execution["status"], json!("failed"));
+        assert_eq!(
+            execution["reason"],
+            json!("wasm guest output exceeds host ABI limit of 4 bytes")
+        );
+        assert_eq!(execution["runtime"]["max_output_bytes"], json!(4));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn execute_wasm_component_bridge_reports_guest_abort_reason() {
+        let wat_source = r#"
+            (module
+              (import "loongclaw" "abort" (func $abort (param i32)))
+              (func (export "run") (result i32)
+                i32.const 7
+                call $abort
+                i32.const 0)
+              (memory (export "memory") 1))
+        "#;
+        let (root, wasm_path) = temp_wasm_fixture("loongclaw-wasm-host-abi-abort", wat_source);
+        let component_path = wasm_path.display().to_string();
+        let provider =
+            provider_with_metadata(BTreeMap::from([("component".to_owned(), component_path)]));
+        let channel = test_wasm_channel(&provider);
+        let command = test_wasm_command(json!({"input":"ping"}));
+        let runtime_policy = test_wasm_runtime_policy(&root);
+
+        let execution = super::execute_wasm_component_bridge(
+            json!({"status": "planned"}),
+            &provider,
+            &channel,
+            &command,
+            &runtime_policy,
+        );
+
+        assert_eq!(execution["status"], json!("failed"));
+        assert_eq!(execution["reason"], json!("wasm guest aborted with code 7"));
+        assert_eq!(execution["runtime"]["host_abi_enabled"], json!(true));
+        assert_eq!(
+            execution["runtime"]["entrypoint_signature"],
+            json!("() -> i32")
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
