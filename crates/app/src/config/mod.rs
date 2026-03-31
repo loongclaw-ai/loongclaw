@@ -19,18 +19,21 @@ pub use channels::{
     FeishuChannelServeMode, FeishuDomain, GoogleChatAccountConfig, GoogleChatChannelConfig,
     ImessageAccountConfig, ImessageChannelConfig, LineAccountConfig, LineChannelConfig,
     MatrixAccountConfig, MatrixChannelConfig, MattermostAccountConfig, MattermostChannelConfig,
-    NextcloudTalkAccountConfig, NextcloudTalkChannelConfig, ResolvedDingtalkChannelConfig,
+    NextcloudTalkAccountConfig, NextcloudTalkChannelConfig, OnebotAccountConfig,
+    OnebotChannelConfig, QqbotAccountConfig, QqbotChannelConfig, ResolvedDingtalkChannelConfig,
     ResolvedDiscordChannelConfig, ResolvedEmailChannelConfig, ResolvedFeishuChannelConfig,
     ResolvedGoogleChatChannelConfig, ResolvedImessageChannelConfig, ResolvedLineChannelConfig,
     ResolvedMatrixChannelConfig, ResolvedMattermostChannelConfig,
-    ResolvedNextcloudTalkChannelConfig, ResolvedSignalChannelConfig, ResolvedSlackChannelConfig,
-    ResolvedSynologyChatChannelConfig, ResolvedTeamsChannelConfig, ResolvedTelegramChannelConfig,
-    ResolvedWebhookChannelConfig, ResolvedWecomChannelConfig, ResolvedWhatsappChannelConfig,
+    ResolvedNextcloudTalkChannelConfig, ResolvedOnebotChannelConfig, ResolvedQqbotChannelConfig,
+    ResolvedSignalChannelConfig, ResolvedSlackChannelConfig, ResolvedSynologyChatChannelConfig,
+    ResolvedTeamsChannelConfig, ResolvedTelegramChannelConfig, ResolvedWebhookChannelConfig,
+    ResolvedWecomChannelConfig, ResolvedWeixinChannelConfig, ResolvedWhatsappChannelConfig,
     SignalAccountConfig, SignalChannelConfig, SlackAccountConfig, SlackChannelConfig,
     SynologyChatAccountConfig, SynologyChatChannelConfig, TeamsAccountConfig, TeamsChannelConfig,
     TelegramAccountConfig, TelegramChannelConfig, TelegramStreamingMode, WebhookAccountConfig,
     WebhookChannelConfig, WebhookPayloadFormat, WecomAccountConfig, WecomChannelConfig,
-    WhatsappAccountConfig, WhatsappChannelConfig, channel_descriptor, service_channel_descriptors,
+    WeixinAccountConfig, WeixinChannelConfig, WhatsappAccountConfig, WhatsappChannelConfig,
+    channel_descriptor, service_channel_descriptors,
 };
 #[allow(unused_imports)]
 pub(crate) use channels::{
@@ -40,13 +43,15 @@ pub(crate) use channels::{
     FEISHU_VERIFICATION_TOKEN_ENV, GOOGLE_CHAT_WEBHOOK_URL_ENV, IMESSAGE_BRIDGE_TOKEN_ENV,
     IMESSAGE_BRIDGE_URL_ENV, LINE_CHANNEL_ACCESS_TOKEN_ENV, LINE_CHANNEL_SECRET_ENV,
     MATRIX_ACCESS_TOKEN_ENV, MATTERMOST_BOT_TOKEN_ENV, MATTERMOST_SERVER_URL_ENV,
-    NEXTCLOUD_TALK_SERVER_URL_ENV, NEXTCLOUD_TALK_SHARED_SECRET_ENV, SIGNAL_ACCOUNT_ENV,
+    NEXTCLOUD_TALK_SERVER_URL_ENV, NEXTCLOUD_TALK_SHARED_SECRET_ENV, ONEBOT_ACCESS_TOKEN_ENV,
+    ONEBOT_WEBSOCKET_URL_ENV, QQBOT_APP_ID_ENV, QQBOT_CLIENT_SECRET_ENV, SIGNAL_ACCOUNT_ENV,
     SIGNAL_SERVICE_URL_ENV, SLACK_BOT_TOKEN_ENV, SYNOLOGY_CHAT_INCOMING_URL_ENV,
     SYNOLOGY_CHAT_TOKEN_ENV, TEAMS_APP_ID_ENV, TEAMS_APP_PASSWORD_ENV, TEAMS_TENANT_ID_ENV,
     TEAMS_WEBHOOK_URL_ENV, TELEGRAM_BOT_TOKEN_ENV, WEBHOOK_AUTH_TOKEN_ENV,
     WEBHOOK_ENDPOINT_URL_ENV, WEBHOOK_SIGNING_SECRET_ENV, WECOM_BOT_ID_ENV, WECOM_SECRET_ENV,
-    WHATSAPP_ACCESS_TOKEN_ENV, WHATSAPP_APP_SECRET_ENV, WHATSAPP_PHONE_NUMBER_ID_ENV,
-    WHATSAPP_VERIFY_TOKEN_ENV, normalize_channel_account_id, parse_email_smtp_endpoint,
+    WEIXIN_BRIDGE_ACCESS_TOKEN_ENV, WEIXIN_BRIDGE_URL_ENV, WHATSAPP_ACCESS_TOKEN_ENV,
+    WHATSAPP_APP_SECRET_ENV, WHATSAPP_PHONE_NUMBER_ID_ENV, WHATSAPP_VERIFY_TOKEN_ENV,
+    normalize_channel_account_id, parse_email_smtp_endpoint,
 };
 #[allow(unused_imports)]
 pub use conversation::{ConversationConfig, ConversationTurnLoopConfig};
@@ -123,6 +128,9 @@ mod tests {
             "feishu",
             "matrix",
             "wecom",
+            "weixin",
+            "qqbot",
+            "onebot",
             "discord",
             "slack",
             "line",
@@ -178,6 +186,24 @@ mod tests {
         assert_eq!(wecom.surface_label, "wecom channel");
         assert_eq!(wecom.runtime_kind, ChannelRuntimeKind::Service);
         assert_eq!(wecom.serve_subcommand, Some("wecom-serve"));
+
+        let weixin = channel_descriptor("wechat").expect("weixin descriptor");
+        assert_eq!(weixin.id, "weixin");
+        assert_eq!(weixin.surface_label, "weixin channel");
+        assert_eq!(weixin.runtime_kind, ChannelRuntimeKind::Service);
+        assert_eq!(weixin.serve_subcommand, None);
+
+        let qqbot = channel_descriptor("qq").expect("qqbot descriptor");
+        assert_eq!(qqbot.id, "qqbot");
+        assert_eq!(qqbot.surface_label, "qq bot channel");
+        assert_eq!(qqbot.runtime_kind, ChannelRuntimeKind::Service);
+        assert_eq!(qqbot.serve_subcommand, None);
+
+        let onebot = channel_descriptor("onebot-v11").expect("onebot descriptor");
+        assert_eq!(onebot.id, "onebot");
+        assert_eq!(onebot.surface_label, "onebot channel");
+        assert_eq!(onebot.runtime_kind, ChannelRuntimeKind::Service);
+        assert_eq!(onebot.serve_subcommand, None);
 
         let discord = channel_descriptor("discord").expect("discord descriptor");
         assert_eq!(discord.id, "discord");
@@ -277,6 +303,9 @@ mod tests {
         config.feishu.enabled = true;
         config.matrix.enabled = true;
         config.wecom.enabled = true;
+        config.weixin.enabled = true;
+        config.qqbot.enabled = true;
+        config.onebot.enabled = true;
         config.discord.enabled = true;
         config.slack.enabled = true;
         config.line.enabled = true;
@@ -300,6 +329,9 @@ mod tests {
                 "feishu",
                 "matrix",
                 "wecom",
+                "weixin",
+                "qqbot",
+                "onebot",
                 "discord",
                 "slack",
                 "line",

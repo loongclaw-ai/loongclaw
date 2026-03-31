@@ -18,6 +18,15 @@ use super::shared::{
 };
 use crate::secrets::resolve_secret_with_legacy_env;
 
+#[path = "channels_bridge.rs"]
+mod bridge;
+
+pub use bridge::{
+    OnebotAccountConfig, OnebotChannelConfig, QqbotAccountConfig, QqbotChannelConfig,
+    ResolvedOnebotChannelConfig, ResolvedQqbotChannelConfig, ResolvedWeixinChannelConfig,
+    WeixinAccountConfig, WeixinChannelConfig,
+};
+
 pub(crate) const TELEGRAM_BOT_TOKEN_ENV: &str = "TELEGRAM_BOT_TOKEN";
 pub(crate) const DISCORD_BOT_TOKEN_ENV: &str = "DISCORD_BOT_TOKEN";
 pub(crate) const DINGTALK_WEBHOOK_URL_ENV: &str = "DINGTALK_WEBHOOK_URL";
@@ -49,6 +58,12 @@ pub(crate) const TEAMS_TENANT_ID_ENV: &str = "TEAMS_TENANT_ID";
 pub(crate) const TEAMS_WEBHOOK_URL_ENV: &str = "TEAMS_WEBHOOK_URL";
 pub(crate) const IMESSAGE_BRIDGE_URL_ENV: &str = "IMESSAGE_BRIDGE_URL";
 pub(crate) const IMESSAGE_BRIDGE_TOKEN_ENV: &str = "IMESSAGE_BRIDGE_TOKEN";
+pub(crate) const WEIXIN_BRIDGE_URL_ENV: &str = "WEIXIN_BRIDGE_URL";
+pub(crate) const WEIXIN_BRIDGE_ACCESS_TOKEN_ENV: &str = "WEIXIN_BRIDGE_ACCESS_TOKEN";
+pub(crate) const QQBOT_APP_ID_ENV: &str = "QQBOT_APP_ID";
+pub(crate) const QQBOT_CLIENT_SECRET_ENV: &str = "QQBOT_CLIENT_SECRET";
+pub(crate) const ONEBOT_WEBSOCKET_URL_ENV: &str = "ONEBOT_WEBSOCKET_URL";
+pub(crate) const ONEBOT_ACCESS_TOKEN_ENV: &str = "ONEBOT_ACCESS_TOKEN";
 pub(crate) const WHATSAPP_ACCESS_TOKEN_ENV: &str = "WHATSAPP_ACCESS_TOKEN";
 pub(crate) const WHATSAPP_PHONE_NUMBER_ID_ENV: &str = "WHATSAPP_PHONE_NUMBER_ID";
 pub(crate) const WHATSAPP_VERIFY_TOKEN_ENV: &str = "WHATSAPP_VERIFY_TOKEN";
@@ -2026,6 +2041,54 @@ impl Default for WecomChannelConfig {
             reconnect_interval_s: default_wecom_reconnect_interval_seconds(),
             allowed_conversation_ids: Vec::new(),
             acp: ChannelAcpConfig::default(),
+            accounts: BTreeMap::new(),
+        }
+    }
+}
+
+impl Default for WeixinChannelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            account_id: None,
+            default_account: None,
+            bridge_url: None,
+            bridge_url_env: Some(WEIXIN_BRIDGE_URL_ENV.to_owned()),
+            bridge_access_token: None,
+            bridge_access_token_env: Some(WEIXIN_BRIDGE_ACCESS_TOKEN_ENV.to_owned()),
+            allowed_contact_ids: Vec::new(),
+            accounts: BTreeMap::new(),
+        }
+    }
+}
+
+impl Default for QqbotChannelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            account_id: None,
+            default_account: None,
+            app_id: None,
+            app_id_env: Some(QQBOT_APP_ID_ENV.to_owned()),
+            client_secret: None,
+            client_secret_env: Some(QQBOT_CLIENT_SECRET_ENV.to_owned()),
+            allowed_peer_ids: Vec::new(),
+            accounts: BTreeMap::new(),
+        }
+    }
+}
+
+impl Default for OnebotChannelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            account_id: None,
+            default_account: None,
+            websocket_url: None,
+            websocket_url_env: Some(ONEBOT_WEBSOCKET_URL_ENV.to_owned()),
+            access_token: None,
+            access_token_env: Some(ONEBOT_ACCESS_TOKEN_ENV.to_owned()),
+            allowed_group_ids: Vec::new(),
             accounts: BTreeMap::new(),
         }
     }

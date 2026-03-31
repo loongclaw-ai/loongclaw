@@ -28,6 +28,14 @@ use super::{
     webhook_auth::build_webhook_auth_header_from_parts,
 };
 
+#[path = "registry_bridge.rs"]
+mod bridge;
+
+use bridge::{
+    ONEBOT_CHANNEL_REGISTRY_DESCRIPTOR, QQBOT_CHANNEL_REGISTRY_DESCRIPTOR,
+    WEIXIN_CHANNEL_REGISTRY_DESCRIPTOR,
+};
+
 pub const CHANNEL_OPERATION_SEND_ID: &str = "send";
 pub const CHANNEL_OPERATION_SERVE_ID: &str = "serve";
 
@@ -171,6 +179,7 @@ impl ChannelCatalogOperationAvailability {
 #[serde(rename_all = "snake_case")]
 pub enum ChannelCapability {
     RuntimeBacked,
+    PluginBacked,
     MultiAccount,
     Send,
     Serve,
@@ -181,6 +190,7 @@ impl ChannelCapability {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::RuntimeBacked => "runtime_backed",
+            Self::PluginBacked => "plugin_backed",
             Self::MultiAccount => "multi_account",
             Self::Send => "send",
             Self::Serve => "serve",
@@ -193,6 +203,7 @@ impl ChannelCapability {
 #[serde(rename_all = "snake_case")]
 pub enum ChannelOnboardingStrategy {
     ManualConfig,
+    PluginBridge,
     Planned,
 }
 
@@ -200,6 +211,7 @@ impl ChannelOnboardingStrategy {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ManualConfig => "manual_config",
+            Self::PluginBridge => "plugin_bridge",
             Self::Planned => "planned",
         }
     }
@@ -241,6 +253,7 @@ pub struct ChannelOperationDescriptor {
 pub enum ChannelCatalogImplementationStatus {
     RuntimeBacked,
     ConfigBacked,
+    PluginBacked,
     Stub,
 }
 
@@ -249,6 +262,7 @@ impl ChannelCatalogImplementationStatus {
         match self {
             Self::RuntimeBacked => "runtime_backed",
             Self::ConfigBacked => "config_backed",
+            Self::PluginBacked => "plugin_backed",
             Self::Stub => "stub",
         }
     }
@@ -824,6 +838,14 @@ const MATRIX_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboard
 };
 
 const PLANNED_CHANNEL_CAPABILITIES: &[ChannelCapability] = &[
+    ChannelCapability::MultiAccount,
+    ChannelCapability::Send,
+    ChannelCapability::Serve,
+    ChannelCapability::RuntimeTracking,
+];
+
+const PLUGIN_BACKED_CHANNEL_CAPABILITIES: &[ChannelCapability] = &[
+    ChannelCapability::PluginBacked,
     ChannelCapability::MultiAccount,
     ChannelCapability::Send,
     ChannelCapability::Serve,
@@ -3146,6 +3168,9 @@ const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
     FEISHU_CHANNEL_REGISTRY_DESCRIPTOR,
     MATRIX_CHANNEL_REGISTRY_DESCRIPTOR,
     WECOM_CHANNEL_REGISTRY_DESCRIPTOR,
+    WEIXIN_CHANNEL_REGISTRY_DESCRIPTOR,
+    QQBOT_CHANNEL_REGISTRY_DESCRIPTOR,
+    ONEBOT_CHANNEL_REGISTRY_DESCRIPTOR,
     DISCORD_CHANNEL_REGISTRY_DESCRIPTOR,
     SLACK_CHANNEL_REGISTRY_DESCRIPTOR,
     LINE_CHANNEL_REGISTRY_DESCRIPTOR,
@@ -3643,6 +3668,28 @@ fn validate_http_url(field: &str, value: &str, issues: &mut Vec<String>) {
     }
 
     let issue = format!("{field} must use http or https, got {scheme}");
+    issues.push(issue);
+}
+
+fn validate_websocket_url(field: &str, value: &str, issues: &mut Vec<String>) {
+    let parsed_url = reqwest::Url::parse(value);
+    let url = match parsed_url {
+        Ok(url) => url,
+        Err(error) => {
+            let issue = format!("{field} is invalid: {error}");
+            issues.push(issue);
+            return;
+        }
+    };
+
+    let scheme = url.scheme();
+    let is_ws = scheme == "ws";
+    let is_wss = scheme == "wss";
+    if is_ws || is_wss {
+        return;
+    }
+
+    let issue = format!("{field} must use ws or wss, got {scheme}");
     issues.push(issue);
 }
 
@@ -7270,6 +7317,10 @@ mod tests {
         assert_eq!(normalize_channel_catalog_id("discord-bot"), Some("discord"));
         assert_eq!(normalize_channel_catalog_id("slack"), Some("slack"));
         assert_eq!(normalize_channel_catalog_id("gchat"), Some("google-chat"));
+        assert_eq!(normalize_channel_catalog_id("wechat"), Some("weixin"));
+        assert_eq!(normalize_channel_catalog_id("wx"), Some("weixin"));
+        assert_eq!(normalize_channel_catalog_id("qq"), Some("qqbot"));
+        assert_eq!(normalize_channel_catalog_id("onebot-v11"), Some("onebot"));
         assert_eq!(
             normalize_channel_catalog_id("synochat"),
             Some("synology-chat")
@@ -7559,6 +7610,9 @@ mod tests {
         let telegram = resolve_channel_catalog_entry("telegram").expect("telegram entry");
         let lark = resolve_channel_catalog_entry("lark").expect("lark entry");
         let discord = resolve_channel_catalog_entry("discord").expect("discord entry");
+        let weixin = resolve_channel_catalog_entry("wechat").expect("weixin entry");
+        let qqbot = resolve_channel_catalog_entry("qq").expect("qqbot entry");
+        let onebot = resolve_channel_catalog_entry("onebot-v11").expect("onebot entry");
 
         assert_eq!(
             telegram.onboarding.strategy,
@@ -7591,6 +7645,19 @@ mod tests {
                 .setup_hint
                 .contains("outbound direct send is shipped")
         );
+
+        assert_eq!(weixin.onboarding.strategy.as_str(), "plugin_bridge");
+        assert_eq!(
+            weixin.onboarding.status_command,
+            "loongclaw channels --json"
+        );
+        assert!(weixin.onboarding.setup_hint.contains("ClawBot"));
+
+        assert_eq!(qqbot.onboarding.strategy.as_str(), "plugin_bridge");
+        assert!(qqbot.onboarding.setup_hint.contains("QQ Bot"));
+
+        assert_eq!(onebot.onboarding.strategy.as_str(), "plugin_bridge");
+        assert!(onebot.onboarding.setup_hint.contains("OneBot"));
     }
 
     #[test]
@@ -8579,7 +8646,7 @@ mod tests {
                 "tlon",
                 "zalo",
                 "zalo-personal",
-                "webchat",
+                "webchat"
             ]
         );
         assert!(!catalog_only.iter().any(|entry| entry.id == "discord"));
@@ -8600,6 +8667,9 @@ mod tests {
         );
         assert!(!catalog_only.iter().any(|entry| entry.id == "synology-chat"));
         assert!(!catalog_only.iter().any(|entry| entry.id == "imessage"));
+        assert!(!catalog_only.iter().any(|entry| entry.id == "weixin"));
+        assert!(!catalog_only.iter().any(|entry| entry.id == "qqbot"));
+        assert!(!catalog_only.iter().any(|entry| entry.id == "onebot"));
         assert_eq!(tlon.operations[0].command, "tlon-send");
         assert_eq!(webchat.operations[1].command, "webchat-serve");
     }
@@ -8620,6 +8690,9 @@ mod tests {
                 "feishu",
                 "matrix",
                 "wecom",
+                "weixin",
+                "qqbot",
+                "onebot",
                 "discord",
                 "slack",
                 "line",
@@ -8649,7 +8722,7 @@ mod tests {
                 "tlon",
                 "zalo",
                 "zalo-personal",
-                "webchat",
+                "webchat"
             ]
         );
         assert_eq!(
@@ -8663,6 +8736,9 @@ mod tests {
                 "feishu",
                 "matrix",
                 "wecom",
+                "weixin",
+                "qqbot",
+                "onebot",
                 "discord",
                 "slack",
                 "line",
@@ -9003,6 +9079,9 @@ mod tests {
                 "feishu",
                 "matrix",
                 "wecom",
+                "weixin",
+                "qqbot",
+                "onebot",
                 "discord",
                 "slack",
                 "line",
@@ -9054,6 +9133,66 @@ mod tests {
             Some("default")
         );
         assert_eq!(discord.configured_accounts[0].id, "discord");
+
+        let weixin = inventory
+            .channel_surfaces
+            .iter()
+            .find(|surface| surface.catalog.id == "weixin")
+            .expect("weixin surface");
+        assert_eq!(
+            weixin.catalog.implementation_status,
+            ChannelCatalogImplementationStatus::PluginBacked
+        );
+        assert_eq!(weixin.configured_accounts.len(), 1);
+        assert_eq!(
+            weixin.default_configured_account_id.as_deref(),
+            Some("default")
+        );
+        assert_eq!(weixin.configured_accounts[0].id, "weixin");
+        assert_eq!(
+            weixin.configured_accounts[0].configured_account_id,
+            "default"
+        );
+
+        let qqbot = inventory
+            .channel_surfaces
+            .iter()
+            .find(|surface| surface.catalog.id == "qqbot")
+            .expect("qqbot surface");
+        assert_eq!(
+            qqbot.catalog.implementation_status,
+            ChannelCatalogImplementationStatus::PluginBacked
+        );
+        assert_eq!(qqbot.configured_accounts.len(), 1);
+        assert_eq!(
+            qqbot.default_configured_account_id.as_deref(),
+            Some("default")
+        );
+        assert_eq!(qqbot.configured_accounts[0].id, "qqbot");
+        assert_eq!(
+            qqbot.configured_accounts[0].configured_account_id,
+            "default"
+        );
+
+        let onebot = inventory
+            .channel_surfaces
+            .iter()
+            .find(|surface| surface.catalog.id == "onebot")
+            .expect("onebot surface");
+        assert_eq!(
+            onebot.catalog.implementation_status,
+            ChannelCatalogImplementationStatus::PluginBacked
+        );
+        assert_eq!(onebot.configured_accounts.len(), 1);
+        assert_eq!(
+            onebot.default_configured_account_id.as_deref(),
+            Some("default")
+        );
+        assert_eq!(onebot.configured_accounts[0].id, "onebot");
+        assert_eq!(
+            onebot.configured_accounts[0].configured_account_id,
+            "default"
+        );
 
         let line = inventory
             .channel_surfaces
@@ -9277,15 +9416,19 @@ mod tests {
     #[test]
     fn shipped_channel_registry_descriptors_define_snapshot_builders() {
         for descriptor in sorted_channel_registry_descriptors() {
-            let is_stub =
-                descriptor.implementation_status == ChannelCatalogImplementationStatus::Stub;
-            if is_stub {
+            let requires_snapshot_builder = matches!(
+                descriptor.implementation_status,
+                ChannelCatalogImplementationStatus::RuntimeBacked
+                    | ChannelCatalogImplementationStatus::ConfigBacked
+                    | ChannelCatalogImplementationStatus::PluginBacked
+            );
+            if !requires_snapshot_builder {
                 continue;
             }
 
             assert!(
                 descriptor.snapshot_builder.is_some(),
-                "non-stub channel `{}` must define a snapshot builder",
+                "built-in shipped channel `{}` must define a snapshot builder",
                 descriptor.id
             );
         }
