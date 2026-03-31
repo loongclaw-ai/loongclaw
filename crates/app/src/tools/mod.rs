@@ -4986,7 +4986,10 @@ mod tests {
             &config,
         )
         .expect_err("tool should reject >500 batch create items");
-        assert!(create_error.contains("batch size must be <= 500"), "error={create_error}");
+        assert!(
+            create_error.contains("batch size must be <= 500"),
+            "error={create_error}"
+        );
 
         let update_records = (0..501)
             .map(|index| {
@@ -5005,7 +5008,10 @@ mod tests {
             &config,
         )
         .expect_err("tool should reject >500 batch update items");
-        assert!(update_error.contains("batch size must be <= 500"), "error={update_error}");
+        assert!(
+            update_error.contains("batch size must be <= 500"),
+            "error={update_error}"
+        );
 
         let delete_records = (0..501)
             .map(|index| format!("rec_{index}"))
@@ -5022,7 +5028,10 @@ mod tests {
             &config,
         )
         .expect_err("tool should reject >500 batch delete items");
-        assert!(delete_error.contains("batch size must be <= 500"), "error={delete_error}");
+        assert!(
+            delete_error.contains("batch size must be <= 500"),
+            "error={delete_error}"
+        );
     }
 
     #[cfg(feature = "feishu-integration")]
@@ -9646,7 +9655,10 @@ mod tests {
 
         let requests = requests.lock().await.clone();
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].path, "/open-apis/bitable/v1/apps/app_demo/tables");
+        assert_eq!(
+            requests[0].path,
+            "/open-apis/bitable/v1/apps/app_demo/tables"
+        );
         assert!(requests[0].query.as_deref().is_some_and(|query| {
             query.contains("page_size=20") && query.contains("page_token=page_current")
         }));

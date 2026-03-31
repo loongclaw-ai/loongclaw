@@ -1193,8 +1193,10 @@ async fn feishu_bitable_app_list_requires_drive_readonly_scope() {
     let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::channel::feishu::api::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant("feishu_main", "ou_123", "u-token", "r-token", now_s);
-    grant.scopes =
-        mvp::channel::feishu::api::FeishuGrantScopeSet::from_scopes(["offline_access", "bitable:app"]);
+    grant.scopes = mvp::channel::feishu::api::FeishuGrantScopeSet::from_scopes([
+        "offline_access",
+        "bitable:app",
+    ]);
     store.save_grant(&grant).expect("seed app list scope grant");
     store
         .set_selected_grant("feishu_main", "ou_123", now_s + 1)
@@ -1255,9 +1257,13 @@ async fn feishu_bitable_list_tables_requires_table_read_scope() {
     let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::channel::feishu::api::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant("feishu_main", "ou_123", "u-token", "r-token", now_s);
-    grant.scopes =
-        mvp::channel::feishu::api::FeishuGrantScopeSet::from_scopes(["offline_access", "bitable:app"]);
-    store.save_grant(&grant).expect("seed list tables scope grant");
+    grant.scopes = mvp::channel::feishu::api::FeishuGrantScopeSet::from_scopes([
+        "offline_access",
+        "bitable:app",
+    ]);
+    store
+        .save_grant(&grant)
+        .expect("seed list tables scope grant");
     store
         .set_selected_grant("feishu_main", "ou_123", now_s + 1)
         .expect("select list tables scope grant");
@@ -1360,7 +1366,10 @@ async fn feishu_bitable_list_tables_returns_top_level_tables_page() {
     let requests = requests.lock().await.clone();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].method, "GET");
-    assert_eq!(requests[0].path, "/open-apis/bitable/v1/apps/app_demo/tables");
+    assert_eq!(
+        requests[0].path,
+        "/open-apis/bitable/v1/apps/app_demo/tables"
+    );
     assert!(requests[0].query.as_deref().is_some_and(
         |query| query.contains("page_size=20") && query.contains("page_token=page_current")
     ));
@@ -1398,8 +1407,10 @@ async fn feishu_bitable_app_get_fetches_expected_path() {
     let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::channel::feishu::api::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant("feishu_main", "ou_123", "u-token", "r-token", now_s);
-    grant.scopes =
-        mvp::channel::feishu::api::FeishuGrantScopeSet::from_scopes(["offline_access", "bitable:app"]);
+    grant.scopes = mvp::channel::feishu::api::FeishuGrantScopeSet::from_scopes([
+        "offline_access",
+        "bitable:app",
+    ]);
     store.save_grant(&grant).expect("seed app get grant");
 
     let payload = loongclaw_daemon::feishu_cli::execute_feishu_bitable_app_get(
@@ -1457,8 +1468,10 @@ async fn feishu_bitable_app_patch_sends_patch_body() {
     let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::channel::feishu::api::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant("feishu_main", "ou_123", "u-token", "r-token", now_s);
-    grant.scopes =
-        mvp::channel::feishu::api::FeishuGrantScopeSet::from_scopes(["offline_access", "bitable:app"]);
+    grant.scopes = mvp::channel::feishu::api::FeishuGrantScopeSet::from_scopes([
+        "offline_access",
+        "bitable:app",
+    ]);
     store.save_grant(&grant).expect("seed app patch grant");
 
     let payload = loongclaw_daemon::feishu_cli::execute_feishu_bitable_app_patch(
@@ -1520,8 +1533,10 @@ async fn feishu_bitable_app_copy_posts_copy_body() {
     let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::channel::feishu::api::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant("feishu_main", "ou_123", "u-token", "r-token", now_s);
-    grant.scopes =
-        mvp::channel::feishu::api::FeishuGrantScopeSet::from_scopes(["offline_access", "bitable:app"]);
+    grant.scopes = mvp::channel::feishu::api::FeishuGrantScopeSet::from_scopes([
+        "offline_access",
+        "bitable:app",
+    ]);
     store.save_grant(&grant).expect("seed app copy grant");
 
     let payload = loongclaw_daemon::feishu_cli::execute_feishu_bitable_app_copy(
@@ -1729,8 +1744,10 @@ async fn feishu_bitable_patch_table_sends_patch_request() {
     let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::channel::feishu::api::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant("feishu_main", "ou_123", "u-token", "r-token", now_s);
-    grant.scopes =
-        mvp::channel::feishu::api::FeishuGrantScopeSet::from_scopes(["offline_access", "bitable:app"]);
+    grant.scopes = mvp::channel::feishu::api::FeishuGrantScopeSet::from_scopes([
+        "offline_access",
+        "bitable:app",
+    ]);
     store.save_grant(&grant).expect("seed patch table grant");
 
     let payload = loongclaw_daemon::feishu_cli::execute_feishu_bitable_patch_table(
@@ -1755,7 +1772,10 @@ async fn feishu_bitable_patch_table_sends_patch_request() {
     let requests = requests.lock().await.clone();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].method, "PATCH");
-    assert_eq!(requests[0].path, "/open-apis/bitable/v1/apps/app_demo/tables/tbl_demo");
+    assert_eq!(
+        requests[0].path,
+        "/open-apis/bitable/v1/apps/app_demo/tables/tbl_demo"
+    );
     assert!(requests[0].body.contains("\"name\":\"Renamed Table\""));
 
     server.abort();
@@ -2322,7 +2342,10 @@ async fn feishu_bitable_list_fields_preserves_ui_type() {
 
     let requests = requests.lock().await.clone();
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].path, "/open-apis/bitable/v1/apps/app_demo/tables/tbl_demo/fields");
+    assert_eq!(
+        requests[0].path,
+        "/open-apis/bitable/v1/apps/app_demo/tables/tbl_demo/fields"
+    );
     assert_eq!(requests[0].query.as_deref(), Some("page_size=50"));
 
     server.abort();
@@ -2396,8 +2419,10 @@ async fn feishu_bitable_delete_field_sends_delete_request() {
     let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::channel::feishu::api::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant("feishu_main", "ou_123", "u-token", "r-token", now_s);
-    grant.scopes =
-        mvp::channel::feishu::api::FeishuGrantScopeSet::from_scopes(["offline_access", "bitable:app"]);
+    grant.scopes = mvp::channel::feishu::api::FeishuGrantScopeSet::from_scopes([
+        "offline_access",
+        "bitable:app",
+    ]);
     store.save_grant(&grant).expect("seed delete field grant");
 
     let payload = loongclaw_daemon::feishu_cli::execute_feishu_bitable_delete_field(
@@ -2679,8 +2704,10 @@ async fn feishu_bitable_get_view_fetches_expected_path() {
     let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::channel::feishu::api::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant("feishu_main", "ou_123", "u-token", "r-token", now_s);
-    grant.scopes =
-        mvp::channel::feishu::api::FeishuGrantScopeSet::from_scopes(["offline_access", "bitable:app"]);
+    grant.scopes = mvp::channel::feishu::api::FeishuGrantScopeSet::from_scopes([
+        "offline_access",
+        "bitable:app",
+    ]);
     store.save_grant(&grant).expect("seed get view grant");
 
     let payload = loongclaw_daemon::feishu_cli::execute_feishu_bitable_get_view(
@@ -2743,8 +2770,10 @@ async fn feishu_bitable_patch_view_sends_patch_request() {
     let now_s = loongclaw_daemon::feishu_support::unix_ts_now();
     let store = mvp::channel::feishu::api::FeishuTokenStore::new(temp_dir.join("feishu.sqlite3"));
     let mut grant = sample_grant("feishu_main", "ou_123", "u-token", "r-token", now_s);
-    grant.scopes =
-        mvp::channel::feishu::api::FeishuGrantScopeSet::from_scopes(["offline_access", "bitable:app"]);
+    grant.scopes = mvp::channel::feishu::api::FeishuGrantScopeSet::from_scopes([
+        "offline_access",
+        "bitable:app",
+    ]);
     store.save_grant(&grant).expect("seed patch view grant");
 
     let payload = loongclaw_daemon::feishu_cli::execute_feishu_bitable_patch_view(
