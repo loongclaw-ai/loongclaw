@@ -4237,7 +4237,11 @@ mod tests {
             .descriptor("feishu.bitable.record.search")
             .expect("feishu bitable record search descriptor");
 
-        assert!(descriptor.argument_hint().contains("automatic_fields?:boolean"));
+        assert!(
+            descriptor
+                .argument_hint()
+                .contains("automatic_fields?:boolean")
+        );
         assert!(
             descriptor
                 .parameter_types()
