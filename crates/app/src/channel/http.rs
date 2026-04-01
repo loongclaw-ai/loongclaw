@@ -120,8 +120,10 @@ mod tests {
     use std::net::{TcpListener, TcpStream};
     use std::time::Duration;
 
-    fn read_test_http_request(stream: &mut TcpStream) -> Result<(), String> {
-        let read_timeout = Duration::from_millis(250);
+    fn read_test_http_request(
+        stream: &mut TcpStream,
+        read_timeout: Duration,
+    ) -> Result<(), String> {
         stream
             .set_read_timeout(Some(read_timeout))
             .map_err(|error| format!("set test server read timeout: {error}"))?;
@@ -179,11 +181,13 @@ mod tests {
 
         let handle = std::thread::spawn(move || -> Result<bool, String> {
             let deadline = std::time::Instant::now() + accept_timeout;
+            let minimum_request_read_timeout = Duration::from_secs(1);
+            let request_read_timeout = accept_timeout.max(minimum_request_read_timeout);
 
             loop {
                 match listener.accept() {
                     Ok((mut stream, _peer)) => {
-                        read_test_http_request(&mut stream)?;
+                        read_test_http_request(&mut stream, request_read_timeout)?;
                         stream
                             .write_all(response.as_bytes())
                             .map_err(|error| format!("write test server response: {error}"))?;
