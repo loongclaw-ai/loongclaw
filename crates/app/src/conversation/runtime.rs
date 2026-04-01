@@ -8,13 +8,12 @@ use serde_json::Value;
 use crate::CliResult;
 use crate::KernelContext;
 #[cfg(feature = "memory-sqlite")]
-use crate::operator::session_graph::OperatorSessionGraph;
+use crate::operator::delegate_runtime::{
+    OperatorDelegateRuntime, OperatorDelegateToolViewDecision,
+};
 use crate::runtime_self_continuity::{self, RuntimeSelfContinuity};
 use crate::tools::runtime_config::ToolRuntimeNarrowing;
-use crate::tools::{
-    ToolView, delegate_child_tool_view_for_config,
-    delegate_child_tool_view_for_config_with_delegate,
-};
+use crate::tools::{ToolView, delegate_child_tool_view_for_config_with_delegate};
 
 use super::super::memory;
 use super::super::{config::LoongClawConfig, provider};
@@ -41,7 +40,7 @@ use super::turn_middleware_registry::{
 use crate::memory::runtime_config::MemoryRuntimeConfig;
 #[cfg(feature = "memory-sqlite")]
 use crate::session::repository::{
-    SessionKind, SessionRepository, SessionState, TransitionSessionWithEventIfCurrentRequest,
+    SessionRepository, SessionState, TransitionSessionWithEventIfCurrentRequest,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -873,43 +872,22 @@ where
         {
             let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
             if let Ok(repo) = SessionRepository::new(&memory_config) {
-                let session_graph = OperatorSessionGraph::new(&repo);
-                if let Some(session) = repo
-                    .load_session(session_id)
-                    .map_err(|error| format!("load session tool-view context failed: {error}"))?
-                {
-                    if session.parent_session_id.is_some() {
-                        let depth = match session_graph.lineage_depth(session_id) {
-                            Ok(depth) => depth,
-                            Err(error)
-                                if error.starts_with("session_lineage_broken:")
-                                    || error.starts_with("session_lineage_cycle_detected:") =>
-                            {
-                                return Ok(delegate_child_tool_view_for_config_with_delegate(
-                                    &config.tools,
-                                    false,
-                                ));
-                            }
-                            Err(error) => {
-                                return Err(format!(
-                                    "compute session lineage depth for tool view failed: {error}"
-                                ));
-                            }
-                        };
-                        let allow_nested_delegate = depth < config.tools.delegate.max_depth;
-                        return Ok(delegate_child_tool_view_for_config_with_delegate(
-                            &config.tools,
-                            allow_nested_delegate,
-                        ));
-                    }
-                } else if repo
-                    .load_session_summary_with_legacy_fallback(session_id)
+                let delegate_runtime = OperatorDelegateRuntime::new(&repo);
+                let tool_view_decision = delegate_runtime
+                    .tool_view_decision(session_id, config.tools.delegate.max_depth)
                     .map_err(|error| {
-                        format!("load legacy session tool-view context failed: {error}")
-                    })?
-                    .is_some_and(|session| session.kind == SessionKind::DelegateChild)
+                        format!("resolve operator delegate tool-view decision failed: {error}")
+                    })?;
+
+                if let OperatorDelegateToolViewDecision::DelegateChild {
+                    allow_nested_delegate,
+                } = tool_view_decision
                 {
-                    return Ok(delegate_child_tool_view_for_config(&config.tools));
+                    let child_tool_view = delegate_child_tool_view_for_config_with_delegate(
+                        &config.tools,
+                        allow_nested_delegate,
+                    );
+                    return Ok(child_tool_view);
                 }
             }
         }

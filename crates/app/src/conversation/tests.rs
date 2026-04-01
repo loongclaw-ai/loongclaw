@@ -10506,6 +10506,60 @@ async fn child_session_hidden_sessions_send_is_rejected_by_default_dispatcher() 
 
 #[cfg(feature = "memory-sqlite")]
 #[tokio::test]
+async fn broken_lineage_child_delegate_is_hidden_by_default_dispatcher() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-delegate", "broken-lineage-dispatcher")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "child-session".to_owned(),
+        kind: crate::session::repository::SessionKind::DelegateChild,
+        parent_session_id: Some("missing-parent".to_owned()),
+        label: Some("Child".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create child session");
+
+    let dispatcher = DefaultAppToolDispatcher::new(memory_config, config.tools.clone());
+    let session_context = SessionContext::child(
+        "child-session",
+        "missing-parent",
+        crate::tools::runtime_tool_view_for_config(&config.tools),
+    );
+
+    let request = loongclaw_contracts::ToolCoreRequest {
+        tool_name: "delegate".to_owned(),
+        payload: json!({
+            "task": "research broken lineage"
+        }),
+    };
+
+    let error = dispatcher
+        .execute_app_tool(
+            &session_context,
+            request,
+            crate::conversation::ConversationRuntimeBinding::direct(),
+        )
+        .await
+        .expect_err("broken-lineage child should not execute delegate");
+
+    assert!(
+        error.contains("tool_not_visible: delegate"),
+        "expected delegate to stay hidden for broken-lineage child, got: {error}"
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
 async fn sessions_send_rejects_unknown_target_session() {
     let mut config = test_config();
     config.tools.messages.enabled = true;

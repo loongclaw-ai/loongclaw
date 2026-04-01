@@ -17,14 +17,15 @@ use crate::memory::runtime_config::MemoryRuntimeConfig;
 #[cfg(feature = "memory-sqlite")]
 use crate::operator::approval_runtime::{GovernedToolApprovalRequest, OperatorApprovalRuntime};
 #[cfg(feature = "memory-sqlite")]
-use crate::operator::session_graph::OperatorSessionGraph;
+use crate::operator::delegate_runtime::{
+    OperatorDelegateRuntime, OperatorDelegateToolViewDecision,
+};
 #[cfg(feature = "memory-sqlite")]
-use crate::session::repository::{SessionKind, SessionRepository};
+use crate::session::repository::SessionRepository;
 use crate::tools::{
     ToolApprovalMode, ToolExecutionKind, ToolSchedulingClass, ToolView,
-    delegate_child_tool_view_for_config, delegate_child_tool_view_for_config_with_delegate,
-    governance_profile_for_descriptor, runtime_tool_view, runtime_tool_view_for_config,
-    tool_catalog,
+    delegate_child_tool_view_for_config_with_delegate, governance_profile_for_descriptor,
+    runtime_tool_view, runtime_tool_view_for_config, tool_catalog,
 };
 
 use super::runtime::SessionContext;
@@ -348,43 +349,30 @@ impl DefaultAppToolDispatcher {
         session_context: &SessionContext,
     ) -> Result<ToolView, String> {
         let repo = SessionRepository::new(&self.memory_config)?;
-        let session_graph = OperatorSessionGraph::new(&repo);
-        if let Some(session) = repo.load_session(&session_context.session_id)? {
-            if session.parent_session_id.is_some() {
-                let depth = session_graph
-                    .lineage_depth(&session_context.session_id)
-                    .map_err(|error| {
-                        format!(
-                            "compute session lineage depth for dispatcher tool view failed: {error}"
-                        )
-                    })?;
-                let allow_nested_delegate = depth < self.tool_config.delegate.max_depth;
-                return Ok(with_runtime_ready_browser_companion_tools(
-                    delegate_child_tool_view_for_config_with_delegate(
-                        &self.tool_config,
-                        allow_nested_delegate,
-                    ),
-                    &session_context.tool_view,
-                ));
+        let delegate_runtime = OperatorDelegateRuntime::new(&repo);
+        let tool_view_decision = delegate_runtime
+            .tool_view_decision(
+                &session_context.session_id,
+                self.tool_config.delegate.max_depth,
+            )
+            .map_err(|error| {
+                format!("resolve operator delegate tool view for dispatcher failed: {error}")
+            })?;
+        let base_tool_view = match tool_view_decision {
+            OperatorDelegateToolViewDecision::Root => {
+                runtime_tool_view_for_config(&self.tool_config)
             }
-            return Ok(with_runtime_ready_browser_companion_tools(
-                runtime_tool_view_for_config(&self.tool_config),
-                &session_context.tool_view,
-            ));
-        }
-        if repo
-            .load_session_summary_with_legacy_fallback(&session_context.session_id)?
-            .is_some_and(|session| session.kind == SessionKind::DelegateChild)
-        {
-            return Ok(with_runtime_ready_browser_companion_tools(
-                delegate_child_tool_view_for_config(&self.tool_config),
-                &session_context.tool_view,
-            ));
-        }
-        Ok(with_runtime_ready_browser_companion_tools(
-            runtime_tool_view_for_config(&self.tool_config),
-            &session_context.tool_view,
-        ))
+            OperatorDelegateToolViewDecision::DelegateChild {
+                allow_nested_delegate,
+            } => delegate_child_tool_view_for_config_with_delegate(
+                &self.tool_config,
+                allow_nested_delegate,
+            ),
+        };
+        let effective_tool_view =
+            with_runtime_ready_browser_companion_tools(base_tool_view, &session_context.tool_view);
+
+        Ok(effective_tool_view)
     }
 
     #[cfg(not(feature = "memory-sqlite"))]
@@ -2468,6 +2456,36 @@ mod tests {
         assert_eq!(request["operation"], "click");
 
         fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn effective_tool_view_for_broken_lineage_child_fails_closed() {
+        let memory_config = isolated_memory_config("broken-lineage-tool-view");
+        let repo = SessionRepository::new(&memory_config).expect("repository");
+
+        repo.ensure_session(NewSessionRecord {
+            session_id: "child-session".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("missing-parent".to_owned()),
+            label: Some("Child".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("ensure child session");
+
+        let tool_config = ToolConfig::default();
+        let dispatcher = DefaultAppToolDispatcher::new(memory_config, tool_config.clone());
+        let tool_view = runtime_tool_view_for_config(&tool_config);
+        let session_context = SessionContext::child("child-session", "missing-parent", tool_view);
+
+        let effective_tool_view = dispatcher
+            .effective_tool_view_for_session(&session_context)
+            .expect("broken lineage child should still resolve a fail-closed tool view");
+
+        assert!(effective_tool_view.contains("file.read"));
+        assert!(effective_tool_view.contains("file.write"));
+        assert!(!effective_tool_view.contains("delegate"));
+        assert!(!effective_tool_view.contains("delegate_async"));
+        assert!(!effective_tool_view.contains("shell.exec"));
     }
 
     #[tokio::test]
