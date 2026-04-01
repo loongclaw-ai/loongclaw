@@ -1,4 +1,3 @@
-use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -1643,6 +1642,7 @@ mod tests {
 
     use crate::test_support::ScopedEnv;
     use loongclaw_contracts::SecretRef;
+    use std::fs;
     use std::process::Command;
     use std::sync::MutexGuard;
 

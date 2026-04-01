@@ -6072,7 +6072,6 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::ffi::OsString;
-    use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, MutexGuard};

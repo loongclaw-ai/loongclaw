@@ -43,9 +43,6 @@ use super::state::{
     load_gateway_owner_status, request_gateway_stop,
 };
 
-const GATEWAY_CONTROL_TOKEN_FILE_MODE: u32 = 0o600;
-const GATEWAY_CONTROL_RUNTIME_DIR_MODE: u32 = 0o700;
-
 type GatewayControlJsonResponse = (StatusCode, Json<Value>);
 
 #[derive(Clone)]
