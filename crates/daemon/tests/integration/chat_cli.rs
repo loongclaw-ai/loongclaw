@@ -1,5 +1,6 @@
 #![cfg(unix)]
 
+use super::latest_selector_process_support::LatestSelectorCliFixture;
 use super::*;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -334,5 +335,90 @@ fn chat_without_config_surfaces_config_path_access_errors() {
         fixture.onboard_log().is_empty(),
         "path access errors should not invoke onboarding: {:?}",
         fixture.onboard_log()
+    );
+}
+
+#[test]
+fn chat_cli_latest_session_selector_process_uses_selected_root_session_history() {
+    let fixture = LatestSelectorCliFixture::new("chat-latest-selector-process");
+    fixture.write_config_with(|_| {});
+
+    fixture.create_root_session("root-old");
+    fixture.append_session_turn("root-old", "user", "old root turn");
+    fixture.set_session_updated_at("root-old", 100);
+    fixture.set_turn_timestamps("root-old", 100);
+
+    fixture.create_root_session("root-new");
+    fixture.append_session_turn("root-new", "user", "selected user turn");
+    fixture.append_session_turn("root-new", "assistant", "selected assistant turn");
+    fixture.set_session_updated_at("root-new", 200);
+    fixture.set_turn_timestamps("root-new", 200);
+
+    fixture.create_delegate_child_session("delegate-child", "root-new");
+    fixture.append_session_turn("delegate-child", "assistant", "delegate child turn");
+    fixture.set_session_updated_at("delegate-child", 400);
+    fixture.set_turn_timestamps("delegate-child", 400);
+
+    fixture.create_root_session("root-archived");
+    fixture.append_session_turn("root-archived", "assistant", "archived root turn");
+    fixture.set_session_updated_at("root-archived", 500);
+    fixture.set_turn_timestamps("root-archived", 500);
+    fixture.archive_session("root-archived", 600);
+
+    let output = fixture.run_process(&["chat", "--session", "latest"], Some(b"/history\n/exit\n"));
+    let stdout = render_output(&output.stdout);
+    let stderr = render_output(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "chat latest selector should succeed, stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("- session: root-new"),
+        "chat startup should surface the resolved latest session id: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("selected user turn"),
+        "history output should include the selected latest root user turn: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("selected assistant turn"),
+        "history output should include the selected latest root assistant turn: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("old root turn"),
+        "older root history should not appear in the latest session output: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("delegate child turn"),
+        "delegate child history should not appear in the latest root output: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("archived root turn"),
+        "archived root history should not appear in the latest root output: {stdout:?}"
+    );
+}
+
+#[test]
+fn chat_cli_latest_session_selector_process_rejects_missing_resumable_root() {
+    let fixture = LatestSelectorCliFixture::new("chat-latest-selector-empty");
+    fixture.write_config_with(|_| {});
+
+    let output = fixture.run_process(&["chat", "--session", "latest"], None);
+    let stdout = render_output(&output.stdout);
+    let stderr = render_output(&output.stderr);
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "missing latest root session should fail before chat starts, stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stderr.contains("latest"),
+        "chat error output should mention the latest selector: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("resumable root session"),
+        "chat error output should explain the missing latest root session: {stderr:?}"
     );
 }

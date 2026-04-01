@@ -84,6 +84,7 @@ fn validation_diagnostic_with_severity(
 
 mod acp;
 mod architecture;
+mod ask_cli;
 mod chat_cli;
 mod cli_tests;
 mod doctor_feishu;
@@ -94,6 +95,7 @@ mod gateway_api_turn;
 mod gateway_owner_state;
 mod gateway_read_models;
 mod import_cli;
+mod latest_selector_process_support;
 mod memory_context_benchmark_cli;
 mod migrate_cli;
 mod migration;
