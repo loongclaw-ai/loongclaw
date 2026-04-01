@@ -3800,10 +3800,13 @@ where
                 })
             }
             Err(error) => {
-                let _ = approval_runtime.finish_executing_request(
-                    approval_request_id,
-                    Some(error.as_str()),
-                )?;
+                let maybe_executed = approval_runtime
+                    .finish_executing_request(approval_request_id, Some(error.as_str()))?;
+                if maybe_executed.is_none() {
+                    return Err(format!(
+                        "approval_request_not_executing: `{approval_request_id}` is no longer executing; original replay error: {error}"
+                    ));
+                }
                 Err(error)
             }
         }

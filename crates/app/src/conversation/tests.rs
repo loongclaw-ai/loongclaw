@@ -39,8 +39,9 @@ use crate::memory::{
 };
 #[cfg(feature = "memory-sqlite")]
 use crate::session::repository::{
-    NewApprovalGrantRecord, NewSessionEvent, NewSessionRecord, NewSessionToolPolicyRecord,
-    SessionKind, SessionRepository, SessionState,
+    ApprovalRequestStatus, NewApprovalGrantRecord, NewSessionEvent, NewSessionRecord,
+    NewSessionToolPolicyRecord, SessionKind, SessionRepository, SessionState,
+    TransitionApprovalRequestIfCurrentRequest,
 };
 
 #[cfg(feature = "memory-sqlite")]
@@ -325,6 +326,162 @@ impl crate::conversation::AsyncDelegateSpawner for LocalChildRuntimeAsyncDelegat
         )
         .await?;
         Ok(())
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+struct ApprovalFinalizationConflictRuntime {
+    inner: FakeRuntime,
+    memory_config: MemoryRuntimeConfig,
+    approval_request_id: String,
+    replay_error: String,
+}
+
+#[cfg(feature = "memory-sqlite")]
+impl ApprovalFinalizationConflictRuntime {
+    fn new(
+        inner: FakeRuntime,
+        memory_config: MemoryRuntimeConfig,
+        approval_request_id: &str,
+        replay_error: &str,
+    ) -> Self {
+        Self {
+            inner,
+            memory_config,
+            approval_request_id: approval_request_id.to_owned(),
+            replay_error: replay_error.to_owned(),
+        }
+    }
+
+    fn finalize_request_out_of_band_if_executing(&self) -> CliResult<bool> {
+        let repo = SessionRepository::new(&self.memory_config)?;
+        let transition_request = TransitionApprovalRequestIfCurrentRequest {
+            expected_status: ApprovalRequestStatus::Executing,
+            next_status: ApprovalRequestStatus::Executed,
+            decision: None,
+            resolved_by_session_id: None,
+            executed_at: Some(1),
+            last_error: Some("out_of_band_finalize".to_owned()),
+        };
+        let finalized = repo.transition_approval_request_if_current(
+            &self.approval_request_id,
+            transition_request,
+        )?;
+
+        Ok(finalized.is_some())
+    }
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[async_trait]
+impl ConversationRuntime for ApprovalFinalizationConflictRuntime {
+    fn session_context(
+        &self,
+        config: &LoongClawConfig,
+        session_id: &str,
+        binding: ConversationRuntimeBinding<'_>,
+    ) -> CliResult<SessionContext> {
+        let finalized = self.finalize_request_out_of_band_if_executing()?;
+
+        if finalized {
+            return Err(self.replay_error.clone());
+        }
+
+        self.inner.session_context(config, session_id, binding)
+    }
+
+    fn tool_view(
+        &self,
+        config: &LoongClawConfig,
+        session_id: &str,
+        binding: ConversationRuntimeBinding<'_>,
+    ) -> CliResult<crate::tools::ToolView> {
+        self.inner.tool_view(config, session_id, binding)
+    }
+
+    async fn build_context(
+        &self,
+        config: &LoongClawConfig,
+        session_id: &str,
+        include_system_prompt: bool,
+        binding: ConversationRuntimeBinding<'_>,
+    ) -> CliResult<AssembledConversationContext> {
+        self.inner
+            .build_context(config, session_id, include_system_prompt, binding)
+            .await
+    }
+
+    async fn build_messages(
+        &self,
+        config: &LoongClawConfig,
+        session_id: &str,
+        include_system_prompt: bool,
+        tool_view: &crate::tools::ToolView,
+        binding: ConversationRuntimeBinding<'_>,
+    ) -> CliResult<Vec<Value>> {
+        self.inner
+            .build_messages(
+                config,
+                session_id,
+                include_system_prompt,
+                tool_view,
+                binding,
+            )
+            .await
+    }
+
+    async fn request_completion(
+        &self,
+        config: &LoongClawConfig,
+        messages: &[Value],
+        binding: ConversationRuntimeBinding<'_>,
+    ) -> CliResult<String> {
+        self.inner
+            .request_completion(config, messages, binding)
+            .await
+    }
+
+    async fn request_turn(
+        &self,
+        config: &LoongClawConfig,
+        session_id: &str,
+        turn_id: &str,
+        messages: &[Value],
+        tool_view: &crate::tools::ToolView,
+        binding: ConversationRuntimeBinding<'_>,
+    ) -> CliResult<ProviderTurn> {
+        self.inner
+            .request_turn(config, session_id, turn_id, messages, tool_view, binding)
+            .await
+    }
+
+    async fn request_turn_streaming(
+        &self,
+        config: &LoongClawConfig,
+        session_id: &str,
+        turn_id: &str,
+        messages: &[Value],
+        tool_view: &crate::tools::ToolView,
+        binding: ConversationRuntimeBinding<'_>,
+        on_token: crate::provider::StreamingTokenCallback,
+    ) -> CliResult<ProviderTurn> {
+        self.inner
+            .request_turn_streaming(
+                config, session_id, turn_id, messages, tool_view, binding, on_token,
+            )
+            .await
+    }
+
+    async fn persist_turn(
+        &self,
+        session_id: &str,
+        role: &str,
+        content: &str,
+        binding: ConversationRuntimeBinding<'_>,
+    ) -> CliResult<()> {
+        self.inner
+            .persist_turn(session_id, role, content, binding)
+            .await
     }
 }
 
@@ -17526,6 +17683,118 @@ async fn handle_turn_with_runtime_approval_request_resolve_approve_always_persis
         grant.is_some(),
         "expected root-session grant to be persisted"
     );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn handle_turn_with_runtime_approval_request_resolve_surfaces_finalize_conflict_on_replay_error()
+ {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-approval-resolve", "finalize-conflict")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    config.tools.approval.mode = crate::config::GovernedToolApprovalMode::Strict;
+
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+    repo.ensure_approval_request(crate::session::repository::NewApprovalRequestRecord {
+        approval_request_id: "apr-delegate-finalize-conflict".to_owned(),
+        session_id: "root-session".to_owned(),
+        turn_id: "turn-delegate-parent".to_owned(),
+        tool_call_id: "call-delegate-parent".to_owned(),
+        tool_name: "delegate".to_owned(),
+        approval_key: "tool:delegate".to_owned(),
+        request_payload_json: json!({
+            "session_id": "root-session",
+            "parent_session_id": Value::Null,
+            "turn_id": "turn-delegate-parent",
+            "tool_call_id": "call-delegate-parent",
+            "tool_name": "delegate",
+            "args_json": {
+                "task": "child task",
+                "label": "finalize-conflict"
+            },
+            "source": "provider_tool_call",
+            "execution_kind": "app"
+        }),
+        governance_snapshot_json: json!({
+            "governance_scope": "topology_mutation",
+            "risk_class": "high",
+            "approval_mode": "policy_driven",
+            "rule_id": "governed_tool_requires_approval",
+            "reason": "operator approval required before running `delegate`"
+        }),
+    })
+    .expect("seed approval request");
+
+    let inner_runtime = FakeRuntime::with_turns_and_completions(
+        vec![],
+        vec![Ok(ProviderTurn {
+            assistant_text: "resolving approval".to_owned(),
+            tool_intents: vec![provider_tool_intent(
+                "approval_request_resolve",
+                json!({
+                    "approval_request_id": "apr-delegate-finalize-conflict",
+                    "decision": "approve_once"
+                }),
+                "root-session",
+                "turn-approval-resolve",
+                "call-approval-resolve",
+            )],
+            raw_meta: Value::Null,
+        })],
+        vec![],
+    )
+    .with_durable_memory_config(memory_config.clone());
+    let runtime = ApprovalFinalizationConflictRuntime::new(
+        inner_runtime,
+        memory_config.clone(),
+        "apr-delegate-finalize-conflict",
+        "synthetic_replay_failure",
+    );
+    let coordinator = ConversationTurnCoordinator::new();
+
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "root-session",
+            "show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            ConversationRuntimeBinding::direct(),
+        )
+        .await
+        .expect("finalization conflict should surface in the raw reply");
+
+    assert!(
+        reply.contains("approval_request_not_executing"),
+        "reply={reply}"
+    );
+    assert!(reply.contains("synthetic_replay_failure"), "reply={reply}");
+
+    let resolved = repo
+        .load_approval_request("apr-delegate-finalize-conflict")
+        .expect("load approval request")
+        .expect("approval request row");
+
+    assert_eq!(
+        resolved.status,
+        crate::session::repository::ApprovalRequestStatus::Executed
+    );
+    assert_eq!(resolved.last_error.as_deref(), Some("out_of_band_finalize"));
 }
 
 #[cfg(feature = "memory-sqlite")]
