@@ -13,7 +13,7 @@ fallback compatibility.
 
 ---
 
-### Task 1: Add the failing repository selection tests
+## Task 1: Add the failing repository selection tests
 
 **Files:**
 - Modify: `crates/app/src/session/repository.rs`
@@ -48,7 +48,7 @@ cargo test -p loongclaw-app latest_resumable_root --locked
 
 Expected: failing because the helper does not exist yet.
 
-### Task 2: Add the failing CLI runtime tests
+## Task 2: Add the failing CLI runtime tests
 
 **Files:**
 - Modify: `crates/app/src/chat.rs`
@@ -73,7 +73,7 @@ cargo test -p loongclaw-app latest_session --locked
 
 Expected: failing because selector resolution is not implemented yet.
 
-### Task 3: Add the failing daemon CLI parsing test
+## Task 3: Add the failing daemon CLI parsing test
 
 **Files:**
 - Modify: `crates/daemon/tests/integration/mod.rs`
@@ -97,7 +97,7 @@ cargo test -p loongclaw-daemon latest_session_selector --locked
 
 Expected: likely already green at the parsing layer, which confirms no parser change is required.
 
-### Task 4: Implement the repository helper
+## Task 4: Implement the repository helper
 
 **Files:**
 - Modify: `crates/app/src/session/repository.rs`
@@ -127,7 +127,7 @@ cargo test -p loongclaw-app latest_resumable_root --locked
 
 Expected: green.
 
-### Task 5: Implement selector-aware CLI session resolution
+## Task 5: Implement selector-aware CLI session resolution
 
 **Files:**
 - Modify: `crates/app/src/chat.rs`
@@ -160,7 +160,7 @@ cargo test -p loongclaw-app latest_session --locked
 
 Expected: green.
 
-### Task 6: Confirm daemon CLI parsing coverage
+## Task 6: Confirm daemon CLI parsing coverage
 
 **Files:**
 - Modify: `crates/daemon/tests/integration/mod.rs`
@@ -180,7 +180,7 @@ Expected: green.
 
 Do not change clap flag structure unless the tests prove it is necessary.
 
-### Task 7: Run focused and broad verification
+## Task 7: Run focused and broad verification
 
 **Files:**
 - Modify: none unless verification exposes a necessary fix
@@ -218,7 +218,7 @@ cargo test --workspace --all-features --locked
 Expected: all green, or any unrelated baseline failure must be explicitly investigated and
 separated from this feature before claiming readiness.
 
-### Task 8: Prepare clean GitHub delivery
+## Task 8: Prepare clean GitHub delivery
 
 **Files:**
 - Modify: GitHub artifacts through `gh`, not repository files

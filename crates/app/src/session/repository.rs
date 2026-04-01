@@ -1900,6 +1900,7 @@ impl SessionRepository {
                     GROUP BY session_id
                  ) archived ON archived.session_id = s.session_id
                  LEFT JOIN turns t ON t.session_id = s.session_id
+                 WHERE s.kind = 'root'
                  GROUP BY
                     s.session_id,
                     s.kind,
