@@ -256,7 +256,7 @@ Expected:
 **Files:**
 - Modify: `docs/plans/2026-04-01-bash-rules-dir-common-semantics-implementation-plan.md`
 
-- [ ] **Step 1: Run required repo verification**
+- [x] **Step 1: Run required repo verification**
 
 Run:
 
@@ -269,7 +269,7 @@ Expected:
 
 - PASS, with the known browser-companion environment issue handled the same way as the current branch policy
 
-- [ ] **Step 2: Run the required implementation review loop**
+- [x] **Step 2: Run the required implementation review loop**
 
 Follow the active superpower implementation workflow:
 
@@ -277,6 +277,6 @@ Follow the active superpower implementation workflow:
 - style review in `single-pass` mode
 - re-run focused tests and repo verification after any scope-in fixes
 
-- [ ] **Step 3: Mark the plan complete and commit the implementation slice**
+- [x] **Step 3: Mark the plan complete and commit the implementation slice**
 
 Update this plan file's checkboxes to reflect the final state, then create a local milestone commit after verification and review gates pass.
