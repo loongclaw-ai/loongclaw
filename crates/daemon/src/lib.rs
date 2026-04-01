@@ -1513,6 +1513,7 @@ pub async fn run_demo() -> CliResult<()> {
 #[cfg(test)]
 mod first_run_entry_tests {
     use super::*;
+    use crate::test_support::ScopedEnv;
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -1533,8 +1534,8 @@ mod first_run_entry_tests {
         std::env::temp_dir().join(format!("{prefix}-{pid}-{nanos}-{counter}"))
     }
 
-    fn isolated_home(prefix: &str) -> (mvp::test_support::ScopedEnv, PathBuf) {
-        let mut env = mvp::test_support::ScopedEnv::new();
+    fn isolated_home(prefix: &str) -> (ScopedEnv, PathBuf) {
+        let mut env = ScopedEnv::new();
         let home = unique_temp_dir(prefix);
         fs::create_dir_all(&home).expect("create isolated home");
         env.set("HOME", &home);
@@ -1571,7 +1572,7 @@ mod first_run_entry_tests {
 
     #[test]
     fn resolve_default_entry_command_honors_loongclaw_config_path_override() {
-        let mut env = mvp::test_support::ScopedEnv::new();
+        let mut env = ScopedEnv::new();
         let config_path = unique_temp_dir("loongclaw-default-entry-env").join("custom-config.toml");
         if let Some(parent) = config_path.parent() {
             fs::create_dir_all(parent).expect("create config parent");
@@ -1592,7 +1593,7 @@ mod first_run_entry_tests {
 
     #[test]
     fn resolve_default_entry_command_routes_to_onboard_when_config_path_is_a_directory() {
-        let mut env = mvp::test_support::ScopedEnv::new();
+        let mut env = ScopedEnv::new();
         let config_dir = unique_temp_dir("loongclaw-default-entry-dir");
         fs::create_dir_all(&config_dir).expect("create config directory");
         env.set("LOONGCLAW_CONFIG_PATH", &config_dir);
@@ -1605,7 +1606,7 @@ mod first_run_entry_tests {
 
     #[test]
     fn run_welcome_cli_rejects_missing_config_file() {
-        let mut env = mvp::test_support::ScopedEnv::new();
+        let mut env = ScopedEnv::new();
         let config_path = unique_temp_dir("loongclaw-welcome-missing").join("missing-config.toml");
         env.set("LOONGCLAW_CONFIG_PATH", &config_path);
 
@@ -1623,7 +1624,7 @@ mod first_run_entry_tests {
 
     #[test]
     fn run_welcome_cli_rejects_directory_config_path() {
-        let mut env = mvp::test_support::ScopedEnv::new();
+        let mut env = ScopedEnv::new();
         let config_dir = unique_temp_dir("loongclaw-welcome-dir");
         fs::create_dir_all(&config_dir).expect("create config directory");
         env.set("LOONGCLAW_CONFIG_PATH", &config_dir);
