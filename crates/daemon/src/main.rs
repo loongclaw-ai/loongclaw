@@ -77,43 +77,6 @@ fn error_code(error: &str) -> String {
     "unclassified".to_owned()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{command_kind, error_code};
-    use loongclaw_daemon::{Commands, MultiChannelServeChannelAccount};
-
-    #[test]
-    fn command_kind_uses_stable_snake_case_labels() {
-        let validate_config = Commands::ValidateConfig {
-            config: None,
-            json: false,
-            output: None,
-            locale: "en".to_owned(),
-            fail_on_diagnostics: false,
-        };
-        let multi_channel_serve = Commands::MultiChannelServe {
-            config: None,
-            session: "session-1".to_owned(),
-            channel_account: vec![MultiChannelServeChannelAccount {
-                channel_id: "telegram".to_owned(),
-                account_id: "ops".to_owned(),
-            }],
-        };
-
-        assert_eq!(command_kind(&validate_config), "validate_config");
-        assert_eq!(command_kind(&multi_channel_serve), "multi_channel_serve");
-    }
-
-    #[test]
-    fn error_code_extracts_stable_prefixes_only() {
-        let stable_error = "config_file_missing: could not read `/tmp/private.toml`";
-        let unstable_error = "Failed to read `/tmp/private.toml`";
-
-        assert_eq!(error_code(stable_error), "config_file_missing");
-        assert_eq!(error_code(unstable_error), "unclassified");
-    }
-}
-
 #[tokio::main]
 async fn main() {
     let _stdin_guard = StdinGuard;
@@ -1086,5 +1049,42 @@ async fn main() {
         }
         flush_stdin();
         std::process::exit(2);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{command_kind, error_code};
+    use loongclaw_daemon::{Commands, MultiChannelServeChannelAccount};
+
+    #[test]
+    fn command_kind_uses_stable_snake_case_labels() {
+        let validate_config = Commands::ValidateConfig {
+            config: None,
+            json: false,
+            output: None,
+            locale: "en".to_owned(),
+            fail_on_diagnostics: false,
+        };
+        let multi_channel_serve = Commands::MultiChannelServe {
+            config: None,
+            session: "session-1".to_owned(),
+            channel_account: vec![MultiChannelServeChannelAccount {
+                channel_id: "telegram".to_owned(),
+                account_id: "ops".to_owned(),
+            }],
+        };
+
+        assert_eq!(command_kind(&validate_config), "validate_config");
+        assert_eq!(command_kind(&multi_channel_serve), "multi_channel_serve");
+    }
+
+    #[test]
+    fn error_code_extracts_stable_prefixes_only() {
+        let stable_error = "config_file_missing: could not read `/tmp/private.toml`";
+        let unstable_error = "Failed to read `/tmp/private.toml`";
+
+        assert_eq!(error_code(stable_error), "config_file_missing");
+        assert_eq!(error_code(unstable_error), "unclassified");
     }
 }

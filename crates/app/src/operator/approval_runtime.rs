@@ -68,7 +68,8 @@ impl<'a> OperatorApprovalRuntime<'a> {
         hasher.update(tool_name.as_bytes());
 
         let digest = hasher.finalize();
-        let request_id = format!("apr_{digest:x}");
+        let digest = hex::encode(digest);
+        let request_id = format!("apr_{digest}");
 
         request_id
     }
