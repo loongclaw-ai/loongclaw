@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 use serde::Serialize;
 
@@ -42,8 +45,10 @@ use bridge::{
     ONEBOT_CHANNEL_REGISTRY_DESCRIPTOR, QQBOT_CHANNEL_REGISTRY_DESCRIPTOR,
     WEIXIN_CHANNEL_REGISTRY_DESCRIPTOR,
 };
-use plugin_bridge::plugin_bridge_contract_from_descriptor;
 pub use plugin_bridge::validate_plugin_channel_bridge_manifest;
+use plugin_bridge::{
+    channel_surface_plugin_bridge_discovery_by_id, plugin_bridge_contract_from_descriptor,
+};
 
 pub const CHANNEL_OPERATION_SEND_ID: &str = "send";
 pub const CHANNEL_OPERATION_SERVE_ID: &str = "serve";
@@ -329,6 +334,73 @@ pub struct ChannelPluginBridgeManifestValidation {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub enum ChannelPluginBridgeDiscoveryStatus {
+    NotConfigured,
+    ScanFailed,
+    NoMatches,
+    MatchesFound,
+}
+
+impl ChannelPluginBridgeDiscoveryStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotConfigured => "not_configured",
+            Self::ScanFailed => "scan_failed",
+            Self::NoMatches => "no_matches",
+            Self::MatchesFound => "matches_found",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelDiscoveredPluginBridgeStatus {
+    CompatibleReady,
+    CompatibleIncompleteContract,
+    MissingSetupSurface,
+    UnsupportedChannelSurface,
+}
+
+impl ChannelDiscoveredPluginBridgeStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CompatibleReady => "compatible_ready",
+            Self::CompatibleIncompleteContract => "compatible_incomplete_contract",
+            Self::MissingSetupSurface => "missing_setup_surface",
+            Self::UnsupportedChannelSurface => "unsupported_channel_surface",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ChannelDiscoveredPluginBridge {
+    pub plugin_id: String,
+    pub source_path: String,
+    pub package_root: String,
+    pub package_manifest_path: Option<String>,
+    pub bridge_kind: String,
+    pub adapter_family: String,
+    pub transport_family: Option<String>,
+    pub target_contract: Option<String>,
+    pub account_scope: Option<String>,
+    pub status: ChannelDiscoveredPluginBridgeStatus,
+    pub issues: Vec<String>,
+    pub missing_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ChannelPluginBridgeDiscovery {
+    pub managed_install_root: Option<String>,
+    pub status: ChannelPluginBridgeDiscoveryStatus,
+    pub scan_issue: Option<String>,
+    pub compatible_plugins: usize,
+    pub incomplete_plugins: usize,
+    pub incompatible_plugins: usize,
+    pub plugins: Vec<ChannelDiscoveredPluginBridge>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ChannelOperationHealth {
     Ready,
     Disabled,
@@ -400,6 +472,7 @@ pub struct ChannelSurface {
     pub catalog: ChannelCatalogEntry,
     pub configured_accounts: Vec<ChannelStatusSnapshot>,
     pub default_configured_account_id: Option<String>,
+    pub plugin_bridge_discovery: Option<ChannelPluginBridgeDiscovery>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3650,7 +3723,10 @@ fn channel_inventory_with_now(
     let channel_catalog = list_channel_catalog();
     let channels = channel_status_snapshots_with_now(config, runtime_dir, now_ms);
     let catalog_only_channels = catalog_only_channel_entries_from(&channel_catalog, &channels);
-    let channel_surfaces = build_channel_surfaces(&channel_catalog, &channels);
+    let plugin_bridge_discovery_by_id =
+        channel_surface_plugin_bridge_discovery_by_id(config, &channel_catalog);
+    let channel_surfaces =
+        build_channel_surfaces(&channel_catalog, &channels, &plugin_bridge_discovery_by_id);
     ChannelInventory {
         channels,
         catalog_only_channels,
@@ -3662,6 +3738,7 @@ fn channel_inventory_with_now(
 fn build_channel_surfaces(
     channel_catalog: &[ChannelCatalogEntry],
     channels: &[ChannelStatusSnapshot],
+    plugin_bridge_discovery_by_id: &BTreeMap<&'static str, ChannelPluginBridgeDiscovery>,
 ) -> Vec<ChannelSurface> {
     channel_catalog
         .iter()
@@ -3675,10 +3752,12 @@ fn build_channel_surfaces(
                 .iter()
                 .find(|snapshot| snapshot.is_default_account)
                 .map(|snapshot| snapshot.configured_account_id.clone());
+            let plugin_bridge_discovery = plugin_bridge_discovery_by_id.get(catalog.id).cloned();
             ChannelSurface {
                 catalog: catalog.clone(),
                 configured_accounts,
                 default_configured_account_id,
+                plugin_bridge_discovery,
             }
         })
         .collect()

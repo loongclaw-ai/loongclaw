@@ -629,6 +629,24 @@ fn render_channel_surfaces_text_reports_catalog_only_channels() {
 }
 
 #[test]
+fn render_channel_surfaces_text_reports_managed_plugin_bridge_discovery() {
+    let config = mvp::config::LoongClawConfig::default();
+    let inventory = mvp::channel::channel_inventory(&config);
+    let rendered = render_channel_surfaces_text("/tmp/loongclaw.toml", &inventory);
+
+    assert!(
+        rendered.contains("Weixin [weixin]"),
+        "rendered channel surfaces should include the weixin surface: {rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "managed_plugin_bridge_discovery status=not_configured managed_install_root=- scan_issue=- compatible=0 incomplete=0 incompatible=0"
+        ),
+        "rendered channel surfaces should include managed discovery summaries: {rendered}"
+    );
+}
+
+#[test]
 fn memory_system_metadata_json_includes_stage_families_summary_and_source() {
     use mvp::memory::MemorySystem as _;
 
@@ -902,6 +920,38 @@ fn build_channels_cli_json_payload_includes_plugin_bridge_contracts() {
                                 .collect::<Vec<_>>()
                         })
                         == Some(vec!["send", "serve"])
+            })
+    );
+}
+
+#[test]
+fn build_channels_cli_json_payload_includes_managed_plugin_bridge_discovery() {
+    let config = mvp::config::LoongClawConfig::default();
+    let inventory = mvp::channel::channel_inventory(&config);
+    let payload = build_channels_cli_json_payload("/tmp/loongclaw.toml", &inventory);
+    let encoded = serde_json::to_value(&payload).expect("serialize payload");
+
+    assert!(
+        encoded["channel_surfaces"]
+            .as_array()
+            .expect("channel surfaces array")
+            .iter()
+            .any(|surface| {
+                surface
+                    .get("catalog")
+                    .and_then(|catalog| catalog.get("id"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("weixin")
+                    && surface
+                        .get("plugin_bridge_discovery")
+                        .and_then(|discovery| discovery.get("status"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some("not_configured")
+                    && surface
+                        .get("plugin_bridge_discovery")
+                        .and_then(|discovery| discovery.get("compatible_plugins"))
+                        .and_then(serde_json::Value::as_u64)
+                        == Some(0)
             })
     );
 }
