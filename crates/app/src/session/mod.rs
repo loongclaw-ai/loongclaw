@@ -2,6 +2,9 @@
 pub mod recovery;
 
 #[cfg(feature = "memory-sqlite")]
+pub mod inspection;
+
+#[cfg(feature = "memory-sqlite")]
 pub mod repository;
 
 #[allow(dead_code)]
