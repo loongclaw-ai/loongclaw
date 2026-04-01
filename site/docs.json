@@ -30,6 +30,7 @@
         "pages": [
           "use-loongclaw/overview",
           "use-loongclaw/common-setups",
+          "use-loongclaw/configuration-patterns",
           "use-loongclaw/volcengine-feishu-lark-playbook",
           "use-loongclaw/wecom-rollout-playbook",
           "use-loongclaw/byteplus-coding-telegram-playbook",

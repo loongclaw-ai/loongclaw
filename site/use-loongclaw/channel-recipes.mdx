@@ -13,6 +13,9 @@ one concrete channel already works.
 
 If you want the gateway ownership model in one place instead of the tutorial
 lane, continue to [Gateway And Supervision](/use-loongclaw/gateway-and-supervision).
+If you want the shared public channel-account and selector shape before the
+recipes branch into specific surfaces, start with
+[Configuration Patterns](/use-loongclaw/configuration-patterns).
 
 ## Start Here
 
@@ -54,6 +57,9 @@ surface.
 ## Reading Rule
 
 - Use this page when you already know the delivery lane and want concrete config or smoke tests.
+- Use [Configuration Patterns](/use-loongclaw/configuration-patterns) when you
+  want the shared `default_account`, `accounts.<id>`, and trust-toggle shape
+  before the per-surface walkthroughs.
 - Start with one surface only; do not jump to multi-channel supervision first.
 - Keep Feishu / Lark, WeCom, Telegram, and Matrix in the runtime-backed lane.
 - Keep webhook, email, Slack, Discord, Teams, and similar workplace sinks in the outbound-only lane.

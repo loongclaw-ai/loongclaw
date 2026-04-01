@@ -5,14 +5,15 @@ channel surfaces, outbound-only delivery inventory, and current gateway owner
 model.
 
 The public reader-facing docs path for this area lives under
-`site/use-loongclaw/`, especially `channels.mdx`, `channel-recipes.mdx`, and
-`gateway-and-supervision.mdx`. This file stays longer because it is the
-source-level contract behind those pages.
+`site/use-loongclaw/`, especially `configuration-patterns.mdx`,
+`channels.mdx`, `channel-recipes.mdx`, and `gateway-and-supervision.mdx`. This
+file stays longer because it is the source-level contract behind those pages.
 
 ## Route By Audience
 
 | If you are trying to... | Start here |
 | --- | --- |
+| read the public config shape first | [`../../site/use-loongclaw/configuration-patterns.mdx`](../../site/use-loongclaw/configuration-patterns.mdx) |
 | read the public operator docs first | [`../../site/use-loongclaw/channels.mdx`](../../site/use-loongclaw/channels.mdx) and [`../../site/use-loongclaw/channel-recipes.mdx`](../../site/use-loongclaw/channel-recipes.mdx) |
 | follow one complete provider-plus-channel rollout | [`../../site/use-loongclaw/common-setups.mdx`](../../site/use-loongclaw/common-setups.mdx) and the playbooks under it |
 | review the source-level contract for shipped channel surfaces | this file |

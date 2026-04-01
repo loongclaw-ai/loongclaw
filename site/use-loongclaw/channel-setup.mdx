@@ -10,6 +10,8 @@ shipped, what is outbound-only, and what still depends on future runtime work.
 
 Use this page when you want the practical setup contract. If you want step-by-step
 smoke tests and worked examples instead, start with [Channel Recipes](/use-loongclaw/channel-recipes).
+If you want the shared public config shape before the per-surface setup rules,
+start with [Configuration Patterns](/use-loongclaw/configuration-patterns).
 If you specifically need the longer-lived owner model, foreground versus
 headless supervision, or `--channel-account` selectors, continue to
 [Gateway And Supervision](/use-loongclaw/gateway-and-supervision).
@@ -21,6 +23,7 @@ headless supervision, or `--channel-account` selectors, continue to
 | a local assistant only | `onboard`, `ask`, `chat`, and `doctor` |
 | inbound or reply-loop automation | one shipped runtime-backed service channel |
 | proactive delivery without a reply loop | one outbound-only surface |
+| the shared account and selector config shape first | [Configuration Patterns](/use-loongclaw/configuration-patterns) |
 | multiple reply-loop surfaces on one host | [Gateway And Supervision](/use-loongclaw/gateway-and-supervision) |
 | the full source-level field contract behind this page | the repository-native [Channel Setup](https://github.com/loongclaw-ai/loongclaw/blob/dev/docs/product-specs/channel-setup.md) spec |
 

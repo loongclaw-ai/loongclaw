@@ -11,6 +11,8 @@ pages separately.
 
 This page is now the setup hub, not another long cookbook. The detailed
 operational steps live in dedicated playbooks.
+If you want the shared public config shape before you pick a playbook, start
+with [Configuration Patterns](/use-loongclaw/configuration-patterns).
 
 ## Start With The Common Cases
 
@@ -64,6 +66,9 @@ loong gateway status --json
 
 - Start with the base CLI path first. Do not treat a channel or gateway setup
   as step zero.
+- Use [Configuration Patterns](/use-loongclaw/configuration-patterns) when the
+  rollout is clear but you still want the shared provider, account, and memory
+  shape before a playbook.
 - Use a dedicated playbook when the rollout shape is already clear.
 - Use provider-only or channel-only recipe pages when the setup is still narrow.
 - Move to gateway selectors only after named `accounts.<id>` entries exist.
@@ -77,6 +82,7 @@ loong gateway status --json
 | follow the dedicated coding-plus-bot route | [BytePlus Coding Plus Telegram](/use-loongclaw/byteplus-coding-telegram-playbook) |
 | use a local model without overclaiming delivery support | [Local Model Plus Outbound Delivery](/use-loongclaw/local-outbound-playbook) |
 | supervise several runtime-backed channels | [Gateway Rollout](/use-loongclaw/gateway-rollout-playbook) |
+| inspect the shared public config shape first | [Configuration Patterns](/use-loongclaw/configuration-patterns) |
 | step back to provider-only setup | [Provider Recipes](/use-loongclaw/provider-recipes) |
 | step back to channel-only setup | [Channel Recipes](/use-loongclaw/channel-recipes) |
 | inspect the owner contract directly | [Gateway And Supervision](/use-loongclaw/gateway-and-supervision) |
