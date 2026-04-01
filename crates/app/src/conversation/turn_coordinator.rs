@@ -62,7 +62,7 @@ use super::runtime::{
     AsyncDelegateSpawnRequest, AsyncDelegateSpawner, ConversationRuntime,
     DefaultConversationRuntime, SessionContext,
 };
-use super::runtime_binding::ConversationRuntimeBinding;
+use super::runtime_binding::{ConversationRuntimeBinding, OwnedConversationRuntimeBinding};
 use super::safe_lane_failure::{
     SafeLaneFailureCode, SafeLaneFailureRouteDecision, SafeLaneFailureRouteSource,
     classify_safe_lane_plan_failure,
@@ -4427,7 +4427,7 @@ async fn enqueue_delegate_async_with_runtime<R: ConversationRuntime + ?Sized>(
         execution,
         runtime_self_continuity,
         timeout_seconds,
-        kernel_context: binding.kernel_context().cloned(),
+        binding: OwnedConversationRuntimeBinding::from_borrowed(binding),
     };
     spawn_async_delegate_detached(runtime_handle, memory_config, spawner, request);
 

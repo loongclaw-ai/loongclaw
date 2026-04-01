@@ -142,7 +142,7 @@ works when the request carries owned binding and no longer exposes
 
 Run:
 - `cargo test --workspace --locked handle_turn_with_runtime_delegate_child_cannot_reenter_delegate_async_by_default`
-- `cargo test --workspace --locked handle_turn_with_runtime_delegate_async_preserves_kernel_context_in_spawn_request`
+- `cargo test --workspace --locked handle_turn_with_runtime_delegate_async_preserves_kernel_binding_in_spawn_request`
 
 Expected: FAIL if the spawner path still reads `request.kernel_context`.
 
@@ -191,7 +191,7 @@ Run:
 - `cargo test -p loongclaw-app governed_runtime_binding --features memory-sqlite`
 - `cargo test -p loongclaw-app approval_request_resolve --features memory-sqlite`
 - `cargo test -p loongclaw-app handle_turn_with_runtime_delegate_async_preserves_kernel_binding_in_spawn_request --features memory-sqlite`
-- `cargo test -p loongclaw-app handle_turn_with_runtime_delegate_async_preserves_kernel_context_in_spawn_request --features memory-sqlite`
+- `cargo test -p loongclaw-app handle_turn_with_runtime_delegate_child_cannot_reenter_delegate_async_by_default --features memory-sqlite`
 
 Expected: PASS
 
