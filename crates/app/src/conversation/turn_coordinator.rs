@@ -8568,7 +8568,7 @@ mod tests {
         assert_eq!(summary["query"], "read repo file");
         assert!(summary.get("adapter").is_none());
         assert!(summary.get("tool_name").is_none());
-        assert!(summary.get("returned").is_none());
+        assert_eq!(summary["returned"], 2);
         assert_eq!(results.len(), 2);
         assert_eq!(first["tool_id"], "file.read");
         assert_eq!(first["lease"], "lease-file");

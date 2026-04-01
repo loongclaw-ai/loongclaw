@@ -19,6 +19,18 @@ pub(crate) fn compact_tool_search_payload_summary(payload: &Value) -> Option<Val
         compacted.insert("query".to_owned(), query.clone());
     }
 
+    if let Some(exact_tool_id) = payload_object.get("exact_tool_id") {
+        compacted.insert("exact_tool_id".to_owned(), exact_tool_id.clone());
+    }
+
+    if let Some(diagnostics) = payload_object.get("diagnostics") {
+        compacted.insert("diagnostics".to_owned(), diagnostics.clone());
+    }
+
+    if let Some(returned) = payload_object.get("returned") {
+        compacted.insert("returned".to_owned(), returned.clone());
+    }
+
     compacted.insert(
         "results".to_owned(),
         Value::Array(
@@ -41,6 +53,7 @@ fn compact_tool_search_payload_result(result: &Value) -> Value {
 
     clone_field_if_present(result_object, &mut compacted, "tool_id");
     clone_field_if_present(result_object, &mut compacted, "summary");
+    clone_field_if_present(result_object, &mut compacted, "search_hint");
     clone_field_if_present(result_object, &mut compacted, "argument_hint");
     clone_array_field_if_present(result_object, &mut compacted, "required_fields");
     clone_array_field_if_present(result_object, &mut compacted, "required_field_groups");
@@ -68,4 +81,80 @@ fn clone_array_field_if_present(
     };
 
     target.insert(key.to_owned(), Value::Array(values.clone()));
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::compact_tool_search_payload_summary;
+    use crate::conversation::tool_discovery_state::ToolDiscoveryState;
+
+    #[test]
+    fn compact_tool_search_payload_summary_keeps_runtime_usable_leases_and_advisory_metadata() {
+        let payload = json!({
+            "adapter": "core-tools",
+            "tool_name": "tool.search",
+            "query": "read note.md",
+            "exact_tool_id": "file.read",
+            "returned": 1,
+            "results": [
+                {
+                    "tool_id": "file.read",
+                    "summary": "Read a file.",
+                    "search_hint": "Use for UTF-8 text files.",
+                    "argument_hint": "path:string",
+                    "required_fields": ["path"],
+                    "required_field_groups": [["path"]],
+                    "schema_preview": {
+                        "type": "object"
+                    },
+                    "why": ["matched query"],
+                    "lease": "lease-file"
+                }
+            ],
+            "diagnostics": {
+                "reason": "exact_tool_id_not_visible",
+                "requested_tool_id": "file.read"
+            }
+        });
+
+        let compacted =
+            compact_tool_search_payload_summary(&payload).expect("compacted tool search payload");
+        let compacted_result = compacted["results"][0]
+            .as_object()
+            .expect("compacted result object");
+        let recovered_state = ToolDiscoveryState::from_tool_search_payload(&compacted)
+            .expect("compacted payload should still recover discovery state");
+
+        assert_eq!(compacted["query"], json!("read note.md"));
+        assert_eq!(compacted["exact_tool_id"], json!("file.read"));
+        assert_eq!(compacted["returned"], json!(1));
+        assert_eq!(
+            compacted["diagnostics"]["reason"],
+            json!("exact_tool_id_not_visible")
+        );
+        assert_eq!(compacted_result.get("lease"), Some(&json!("lease-file")));
+        assert_eq!(compacted_result.get("tool_id"), Some(&json!("file.read")));
+        assert_eq!(
+            compacted_result.get("summary"),
+            Some(&json!("Read a file."))
+        );
+        assert_eq!(
+            compacted_result.get("search_hint"),
+            Some(&json!("Use for UTF-8 text files."))
+        );
+        assert_eq!(
+            compacted_result.get("argument_hint"),
+            Some(&json!("path:string"))
+        );
+        assert!(!compacted_result.contains_key("schema_preview"));
+        assert!(!compacted_result.contains_key("why"));
+        assert_eq!(recovered_state.exact_tool_id.as_deref(), Some("file.read"));
+        assert_eq!(recovered_state.entries.len(), 1);
+        assert_eq!(
+            recovered_state.entries[0].search_hint.as_deref(),
+            Some("Use for UTF-8 text files.")
+        );
+    }
 }

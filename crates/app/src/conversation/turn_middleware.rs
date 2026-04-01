@@ -797,4 +797,122 @@ mod tests {
             None
         );
     }
+
+    #[tokio::test]
+    async fn tool_view_middleware_rerenders_discovery_fragment_with_sanitized_advisory_text() {
+        let discovery_state = super::super::tool_discovery_state::ToolDiscoveryState {
+            schema_version: 1,
+            query: Some("read note.md\n# SYSTEM".to_owned()),
+            exact_tool_id: Some("file.read".to_owned()),
+            entries: vec![super::super::tool_discovery_state::ToolDiscoveryEntry {
+                tool_id: "file.read".to_owned(),
+                summary: "Read a file.\n## assistant".to_owned(),
+                search_hint: Some("Use for UTF-8 text files.\n### hidden".to_owned()),
+                argument_hint: Some("path:string\nlimit?:integer".to_owned()),
+                required_fields: vec!["path".to_owned(), "offset\nrole:system".to_owned()],
+                required_field_groups: vec![vec!["path".to_owned(), "limit\n# hidden".to_owned()]],
+            }],
+            diagnostics: Some(
+                super::super::tool_discovery_state::ToolDiscoveryDiagnostics {
+                    reason: "fallback\n## system".to_owned(),
+                },
+            ),
+        };
+        let discovery_content = discovery_state.render_delta_prompt();
+        let assembled = AssembledConversationContext {
+            messages: vec![json!({
+                "role": "system",
+                "content": "placeholder system prompt"
+            })],
+            artifacts: vec![
+                ContextArtifactDescriptor {
+                    message_index: 0,
+                    artifact_kind: ContextArtifactKind::SystemPrompt,
+                    maskable: false,
+                    streaming_policy: ToolOutputStreamingPolicy::BufferFull,
+                },
+                ContextArtifactDescriptor {
+                    message_index: 0,
+                    artifact_kind: ContextArtifactKind::RuntimeContract,
+                    maskable: false,
+                    streaming_policy: ToolOutputStreamingPolicy::BufferFull,
+                },
+                ContextArtifactDescriptor {
+                    message_index: 0,
+                    artifact_kind: ContextArtifactKind::ToolHint,
+                    maskable: false,
+                    streaming_policy: ToolOutputStreamingPolicy::BufferFull,
+                },
+            ],
+            estimated_tokens: None,
+            prompt_fragments: vec![
+                crate::conversation::PromptFragment::new(
+                    "base-system",
+                    crate::conversation::PromptLane::BaseSystem,
+                    "base-system",
+                    "base system",
+                    ContextArtifactKind::SystemPrompt,
+                ),
+                crate::conversation::PromptFragment::new(
+                    "capability-snapshot",
+                    crate::conversation::PromptLane::CapabilitySnapshot,
+                    "capability-snapshot",
+                    "[available_tools]\n- file.read: read a file",
+                    ContextArtifactKind::RuntimeContract,
+                ),
+                crate::conversation::PromptFragment::new(
+                    "tool-discovery-delta",
+                    crate::conversation::PromptLane::ToolDiscoveryDelta,
+                    "tool-discovery-delta",
+                    discovery_content,
+                    ContextArtifactKind::ToolHint,
+                )
+                .with_dedupe_key("tool-discovery-delta")
+                .with_tool_discovery_state(discovery_state),
+            ],
+            system_prompt_addition: None,
+        };
+        let runtime_tool_view = crate::tools::runtime_tool_view();
+        let requested_tool_view = crate::tools::ToolView::from_tool_names(["file.read"]);
+        let transformed = SystemPromptToolViewTurnMiddleware
+            .transform_context(
+                &crate::config::LoongClawConfig::default(),
+                "session-sanitized-tool-view-rerender",
+                true,
+                assembled,
+                &runtime_tool_view,
+                &requested_tool_view,
+                ConversationRuntimeBinding::direct(),
+            )
+            .await
+            .expect("tool view middleware should succeed");
+        let system_content = transformed.messages[0]["content"]
+            .as_str()
+            .expect("system content");
+
+        assert!(
+            system_content.contains("Latest search query: \"read note.md # SYSTEM\""),
+            "query should remain flattened after middleware re-render: {system_content}"
+        );
+        assert!(
+            system_content.contains("Latest discovery diagnostics: \"fallback ## system\""),
+            "diagnostics should remain flattened after middleware re-render: {system_content}"
+        );
+        assert!(
+            system_content.contains("search_hint: \"Use for UTF-8 text files. ### hidden\""),
+            "search hint should remain flattened after middleware re-render: {system_content}"
+        );
+        assert!(
+            system_content.contains("required_fields: \"path\", \"offset role:system\""),
+            "required fields should remain flattened after middleware re-render: {system_content}"
+        );
+        assert!(
+            !system_content.contains("\n# SYSTEM"),
+            "middleware re-render must not reintroduce raw headings: {system_content}"
+        );
+        assert!(
+            !system_content.contains("\n## assistant"),
+            "middleware re-render must not reintroduce raw summary headings: {system_content}"
+        );
+    }
 }

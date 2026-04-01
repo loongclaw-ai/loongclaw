@@ -1235,7 +1235,12 @@ mod tests {
             "adapter": "core-tools",
             "tool_name": "tool.search",
             "query": "read repo file",
+            "exact_tool_id": "file.read",
             "returned": 2,
+            "diagnostics": {
+                "reason": "exact_tool_id_not_visible",
+                "requested_tool_id": "file.read"
+            },
             "results": [
                 {
                     "tool_id": "file.read",
@@ -1316,9 +1321,14 @@ mod tests {
         assert_eq!(envelope["tool"], "tool.search");
         assert_eq!(envelope["payload_truncated"], false);
         assert_eq!(summary["query"], "read repo file");
+        assert_eq!(summary["exact_tool_id"], "file.read");
+        assert_eq!(
+            summary["diagnostics"]["reason"],
+            "exact_tool_id_not_visible"
+        );
         assert!(summary.get("adapter").is_none());
         assert!(summary.get("tool_name").is_none());
-        assert!(summary.get("returned").is_none());
+        assert_eq!(summary["returned"], 2);
         assert_eq!(first["tool_id"], "file.read");
         assert_eq!(first["lease"], "lease-file");
         for entry in summary["results"]
@@ -1402,7 +1412,12 @@ mod tests {
             "adapter": "core-tools",
             "tool_name": "tool.search",
             "query": "read repo file",
+            "exact_tool_id": "file.read",
             "returned": 1,
+            "diagnostics": {
+                "reason": "exact_tool_id_not_visible",
+                "requested_tool_id": "file.read"
+            },
             "results": [
                 {
                     "tool_id": "file.read",
@@ -1448,9 +1463,14 @@ mod tests {
         assert_eq!(envelope["tool"], "tool.search");
         assert_eq!(envelope["payload_truncated"], false);
         assert_eq!(summary["query"], "read repo file");
+        assert_eq!(summary["exact_tool_id"], "file.read");
+        assert_eq!(
+            summary["diagnostics"]["reason"],
+            "exact_tool_id_not_visible"
+        );
         assert!(summary.get("adapter").is_none());
         assert!(summary.get("tool_name").is_none());
-        assert!(summary.get("returned").is_none());
+        assert_eq!(summary["returned"], 1);
         assert_eq!(first["tool_id"], "file.read");
         assert_eq!(first["lease"], "lease-file");
         assert!(first.get("tags").is_none());
