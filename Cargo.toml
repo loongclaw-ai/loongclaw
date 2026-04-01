@@ -13,8 +13,10 @@ resolver = "2"
 [workspace.package]
 edition = "2024"
 license = "MIT"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 authors = ["chumyin"]
+repository = "https://github.com/loongclaw-ai/loongclaw"
+homepage = "https://github.com/loongclaw-ai/loongclaw"
 
 [workspace.dependencies]
 async-trait = "0.1"
