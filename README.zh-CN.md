@@ -26,8 +26,9 @@
 </p>
 
 <p>
-  <strong>LoongClaw 是一套基于 Rust 构建的安全、可扩展、可持续演进的 Claw 基座。</strong><br/>
+  <strong>LoongClaw 是一套基于 Rust 构建的安全、可扩展、可持续演进的智能体运行时基座。</strong><br/>
   它以助手能力为起点，但目标并不仅停留于通用助手，而是逐步成长为面向团队的垂域智能体基础层，让人与 AI 能在真实场景中持续协作、共同进化。
+  它的目标不是停在一层轻量模型封装或一个只在终端里演示的 demo，而是逐步长成一个能够围绕 provider、tool、memory、channel、policy 持续扩展的受治理运行时底座。
 </p>
 
 <p>
@@ -47,6 +48,8 @@
 ## LoongClaw 现在到底是什么
 
 LoongClaw 从可运行的助手路径出发，但它今天已经更接近一个可扩展的 runtime foundation，而不是只在终端里工作的玩具。
+重要的不只是你已经可以运行 `loong onboard`、`loong ask` 或 `loong chat`，而是围绕这些入口，项目已经把团队后续真正需要观察、操作和扩展的运行时表面公开出来了。
+README 仍然刻意保持紧凑，但它已经指向一个更完整的 operating model：可用的 operator path、操作者可见的 runtime surface，以及面向更长期团队工作流的受治理 foundation。
 
 今天更准确地说，它已经具备三层公开现实：
 

@@ -26,8 +26,9 @@
 </p>
 
 <p>
-  <strong>LoongClaw is a secure, extensible, and sustainably evolvable Claw foundation built in Rust.</strong><br/>
+  <strong>LoongClaw is a secure, extensible, and sustainably evolvable agent runtime foundation built in Rust.</strong><br/>
   It starts from assistant capabilities, but its goal does not stop at being a general assistant. It is meant to grow into a team-facing foundation layer for vertical AI agents, where people and AI can keep collaborating and evolving together.
+  Rather than ending at a thin model wrapper or a terminal-only demo, LoongClaw is being shaped as a governed runtime base that can keep expanding across providers, tools, memory, channels, and policy as real workflows become more demanding.
 </p>
 
 <p>
@@ -47,6 +48,8 @@
 ## What LoongClaw Is
 
 LoongClaw starts from a runnable assistant path, but it is already structured as a broader runtime foundation rather than a terminal-only toy.
+What matters is not only that you can run `loong onboard`, `loong ask`, or `loong chat`, but that the project already exposes the surrounding runtime surfaces teams eventually need to inspect, operate, and extend.
+The README still keeps that public surface intentionally compact, but it already points to a larger operating model: a usable operator path, an operator-visible runtime surface, and a governed foundation for longer-lived team workflows.
 
 Today that means three concrete things:
 
