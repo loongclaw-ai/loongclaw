@@ -1,11 +1,13 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 use serde::{Deserialize, Serialize};
 
-use super::shared::{ConfigValidationIssue, expand_path, validate_numeric_range};
+use super::shared::{
+    ConfigValidationIssue, default_loongclaw_home, expand_path, validate_numeric_range,
+};
 
 pub const DEFAULT_WEB_FETCH_MAX_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_WEB_FETCH_TIMEOUT_SECONDS: u64 = 15;
@@ -841,33 +843,11 @@ impl ToolConfig {
 }
 
 impl BashToolConfig {
-    pub fn resolved_rules_dir(&self, config_path: Option<&Path>) -> PathBuf {
-        let config_base_dir = config_path
-            .and_then(Path::parent)
-            .filter(|path| !path.as_os_str().is_empty())
-            .map(Path::to_path_buf);
-        let base_dir = config_base_dir
-            .clone()
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-
-        let Some(rules_dir) = self.rules_dir.as_deref() else {
-            return default_bash_rules_dir(&base_dir, config_base_dir.is_some());
-        };
-
-        let expanded = expand_path(rules_dir);
-        if expanded.is_absolute() {
-            expanded
-        } else {
-            base_dir.join(expanded)
-        }
-    }
-}
-
-fn default_bash_rules_dir(base_dir: &Path, from_config_path: bool) -> PathBuf {
-    if from_config_path && base_dir.file_name() == Some(std::ffi::OsStr::new(".loongclaw")) {
-        base_dir.join("rules")
-    } else {
-        base_dir.join(".loongclaw").join("rules")
+    pub fn resolved_rules_dir(&self) -> PathBuf {
+        self.rules_dir
+            .as_deref()
+            .map(expand_path)
+            .unwrap_or_else(|| default_loongclaw_home().join("rules"))
     }
 }
 
@@ -1075,6 +1055,7 @@ fn normalize_domain_entries(entries: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::ScopedEnv;
 
     #[test]
     fn tool_config_defaults_expose_session_runtime_policy() {
@@ -1653,25 +1634,25 @@ blocked_domains = ["internal.example", " INTERNAL.EXAMPLE "]
     }
 
     #[test]
-    fn bash_tool_config_defaults_to_no_explicit_rules_dir() {
-        assert!(BashToolConfig::default().rules_dir.is_none());
-    }
+    fn bash_tool_config_defaults_to_loongclaw_home_rules_dir() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let mut env = ScopedEnv::new();
+        env.set("HOME", home.path());
 
-    #[test]
-    fn bash_tool_config_resolves_rules_dir_without_double_loongclaw_segment() {
         assert_eq!(
-            BashToolConfig::default()
-                .resolved_rules_dir(Some(Path::new("/home/test/.loongclaw/config.toml"))),
-            PathBuf::from("/home/test/.loongclaw/rules")
+            BashToolConfig::default().resolved_rules_dir(),
+            crate::config::default_loongclaw_home().join("rules")
         );
     }
 
     #[test]
-    fn default_bash_rules_dir_keeps_cwd_fallback_semantics_for_loongclaw_named_dir() {
-        assert_eq!(
-            default_bash_rules_dir(Path::new("/home/test/.loongclaw"), false),
-            PathBuf::from("/home/test/.loongclaw/.loongclaw/rules")
-        );
+    fn bash_tool_config_resolves_relative_rules_dir_like_other_path_fields() {
+        let config = BashToolConfig {
+            rules_dir: Some("custom/rules".to_owned()),
+            ..BashToolConfig::default()
+        };
+
+        assert_eq!(config.resolved_rules_dir(), PathBuf::from("custom/rules"));
     }
 
     #[test]

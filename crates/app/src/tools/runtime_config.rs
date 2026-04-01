@@ -706,7 +706,7 @@ impl ToolRuntimeConfig {
             .map(|value| value.to_ascii_lowercase())
             .collect();
         let bash_governance = build_bash_governance_runtime_policy(
-            config.tools.bash.resolved_rules_dir(config_path),
+            config.tools.bash.resolved_rules_dir(),
             shell_allow.iter(),
             shell_deny.iter(),
         );
@@ -972,7 +972,7 @@ impl ToolRuntimeConfig {
             build_bash_governance_runtime_policy(
                 crate::config::ToolConfig::default()
                     .bash
-                    .resolved_rules_dir(config_path.as_deref()),
+                    .resolved_rules_dir(),
                 shell_allow.iter(),
                 shell_deny.iter(),
             ),
@@ -1760,7 +1760,11 @@ mod tests {
     }
 
     #[test]
-    fn tool_runtime_config_uses_default_workspace_rules_dir_when_unset() {
+    fn tool_runtime_config_uses_loongclaw_home_rules_dir_when_unset() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let mut env = ScopedEnv::new();
+        env.set("HOME", home.path());
+
         let runtime = ToolRuntimeConfig::from_loongclaw_config(
             &LoongClawConfig::default(),
             Some(std::path::Path::new("/tmp/work/loongclaw.toml")),
@@ -1768,25 +1772,12 @@ mod tests {
 
         assert_eq!(
             runtime.bash_exec.governance.rules_dir,
-            PathBuf::from("/tmp/work/.loongclaw/rules")
+            crate::config::default_loongclaw_home().join("rules")
         );
     }
 
     #[test]
-    fn tool_runtime_config_uses_loongclaw_home_rules_dir_when_config_lives_inside_loongclaw_dir() {
-        let runtime = ToolRuntimeConfig::from_loongclaw_config(
-            &LoongClawConfig::default(),
-            Some(std::path::Path::new("/home/test/.loongclaw/config.toml")),
-        );
-
-        assert_eq!(
-            runtime.bash_exec.governance.rules_dir,
-            PathBuf::from("/home/test/.loongclaw/rules")
-        );
-    }
-
-    #[test]
-    fn tool_runtime_config_projects_bash_rules_dir_override() {
+    fn tool_runtime_config_keeps_relative_bash_rules_dir_override_relative() {
         let config: crate::config::ToolConfig =
             toml::from_str("[bash]\nrules_dir = \"custom/rules\"\n").expect("bash tool config");
         let loongclaw = crate::config::LoongClawConfig {
@@ -1801,13 +1792,15 @@ mod tests {
 
         assert_eq!(
             runtime.bash_exec.governance.rules_dir,
-            PathBuf::from("/tmp/work/custom/rules")
+            PathBuf::from("custom/rules")
         );
     }
 
     #[test]
     fn bash_governance_runtime_treats_missing_rules_dir_as_empty_rule_set() {
         let tempdir = tempfile::tempdir().expect("tempdir");
+        let mut env = ScopedEnv::new();
+        env.set("HOME", tempdir.path());
         let config_path = tempdir.path().join("loongclaw.toml");
 
         let runtime = ToolRuntimeConfig::from_loongclaw_config(
