@@ -23,7 +23,7 @@
 - Modify: `README.md`
   - Document `bash.exec` as an experimental parallel tool, explain `[tools.bash]`, and show the default `~/.loongclaw/rules` layout plus legacy `shell_*` compatibility.
 - Modify: `README.zh-CN.md`
-  - Mirror the `bash.exec` documentation updates in Chinese and remove the currently broken `docs/configuration/tool-policy.md` link.
+  - Mirror the `bash.exec` documentation updates in Chinese and update the docs link to the shipped tool-surface spec.
 - Modify: `docs/product-specs/tool-surface.md`
   - Record the shipped tool-surface truth that `bash.exec` now exists as an experimental parallel tool and must be documented with its canonical name without implying `shell.exec` replacement.
 - Delete: `docs/plans/2026-03-28-tool-result-followup-prompt-bug-issue-body.en.md`
@@ -70,7 +70,7 @@
 - Create: `docs/releases/architecture-drift-2026-04.md`
 - Modify: `docs/plans/2026-04-01-bash-exec-final-cleanup-implementation-plan.md`
 
-- [ ] **Step 1: Prove the current UTC-month report is the missing tracked artifact**
+- [x] **Step 1: Prove the current UTC-month report is the missing tracked artifact**
 
 Run:
 
@@ -82,7 +82,7 @@ Expected:
 - the first command fails because `architecture-drift-2026-04.md` is not yet tracked
 - the second command shows only `architecture-drift-2026-03.md`
 
-- [ ] **Step 2: Generate and add the 2026-04 architecture drift report**
+- [x] **Step 2: Generate and add the 2026-04 architecture drift report**
 
 Run:
 
@@ -115,7 +115,7 @@ Expected:
 - Modify: `deny.toml`
 - Modify: `docs/plans/2026-04-01-bash-exec-final-cleanup-implementation-plan.md`
 
-- [ ] **Step 1: Reproduce the failing advisory check locally**
+- [x] **Step 1: Reproduce the failing advisory check locally**
 
 Run:
 
@@ -128,7 +128,7 @@ Expected:
 - `cargo deny` fails on `RUSTSEC-2024-0388` and `RUSTSEC-2024-0436`
 - both dependency trees show the path through direct dependency `starlark v0.13.0`
 
-- [ ] **Step 2: Add targeted ignore entries with honest rationale**
+- [x] **Step 2: Add targeted ignore entries with honest rationale**
 
 Update `deny.toml` so the advisory section becomes:
 
@@ -141,7 +141,12 @@ ignore = [
 ]
 ```
 
-- [ ] **Step 3: Re-run the security workflow parity commands**
+- [x] **Step 3: Re-run the security workflow parity commands**
+
+Current status on 2026-04-01:
+
+- `cargo deny check advisories bans sources` now passes locally after the targeted `deny.toml` update.
+- `cargo audit` now passes locally after installing `cargo-audit`.
 
 Run:
 
@@ -161,7 +166,7 @@ Expected:
 - Modify: `docs/product-specs/tool-surface.md`
 - Modify: `docs/plans/2026-04-01-bash-exec-final-cleanup-implementation-plan.md`
 
-- [ ] **Step 1: Update the English README to document `bash.exec` as experimental and parallel**
+- [x] **Step 1: Update the English README to document `bash.exec` as experimental and parallel**
 
 In `README.md`, replace the current shell-policy-only example with a `bash.exec`-aware section that keeps `shell.exec` intact and explains the config boundary. The new example should look like:
 
@@ -195,18 +200,18 @@ The prose must explicitly say:
 - default rule files live in `~/.loongclaw/rules`
 - legacy `shell_allow`, `shell_deny`, and `shell_default_mode` still feed compatibility rules/default mode for `bash.exec`
 
-- [ ] **Step 2: Mirror the same behavior truth in `README.zh-CN.md` and fix the broken link**
+- [x] **Step 2: Mirror the same behavior truth in `README.zh-CN.md` and fix the broken link**
 
 In `README.zh-CN.md`, add the matching Chinese explanation and config example, then replace the broken link target:
 
 ```md
-- [工具策略配置](docs/configuration/tool-policy.md)
+- `docs/configuration/tool-policy.md`
 ```
 
 with the real shipped spec link:
 
 ```md
-- [工具表面规格](docs/product-specs/tool-surface.md)
+- `docs/product-specs/tool-surface.md`
 ```
 
 The Chinese prose must preserve the same scope boundary:
@@ -215,7 +220,7 @@ The Chinese prose must preserve the same scope boundary:
 - 它与 `shell.exec` 并行存在
 - 这轮不宣称二者已经收敛或互相替代
 
-- [ ] **Step 3: Update the product spec so the shipped tool surface matches the docs**
+- [x] **Step 3: Update the product spec so the shipped tool surface matches the docs**
 
 Extend `docs/product-specs/tool-surface.md` with a short section like:
 
@@ -228,6 +233,11 @@ Extend `docs/product-specs/tool-surface.md` with a short section like:
 ```
 
 - [ ] **Step 4: Run focused docs validation**
+
+Current status on 2026-04-01:
+
+- `rg -n "bash\\.exec|shell\\.exec|rules_dir|login_shell|shell_allow|shell_deny" README.md README.zh-CN.md docs/product-specs/tool-surface.md` passes and shows the expected `bash.exec` references.
+- `LOONGCLAW_RELEASE_DOCS_STRICT=1 scripts/check-docs.sh` remains blocked by pre-existing baseline docs/release issues outside this cleanup slice after merging latest `upstream/dev`.
 
 Run:
 
@@ -247,7 +257,7 @@ Expected:
 - Modify: `docs/plans/2026-04-01-bash-exec-final-cleanup-implementation-plan.md`
 - External update: GitHub PR `#677`
 
-- [ ] **Step 1: Remove the obsolete local issue drafts from the workspace**
+- [x] **Step 1: Remove the obsolete local issue drafts from the workspace**
 
 Delete:
 
@@ -258,7 +268,7 @@ Expected:
 
 - `git status --short` no longer shows the two untracked local issue-draft files
 
-- [ ] **Step 2: Rewrite the PR body to match the repository template and the real shipped scope**
+- [x] **Step 2: Rewrite the PR body to match the repository template and the real shipped scope**
 
 Update PR `#677` so its body follows `.github/PULL_REQUEST_TEMPLATE.md` and uses content equivalent to:
 
@@ -302,7 +312,7 @@ If Track B, fill these in:
 - Rollback path: revert the `bash.exec` governance series and remove the current-month release artifact / deny exceptions in one branch rollback.
 ```
 
-- [ ] **Step 3: Record the real validation evidence in the PR body**
+- [x] **Step 3: Record the real validation evidence in the PR body**
 
 The PR validation section must include the exact commands actually run in this slice:
 
@@ -335,6 +345,12 @@ Also summarize the manual `bash.exec` smoke results:
 - Modify: `docs/plans/2026-04-01-bash-exec-final-cleanup-implementation-plan.md`
 
 - [ ] **Step 1: Run the full local verification suite for this cleanup slice**
+
+Current status on 2026-04-01:
+
+- Passing locally: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace --locked`, `cargo test --workspace --all-features --locked`, `cargo audit`, `cargo deny check advisories bans sources`, `bash scripts/check_architecture_drift_freshness.sh docs/releases/architecture-drift-2026-04.md`, and `git diff --check`.
+- Remaining scope-out blockers accepted for separate follow-up PRs: strict docs governance remains blocked by pre-existing baseline docs/release issues outside this cleanup slice after merging latest `upstream/dev`, and strict architecture boundaries remain blocked by the real `tools_mod` budget breach surfaced by the refreshed April drift report.
+- Current PR handling for those blockers: disclose them explicitly as not introduced by this PR and do not fix them inside this cleanup slice.
 
 Run:
 

@@ -634,12 +634,21 @@ Current bridge-first target families include:
 
 Pure catalog-only planned surfaces such as Tlon, Nostr, Twitch, Zalo, and WebChat still do not claim runtime support until an adapter is actually shipped.
 
-Tool policy stays explicit:
+Tool policy stays explicit, and `bash.exec` is an experimental parallel tool
+that does not replace `shell.exec`. Legacy `shell_default_mode`,
+`shell_allow`, and `shell_deny` still feed the compatibility defaults and
+compatibility rules for `bash.exec`, while the default rule files live under
+`~/.loongclaw/rules`:
 
 ```toml
 [tools]
 shell_default_mode = "deny"
 shell_allow = ["echo", "ls", "git", "cargo"]
+shell_deny = ["rm"]
+
+[tools.bash]
+login_shell = false
+# rules_dir = "~/.loongclaw/rules"
 
 [tools.browser]
 enabled = true
@@ -661,6 +670,16 @@ max_results = 5
 # exa_api_key = "${EXA_API_KEY}"
 # jina_api_key = "${JINA_API_KEY}"
 # or "${JINA_AUTH_TOKEN}"
+```
+
+```text
+# ~/.loongclaw/rules/00-allow-basic.rules
+prefix_rule(pattern=["printf"], decision="allow")
+prefix_rule(pattern=["git", "status"], decision="allow")
+
+# ~/.loongclaw/rules/90-deny-dangerous.rules
+prefix_rule(pattern=["rm"], decision="deny")
+prefix_rule(pattern=["cargo", "publish"], decision="deny")
 ```
 
 Further references:
