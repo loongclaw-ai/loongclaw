@@ -6,7 +6,10 @@ cd "$REPO_ROOT"
 
 REPORT_MONTH="${LOONGCLAW_ARCH_REPORT_MONTH:-$(date -u +%Y-%m)}"
 REPORT_PATH="${1:-docs/releases/support/architecture-drift-${REPORT_MONTH}.md}"
-TEMP_REPORT="$(mktemp)"
+REPORT_DIR="$(dirname "$REPORT_PATH")"
+mkdir -p "$REPORT_DIR"
+# Keep the temp report beside the tracked report so baseline resolution uses the same directory.
+TEMP_REPORT="$(mktemp "${REPORT_DIR}/architecture-drift-check.XXXXXX")"
 NORMALIZED_TRACKED="$(mktemp)"
 NORMALIZED_GENERATED="$(mktemp)"
 DIFF_OUTPUT="$(mktemp)"

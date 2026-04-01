@@ -16,6 +16,16 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  local file="$1"
+  local needle="$2"
+  if grep -Fq "$needle" "$file"; then
+    echo "did not expect to find '$needle' in $file" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
 make_fixture_repo() {
   local fixture
   fixture="$(mktemp -d)"
@@ -142,6 +152,60 @@ run_stale_report_fails_test() {
   assert_contains "$output_file" "stale tracked architecture drift report"
 }
 
+run_report_with_baseline_passes_test() {
+  local fixture
+  fixture="$(make_fixture_repo)"
+  trap 'rm -rf "$fixture"' RETURN
+
+  local previous_report="$fixture/docs/releases/support/architecture-drift-2098-12.md"
+  local report_file="$fixture/docs/releases/support/architecture-drift-2099-01.md"
+  (
+    cd "$fixture"
+    LOONGCLAW_ARCH_REPORT_MONTH="2098-12" \
+      scripts/generate_architecture_drift_report.sh "$previous_report"
+    git add "$previous_report"
+    git commit -qm "seed previous architecture drift report"
+    LOONGCLAW_ARCH_REPORT_MONTH="2099-01" \
+      scripts/generate_architecture_drift_report.sh "$report_file"
+    git add "$report_file"
+    git commit -qm "seed fresh architecture drift report with baseline"
+  )
+
+  local output_file="$fixture/baseline.out"
+  (
+    cd "$fixture"
+    LOONGCLAW_ARCH_REPORT_MONTH="2099-01" \
+      scripts/check_architecture_drift_freshness.sh "$report_file" >"$output_file" 2>&1
+  )
+
+  assert_contains "$output_file" "tracked architecture drift report is fresh"
+}
+
+run_temp_report_path_uses_real_unique_name_test() {
+  local fixture
+  fixture="$(make_fixture_repo)"
+  trap 'rm -rf "$fixture"' RETURN
+
+  local report_file="$fixture/docs/releases/support/architecture-drift-2099-01.md"
+  (
+    cd "$fixture"
+    LOONGCLAW_ARCH_REPORT_MONTH="2099-01" \
+      scripts/generate_architecture_drift_report.sh "$report_file"
+    git add "$report_file"
+    git commit -qm "seed fresh architecture drift report"
+  )
+
+  local output_file="$fixture/temp-report-name.out"
+  (
+    cd "$fixture"
+    LOONGCLAW_ARCH_REPORT_MONTH="2099-01" \
+      scripts/check_architecture_drift_freshness.sh "$report_file" >"$output_file" 2>&1
+  )
+
+  assert_contains "$output_file" "tracked architecture drift report is fresh"
+  assert_not_contains "$output_file" "architecture-drift-check.XXXXXX"
+}
+
 run_untracked_report_fails_test() {
   local fixture
   fixture="$(make_fixture_repo)"
@@ -164,6 +228,8 @@ run_untracked_report_fails_test() {
 
 run_fresh_report_passes_test
 run_stale_report_fails_test
+run_report_with_baseline_passes_test
+run_temp_report_path_uses_real_unique_name_test
 run_untracked_report_fails_test
 
 echo "check_architecture_drift_freshness.sh checks passed"
