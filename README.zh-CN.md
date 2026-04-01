@@ -131,7 +131,6 @@ loong doctor --fix
 `onboard` 是支持的 first-run 路径。它应该把你带到可用的 provider 配置和明确的下一条命令，而不是先逼你手改原始配置。
 
 首轮上手路径刻意保持简短。完整 provider 设置、channel 配置和操作变体，应该放在 docs，而不是继续往首页里塞。
-如果你想先理解公开配置形态，再进入 provider 或 channel 的具体教程，可以先看 [Configuration Patterns](site/use-loongclaw/configuration-patterns.mdx)。
 
 <a id="start-paths"></a>
 ## 从哪里开始
@@ -140,7 +139,6 @@ loong doctor --fix
 | --- | --- |
 | 先尽快得到第一条有效结果 | `onboard`、`ask`、`chat`、`doctor` |
 | 想直接跟着一条完整的 provider + channel 路径走 | [Common Setups](site/use-loongclaw/common-setups.mdx) 与其下对应的 playbook 页面 |
-| 先理解共享的公开配置形态，再进入更细的教程 | [Configuration Patterns](site/use-loongclaw/configuration-patterns.mdx)、[Provider Recipes](site/use-loongclaw/provider-recipes.mdx)、[Channel Setup](docs/product-specs/channel-setup.md) 与 [Memory Profiles](site/use-loongclaw/memory-profiles.mdx) |
 | 不靠猜测完成 provider / model 选择 | `onboard`、`list-models`、[Providers And Models](site/use-loongclaw/providers-and-models.mdx) 以及 [Provider Recipes](site/use-loongclaw/provider-recipes.mdx) |
 | 增加交付接入面，但不把支持范围说大 | [Channels](site/use-loongclaw/channels.mdx)、[Gateway And Supervision](site/use-loongclaw/gateway-and-supervision.mdx)、[Channel Recipes](site/use-loongclaw/channel-recipes.mdx) 与完整的 [Channel Setup](docs/product-specs/channel-setup.md) 说明 |
 | 理解当前 runtime surface 以及受治理的扩展边界 | [Use LoongClaw](site/use-loongclaw/overview.mdx)、[Tools And Memory](site/use-loongclaw/tools-and-memory.mdx)、[ARCHITECTURE.md](ARCHITECTURE.md)、[Contributing](CONTRIBUTING.md) |
@@ -208,6 +206,12 @@ contracts  (stable contract vocabulary)
 
 完整分层模型见 [ARCHITECTURE.md](ARCHITECTURE.md) 与 [Layered Kernel Design](docs/design-docs/layered-kernel-design.md)。
 
+## 贡献
+
+欢迎贡献。先从 [CONTRIBUTING.md](CONTRIBUTING.md) 开始。
+
+如果你想先看哪些方向最值得补强，可以读 [Contribution Areas](site/build-on-loongclaw/contribution-areas.mdx)。
+
 ## Star History
 
 <p align="center">
@@ -215,9 +219,3 @@ contracts  (stable contract vocabulary)
     <img src="https://api.star-history.com/svg?repos=loongclaw-ai/loongclaw&type=Date" alt="Star History Chart" />
   </a>
 </p>
-
-## 贡献
-
-欢迎贡献。先从 [CONTRIBUTING.md](CONTRIBUTING.md) 开始。
-
-如果你想先看哪些方向最值得补强，可以读 [Contribution Areas](site/build-on-loongclaw/contribution-areas.mdx)。

@@ -131,7 +131,6 @@ loong doctor --fix
 `onboard` is the supported first-run path. It should get you to a working provider configuration and a concrete next command without making you hand-edit raw config first.
 
 The first-run path stays intentionally short. Full provider setup, channel configuration, and operational variants belong in docs instead of the landing page.
-If you want the shared public config shape before provider-specific or channel-specific recipes, start with [Configuration Patterns](site/use-loongclaw/configuration-patterns.mdx).
 
 <a id="start-paths"></a>
 ## Start Paths
@@ -140,7 +139,6 @@ If you want the shared public config shape before provider-specific or channel-s
 | --- | --- |
 | reach first value quickly | `onboard`, `ask`, `chat`, and `doctor` |
 | follow one complete provider-plus-channel rollout path | [Common Setups](site/use-loongclaw/common-setups.mdx) and the dedicated playbooks under it |
-| understand the shared public config shape before deeper recipes | [Configuration Patterns](site/use-loongclaw/configuration-patterns.mdx), [Provider Recipes](site/use-loongclaw/provider-recipes.mdx), [Channel Setup](docs/product-specs/channel-setup.md), and [Memory Profiles](site/use-loongclaw/memory-profiles.mdx) |
 | choose a provider or model without guessing | `onboard`, `list-models`, [Providers And Models](site/use-loongclaw/providers-and-models.mdx), and [Provider Recipes](site/use-loongclaw/provider-recipes.mdx) |
 | add delivery surfaces without overclaiming support | [Channels](site/use-loongclaw/channels.mdx), [Gateway And Supervision](site/use-loongclaw/gateway-and-supervision.mdx), [Channel Recipes](site/use-loongclaw/channel-recipes.mdx), and the full [Channel Setup](docs/product-specs/channel-setup.md) contract |
 | understand the current runtime surface and governed extension seams | [Use LoongClaw](site/use-loongclaw/overview.mdx), [Tools And Memory](site/use-loongclaw/tools-and-memory.mdx), [ARCHITECTURE.md](ARCHITECTURE.md), and [Contributing](CONTRIBUTING.md) |
@@ -210,6 +208,13 @@ Three design rules matter most:
 
 For the full layered execution model, see [ARCHITECTURE.md](ARCHITECTURE.md) and [Layered Kernel Design](docs/design-docs/layered-kernel-design.md).
 
+<a id="contributing"></a>
+## Contributing
+
+Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md).
+
+If you want to help where it matters most right now, read [Contribution Areas](site/build-on-loongclaw/contribution-areas.mdx).
+
 ## Star History
 
 <p align="center">
@@ -217,10 +222,3 @@ For the full layered execution model, see [ARCHITECTURE.md](ARCHITECTURE.md) and
     <img src="https://api.star-history.com/svg?repos=loongclaw-ai/loongclaw&type=Date" alt="Star History Chart" />
   </a>
 </p>
-
-<a id="contributing"></a>
-## Contributing
-
-Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md).
-
-If you want to help where it matters most right now, read [Contribution Areas](site/build-on-loongclaw/contribution-areas.mdx).
