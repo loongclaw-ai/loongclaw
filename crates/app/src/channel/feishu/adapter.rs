@@ -138,6 +138,16 @@ impl FeishuAdapter {
         })
     }
 
+    pub(super) async fn add_ack_reaction(&self, message_id: &str) -> CliResult<()> {
+        add_message_reaction(
+            &self.client,
+            self.tenant_access_token()?,
+            message_id,
+            random_feishu_ack_reaction(),
+        )
+        .await
+    }
+
     fn feishu_body(message: &ChannelOutboundMessage) -> CliResult<FeishuOutboundMessageBody> {
         match message {
             ChannelOutboundMessage::Text(text) => messages::resolve_outbound_message_body(

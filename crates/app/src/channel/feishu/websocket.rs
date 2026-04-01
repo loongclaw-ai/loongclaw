@@ -1075,7 +1075,7 @@ mod tests {
         );
 
         let feishu_requests = wait_for_request_count(&feishu_requests, 3).await;
-        assert_eq!(feishu_requests.len(), 4);
+        assert_eq!(feishu_requests.len(), 3);
         let reaction_request = feishu_requests
             .iter()
             .find(|request| request.path == "/open-apis/im/v1/messages/om_inbound_ws_1/reactions")

@@ -30,10 +30,7 @@ use crate::channel::{
 use crate::config::{LoongClawConfig, ResolvedFeishuChannelConfig};
 use crate::crypto::timing_safe_eq;
 
-use super::adapter::{
-    FeishuAdapter, add_message_reaction, outbound_reply_message_from_text,
-    random_feishu_ack_reaction,
-};
+use super::adapter::{FeishuAdapter, outbound_reply_message_from_text};
 use super::payload::{FeishuCardCallbackEvent, FeishuWebhookAction};
 
 const FEISHU_CALLBACK_RESPONSE_MARKER: &str = "[feishu_callback_response]";
@@ -590,14 +587,14 @@ async fn handle_feishu_inbound_event(
     })?;
 
     let result = async {
-        maybe_send_feishu_ack_reaction_nonblocking(state, event.message_id.as_str());
+        let inbound_message_id = event.message_id.clone();
         let channel_message = ChannelInboundMessage {
             session: event.session,
             reply_target: event.reply_target,
             text: event.text,
             delivery: crate::channel::ChannelDelivery {
                 ack_cursor: None,
-                source_message_id: Some(event.message_id),
+                source_message_id: Some(inbound_message_id.clone()),
                 sender_principal_key: event.principal.as_ref().map(|value| value.storage_key()),
                 thread_root_id: event.root_id,
                 parent_message_id: event.parent_id,
@@ -642,6 +639,17 @@ async fn handle_feishu_inbound_event(
                     )
                 })?;
         }
+        if state.ack_reactions {
+            adapter
+                .add_ack_reaction(inbound_message_id.as_str())
+                .await
+                .map_err(|error| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("feishu ack reaction failed: {error}"),
+                    )
+                })?;
+        }
 
         Ok(FeishuParsedActionResponse::immediate(
             json!({"code": 0, "msg": "ok"}),
@@ -654,49 +662,6 @@ async fn handle_feishu_inbound_event(
     }
 
     result
-}
-
-fn maybe_send_feishu_ack_reaction_nonblocking(state: &FeishuWebhookState, message_id: &str) {
-    if !state.ack_reactions {
-        return;
-    }
-    let message_id = message_id.trim();
-    if message_id.is_empty() {
-        return;
-    }
-
-    let config = state.config.clone();
-    let configured_account_id = state.configured_account_id.clone();
-    let message_id = message_id.to_owned();
-    tokio::spawn(async move {
-        if let Err(error) =
-            send_feishu_ack_reaction(config, configured_account_id, &message_id).await
-        {
-            log_feishu_inbound_warning("ack reaction failed", &error);
-        }
-    });
-}
-
-async fn send_feishu_ack_reaction(
-    config: LoongClawConfig,
-    configured_account_id: String,
-    message_id: &str,
-) -> CliResult<()> {
-    let resolved = config
-        .feishu
-        .resolve_account(Some(configured_account_id.as_str()))?;
-    if !resolved.ack_reactions {
-        return Ok(());
-    }
-    let client = FeishuClient::from_configs(&resolved, &config.feishu_integration)?;
-    let tenant_access_token = client.get_tenant_access_token().await?;
-    add_message_reaction(
-        &client,
-        tenant_access_token.as_str(),
-        message_id,
-        random_feishu_ack_reaction(),
-    )
-    .await
 }
 
 fn parse_feishu_structured_callback_response(text: &str) -> Option<FeishuCallbackResponse> {
@@ -1774,7 +1739,7 @@ mod tests {
         );
 
         let feishu_requests = wait_for_request_count(&feishu_requests, 3).await;
-        assert_eq!(feishu_requests.len(), 4);
+        assert_eq!(feishu_requests.len(), 3);
         let reaction_request = feishu_requests
             .iter()
             .find(|request| request.path == "/open-apis/im/v1/messages/om_inbound_file_1/reactions")
@@ -1887,6 +1852,92 @@ mod tests {
                 .all(|request| request.path
                     != "/open-apis/im/v1/messages/om_inbound_no_ack_1/reactions"),
             "disabled ack_reactions should skip the reaction API call"
+        );
+
+        provider_server.abort();
+        feishu_server.abort();
+    }
+
+    #[tokio::test]
+    async fn feishu_webhook_provider_failure_does_not_send_ack_reaction() {
+        let provider_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+        let feishu_requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+        let (provider_base_url, provider_server) =
+            spawn_mock_provider_failure_server(provider_requests.clone()).await;
+        let (feishu_base_url, feishu_server) =
+            spawn_mock_feishu_api_server(feishu_requests.clone(), "om_reply_unused").await;
+
+        let config = test_webhook_config(&provider_base_url, &feishu_base_url);
+        let resolved = config
+            .feishu
+            .resolve_account(None)
+            .expect("resolve feishu account");
+        let mut adapter = FeishuAdapter::new(&resolved).expect("build feishu adapter");
+        adapter
+            .refresh_tenant_token()
+            .await
+            .expect("refresh tenant token before webhook test");
+        let kernel_ctx =
+            bootstrap_test_kernel_context("feishu-webhook-provider-failure", DEFAULT_TOKEN_TTL_S)
+                .expect("bootstrap kernel context");
+        let runtime = Arc::new(
+            ChannelOperationRuntimeTracker::start(
+                ChannelPlatform::Feishu,
+                "serve",
+                resolved.account.id.as_str(),
+                resolved.account.label.as_str(),
+            )
+            .await
+            .expect("start runtime tracker"),
+        );
+        let state = FeishuWebhookState::new(config, &resolved, adapter, kernel_ctx, runtime);
+
+        let payload = json!({
+            "token": "verify-token",
+            "header": {
+                "event_id": "evt_provider_failure_no_ack",
+                "event_type": "im.message.receive_v1"
+            },
+            "event": {
+                "sender": {
+                    "sender_type": "user",
+                    "sender_id": {
+                        "open_id": "ou_sender_provider_failure"
+                    }
+                },
+                "message": {
+                    "chat_id": "oc_demo",
+                    "message_id": "om_inbound_failure_no_ack_1",
+                    "message_type": "text",
+                    "content": "{\"text\":\"provider failure should not ack\"}"
+                }
+            }
+        });
+        let raw_body = serde_json::to_string(&payload).expect("serialize payload");
+        let headers = signed_headers(&raw_body, "encrypt-key");
+        let error = handle_feishu_webhook_payload(
+            state,
+            &headers,
+            raw_body.as_str(),
+            serde_json::from_str(raw_body.as_str()).expect("payload value"),
+        )
+        .await
+        .expect_err("webhook should surface provider failure");
+
+        assert_eq!(error.0, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(error.1.contains("provider processing failed"));
+
+        let feishu_requests = wait_for_request_count(&feishu_requests, 1).await;
+        assert_eq!(feishu_requests.len(), 1);
+        assert!(
+            feishu_requests.iter().all(|request| request.path
+                != "/open-apis/im/v1/messages/om_inbound_failure_no_ack_1/reactions"),
+            "failed inbound handling must not emit an ack reaction before retry"
+        );
+        assert!(
+            feishu_requests.iter().all(|request| request.path
+                != "/open-apis/im/v1/messages/om_inbound_failure_no_ack_1/reply"),
+            "failed inbound handling must not send a reply"
         );
 
         provider_server.abort();
