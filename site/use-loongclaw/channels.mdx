@@ -11,7 +11,13 @@ right delivery surface story before diving into commands or config fields.
 The base CLI path still comes first. A user should be able to succeed with
 `ask` or `chat` before enabling service channels.
 
-If you want setup walkthroughs and command demos instead of the conceptual surface map, go directly to [Channel Recipes](/use-loongclaw/channel-recipes). It starts with Feishu / Lark, then walks through Telegram, Matrix, WeCom, multi-account channel configs, outbound-only sends, and multi-channel rollout.
+If you want setup walkthroughs and command demos instead of the conceptual
+surface map, go directly to
+[Channel Recipes](/use-loongclaw/channel-recipes). That page covers the
+runtime-backed service channels first, then the outbound-only families and the
+multi-channel rollout path. Feishu / Lark and WeCom stay high in the order
+because many teams ask for them early, while the broader channel inventory
+still stays visible.
 
 If you already know the provider and channel together, skip the narrower recipe
 pass and go to [Common Setups](/use-loongclaw/common-setups) plus the dedicated
@@ -38,11 +44,11 @@ straight to the matching playbook.
 
 | If you need... | Start with... | Why |
 | --- | --- | --- |
-| one team-chat runtime that most directly matches the current docs emphasis | Feishu / Lark in [Channel Recipes](/use-loongclaw/channel-recipes) | it is the first runtime-backed tutorial path and supports webhook or websocket ownership |
-| one governed enterprise chat lane with the shipped official long connection | WeCom in [Channel Recipes](/use-loongclaw/channel-recipes) | the docs keep it aligned with the AIBot long-connection contract |
-| one simple reply-loop bot | Telegram in [Channel Recipes](/use-loongclaw/channel-recipes) | it is the smallest shipped runtime-backed setup surface |
-| one self-hosted or federated room runtime | Matrix in [Channel Recipes](/use-loongclaw/channel-recipes) | homeserver and room trust boundaries stay explicit |
-| outbound notifications without a reply loop | [Channel Recipes](/use-loongclaw/channel-recipes) and [Channel Setup](/use-loongclaw/channel-setup) | outbound-only surfaces stay truthful instead of being overclaimed as runtimes |
+| Feishu or Lark should own a live team-chat runtime | Feishu / Lark in [Channel Recipes](/use-loongclaw/channel-recipes) | it is the shipped runtime family with webhook or websocket ownership |
+| Telegram is enough for the live reply loop | Telegram in [Channel Recipes](/use-loongclaw/channel-recipes) | it is the smallest shipped runtime-backed setup surface |
+| Matrix should own a self-hosted or federated room runtime | Matrix in [Channel Recipes](/use-loongclaw/channel-recipes) | homeserver and room trust boundaries stay explicit |
+| WeCom should own the official enterprise AIBot lane | WeCom in [Channel Recipes](/use-loongclaw/channel-recipes) | it aligns with the shipped long-connection contract |
+| outbound notifications without a reply loop | [Channel Recipes](/use-loongclaw/channel-recipes) and [Channel Setup](/use-loongclaw/channel-setup) | outbound-only surfaces stay visible without being overclaimed as runtimes |
 | one host supervising several runtime-backed channels | [Gateway And Supervision](/use-loongclaw/gateway-and-supervision) | owner commands, selectors, and rollout order live there |
 
 ## Reading Rule
@@ -59,7 +65,7 @@ straight to the matching playbook.
 | Base assistant loop | local operator-first path | `onboard`, `ask`, `chat`, `doctor` |
 | Gateway owner contract | daemon-owned runtime control for longer-lived surfaces | `gateway run`, `gateway status`, `gateway stop` |
 | Runtime-backed service channels | shipped reply-loop runtimes | Feishu / Lark, Telegram, Matrix, WeCom |
-| Config-backed outbound surfaces | shipped direct-send surfaces without a full reply-loop runtime | Discord, Slack, Webhook, Email, Twitch, and similar outbound integrations |
+| Config-backed outbound surfaces | shipped direct-send surfaces without a full reply-loop runtime | Discord, Slack, LINE, DingTalk, WhatsApp, Webhook, Email, Teams, Google Chat, Signal, Twitch, and similar outbound integrations |
 | Catalog or planned surfaces | inventory or future direction only | not presented as if a reply loop already ships |
 
 ## Gateway And Runtime Ownership
@@ -82,7 +88,7 @@ These are the shipped reply-loop runtimes today.
 | Matrix | Client-Server sync loop | `loong matrix-send`, `loong matrix-serve` |
 | WeCom | official AIBot long connection | `loong wecom-send`, `loong wecom-serve` |
 
-## Config-Backed Outbound Surfaces
+## Outbound Surface Families
 
 These surfaces ship direct sends, config validation, and inventory metadata
 without claiming a full reply-loop runtime. This page keeps the concept layer
@@ -91,9 +97,9 @@ short on purpose; the fuller field-level inventory remains in
 
 | Surface family | Current examples | Typical command shape |
 | --- | --- | --- |
-| workplace chat | Slack, Discord, Microsoft Teams, Google Chat, Mattermost, Nextcloud Talk, Synology Chat | `loong <surface>-send` |
+| workplace chat sinks | Slack, Discord, Microsoft Teams, Google Chat, Mattermost, Nextcloud Talk, Synology Chat | `loong <surface>-send` |
 | messaging and bridge targets | LINE, DingTalk, WhatsApp, Signal, IRC, iMessage / BlueBubbles, Nostr, Tlon | `loong <surface>-send` |
-| direct delivery lanes | Webhook, Email, Twitch | `loong <surface>-send` |
+| direct delivery and alerting lanes | Webhook, Email, Twitch | `loong <surface>-send` |
 
 ## Public Documentation Rule
 
@@ -113,7 +119,7 @@ LoongClaw tries to keep the public channel story truthful:
 
 ## Where To Go Next
 
-- Continue to [Channel Recipes](/use-loongclaw/channel-recipes) for Feishu / Lark, Telegram, Matrix, WeCom, webhook, email, and multi-channel rollout examples.
+- Continue to [Channel Recipes](/use-loongclaw/channel-recipes) for Feishu / Lark, Telegram, Matrix, WeCom, webhook, email, Slack-style outbound, and multi-channel rollout examples.
 - Continue to [Channel Setup](/use-loongclaw/channel-setup) for the practical public setup guide.
 - Continue to [Gateway And Supervision](/use-loongclaw/gateway-and-supervision)
   for the longer-lived owner contract and channel-account selection rules.

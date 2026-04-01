@@ -17,34 +17,35 @@ Most operators only need one of these routes:
 
 | If your situation is... | Start with |
 | --- | --- |
-| one hosted provider should own first value | Recipe 1 |
+| one platform-first hosted provider should own first value | Recipe 1 |
+| one direct hosted provider your team already uses should stay explicit | Recipe 1 |
 | coding traffic should stay on a separate route | Recipe 2 |
 | the real provider is behind a gateway or compatibility layer | Recipe 3 |
 | the model server is local or self-hosted | Recipe 4 |
 | one config should hold several explicit lanes | Recipe 5 |
 | `model = "auto"` should stay, but recovery should be explicit | Recipe 6 |
 
-## Ark-Family Quick Guide
+## Hosted Provider Quick Map
 
-These hosted families are worth separating early because the general lanes and
-the coding-plan lanes are not the same thing.
+LoongClaw supports a broad hosted-provider catalog. Volcengine and BytePlus
+stay high in the order because they are a common first-run path, but the docs
+should keep the broader hosted map legible too.
 
-| Provider kind | Default route family | Default key env | Use it when |
-| --- | --- | --- | --- |
-| `volcengine` | Ark general lane under `/api/v3` | `ARK_API_KEY` | one hosted Volcengine profile should own the normal runtime |
-| `volcengine_coding` | Ark Coding Plan under `/api/coding/v3` | `ARK_API_KEY` | coding quota or billing should stay on the dedicated coding lane |
-| `byteplus` | ModelArk general lane under `/api/v3` | `BYTEPLUS_API_KEY` | one hosted BytePlus profile should own the normal runtime |
-| `byteplus_coding` | BytePlus Coding Plan under `/api/coding/v3` | `BYTEPLUS_API_KEY` | coding traffic should stay on the dedicated BytePlus coding lane |
-
-For BytePlus, `ARK_API_KEY` is also accepted as an API-key env alias, but
-`BYTEPLUS_API_KEY` is still the primary default.
+| Family | Current built-in kinds | Use it when |
+| --- | --- | --- |
+| platform-first hosted | `volcengine`, `byteplus` | one managed hosted provider should own first value and you want a short reviewed path |
+| direct hosted general | `openai`, `anthropic`, `gemini`, `deepseek`, `minimax`, `mistral`, `cohere`, `xai`, `zai`, `zhipu`, `qwen`, `kimi`, `groq`, `fireworks`, `together`, `perplexity`, `qianfan`, `cerebras`, `nvidia`, `sambanova`, `novita`, `siliconflow`, `stepfun`, `venice` | your team already runs on a named hosted provider and you want that family to stay explicit |
+| coding-specialized hosted | `volcengine_coding`, `byteplus_coding`, `kimi_coding`, `step_plan`, `bailian_coding` | coding traffic, pricing, or quota should stay on a deliberate lane |
+| gateway and platform routing | `openrouter`, `cloudflare_ai_gateway`, `vercel_ai_gateway`, `bedrock`, `custom` | a gateway, proxy, or managed route sits between LoongClaw and the upstream models |
+| local and self-hosted | `ollama`, `lm_studio`, `llamacpp`, `vllm`, `sglang` | the model server boundary should stay operator-owned |
 
 ## Pick The Right Recipe
 
 | Goal | Start with | Good fit when |
 | --- | --- | --- |
-| get one Ark-family hosted provider running fast | Recipe 1 | Volcengine or BytePlus should own first value |
-| use the dedicated coding-plan lane explicitly | Recipe 2 | Volcengine Coding or BytePlus Coding should stay separate from the general lane |
+| get one platform-first hosted provider running fast | Recipe 1 | Volcengine or BytePlus should own first value |
+| keep one direct hosted provider explicit | Recipe 1 | OpenAI, Anthropic, Gemini, DeepSeek, MiniMax, or another direct hosted family already owns the lane |
+| use the dedicated coding-plan lane explicitly | Recipe 2 | Volcengine Coding, BytePlus Coding, Kimi Coding, Step Plan, or Bailian Coding should stay separate from the general lane |
 | point LoongClaw at a gateway or compatibility layer | Recipe 3 | internal proxy, OpenAI-compatible endpoint, or managed gateway |
 | run against a local model server | Recipe 4 | Ollama, LM Studio, llama.cpp, vLLM, or SGLang |
 | keep several providers in one config | Recipe 5 | cost, latency, quota, or region should stay explicit |
@@ -67,7 +68,7 @@ pretending discovery is always available.
 ## Reading Rule
 
 - Use this page to get from provider lane to concrete config quickly.
-- Start with Recipes 1 or 2 unless you already know you are in a gateway, local, or multi-profile case.
+- Start with Recipe 1 unless you already know you are in a coding-lane, gateway, local, or multi-profile case.
 - Use [Configuration Patterns](/use-loongclaw/configuration-patterns) when you
   want the shared `active_provider` plus `providers.<id>` shape before the
   provider-specific walkthroughs.
@@ -82,14 +83,17 @@ provider-only lane and jump straight to the matching playbook.
 | Stack | Jump here | Why |
 | --- | --- | --- |
 | Volcengine plus Feishu or Lark | [Volcengine Plus Feishu Or Lark](/use-loongclaw/volcengine-feishu-lark-playbook) | hosted provider and team-chat runtime stay in one path |
-| Volcengine plus WeCom | [WeCom Rollout](/use-loongclaw/wecom-rollout-playbook) | hosted provider and the enterprise lane stay in one path |
+| Volcengine plus WeCom | [WeCom Rollout](/use-loongclaw/wecom-rollout-playbook) | hosted provider and the official WeCom lane stay in one path |
 | BytePlus Coding plus Telegram | [BytePlus Coding Plus Telegram](/use-loongclaw/byteplus-coding-telegram-playbook) | coding route and bot runtime stay explicit together |
 | local or self-hosted provider plus outbound delivery | [Local Model Plus Outbound Delivery](/use-loongclaw/local-outbound-playbook) | local inference and outbound-only delivery stay truthful |
 
-## Recipe 1: Volcengine Or BytePlus Hosted Profile
+## Recipe 1: One Hosted Provider Profile
 
-This is the cleanest path when one hosted Ark-family provider should own the
-current runtime.
+This is the cleanest path when one hosted provider should own the current
+runtime. The exact built-in kind can be Volcengine, BytePlus, OpenAI,
+Anthropic, Gemini, DeepSeek, MiniMax, or another direct hosted family.
+
+### Platform-First Hosted: Volcengine Or BytePlus
 
 ```toml
 active_provider = "volcengine"
@@ -128,9 +132,42 @@ Operational notes:
 - `volcengine` and `byteplus` are the general hosted lanes, not the coding-plan lanes.
 - Volcengine defaults to `ARK_API_KEY`.
 - BytePlus defaults to `BYTEPLUS_API_KEY` and also accepts `ARK_API_KEY` as an alias.
-- The same profile shape still works for other hosted providers such as `openai`, `anthropic`, `gemini`, or `deepseek`.
 
-## Recipe 2: Volcengine Coding Or BytePlus Coding Plan
+### Other Direct Hosted Families
+
+The same provider-profile shape works for the broader direct-hosted set. Swap
+the built-in `kind`, the default credential env, and the reviewed model choice.
+
+```toml
+active_provider = "openai"
+
+[providers.openai]
+kind = "openai"
+api_key = { env = "OPENAI_API_KEY" }
+model = "auto"
+```
+
+Representative direct-hosted variants:
+
+| Built-in kind | Default key env | Notes |
+| --- | --- | --- |
+| `openai` | `OPENAI_API_KEY` | good when one OpenAI profile should stay explicit |
+| `anthropic` | `ANTHROPIC_API_KEY` | the built-in kind keeps the Messages-protocol details visible |
+| `gemini` | `GEMINI_API_KEY` | use the built-in Gemini family instead of forcing a compatibility proxy |
+| `deepseek` | `DEEPSEEK_API_KEY` | pairs well with `preferred_models` when recovery should stay explicit |
+| `minimax` | `MINIMAX_API_KEY` | set `base_url` explicitly when the account uses the global endpoint |
+| `mistral` | `MISTRAL_API_KEY` | same profile shape, built-in auth and endpoint defaults |
+| `cohere` | `COHERE_API_KEY` | same profile shape, built-in auth and endpoint defaults |
+| `xai` | `XAI_API_KEY` | same profile shape, built-in auth and endpoint defaults |
+| `zhipu` | `ZHIPUAI_API_KEY` | `ZHIPU_API_KEY` is also accepted as an alias |
+
+The broader direct-hosted catalog also includes `qwen`, `kimi`, `zai`, `groq`,
+`fireworks`, `together`, `perplexity`, `qianfan`, `cerebras`, `nvidia`,
+`sambanova`, `novita`, `siliconflow`, `stepfun`, and `venice`. Use the built-in
+provider `kind`, then let `loong onboard` or `loong doctor` surface the exact
+default credential env and readiness hints for that family.
+
+## Recipe 2: Dedicated Coding Lane
 
 Use this lane when coding traffic should stay on the dedicated coding-plan
 route instead of the normal hosted chat lane.
@@ -168,6 +205,7 @@ Important boundary:
 - `volcengine` and `byteplus` belong to the general `/api/v3` lane.
 - `volcengine_coding` and `byteplus_coding` belong to `/api/coding/v3`.
 - Do not point a general kind at the coding route, or a coding kind at the general route. Keep the provider `kind` and route family aligned so runtime validation and quota expectations match.
+- Other coding-specialized families such as `kimi_coding`, `step_plan`, and `bailian_coding` follow the same rule: keep a separate profile id, use the matching built-in `kind`, and pin a reviewed coding model instead of letting the general hosted lane absorb the traffic by accident.
 
 ## Recipe 3: OpenAI-Compatible Gateway Or Managed Proxy
 

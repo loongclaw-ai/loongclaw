@@ -10,6 +10,9 @@ shipped, what is outbound-only, and what still depends on future runtime work.
 
 Use this page when you want the practical setup contract. If you want step-by-step
 smoke tests and worked examples instead, start with [Channel Recipes](/use-loongclaw/channel-recipes).
+That recipe page now keeps representative runtime-backed and outbound-only
+config paths visible instead of collapsing everything into one preferred
+surface.
 If you want the shared public config shape before the per-surface setup rules,
 start with [Configuration Patterns](/use-loongclaw/configuration-patterns).
 If you specifically need the longer-lived owner model, foreground versus
@@ -43,6 +46,7 @@ Before any channel is really ready:
 | --- | --- | --- |
 | one Feishu or Lark app should own inbound automation | configure `feishu` and run `loong feishu-serve` | the Feishu family is the shipped runtime lane for both Feishu and Lark |
 | one Telegram bot should own a reply loop | configure `telegram` and run `loong telegram-serve` | this is the simplest runtime-backed bot lane |
+| one Matrix bot should own a room sync loop | configure `matrix` and run `loong matrix-serve` | the homeserver, room ids, and sync boundary stay explicit |
 | one WeCom bot should own the official long connection | configure `wecom` and run `loong wecom-serve` | this matches the shipped AIBot contract |
 | you need several accounts in one channel family | add `default_account` plus `accounts.<id>` before adding gateway selectors | stable account ids make later supervision and routing legible |
 | you only need governed direct sends | configure one outbound-only surface and use `loong <surface>-send` | this avoids pretending a reply loop already ships |

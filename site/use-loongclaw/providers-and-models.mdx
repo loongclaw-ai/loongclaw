@@ -14,8 +14,10 @@ work lives in the recipe pages.
 
 If you want concrete setup walkthroughs instead of the conceptual contract on
 this page, go directly to [Provider Recipes](/use-loongclaw/provider-recipes).
-The first recipes start with Volcengine, BytePlus, and their coding-plan
-variants before branching into gateway, local, and multi-profile patterns.
+The recipes cover direct hosted providers, coding-specialized lanes, gateway
+or compatibility endpoints, local runtimes, and multi-profile patterns.
+Volcengine and BytePlus stay near the top because they are a common first-run
+path, but they are not the only provider families surfaced here.
 If you want the shared public provider-profile shape before the recipes become
 provider-specific, start with
 [Configuration Patterns](/use-loongclaw/configuration-patterns).
@@ -28,8 +30,9 @@ playbook that matches the rollout shape.
 
 | If you need... | Start here | Why |
 | --- | --- | --- |
-| one hosted provider to own first value cleanly | Volcengine or BytePlus | the docs keep the main hosted lane short and explicit |
-| a separate coding lane for coding quota or billing | Volcengine Coding or BytePlus Coding | coding traffic stays separate from the general hosted lane |
+| a common hosted first run with a short reviewed path | Volcengine or BytePlus | the main hosted fast path stays short without hiding the broader provider map |
+| a direct hosted provider your team already uses | OpenAI, Anthropic, Gemini, DeepSeek, MiniMax, Mistral, Cohere, xAI, Z.ai, Zhipu, Qwen, Kimi, Groq, Fireworks, Together, Perplexity, Qianfan, Cerebras, NVIDIA, SambaNova, Novita, SiliconFlow, StepFun, or Venice | built-in families stay explicit instead of being forced through `custom` |
+| a separate coding lane for coding quota or billing | Volcengine Coding, BytePlus Coding, Kimi Coding, Step Plan, or Bailian Coding | coding traffic stays separate from the general hosted lane |
 | one proxy or compatibility endpoint in front of upstream models | gateway or custom endpoint recipes | route ownership stays visible instead of being mistaken for a first-party provider |
 | a local or self-hosted model server | Ollama, LM Studio, llama.cpp, vLLM, or SGLang | the server boundary and model inventory stay explicit |
 | several reviewed provider profiles in one config | multi-profile provider recipes | cost, quota, latency, or region decisions stay operator-visible |
@@ -96,6 +99,23 @@ with the lane chooser above, then use this section as the broader public map.
 
 A practical public grouping, inferred from the built-in provider kinds, is:
 
+### Hosted Families At A Glance
+
+| Family | Current built-in kinds | Use it when... |
+| --- | --- | --- |
+| platform-first hosted | Volcengine, BytePlus | you want a short first-run hosted lane that stays explicit in the docs |
+| direct hosted general | OpenAI, Anthropic, Gemini, DeepSeek, MiniMax, Mistral, Cohere, xAI, Z.ai, Zhipu, Qwen, Kimi, Groq, Fireworks, Together, Perplexity, Qianfan, Cerebras, NVIDIA, SambaNova, Novita, SiliconFlow, StepFun, Venice | your team already has a named hosted provider and you want that family to remain visible |
+| coding-specialized hosted | Volcengine Coding, BytePlus Coding, Kimi Coding, Step Plan, Bailian Coding | coding work, quota, or pricing should stay on an explicit lane |
+| gateway and platform routing | OpenRouter, Cloudflare AI Gateway, Vercel AI Gateway, Bedrock, Custom | a gateway, proxy, or managed route sits between LoongClaw and the upstream models |
+| local and self-hosted | Ollama, LM Studio, llama.cpp, vLLM, SGLang | the model server boundary should stay operator-owned |
+
+### Platform-First Hosted Providers
+
+- Volcengine
+- Volcengine Coding
+- BytePlus
+- BytePlus Coding
+
 ### Direct Hosted Providers
 
 - OpenAI
@@ -110,7 +130,6 @@ A practical public grouping, inferred from the built-in provider kinds, is:
 - Zhipu
 - Qwen
 - Kimi
-- Kimi Coding
 - Groq
 - Fireworks
 - Together
@@ -122,20 +141,20 @@ A practical public grouping, inferred from the built-in provider kinds, is:
 - Novita
 - SiliconFlow
 - StepFun
-- Step Plan
 - Venice
 
-### Gateway, Platform, And Compatibility Providers
+### Coding-Specialized Hosted Providers
 
-- Volcengine
-- Volcengine Coding
-- BytePlus
-- BytePlus Coding
+- Kimi Coding
+- Step Plan
+- Bailian Coding
+
+### Gateway And Compatibility Providers
+
 - Cloudflare AI Gateway
 - Vercel AI Gateway
 - OpenRouter
 - Bedrock
-- Bailian Coding
 - Custom OpenAI-compatible endpoints
 
 ### Local And Self-Hosted Providers
@@ -162,10 +181,13 @@ model = "auto"
 ```
 
 The important part is that the runtime uses the same provider surface after onboarding that it uses during normal operation. There is no separate marketing-only provider layer.
+The same profile shape also works for OpenAI, Anthropic, Gemini, DeepSeek,
+MiniMax, BytePlus, and other built-in hosted families by swapping the provider
+`kind`, the default credential env, and the reviewed model choice.
 
 ## Continue Reading
 
-- Continue to [Provider Recipes](/use-loongclaw/provider-recipes) for step-by-step hosted, gateway, local, and multi-profile examples.
+- Continue to [Provider Recipes](/use-loongclaw/provider-recipes) for step-by-step hosted, coding-lane, gateway, local, and multi-profile examples.
 - Go to [First Run](/get-started/first-run) if you still need the shortest path to a useful answer.
 - Go to [Common Setups](/use-loongclaw/common-setups) if the provider choice is already tied to Feishu / Lark, WeCom, Telegram, local outbound delivery, or gateway ownership.
 - Go to [Channels](/use-loongclaw/channels) if you want the current delivery-surface model.
