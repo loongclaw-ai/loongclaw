@@ -1,6 +1,4 @@
 #[cfg(feature = "memory-sqlite")]
-use loongclaw_contracts::ToolCoreRequest;
-#[cfg(feature = "memory-sqlite")]
 use serde_json::{Value, json};
 #[cfg(feature = "memory-sqlite")]
 use sha2::{Digest, Sha256};
@@ -213,43 +211,6 @@ impl<'a> OperatorApprovalRuntime<'a> {
 
         Ok(resolved)
     }
-
-    pub(crate) fn replayable_tool_request(
-        &self,
-        approval_request: &ApprovalRequestRecord,
-    ) -> Result<ToolCoreRequest, String> {
-        let execution_kind = approval_request
-            .request_payload_json
-            .get("execution_kind")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "approval_request_invalid_payload: missing execution_kind".to_owned())?;
-
-        if execution_kind != "app" {
-            return Err(format!(
-                "approval_request_invalid_execution_kind: expected `app`, got `{execution_kind}`"
-            ));
-        }
-
-        let tool_name_value = approval_request
-            .request_payload_json
-            .get("tool_name")
-            .and_then(Value::as_str);
-        let tool_name_value = tool_name_value.map(str::trim);
-        let tool_name = tool_name_value
-            .filter(|tool_name| !tool_name.is_empty())
-            .ok_or_else(|| "approval_request_invalid_payload: missing tool_name".to_owned())?;
-        let payload = approval_request
-            .request_payload_json
-            .get("args_json")
-            .cloned()
-            .ok_or_else(|| "approval_request_invalid_payload: missing args_json".to_owned())?;
-
-        Ok(ToolCoreRequest {
-            tool_name: tool_name.to_owned(),
-            payload,
-        })
-    }
-
     pub(crate) fn begin_approved_request_execution(
         &self,
         approval_request_id: &str,
