@@ -152,7 +152,126 @@ pub fn sign_security_scan_profile_for_test(profile: &SecurityScanProfile) -> (St
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
     use super::ScopedEnv;
+
+    fn daemon_source_uses_forbidden_env_guard(source: &str) -> bool {
+        let normalized_source = normalize_source_for_guard_scan(source);
+        let direct_base_path = ["mvp", "::test_support"].concat();
+        let crate_base_path = ["crate::", direct_base_path.as_str()].concat();
+        let scoped_env_name = ["Scoped", "Env"].concat();
+        let direct_path = [direct_base_path.as_str(), "::", scoped_env_name.as_str()].concat();
+        let crate_path = [crate_base_path.as_str(), "::", scoped_env_name.as_str()].concat();
+        let uses_direct_path = normalized_source.contains(&direct_path);
+
+        if uses_direct_path {
+            return true;
+        }
+
+        let uses_crate_path = normalized_source.contains(&crate_path);
+
+        if uses_crate_path {
+            return true;
+        }
+
+        let uses_direct_brace_import = brace_import_contains_scoped_env(
+            &normalized_source,
+            &direct_base_path,
+            &scoped_env_name,
+        );
+
+        if uses_direct_brace_import {
+            return true;
+        }
+
+        brace_import_contains_scoped_env(&normalized_source, &crate_base_path, &scoped_env_name)
+    }
+
+    fn normalize_source_for_guard_scan(source: &str) -> String {
+        let mut normalized = String::with_capacity(source.len());
+
+        for ch in source.chars() {
+            let is_whitespace = ch.is_ascii_whitespace();
+
+            if is_whitespace {
+                continue;
+            }
+
+            normalized.push(ch);
+        }
+
+        normalized
+    }
+
+    fn brace_import_contains_scoped_env(
+        normalized_source: &str,
+        test_support_prefix: &str,
+        scoped_env_name: &str,
+    ) -> bool {
+        let brace_import_prefix = [test_support_prefix, "::{"].concat();
+        let mut search_start = 0;
+
+        while let Some(relative_start) =
+            normalized_source[search_start..].find(&brace_import_prefix)
+        {
+            let absolute_start = search_start + relative_start;
+            let import_list_start = absolute_start + brace_import_prefix.len();
+            let remaining_source = &normalized_source[import_list_start..];
+            let closing_brace_offset = remaining_source.find('}');
+
+            let Some(closing_brace_offset) = closing_brace_offset else {
+                return false;
+            };
+
+            let import_list = &remaining_source[..closing_brace_offset];
+            let has_scoped_env = import_list.contains(scoped_env_name);
+
+            if has_scoped_env {
+                return true;
+            }
+
+            search_start = import_list_start + closing_brace_offset + 1;
+        }
+
+        false
+    }
+
+    fn collect_rust_source_paths(root: &Path) -> Vec<PathBuf> {
+        let mut pending_paths = vec![root.to_path_buf()];
+        let mut rust_source_paths = Vec::new();
+
+        while let Some(current_path) = pending_paths.pop() {
+            let read_dir = fs::read_dir(&current_path).expect("read daemon source directory");
+            let mut child_paths = Vec::new();
+
+            for entry in read_dir {
+                let entry = entry.expect("daemon source directory entry");
+                let child_path = entry.path();
+                child_paths.push(child_path);
+            }
+
+            child_paths.sort();
+
+            for child_path in child_paths {
+                if child_path.is_dir() {
+                    pending_paths.push(child_path);
+                    continue;
+                }
+
+                let extension = child_path.extension();
+                let rust_extension = Some(std::ffi::OsStr::new("rs"));
+
+                if extension == rust_extension {
+                    rust_source_paths.push(child_path);
+                }
+            }
+        }
+
+        rust_source_paths.sort();
+        rust_source_paths
+    }
 
     #[test]
     fn scoped_env_remove_restores_original_value() {
@@ -175,6 +294,79 @@ mod tests {
             std::env::var_os(key),
             original_value,
             "ScopedEnv should restore the original environment value when dropped"
+        );
+    }
+
+    #[test]
+    fn daemon_source_guard_flags_mvp_scoped_env_reference() {
+        let base_path = ["mvp", "::test_support"].concat();
+        let scoped_env_name = ["Scoped", "Env"].concat();
+        let sample_source = format!("let mut env = {base_path}::{scoped_env_name}::new();");
+
+        assert!(
+            daemon_source_uses_forbidden_env_guard(&sample_source),
+            "daemon source guard should flag direct mvp scoped env references"
+        );
+    }
+
+    #[test]
+    fn daemon_source_guard_accepts_daemon_scoped_env_reference() {
+        let sample_source = "let mut env = crate::test_support::ScopedEnv::new();";
+
+        assert!(
+            !daemon_source_uses_forbidden_env_guard(sample_source),
+            "daemon source guard should allow daemon scoped env references"
+        );
+    }
+
+    #[test]
+    fn daemon_source_guard_flags_mvp_scoped_env_brace_import() {
+        let prefix = ["crate::", "mvp", "::test_support"].concat();
+        let scoped_env_name = ["Scoped", "Env"].concat();
+        let sample_source = format!("use {prefix}::{{self,{scoped_env_name}}};");
+
+        assert!(
+            daemon_source_uses_forbidden_env_guard(&sample_source),
+            "daemon source guard should flag mvp scoped env brace imports"
+        );
+    }
+
+    #[test]
+    fn daemon_source_guard_flags_multiline_mvp_scoped_env_brace_import() {
+        let prefix = ["crate::", "mvp", "::test_support"].concat();
+        let scoped_env_name = ["Scoped", "Env"].concat();
+        let sample_source = format!(
+            "use {prefix}::{{
+                self,
+                {scoped_env_name},
+            }};"
+        );
+
+        assert!(
+            daemon_source_uses_forbidden_env_guard(&sample_source),
+            "daemon source guard should flag multiline mvp scoped env brace imports"
+        );
+    }
+
+    #[test]
+    fn daemon_test_env_source_files_do_not_use_app_scoped_env_guard() {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let daemon_source_root = manifest_dir.join("src");
+        let rust_source_paths = collect_rust_source_paths(&daemon_source_root);
+        let mut violating_paths = Vec::new();
+
+        for rust_source_path in rust_source_paths {
+            let source = fs::read_to_string(&rust_source_path).expect("read daemon source file");
+            let has_forbidden_env_guard = daemon_source_uses_forbidden_env_guard(&source);
+
+            if has_forbidden_env_guard {
+                violating_paths.push(rust_source_path);
+            }
+        }
+
+        assert!(
+            violating_paths.is_empty(),
+            "daemon source files must not use the app scoped env guard: {violating_paths:?}"
         );
     }
 }
