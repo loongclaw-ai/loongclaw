@@ -27,8 +27,9 @@
 
 <p>
   <strong>LoongClaw is a secure, extensible, and sustainably evolvable agent runtime foundation built in Rust.</strong><br/>
-  It starts from assistant capabilities, but its goal does not stop at being a general assistant. It is meant to grow into a team-facing foundation layer for vertical AI agents, where people and AI can keep collaborating and evolving together.
+  It starts from assistant capabilities, but its goal does not stop at being a general assistant. It is meant to grow into a team-facing foundation layer for vertical AI agents, where people and AI can keep collaborating, evolving, and building more capable workflows together.
   Rather than ending at a thin model wrapper or a terminal-only demo, LoongClaw is being shaped as a governed runtime base that can keep expanding across providers, tools, memory, channels, and policy as real workflows become more demanding.
+  Over time, that direction is meant to support longer-horizon workflow construction, compound task execution, and closed-loop improvement, so teams can move from isolated assistant turns toward agent systems that can refine and extend real work.
 </p>
 
 <p>
@@ -47,9 +48,9 @@
 <a id="what-loongclaw-is"></a>
 ## What LoongClaw Is
 
-LoongClaw starts from a runnable assistant path, but it is already structured as a broader runtime foundation rather than a terminal-only toy.
-What matters is not only that you can run `loong onboard`, `loong ask`, or `loong chat`, but that the project already exposes the surrounding runtime surfaces teams eventually need to inspect, operate, and extend.
-The README still keeps that public surface intentionally compact, but it already points to a larger operating model: a usable operator path, an operator-visible runtime surface, and a governed foundation for longer-lived team workflows.
+LoongClaw already presents itself as more than a runnable assistant path.
+You can start with `loong onboard`, `loong ask`, or `loong chat`, but the more important point is that the project already exposes the runtime surfaces teams eventually need to inspect, operate, and extend.
+The README keeps that public surface intentionally compact. What it exposes today is a concrete public shape: a usable operator path, an operator-visible runtime surface, and a governed foundation for longer-lived team workflows.
 
 Today that means three concrete things:
 
