@@ -1,9 +1,21 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::Path;
+
+use tempfile::TempDir;
 
 fn sample_channel_bridge_manifest(
     channel_id: Option<&str>,
     setup_surface: Option<&str>,
+) -> loongclaw_kernel::PluginManifest {
+    sample_channel_bridge_manifest_with_metadata(channel_id, setup_surface, BTreeMap::new())
+}
+
+fn sample_channel_bridge_manifest_with_metadata(
+    channel_id: Option<&str>,
+    setup_surface: Option<&str>,
+    metadata: BTreeMap<String, String>,
 ) -> loongclaw_kernel::PluginManifest {
     let normalized_channel_id = channel_id.map(str::to_owned);
     let normalized_setup_surface = setup_surface.map(str::to_owned);
@@ -26,7 +38,7 @@ fn sample_channel_bridge_manifest(
         channel_id: normalized_channel_id,
         endpoint: Some("http://127.0.0.1:9999/invoke".to_owned()),
         capabilities: BTreeSet::new(),
-        metadata: BTreeMap::new(),
+        metadata,
         summary: None,
         tags: Vec::new(),
         input_examples: Vec::new(),
@@ -34,6 +46,33 @@ fn sample_channel_bridge_manifest(
         defer_loading: false,
         setup,
     }
+}
+
+fn write_plugin_package_manifest(
+    root: &Path,
+    directory_name: &str,
+    manifest: &loongclaw_kernel::PluginManifest,
+) {
+    let plugin_directory = root.join(directory_name);
+    let manifest_path = plugin_directory.join("loongclaw.plugin.json");
+    let encoded_manifest =
+        serde_json::to_string_pretty(manifest).expect("serialize plugin package manifest");
+
+    fs::create_dir_all(&plugin_directory).expect("create plugin package directory");
+    fs::write(&manifest_path, encoded_manifest).expect("write plugin package manifest");
+}
+
+fn compatible_bridge_metadata(
+    transport_family: &str,
+    target_contract: &str,
+) -> BTreeMap<String, String> {
+    let mut metadata = BTreeMap::new();
+
+    metadata.insert("adapter_family".to_owned(), "channel-bridge".to_owned());
+    metadata.insert("transport_family".to_owned(), transport_family.to_owned());
+    metadata.insert("target_contract".to_owned(), target_contract.to_owned());
+
+    metadata
 }
 
 #[test]
@@ -126,4 +165,179 @@ fn validate_plugin_channel_bridge_manifest_reports_contract_mismatches() {
         missing_surface_validation.status,
         ChannelPluginBridgeManifestStatus::MissingSetupSurface
     );
+}
+
+#[test]
+fn channel_inventory_marks_managed_bridge_discovery_unavailable_when_install_root_is_unset() {
+    let config = LoongClawConfig::default();
+    let inventory = channel_inventory(&config);
+    let weixin = inventory
+        .channel_surfaces
+        .iter()
+        .find(|surface| surface.catalog.id == "weixin")
+        .expect("weixin surface");
+    let discovery = weixin
+        .plugin_bridge_discovery
+        .as_ref()
+        .expect("weixin managed discovery");
+
+    assert_eq!(
+        discovery.status,
+        ChannelPluginBridgeDiscoveryStatus::NotConfigured
+    );
+    assert!(discovery.managed_install_root.is_none());
+    assert!(discovery.scan_issue.is_none());
+    assert!(discovery.plugins.is_empty());
+}
+
+#[test]
+fn channel_inventory_reports_managed_bridge_plugin_statuses_per_surface() {
+    let install_root = TempDir::new().expect("create managed install root");
+    let compatible_manifest = sample_channel_bridge_manifest_with_metadata(
+        Some("weixin"),
+        Some("channel"),
+        compatible_bridge_metadata("wechat_clawbot_ilink_bridge", "weixin_reply_loop"),
+    );
+    let mut incomplete_metadata = compatible_bridge_metadata(
+        "qq_official_bot_gateway_or_plugin_bridge",
+        "qqbot_reply_loop",
+    );
+    let removed_transport_family = incomplete_metadata.remove("transport_family");
+    let incomplete_manifest = sample_channel_bridge_manifest_with_metadata(
+        Some("qqbot"),
+        Some("channel"),
+        incomplete_metadata,
+    );
+    let incompatible_manifest = sample_channel_bridge_manifest(Some("onebot"), Some("tool"));
+    let mut config = LoongClawConfig::default();
+
+    assert_eq!(
+        removed_transport_family.as_deref(),
+        Some("qq_official_bot_gateway_or_plugin_bridge")
+    );
+
+    write_plugin_package_manifest(
+        install_root.path(),
+        "weixin-compatible",
+        &compatible_manifest,
+    );
+    write_plugin_package_manifest(
+        install_root.path(),
+        "qqbot-incomplete",
+        &incomplete_manifest,
+    );
+    write_plugin_package_manifest(
+        install_root.path(),
+        "onebot-incompatible",
+        &incompatible_manifest,
+    );
+
+    config.external_skills.install_root = Some(install_root.path().display().to_string());
+
+    let inventory = channel_inventory(&config);
+    let weixin = inventory
+        .channel_surfaces
+        .iter()
+        .find(|surface| surface.catalog.id == "weixin")
+        .expect("weixin surface");
+    let qqbot = inventory
+        .channel_surfaces
+        .iter()
+        .find(|surface| surface.catalog.id == "qqbot")
+        .expect("qqbot surface");
+    let onebot = inventory
+        .channel_surfaces
+        .iter()
+        .find(|surface| surface.catalog.id == "onebot")
+        .expect("onebot surface");
+    let weixin_discovery = weixin
+        .plugin_bridge_discovery
+        .as_ref()
+        .expect("weixin managed discovery");
+    let qqbot_discovery = qqbot
+        .plugin_bridge_discovery
+        .as_ref()
+        .expect("qqbot managed discovery");
+    let onebot_discovery = onebot
+        .plugin_bridge_discovery
+        .as_ref()
+        .expect("onebot managed discovery");
+
+    assert_eq!(
+        weixin_discovery.status,
+        ChannelPluginBridgeDiscoveryStatus::MatchesFound
+    );
+    assert_eq!(weixin_discovery.compatible_plugins, 1);
+    assert_eq!(weixin_discovery.incomplete_plugins, 0);
+    assert_eq!(weixin_discovery.incompatible_plugins, 0);
+    assert_eq!(weixin_discovery.plugins.len(), 1);
+    assert_eq!(
+        weixin_discovery.plugins[0].status,
+        ChannelDiscoveredPluginBridgeStatus::CompatibleReady
+    );
+
+    assert_eq!(
+        qqbot_discovery.status,
+        ChannelPluginBridgeDiscoveryStatus::MatchesFound
+    );
+    assert_eq!(qqbot_discovery.compatible_plugins, 0);
+    assert_eq!(qqbot_discovery.incomplete_plugins, 1);
+    assert_eq!(qqbot_discovery.incompatible_plugins, 0);
+    assert_eq!(qqbot_discovery.plugins.len(), 1);
+    assert_eq!(
+        qqbot_discovery.plugins[0].status,
+        ChannelDiscoveredPluginBridgeStatus::CompatibleIncompleteContract
+    );
+    assert_eq!(
+        qqbot_discovery.plugins[0].missing_fields,
+        vec!["metadata.transport_family".to_owned()]
+    );
+
+    assert_eq!(
+        onebot_discovery.status,
+        ChannelPluginBridgeDiscoveryStatus::MatchesFound
+    );
+    assert_eq!(onebot_discovery.compatible_plugins, 0);
+    assert_eq!(onebot_discovery.incomplete_plugins, 0);
+    assert_eq!(onebot_discovery.incompatible_plugins, 1);
+    assert_eq!(onebot_discovery.plugins.len(), 1);
+    assert_eq!(
+        onebot_discovery.plugins[0].status,
+        ChannelDiscoveredPluginBridgeStatus::UnsupportedChannelSurface
+    );
+}
+
+#[test]
+fn channel_inventory_reports_managed_bridge_scan_failures() {
+    let missing_install_root = std::env::temp_dir().join(format!(
+        "loongclaw-missing-managed-bridge-root-{}",
+        std::process::id()
+    ));
+    let expected_install_root = missing_install_root.display().to_string();
+    let mut config = LoongClawConfig::default();
+
+    let _ = fs::remove_dir_all(&missing_install_root);
+
+    config.external_skills.install_root = Some(expected_install_root.clone());
+
+    let inventory = channel_inventory(&config);
+    let weixin = inventory
+        .channel_surfaces
+        .iter()
+        .find(|surface| surface.catalog.id == "weixin")
+        .expect("weixin surface");
+    let discovery = weixin
+        .plugin_bridge_discovery
+        .as_ref()
+        .expect("weixin managed discovery");
+
+    assert_eq!(
+        discovery.status,
+        ChannelPluginBridgeDiscoveryStatus::ScanFailed
+    );
+    assert_eq!(
+        discovery.managed_install_root.as_deref(),
+        Some(expected_install_root.as_str())
+    );
+    assert!(discovery.scan_issue.is_some());
 }
