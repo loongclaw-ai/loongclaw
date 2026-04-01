@@ -37,16 +37,18 @@ assert_lines_exact() {
   local file="$1"
   shift
 
-  local expected_lines
-  local actual_lines
+  local expected_lines=("$@")
+  local actual_lines=()
   local expected_count
   local actual_count
   local index
   local expected_line
   local actual_line
+  local line
 
-  mapfile -t expected_lines < <(printf '%s\n' "$@")
-  mapfile -t actual_lines < "$file"
+  while IFS= read -r line; do
+    actual_lines+=("$line")
+  done < "$file"
 
   expected_count="${#expected_lines[@]}"
   actual_count="${#actual_lines[@]}"
