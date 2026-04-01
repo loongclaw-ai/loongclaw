@@ -394,12 +394,21 @@ plugin-backed channel surface 的定位是刻意保持诚实的：
 
 而像 Tlon、Nostr、Twitch、Zalo、WebChat 这类纯 catalog-only planned surface，仍然不会在 adapter 真正落地前宣称已经具备 runtime 支持。
 
-工具策略需要明确配置：
+工具策略需要明确配置。`bash.exec` 仍处于实验阶段，它与
+`shell.exec` 并行存在，不代表这轮已经收敛成单一执行面，也不替代
+`shell.exec`。旧有的 `shell_default_mode`、`shell_allow` 和
+`shell_deny` 仍会继续作为 `bash.exec` 的兼容默认模式与兼容规则输入，
+默认规则文件则位于 `~/.loongclaw/rules`：
 
 ```toml
 [tools]
 shell_default_mode = "deny"
 shell_allow = ["echo", "ls", "git", "cargo"]
+shell_deny = ["rm"]
+
+[tools.bash]
+login_shell = false
+# rules_dir = "~/.loongclaw/rules"
 
 [tools.browser]
 enabled = true
@@ -423,11 +432,21 @@ max_results = 5
 # 或 "${JINA_AUTH_TOKEN}"
 ```
 
+```text
+# ~/.loongclaw/rules/00-allow-basic.rules
+prefix_rule(pattern=["printf"], decision="allow")
+prefix_rule(pattern=["git", "status"], decision="allow")
+
+# ~/.loongclaw/rules/90-deny-dangerous.rules
+prefix_rule(pattern=["rm"], decision="deny")
+prefix_rule(pattern=["cargo", "publish"], decision="deny")
+```
+
 进一步参考：
 
 - `default_provider` 支持 `duckduckgo`（或 `ddg`）、`brave`、`tavily`、`perplexity`（或 `perplexity_search`）、`exa`、`jina`（或 `jinaai` / `jina-ai`）
 - `BRAVE_API_KEY`、`TAVILY_API_KEY`、`PERPLEXITY_API_KEY`、`EXA_API_KEY`、`JINA_API_KEY`、`JINA_AUTH_TOKEN` 都可以作为环境变量回退
-- [工具策略配置](docs/configuration/tool-policy.md)
+- [工具表面规格](docs/product-specs/tool-surface.md)
 - [产品规格](docs/product-specs/index.md)
 - `loong validate-config --config ~/.loongclaw/config.toml --json`
 
