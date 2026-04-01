@@ -2903,6 +2903,8 @@ mod tests {
     #[test]
     fn check_channel_surfaces_warns_when_managed_bridge_discovery_is_ambiguous() {
         let install_root = browser_companion_temp_dir("managed-bridge-ambiguous");
+        let first_plugin_directory = "weixin-bridge-a";
+        let second_plugin_directory = "weixin-bridge-b";
         let mut first_manifest = managed_bridge_manifest(
             "weixin",
             Some("channel"),
@@ -2926,8 +2928,16 @@ mod tests {
         first_manifest.plugin_id = "weixin-bridge-shared".to_owned();
         second_manifest.plugin_id = "weixin-bridge-shared".to_owned();
 
-        write_managed_bridge_manifest(install_root.as_path(), "weixin-bridge-a", &first_manifest);
-        write_managed_bridge_manifest(install_root.as_path(), "weixin-bridge-b", &second_manifest);
+        write_managed_bridge_manifest(
+            install_root.as_path(),
+            first_plugin_directory,
+            &first_manifest,
+        );
+        write_managed_bridge_manifest(
+            install_root.as_path(),
+            second_plugin_directory,
+            &second_manifest,
+        );
 
         config.external_skills.install_root = Some(install_root.display().to_string());
 
@@ -2943,8 +2953,8 @@ mod tests {
                     .detail
                     .contains("compatible_plugin_ids=weixin-bridge-shared,weixin-bridge-shared")
                 && check.detail.contains("package_root=")
-                && check.detail.contains("/weixin-bridge-a")
-                && check.detail.contains("/weixin-bridge-b")
+                && check.detail.contains(first_plugin_directory)
+                && check.detail.contains(second_plugin_directory)
         }));
     }
 
