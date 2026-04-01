@@ -173,8 +173,7 @@ mod tests {
 
     #[test]
     fn governed_workflow_contract_operation_kind_and_scope_serialize_deterministically() {
-        let kind =
-            serde_json::to_value(WorkflowOperationKind::Worktree).expect("kind serializes");
+        let kind = serde_json::to_value(WorkflowOperationKind::Worktree).expect("kind serializes");
         let scope =
             serde_json::to_value(WorkflowOperationScope::Worktree).expect("scope serializes");
 

@@ -1271,7 +1271,9 @@ fn provider_runtime_binding(
         ConversationRuntimeBinding::Kernel(kernel_ctx) => {
             provider::ProviderRuntimeBinding::kernel(kernel_ctx)
         }
-        ConversationRuntimeBinding::Direct => provider::ProviderRuntimeBinding::direct(),
+        ConversationRuntimeBinding::AdvisoryOnly => {
+            provider::ProviderRuntimeBinding::advisory_only()
+        }
     }
 }
 
@@ -1338,10 +1340,10 @@ mod tests {
     use crate::test_support::TurnTestHarness;
 
     #[test]
-    fn provider_runtime_binding_maps_direct_conversation_binding_to_direct() {
+    fn provider_runtime_binding_maps_direct_conversation_binding_to_advisory_only() {
         assert!(matches!(
             provider_runtime_binding(ConversationRuntimeBinding::direct()),
-            provider::ProviderRuntimeBinding::Direct
+            provider::ProviderRuntimeBinding::AdvisoryOnly
         ));
     }
 

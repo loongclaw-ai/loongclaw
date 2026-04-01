@@ -1679,6 +1679,37 @@ fn test_kernel_context(agent_id: &str) -> KernelContext {
 }
 
 #[cfg(feature = "memory-sqlite")]
+async fn provider_messages_with_kernel_binding(
+    config: &LoongClawConfig,
+    session_id: &str,
+    kernel_ctx: &KernelContext,
+) -> Vec<Value> {
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let workspace_root = config
+        .tools
+        .file_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|_| config.tools.resolved_file_root());
+    let hydrated = crate::memory::hydrate_memory_context_with_workspace_root(
+        session_id,
+        workspace_root.as_deref(),
+        &memory_config,
+    )
+    .expect("hydrate memory context");
+    crate::provider::project_hydrated_memory_context_for_view_with_binding(
+        config,
+        true,
+        &crate::tools::runtime_tool_view(),
+        crate::provider::ProviderRuntimeBinding::kernel(kernel_ctx),
+        &hydrated,
+    )
+    .await
+    .messages
+}
+
+#[cfg(feature = "memory-sqlite")]
 fn collect_markdown_file_paths(root: &std::path::Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
@@ -3450,8 +3481,8 @@ async fn default_runtime_kernel_build_context_matches_builtin_summary_projection
         )
         .await
         .expect("build kernel context from default runtime");
-    let provider_messages = crate::provider::build_messages_for_session(&config, &session_id, true)
-        .expect("build provider messages");
+    let provider_messages =
+        provider_messages_with_kernel_binding(&config, &session_id, &kernel_ctx).await;
 
     assert_eq!(
         assembled.messages, provider_messages,
@@ -3490,8 +3521,8 @@ async fn default_runtime_kernel_build_context_preserves_profile_projection() {
         )
         .await
         .expect("build kernel context from default runtime");
-    let provider_messages = crate::provider::build_messages_for_session(&config, &session_id, true)
-        .expect("build provider messages");
+    let provider_messages =
+        provider_messages_with_kernel_binding(&config, &session_id, &kernel_ctx).await;
 
     assert_eq!(
         assembled.messages, provider_messages,
@@ -10487,6 +10518,7 @@ async fn turn_engine_fails_closed_before_governed_approval_for_later_app_intent(
 
     #[derive(Default)]
     struct ApprovalBarrierDispatcher {
+        approval_checks: Mutex<usize>,
         executed: Mutex<Vec<String>>,
     }
 
@@ -10499,6 +10531,7 @@ async fn turn_engine_fails_closed_before_governed_approval_for_later_app_intent(
             descriptor: &crate::tools::ToolDescriptor,
             _kernel_ctx: Option<&crate::KernelContext>,
         ) -> Result<Option<crate::conversation::turn_engine::ApprovalRequirement>, String> {
+            *self.approval_checks.lock().expect("approval checks lock") += 1;
             if descriptor.name == "delegate_async" {
                 return Ok(Some(
                     crate::conversation::turn_engine::ApprovalRequirement {
@@ -10575,23 +10608,28 @@ async fn turn_engine_fails_closed_before_governed_approval_for_later_app_intent(
         .await;
 
     match result {
-        TurnResult::NeedsApproval(requirement) => {
-            assert_eq!(requirement.tool_name.as_deref(), Some("delegate_async"));
-            assert_eq!(
-                requirement.approval_request_id.as_deref(),
-                Some("apr-test-approval-barrier")
-            );
+        TurnResult::ToolDenied(failure) => {
+            assert_eq!(failure.code, "governed_runtime_binding_required");
+            assert_eq!(failure.reason, "governed_runtime_binding_required");
         }
         other @ TurnResult::FinalText(_)
         | other @ TurnResult::StreamingText(_)
         | other @ TurnResult::StreamingDone(_)
-        | other @ TurnResult::ToolDenied(_)
+        | other @ TurnResult::NeedsApproval(_)
         | other @ TurnResult::ToolError(_)
         | other @ TurnResult::ProviderError(_) => {
-            panic!("expected NeedsApproval, got: {other:?}")
+            panic!("expected ToolDenied, got: {other:?}")
         }
     }
 
+    assert_eq!(
+        *dispatcher
+            .approval_checks
+            .lock()
+            .expect("approval checks lock"),
+        1,
+        "only the earlier low-risk app intent should reach approval routing"
+    );
     assert!(
         dispatcher
             .executed
@@ -10599,6 +10637,122 @@ async fn turn_engine_fails_closed_before_governed_approval_for_later_app_intent(
             .expect("dispatcher executed lock")
             .is_empty(),
         "batch should fail closed before any earlier app tool executes"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn governed_runtime_binding_rejects_mutating_app_intent_before_approval_on_advisory_binding()
+{
+    use async_trait::async_trait;
+    use loongclaw_contracts::{ToolCoreOutcome, ToolCoreRequest};
+
+    #[derive(Default)]
+    struct GuardedApprovalDispatcher {
+        approval_checks: Mutex<usize>,
+        executed: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl crate::conversation::AppToolDispatcher for GuardedApprovalDispatcher {
+        async fn maybe_require_approval(
+            &self,
+            _session_context: &crate::conversation::SessionContext,
+            _intent: &crate::conversation::ToolIntent,
+            _descriptor: &crate::tools::ToolDescriptor,
+            _kernel_ctx: Option<&crate::KernelContext>,
+        ) -> Result<Option<crate::conversation::turn_engine::ApprovalRequirement>, String> {
+            *self.approval_checks.lock().expect("approval checks lock") += 1;
+            Ok(Some(
+                crate::conversation::turn_engine::ApprovalRequirement {
+                    kind: crate::conversation::turn_engine::ApprovalRequirementKind::GovernedTool,
+                    reason: "operator approval required before running `delegate_async`".to_owned(),
+                    rule_id: "governed_tool_requires_approval".to_owned(),
+                    tool_name: Some("delegate_async".to_owned()),
+                    approval_key: Some("tool:delegate_async".to_owned()),
+                    approval_request_id: Some("apr-test-governed-runtime-binding".to_owned()),
+                },
+            ))
+        }
+
+        async fn execute_app_tool(
+            &self,
+            _session_context: &crate::conversation::SessionContext,
+            request: ToolCoreRequest,
+            _binding: crate::conversation::ConversationRuntimeBinding<'_>,
+        ) -> Result<ToolCoreOutcome, String> {
+            self.executed
+                .lock()
+                .expect("dispatcher executed lock")
+                .push(request.tool_name.clone());
+            Ok(ToolCoreOutcome {
+                status: "ok".to_owned(),
+                payload: json!({
+                    "tool_name": request.tool_name,
+                }),
+            })
+        }
+    }
+
+    let dispatcher = GuardedApprovalDispatcher::default();
+    let engine = TurnEngine::new(1);
+    let turn = ProviderTurn {
+        assistant_text: "".to_owned(),
+        tool_intents: vec![provider_tool_intent(
+            "delegate_async",
+            json!({
+                "task": "inspect child task"
+            }),
+            "root-session",
+            "turn-governed-runtime-binding",
+            "call-governed-runtime-binding",
+        )],
+        raw_meta: Value::Null,
+    };
+    let session_context = crate::conversation::SessionContext::root_with_tool_view(
+        "root-session",
+        crate::tools::planned_root_tool_view(),
+    );
+
+    let result = engine
+        .execute_turn_in_context(
+            &turn,
+            &session_context,
+            &dispatcher,
+            crate::conversation::ConversationRuntimeBinding::direct(),
+            None,
+        )
+        .await;
+
+    match result {
+        TurnResult::ToolDenied(failure) => {
+            assert_eq!(failure.code, "governed_runtime_binding_required");
+            assert_eq!(failure.reason, "governed_runtime_binding_required");
+        }
+        other @ TurnResult::FinalText(_)
+        | other @ TurnResult::StreamingText(_)
+        | other @ TurnResult::StreamingDone(_)
+        | other @ TurnResult::NeedsApproval(_)
+        | other @ TurnResult::ToolError(_)
+        | other @ TurnResult::ProviderError(_) => {
+            panic!("expected ToolDenied, got: {other:?}")
+        }
+    }
+
+    assert_eq!(
+        *dispatcher
+            .approval_checks
+            .lock()
+            .expect("approval checks lock"),
+        0,
+        "advisory binding should fail before approval routing"
+    );
+    assert!(
+        dispatcher
+            .executed
+            .lock()
+            .expect("dispatcher executed lock")
+            .is_empty(),
+        "mutating app tool should not execute under advisory binding"
     );
 }
 
@@ -13514,6 +13668,33 @@ fn conversation_runtime_binding_kernel_exposes_bound_context() {
     let (kernel_ctx, _invocations) = build_kernel_context(Arc::new(InMemoryAuditSink::default()));
     let binding = crate::conversation::ConversationRuntimeBinding::kernel(&kernel_ctx);
 
+    assert!(binding.is_kernel_bound());
+    assert!(binding.kernel_context().is_some());
+}
+
+#[test]
+fn governed_runtime_binding_direct_alias_is_advisory_only_and_non_mutating() {
+    let binding = crate::conversation::ConversationRuntimeBinding::direct();
+
+    assert_eq!(
+        binding.session_mode(),
+        loongclaw_contracts::GovernedSessionMode::AdvisoryOnly
+    );
+    assert!(!binding.allows_mutation());
+    assert!(!binding.is_kernel_bound());
+    assert!(binding.kernel_context().is_none());
+}
+
+#[test]
+fn governed_runtime_binding_kernel_path_is_mutating_capable() {
+    let (kernel_ctx, _invocations) = build_kernel_context(Arc::new(InMemoryAuditSink::default()));
+    let binding = crate::conversation::ConversationRuntimeBinding::kernel(&kernel_ctx);
+
+    assert_eq!(
+        binding.session_mode(),
+        loongclaw_contracts::GovernedSessionMode::MutatingCapable
+    );
+    assert!(binding.allows_mutation());
     assert!(binding.is_kernel_bound());
     assert!(binding.kernel_context().is_some());
 }
@@ -17133,6 +17314,7 @@ async fn handle_turn_with_runtime_executes_sessions_send_via_default_dispatcher(
         }),
         Ok("unused".to_owned()),
     );
+    let kernel_ctx = test_kernel_context("conversation-sessions-send-normal-lane");
     let coordinator = ConversationTurnCoordinator::new();
 
     let reply = coordinator
@@ -17142,7 +17324,7 @@ async fn handle_turn_with_runtime_executes_sessions_send_via_default_dispatcher(
             "show raw json tool output",
             ProviderErrorMode::Propagate,
             &runtime,
-            ConversationRuntimeBinding::direct(),
+            ConversationRuntimeBinding::kernel(&kernel_ctx),
         )
         .await
         .expect("handle turn success");
@@ -17242,6 +17424,7 @@ async fn handle_turn_with_runtime_requires_approval_before_delegate_execution() 
         vec![],
     )
     .with_durable_memory_config(memory_config.clone());
+    let kernel_ctx = test_kernel_context("conversation-delegate-approval-normal-lane");
     let coordinator = ConversationTurnCoordinator::new();
     let kernel_ctx = test_kernel_context("conversation-delegate-approval-normal-lane");
 
@@ -17343,6 +17526,7 @@ async fn handle_turn_with_runtime_executes_delegate_via_coordinator() {
         vec![],
     )
     .with_durable_memory_config(memory_config.clone());
+    let kernel_ctx = test_kernel_context("conversation-delegate-normal-lane");
     let coordinator = ConversationTurnCoordinator::new();
     let kernel_ctx = test_kernel_context("conversation-delegate-normal-lane");
 
@@ -18007,6 +18191,7 @@ async fn handle_turn_with_runtime_approval_request_resolve_approve_always_reuses
         vec![],
     )
     .with_durable_memory_config(memory_config.clone());
+    let kernel_ctx = test_kernel_context("conversation-approval-resolve-approve-always-grant");
 
     let granted_reply = coordinator
         .handle_turn_with_runtime(
@@ -18640,6 +18825,7 @@ async fn handle_turn_with_runtime_delegate_async_queue_failure_rolls_back_child_
     )
     .with_async_delegate_spawner(spawner.clone())
     .with_durable_memory_config(memory_config.clone());
+    let kernel_ctx = test_kernel_context("conversation-delegate-async-queue-rollback");
 
     let coordinator = ConversationTurnCoordinator::new();
     let kernel_ctx = test_kernel_context("conversation-delegate-async-queue-failure");
@@ -18730,6 +18916,7 @@ async fn handle_turn_with_runtime_delegate_async_rejects_when_active_child_limit
     )
     .with_async_delegate_spawner(spawner.clone())
     .with_durable_memory_config(memory_config.clone());
+    let kernel_ctx = test_kernel_context("conversation-delegate-async-active-child-limit");
 
     let coordinator = ConversationTurnCoordinator::new();
     let kernel_ctx = test_kernel_context("conversation-delegate-async-active-child-limit");
@@ -18816,6 +19003,7 @@ async fn handle_turn_with_runtime_executes_delegate_async_via_coordinator_withou
     )
     .with_async_delegate_spawner(Arc::new(gated_spawner))
     .with_durable_memory_config(memory_config.clone());
+    let kernel_ctx = test_kernel_context("conversation-delegate-async-queued");
 
     let coordinator = ConversationTurnCoordinator::new();
     let kernel_ctx = test_kernel_context("conversation-delegate-async-queued");
@@ -18881,7 +19069,7 @@ async fn handle_turn_with_runtime_executes_delegate_async_via_coordinator_withou
     assert_eq!(spawn_request.timeout_seconds, 9);
     assert!(
         spawn_request.kernel_context.is_some(),
-        "product-mode async delegate execution should preserve kernel binding"
+        "kernel-bound parent turns should preserve governed binding for async delegates"
     );
     assert_eq!(child.state, crate::session::repository::SessionState::Ready);
     assert_eq!(child.label.as_deref(), Some("async-child"));
@@ -19057,6 +19245,7 @@ async fn handle_turn_with_runtime_delegate_async_spawn_failure_is_observable_aft
         spawn_error: Some("spawn unavailable".to_owned()),
     }))
     .with_durable_memory_config(memory_config.clone());
+    let kernel_ctx = test_kernel_context("conversation-delegate-async-spawn-failed");
 
     let coordinator = ConversationTurnCoordinator::new();
     let kernel_ctx = test_kernel_context("conversation-delegate-async-spawn-failed");
@@ -19279,6 +19468,7 @@ async fn handle_turn_with_runtime_delegate_async_spawn_panic_is_observable_after
     )
     .with_async_delegate_spawner(Arc::new(PanicAsyncDelegateSpawner))
     .with_durable_memory_config(memory_config.clone());
+    let kernel_ctx = test_kernel_context("conversation-delegate-async-spawn-panic");
 
     let coordinator = ConversationTurnCoordinator::new();
     let kernel_ctx = test_kernel_context("conversation-delegate-async-spawn-panic");
@@ -19408,6 +19598,7 @@ async fn handle_turn_with_runtime_delegate_async_spawn_failure_persistence_recov
         spawn_error: Some("spawn unavailable".to_owned()),
     }))
     .with_durable_memory_config(memory_config.clone());
+    let kernel_ctx = test_kernel_context("conversation-delegate-async-spawn-persist-recovery");
 
     let coordinator = ConversationTurnCoordinator::new();
     let kernel_ctx = test_kernel_context("conversation-delegate-async-spawn-persist-recovery");
@@ -19544,6 +19735,7 @@ async fn handle_turn_with_runtime_delegate_child_cannot_reenter_delegate_by_defa
         vec![],
     )
     .with_durable_memory_config(memory_config.clone());
+    let kernel_ctx = test_kernel_context("conversation-delegate-nested-denied");
     let coordinator = ConversationTurnCoordinator::new();
     let kernel_ctx = test_kernel_context("conversation-delegate-nested-denied");
 
@@ -19640,6 +19832,7 @@ async fn handle_turn_with_runtime_delegate_child_cannot_reenter_delegate_async_b
         runtime_ref.set(runtime.clone()).is_ok(),
         "install local async delegate runtime"
     );
+    let kernel_ctx = test_kernel_context("conversation-delegate-async-nested-denied");
     let coordinator = ConversationTurnCoordinator::new();
     let kernel_ctx = test_kernel_context("conversation-delegate-async-nested-denied");
 
@@ -19785,6 +19978,7 @@ async fn handle_turn_with_runtime_delegate_child_can_reenter_when_max_depth_allo
         vec![],
     )
     .with_durable_memory_config(memory_config.clone());
+    let kernel_ctx = test_kernel_context("conversation-delegate-nested-allowed");
     let coordinator = ConversationTurnCoordinator::new();
     let kernel_ctx = test_kernel_context("conversation-delegate-nested-allowed");
 
@@ -20048,6 +20242,7 @@ async fn handle_turn_with_runtime_safe_lane_executes_sessions_send_via_default_d
         }),
         Ok("unused".to_owned()),
     );
+    let kernel_ctx = test_kernel_context("conversation-sessions-send-safe-lane");
     let coordinator = ConversationTurnCoordinator::new();
 
     let reply = coordinator
@@ -20057,7 +20252,7 @@ async fn handle_turn_with_runtime_safe_lane_executes_sessions_send_via_default_d
             "deploy to production with secret token and show raw json tool output",
             ProviderErrorMode::Propagate,
             &runtime,
-            ConversationRuntimeBinding::direct(),
+            ConversationRuntimeBinding::kernel(&kernel_ctx),
         )
         .await
         .expect("safe-lane handle turn success");

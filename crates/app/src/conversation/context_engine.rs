@@ -671,6 +671,30 @@ mod tests {
     use crate::config::MemoryProfile;
     use crate::test_support::TurnTestHarness;
 
+    #[cfg(feature = "memory-sqlite")]
+    async fn provider_messages_with_kernel_binding(
+        config: &LoongClawConfig,
+        session_id: &str,
+        kernel_ctx: &crate::KernelContext,
+    ) -> Vec<Value> {
+        let envelope = load_stage_envelope(
+            config,
+            session_id,
+            ConversationRuntimeBinding::kernel(kernel_ctx),
+        )
+        .await
+        .expect("load staged memory envelope");
+        crate::provider::project_hydrated_memory_context_for_view_with_binding(
+            config,
+            true,
+            &crate::tools::runtime_tool_view(),
+            crate::provider::ProviderRuntimeBinding::kernel(kernel_ctx),
+            &envelope.hydrated,
+        )
+        .await
+        .messages
+    }
+
     #[test]
     fn default_engine_metadata_has_stable_identity() {
         let metadata = DefaultContextEngine.metadata();
@@ -803,8 +827,7 @@ mod tests {
             .await
             .expect("assemble messages");
         let provider_messages =
-            crate::provider::build_messages_for_session(&config, session_id, true)
-                .expect("build provider messages");
+            provider_messages_with_kernel_binding(&config, session_id, &harness.kernel_ctx).await;
 
         assert_eq!(
             kernel_messages, provider_messages,
@@ -856,8 +879,7 @@ mod tests {
             .await
             .expect("assemble messages");
         let provider_messages =
-            crate::provider::build_messages_for_session(&config, session_id, true)
-                .expect("build provider messages");
+            provider_messages_with_kernel_binding(&config, session_id, &harness.kernel_ctx).await;
 
         assert_eq!(
             kernel_messages, provider_messages,
@@ -906,8 +928,7 @@ mod tests {
             .await
             .expect("assemble messages");
         let provider_messages =
-            crate::provider::build_messages_for_session(&config, session_id, true)
-                .expect("build provider messages");
+            provider_messages_with_kernel_binding(&config, session_id, &harness.kernel_ctx).await;
 
         assert_eq!(
             kernel_messages, provider_messages,
@@ -960,8 +981,7 @@ mod tests {
             .await
             .expect("assemble messages");
         let provider_messages =
-            crate::provider::build_messages_for_session(&config, session_id, true)
-                .expect("build provider messages");
+            provider_messages_with_kernel_binding(&config, session_id, &harness.kernel_ctx).await;
 
         assert_eq!(
             kernel_messages, provider_messages,
