@@ -3326,16 +3326,22 @@ pub(crate) async fn process_inbound_with_provider(
     feedback_policy: ChannelTurnFeedbackPolicy,
 ) -> CliResult<String> {
     let started_at = std::time::Instant::now();
-    let turn_config = reload_channel_turn_config(config, resolved_path)?;
-    let runtime = DefaultConversationRuntime::from_config_or_env(&turn_config)?;
-    let result = process_inbound_with_runtime_and_feedback(
-        &turn_config,
-        &runtime,
-        message,
-        ConversationRuntimeBinding::kernel(kernel_ctx),
-        feedback_policy,
-    )
-    .await;
+    let result = match reload_channel_turn_config(config, resolved_path) {
+        Ok(turn_config) => match DefaultConversationRuntime::from_config_or_env(&turn_config) {
+            Ok(runtime) => {
+                process_inbound_with_runtime_and_feedback(
+                    &turn_config,
+                    &runtime,
+                    message,
+                    ConversationRuntimeBinding::kernel(kernel_ctx),
+                    feedback_policy,
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        },
+        Err(error) => Err(error),
+    };
     let duration_ms = started_at.elapsed().as_millis();
     match &result {
         Ok(reply) => {

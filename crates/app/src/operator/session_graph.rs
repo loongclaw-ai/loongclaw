@@ -28,7 +28,11 @@ impl<'a> OperatorSessionGraph<'a> {
         session_id: &str,
         parent_session_id: Option<&str>,
     ) -> Result<String, String> {
-        let stored_lineage_root_session_id = self.lineage_root_session_id(session_id)?;
+        let stored_lineage_root_session_id = match self.lineage_root_session_id(session_id) {
+            Ok(lineage_root_session_id) => lineage_root_session_id,
+            Err(error) if error.starts_with("session_lineage_broken:") => None,
+            Err(error) => return Err(error),
+        };
 
         if let Some(stored_lineage_root_session_id) = stored_lineage_root_session_id {
             return Ok(stored_lineage_root_session_id);
@@ -39,7 +43,11 @@ impl<'a> OperatorSessionGraph<'a> {
         };
 
         let stored_parent_lineage_root_session_id =
-            self.lineage_root_session_id(parent_session_id)?;
+            match self.lineage_root_session_id(parent_session_id) {
+                Ok(lineage_root_session_id) => lineage_root_session_id,
+                Err(error) if error.starts_with("session_lineage_broken:") => None,
+                Err(error) => return Err(error),
+            };
 
         if let Some(stored_parent_lineage_root_session_id) = stored_parent_lineage_root_session_id {
             return Ok(stored_parent_lineage_root_session_id);
@@ -71,6 +79,8 @@ impl<'a> OperatorSessionGraph<'a> {
 mod tests {
     use super::OperatorSessionGraph;
 
+    use rusqlite::params;
+
     use crate::memory::runtime_config::MemoryRuntimeConfig;
     use crate::session::repository::{
         NewSessionRecord, SessionKind, SessionRepository, SessionState,
@@ -90,6 +100,20 @@ mod tests {
             sqlite_path: Some(db_path),
             ..MemoryRuntimeConfig::default()
         }
+    }
+
+    fn delete_session_row(memory_config: &MemoryRuntimeConfig, session_id: &str) {
+        let sqlite_path = memory_config
+            .sqlite_path
+            .as_ref()
+            .expect("sqlite path should be configured");
+        let conn = rusqlite::Connection::open(sqlite_path).expect("open sqlite connection");
+
+        conn.execute(
+            "DELETE FROM sessions WHERE session_id = ?1",
+            params![session_id],
+        )
+        .expect("delete session row");
     }
 
     fn seed_session(
@@ -203,6 +227,28 @@ mod tests {
         let repo = SessionRepository::new(&memory_config).expect("create session repository");
 
         seed_session(&repo, "root-session", SessionKind::Root, None);
+
+        let session_graph = OperatorSessionGraph::new(&repo);
+        let effective_lineage_root_session_id = session_graph
+            .effective_lineage_root_session_id("child-session", Some("root-session"))
+            .expect("compute effective lineage root");
+
+        assert_eq!(effective_lineage_root_session_id, "root-session");
+    }
+
+    #[test]
+    fn operator_session_graph_falls_back_to_parent_scope_when_parent_row_is_missing() {
+        let memory_config = isolated_memory_config("missing-parent-row");
+        let repo = SessionRepository::new(&memory_config).expect("create session repository");
+
+        seed_session(&repo, "root-session", SessionKind::Root, None);
+        seed_session(
+            &repo,
+            "child-session",
+            SessionKind::DelegateChild,
+            Some("root-session"),
+        );
+        delete_session_row(&memory_config, "root-session");
 
         let session_graph = OperatorSessionGraph::new(&repo);
         let effective_lineage_root_session_id = session_graph

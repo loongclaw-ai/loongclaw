@@ -663,28 +663,30 @@ pub fn execute_tool_core_with_config(
     let requested_tool_name = request.tool_name.clone();
     let payload_kind = crate::observability::json_value_kind(&request.payload);
     let payload_keys = crate::observability::top_level_json_keys(&request.payload);
-    if !trusted_internal_tool_payload_enabled()
-        && payload_uses_reserved_internal_tool_context(&request.payload)
-    {
-        return Err(format!(
-            "tool `{}` payload.{LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY} is reserved for trusted internal tool context; retry without that field",
-            request.tool_name
-        ));
-    }
-    let canonical_name = canonical_tool_name(request.tool_name.as_str());
-    let request = ToolCoreRequest {
-        tool_name: canonical_name.to_owned(),
-        payload: request.payload,
-    };
-    let effective_config = trusted_runtime_narrowing_from_payload(&request.payload)?
-        .map(|narrowing| config.narrowed(&narrowing));
-    let config = effective_config.as_ref().unwrap_or(config);
+    let canonical_name = canonical_tool_name(request.tool_name.as_str()).to_owned();
+    let payload = request.payload;
     let started_at = std::time::Instant::now();
-    let result = match canonical_name {
-        "tool.search" => execute_tool_search_tool_with_config(request, config),
-        "tool.invoke" => execute_tool_invoke_tool_with_config(request, config),
-        _ => execute_discoverable_tool_core_with_config(request, config),
-    };
+    let result = (|| {
+        ensure_untrusted_payload_does_not_use_reserved_internal_tool_context(
+            requested_tool_name.as_str(),
+            &payload,
+            "payload",
+        )?;
+
+        let request = ToolCoreRequest {
+            tool_name: canonical_name.clone(),
+            payload,
+        };
+        let effective_config = trusted_runtime_narrowing_from_payload(&request.payload)?;
+        let effective_config = effective_config.map(|narrowing| config.narrowed(&narrowing));
+        let config = effective_config.as_ref().unwrap_or(config);
+
+        match canonical_name.as_str() {
+            "tool.search" => execute_tool_search_tool_with_config(request, config),
+            "tool.invoke" => execute_tool_invoke_tool_with_config(request, config),
+            _ => execute_discoverable_tool_core_with_config(request, config),
+        }
+    })();
     let duration_ms = started_at.elapsed().as_millis();
     match &result {
         Ok(outcome) => {
