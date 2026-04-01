@@ -3803,6 +3803,35 @@ async fn feishu_auth_start_persists_oauth_state_and_authorize_url() {
 }
 
 #[tokio::test]
+async fn feishu_auth_start_non_json_keeps_manual_flow_for_non_local_redirect_uri() {
+    let temp_dir = temp_feishu_cli_dir("auth-start-non-json-manual");
+    let config_path = write_sample_feishu_config(&temp_dir);
+    let command = loongclaw_daemon::feishu_cli::FeishuCommand::Auth {
+        command: loongclaw_daemon::feishu_cli::FeishuAuthCommand::Start(
+            loongclaw_daemon::feishu_cli::FeishuAuthStartArgs {
+                common: loongclaw_daemon::feishu_cli::FeishuCommonArgs {
+                    config: Some(config_path.display().to_string()),
+                    account: Some("feishu_main".to_owned()),
+                    json: false,
+                },
+                redirect_uri: "https://example.com/callback".to_owned(),
+                principal_hint: Some("operator".to_owned()),
+                scopes: Vec::new(),
+                capabilities: Vec::new(),
+                include_message_write: false,
+            },
+        ),
+    };
+
+    let result = loongclaw_daemon::feishu_cli::run_feishu_command(command).await;
+
+    assert!(
+        result.is_ok(),
+        "non-json auth start should remain manual and accept non-local redirect URIs: {result:?}"
+    );
+}
+
+#[tokio::test]
 async fn feishu_auth_start_can_include_recommended_message_write_scopes() {
     let temp_dir = temp_feishu_cli_dir("auth-start-write");
     let config_path = write_sample_feishu_config(&temp_dir);
@@ -3986,8 +4015,10 @@ async fn feishu_auth_exchange_sets_selected_open_id_for_new_grant() {
             .body
             .contains("\"code_verifier\":\"verifier-123\"")
     );
+    let token_request_body: Value =
+        serde_json::from_str(&requests[0].body).expect("token request body should be valid json");
     assert!(
-        !requests[0].body.contains("\"scope\""),
+        token_request_body.get("scope").is_none(),
         "authorization_code exchange should not resend scope list: {}",
         requests[0].body
     );
