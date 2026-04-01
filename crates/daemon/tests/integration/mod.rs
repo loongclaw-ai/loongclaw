@@ -263,6 +263,29 @@ fn ask_cli_accepts_message_session_and_acp_flags() {
 }
 
 #[test]
+fn ask_cli_accepts_latest_session_selector() {
+    let cli = try_parse_cli([
+        "loongclaw",
+        "ask",
+        "--message",
+        "Summarize this repository",
+        "--session",
+        "latest",
+    ])
+    .expect("ask CLI should accept the latest session selector");
+
+    match cli.command {
+        Some(Commands::Ask {
+            message, session, ..
+        }) => {
+            assert_eq!(message, "Summarize this repository");
+            assert_eq!(session.as_deref(), Some("latest"));
+        }
+        other => panic!("unexpected command parse result: {other:?}"),
+    }
+}
+
+#[test]
 fn init_spec_cli_accepts_plugin_trust_guard_preset() {
     let cli = try_parse_cli([
         "loongclaw",

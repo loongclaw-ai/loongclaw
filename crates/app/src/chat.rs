@@ -51,6 +51,8 @@ use super::conversation::{load_fast_lane_tool_batch_event_summary, load_safe_lan
 use super::memory;
 #[cfg(feature = "memory-sqlite")]
 use super::memory::runtime_config::MemoryRuntimeConfig;
+#[cfg(feature = "memory-sqlite")]
+use super::session::repository::SessionRepository;
 use super::tui_surface::{
     TuiActionSpec, TuiCalloutTone, TuiChecklistItemSpec, TuiChecklistStatus, TuiChoiceSpec,
     TuiHeaderStyle, TuiKeyValueSpec, TuiMessageSpec, TuiScreenSpec, TuiSectionSpec,
@@ -58,6 +60,7 @@ use super::tui_surface::{
 };
 
 pub const DEFAULT_FIRST_PROMPT: &str = "Summarize this repository and suggest the best next step.";
+const CLI_SESSION_SELECTOR_LATEST: &str = "latest";
 const TEST_ONBOARD_EXECUTABLE_ENV: &str = "LOONGCLAW_TEST_ONBOARD_EXECUTABLE";
 const CLI_CHAT_LIVE_PREVIEW_MIN_EMIT_CHARS: usize = 80;
 const CLI_CHAT_LIVE_PREVIEW_MAX_EMIT_CHARS: usize = 240;
@@ -475,7 +478,6 @@ fn initialize_cli_turn_runtime_with_loaded_config(
         return Err("CLI channel is disabled by config.cli.enabled=false".to_owned());
     }
 
-    let session_id = resolve_cli_session_id(session_hint, session_requirement)?;
     if initialize_runtime_environment {
         crate::runtime_env::initialize_runtime_environment(&config, Some(&resolved_path));
     }
@@ -490,19 +492,29 @@ fn initialize_cli_turn_runtime_with_loaded_config(
         .acp_working_directory
         .clone()
         .or_else(|| config.acp.dispatch.resolved_working_directory());
-    let session_address = ConversationSessionAddress::from_session_id(session_id.clone());
 
     #[cfg(feature = "memory-sqlite")]
-    let (memory_config, memory_label) = {
-        let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+
+    #[cfg(feature = "memory-sqlite")]
+    let memory_label = {
         let sqlite_path = config.memory.resolved_sqlite_path();
         let initialized = memory::ensure_memory_db_ready(Some(sqlite_path), &memory_config)
             .map_err(|error| format!("failed to initialize sqlite memory: {error}"))?;
-        (memory_config, initialized.display().to_string())
+        initialized.display().to_string()
     };
 
     #[cfg(not(feature = "memory-sqlite"))]
     let memory_label = "disabled".to_owned();
+
+    #[cfg(feature = "memory-sqlite")]
+    let session_id =
+        resolve_cli_runtime_session_id(session_hint, session_requirement, &memory_config)?;
+
+    #[cfg(not(feature = "memory-sqlite"))]
+    let session_id = resolve_cli_session_id(session_hint, session_requirement)?;
+
+    let session_address = ConversationSessionAddress::from_session_id(session_id.clone());
 
     Ok(CliTurnRuntime {
         resolved_path,
@@ -536,6 +548,29 @@ fn resolve_cli_session_id(
             }
         },
     }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn resolve_cli_runtime_session_id(
+    session_hint: Option<&str>,
+    session_requirement: CliSessionRequirement,
+    memory_config: &MemoryRuntimeConfig,
+) -> CliResult<String> {
+    let session_id = resolve_cli_session_id(session_hint, session_requirement)?;
+    let should_resolve_latest = session_requirement == CliSessionRequirement::AllowImplicitDefault
+        && session_id == CLI_SESSION_SELECTOR_LATEST;
+
+    if !should_resolve_latest {
+        return Ok(session_id);
+    }
+
+    let repo = SessionRepository::new(memory_config)?;
+    let latest_session = repo.latest_resumable_root_session_summary()?;
+    let latest_session = latest_session.ok_or_else(|| {
+        "CLI session selector `latest` did not find any resumable root session".to_owned()
+    })?;
+
+    Ok(latest_session.session_id)
 }
 
 #[allow(clippy::print_stdout)] // CLI output
@@ -4466,6 +4501,10 @@ mod tests {
     };
 
     #[cfg(feature = "memory-sqlite")]
+    use crate::session::repository::{
+        NewSessionRecord, SessionKind, SessionRepository, SessionState,
+    };
+    #[cfg(feature = "memory-sqlite")]
     use async_trait::async_trait;
     #[cfg(feature = "memory-sqlite")]
     use loongclaw_contracts::{Capability, ExecutionRoute, HarnessKind, MemoryPlaneError};
@@ -4895,6 +4934,121 @@ mod tests {
             error.contains("explicit session"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    #[cfg(feature = "memory-sqlite")]
+    fn cli_runtime_resolves_latest_session_selector_to_latest_resumable_root() {
+        let (config, memory_config, sqlite_path) = init_chat_test_memory("latest-selector");
+        let repo = SessionRepository::new(&memory_config).expect("repository");
+        repo.create_session(NewSessionRecord {
+            session_id: "selected-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("selected-session".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create selected session");
+        crate::memory::append_turn_direct("selected-session", "user", "hello", &memory_config)
+            .expect("persist selected turn");
+
+        let runtime = initialize_cli_turn_runtime_with_loaded_config(
+            PathBuf::from("/tmp/loongclaw.toml"),
+            config,
+            Some("latest"),
+            &CliChatOptions::default(),
+            "cli-chat-latest-selector-test",
+            CliSessionRequirement::AllowImplicitDefault,
+            false,
+        )
+        .expect("latest selector runtime");
+
+        assert_eq!(runtime.session_id, "selected-session");
+
+        cleanup_chat_test_memory(&sqlite_path);
+    }
+
+    #[test]
+    #[cfg(feature = "memory-sqlite")]
+    fn cli_runtime_rejects_latest_session_selector_when_no_resumable_root_exists() {
+        let (config, _memory_config, sqlite_path) = init_chat_test_memory("latest-selector-none");
+        let result = initialize_cli_turn_runtime_with_loaded_config(
+            PathBuf::from("/tmp/loongclaw.toml"),
+            config,
+            Some("latest"),
+            &CliChatOptions::default(),
+            "cli-chat-latest-selector-empty-test",
+            CliSessionRequirement::AllowImplicitDefault,
+            false,
+        );
+        let error = match result {
+            Ok(_) => panic!("latest selector should fail without a resumable root session"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("latest"), "unexpected error: {error}");
+
+        cleanup_chat_test_memory(&sqlite_path);
+    }
+
+    #[test]
+    #[cfg(feature = "memory-sqlite")]
+    fn cli_runtime_keeps_default_session_when_no_hint_is_provided() {
+        let (config, _memory_config, sqlite_path) = init_chat_test_memory("default-selector");
+        let runtime = initialize_cli_turn_runtime_with_loaded_config(
+            PathBuf::from("/tmp/loongclaw.toml"),
+            config,
+            None,
+            &CliChatOptions::default(),
+            "cli-chat-default-selector-test",
+            CliSessionRequirement::AllowImplicitDefault,
+            false,
+        )
+        .expect("default session runtime");
+
+        assert_eq!(runtime.session_id, "default");
+
+        cleanup_chat_test_memory(&sqlite_path);
+    }
+
+    #[test]
+    #[cfg(feature = "memory-sqlite")]
+    fn cli_runtime_keeps_explicit_literal_session_id() {
+        let (config, _memory_config, sqlite_path) = init_chat_test_memory("literal-selector");
+        let runtime = initialize_cli_turn_runtime_with_loaded_config(
+            PathBuf::from("/tmp/loongclaw.toml"),
+            config,
+            Some("custom-session"),
+            &CliChatOptions::default(),
+            "cli-chat-literal-selector-test",
+            CliSessionRequirement::AllowImplicitDefault,
+            false,
+        )
+        .expect("literal session runtime");
+
+        assert_eq!(runtime.session_id, "custom-session");
+
+        cleanup_chat_test_memory(&sqlite_path);
+    }
+
+    #[test]
+    #[cfg(feature = "memory-sqlite")]
+    fn concurrent_cli_runtime_keeps_latest_literal_when_explicit_session_is_required() {
+        let (config, _memory_config, sqlite_path) = init_chat_test_memory("concurrent-latest");
+        let runtime = initialize_cli_turn_runtime_with_loaded_config(
+            PathBuf::from("/tmp/loongclaw.toml"),
+            config,
+            Some("latest"),
+            &CliChatOptions::default(),
+            "cli-chat-concurrent-latest-test",
+            CliSessionRequirement::RequireExplicit,
+            false,
+        )
+        .expect("concurrent runtime");
+
+        assert_eq!(runtime.session_id, "latest");
+
+        cleanup_chat_test_memory(&sqlite_path);
     }
 
     #[tokio::test]

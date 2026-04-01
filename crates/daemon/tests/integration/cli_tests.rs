@@ -1422,6 +1422,19 @@ fn chat_cli_accepts_acp_runtime_option_flags() {
 }
 
 #[test]
+fn chat_cli_accepts_latest_session_selector() {
+    let cli = try_parse_cli(["loongclaw", "chat", "--session", "latest"])
+        .expect("chat CLI should accept the latest session selector");
+
+    match cli.command {
+        Some(Commands::Chat { session, .. }) => {
+            assert_eq!(session.as_deref(), Some("latest"));
+        }
+        other => panic!("unexpected command parse result: {other:?}"),
+    }
+}
+
+#[test]
 fn feishu_send_cli_accepts_generic_target_and_target_kind() {
     let cli = try_parse_cli([
         "loongclaw",
