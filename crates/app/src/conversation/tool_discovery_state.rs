@@ -108,6 +108,7 @@ impl ToolDiscoveryState {
     }
 
     pub(crate) fn render_delta_prompt(&self) -> String {
+        const MAX_ENTRIES: usize = 10;
         let mut sections = Vec::new();
         let mut entry_lines = Vec::new();
 
@@ -146,7 +147,8 @@ impl ToolDiscoveryState {
 
         entry_lines.push("Latest discovered tools:".to_owned());
 
-        for entry in &self.entries {
+        let entries_to_render = self.entries.iter().take(MAX_ENTRIES);
+        for entry in entries_to_render {
             let rendered_tool_id = render_tool_discovery_advisory_text(entry.tool_id.as_str());
             let rendered_summary = render_tool_discovery_advisory_text(entry.summary.as_str());
 
@@ -803,5 +805,53 @@ mod tests {
         assert!(rendered.contains("[tool_discovery_delta]"));
         assert!(rendered.contains("exact_tool_id"));
         assert!(rendered.contains("file.read"));
+    }
+
+    #[test]
+    fn render_delta_prompt_limits_output_to_prevent_stack_overflow() {
+        const MAX_ENTRIES: usize = 10;
+        let many_entries: Vec<ToolDiscoveryEntry> = (0..50)
+            .map(|i| ToolDiscoveryEntry {
+                tool_id: format!("tool_{i}"),
+                summary: format!("Summary for tool {i} with some extra text"),
+                search_hint: Some(format!("Search hint for tool {i}")),
+                argument_hint: Some("arg: string".to_owned()),
+                required_fields: vec!["field1".to_owned(), "field2".to_owned()],
+                required_field_groups: vec![vec!["group1".to_owned()]],
+            })
+            .collect();
+
+        let state = ToolDiscoveryState {
+            schema_version: TOOL_DISCOVERY_SCHEMA_VERSION,
+            query: Some("test query".to_owned()),
+            exact_tool_id: Some("tool_5".to_owned()),
+            entries: many_entries,
+            diagnostics: Some(ToolDiscoveryDiagnostics {
+                reason: "test diagnostic".to_owned(),
+            }),
+        };
+
+        let rendered = state.render_delta_prompt();
+        let line_count = rendered.lines().count();
+
+        assert!(
+            line_count <= 100,
+            "render_delta_prompt should limit output to prevent stack overflow, got {} lines: {}",
+            line_count,
+            rendered
+        );
+
+        assert!(
+            rendered.contains("Latest discovered tools:"),
+            "should still render discovered tools section"
+        );
+
+        let tool_count = rendered.matches("- tool_").count();
+        assert!(
+            tool_count <= MAX_ENTRIES,
+            "should render at most {} tools, got {}",
+            MAX_ENTRIES,
+            tool_count
+        );
     }
 }

@@ -675,11 +675,18 @@ impl SupervisorRuntimeHooks {
             }),
             run_cli_host: Arc::new(|options| {
                 Box::pin(async move {
-                    tokio::task::spawn_blocking(move || {
-                        mvp::chat::run_concurrent_cli_host(&options)
-                    })
-                    .await
-                    .map_err(|error| format!("concurrent CLI host task failed to join: {error}"))?
+                    const GATEWAY_CLI_STACK_SIZE: usize = 8 * 1024 * 1024;
+                    let handle = std::thread::Builder::new()
+                        .name("gateway-cli-host".to_owned())
+                        .stack_size(GATEWAY_CLI_STACK_SIZE)
+                        .spawn(move || mvp::chat::run_concurrent_cli_host(&options))
+                        .map_err(|error| {
+                            format!("failed to spawn gateway CLI host thread: {error}")
+                        })?;
+
+                    handle
+                        .join()
+                        .map_err(|_panic| "gateway CLI host thread panicked".to_owned())?
                 })
             }),
             background_channel_runners: Self::production_background_channel_runners(),
@@ -1481,5 +1488,29 @@ mod tests {
             .expect("feishu surface should still be tracked");
         assert_eq!(feishu_state.phase, SurfacePhase::Stopping);
         assert_eq!(feishu_state.started_at_ms, None);
+    }
+
+    #[test]
+    fn gateway_cli_uses_increased_stack_size_to_prevent_overflow() {
+        use std::thread;
+
+        const GATEWAY_CLI_STACK_SIZE: usize = 8 * 1024 * 1024;
+        let handle = thread::Builder::new()
+            .stack_size(GATEWAY_CLI_STACK_SIZE)
+            .spawn(|| {
+                let deep_recursion_limit = 100_000;
+                fn recursive_fn(n: usize) -> usize {
+                    if n == 0 { 1 } else { 1 + recursive_fn(n - 1) }
+                }
+                recursive_fn(deep_recursion_limit)
+            })
+            .expect("spawn thread with increased stack");
+
+        let result = handle.join();
+        assert!(
+            result.is_ok(),
+            "thread with {}MB stack should handle deep recursion without overflow",
+            GATEWAY_CLI_STACK_SIZE / 1024 / 1024
+        );
     }
 }
