@@ -44,6 +44,8 @@ pub struct ScopedEnv {
 }
 
 impl ScopedEnv {
+    // Daemon-side tests must share this guard so every env mutation in the
+    // daemon test process is serialized behind one lock.
     pub fn new() -> Self {
         let lock = lock_daemon_test_environment();
         let saved = Vec::new();
