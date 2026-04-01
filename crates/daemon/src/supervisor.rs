@@ -13,6 +13,8 @@ use tokio::task::{Id, JoinSet};
 
 use crate::{MultiChannelServeChannelAccount, mvp};
 
+pub(crate) const GATEWAY_CLI_STACK_SIZE: usize = 8 * 1024 * 1024;
+
 type BoxedSupervisorFuture = Pin<Box<dyn Future<Output = CliResult<()>> + Send + 'static>>;
 type BoxedShutdownFuture = Pin<Box<dyn Future<Output = CliResult<String>> + Send + 'static>>;
 type BackgroundChannelRunner =
@@ -675,8 +677,6 @@ impl SupervisorRuntimeHooks {
             }),
             run_cli_host: Arc::new(|options| {
                 Box::pin(async move {
-                    const GATEWAY_CLI_STACK_SIZE: usize = 8 * 1024 * 1024;
-
                     let handle = std::thread::Builder::new()
                         .name("gateway-cli-host".to_owned())
                         .stack_size(GATEWAY_CLI_STACK_SIZE)
@@ -1495,13 +1495,16 @@ mod tests {
     fn gateway_cli_run_cli_host_uses_increased_stack_size() {
         use std::thread;
 
-        const PRODUCTION_STACK_SIZE: usize = 8 * 1024 * 1024;
         let handle = thread::Builder::new()
-            .stack_size(PRODUCTION_STACK_SIZE)
+            .stack_size(super::GATEWAY_CLI_STACK_SIZE)
             .spawn(|| {
                 let deep_recursion_limit = 100_000;
                 fn recursive_fn(n: usize) -> usize {
-                    if n == 0 { 1 } else { 1 + recursive_fn(n - 1) }
+                    if n == 0 {
+                        1
+                    } else {
+                        1 + recursive_fn(n - 1)
+                    }
                 }
                 recursive_fn(deep_recursion_limit)
             })
@@ -1511,11 +1514,16 @@ mod tests {
         assert!(
             result.is_ok(),
             "production stack size ({}MB) should handle deep recursion without overflow",
-            PRODUCTION_STACK_SIZE / 1024 / 1024
+            super::GATEWAY_CLI_STACK_SIZE / 1024 / 1024
         );
 
         assert_eq!(
-            PRODUCTION_STACK_SIZE,
+            super::GATEWAY_CLI_STACK_SIZE,
+            8 * 1024 * 1024,
+        );
+
+        assert_eq!(
+            super::GATEWAY_CLI_STACK_SIZE,
             8 * 1024 * 1024,
             "production stack size constant must be 8MB to prevent gateway stack overflow (issue #804)"
         );

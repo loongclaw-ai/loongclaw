@@ -148,6 +148,7 @@ impl ToolDiscoveryState {
 
         entry_lines.push("Latest discovered tools:".to_owned());
 
+        let total_entries = self.entries.len();
         let entries_to_render = self.entries.iter().take(MAX_ENTRIES);
         for entry in entries_to_render {
             let rendered_tool_id = render_tool_discovery_advisory_text(entry.tool_id.as_str());
@@ -181,6 +182,13 @@ impl ToolDiscoveryState {
                 render_tool_discovery_advisory_text(entry.tool_id.as_str());
             entry_lines.push(format!(
                 "  refresh: tool.search {{ \"exact_tool_id\": {rendered_refresh_tool_id} }}"
+            ));
+        }
+
+        if total_entries > MAX_ENTRIES {
+            entry_lines.push(format!(
+                "… {} additional tools omitted. Re-run tool.search with a narrower query or exact_tool_id.",
+                total_entries - MAX_ENTRIES
             ));
         }
 
@@ -847,7 +855,7 @@ mod tests {
             "should still render discovered tools section"
         );
 
-        let tool_count = rendered.matches("- tool_").count();
+        let tool_count = rendered.matches("- \"tool_").count();
         assert!(
             tool_count <= MAX_ENTRIES,
             "should render at most {} tools, got {}",
@@ -886,7 +894,7 @@ mod tests {
             rendered
         );
 
-        let tool_count = rendered.matches("- ").count();
+        let tool_count = rendered.matches("- \"tool_").count();
         assert_eq!(
             tool_count, MAX_ENTRIES,
             "should render exactly {} tools when entries equals MAX_ENTRIES, got {}: {}",
