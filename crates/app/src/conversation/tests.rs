@@ -248,13 +248,12 @@ impl crate::conversation::AsyncDelegateSpawner for PostPrepareFailingAsyncDelega
             .runtime
             .get()
             .ok_or_else(|| "test_post_prepare_runtime_missing".to_owned())?;
+        let binding = request.binding.as_borrowed();
         super::turn_coordinator::with_prepared_subagent_spawn_cleanup_if_kernel_bound(
             runtime.as_ref(),
             &request.parent_session_id,
             &request.child_session_id,
-            crate::conversation::ConversationRuntimeBinding::from_optional_kernel_context(
-                request.kernel_context.as_ref(),
-            ),
+            binding,
             || async { Err("synthetic_post_prepare_async_spawn_failure".to_owned()) },
         )
         .await
@@ -282,7 +281,7 @@ impl crate::conversation::AsyncDelegateSpawner for LocalChildRuntimeAsyncDelegat
             execution,
             runtime_self_continuity: _,
             timeout_seconds,
-            kernel_context,
+            binding,
         } = request;
         let memory_config = MemoryRuntimeConfig::from_memory_config(&self.config.memory);
         let repo = crate::session::repository::SessionRepository::new(&memory_config)?;
@@ -292,15 +291,13 @@ impl crate::conversation::AsyncDelegateSpawner for LocalChildRuntimeAsyncDelegat
             .ok_or_else(|| "test_local_delegate_runtime_missing".to_owned())?;
         let child_session_id_for_spawn = child_session_id.clone();
         let parent_session_id_for_spawn = parent_session_id.clone();
-        let binding = crate::conversation::ConversationRuntimeBinding::from_optional_kernel_context(
-            kernel_context.as_ref(),
-        );
-        let child_kernel_context = kernel_context.clone();
+        let borrowed_binding = binding.as_borrowed();
+        let child_binding = binding.clone();
         super::turn_coordinator::with_prepared_subagent_spawn_cleanup_if_kernel_bound(
             runtime.as_ref(),
             &parent_session_id,
             &child_session_id,
-            binding,
+            borrowed_binding,
             move || async move {
                 let started = repo.transition_session_with_event_if_current(
                     &child_session_id_for_spawn,
@@ -330,9 +327,7 @@ impl crate::conversation::AsyncDelegateSpawner for LocalChildRuntimeAsyncDelegat
                     &task,
                     execution,
                     timeout_seconds,
-                    crate::conversation::ConversationRuntimeBinding::from_optional_kernel_context(
-                        child_kernel_context.as_ref(),
-                    ),
+                    child_binding.as_borrowed(),
                 )
                 .await;
                 Ok(())
@@ -19525,8 +19520,11 @@ async fn handle_turn_with_runtime_executes_delegate_async_via_coordinator_withou
     assert_eq!(spawn_request.label.as_deref(), Some("async-child"));
     assert_eq!(spawn_request.timeout_seconds, 9);
     assert!(
-        spawn_request.kernel_context.is_some(),
-        "kernel-bound parent turns should preserve kernel context for async delegates"
+        matches!(
+            &spawn_request.binding,
+            crate::conversation::OwnedConversationRuntimeBinding::Kernel(_)
+        ),
+        "kernel-bound parent turns should preserve owned governed binding for async delegates"
     );
     assert_eq!(child.state, crate::session::repository::SessionState::Ready);
     assert_eq!(child.label.as_deref(), Some("async-child"));
@@ -19556,7 +19554,7 @@ async fn handle_turn_with_runtime_executes_delegate_async_via_coordinator_withou
 
 #[cfg(feature = "memory-sqlite")]
 #[tokio::test]
-async fn handle_turn_with_runtime_delegate_async_preserves_kernel_context_in_spawn_request() {
+async fn handle_turn_with_runtime_delegate_async_preserves_kernel_binding_in_spawn_request() {
     let db_path = std::env::temp_dir().join(format!(
         "{}.sqlite3",
         unique_acp_test_id("conversation-delegate-async", "kernel-binding")
@@ -19637,11 +19635,14 @@ async fn handle_turn_with_runtime_delegate_async_preserves_kernel_context_in_spa
         reply.contains("\"tool\":\"delegate_async\""),
         "expected raw delegate_async tool output, got: {reply}"
     );
-    assert!(spawn_request.kernel_context.is_some());
+    assert!(matches!(
+        &spawn_request.binding,
+        crate::conversation::OwnedConversationRuntimeBinding::Kernel(_)
+    ));
     let child_kernel_ctx = spawn_request
-        .kernel_context
-        .as_ref()
-        .expect("spawn request should carry kernel context");
+        .binding
+        .kernel_context()
+        .expect("spawn request should carry owned governed binding");
     assert_eq!(child_kernel_ctx.token, expected_kernel_ctx.token);
     assert!(
         Arc::ptr_eq(&child_kernel_ctx.kernel, &expected_kernel_ctx.kernel),
