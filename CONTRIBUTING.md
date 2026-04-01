@@ -363,6 +363,11 @@ lock contention does not invalidate the debugging signal.
 The following pull requests are unlikely to be accepted unless maintainers have explicitly aligned
 on them in advance:
 
+This is a statement of current review posture, not a promise that these areas
+are permanently closed forever. If the project direction changes, maintainers
+can choose to revisit them, but we want that move to happen through explicit
+alignment rather than by letting a surprise PR redefine the boundary.
+
 1. AI-assisted changes that the author does not understand or cannot defend. We welcome AI tooling
    as a force multiplier, but contributors are expected to understand every line they submit and to
    take responsibility for its behavior, risks, and tradeoffs.

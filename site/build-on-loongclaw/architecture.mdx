@@ -12,6 +12,11 @@ LoongClaw is organized as a 7-crate Rust workspace with a strict dependency DAG.
 This page stays intentionally short: it explains the boundaries builders should
 preserve, not the full internal authoring trail.
 
+These boundaries describe the current public architecture contract, not a claim
+that every crate split or layer label is frozen forever. If the system evolves,
+the contract can evolve too, but it should do so explicitly and with review
+rather than through gradual undocumented drift.
+
 ## Start Here If
 
 | If you are trying to... | Start here | Then continue to... |
@@ -104,6 +109,11 @@ also layered so governance and execution stay explicit.
 - Do not bypass kernel-governed capability, policy, and audit paths with shadow execution routes.
 - Prefer additive growth to breaking public contract rewrites.
 - Keep runtime-backed product surfaces on the same governed model instead of inventing one-off sidecar systems.
+
+Those rules are intentionally strict for the current architecture posture. When
+maintainers decide the posture itself should change, the expectation is an
+explicit architecture update, not an exception that quietly becomes the new
+shape.
 
 ## Common Architecture Smells
 

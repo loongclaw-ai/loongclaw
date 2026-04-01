@@ -4,6 +4,12 @@ LoongClaw is structured as a 7-crate Rust workspace with a strict acyclic
 dependency graph. The kernel enforces layered execution planes separating
 contracts, security, execution, and orchestration concerns.
 
+This file describes the architecture as it is currently governed in the
+repository. The crate split, layer names, and ownership map are deliberate
+decisions, but they are not presented as eternal truths. If the product shape
+changes, maintainers may revise this map explicitly through design work rather
+than by letting boundary drift accumulate accidentally.
+
 Public reader-facing architecture docs live under `site/`. This file remains
 the repository-native architecture map for contributors, source readers, and
 maintainers who need the codebase-level structure behind the Mintlify docs.
@@ -149,6 +155,11 @@ file is the map, not the full per-layer contract.
 
 These are the core principles for anyone working in this codebase. They are enforced
 mechanically where possible.
+
+Some of these principles are durable invariants, while others describe the
+current preferred architecture shape. The right way to change the latter is not
+to quietly code around them, but to first make the design case and then update
+the documented contract deliberately.
 
 1. **Kernel-first** -- kernel-governed execution routes through the kernel's capability, policy, and audit system. Remaining direct compatibility paths must be explicit and are follow-up work, not implicit shadow routing.
 2. **No breaking changes** -- new features are additive only. Existing public API signatures stay unchanged.
