@@ -204,12 +204,16 @@ impl ConversationTurnMiddleware for SystemPromptAdditionTurnMiddleware {
         &self,
         _config: &LoongClawConfig,
         _session_id: &str,
-        _include_system_prompt: bool,
+        include_system_prompt: bool,
         mut assembled: AssembledConversationContext,
         _runtime_tool_view: &ToolView,
         _requested_tool_view: &ToolView,
         _binding: ConversationRuntimeBinding<'_>,
     ) -> CliResult<AssembledConversationContext> {
+        if !include_system_prompt {
+            return Ok(assembled);
+        }
+
         let addition = assembled.system_prompt_addition.clone();
 
         apply_system_prompt_addition(&mut assembled, addition.as_deref());
@@ -319,10 +323,6 @@ fn apply_tool_view_to_system_prompt(
         .prompt_fragments
         .iter()
         .position(|fragment| fragment.lane == PromptLane::CapabilitySnapshot);
-    let discovery_fragment_index = assembled
-        .prompt_fragments
-        .iter()
-        .position(|fragment| fragment.lane == PromptLane::ToolDiscoveryDelta);
     let mut updated_prompt_fragments = false;
 
     if let Some(capability_fragment_index) = capability_fragment_index
@@ -334,37 +334,40 @@ fn apply_tool_view_to_system_prompt(
         updated_prompt_fragments = true;
     }
 
-    if let Some(discovery_fragment_index) = discovery_fragment_index {
-        let discovery_state = assembled
-            .prompt_fragments
-            .get(discovery_fragment_index)
-            .and_then(|fragment| fragment.tool_discovery_state.clone());
+    let mut discovery_fragment_insert_index: Option<usize> = None;
+    let mut selected_discovery_fragment: Option<PromptFragment> = None;
+    let original_prompt_fragments = std::mem::take(&mut assembled.prompt_fragments);
 
-        match discovery_state {
-            Some(discovery_state) => {
-                let filtered_state = discovery_state.filtered_for_tool_view(tool_view);
-
-                match filtered_state {
-                    Some(filtered_state) => {
-                        let discovery_content = filtered_state.render_delta_prompt();
-                        if let Some(discovery_fragment) =
-                            assembled.prompt_fragments.get_mut(discovery_fragment_index)
-                        {
-                            discovery_fragment.content = discovery_content;
-                            discovery_fragment.tool_discovery_state = Some(filtered_state);
-                        }
-                    }
-                    None => {
-                        assembled.prompt_fragments.remove(discovery_fragment_index);
-                    }
-                }
-            }
-            None => {
-                assembled.prompt_fragments.remove(discovery_fragment_index);
-            }
+    for mut fragment in original_prompt_fragments {
+        if fragment.lane != PromptLane::ToolDiscoveryDelta {
+            assembled.prompt_fragments.push(fragment);
+            continue;
         }
 
         updated_prompt_fragments = true;
+
+        if discovery_fragment_insert_index.is_none() {
+            discovery_fragment_insert_index = Some(assembled.prompt_fragments.len());
+        }
+
+        let Some(discovery_state) = fragment.tool_discovery_state.clone() else {
+            continue;
+        };
+        let Some(filtered_state) = discovery_state.filtered_for_tool_view(tool_view) else {
+            continue;
+        };
+
+        fragment.content = filtered_state.render_delta_prompt();
+        fragment.tool_discovery_state = Some(filtered_state);
+        selected_discovery_fragment = Some(fragment);
+    }
+
+    if let Some(selected_discovery_fragment) = selected_discovery_fragment {
+        let insert_index =
+            discovery_fragment_insert_index.unwrap_or(assembled.prompt_fragments.len());
+        assembled
+            .prompt_fragments
+            .insert(insert_index, selected_discovery_fragment);
     }
 
     if updated_prompt_fragments {
@@ -796,6 +799,140 @@ mod tests {
                 .and_then(|state| state.exact_tool_id.as_deref()),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn system_prompt_addition_middleware_skips_addition_when_system_prompt_is_disabled() {
+        let assembled = AssembledConversationContext {
+            messages: Vec::new(),
+            artifacts: Vec::new(),
+            estimated_tokens: None,
+            prompt_fragments: Vec::new(),
+            system_prompt_addition: Some("runtime-policy-addition".to_owned()),
+        };
+        let runtime_tool_view = crate::tools::runtime_tool_view();
+
+        let transformed = SystemPromptAdditionTurnMiddleware
+            .transform_context(
+                &crate::config::LoongClawConfig::default(),
+                "session-no-system-prompt",
+                false,
+                assembled,
+                &runtime_tool_view,
+                &runtime_tool_view,
+                ConversationRuntimeBinding::direct(),
+            )
+            .await
+            .expect("system prompt addition middleware should succeed");
+
+        assert!(transformed.messages.is_empty());
+        assert!(transformed.artifacts.is_empty());
+        assert!(transformed.prompt_fragments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn tool_view_middleware_removes_all_duplicate_tool_discovery_fragments() {
+        let discovery_state = super::super::tool_discovery_state::ToolDiscoveryState {
+            schema_version: 1,
+            query: None,
+            exact_tool_id: Some("file.read".to_owned()),
+            entries: vec![super::super::tool_discovery_state::ToolDiscoveryEntry {
+                tool_id: "file.read".to_owned(),
+                summary: "Read a file.".to_owned(),
+                search_hint: None,
+                argument_hint: None,
+                required_fields: vec!["path".to_owned()],
+                required_field_groups: vec![vec!["path".to_owned()]],
+            }],
+            diagnostics: None,
+        };
+        let discovery_content = discovery_state.render_delta_prompt();
+        let duplicate_fragment = || {
+            crate::conversation::PromptFragment::new(
+                "tool-discovery-delta",
+                crate::conversation::PromptLane::ToolDiscoveryDelta,
+                "tool-discovery-delta",
+                discovery_content.clone(),
+                ContextArtifactKind::ToolHint,
+            )
+            .with_dedupe_key("tool-discovery-delta")
+            .with_tool_discovery_state(discovery_state.clone())
+        };
+        let assembled = AssembledConversationContext {
+            messages: vec![json!({
+                "role": "system",
+                "content": "placeholder system prompt"
+            })],
+            artifacts: vec![
+                ContextArtifactDescriptor {
+                    message_index: 0,
+                    artifact_kind: ContextArtifactKind::SystemPrompt,
+                    maskable: false,
+                    streaming_policy: ToolOutputStreamingPolicy::BufferFull,
+                },
+                ContextArtifactDescriptor {
+                    message_index: 0,
+                    artifact_kind: ContextArtifactKind::RuntimeContract,
+                    maskable: false,
+                    streaming_policy: ToolOutputStreamingPolicy::BufferFull,
+                },
+                ContextArtifactDescriptor {
+                    message_index: 0,
+                    artifact_kind: ContextArtifactKind::ToolHint,
+                    maskable: false,
+                    streaming_policy: ToolOutputStreamingPolicy::BufferFull,
+                },
+            ],
+            estimated_tokens: None,
+            prompt_fragments: vec![
+                crate::conversation::PromptFragment::new(
+                    "base-system",
+                    crate::conversation::PromptLane::BaseSystem,
+                    "base-system",
+                    "base system",
+                    ContextArtifactKind::SystemPrompt,
+                ),
+                crate::conversation::PromptFragment::new(
+                    "capability-snapshot",
+                    crate::conversation::PromptLane::CapabilitySnapshot,
+                    "capability-snapshot",
+                    "[available_tools]\n- file.read: read a file",
+                    ContextArtifactKind::RuntimeContract,
+                ),
+                duplicate_fragment(),
+                duplicate_fragment(),
+            ],
+            system_prompt_addition: None,
+        };
+        let runtime_tool_view = crate::tools::runtime_tool_view();
+        let requested_tool_view =
+            crate::tools::ToolView::from_tool_names(["tool.search", "tool.invoke"]);
+
+        let transformed = SystemPromptToolViewTurnMiddleware
+            .transform_context(
+                &crate::config::LoongClawConfig::default(),
+                "session-tool-discovery-duplicate-filter",
+                true,
+                assembled,
+                &runtime_tool_view,
+                &requested_tool_view,
+                ConversationRuntimeBinding::direct(),
+            )
+            .await
+            .expect("tool view middleware should succeed");
+
+        let system_content = transformed.messages[0]["content"]
+            .as_str()
+            .expect("system content");
+        let discovery_fragment_count = transformed
+            .prompt_fragments
+            .iter()
+            .filter(|fragment| fragment.lane == crate::conversation::PromptLane::ToolDiscoveryDelta)
+            .count();
+
+        assert_eq!(discovery_fragment_count, 0);
+        assert!(!system_content.contains("[tool_discovery_delta]"));
+        assert!(!system_content.contains("file.read"));
     }
 
     #[tokio::test]

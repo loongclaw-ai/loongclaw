@@ -4024,6 +4024,8 @@ where
     async fn after_tool_execution(
         &self,
         session_context: &SessionContext,
+        intent: &ToolIntent,
+        intent_sequence: usize,
         request: &loongclaw_contracts::ToolCoreRequest,
         outcome: &loongclaw_contracts::ToolCoreOutcome,
         binding: ConversationRuntimeBinding<'_>,
@@ -4033,6 +4035,8 @@ where
         persist_tool_discovery_refresh_event_if_needed(
             self.runtime,
             &session_context.session_id,
+            intent,
+            intent_sequence,
             tool_name,
             outcome,
             binding,
@@ -4044,6 +4048,8 @@ where
 async fn persist_tool_discovery_refresh_event_if_needed<R: ConversationRuntime + ?Sized>(
     runtime: &R,
     session_id: &str,
+    intent: &ToolIntent,
+    intent_sequence: usize,
     tool_name: &str,
     outcome: &loongclaw_contracts::ToolCoreOutcome,
     binding: ConversationRuntimeBinding<'_>,
@@ -4060,9 +4066,10 @@ async fn persist_tool_discovery_refresh_event_if_needed<R: ConversationRuntime +
     else {
         return;
     };
-    let discovery_payload = match serde_json::to_value(discovery_state) {
-        Ok(discovery_payload) => discovery_payload,
-        Err(_) => return,
+    let Some(discovery_payload) =
+        build_tool_discovery_refresh_event_payload(discovery_state, intent, intent_sequence)
+    else {
+        return;
     };
     let persist_result = persist_conversation_event(
         runtime,
@@ -4093,6 +4100,34 @@ async fn persist_tool_discovery_refresh_event_if_needed<R: ConversationRuntime +
             required_capabilities: Vec::new(),
         },
     );
+}
+
+fn build_tool_discovery_refresh_event_payload(
+    discovery_state: ToolDiscoveryState,
+    intent: &ToolIntent,
+    intent_sequence: usize,
+) -> Option<Value> {
+    let discovery_payload = serde_json::to_value(discovery_state).ok()?;
+    let Value::Object(mut discovery_payload) = discovery_payload else {
+        return None;
+    };
+    let turn_id = intent.turn_id.trim();
+    let tool_call_id = intent.tool_call_id.trim();
+
+    if !turn_id.is_empty() {
+        discovery_payload.insert("turn_id".to_owned(), Value::String(turn_id.to_owned()));
+    }
+
+    if !tool_call_id.is_empty() {
+        discovery_payload.insert(
+            "tool_call_id".to_owned(),
+            Value::String(tool_call_id.to_owned()),
+        );
+    }
+
+    discovery_payload.insert("intent_sequence".to_owned(), json!(intent_sequence));
+
+    Some(Value::Object(discovery_payload))
 }
 
 #[cfg(feature = "memory-sqlite")]

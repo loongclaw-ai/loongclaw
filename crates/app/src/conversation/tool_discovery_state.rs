@@ -39,6 +39,12 @@ pub(crate) struct ToolDiscoveryState {
     pub diagnostics: Option<ToolDiscoveryDiagnostics>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ToolDiscoveryEventOrdering {
+    turn_id: String,
+    intent_sequence: usize,
+}
+
 impl ToolDiscoveryState {
     pub(crate) fn from_tool_search_payload(payload: &Value) -> Option<Self> {
         let payload_object = payload.as_object()?;
@@ -76,6 +82,11 @@ impl ToolDiscoveryState {
 
     pub(crate) fn from_event_payload(payload: &Value) -> Option<Self> {
         let mut state = serde_json::from_value::<Self>(payload.clone()).ok()?;
+        let schema_version = state.schema_version;
+
+        if schema_version != TOOL_DISCOVERY_SCHEMA_VERSION {
+            return None;
+        }
 
         state.query = normalize_optional_string(state.query);
         state.exact_tool_id = normalize_optional_string(state.exact_tool_id);
@@ -87,7 +98,6 @@ impl ToolDiscoveryState {
         state.diagnostics = state
             .diagnostics
             .and_then(normalize_tool_discovery_diagnostics);
-        state.schema_version = TOOL_DISCOVERY_SCHEMA_VERSION;
 
         let has_state = state.query.is_some()
             || state.exact_tool_id.is_some()
@@ -209,6 +219,10 @@ impl ToolDiscoveryState {
 pub(crate) fn latest_tool_discovery_state_from_assistant_contents(
     assistant_contents: &[String],
 ) -> Option<ToolDiscoveryState> {
+    let mut latest_turn_id: Option<String> = None;
+    let mut latest_intent_sequence = 0_usize;
+    let mut latest_state: Option<ToolDiscoveryState> = None;
+
     for content in assistant_contents.iter().rev() {
         let Some(record) = parse_conversation_event(content) else {
             continue;
@@ -218,14 +232,37 @@ pub(crate) fn latest_tool_discovery_state_from_assistant_contents(
             continue;
         }
 
-        let state = ToolDiscoveryState::from_event_payload(&record.payload);
+        let Some(state) = ToolDiscoveryState::from_event_payload(&record.payload) else {
+            continue;
+        };
+        let ordering = tool_discovery_event_ordering(&record.payload);
 
-        if state.is_some() {
-            return state;
+        let Some(ordering) = ordering else {
+            if latest_state.is_none() {
+                return Some(state);
+            }
+            continue;
+        };
+
+        match latest_turn_id.as_deref() {
+            None => {
+                latest_intent_sequence = ordering.intent_sequence;
+                latest_turn_id = Some(ordering.turn_id);
+                latest_state = Some(state);
+            }
+            Some(current_turn_id) if current_turn_id == ordering.turn_id => {
+                if ordering.intent_sequence > latest_intent_sequence {
+                    latest_intent_sequence = ordering.intent_sequence;
+                    latest_state = Some(state);
+                }
+            }
+            Some(_) => {
+                break;
+            }
         }
     }
 
-    None
+    latest_state
 }
 
 fn tool_discovery_entry_from_value(value: &Value) -> Option<ToolDiscoveryEntry> {
@@ -348,6 +385,20 @@ fn normalize_string_list(values: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+fn tool_discovery_event_ordering(payload: &Value) -> Option<ToolDiscoveryEventOrdering> {
+    let payload_object = payload.as_object()?;
+    let turn_id = trimmed_string(payload_object.get("turn_id"))?;
+    let intent_sequence = payload_object
+        .get("intent_sequence")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())?;
+
+    Some(ToolDiscoveryEventOrdering {
+        turn_id,
+        intent_sequence,
+    })
+}
+
 fn render_tool_discovery_advisory_text(value: &str) -> String {
     let compacted = compact_tool_discovery_advisory_text(value);
     let encoded = serde_json::to_string(&compacted);
@@ -400,8 +451,9 @@ mod state_recovery_tests {
     use serde_json::json;
 
     use super::{
-        TOOL_DISCOVERY_REFRESHED_EVENT_NAME, ToolDiscoveryDiagnostics, ToolDiscoveryEntry,
-        ToolDiscoveryState, latest_tool_discovery_state_from_assistant_contents,
+        TOOL_DISCOVERY_REFRESHED_EVENT_NAME, TOOL_DISCOVERY_SCHEMA_VERSION,
+        ToolDiscoveryDiagnostics, ToolDiscoveryEntry, ToolDiscoveryState,
+        latest_tool_discovery_state_from_assistant_contents,
     };
 
     #[test]
@@ -447,6 +499,72 @@ mod state_recovery_tests {
         assert_eq!(state.query.as_deref(), Some("latest query"));
         assert_eq!(state.entries.len(), 1);
         assert_eq!(state.entries[0].tool_id, "web.fetch");
+    }
+
+    #[test]
+    fn latest_tool_discovery_state_from_assistant_contents_prefers_highest_sequence_in_latest_turn()
+    {
+        let latest_turn_high_sequence = json!({
+            "type": "conversation_event",
+            "event": TOOL_DISCOVERY_REFRESHED_EVENT_NAME,
+            "payload": {
+                "schema_version": TOOL_DISCOVERY_SCHEMA_VERSION,
+                "turn_id": "turn-latest",
+                "intent_sequence": 1,
+                "query": "preferred query",
+                "entries": [
+                    {
+                        "tool_id": "file.read",
+                        "summary": "Preferred entry"
+                    }
+                ]
+            }
+        });
+        let latest_turn_low_sequence = json!({
+            "type": "conversation_event",
+            "event": TOOL_DISCOVERY_REFRESHED_EVENT_NAME,
+            "payload": {
+                "schema_version": TOOL_DISCOVERY_SCHEMA_VERSION,
+                "turn_id": "turn-latest",
+                "intent_sequence": 0,
+                "query": "racy later append",
+                "entries": [
+                    {
+                        "tool_id": "web.fetch",
+                        "summary": "Non-preferred entry"
+                    }
+                ]
+            }
+        });
+        let older_turn = json!({
+            "type": "conversation_event",
+            "event": TOOL_DISCOVERY_REFRESHED_EVENT_NAME,
+            "payload": {
+                "schema_version": TOOL_DISCOVERY_SCHEMA_VERSION,
+                "turn_id": "turn-older",
+                "intent_sequence": 3,
+                "query": "older turn query",
+                "entries": [
+                    {
+                        "tool_id": "shell.exec",
+                        "summary": "Older turn entry"
+                    }
+                ]
+            }
+        });
+        let assistant_contents = vec![
+            older_turn.to_string(),
+            latest_turn_high_sequence.to_string(),
+            latest_turn_low_sequence.to_string(),
+        ];
+
+        let state =
+            latest_tool_discovery_state_from_assistant_contents(assistant_contents.as_slice())
+                .expect("latest discovery state should be extracted");
+
+        assert_eq!(state.query.as_deref(), Some("preferred query"));
+        assert_eq!(state.entries.len(), 1);
+        assert_eq!(state.entries[0].tool_id, "file.read");
     }
 
     #[test]
@@ -547,6 +665,27 @@ mod tests {
         assert!(
             state.is_none(),
             "returned-only payloads should not recover empty discovery state"
+        );
+    }
+
+    #[test]
+    fn tool_discovery_state_rejects_mismatched_event_schema_versions() {
+        let payload = json!({
+            "schema_version": TOOL_DISCOVERY_SCHEMA_VERSION + 1,
+            "query": "read note.md",
+            "entries": [
+                {
+                    "tool_id": "file.read",
+                    "summary": "Read a file."
+                }
+            ]
+        });
+
+        let state = ToolDiscoveryState::from_event_payload(&payload);
+
+        assert!(
+            state.is_none(),
+            "mismatched discovery event schema versions should be rejected"
         );
     }
 

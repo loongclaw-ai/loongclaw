@@ -6224,6 +6224,19 @@ async fn handle_turn_with_runtime_tool_search_requests_a_followup_provider_turn(
         .expect("tool discovery entries should be an array");
 
     assert!(
+        latest_discovery_payload["turn_id"]
+            .as_str()
+            .is_some_and(|turn_id| !turn_id.is_empty()),
+        "persisted discovery state should record the scoped turn id: {latest_discovery_payload:?}"
+    );
+    assert!(
+        latest_discovery_payload["tool_call_id"]
+            .as_str()
+            .is_some_and(|tool_call_id| !tool_call_id.is_empty()),
+        "persisted discovery state should record the tool call id: {latest_discovery_payload:?}"
+    );
+    assert_eq!(latest_discovery_payload["intent_sequence"], 0);
+    assert!(
         !entries.is_empty(),
         "expected at least one persisted discovery entry"
     );

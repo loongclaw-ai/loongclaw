@@ -491,7 +491,13 @@ pub(crate) async fn project_hydrated_memory_context_for_view_with_binding(
 
     #[cfg(feature = "memory-sqlite")]
     {
-        append_hydrated_tool_discovery_prompt_fragment(&mut prompt_fragments, tool_view, hydrated);
+        if include_system_prompt {
+            append_hydrated_tool_discovery_prompt_fragment(
+                &mut prompt_fragments,
+                tool_view,
+                hydrated,
+            );
+        }
         append_hydrated_memory_messages(&mut messages, &mut artifacts, hydrated);
     }
 
@@ -521,7 +527,13 @@ pub(crate) fn project_hydrated_memory_context_for_view(
 
     #[cfg(feature = "memory-sqlite")]
     {
-        append_hydrated_tool_discovery_prompt_fragment(&mut prompt_fragments, tool_view, hydrated);
+        if include_system_prompt {
+            append_hydrated_tool_discovery_prompt_fragment(
+                &mut prompt_fragments,
+                tool_view,
+                hydrated,
+            );
+        }
         append_hydrated_memory_messages(&mut messages, &mut artifacts, hydrated);
     }
 
@@ -717,6 +729,77 @@ mod tests {
     fn build_system_message_returns_none_when_disabled() {
         let config = LoongClawConfig::default();
         assert_eq!(build_system_message(&config, false), None);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    fn hydrated_context_with_tool_discovery_event() -> crate::memory::HydratedMemoryContext {
+        crate::memory::HydratedMemoryContext {
+            entries: Vec::new(),
+            recent_window: vec![crate::memory::WindowTurn {
+                role: "assistant".to_owned(),
+                content: crate::memory::build_conversation_event_content(
+                    "tool_discovery_refreshed",
+                    json!({
+                        "schema_version": 1,
+                        "query": "read note.md",
+                        "entries": [
+                            {
+                                "tool_id": "file.read",
+                                "summary": "Read a file."
+                            }
+                        ]
+                    }),
+                ),
+                ts: None,
+            }],
+            diagnostics: crate::memory::MemoryDiagnostics {
+                system_id: "memory-sqlite".to_owned(),
+                fail_open: false,
+                strict_mode_requested: false,
+                strict_mode_active: false,
+                degraded: false,
+                derivation_error: None,
+                retrieval_error: None,
+                recent_window_count: 1,
+                entry_count: 0,
+            },
+        }
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn project_hydrated_memory_context_skips_tool_discovery_fragment_when_system_prompt_is_disabled()
+     {
+        let config = LoongClawConfig::default();
+        let hydrated = hydrated_context_with_tool_discovery_event();
+        let projected = project_hydrated_memory_context_for_view(
+            &config,
+            false,
+            &crate::tools::runtime_tool_view(),
+            &hydrated,
+        );
+
+        assert!(projected.messages.is_empty());
+        assert!(projected.prompt_fragments.is_empty());
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[tokio::test]
+    async fn project_hydrated_memory_context_with_binding_skips_tool_discovery_fragment_when_system_prompt_is_disabled()
+     {
+        let config = LoongClawConfig::default();
+        let hydrated = hydrated_context_with_tool_discovery_event();
+        let projected = project_hydrated_memory_context_for_view_with_binding(
+            &config,
+            false,
+            &crate::tools::runtime_tool_view(),
+            ProviderRuntimeBinding::direct(),
+            &hydrated,
+        )
+        .await;
+
+        assert!(projected.messages.is_empty());
+        assert!(projected.prompt_fragments.is_empty());
     }
 
     #[test]

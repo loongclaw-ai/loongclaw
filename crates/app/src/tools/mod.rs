@@ -1032,13 +1032,14 @@ fn feishu_searchable_entries() -> Vec<SearchableToolEntry> {
                 .to_owned();
             let tags = vec!["feishu".to_owned()];
             let canonical_name = canonical_tool_name(provider_name).to_owned();
+            let search_hint = canonical_name.clone();
             let preferred_parameter_order: &[(&str, &str)] = &[];
             Some(searchable_entry_from_provider_definition(
                 canonical_name.as_str(),
                 provider_name,
                 &[],
                 summary,
-                canonical_name.clone(),
+                search_hint,
                 &parameters,
                 preferred_parameter_order,
                 tags,
@@ -1139,15 +1140,18 @@ fn execute_tool_search_tool_with_config(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
-    let exact_tool_id = payload
+    let requested_exact_tool_id = payload
         .get("exact_tool_id")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let exact_tool_id = requested_exact_tool_id
+        .as_deref()
         .map(canonical_tool_name)
         .map(str::to_owned);
     let has_query = query.is_some();
-    let has_exact_tool_id = exact_tool_id.is_some();
+    let has_exact_tool_id = requested_exact_tool_id.is_some();
 
     if !has_query && !has_exact_tool_id {
         return Err("tool.search requires payload.query or payload.exact_tool_id".to_owned());
@@ -1179,9 +1183,11 @@ fn execute_tool_search_tool_with_config(
             .find(|entry| entry.canonical_name == *exact_tool_id)
             .cloned()
     });
+    let exact_match_found = exact_match_entry.is_some();
     let mut diagnostics_reason = None;
     let results: Vec<Value> = if let Some(entry) = exact_match_entry {
-        vec![tool_search_result_entry_json(&entry, Vec::new(), payload)]
+        let why = Vec::new();
+        vec![tool_search_result_entry_json(&entry, why, payload)]
     } else if let Some(query) = query.as_deref() {
         let ranking = rank_searchable_entries(searchable_entries, query, limit);
         diagnostics_reason = ranking.diagnostics_reason;
@@ -1199,11 +1205,16 @@ fn execute_tool_search_tool_with_config(
         Vec::new()
     };
     let diagnostics = tool_search_diagnostics_json(
-        exact_tool_id.as_deref(),
+        requested_exact_tool_id.as_deref(),
+        exact_match_found,
         query.as_deref(),
-        results.as_slice(),
         diagnostics_reason,
     );
+    let response_exact_tool_id = if exact_match_found {
+        exact_tool_id
+    } else {
+        requested_exact_tool_id
+    };
 
     Ok(ToolCoreOutcome {
         status: "ok".to_owned(),
@@ -1211,7 +1222,7 @@ fn execute_tool_search_tool_with_config(
             "adapter": "core-tools",
             "tool_name": request.tool_name,
             "query": query,
-            "exact_tool_id": exact_tool_id,
+            "exact_tool_id": response_exact_tool_id,
             "returned": results.len(),
             "results": results,
             "diagnostics": diagnostics,
@@ -1239,21 +1250,19 @@ fn tool_search_result_entry_json(
 }
 
 fn tool_search_diagnostics_json(
-    exact_tool_id: Option<&str>,
+    requested_exact_tool_id: Option<&str>,
+    exact_match_found: bool,
     query: Option<&str>,
-    results: &[Value],
     diagnostics_reason: Option<&str>,
 ) -> Value {
-    if let Some(exact_tool_id) = exact_tool_id {
-        let has_results = !results.is_empty();
-
-        if has_results {
+    if let Some(requested_exact_tool_id) = requested_exact_tool_id {
+        if exact_match_found {
             return Value::Null;
         }
 
         return json!({
             "reason": "exact_tool_id_not_visible",
-            "requested_tool_id": exact_tool_id,
+            "requested_tool_id": requested_exact_tool_id,
         });
     }
 
@@ -2219,29 +2228,22 @@ mod tests {
                     == Some("tool_search")
             })
             .expect("tool_search definition should exist");
-        let any_of = tool_search["function"]["parameters"]["anyOf"]
+        let tool_search_properties = tool_search["function"]["parameters"]["properties"]
+            .as_object()
+            .expect("tool_search properties should be an object");
+        let tool_search_required = tool_search["function"]["parameters"]["required"]
             .as_array()
-            .expect("tool_search anyOf should be an array");
-        let required_groups = any_of
-            .iter()
-            .filter_map(|entry| entry.get("required"))
-            .filter_map(Value::as_array)
-            .map(|group| {
-                group
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
+            .expect("required should be an array");
 
-        assert!(
-            required_groups.contains(&vec!["query".to_owned()]),
-            "tool_search schema should accept query-driven discovery"
-        );
-        assert!(
-            required_groups.contains(&vec!["exact_tool_id".to_owned()]),
-            "tool_search schema should accept exact tool refresh"
+        assert!(tool_search_properties.contains_key("query"));
+        assert!(tool_search_properties.contains_key("exact_tool_id"));
+        assert!(!tool_search_required.contains(&Value::String("query".to_owned())));
+        assert_eq!(
+            tool_search["function"]["parameters"]["anyOf"],
+            json!([
+                { "required": ["query"] },
+                { "required": ["exact_tool_id"] }
+            ])
         );
     }
 
@@ -3436,6 +3438,43 @@ mod tests {
 
     #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
     #[test]
+    fn tool_search_exact_tool_id_not_visible_preserves_raw_request_and_diagnostics_with_fallback_results()
+     {
+        let root = unique_tool_temp_dir("loongclaw-tool-search-exact-refresh-fallback");
+        std::fs::create_dir_all(&root).expect("create fixture root");
+
+        let config = test_tool_runtime_config(root.clone());
+        let outcome = execute_tool_core_with_test_context(
+            ToolCoreRequest {
+                tool_name: "tool.search".to_owned(),
+                payload: json!({
+                    "exact_tool_id": "file_read",
+                    "query": "run shell command",
+                    "_loongclaw": {
+                        "tool_search": {
+                            "visible_tool_ids": ["tool.search", "tool.invoke", "shell.exec"],
+                        }
+                    }
+                }),
+            },
+            &config,
+        )
+        .expect("tool search should succeed");
+
+        let results = outcome.payload["results"].as_array().expect("results");
+        let diagnostics = &outcome.payload["diagnostics"];
+
+        assert!(!results.is_empty());
+        assert_eq!(results[0]["tool_id"], "shell.exec");
+        assert_eq!(outcome.payload["exact_tool_id"], "file_read");
+        assert_eq!(diagnostics["reason"], "exact_tool_id_not_visible");
+        assert_eq!(diagnostics["requested_tool_id"], "file_read");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
+    #[test]
     fn tool_search_result_includes_search_hint_and_schema_preview() {
         let root = unique_tool_temp_dir("loongclaw-tool-search-card-metadata");
         std::fs::create_dir_all(&root).expect("create fixture root");
@@ -3570,9 +3609,6 @@ mod tests {
         .expect("tool search should succeed");
 
         let results = outcome.payload["results"].as_array().expect("results");
-        let diagnostics = outcome.payload["diagnostics"]
-            .as_object()
-            .expect("diagnostics should exist for coarse fallback");
         assert!(
             !results.is_empty(),
             "coarse fallback should surface visible tools instead of an empty set"
@@ -3584,10 +3620,6 @@ mod tests {
                     .iter()
                     .any(|reason| reason.as_str() == Some("coarse_fallback")))),
             "coarse fallback results should explain their fallback mode: {results:?}"
-        );
-        assert_eq!(
-            diagnostics.get("reason").and_then(Value::as_str),
-            Some("coarse_fallback")
         );
 
         std::fs::remove_dir_all(&root).ok();
