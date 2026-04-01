@@ -3724,6 +3724,81 @@ where
             .filter(|value| !value.is_empty())
     }
 
+    fn replay_approval_mode(
+        &self,
+        approval_request: &ApprovalRequestRecord,
+    ) -> Result<Option<crate::tools::ToolApprovalMode>, String> {
+        let approval_mode_value = approval_request
+            .governance_snapshot_json
+            .get("approval_mode")
+            .and_then(Value::as_str);
+        let Some(approval_mode_value) = approval_mode_value else {
+            return Ok(None);
+        };
+
+        let policy_driven = crate::tools::ToolApprovalMode::PolicyDriven;
+        let never = crate::tools::ToolApprovalMode::Never;
+
+        if approval_mode_value == policy_driven.as_str() {
+            return Ok(Some(policy_driven));
+        }
+
+        if approval_mode_value == never.as_str() {
+            return Ok(Some(never));
+        }
+
+        Err(format!(
+            "approval_request_invalid_governance_snapshot: unknown approval_mode `{approval_mode_value}`"
+        ))
+    }
+
+    fn replay_requires_mutating_binding(
+        &self,
+        approval_request: &ApprovalRequestRecord,
+    ) -> Result<bool, String> {
+        let execution_kind = self.replay_execution_kind(approval_request)?;
+        if execution_kind != ToolExecutionKind::App {
+            return Ok(false);
+        }
+
+        let replay_approval_mode = match self.replay_approval_mode(approval_request)? {
+            Some(replay_approval_mode) => replay_approval_mode,
+            None => {
+                let governance = crate::tools::governance_profile_for_tool_name(
+                    approval_request.tool_name.as_str(),
+                );
+                governance.approval_mode
+            }
+        };
+
+        Ok(replay_approval_mode == crate::tools::ToolApprovalMode::PolicyDriven)
+    }
+
+    fn ensure_resolution_binding_allows_decision(
+        &self,
+        approval_request: &ApprovalRequestRecord,
+        decision: ApprovalDecision,
+    ) -> Result<(), String> {
+        let mutating_resolution_requested = matches!(
+            decision,
+            ApprovalDecision::ApproveOnce | ApprovalDecision::ApproveAlways
+        );
+        if !mutating_resolution_requested {
+            return Ok(());
+        }
+
+        if self.binding.allows_mutation() {
+            return Ok(());
+        }
+
+        let replay_requires_mutation = self.replay_requires_mutating_binding(approval_request)?;
+        if !replay_requires_mutation {
+            return Ok(());
+        }
+
+        Err("app_tool_denied: governed_runtime_binding_required".to_owned())
+    }
+
     async fn replay_approved_request(
         &self,
         approval_request: &ApprovalRequestRecord,
@@ -3857,6 +3932,8 @@ where
                 approval_request.session_id, request.current_session_id
             ));
         }
+
+        self.ensure_resolution_binding_allows_decision(&approval_request, request.decision)?;
 
         match request.decision {
             ApprovalDecision::Deny => {
@@ -4270,7 +4347,7 @@ async fn enqueue_delegate_async_with_runtime<R: ConversationRuntime + ?Sized>(
         execution,
         runtime_self_continuity,
         timeout_seconds,
-        binding: super::runtime_binding::OwnedConversationRuntimeBinding::from_borrowed(binding),
+        kernel_context: binding.kernel_context().cloned(),
     };
     spawn_async_delegate_detached(runtime_handle, memory_config, spawner, request);
 
