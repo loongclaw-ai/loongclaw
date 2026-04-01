@@ -3747,21 +3747,22 @@ where
         approval_request: &ApprovalRequestRecord,
     ) -> Result<bool, String> {
         let execution_kind = self.replay_execution_kind(approval_request)?;
-        if execution_kind != ToolExecutionKind::App {
-            return Ok(false);
-        }
+        match execution_kind {
+            ToolExecutionKind::Core => Ok(true),
+            ToolExecutionKind::App => {
+                let replay_approval_mode = match self.replay_approval_mode(approval_request)? {
+                    Some(replay_approval_mode) => replay_approval_mode,
+                    None => {
+                        let governance = crate::tools::governance_profile_for_tool_name(
+                            approval_request.tool_name.as_str(),
+                        );
+                        governance.approval_mode
+                    }
+                };
 
-        let replay_approval_mode = match self.replay_approval_mode(approval_request)? {
-            Some(replay_approval_mode) => replay_approval_mode,
-            None => {
-                let governance = crate::tools::governance_profile_for_tool_name(
-                    approval_request.tool_name.as_str(),
-                );
-                governance.approval_mode
+                Ok(replay_approval_mode == crate::tools::ToolApprovalMode::PolicyDriven)
             }
-        };
-
-        Ok(replay_approval_mode == crate::tools::ToolApprovalMode::PolicyDriven)
+        }
     }
 
     fn ensure_resolution_binding_allows_decision(

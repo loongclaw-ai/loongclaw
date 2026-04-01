@@ -18308,6 +18308,121 @@ async fn handle_turn_with_runtime_approval_request_resolve_rejects_governed_gran
 
 #[cfg(feature = "memory-sqlite")]
 #[tokio::test]
+async fn handle_turn_with_runtime_approval_request_resolve_rejects_core_replay_for_approve_once_on_advisory_binding()
+ {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id(
+            "conversation-approval-resolve",
+            "approve-once-core-advisory"
+        )
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+    repo.ensure_approval_request(crate::session::repository::NewApprovalRequestRecord {
+        approval_request_id: "apr-provider-switch-core".to_owned(),
+        session_id: "root-session".to_owned(),
+        turn_id: "turn-provider-switch-parent".to_owned(),
+        tool_call_id: "call-provider-switch-parent".to_owned(),
+        tool_name: "provider.switch".to_owned(),
+        approval_key: "tool:provider.switch".to_owned(),
+        request_payload_json: json!({
+            "session_id": "root-session",
+            "parent_session_id": Value::Null,
+            "turn_id": "turn-provider-switch-parent",
+            "tool_call_id": "call-provider-switch-parent",
+            "tool_name": "provider.switch",
+            "args_json": {
+                "selector": "openai"
+            },
+            "source": "provider_tool_call",
+            "execution_kind": "core"
+        }),
+        governance_snapshot_json: json!({
+            "governance_scope": "routine",
+            "risk_class": "high",
+            "approval_mode": "policy_driven",
+            "rule_id": "autonomy_policy_provider_switch_requires_approval",
+            "reason": "operator approval required before running `provider.switch`"
+        }),
+    })
+    .expect("seed core approval request");
+
+    let runtime = FakeRuntime::with_turns_and_completions(
+        vec![],
+        vec![Ok(ProviderTurn {
+            assistant_text: "resolving approval".to_owned(),
+            tool_intents: vec![provider_tool_intent(
+                "approval_request_resolve",
+                json!({
+                    "approval_request_id": "apr-provider-switch-core",
+                    "decision": "approve_once"
+                }),
+                "root-session",
+                "turn-approval-resolve-core",
+                "call-approval-resolve-core",
+            )],
+            raw_meta: Value::Null,
+        })],
+        vec![],
+    )
+    .with_durable_memory_config(memory_config.clone());
+    let coordinator = ConversationTurnCoordinator::new();
+
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "root-session",
+            "show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            ConversationRuntimeBinding::direct(),
+        )
+        .await
+        .expect("advisory denial should still return a reply payload");
+
+    assert!(
+        reply.contains("governed_runtime_binding_required"),
+        "expected governed runtime binding denial, got: {reply}"
+    );
+    assert_eq!(*runtime.turn_calls.lock().expect("turn calls lock"), 1);
+    assert_eq!(
+        *runtime
+            .completion_calls
+            .lock()
+            .expect("completion calls lock"),
+        0
+    );
+
+    let request = repo
+        .load_approval_request("apr-provider-switch-core")
+        .expect("load approval request")
+        .expect("approval request row");
+    assert_eq!(
+        request.status,
+        crate::session::repository::ApprovalRequestStatus::Pending
+    );
+    assert_eq!(request.decision, None);
+    assert_eq!(request.resolved_by_session_id, None);
+    assert!(request.executed_at.is_none(), "request={request:?}");
+    assert!(request.last_error.is_none(), "request={request:?}");
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
 async fn handle_turn_with_runtime_approval_request_resolve_reports_not_pending_before_binding_gate_for_stale_governed_retry()
  {
     let db_path = std::env::temp_dir().join(format!(
