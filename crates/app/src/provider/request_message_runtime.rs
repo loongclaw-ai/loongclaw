@@ -36,7 +36,9 @@ pub(super) fn build_system_message(
     config: &LoongClawConfig,
     include_system_prompt: bool,
 ) -> Option<Value> {
-    build_system_message_for_view(config, include_system_prompt, &tools::runtime_tool_view())
+    let runtime_tool_view = tools::runtime_tool_view_from_loongclaw_config(config);
+
+    build_system_message_for_view(config, include_system_prompt, &runtime_tool_view)
 }
 
 pub(super) fn build_system_message_for_view(
@@ -64,10 +66,11 @@ pub(super) async fn build_base_messages_with_binding(
         return Vec::new();
     }
 
+    let runtime_tool_view = tools::runtime_tool_view_from_loongclaw_config(config);
     let projection = build_base_prompt_projection_for_view_with_binding(
         config,
         include_system_prompt,
-        &tools::runtime_tool_view(),
+        &runtime_tool_view,
         binding,
     )
     .await;
@@ -385,11 +388,13 @@ pub(super) fn build_messages_for_session(
     session_id: &str,
     include_system_prompt: bool,
 ) -> CliResult<Vec<Value>> {
+    let runtime_tool_view = tools::runtime_tool_view_from_loongclaw_config(config);
+
     build_projected_context_for_session_in_view(
         config,
         session_id,
         include_system_prompt,
-        &tools::runtime_tool_view(),
+        &runtime_tool_view,
     )
     .map(|projected| projected.messages)
 }
@@ -399,11 +404,13 @@ pub(crate) fn build_projected_context_for_session(
     session_id: &str,
     include_system_prompt: bool,
 ) -> CliResult<ProjectedMessageContext> {
+    let runtime_tool_view = tools::runtime_tool_view_from_loongclaw_config(config);
+
     build_projected_context_for_session_in_view(
         config,
         session_id,
         include_system_prompt,
-        &tools::runtime_tool_view(),
+        &runtime_tool_view,
     )
 }
 
