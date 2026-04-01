@@ -315,7 +315,7 @@ pub struct AsyncDelegateSpawnRequest {
     pub execution: ConstrainedSubagentExecution,
     pub(crate) runtime_self_continuity: Option<RuntimeSelfContinuity>,
     pub timeout_seconds: u64,
-    pub binding: OwnedConversationRuntimeBinding,
+    pub kernel_context: Option<KernelContext>,
 }
 
 #[async_trait]
@@ -350,7 +350,7 @@ impl AsyncDelegateSpawner for DefaultAsyncDelegateSpawner {
             execution,
             runtime_self_continuity,
             timeout_seconds,
-            binding,
+            kernel_context,
         } = request;
 
         let execution_timeout_seconds = execution.timeout_seconds;
@@ -368,12 +368,14 @@ impl AsyncDelegateSpawner for DefaultAsyncDelegateSpawner {
         let runtime_ref = &runtime;
         let child_session_id_for_spawn = child_session_id.clone();
         let parent_session_id_for_spawn = parent_session_id.clone();
-        let child_binding = binding.clone();
+        let binding =
+            ConversationRuntimeBinding::from_optional_kernel_context(kernel_context.as_ref());
+        let child_kernel_context = kernel_context.clone();
         super::turn_coordinator::with_prepared_subagent_spawn_cleanup_if_kernel_bound(
             runtime_ref,
             &parent_session_id,
             &child_session_id,
-            binding.as_borrowed(),
+            binding,
             move || async move {
                 let started = repo.transition_session_with_event_if_current(
                     &child_session_id_for_spawn,
@@ -406,7 +408,9 @@ impl AsyncDelegateSpawner for DefaultAsyncDelegateSpawner {
                     &task,
                     execution,
                     execution_timeout_seconds,
-                    child_binding.as_borrowed(),
+                    ConversationRuntimeBinding::from_optional_kernel_context(
+                        child_kernel_context.as_ref(),
+                    ),
                 )
                 .await;
                 Ok(())
@@ -1280,9 +1284,7 @@ fn provider_runtime_binding(
         ConversationRuntimeBinding::Kernel(kernel_ctx) => {
             provider::ProviderRuntimeBinding::kernel(kernel_ctx)
         }
-        ConversationRuntimeBinding::AdvisoryOnly => {
-            provider::ProviderRuntimeBinding::advisory_only()
-        }
+        ConversationRuntimeBinding::Direct => provider::ProviderRuntimeBinding::advisory_only(),
     }
 }
 

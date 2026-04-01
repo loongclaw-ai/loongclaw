@@ -427,6 +427,13 @@ fn denied_tool_decision(tool_name: &str, failure: &TurnFailure) -> ToolDecisionT
     ToolDecisionTelemetry::deny(tool_name, reason, rule_id)
 }
 
+fn governed_runtime_binding_denied_outcome(tool_name: &str) -> ToolPreflightOutcome {
+    let reason_code = "governed_runtime_binding_required";
+    let failure = TurnFailure::policy_denied(reason_code, reason_code);
+    let decision = denied_tool_decision(tool_name, &failure);
+    ToolPreflightOutcome::Denied { failure, decision }
+}
+
 #[async_trait]
 pub trait AppToolDispatcher: Send + Sync {
     async fn preflight_tool_intent_with_binding(
@@ -437,6 +444,13 @@ pub trait AppToolDispatcher: Send + Sync {
         binding: ConversationRuntimeBinding<'_>,
         _budget_state: &AutonomyTurnBudgetState,
     ) -> Result<ToolPreflightOutcome, String> {
+        let requires_mutating_binding = requires_mutating_runtime_binding(descriptor);
+        let allows_mutation = binding.allows_mutation();
+        if requires_mutating_binding && !allows_mutation {
+            let denied = governed_runtime_binding_denied_outcome(descriptor.name);
+            return Ok(denied);
+        }
+
         match self
             .maybe_require_approval_with_binding(session_context, intent, descriptor, binding)
             .await
@@ -458,10 +472,22 @@ pub trait AppToolDispatcher: Send + Sync {
 
     async fn maybe_require_approval_with_binding(
         &self,
+        session_context: &SessionContext,
+        intent: &ToolIntent,
+        descriptor: &crate::tools::ToolDescriptor,
+        binding: ConversationRuntimeBinding<'_>,
+    ) -> Result<Option<ApprovalRequirement>, String> {
+        let kernel_ctx = binding.kernel_context();
+        self.maybe_require_approval(session_context, intent, descriptor, kernel_ctx)
+            .await
+    }
+
+    async fn maybe_require_approval(
+        &self,
         _session_context: &SessionContext,
         _intent: &ToolIntent,
         _descriptor: &crate::tools::ToolDescriptor,
-        _binding: ConversationRuntimeBinding<'_>,
+        _kernel_ctx: Option<&KernelContext>,
     ) -> Result<Option<ApprovalRequirement>, String> {
         Ok(None)
     }
@@ -1101,6 +1127,13 @@ impl AppToolDispatcher for DefaultAppToolDispatcher {
                 })
             }
             Ok(None) => {
+                let requires_mutating_binding = requires_mutating_runtime_binding(descriptor);
+                let allows_mutation = binding.allows_mutation();
+                if requires_mutating_binding && !allows_mutation {
+                    let denied = governed_runtime_binding_denied_outcome(descriptor.name);
+                    return Ok(denied);
+                }
+
                 let decision = autonomy_allow_decision
                     .unwrap_or_else(|| generic_allow_tool_decision(descriptor.name));
                 Ok(ToolPreflightOutcome::Allow(decision))
@@ -2766,20 +2799,6 @@ impl TurnEngine {
         };
         let capability_action_class = descriptor.capability_action_class();
         let scheduling_class = descriptor.scheduling_class();
-
-        if requires_mutating_runtime_binding(descriptor) && !binding.allows_mutation() {
-            let reason_code = "governed_runtime_binding_required";
-            let failure = TurnFailure::policy_denied(reason_code, reason_code);
-            let turn_result = TurnResult::ToolDenied(failure.clone());
-            let base_decision = denied_tool_decision(effective_tool_name.as_str(), &failure);
-            let decision =
-                base_decision.with_capability_action_class(capability_action_class.as_str());
-            return Err(PreparedToolIntentFailure {
-                intent: effective_intent,
-                turn_result,
-                decision,
-            });
-        }
 
         let decision = match app_dispatcher
             .preflight_tool_intent_with_binding(
