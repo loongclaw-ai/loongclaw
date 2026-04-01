@@ -115,6 +115,10 @@ api_key = { env = "BYTEPLUS_API_KEY" }
 model = "auto"
 ```
 
+Secret reference rule:
+- `api_key = { env = "ARK_API_KEY" }` or `api_key = { env = "BYTEPLUS_API_KEY" }` means the runtime should read the secret from that env var.
+- `api_key = "ARK_API_KEY"` would mean the literal string `ARK_API_KEY` is the configured key.
+
 Use this when:
 
 - one hosted provider should own first value cleanly
@@ -380,6 +384,7 @@ Region note:
 | If you want to... | Go here |
 | --- | --- |
 | return to the provider chooser and model-selection contract | [Providers And Models](/use-loongclaw/providers-and-models) |
+| inspect the full built-in provider matrix | [Provider Guides](/use-loongclaw/provider-guides/index) |
 | move from provider-only setup to a full rollout path | [Common Setups](/use-loongclaw/common-setups) |
 | choose a delivery surface after provider setup is healthy | [Channels](/use-loongclaw/channels) |
-| go straight to concrete channel demos | [Channel Recipes](/use-loongclaw/channel-recipes) |
+| go straight to concrete channel demos | [Channel Guides](/use-loongclaw/channel-guides/index) and [Channel Recipes](/use-loongclaw/channel-recipes) |

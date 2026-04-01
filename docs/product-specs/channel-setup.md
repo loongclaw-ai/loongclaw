@@ -6,15 +6,16 @@ model.
 
 The public reader-facing docs path for this area lives under
 `site/use-loongclaw/`, especially `configuration-patterns.mdx`,
-`channels.mdx`, `channel-recipes.mdx`, and `gateway-and-supervision.mdx`. This
-file stays longer because it is the source-level contract behind those pages.
+`channels.mdx`, `channel-guides/index.mdx`, `channel-recipes.mdx`, and
+`gateway-and-supervision.mdx`. This file stays longer because it is the
+source-level contract behind those pages.
 
 ## Route By Audience
 
 | If you are trying to... | Start here |
 | --- | --- |
 | read the public config shape first | [`../../site/use-loongclaw/configuration-patterns.mdx`](../../site/use-loongclaw/configuration-patterns.mdx) |
-| read the public operator docs first | [`../../site/use-loongclaw/channels.mdx`](../../site/use-loongclaw/channels.mdx) and [`../../site/use-loongclaw/channel-recipes.mdx`](../../site/use-loongclaw/channel-recipes.mdx) |
+| read the public operator docs first | [`../../site/use-loongclaw/channels.mdx`](../../site/use-loongclaw/channels.mdx), [`../../site/use-loongclaw/channel-guides/index.mdx`](../../site/use-loongclaw/channel-guides/index.mdx), and [`../../site/use-loongclaw/channel-recipes.mdx`](../../site/use-loongclaw/channel-recipes.mdx) |
 | follow one complete provider-plus-channel rollout | [`../../site/use-loongclaw/common-setups.mdx`](../../site/use-loongclaw/common-setups.mdx) and the playbooks under it |
 | review the source-level contract for shipped channel surfaces | this file |
 | check the current gateway owner contract | this file and [`../../site/use-loongclaw/gateway-and-supervision.mdx`](../../site/use-loongclaw/gateway-and-supervision.mdx) |
@@ -39,9 +40,9 @@ needs.
 
 - [ ] Product docs clearly distinguish the shipped MVP surfaces: the base CLI
       assistant loop, the explicit `gateway run/status/stop` runtime-owner
-      contract, runtime-backed Feishu / Lark, Telegram, Matrix, and WeCom
-      service channels, plus config-backed outbound Discord, Slack, LINE,
-      DingTalk, WhatsApp, Email, generic Webhook, Google Chat, Signal, Twitch,
+      contract, runtime-backed Feishu / Lark, Telegram, Matrix, WhatsApp, and
+      WeCom service channels, plus config-backed outbound Discord, Slack,
+      LINE, DingTalk, Email, generic Webhook, Google Chat, Signal, Twitch,
       Tlon, Microsoft Teams, Mattermost, Nextcloud Talk, Synology Chat, IRC,
       iMessage / BlueBubbles, and Nostr.
 - [ ] Product docs clearly distinguish runtime-backed shipped surfaces,
@@ -67,7 +68,7 @@ needs.
 ## Out of Scope
 
 - Shipping additional runtime-backed channels beyond CLI, Feishu / Lark,
-  Telegram, Matrix, and WeCom
+  Telegram, Matrix, WhatsApp, and WeCom
 - Promoting the remaining catalog-only planned surfaces such as Zalo,
   Zalo Personal, or WebChat to shipped support in this slice
 - Broad cross-channel inbox or routing UX
@@ -91,12 +92,12 @@ needs.
 | Feishu / Lark | Runtime-backed | webhook or websocket | `feishu.enabled`, `feishu.app_id`, `feishu.app_secret`, `feishu.allowed_chat_ids`; webhook mode also needs `verification_token` and `encrypt_key` | `loong feishu-send`, `loong feishu-serve` |
 | Telegram | Runtime-backed | Bot API polling | `telegram.enabled`, `telegram.bot_token`, `telegram.allowed_chat_ids` | `loong telegram-send`, `loong telegram-serve` |
 | Matrix | Runtime-backed | Client-Server sync | `matrix.enabled`, `matrix.access_token`, `matrix.base_url`, `matrix.allowed_room_ids` | `loong matrix-send`, `loong matrix-serve` |
+| WhatsApp | Runtime-backed | WhatsApp Cloud API plus verified webhook | `whatsapp.enabled`, `whatsapp.access_token`, `whatsapp.phone_number_id`; serve mode also needs `verify_token` and `app_secret` | `loong whatsapp-send`, `loong whatsapp-serve` |
 | WeCom | Runtime-backed | official AIBot long connection | `wecom.enabled`, `wecom.bot_id`, `wecom.secret`, `wecom.allowed_conversation_ids` | `loong wecom-send`, `loong wecom-serve` |
 | Discord | Config-backed outbound | Discord HTTP API | `discord.enabled`, `discord.bot_token` | `loong discord-send` |
 | Slack | Config-backed outbound | Slack Web API | `slack.enabled`, `slack.bot_token` | `loong slack-send` |
 | LINE | Config-backed outbound | LINE Messaging API | `line.enabled`, `line.channel_access_token` | `loong line-send` |
 | DingTalk | Config-backed outbound | DingTalk custom robot webhook | `dingtalk.enabled`, `dingtalk.webhook_url`; `secret` is optional when the webhook uses signed requests | `loong dingtalk-send` |
-| WhatsApp | Config-backed outbound | WhatsApp Cloud API | `whatsapp.enabled`, `whatsapp.access_token`, `whatsapp.phone_number_id` | `loong whatsapp-send` |
 | Email | Config-backed outbound | SMTP relay or SMTP URL | `email.enabled`, `email.smtp_host`, `email.smtp_username`, `email.smtp_password`, `email.from_address` | `loong email-send` |
 | Webhook | Config-backed outbound | generic HTTP webhook POST | `webhook.enabled`, `webhook.endpoint_url`; `auth_token` is optional and can pair with custom header and prefix overrides | `loong webhook-send` |
 | Google Chat | Config-backed outbound | Google Chat incoming webhook | `google_chat.enabled`, `google_chat.webhook_url` | `loong google-chat-send` |
@@ -143,8 +144,8 @@ send-only surface is already a shipped runtime surface.
 | Family | Current scope | Read next |
 | --- | --- | --- |
 | base local assistant path | CLI | [Surface Setup Rules](#surface-setup-rules) |
-| runtime-backed service channels | Feishu / Lark, Telegram, Matrix, WeCom | [Runtime-Backed Service Channels](#runtime-backed-service-channels) and [Gateway Ownership Direction](#gateway-ownership-direction) |
-| config-backed outbound surfaces | Discord, Slack, LINE, DingTalk, WhatsApp, Email, Webhook, Google Chat, Signal, Twitch, Tlon, Microsoft Teams, Mattermost, Nextcloud Talk, Synology Chat, IRC, iMessage / BlueBubbles, Nostr | [Config-Backed Outbound Surfaces](#config-backed-outbound-surfaces) |
+| runtime-backed service channels | Feishu / Lark, Telegram, Matrix, WhatsApp, WeCom | [Runtime-Backed Service Channels](#runtime-backed-service-channels) and [Gateway Ownership Direction](#gateway-ownership-direction) |
+| config-backed outbound surfaces | Discord, Slack, LINE, DingTalk, Email, Webhook, Google Chat, Signal, Twitch, Tlon, Microsoft Teams, Mattermost, Nextcloud Talk, Synology Chat, IRC, iMessage / BlueBubbles, Nostr | [Config-Backed Outbound Surfaces](#config-backed-outbound-surfaces) |
 | catalog-only planned surfaces | Zalo, Zalo Personal, WebChat | [Expansion Model](#expansion-model) |
 
 ## Surface Setup Rules
@@ -155,7 +156,7 @@ send-only surface is already a shipped runtime surface.
 
 The base CLI path stays independent from the gateway and service channels. A
 user must be able to succeed with `ask` or `chat` before enabling Feishu / Lark,
-Telegram, Matrix, or WeCom.
+Telegram, Matrix, WhatsApp, or WeCom.
 
 ### Runtime-Backed Service Channels
 
@@ -191,6 +192,18 @@ Matrix uses a sync-loop transport with explicit homeserver configuration:
 - use `matrix-send` for direct room delivery and `matrix-serve` for the sync
   reply loop
 
+#### WhatsApp
+
+WhatsApp is shipped as a real runtime-backed surface through the Cloud API send
+path plus a verified webhook reply loop:
+
+- configure `access_token` and `phone_number_id`
+- provide `verify_token` and `app_secret` for the serve path
+- use `whatsapp-send` for proactive sends
+- use `whatsapp-serve` to own the webhook-backed reply loop
+- keep `webhook_bind` and `webhook_path` explicit when local ingress ownership
+  matters for the rollout
+
 #### WeCom
 
 WeCom is shipped as a real runtime-backed surface through the official AIBot
@@ -210,10 +223,10 @@ runtime contract is explicitly the official AIBot websocket subscription flow.
 
 ### Config-Backed Outbound Surfaces
 
-Discord, Slack, LINE, DingTalk, WhatsApp, Email, generic Webhook, Google
-Chat, Signal, Twitch, Tlon, Microsoft Teams, Mattermost, Nextcloud Talk,
-Synology Chat, IRC, iMessage / BlueBubbles, and Nostr are shipped as
-account-aware outbound surfaces:
+Discord, Slack, LINE, DingTalk, Email, generic Webhook, Google Chat, Signal,
+Twitch, Tlon, Microsoft Teams, Mattermost, Nextcloud Talk, Synology Chat,
+IRC, iMessage / BlueBubbles, and Nostr are shipped as account-aware outbound
+surfaces:
 
 - they publish send commands, config validation, inventory snapshots, and
   onboarding metadata through the shared channel SDK
@@ -230,8 +243,8 @@ account-aware outbound surfaces:
 
 #### Straightforward API Or Webhook Sends
 
-Discord, Slack, LINE, DingTalk, WhatsApp, Google Chat, and Mattermost stay in
-the simplest config-backed outbound bucket for this spec slice:
+Discord, Slack, LINE, DingTalk, Google Chat, and Mattermost stay in the
+simplest config-backed outbound bucket for this spec slice:
 
 - the matrix above is the canonical source for required config keys and send
   commands
@@ -460,11 +473,10 @@ the attached compatibility wrapper rather than the long-term product noun:
 - those selectors should resolve against configured `accounts.<id>` entries;
   if named accounts do not exist yet, the operator should finish the normal
   per-channel setup first instead of inventing selector ids ad hoc
-- it never promotes config-backed outbound surfaces such as WhatsApp, Signal,
-  Email, generic Webhook, Microsoft Teams, DingTalk, Google Chat, Twitch,
-  Tlon, Mattermost, Nextcloud Talk, Synology Chat, IRC, or iMessage /
-  BlueBubbles into runtime supervision until those adapters grow real serve
-  ownership
+- it never promotes config-backed outbound surfaces such as Signal, Email,
+  generic Webhook, Microsoft Teams, DingTalk, Google Chat, Twitch, Tlon,
+  Mattermost, Nextcloud Talk, Synology Chat, IRC, or iMessage / BlueBubbles
+  into runtime supervision until those adapters grow real serve ownership
 - it never promotes catalog-only planned surfaces such as Zalo, Zalo Personal,
   or WebChat into runtime supervision until those adapters are implemented
 - the gateway service should continue to absorb this runtime ownership model,

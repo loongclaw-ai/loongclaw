@@ -10,7 +10,8 @@ source-level spec.
 
 This page is intentionally about patterns, not every field. It should help you
 recognize how LoongClaw's config is organized before you drop into provider
-recipes, channel rollouts, or the repository-native product specs.
+guides, channel guides, rollout recipes, or the repository-native product
+specs.
 
 ## Start With The Right Question
 
@@ -67,6 +68,11 @@ allowed_chat_ids = ["oc_ops_room"]
 This is the public pattern: one provider lane, one explicit memory profile, and
 one channel family that stays visible in config instead of being hidden behind a
 launcher.
+
+Secret reference note:
+- `api_key = { env = "ARK_API_KEY" }` is an explicit env-backed secret reference.
+- `api_key = "ARK_API_KEY"` would be parsed as an inline literal, not as an env name lookup.
+- `${ARK_API_KEY}` can also work, but the docs prefer `{ env = "..." }` because it is clearer and consistent with `file` and `exec` secret references.
 
 Other governed operator-facing config families live alongside that core shape:
 
@@ -143,8 +149,10 @@ Rules that matter:
 - use `model = "auto"` only when discovery is actually useful for that lane
 - treat `preferred_models` as an explicit fallback path, not a hidden override
 
-When you need worked examples instead of the shared pattern, continue to
-[Provider Recipes](/use-loongclaw/provider-recipes).
+When you need the exact built-in provider contract, continue to
+[Provider Guides](/use-loongclaw/provider-guides/index). Keep
+[Provider Recipes](/use-loongclaw/provider-recipes) for representative rollout
+patterns layered on top.
 
 ## Multi-Profile Provider Config
 
@@ -244,8 +252,10 @@ The same pattern applies to runtime-backed or outbound-only channel families:
 - keep selector ids stable and human-readable, such as `work`, `alerts`, or
   `bot_123456`
 
-For more step-by-step rollout examples, continue to
-[Channel Recipes](/use-loongclaw/channel-recipes).
+For the exact built-in channel contract, continue to
+[Channel Guides](/use-loongclaw/channel-guides/index). Keep
+[Channel Recipes](/use-loongclaw/channel-recipes) for representative rollout
+patterns and sequencing.
 
 ## Gateway Selector Rule
 
@@ -312,7 +322,8 @@ continuity model and progression rules.
 ## Reading Rules
 
 - Use this page for shared public config shape, not every field.
-- Use recipe pages when you need concrete commands, smoke tests, or rollout
+- Use guide pages when you need the exact built-in contract for one provider or channel.
+- Use recipe pages when you need representative commands, smoke tests, or rollout
   order.
 - Use repository-native product specs when you need the exact source-level
   contract behind the public docs.
@@ -322,10 +333,10 @@ continuity model and progression rules.
 | If you want to... | Go here |
 | --- | --- |
 | choose the provider lane first | [Providers And Models](/use-loongclaw/providers-and-models) |
-| follow provider-specific config walkthroughs | [Provider Recipes](/use-loongclaw/provider-recipes) |
+| follow provider-specific config walkthroughs | [Provider Guides](/use-loongclaw/provider-guides/index) and [Provider Recipes](/use-loongclaw/provider-recipes) |
 | understand the delivery-surface model first | [Channels](/use-loongclaw/channels) |
 | manage skill install and exposure policy | [Managed Skills](/use-loongclaw/managed-skills) |
 | debug private-host, domain, or browser runtime gates | [Browser And Web Boundaries](/use-loongclaw/browser-and-web-boundaries) |
-| follow channel setup and smoke-test paths | [Channel Recipes](/use-loongclaw/channel-recipes) and [Channel Setup](/use-loongclaw/channel-setup) |
+| follow channel setup and smoke-test paths | [Channel Guides](/use-loongclaw/channel-guides/index), [Channel Recipes](/use-loongclaw/channel-recipes), and [Channel Setup](/use-loongclaw/channel-setup) |
 | choose between foreground serve loops and gateway ownership | [Gateway And Supervision](/use-loongclaw/gateway-and-supervision) |
 | inspect the source-level public contract | the repository-native [Channel Setup](https://github.com/loongclaw-ai/loongclaw/blob/dev/docs/product-specs/channel-setup.md) spec |

@@ -55,6 +55,11 @@ api_key = { env = "PROVIDER_API_KEY" }
 
 The exact provider kind and env var will vary. The important part is that onboarding writes the same provider surface the runtime will keep using later.
 
+Secret reference note:
+- `api_key = { env = "PROVIDER_API_KEY" }` means "read the secret from that environment variable".
+- `api_key = "PROVIDER_API_KEY"` would instead be treated as the literal API key value itself.
+- The docs standardize on the `{ env = "..." }` shape because it is explicit and matches the wider secret-reference model.
+
 ## Why This Page Stays Short
 
 - The first-run handoff should get you to one useful answer quickly.

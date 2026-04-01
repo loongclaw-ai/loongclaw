@@ -11,6 +11,11 @@ The rule stays the same: get the local assistant path healthy first, then add
 one surface at a time. Do not jump straight to a multi-channel supervisor before
 one concrete channel already works.
 
+Keep [Channel Guides](/use-loongclaw/channel-guides/index) open when you need
+the exact built-in contract for one shipped surface. This page stays narrower:
+it shows representative rollout patterns rather than duplicating the entire
+channel inventory.
+
 If you want the gateway ownership model in one place instead of the tutorial
 lane, continue to [Gateway And Supervision](/use-loongclaw/gateway-and-supervision).
 If you want the shared public channel-account and selector shape before the
@@ -27,6 +32,7 @@ Most operators should start in one of these places:
 | Telegram is enough for the simplest reply-loop bot | Recipe 2 |
 | Matrix should own a self-hosted or federated room runtime | Recipe 3 |
 | WeCom should own the official enterprise lane | Recipe 4 |
+| WhatsApp should own a Cloud API reply loop | [WhatsApp guide](/use-loongclaw/channel-guides/whatsapp) |
 | you only need governed outbound delivery | Recipe 6 |
 | several identities or several runtime-backed channels are already in scope | Recipe 5 or Recipe 7 |
 
@@ -37,6 +43,7 @@ Most operators should start in one of these places:
 | a Feishu or Lark team-chat runtime | Feishu / Lark | shipped inbound runtime with webhook or websocket mode |
 | the simplest reply-loop bot | Telegram | smallest runtime-backed setup surface |
 | self-hosted or federated room sync | Matrix | explicit homeserver and room boundary |
+| a WhatsApp Cloud runtime | [WhatsApp guide](/use-loongclaw/channel-guides/whatsapp) | shipped Cloud API send plus verified webhook reply loop |
 | official WeCom runtime lane | WeCom | shipped AIBot long-connection flow |
 | several Feishu / Lark or WeCom identities in one config | Recipe 5 | explicit default account plus stable account selectors |
 | proactive delivery without a reply loop | Recipe 6 | outbound-only sends without overclaiming runtime support |
@@ -47,11 +54,11 @@ Most operators should start in one of these places:
 This page uses representative recipes, but it should still keep the shipped
 surface map visible.
 
-| Surface family | Current examples | Representative recipe |
+| Surface family | Current examples | Best next page |
 | --- | --- | --- |
-| runtime-backed service channels | Feishu / Lark, Telegram, Matrix, WeCom | Recipes 1 to 4 |
+| runtime-backed service channels | Feishu / Lark, Telegram, Matrix, WhatsApp, WeCom | Recipes 1 to 4 plus the [WhatsApp guide](/use-loongclaw/channel-guides/whatsapp) |
 | workplace outbound surfaces | Slack, Discord, Microsoft Teams, Google Chat, Mattermost, Nextcloud Talk, Synology Chat | Recipe 6 |
-| messaging and bridge outbound surfaces | LINE, DingTalk, WhatsApp, Signal, IRC, iMessage / BlueBubbles, Nostr, Tlon | Recipe 6 |
+| messaging and bridge outbound surfaces | LINE, DingTalk, Signal, IRC, iMessage / BlueBubbles, Nostr, Tlon | Recipe 6 |
 | direct delivery and alerting surfaces | Webhook, Email, Twitch | Recipe 6 |
 | multi-account runtime-backed rollout | Feishu / Lark and WeCom account sets | Recipe 5 |
 | multi-channel runtime-backed supervision | several shipped runtime-backed channels on one host | Recipe 7 |
@@ -72,12 +79,13 @@ surface.
 ## Reading Rule
 
 - Use this page when you already know the delivery lane and want concrete config or smoke tests.
+- Use [Channel Guides](/use-loongclaw/channel-guides/index) when you need the exact built-in contract for one surface.
 - Use [Configuration Patterns](/use-loongclaw/configuration-patterns) when you
   want the shared `default_account`, `accounts.<id>`, and trust-toggle shape
   before the per-surface walkthroughs.
 - Start with one surface only; do not jump to multi-channel supervision first.
-- Keep Feishu / Lark, WeCom, Telegram, and Matrix in the runtime-backed lane.
-- Keep webhook, email, Slack, Discord, Teams, Google Chat, Mattermost, Nextcloud Talk, Synology Chat, LINE, DingTalk, WhatsApp, Signal, IRC, iMessage / BlueBubbles, Nostr, Tlon, and similar sinks in the outbound-only lane.
+- Keep Feishu / Lark, Telegram, Matrix, WhatsApp, and WeCom in the runtime-backed lane.
+- Keep webhook, email, Slack, Discord, Teams, Google Chat, Mattermost, Nextcloud Talk, Synology Chat, LINE, DingTalk, Signal, IRC, iMessage / BlueBubbles, Nostr, Tlon, and similar sinks in the outbound-only lane.
 - Jump to [Common Setups](/use-loongclaw/common-setups) when the provider and channel should be chosen together.
 
 ## Need A Full Rollout Instead?
@@ -314,7 +322,7 @@ Operational notes:
 Outbound-only surfaces are the right choice when you want governed delivery
 without pretending a reply loop already ships.
 
-This recipe uses a few representative examples, but the same pattern covers the broader outbound-only catalog: Slack, Discord, Teams, Google Chat, Mattermost, Nextcloud Talk, Synology Chat, LINE, DingTalk, WhatsApp, Signal, IRC, iMessage / BlueBubbles, Nostr, Tlon, Webhook, Email, and Twitch.
+This recipe uses a few representative examples, but the same pattern covers the broader outbound-only catalog: Slack, Discord, Teams, Google Chat, Mattermost, Nextcloud Talk, Synology Chat, LINE, DingTalk, Signal, IRC, iMessage / BlueBubbles, Nostr, Tlon, Webhook, Email, and Twitch.
 
 Webhook example:
 
@@ -391,7 +399,7 @@ More outbound-only starting points:
 | Surface family | Current examples | What to configure first | Command shape |
 | --- | --- | --- | --- |
 | workplace chat sinks | Slack, Discord, Microsoft Teams, Google Chat, Mattermost, Nextcloud Talk, Synology Chat | bot token or webhook URL, plus `default_account` / `accounts.<id>` when you need several identities | `loong <surface>-send` |
-| messaging and robot lanes | LINE, DingTalk, WhatsApp | channel token, robot webhook, or phone/account identity plus any required secret material | `loong <surface>-send` |
+| messaging and robot lanes | LINE, DingTalk, Signal | channel token, robot webhook, or account identity plus any required secret material | `loong <surface>-send` |
 | bridge and relay lanes | Signal, IRC, iMessage / BlueBubbles, Nostr, Tlon | bridge URL, relay URLs, or server identity plus the account or key material that owns the lane | `loong <surface>-send` |
 | direct delivery and alerting lanes | Webhook, Email, Twitch | endpoint URL, SMTP relay, or OAuth/token material for the target delivery path | `loong <surface>-send` |
 
@@ -459,6 +467,7 @@ Important boundary:
 | --- | --- |
 | move to a full provider-plus-channel rollout path | [Common Setups](/use-loongclaw/common-setups) |
 | step back to the conceptual surface model | [Channels](/use-loongclaw/channels) |
+| inspect the full shipped channel matrix | [Channel Guides](/use-loongclaw/channel-guides/index) |
 | inspect the field-level public setup guide | [Channel Setup](/use-loongclaw/channel-setup) |
 | inspect owner commands, selectors, and supervision | [Gateway And Supervision](/use-loongclaw/gateway-and-supervision) |
-| go fix the provider lane first | [Providers And Models](/use-loongclaw/providers-and-models) and [Provider Recipes](/use-loongclaw/provider-recipes) |
+| go fix the provider lane first | [Providers And Models](/use-loongclaw/providers-and-models), [Provider Guides](/use-loongclaw/provider-guides/index), and [Provider Recipes](/use-loongclaw/provider-recipes) |

@@ -9,9 +9,10 @@ Use this page when one service channel already works and you need to decide how
 LoongClaw should own longer-lived delivery.
 
 If you still need initial channel setup or smoke tests, start with
-[Channel Recipes](/use-loongclaw/channel-recipes) first. This page is about
-runtime ownership, supervision, and account selection after the basic lane is
-already healthy.
+[Channel Guides](/use-loongclaw/channel-guides/index) for the exact one-surface
+contract and keep [Channel Recipes](/use-loongclaw/channel-recipes) for the
+representative rollout path. This page is about runtime ownership,
+supervision, and account selection after the basic lane is already healthy.
 If you first need the shared `default_account`, `accounts.<id>`, or outbound
 trust config shape, start with
 [Configuration Patterns](/use-loongclaw/configuration-patterns).
@@ -38,12 +39,19 @@ trust config shape, start with
 
 ## What Gateway Supervision Includes Today
 
-| Included in runtime supervision | Not part of runtime supervision |
-| --- | --- |
-| Feishu / Lark | Webhook |
-| Telegram | Email |
-| Matrix | Slack, Discord, Teams, Google Chat |
-| WeCom | Twitch, Signal, WhatsApp, and similar outbound-only surfaces |
+Included in runtime supervision today:
+
+- Feishu / Lark
+- Telegram
+- Matrix
+- WhatsApp
+- WeCom
+
+Not part of runtime supervision today:
+
+- Webhook and Email
+- Slack, Discord, Teams, Google Chat, Mattermost, Nextcloud Talk, and Synology Chat
+- LINE, DingTalk, Signal, IRC, iMessage / BlueBubbles, Nostr, Tlon, Twitch, and similar outbound-only surfaces
 
 If a surface is outbound-only, it should stay documented as outbound-only
 instead of being described as if it joins the same reply-loop supervisor.
@@ -150,6 +158,8 @@ If the runtime still does not start cleanly:
   for the shared public account, selector, and trust-toggle config shapes.
 - Go back to [Channels](/use-loongclaw/channels) for the surface model and
   runtime-backed versus outbound-only boundary.
+- Continue to [Channel Guides](/use-loongclaw/channel-guides/index) for the
+  exact built-in contract of one shipped channel surface.
 - Continue to [Channel Setup](/use-loongclaw/channel-setup) for the practical
   public setup contract.
 - Continue to [Channel Recipes](/use-loongclaw/channel-recipes) for smoke tests,

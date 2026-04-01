@@ -9,13 +9,11 @@ Use this page when the base CLI path already makes sense and you need to choose
 the right provider lane before editing config in detail.
 
 LoongClaw treats provider and model choice as operator-visible configuration,
-not hidden runtime magic. This page is the chooser. The step-by-step config
-work lives in the recipe pages.
+not hidden runtime magic. This page is the chooser. The exact built-in
+provider contract lives in [Provider Guides](/use-loongclaw/provider-guides/index),
+while [Provider Recipes](/use-loongclaw/provider-recipes) keeps a smaller set
+of representative rollout patterns.
 
-If you want concrete setup walkthroughs instead of the conceptual contract on
-this page, go directly to [Provider Recipes](/use-loongclaw/provider-recipes).
-The recipes cover direct hosted providers, coding-specialized lanes, gateway
-or compatibility endpoints, local runtimes, and multi-profile patterns.
 Volcengine and BytePlus stay near the top because they are a common first-run
 path, but they are not the only provider families surfaced here.
 If you want the shared public provider-profile shape before the recipes become
@@ -66,7 +64,8 @@ Use `list-models` after credentials are healthy when you want the current catalo
 - Use [Configuration Patterns](/use-loongclaw/configuration-patterns) when you
   want the shared `active_provider` plus `providers.<id>` shape before the
   provider-specific walkthroughs.
-- Use [Provider Recipes](/use-loongclaw/provider-recipes) once you know the lane and need commands or config.
+- Use [Provider Guides](/use-loongclaw/provider-guides/index) once you know the lane and need the exact built-in contract.
+- Use [Provider Recipes](/use-loongclaw/provider-recipes) when you want representative rollout patterns on top of that contract.
 - Use [Common Setups](/use-loongclaw/common-setups) when the provider choice only makes sense together with the delivery surface.
 
 ## How Model Selection Works
@@ -181,12 +180,14 @@ model = "auto"
 ```
 
 The important part is that the runtime uses the same provider surface after onboarding that it uses during normal operation. There is no separate marketing-only provider layer.
+Here `api_key = { env = "ARK_API_KEY" }` explicitly means "read from the `ARK_API_KEY` environment variable". Writing `api_key = "ARK_API_KEY"` would instead treat `ARK_API_KEY` as the literal key value, which is why the docs do not use that form for env-backed secrets.
 The same profile shape also works for OpenAI, Anthropic, Gemini, DeepSeek,
 MiniMax, BytePlus, and other built-in hosted families by swapping the provider
 `kind`, the default credential env, and the reviewed model choice.
 
 ## Continue Reading
 
+- Continue to [Provider Guides](/use-loongclaw/provider-guides/index) for the full built-in provider matrix.
 - Continue to [Provider Recipes](/use-loongclaw/provider-recipes) for step-by-step hosted, coding-lane, gateway, local, and multi-profile examples.
 - Go to [First Run](/get-started/first-run) if you still need the shortest path to a useful answer.
 - Go to [Common Setups](/use-loongclaw/common-setups) if the provider choice is already tied to Feishu / Lark, WeCom, Telegram, local outbound delivery, or gateway ownership.

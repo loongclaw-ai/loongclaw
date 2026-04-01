@@ -135,6 +135,16 @@ loong doctor --fix
 
 首轮上手路径刻意保持简短。完整 provider 设置、channel 配置和操作变体，应该放在 docs，而不是继续往首页里塞。
 
+当你真的需要落到原始配置时，env-backed secret 会显式写出来：
+
+```toml
+[providers.openai]
+kind = "openai"
+api_key = { env = "OPENAI_API_KEY" }
+```
+
+`api_key = { env = "OPENAI_API_KEY" }` 的意思是“从这个环境变量读取 secret”。`api_key = "OPENAI_API_KEY"` 则会把 `OPENAI_API_KEY` 当成字面量 key 值本身。
+
 <a id="start-paths"></a>
 ## 从哪里开始
 

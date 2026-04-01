@@ -135,6 +135,16 @@ loong doctor --fix
 
 The first-run path stays intentionally short. Full provider setup, channel configuration, and operational variants belong in docs instead of the landing page.
 
+When you do need raw config, env-backed secrets are written explicitly:
+
+```toml
+[providers.openai]
+kind = "openai"
+api_key = { env = "OPENAI_API_KEY" }
+```
+
+`api_key = { env = "OPENAI_API_KEY" }` means "read the secret from that environment variable". `api_key = "OPENAI_API_KEY"` would instead treat `OPENAI_API_KEY` as the literal key value itself.
+
 <a id="start-paths"></a>
 ## Start Paths
 

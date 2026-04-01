@@ -9,10 +9,7 @@ LoongClaw keeps channel setup explicit so operators can tell what is actually
 shipped, what is outbound-only, and what still depends on future runtime work.
 
 Use this page when you want the practical setup contract. If you want step-by-step
-smoke tests and worked examples instead, start with [Channel Recipes](/use-loongclaw/channel-recipes).
-That recipe page now keeps representative runtime-backed and outbound-only
-config paths visible instead of collapsing everything into one preferred
-surface.
+smoke tests and worked examples instead, start with [Channel Guides](/use-loongclaw/channel-guides/index) for the exact per-surface contract, then keep [Channel Recipes](/use-loongclaw/channel-recipes) for representative rollout patterns.
 If you want the shared public config shape before the per-surface setup rules,
 start with [Configuration Patterns](/use-loongclaw/configuration-patterns).
 If you specifically need the longer-lived owner model, foreground versus
@@ -47,6 +44,7 @@ Before any channel is really ready:
 | one Feishu or Lark app should own inbound automation | configure `feishu` and run `loong feishu-serve` | the Feishu family is the shipped runtime lane for both Feishu and Lark |
 | one Telegram bot should own a reply loop | configure `telegram` and run `loong telegram-serve` | this is the simplest runtime-backed bot lane |
 | one Matrix bot should own a room sync loop | configure `matrix` and run `loong matrix-serve` | the homeserver, room ids, and sync boundary stay explicit |
+| one WhatsApp business account should own a Cloud API reply loop | configure `whatsapp` and run `loong whatsapp-serve` | send and serve are both shipped on the verified webhook path |
 | one WeCom bot should own the official long connection | configure `wecom` and run `loong wecom-serve` | this matches the shipped AIBot contract |
 | you need several accounts in one channel family | add `default_account` plus `accounts.<id>` before adding gateway selectors | stable account ids make later supervision and routing legible |
 | you only need governed direct sends | configure one outbound-only surface and use `loong <surface>-send` | this avoids pretending a reply loop already ships |
@@ -60,6 +58,7 @@ These are the shipped reply-loop surfaces today.
 | Feishu / Lark | app credentials, trusted chats, and the selected inbound transport | `loong feishu-serve` |
 | Telegram | bot token and trusted chat ids | `loong telegram-serve` |
 | Matrix | homeserver base URL, access token, and trusted room ids | `loong matrix-serve` |
+| WhatsApp | Cloud API credentials plus verified webhook material | `loong whatsapp-serve` |
 | WeCom | bot id, secret, and trusted conversation ids | `loong wecom-serve` |
 
 ## Multi-Account Rule
@@ -104,6 +103,16 @@ Matrix is a sync-loop surface:
 - use `matrix-send` for direct room delivery
 - use `matrix-serve` for the reply loop
 
+### WhatsApp
+
+WhatsApp is a Cloud API plus verified webhook runtime surface:
+
+- configure `access_token` and `phone_number_id` for direct sends
+- configure `verify_token` and `app_secret` for the webhook-backed serve path
+- use `whatsapp-send` for proactive sends
+- use `whatsapp-serve` for the reply loop
+- keep `webhook_bind` and `webhook_path` explicit so the callback owner is legible
+
 ### WeCom
 
 WeCom is documented as the official AIBot long-connection lane:
@@ -124,7 +133,7 @@ metadata without claiming a full reply-loop runtime.
 | Surface family | Current examples | Primary command shape |
 | --- | --- | --- |
 | chat and workplace platforms | Discord, Slack, LINE, DingTalk, Microsoft Teams, Mattermost, Google Chat | `loong <surface>-send` |
-| messaging and communication bridges | WhatsApp, Signal, IRC, iMessage / BlueBubbles, Nostr | `loong <surface>-send` |
+| messaging and communication bridges | Signal, IRC, iMessage / BlueBubbles, Nostr | `loong <surface>-send` |
 | generic or self-hosted delivery | Webhook, Email, Nextcloud Talk, Synology Chat, Tlon | `loong <surface>-send` |
 | community-facing outbound integrations | Twitch and similar outbound-only integrations | `loong <surface>-send` |
 
@@ -159,6 +168,7 @@ When you move beyond one local surface:
 
 ## Deep References
 
+- Continue to [Channel Guides](/use-loongclaw/channel-guides/index) for the full shipped channel matrix.
 - Continue to [Channel Recipes](/use-loongclaw/channel-recipes) for tutorial-style demos built on top of this setup contract.
 - Continue to [Channels](/use-loongclaw/channels) for the conceptual public-surface model.
 - Continue to [Gateway And Supervision](/use-loongclaw/gateway-and-supervision)

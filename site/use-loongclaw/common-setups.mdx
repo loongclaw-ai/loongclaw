@@ -18,14 +18,16 @@ with [Configuration Patterns](/use-loongclaw/configuration-patterns).
 
 These playbooks cover a few repeatable rollout shapes. They are representative
 paths, not the full support matrix. Use
+[Provider Guides](/use-loongclaw/provider-guides/index) and
+[Channel Guides](/use-loongclaw/channel-guides/index) when you want the broader
+family-by-family map instead of one end-to-end playbook. Keep
 [Provider Recipes](/use-loongclaw/provider-recipes) and
-[Channel Recipes](/use-loongclaw/channel-recipes) when you want the broader
-family-by-family map instead of one end-to-end playbook.
+[Channel Recipes](/use-loongclaw/channel-recipes) for representative patterns.
 
 All routes here stay inside the current public contract:
 
 - runtime-backed service channels are still Feishu / Lark, Telegram, Matrix,
-  and WeCom
+  WhatsApp, and WeCom
 - outbound-only surfaces stay outbound-only
 - `gateway run` remains the explicit owner contract for longer-lived service
   supervision
@@ -42,7 +44,7 @@ All routes here stay inside the current public contract:
 
 If you still just need one provider to work locally, go back to
 [First Run](/get-started/first-run) and
-[Provider Recipes](/use-loongclaw/provider-recipes) instead of treating this
+[Provider Guides](/use-loongclaw/provider-guides/index) instead of treating this
 hub like a provider-only guide.
 
 ## Shared Validation Loop
@@ -82,7 +84,7 @@ loong gateway status --json
 | use a local model without overclaiming delivery support | [Local Model Plus Outbound Delivery](/use-loongclaw/local-outbound-playbook) |
 | supervise several runtime-backed channels | [Gateway Rollout](/use-loongclaw/gateway-rollout-playbook) |
 | inspect the shared public config shape first | [Configuration Patterns](/use-loongclaw/configuration-patterns) |
-| step back to provider-only setup | [Provider Recipes](/use-loongclaw/provider-recipes) |
-| step back to channel-only setup | [Channel Recipes](/use-loongclaw/channel-recipes) |
+| step back to provider-only setup | [Provider Guides](/use-loongclaw/provider-guides/index) and [Provider Recipes](/use-loongclaw/provider-recipes) |
+| step back to channel-only setup | [Channel Guides](/use-loongclaw/channel-guides/index) and [Channel Recipes](/use-loongclaw/channel-recipes) |
 | inspect the owner contract directly | [Gateway And Supervision](/use-loongclaw/gateway-and-supervision) |
 | return to the wider runtime map | [Use LoongClaw](/use-loongclaw/overview) |
