@@ -3005,6 +3005,7 @@ pub fn render_channel_surfaces_text(
 
         push_channel_surface_header(&mut lines, surface);
         lines.push(render_channel_onboarding_line(&surface.catalog.onboarding));
+        push_channel_surface_managed_plugin_bridge_discovery(&mut lines, surface);
         for snapshot in &surface.configured_accounts {
             let api_base_url = snapshot.api_base_url.as_deref().unwrap_or("-");
             lines.push(format!(
@@ -3084,6 +3085,7 @@ pub fn render_channel_surfaces_text(
         for surface in catalog_only_surfaces {
             push_channel_surface_header(&mut lines, surface);
             lines.push(render_channel_onboarding_line(&surface.catalog.onboarding));
+            push_channel_surface_managed_plugin_bridge_discovery(&mut lines, surface);
             for operation in &surface.catalog.operations {
                 lines.push(format!(
                     "  catalog op {} ({}) availability={} tracks_runtime={} target_kinds={} requirements={}",
@@ -3180,6 +3182,71 @@ pub fn push_channel_surface_header(
             .unwrap_or("-")
     ));
     lines.push(format!("  blurb: {}", surface.catalog.blurb));
+}
+
+pub fn push_channel_surface_managed_plugin_bridge_discovery(
+    lines: &mut Vec<String>,
+    surface: &mvp::channel::ChannelSurface,
+) {
+    let Some(discovery) = surface.plugin_bridge_discovery.as_ref() else {
+        return;
+    };
+
+    let managed_install_root = discovery.managed_install_root.as_deref().unwrap_or("-");
+    let scan_issue = discovery.scan_issue.as_deref().unwrap_or("-");
+    let status = discovery.status.as_str();
+    let compatible_plugins = discovery.compatible_plugins;
+    let incomplete_plugins = discovery.incomplete_plugins;
+    let incompatible_plugins = discovery.incompatible_plugins;
+
+    lines.push(format!(
+        "  managed_plugin_bridge_discovery status={} managed_install_root={} scan_issue={} compatible={} incomplete={} incompatible={}",
+        status,
+        managed_install_root,
+        scan_issue,
+        compatible_plugins,
+        incomplete_plugins,
+        incompatible_plugins,
+    ));
+
+    for plugin in &discovery.plugins {
+        lines.push(render_channel_surface_discovered_plugin_line(plugin));
+    }
+}
+
+pub fn render_channel_surface_discovered_plugin_line(
+    plugin: &mvp::channel::ChannelDiscoveredPluginBridge,
+) -> String {
+    let package_manifest_path = plugin.package_manifest_path.as_deref().unwrap_or("-");
+    let transport_family = plugin.transport_family.as_deref().unwrap_or("-");
+    let target_contract = plugin.target_contract.as_deref().unwrap_or("-");
+    let account_scope = plugin.account_scope.as_deref().unwrap_or("-");
+    let missing_fields = if plugin.missing_fields.is_empty() {
+        "-".to_owned()
+    } else {
+        plugin.missing_fields.join(",")
+    };
+    let issues = if plugin.issues.is_empty() {
+        "-".to_owned()
+    } else {
+        plugin.issues.join("|")
+    };
+
+    format!(
+        "    managed_plugin id={} status={} bridge_kind={} adapter_family={} transport_family={} target_contract={} account_scope={} source_path={} package_root={} package_manifest_path={} missing_fields={} issues={}",
+        plugin.plugin_id,
+        plugin.status.as_str(),
+        plugin.bridge_kind,
+        plugin.adapter_family,
+        transport_family,
+        target_contract,
+        account_scope,
+        plugin.source_path,
+        plugin.package_root,
+        package_manifest_path,
+        missing_fields,
+        issues,
+    )
 }
 
 pub fn run_list_context_engines_cli(config_path: Option<&str>, as_json: bool) -> CliResult<()> {
@@ -4958,6 +5025,7 @@ pub fn render_runtime_snapshot_text(snapshot: &RuntimeSnapshotCliState) -> Strin
                 .unwrap_or("-"),
             render_string_list(surface.catalog.aliases.iter().copied())
         ));
+        push_channel_surface_managed_plugin_bridge_discovery(&mut lines, surface);
     }
     lines.push(format!(
         "tool_runtime shell_default={} shell_allow={} shell_deny={} sessions_enabled={} messages_enabled={} delegate_enabled={}",
