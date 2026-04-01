@@ -1,5 +1,4 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)] // CLI daemon binary
-use clap::Parser;
 use loongclaw_daemon::*;
 
 /// Discard any unread input from the terminal's tty input queue.
@@ -91,7 +90,7 @@ async fn main() {
         command_kind = %command_kind,
         "parsed CLI command"
     );
-    let result = match cli.command.unwrap_or_else(resolve_default_entry_command) {
+    let result = match command {
         Commands::Welcome => run_welcome_cli(),
         Commands::Demo => run_demo().await,
         Commands::RunTask { objective, payload } => run_task_cli(&objective, &payload).await,

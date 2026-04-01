@@ -2,6 +2,7 @@
 
 use super::latest_selector_process_support::LatestSelectorCliFixture;
 use super::*;
+use std::ffi::OsStr;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -26,6 +27,12 @@ fn unique_temp_path(label: &str) -> PathBuf {
 
 fn render_output(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
+}
+
+fn invoked_chat_cli_command_name() -> &'static str {
+    mvp::config::detect_invoked_cli_command_name_from_arg0(Some(OsStr::new(env!(
+        "CARGO_BIN_EXE_loongclaw"
+    ))))
 }
 
 struct PermissionsResetGuard {
@@ -222,7 +229,7 @@ fn chat_without_config_decline_hint_preserves_explicit_config_path() {
     let stderr = render_output(&output.stderr);
     let expected_hint = format!(
         "You can run '{} onboard --output {}' later to get started.",
-        super::active_cli_command_name(),
+        invoked_chat_cli_command_name(),
         explicit_config.display()
     );
     let compacted_stdout = stdout.split_whitespace().collect::<String>();
@@ -250,6 +257,12 @@ fn chat_without_config_treats_explicit_no_as_decline() {
     let output = fixture.run_chat_command(None, Some(b"n\n"));
     let stdout = render_output(&output.stdout);
     let stderr = render_output(&output.stderr);
+    let expected_hint = format!(
+        "You can run '{} onboard' later to get started.",
+        invoked_chat_cli_command_name()
+    );
+    let compacted_stdout = stdout.split_whitespace().collect::<String>();
+    let compacted_expected_hint = expected_hint.split_whitespace().collect::<String>();
 
     assert!(
         output.status.success(),
@@ -261,13 +274,7 @@ fn chat_without_config_treats_explicit_no_as_decline() {
         fixture.onboard_log()
     );
     assert!(
-        stdout.contains(
-            format!(
-                "You can run '{} onboard' later to get started.",
-                super::active_cli_command_name()
-            )
-            .as_str()
-        ),
+        compacted_stdout.contains(&compacted_expected_hint),
         "explicit no should leave a follow-up hint: {stdout:?}"
     );
 }
@@ -279,6 +286,12 @@ fn chat_without_config_treats_eof_as_decline() {
     let output = fixture.run_chat_command(None, None);
     let stdout = render_output(&output.stdout);
     let stderr = render_output(&output.stderr);
+    let expected_hint = format!(
+        "You can run '{} onboard' later to get started.",
+        invoked_chat_cli_command_name()
+    );
+    let compacted_stdout = stdout.split_whitespace().collect::<String>();
+    let compacted_expected_hint = expected_hint.split_whitespace().collect::<String>();
 
     assert!(
         output.status.success(),
@@ -290,13 +303,7 @@ fn chat_without_config_treats_eof_as_decline() {
         fixture.onboard_log()
     );
     assert!(
-        stdout.contains(
-            format!(
-                "You can run '{} onboard' later to get started.",
-                super::active_cli_command_name()
-            )
-            .as_str()
-        ),
+        compacted_stdout.contains(&compacted_expected_hint),
         "eof should still leave the follow-up hint: {stdout:?}"
     );
 }
