@@ -454,10 +454,11 @@ impl ConversationContextEngine for DefaultContextEngine {
                 .ok_or_else(|| "kernel-bound context engine requires kernel context".to_owned())?;
             let provider_binding = crate::provider::ProviderRuntimeBinding::kernel(kernel_ctx);
             let envelope = load_stage_envelope(config, session_id, binding).await?;
+            let runtime_tool_view = crate::tools::runtime_tool_view_from_loongclaw_config(config);
             let projected = crate::provider::project_hydrated_memory_context_for_view_with_binding(
                 config,
                 include_system_prompt,
-                &crate::tools::runtime_tool_view(),
+                &runtime_tool_view,
                 provider_binding,
                 &envelope.hydrated,
             )

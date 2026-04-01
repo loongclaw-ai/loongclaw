@@ -6357,6 +6357,203 @@ async fn default_runtime_build_messages_filters_tool_discovery_delta_to_requeste
     );
 }
 
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn default_runtime_build_context_uses_configured_runtime_tool_view_for_tool_discovery_delta()
+{
+    let mut config = test_config();
+    let sqlite_path = unique_memory_sqlite_path("tool-discovery-delta-configured-runtime-view");
+    config.memory.sqlite_path = sqlite_path;
+    config.external_skills.enabled = true;
+    config.tools.web_search.enabled = false;
+
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let session_id = "session-tool-discovery-delta-configured-runtime-view";
+    let runtime_tool_view = crate::tools::runtime_tool_view_from_loongclaw_config(&config);
+    let discovery_event = crate::memory::build_conversation_event_content(
+        "tool_discovery_refreshed",
+        json!({
+            "schema_version": 1,
+            "query": "inspect installed skills or search the web",
+            "entries": [
+                {
+                    "tool_id": "external_skills.inspect",
+                    "summary": "Read managed external skill metadata.",
+                    "argument_hint": "skill_id:string",
+                    "required_fields": ["skill_id"],
+                    "required_field_groups": [["skill_id"]]
+                },
+                {
+                    "tool_id": "web.search",
+                    "summary": "Search the public web.",
+                    "argument_hint": "query:string",
+                    "required_fields": ["query"],
+                    "required_field_groups": [["query"]]
+                }
+            ]
+        }),
+    );
+
+    assert!(
+        runtime_tool_view.contains("external_skills.inspect"),
+        "configured runtime tool view should expose external skills when enabled"
+    );
+    assert!(
+        !runtime_tool_view.contains("web.search"),
+        "configured runtime tool view should hide web.search when disabled"
+    );
+
+    crate::memory::append_turn_direct(session_id, "assistant", &discovery_event, &memory_config)
+        .expect("persist discovery event");
+
+    let runtime = DefaultConversationRuntime::default();
+    let assembled = runtime
+        .build_context(
+            &config,
+            session_id,
+            true,
+            ConversationRuntimeBinding::direct(),
+        )
+        .await
+        .expect("build context");
+    let system_text = assembled.messages[0]["content"]
+        .as_str()
+        .expect("system text");
+    let discovery_fragment = assembled
+        .prompt_fragments
+        .iter()
+        .find(|fragment| fragment.lane == PromptLane::ToolDiscoveryDelta)
+        .expect("tool discovery fragment");
+    let discovery_state = discovery_fragment
+        .tool_discovery_state
+        .as_ref()
+        .expect("tool discovery state");
+    let discovered_tool_ids = discovery_state
+        .entries
+        .iter()
+        .map(|entry| entry.tool_id.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(
+        system_text.contains("[tool_discovery_delta]"),
+        "expected discovery delta guidance to remain present: {system_text}"
+    );
+    assert!(
+        system_text.contains("external_skills.inspect"),
+        "configured runtime tool view should keep enabled discovered tools visible: {system_text}"
+    );
+    assert!(
+        !system_text.contains("web.search"),
+        "configured runtime tool view should hide disabled discovered tools: {system_text}"
+    );
+    assert_eq!(
+        discovered_tool_ids,
+        vec!["external_skills.inspect"],
+        "rehydrated discovery state should follow the configured runtime tool view"
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn default_runtime_kernel_build_context_uses_configured_runtime_tool_view_for_tool_discovery_delta()
+ {
+    let mut config = test_config();
+    let sqlite_path =
+        unique_memory_sqlite_path("tool-discovery-delta-configured-runtime-view-kernel");
+    config.memory.sqlite_path = sqlite_path;
+    config.external_skills.enabled = true;
+    config.tools.web_search.enabled = false;
+
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let session_id = "session-tool-discovery-delta-configured-runtime-view-kernel";
+    let runtime_tool_view = crate::tools::runtime_tool_view_from_loongclaw_config(&config);
+    let discovery_event = crate::memory::build_conversation_event_content(
+        "tool_discovery_refreshed",
+        json!({
+            "schema_version": 1,
+            "query": "inspect installed skills or search the web",
+            "entries": [
+                {
+                    "tool_id": "external_skills.inspect",
+                    "summary": "Read managed external skill metadata.",
+                    "argument_hint": "skill_id:string",
+                    "required_fields": ["skill_id"],
+                    "required_field_groups": [["skill_id"]]
+                },
+                {
+                    "tool_id": "web.search",
+                    "summary": "Search the public web.",
+                    "argument_hint": "query:string",
+                    "required_fields": ["query"],
+                    "required_field_groups": [["query"]]
+                }
+            ]
+        }),
+    );
+
+    assert!(
+        runtime_tool_view.contains("external_skills.inspect"),
+        "configured runtime tool view should expose external skills when enabled"
+    );
+    assert!(
+        !runtime_tool_view.contains("web.search"),
+        "configured runtime tool view should hide web.search when disabled"
+    );
+
+    crate::memory::append_turn_direct(session_id, "assistant", &discovery_event, &memory_config)
+        .expect("persist discovery event");
+
+    let kernel_ctx = test_kernel_context_with_memory(
+        "test-tool-discovery-delta-configured-runtime-view-kernel",
+        &memory_config,
+    );
+    let runtime = DefaultConversationRuntime::default();
+    let assembled = runtime
+        .build_context(
+            &config,
+            session_id,
+            true,
+            ConversationRuntimeBinding::kernel(&kernel_ctx),
+        )
+        .await
+        .expect("build context");
+    let system_text = assembled.messages[0]["content"]
+        .as_str()
+        .expect("system text");
+    let discovery_fragment = assembled
+        .prompt_fragments
+        .iter()
+        .find(|fragment| fragment.lane == PromptLane::ToolDiscoveryDelta)
+        .expect("tool discovery fragment");
+    let discovery_state = discovery_fragment
+        .tool_discovery_state
+        .as_ref()
+        .expect("tool discovery state");
+    let discovered_tool_ids = discovery_state
+        .entries
+        .iter()
+        .map(|entry| entry.tool_id.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(
+        system_text.contains("[tool_discovery_delta]"),
+        "expected discovery delta guidance to remain present: {system_text}"
+    );
+    assert!(
+        system_text.contains("external_skills.inspect"),
+        "kernel-bound context should keep enabled discovered tools visible: {system_text}"
+    );
+    assert!(
+        !system_text.contains("web.search"),
+        "kernel-bound context should hide disabled discovered tools: {system_text}"
+    );
+    assert_eq!(
+        discovered_tool_ids,
+        vec!["external_skills.inspect"],
+        "kernel-bound rehydrated discovery state should follow the configured runtime tool view"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn handle_turn_with_runtime_blocks_only_when_next_round_would_exceed_max_total_tool_calls() {
     use crate::test_support::TurnTestHarness;
