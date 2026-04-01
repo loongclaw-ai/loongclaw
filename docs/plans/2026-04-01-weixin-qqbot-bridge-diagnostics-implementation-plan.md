@@ -1,20 +1,20 @@
 # Weixin and QQBot Bridge Diagnostics Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
-
 **Goal:** Add truthful doctor coverage and onboarding diagnostics for the plugin-backed `weixin`, `qqbot`, and `onebot` bridge surfaces.
 
 **Architecture:** Extend the shared channel registry with a bridge-specific doctor trigger, wire the daemon doctor path to interpret plugin-owned bridge snapshots correctly, and update onboarding metadata to point operators at `loongclaw doctor`. Keep all semantics attached to registry descriptors and shared inventory data rather than daemon-local channel special cases.
 
-**Tech Stack:** Rust channel registry metadata, daemon doctor CLI logic, Rust unit tests, Markdown design and analysis docs.
+**Tech Stack:** Rust channel registry metadata, daemon doctor CLI logic, Rust unit tests, and Markdown design docs.
 
 ---
+
+## Tasks
 
 ### Task 1: Save the design and analysis artifacts
 
 **Files:**
 - Create: `docs/plans/2026-04-01-weixin-qqbot-bridge-diagnostics-design.md`
-- Create: `/Users/chum/lc-knowledge-base/projects/loongclaw/analysis/2026/2026-04-01-weixin-qqbot-bridge-diagnostics-analysis.md`
+- Create: a private analysis note outside this repository, if needed
 
 **Step 1: Persist the public design**
 
@@ -24,7 +24,7 @@ registry-first fix.
 **Step 2: Persist the private analysis**
 
 Archive the broader reasoning, rejected approaches, and external reference notes
-under `lc-knowledge-base`.
+in a private analysis archive outside this repository.
 
 ### Task 2: Add failing registry and doctor tests
 

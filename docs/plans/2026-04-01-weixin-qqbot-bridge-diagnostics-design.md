@@ -62,7 +62,7 @@ own contract without misreporting external runtime ownership as a local fault.
 
 **Chosen Design**
 
-### 1. Add a bridge-specific doctor trigger in the registry contract
+## 1. Add a bridge-specific doctor trigger in the registry contract
 
 LoongClaw should add one new `ChannelDoctorCheckTrigger` variant dedicated to
 plugin-backed bridge surfaces.
@@ -75,7 +75,7 @@ This trigger still lives beside operation metadata in the channel registry, so
 doctor semantics remain attached to the same source of truth as operation
 labels, commands, and requirements.
 
-### 2. Keep the existing generic health mapping unchanged
+## 2. Keep the existing generic health mapping unchanged
 
 The existing `OperationHealth -> DoctorCheckLevel` mapping should stay as-is for
 native and config-backed surfaces.
@@ -89,7 +89,7 @@ That preserves current semantics:
 
 This avoids leaking plugin-specific meaning into generic operation health.
 
-### 3. Interpret plugin bridge health from shared snapshot facts
+## 3. Interpret plugin bridge health from shared snapshot facts
 
 The new trigger should use snapshot facts that already exist in the registry
 projection:
@@ -113,7 +113,7 @@ Recommended semantics:
 This keeps the rule declarative and generic across `weixin`, `qqbot`, and
 `onebot`.
 
-### 4. Emit operation-level bridge contract checks
+## 4. Emit operation-level bridge contract checks
 
 Doctor should report one check per bridge operation instead of collapsing send
 and serve into a single channel-wide status.
@@ -131,7 +131,7 @@ Examples of truthful outcomes:
 - `qqbot send` can pass while `qqbot serve` fails if the gateway credentials
   exist but `allowed_peer_ids` are missing
 
-### 5. Point plugin-backed onboarding status to doctor
+## 5. Point plugin-backed onboarding status to doctor
 
 Once bridge surfaces participate in doctor, their onboarding metadata should
 use:
