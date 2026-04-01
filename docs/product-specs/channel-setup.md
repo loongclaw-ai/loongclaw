@@ -183,6 +183,9 @@ and iMessage / BlueBubbles are shipped as account-aware outbound surfaces:
 - they also expose config-derived account snapshots and bridge endpoint
   summaries through `loongclaw channels --json` when the bridge surface is
   configured
+- `loongclaw doctor` validates the local bridge contract for these surfaces and
+  treats external plugin runtime ownership as expected instead of as a native
+  runtime failure
 - their reserved native `*-send` and `*-serve` command ids remain non-runnable
   catalog stubs until LoongClaw ships the adapter itself
 - they do not join `multi-channel-serve` because the active reply loop still
