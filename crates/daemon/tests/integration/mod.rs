@@ -96,6 +96,7 @@ mod gateway_owner_state;
 mod gateway_read_models;
 mod import_cli;
 mod latest_selector_process_support;
+mod logging;
 mod memory_context_benchmark_cli;
 mod migrate_cli;
 mod migration;

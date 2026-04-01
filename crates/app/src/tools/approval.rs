@@ -1706,4 +1706,71 @@ mod tests {
         assert_eq!(grant_review["grant_exists"], true);
         assert_eq!(grant_attention["needs_attention"], false);
     }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn approval_request_status_uses_root_scope_for_child_request_when_root_row_is_missing() {
+        let config = isolated_memory_config("approval-grant-missing-root-row-child-request");
+        let repo = SessionRepository::new(&config).expect("repository");
+
+        seed_session(&repo, "root-session", SessionKind::Root, None);
+        seed_session(
+            &repo,
+            "child-session",
+            SessionKind::DelegateChild,
+            Some("root-session"),
+        );
+        repo.ensure_approval_request(NewApprovalRequestRecord {
+            approval_request_id: "apr-missing-root-row-child-request".to_owned(),
+            session_id: "child-session".to_owned(),
+            turn_id: "turn-apr-missing-root-row-child-request".to_owned(),
+            tool_call_id: "call-apr-missing-root-row-child-request".to_owned(),
+            tool_name: "delegate".to_owned(),
+            approval_key: "tool:delegate".to_owned(),
+            request_payload_json: json!({
+                "session_id": "child-session",
+                "parent_session_id": "root-session",
+                "tool_name": "delegate",
+                "args_json": {
+                    "task": "run-apr-missing-root-row-child-request"
+                },
+            }),
+            governance_snapshot_json: json!({
+                "reason": "approval required for delegate",
+                "rule_id": "rule-missing-root-row-child-request",
+            }),
+        })
+        .expect("seed child approval request");
+        approve_request(
+            &repo,
+            "apr-missing-root-row-child-request",
+            ApprovalDecision::ApproveAlways,
+            "root-session",
+        );
+        mark_request_executed(&repo, "apr-missing-root-row-child-request", None);
+        seed_runtime_grant(&repo, "root-session", "tool:delegate");
+        delete_session_row(&config, "root-session");
+
+        let outcome = crate::tools::execute_app_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "approval_request_status".to_owned(),
+                payload: json!({
+                    "approval_request_id": "apr-missing-root-row-child-request",
+                }),
+            },
+            "child-session",
+            &config,
+            &ToolConfig::default(),
+        )
+        .expect("approval_request_status outcome");
+
+        let approval_request = &outcome.payload["approval_request"];
+        let grant_review = &approval_request["grant_review"];
+        let grant_attention = &approval_request["grant_attention"];
+
+        assert_eq!(grant_review["state"], "clean");
+        assert_eq!(grant_review["scope_session_id"], "root-session");
+        assert_eq!(grant_review["grant_exists"], true);
+        assert_eq!(grant_attention["needs_attention"], false);
+    }
 }
