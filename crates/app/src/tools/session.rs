@@ -13,15 +13,20 @@ use super::payload::{optional_payload_limit, optional_payload_string, required_p
 
 use crate::config::{SessionVisibility, ToolConfig};
 #[cfg(feature = "memory-sqlite")]
-use crate::conversation::ConstrainedSubagentExecution;
 use crate::memory;
 use crate::memory::runtime_config::MemoryRuntimeConfig;
 #[cfg(feature = "memory-sqlite")]
+use crate::session::inspection::{
+    SessionDelegateLifecycleRecord, SessionInspectionSnapshot, SessionObservationSnapshot,
+    load_delegate_lifecycle_events, load_session_observation_snapshot,
+    session_delegate_lifecycle_at, session_delegate_lifecycle_json, session_event_json,
+    session_inspection_payload, session_state_is_terminal,
+};
+#[cfg(feature = "memory-sqlite")]
 use crate::session::recovery::{
     RECOVERY_EVENT_KIND, RECOVERY_KIND_QUEUED_ASYNC_OVERDUE_MARKED_FAILED,
-    RECOVERY_KIND_RUNNING_ASYNC_OVERDUE_MARKED_FAILED, SessionRecoveryRecord,
-    build_queued_async_overdue_recovery_payload, build_running_async_overdue_recovery_payload,
-    observe_missing_recovery, recovery_json,
+    RECOVERY_KIND_RUNNING_ASYNC_OVERDUE_MARKED_FAILED, build_queued_async_overdue_recovery_payload,
+    build_running_async_overdue_recovery_payload,
 };
 #[cfg(feature = "memory-sqlite")]
 use crate::session::{
@@ -31,8 +36,7 @@ use crate::session::{
 
 #[cfg(feature = "memory-sqlite")]
 use crate::session::repository::{
-    SessionEventRecord, SessionKind, SessionObservationRecord, SessionRepository, SessionState,
-    SessionSummaryRecord, SessionTerminalOutcomeRecord,
+    SessionEventRecord, SessionKind, SessionRepository, SessionState, SessionSummaryRecord,
 };
 
 #[cfg(feature = "memory-sqlite")]
@@ -51,54 +55,6 @@ fn delegate_error_outcome(
             "error": error,
         }),
     }
-}
-
-#[cfg(feature = "memory-sqlite")]
-#[derive(Debug, Clone, PartialEq)]
-pub(super) struct SessionInspectionSnapshot {
-    pub session: SessionSummaryRecord,
-    pub terminal_outcome: Option<SessionTerminalOutcomeRecord>,
-    pub recent_events: Vec<SessionEventRecord>,
-    pub delegate_events: Vec<SessionEventRecord>,
-}
-
-#[cfg(feature = "memory-sqlite")]
-#[derive(Debug, Clone, PartialEq)]
-pub(super) struct SessionObservationSnapshot {
-    pub inspection: SessionInspectionSnapshot,
-    pub tail_events: Vec<SessionEventRecord>,
-}
-
-#[cfg(feature = "memory-sqlite")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SessionDelegateLifecycleRecord {
-    mode: &'static str,
-    phase: &'static str,
-    queued_at: Option<i64>,
-    started_at: Option<i64>,
-    timeout_seconds: Option<u64>,
-    execution: Option<ConstrainedSubagentExecution>,
-    staleness: Option<SessionDelegateStalenessRecord>,
-    cancellation: Option<SessionDelegateCancellationRecord>,
-}
-
-#[cfg(feature = "memory-sqlite")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SessionDelegateStalenessRecord {
-    state: &'static str,
-    reference: &'static str,
-    elapsed_seconds: u64,
-    threshold_seconds: u64,
-    deadline_at: i64,
-}
-
-#[cfg(feature = "memory-sqlite")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SessionDelegateCancellationRecord {
-    state: &'static str,
-    reference: String,
-    requested_at: i64,
-    reason: String,
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -1214,113 +1170,13 @@ pub(super) fn observe_visible_session_with_policies(
         &target_session_id,
         tool_config.sessions.visibility,
     )?;
-    let SessionObservationRecord {
-        session,
-        terminal_outcome,
-        recent_events,
-        tail_events,
-    } = repo
-        .load_session_observation(
-            &target_session_id,
-            recent_event_limit,
-            tail_after_id,
-            tail_page_limit,
-        )?
-        .ok_or_else(|| format!("session_not_found: `{target_session_id}`"))?;
-    let delegate_events = load_delegate_lifecycle_events(&repo, &session)?;
-
-    Ok(SessionObservationSnapshot {
-        inspection: SessionInspectionSnapshot {
-            session,
-            terminal_outcome,
-            recent_events,
-            delegate_events,
-        },
-        tail_events,
-    })
-}
-
-#[cfg(feature = "memory-sqlite")]
-fn load_delegate_lifecycle_events(
-    repo: &SessionRepository,
-    session: &SessionSummaryRecord,
-) -> Result<Vec<SessionEventRecord>, String> {
-    if session.kind != SessionKind::DelegateChild {
-        return Ok(Vec::new());
-    }
-    repo.list_delegate_lifecycle_events(&session.session_id)
-}
-
-#[cfg(feature = "memory-sqlite")]
-pub(super) fn session_state_is_terminal(state: SessionState) -> bool {
-    matches!(
-        state,
-        SessionState::Completed | SessionState::Failed | SessionState::TimedOut
+    load_session_observation_snapshot(
+        &repo,
+        &target_session_id,
+        recent_event_limit,
+        tail_after_id,
+        tail_page_limit,
     )
-}
-
-#[cfg(feature = "memory-sqlite")]
-pub(super) fn session_inspection_payload(snapshot: SessionInspectionSnapshot) -> Value {
-    let terminal_outcome_state =
-        session_terminal_outcome_state(snapshot.session.state, snapshot.terminal_outcome.is_some());
-    let delegate_lifecycle = session_delegate_lifecycle_at(
-        &snapshot.session,
-        snapshot.delegate_events.as_slice(),
-        current_unix_ts(),
-    );
-    let recovery = match terminal_outcome_state {
-        "missing" => Some(observe_missing_recovery(
-            snapshot.recent_events.as_slice(),
-            snapshot.session.last_error.as_deref(),
-        )),
-        _ => None,
-    };
-    let terminal_outcome_missing_reason = match terminal_outcome_state {
-        "missing" => session_terminal_outcome_missing_reason(recovery.as_ref()),
-        _ => None,
-    };
-    json!({
-        "session": {
-            "session_id": snapshot.session.session_id,
-            "kind": snapshot.session.kind.as_str(),
-            "parent_session_id": snapshot.session.parent_session_id,
-            "label": snapshot.session.label,
-            "state": snapshot.session.state.as_str(),
-            "created_at": snapshot.session.created_at,
-            "updated_at": snapshot.session.updated_at,
-            "archived": snapshot.session.archived_at.is_some(),
-            "archived_at": snapshot.session.archived_at,
-            "last_error": snapshot.session.last_error,
-        },
-        "terminal_outcome_state": terminal_outcome_state,
-        "terminal_outcome_missing_reason": terminal_outcome_missing_reason,
-        "delegate_lifecycle": delegate_lifecycle.map(session_delegate_lifecycle_json),
-        "recovery": recovery.map(recovery_json),
-        "terminal_outcome": snapshot.terminal_outcome.map(session_terminal_outcome_json),
-        "recent_events": snapshot
-            .recent_events
-            .into_iter()
-            .map(session_event_json)
-            .collect::<Vec<_>>(),
-    })
-}
-
-#[cfg(feature = "memory-sqlite")]
-fn session_terminal_outcome_state(state: SessionState, has_terminal_outcome: bool) -> &'static str {
-    if has_terminal_outcome {
-        "present"
-    } else if session_state_is_terminal(state) {
-        "missing"
-    } else {
-        "not_terminal"
-    }
-}
-
-#[cfg(feature = "memory-sqlite")]
-fn session_terminal_outcome_missing_reason(
-    recovery: Option<&SessionRecoveryRecord>,
-) -> Option<String> {
-    recovery.map(|recovery| recovery.kind.clone())
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -1957,201 +1813,6 @@ fn build_session_cancel_plan(
 }
 
 #[cfg(feature = "memory-sqlite")]
-fn session_delegate_lifecycle_at(
-    session: &SessionSummaryRecord,
-    recent_events: &[SessionEventRecord],
-    now_ts: i64,
-) -> Option<SessionDelegateLifecycleRecord> {
-    if session.kind != SessionKind::DelegateChild {
-        return None;
-    }
-
-    let mut queued_at = None;
-    let mut started_at = None;
-    let mut queued_timeout_seconds = None;
-    let mut started_timeout_seconds = None;
-    let mut execution = None;
-    let mut cancellation = None;
-    for event in recent_events {
-        match event.event_kind.as_str() {
-            "delegate_queued" => {
-                queued_at = Some(event.ts);
-                execution = execution.or_else(|| {
-                    ConstrainedSubagentExecution::from_event_payload(&event.payload_json)
-                });
-                queued_timeout_seconds = event
-                    .payload_json
-                    .get("timeout_seconds")
-                    .and_then(Value::as_u64)
-                    .or_else(|| {
-                        execution
-                            .as_ref()
-                            .map(|execution| execution.timeout_seconds)
-                    });
-            }
-            "delegate_started" => {
-                started_at = Some(event.ts);
-                execution = execution.or_else(|| {
-                    ConstrainedSubagentExecution::from_event_payload(&event.payload_json)
-                });
-                started_timeout_seconds = event
-                    .payload_json
-                    .get("timeout_seconds")
-                    .and_then(Value::as_u64)
-                    .or_else(|| {
-                        execution
-                            .as_ref()
-                            .map(|execution| execution.timeout_seconds)
-                    });
-            }
-            DELEGATE_CANCEL_REQUESTED_EVENT_KIND => {
-                let reason = event
-                    .payload_json
-                    .get("cancel_reason")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .unwrap_or(DELEGATE_CANCEL_REASON_OPERATOR_REQUESTED)
-                    .to_owned();
-                let reference = event
-                    .payload_json
-                    .get("reference")
-                    .and_then(Value::as_str)
-                    .filter(|value| *value == "running")
-                    .unwrap_or("running");
-                cancellation = Some(SessionDelegateCancellationRecord {
-                    state: "requested",
-                    reference: reference.to_owned(),
-                    requested_at: event.ts,
-                    reason,
-                });
-            }
-            _ => {}
-        }
-    }
-
-    if session.parent_session_id.is_none() && queued_at.is_none() && started_at.is_none() {
-        return None;
-    }
-
-    let phase = match session.state {
-        SessionState::Ready => "queued",
-        SessionState::Running => "running",
-        SessionState::Completed => "completed",
-        SessionState::Failed => "failed",
-        SessionState::TimedOut => "timed_out",
-    };
-    let timeout_seconds = started_timeout_seconds.or(queued_timeout_seconds);
-    let mode = execution
-        .as_ref()
-        .map(|execution| match execution.mode {
-            crate::conversation::ConstrainedSubagentMode::Async => "async",
-            crate::conversation::ConstrainedSubagentMode::Inline => "inline",
-        })
-        .unwrap_or_else(|| {
-            if queued_at.is_some() || matches!(session.state, SessionState::Ready) {
-                "async"
-            } else {
-                "inline"
-            }
-        });
-    let staleness = match session.state {
-        SessionState::Ready => {
-            session_delegate_staleness_at("queued", queued_at, timeout_seconds, now_ts)
-        }
-        SessionState::Running => session_delegate_staleness_at(
-            if started_at.is_some() {
-                "started"
-            } else {
-                "queued"
-            },
-            started_at.or(queued_at),
-            timeout_seconds,
-            now_ts,
-        ),
-        SessionState::Completed | SessionState::Failed | SessionState::TimedOut => None,
-    };
-
-    Some(SessionDelegateLifecycleRecord {
-        mode,
-        phase,
-        queued_at,
-        started_at,
-        timeout_seconds,
-        execution,
-        staleness,
-        cancellation: if session.state == SessionState::Running {
-            cancellation
-        } else {
-            None
-        },
-    })
-}
-
-#[cfg(feature = "memory-sqlite")]
-fn session_delegate_staleness_at(
-    reference: &'static str,
-    reference_at: Option<i64>,
-    timeout_seconds: Option<u64>,
-    now_ts: i64,
-) -> Option<SessionDelegateStalenessRecord> {
-    let reference_at = reference_at?;
-    let threshold_seconds = timeout_seconds?;
-    let elapsed_seconds = now_ts.saturating_sub(reference_at).max(0) as u64;
-    let deadline_at = reference_at.saturating_add(threshold_seconds.min(i64::MAX as u64) as i64);
-    let state = if elapsed_seconds > threshold_seconds {
-        "overdue"
-    } else {
-        "fresh"
-    };
-
-    Some(SessionDelegateStalenessRecord {
-        state,
-        reference,
-        elapsed_seconds,
-        threshold_seconds,
-        deadline_at,
-    })
-}
-
-#[cfg(feature = "memory-sqlite")]
-fn session_delegate_lifecycle_json(lifecycle: SessionDelegateLifecycleRecord) -> Value {
-    json!({
-        "mode": lifecycle.mode,
-        "phase": lifecycle.phase,
-        "queued_at": lifecycle.queued_at,
-        "started_at": lifecycle.started_at,
-        "timeout_seconds": lifecycle.timeout_seconds,
-        "execution": lifecycle.execution,
-        "staleness": lifecycle.staleness.map(session_delegate_staleness_json),
-        "cancellation": lifecycle
-            .cancellation
-            .map(session_delegate_cancellation_json),
-    })
-}
-
-#[cfg(feature = "memory-sqlite")]
-fn session_delegate_staleness_json(staleness: SessionDelegateStalenessRecord) -> Value {
-    json!({
-        "state": staleness.state,
-        "reference": staleness.reference,
-        "elapsed_seconds": staleness.elapsed_seconds,
-        "threshold_seconds": staleness.threshold_seconds,
-        "deadline_at": staleness.deadline_at,
-    })
-}
-
-#[cfg(feature = "memory-sqlite")]
-fn session_delegate_cancellation_json(cancellation: SessionDelegateCancellationRecord) -> Value {
-    json!({
-        "state": cancellation.state,
-        "reference": cancellation.reference,
-        "requested_at": cancellation.requested_at,
-        "reason": cancellation.reason,
-    })
-}
-
-#[cfg(feature = "memory-sqlite")]
 fn current_unix_ts() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2569,30 +2230,6 @@ fn session_summary_json_with_delegate_lifecycle(
         );
     }
     payload
-}
-
-#[cfg(feature = "memory-sqlite")]
-pub(super) fn session_event_json(event: SessionEventRecord) -> Value {
-    json!({
-        "id": event.id,
-        "session_id": event.session_id,
-        "event_kind": event.event_kind,
-        "actor_session_id": event.actor_session_id,
-        "payload_json": event.payload_json,
-        "ts": event.ts,
-    })
-}
-
-#[cfg(feature = "memory-sqlite")]
-fn session_terminal_outcome_json(
-    outcome: crate::session::repository::SessionTerminalOutcomeRecord,
-) -> Value {
-    json!({
-        "session_id": outcome.session_id,
-        "status": outcome.status,
-        "payload": outcome.payload_json,
-        "recorded_at": outcome.recorded_at,
-    })
 }
 
 #[cfg(test)]
@@ -4537,8 +4174,9 @@ mod tests {
             ts: 100,
         }];
 
-        let lifecycle = super::session_delegate_lifecycle_at(&session, &events, 140)
-            .expect("delegate lifecycle");
+        let lifecycle =
+            crate::session::inspection::session_delegate_lifecycle_at(&session, &events, 140)
+                .expect("delegate lifecycle");
 
         assert_eq!(lifecycle.mode, "async");
         assert_eq!(lifecycle.phase, "queued");
@@ -4807,8 +4445,9 @@ mod tests {
             },
         ];
 
-        let lifecycle = super::session_delegate_lifecycle_at(&session, &events, 130)
-            .expect("delegate lifecycle");
+        let lifecycle =
+            crate::session::inspection::session_delegate_lifecycle_at(&session, &events, 130)
+                .expect("delegate lifecycle");
 
         assert_eq!(
             lifecycle.mode, "async",
