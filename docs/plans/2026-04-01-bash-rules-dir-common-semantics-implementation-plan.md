@@ -57,7 +57,7 @@
 - Test: `crates/app/src/config/tools.rs`
 - Test: `crates/app/src/tools/runtime_config.rs`
 
-- [ ] **Step 1: Add red tests for the new default and override semantics**
+- [x] **Step 1: Add red tests for the new default and override semantics**
 
 Add focused tests in `crates/app/src/config/tools.rs` that pin the intended semantics:
 
@@ -123,7 +123,7 @@ fn tool_runtime_config_keeps_relative_bash_rules_dir_override_relative() {
 }
 ```
 
-- [ ] **Step 2: Run the red tests**
+- [x] **Step 2: Run the red tests**
 
 Run:
 
@@ -136,7 +136,7 @@ Expected:
 
 - FAIL because current Bash rules resolution still derives defaults and relative overrides from `config_path.parent()` / `cwd` special cases
 
-- [ ] **Step 3: Implement the semantic correction**
+- [x] **Step 3: Implement the semantic correction**
 
 In `crates/app/src/config/tools.rs`:
 
@@ -162,7 +162,7 @@ In `crates/app/src/tools/runtime_config.rs`:
 - update the Bash governance builder call sites to use the new zero-argument helper
 - keep all other `config_path` consumers unchanged
 
-- [ ] **Step 4: Re-run focused config/runtime tests**
+- [x] **Step 4: Re-run focused config/runtime tests**
 
 Run:
 
