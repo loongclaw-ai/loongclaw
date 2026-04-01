@@ -311,8 +311,16 @@ fn check_directory_ready(
 }
 
 fn check_channel_surfaces(config: &mvp::config::LoongClawConfig) -> Vec<DoctorCheck> {
-    let snapshots = mvp::channel::channel_status_snapshots(config);
-    build_channel_surface_checks(&snapshots)
+    let inventory = mvp::channel::channel_inventory(config);
+    let snapshot_checks = build_channel_surface_checks(&inventory.channels);
+    let discovery_checks =
+        build_channel_surface_managed_plugin_discovery_checks(&inventory.channel_surfaces);
+    let mut checks = Vec::new();
+
+    checks.extend(snapshot_checks);
+    checks.extend(discovery_checks);
+
+    checks
 }
 
 fn audit_retention_doctor_check(audit: &mvp::config::AuditConfig) -> DoctorCheck {
@@ -1009,6 +1017,160 @@ fn build_channel_surface_checks(
     }
 
     checks
+}
+
+fn build_channel_surface_managed_plugin_discovery_checks(
+    surfaces: &[mvp::channel::ChannelSurface],
+) -> Vec<DoctorCheck> {
+    let mut checks = Vec::new();
+
+    for surface in surfaces {
+        let doctor_check = build_channel_surface_managed_plugin_discovery_check(surface);
+
+        if let Some(doctor_check) = doctor_check {
+            checks.push(doctor_check);
+        }
+    }
+
+    checks
+}
+
+fn build_channel_surface_managed_plugin_discovery_check(
+    surface: &mvp::channel::ChannelSurface,
+) -> Option<DoctorCheck> {
+    let has_plugin_bridge_contract = surface.catalog.plugin_bridge_contract.is_some();
+
+    if !has_plugin_bridge_contract {
+        return None;
+    }
+
+    let has_enabled_account = surface
+        .configured_accounts
+        .iter()
+        .any(|snapshot| snapshot.enabled);
+
+    if !has_enabled_account {
+        return None;
+    }
+
+    let discovery = surface.plugin_bridge_discovery.as_ref()?;
+    let check_name = format!("{} managed bridge discovery", surface.catalog.id);
+    let check_level = managed_plugin_bridge_discovery_check_level(discovery);
+    let check_detail = managed_plugin_bridge_discovery_check_detail(discovery);
+
+    Some(DoctorCheck {
+        name: check_name,
+        level: check_level,
+        detail: check_detail,
+    })
+}
+
+fn managed_plugin_bridge_discovery_check_level(
+    discovery: &mvp::channel::ChannelPluginBridgeDiscovery,
+) -> DoctorCheckLevel {
+    match discovery.status {
+        mvp::channel::ChannelPluginBridgeDiscoveryStatus::NotConfigured => DoctorCheckLevel::Warn,
+        mvp::channel::ChannelPluginBridgeDiscoveryStatus::ScanFailed => DoctorCheckLevel::Fail,
+        mvp::channel::ChannelPluginBridgeDiscoveryStatus::NoMatches => DoctorCheckLevel::Warn,
+        mvp::channel::ChannelPluginBridgeDiscoveryStatus::MatchesFound => {
+            let has_compatible_plugin = discovery.compatible_plugins > 0;
+
+            if has_compatible_plugin {
+                return DoctorCheckLevel::Pass;
+            }
+
+            DoctorCheckLevel::Warn
+        }
+    }
+}
+
+fn managed_plugin_bridge_discovery_check_detail(
+    discovery: &mvp::channel::ChannelPluginBridgeDiscovery,
+) -> String {
+    let managed_install_root = discovery.managed_install_root.as_deref().unwrap_or("-");
+
+    match discovery.status {
+        mvp::channel::ChannelPluginBridgeDiscoveryStatus::NotConfigured => {
+            "managed bridge discovery is unavailable because external_skills.install_root is not configured".to_owned()
+        }
+        mvp::channel::ChannelPluginBridgeDiscoveryStatus::ScanFailed => {
+            let scan_issue = discovery.scan_issue.as_deref().unwrap_or("unknown scan failure");
+            let detail =
+                format!("managed bridge discovery failed under {managed_install_root}: {scan_issue}");
+
+            detail
+        }
+        mvp::channel::ChannelPluginBridgeDiscoveryStatus::NoMatches => {
+            let detail = format!(
+                "managed bridge discovery found no matching bridge plugins under {managed_install_root}"
+            );
+
+            detail
+        }
+        mvp::channel::ChannelPluginBridgeDiscoveryStatus::MatchesFound => {
+            let compatible_plugins = discovery.compatible_plugins;
+            let incomplete_plugins = discovery.incomplete_plugins;
+            let incompatible_plugins = discovery.incompatible_plugins;
+            let rendered_plugins = render_managed_plugin_bridge_discovery_plugins(&discovery.plugins);
+            let detail = format!(
+                "managed bridge discovery root={managed_install_root} compatible={compatible_plugins} incomplete={incomplete_plugins} incompatible={incompatible_plugins} plugins={rendered_plugins}"
+            );
+
+            detail
+        }
+    }
+}
+
+fn render_managed_plugin_bridge_discovery_plugins(
+    plugins: &[mvp::channel::ChannelDiscoveredPluginBridge],
+) -> String {
+    if plugins.is_empty() {
+        return "-".to_owned();
+    }
+
+    let mut rendered_plugins = Vec::new();
+
+    for plugin in plugins {
+        let rendered_plugin = render_managed_plugin_bridge_discovery_plugin(plugin);
+        rendered_plugins.push(rendered_plugin);
+    }
+
+    rendered_plugins.join("; ")
+}
+
+fn render_managed_plugin_bridge_discovery_plugin(
+    plugin: &mvp::channel::ChannelDiscoveredPluginBridge,
+) -> String {
+    let mut segments = Vec::new();
+
+    segments.push(plugin.plugin_id.clone());
+    segments.push(format!("status={}", plugin.status.as_str()));
+    segments.push(format!("bridge_kind={}", plugin.bridge_kind));
+    segments.push(format!("adapter_family={}", plugin.adapter_family));
+
+    if let Some(transport_family) = &plugin.transport_family {
+        segments.push(format!("transport_family={transport_family}"));
+    }
+
+    if let Some(target_contract) = &plugin.target_contract {
+        segments.push(format!("target_contract={target_contract}"));
+    }
+
+    if let Some(account_scope) = &plugin.account_scope {
+        segments.push(format!("account_scope={account_scope}"));
+    }
+
+    if !plugin.missing_fields.is_empty() {
+        let missing_fields = plugin.missing_fields.join(",");
+        segments.push(format!("missing_fields={missing_fields}"));
+    }
+
+    if !plugin.issues.is_empty() {
+        let issues = plugin.issues.join("|");
+        segments.push(format!("issues={issues}"));
+    }
+
+    segments.join(" ")
 }
 
 fn scoped_doctor_check_name(
@@ -1985,6 +2147,7 @@ fn push_unique_step(steps: &mut Vec<String>, step: String) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
     #[cfg(unix)]
     use std::ffi::OsString;
     use std::fs::Permissions;
@@ -2016,6 +2179,67 @@ mod tests {
         ));
         std::fs::create_dir_all(&temp_dir).expect("create browser companion temp dir");
         temp_dir
+    }
+
+    fn managed_bridge_manifest(
+        channel_id: &str,
+        setup_surface: Option<&str>,
+        metadata: BTreeMap<String, String>,
+    ) -> kernel::PluginManifest {
+        let setup = setup_surface.map(|surface| kernel::PluginSetup {
+            mode: kernel::PluginSetupMode::MetadataOnly,
+            surface: Some(surface.to_owned()),
+            required_env_vars: Vec::new(),
+            recommended_env_vars: Vec::new(),
+            required_config_keys: Vec::new(),
+            default_env_var: None,
+            docs_urls: Vec::new(),
+            remediation: None,
+        });
+
+        kernel::PluginManifest {
+            plugin_id: format!("{channel_id}-managed-bridge"),
+            provider_id: format!("{channel_id}-provider"),
+            connector_name: format!("{channel_id}-connector"),
+            channel_id: Some(channel_id.to_owned()),
+            endpoint: Some("http://127.0.0.1:9999/invoke".to_owned()),
+            capabilities: BTreeSet::new(),
+            metadata,
+            summary: None,
+            tags: Vec::new(),
+            input_examples: Vec::new(),
+            output_examples: Vec::new(),
+            defer_loading: false,
+            setup,
+        }
+    }
+
+    fn compatible_managed_bridge_metadata(
+        transport_family: &str,
+        target_contract: &str,
+    ) -> BTreeMap<String, String> {
+        let mut metadata = BTreeMap::new();
+
+        metadata.insert("adapter_family".to_owned(), "channel-bridge".to_owned());
+        metadata.insert("transport_family".to_owned(), transport_family.to_owned());
+        metadata.insert("target_contract".to_owned(), target_contract.to_owned());
+
+        metadata
+    }
+
+    fn write_managed_bridge_manifest(
+        install_root: &Path,
+        directory_name: &str,
+        manifest: &kernel::PluginManifest,
+    ) {
+        let plugin_directory = install_root.join(directory_name);
+        let manifest_path = plugin_directory.join("loongclaw.plugin.json");
+        let encoded_manifest =
+            serde_json::to_string_pretty(manifest).expect("serialize managed bridge manifest");
+
+        std::fs::create_dir_all(&plugin_directory).expect("create managed bridge plugin directory");
+        std::fs::write(&manifest_path, encoded_manifest)
+            .expect("write managed bridge plugin manifest");
     }
 
     #[cfg(unix)]
@@ -2224,6 +2448,84 @@ mod tests {
         }));
         assert!(checks.iter().any(|check| {
             check.name == "onebot bridge serve contract" && check.level == DoctorCheckLevel::Pass
+        }));
+    }
+
+    #[test]
+    fn check_channel_surfaces_reports_managed_bridge_discovery_for_compatible_plugins() {
+        let install_root = browser_companion_temp_dir("managed-bridge-compatible");
+        let manifest = managed_bridge_manifest(
+            "weixin",
+            Some("channel"),
+            compatible_managed_bridge_metadata("wechat_clawbot_ilink_bridge", "weixin_reply_loop"),
+        );
+        let mut config: mvp::config::LoongClawConfig = serde_json::from_value(serde_json::json!({
+            "weixin": {
+                "enabled": true,
+                "bridge_url": "https://bridge.example.test/weixin",
+                "bridge_access_token": "weixin-token",
+                "allowed_contact_ids": ["wxid_alice"]
+            }
+        }))
+        .expect("deserialize weixin config");
+
+        write_managed_bridge_manifest(install_root.as_path(), "weixin-managed-bridge", &manifest);
+
+        config.external_skills.install_root = Some(install_root.display().to_string());
+
+        let checks = check_channel_surfaces(&config);
+
+        assert!(checks.iter().any(|check| {
+            check.name == "weixin bridge send contract" && check.level == DoctorCheckLevel::Pass
+        }));
+        assert!(checks.iter().any(|check| {
+            check.name == "weixin managed bridge discovery"
+                && check.level == DoctorCheckLevel::Pass
+                && check.detail.contains("compatible=1")
+                && check.detail.contains("weixin-managed-bridge")
+        }));
+    }
+
+    #[test]
+    fn check_channel_surfaces_warns_when_managed_bridge_discovery_only_finds_incomplete_plugins() {
+        let install_root = browser_companion_temp_dir("managed-bridge-incomplete");
+        let mut metadata = compatible_managed_bridge_metadata(
+            "qq_official_bot_gateway_or_plugin_bridge",
+            "qqbot_reply_loop",
+        );
+        let removed_transport_family = metadata.remove("transport_family");
+        let manifest = managed_bridge_manifest("qqbot", Some("channel"), metadata);
+        let mut config: mvp::config::LoongClawConfig = serde_json::from_value(serde_json::json!({
+            "qqbot": {
+                "enabled": true,
+                "app_id": "10001",
+                "client_secret": "qqbot-secret",
+                "allowed_peer_ids": ["openid-alice"]
+            }
+        }))
+        .expect("deserialize qqbot config");
+
+        assert_eq!(
+            removed_transport_family.as_deref(),
+            Some("qq_official_bot_gateway_or_plugin_bridge")
+        );
+
+        write_managed_bridge_manifest(install_root.as_path(), "qqbot-incomplete-bridge", &manifest);
+
+        config.external_skills.install_root = Some(install_root.display().to_string());
+
+        let checks = check_channel_surfaces(&config);
+
+        assert!(checks.iter().any(|check| {
+            check.name == "qqbot bridge serve contract" && check.level == DoctorCheckLevel::Pass
+        }));
+        assert!(checks.iter().any(|check| {
+            check.name == "qqbot managed bridge discovery"
+                && check.level == DoctorCheckLevel::Warn
+                && check.detail.contains("incomplete=1")
+                && check
+                    .detail
+                    .contains("missing_fields=metadata.transport_family")
         }));
     }
 
