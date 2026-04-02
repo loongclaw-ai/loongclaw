@@ -152,7 +152,7 @@ pub fn sign_security_scan_profile_for_test(profile: &SecurityScanProfile) -> (St
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -174,8 +174,7 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct ForbiddenAliasScope {
-        module_aliases: BTreeSet<String>,
-        scoped_env_aliases: BTreeSet<String>,
+        imported_bindings: BTreeMap<String, Vec<String>>,
         scoped_env_visible_from_glob_import: bool,
     }
 
@@ -220,17 +219,59 @@ mod tests {
                 .expect("daemon source guard scope should exist")
         }
 
-        fn record_alias(&mut self, alias: String, kind: ForbiddenImportKind) {
+        fn record_alias(&mut self, alias: String, imported_path: Vec<String>) {
             let current_scope = self.current_scope_mut();
+            current_scope.imported_bindings.insert(alias, imported_path);
+        }
 
-            match kind {
-                ForbiddenImportKind::Module => {
-                    current_scope.module_aliases.insert(alias);
-                }
-                ForbiddenImportKind::ScopedEnv => {
-                    current_scope.scoped_env_aliases.insert(alias);
+        fn lookup_alias(&self, alias: &str) -> Option<Vec<String>> {
+            for scope in self.alias_scopes.iter().rev() {
+                let imported_path = scope.imported_bindings.get(alias);
+
+                if let Some(imported_path) = imported_path {
+                    return Some(imported_path.clone());
                 }
             }
+
+            None
+        }
+
+        fn resolve_path_aliases(&self, path_segments: &[String]) -> Vec<String> {
+            let mut resolved_segments = path_segments.to_vec();
+            let mut seen_paths = BTreeSet::new();
+
+            loop {
+                let inserted_new_path = seen_paths.insert(resolved_segments.clone());
+                let already_saw_path = !inserted_new_path;
+
+                if already_saw_path {
+                    break;
+                }
+
+                let first_segment = match resolved_segments.first() {
+                    Some(first_segment) => first_segment,
+                    None => break,
+                };
+                let imported_path = match self.lookup_alias(first_segment) {
+                    Some(imported_path) => imported_path,
+                    None => break,
+                };
+                let mut expanded_segments = imported_path;
+
+                for tail_segment in resolved_segments.iter().skip(1) {
+                    expanded_segments.push(tail_segment.clone());
+                }
+
+                let expansion_changed = expanded_segments != resolved_segments;
+
+                if !expansion_changed {
+                    break;
+                }
+
+                resolved_segments = expanded_segments;
+            }
+
+            resolved_segments
         }
 
         fn record_glob_import(&mut self, kind: ForbiddenImportKind) {
@@ -268,17 +309,12 @@ mod tests {
                 return true;
             }
 
-            let first_segment = match path_segments.first() {
-                Some(first_segment) => first_segment,
-                None => return false,
-            };
+            let resolved_path_segments = self.resolve_path_aliases(&path_segments);
+            let uses_resolved_path =
+                path_contains_forbidden_scoped_env_path(&resolved_path_segments);
 
-            for scope in self.alias_scopes.iter().rev() {
-                let uses_scoped_env_alias = scope.scoped_env_aliases.contains(first_segment);
-
-                if uses_scoped_env_alias {
-                    return true;
-                }
+            if uses_resolved_path {
+                return true;
             }
 
             let uses_glob_visible_scoped_env =
@@ -292,24 +328,6 @@ mod tests {
                     if scoped_env_visible_from_glob_import {
                         return true;
                     }
-                }
-            }
-
-            let second_segment = match path_segments.get(1) {
-                Some(second_segment) => second_segment,
-                None => return false,
-            };
-            let uses_module_alias_scoped_env = second_segment == "ScopedEnv";
-
-            if !uses_module_alias_scoped_env {
-                return false;
-            }
-
-            for scope in self.alias_scopes.iter().rev() {
-                let uses_module_alias = scope.module_aliases.contains(first_segment);
-
-                if uses_module_alias {
-                    return true;
                 }
             }
 
@@ -337,7 +355,8 @@ mod tests {
                 }
                 syn::UseTree::Glob(_) => {
                     let imported_path = prefix.clone();
-                    let import_kind = forbidden_import_kind_for_use_path(&imported_path);
+                    let resolved_imported_path = self.resolve_path_aliases(&imported_path);
+                    let import_kind = forbidden_import_kind_for_use_path(&resolved_imported_path);
 
                     if let Some(import_kind) = import_kind {
                         self.record_glob_import(import_kind);
@@ -352,11 +371,18 @@ mod tests {
         }
 
         fn record_import_path(&mut self, imported_path: Vec<String>, alias: Option<String>) {
-            let import_kind = forbidden_import_kind_for_use_path(&imported_path);
+            let alias_name = match alias {
+                Some(alias_name) => alias_name,
+                None => imported_binding_name(&imported_path),
+            };
+            let resolved_imported_path = self.resolve_path_aliases(&imported_path);
+            let import_kind = forbidden_import_kind_for_use_path(&resolved_imported_path);
+
+            self.record_alias(alias_name, resolved_imported_path);
+
             let Some(import_kind) = import_kind else {
                 return;
             };
-
             let should_mark_forbidden_reference = match import_kind {
                 ForbiddenImportKind::Module => false,
                 ForbiddenImportKind::ScopedEnv => true,
@@ -365,12 +391,6 @@ mod tests {
             if should_mark_forbidden_reference {
                 self.mark_forbidden_reference();
             }
-
-            let alias_name = match alias {
-                Some(alias_name) => alias_name,
-                None => imported_binding_name(&imported_path),
-            };
-            self.record_alias(alias_name, import_kind);
         }
     }
 
@@ -731,6 +751,66 @@ mod tests {
         assert!(
             daemon_source_uses_forbidden_env_guard(sample_source),
             "daemon source guard should flag aliases to forbidden scoped env items"
+        );
+    }
+
+    #[test]
+    fn daemon_source_guard_flags_alias_to_forbidden_mvp_root_module() {
+        let sample_source = r#"
+            use crate::mvp as app_side;
+
+            fn build_guard() {
+                let mut env = app_side::test_support::ScopedEnv::new();
+                drop(env);
+            }
+        "#;
+
+        assert!(
+            daemon_source_uses_forbidden_env_guard(sample_source),
+            "daemon source guard should flag aliases to the forbidden mvp root module"
+        );
+    }
+
+    #[test]
+    fn daemon_source_guard_flags_alias_to_forbidden_app_root_module() {
+        let sample_source = r#"
+            use loongclaw_app as app_side;
+
+            fn build_guard() {
+                let mut env = app_side::test_support::ScopedEnv::new();
+                drop(env);
+            }
+        "#;
+
+        assert!(
+            daemon_source_uses_forbidden_env_guard(sample_source),
+            "daemon source guard should flag aliases to the forbidden app root module"
+        );
+    }
+
+    #[test]
+    fn daemon_source_guard_flags_long_alias_chain_to_forbidden_root_module() {
+        let sample_source = r#"
+            use crate::mvp as app_side_0;
+            use app_side_0 as app_side_1;
+            use app_side_1 as app_side_2;
+            use app_side_2 as app_side_3;
+            use app_side_3 as app_side_4;
+            use app_side_4 as app_side_5;
+            use app_side_5 as app_side_6;
+            use app_side_6 as app_side_7;
+            use app_side_7 as app_side_8;
+            use app_side_8 as app_side_9;
+
+            fn build_guard() {
+                let mut env = app_side_9::test_support::ScopedEnv::new();
+                drop(env);
+            }
+        "#;
+
+        assert!(
+            daemon_source_uses_forbidden_env_guard(sample_source),
+            "daemon source guard should flag long alias chains that still resolve to the forbidden root module"
         );
     }
 
