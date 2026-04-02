@@ -57,7 +57,7 @@ pub use ingress::{
     ConversationIngressPrivateContext,
 };
 pub use lane_arbiter::{ExecutionLane, LaneArbiterPolicy, LaneDecision};
-pub use prompt_fragments::{PromptFragment, PromptLane};
+pub use prompt_fragments::{PromptFragment, PromptLane, PromptRenderPolicy};
 pub use prompt_orchestrator::{PromptCompilation, PromptCompiler};
 #[allow(unused_imports)]
 pub use runtime::{

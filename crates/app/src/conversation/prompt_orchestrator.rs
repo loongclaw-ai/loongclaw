@@ -9,6 +9,7 @@ use super::context_engine::ContextArtifactKind;
 use super::context_engine::ToolOutputStreamingPolicy;
 use super::prompt_fragments::PromptFragment;
 use super::prompt_fragments::PromptLane;
+use super::prompt_fragments::PromptRenderPolicy;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PromptCompilation {
@@ -86,12 +87,27 @@ fn render_system_text(fragments: &[PromptFragment]) -> String {
     let mut sections = Vec::new();
 
     for fragment in fragments {
-        let section = fragment.content.clone();
+        let section = render_fragment_content(fragment);
 
         sections.push(section);
     }
 
     sections.join("\n\n")
+}
+
+fn render_fragment_content(fragment: &PromptFragment) -> String {
+    let content = fragment.content.as_str();
+    let render_policy = fragment.render_policy;
+
+    match render_policy {
+        PromptRenderPolicy::TrustedLiteral => content.to_owned(),
+        PromptRenderPolicy::GovernedAdvisory {
+            allowed_root_headings,
+        } => crate::advisory_prompt::demote_governed_advisory_headings_with_allowed_roots(
+            content,
+            allowed_root_headings,
+        ),
+    }
 }
 
 fn build_artifacts(fragments: &[PromptFragment]) -> Vec<ContextArtifactDescriptor> {

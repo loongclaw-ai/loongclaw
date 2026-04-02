@@ -26,12 +26,21 @@ impl PromptLane {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptRenderPolicy {
+    TrustedLiteral,
+    GovernedAdvisory {
+        allowed_root_headings: &'static [&'static str],
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptFragment {
     pub fragment_id: String,
     pub lane: PromptLane,
     pub source_id: &'static str,
     pub content: String,
+    pub render_policy: PromptRenderPolicy,
     pub artifact_kind: ContextArtifactKind,
     pub maskable: bool,
     pub cacheable: bool,
@@ -49,12 +58,14 @@ impl PromptFragment {
     ) -> Self {
         let fragment_id = fragment_id.into();
         let content = content.into();
+        let render_policy = PromptRenderPolicy::TrustedLiteral;
 
         Self {
             fragment_id,
             lane,
             source_id,
             content,
+            render_policy,
             artifact_kind,
             maskable: false,
             cacheable: false,
@@ -80,6 +91,12 @@ impl PromptFragment {
     #[must_use]
     pub fn with_cacheable(mut self, cacheable: bool) -> Self {
         self.cacheable = cacheable;
+        self
+    }
+
+    #[must_use]
+    pub fn with_render_policy(mut self, render_policy: PromptRenderPolicy) -> Self {
+        self.render_policy = render_policy;
         self
     }
 

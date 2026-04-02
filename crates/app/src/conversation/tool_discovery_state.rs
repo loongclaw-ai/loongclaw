@@ -123,19 +123,23 @@ impl ToolDiscoveryState {
         );
 
         if let Some(query) = self.query.as_deref() {
-            let rendered_query = render_tool_discovery_advisory_text(query);
+            let rendered_query =
+                crate::advisory_prompt::render_governed_advisory_inline_value(query);
             sections.push(format!("Latest search query: {rendered_query}"));
         }
 
         if let Some(exact_tool_id) = self.exact_tool_id.as_deref() {
-            let rendered_exact_tool_id = render_tool_discovery_advisory_text(exact_tool_id);
+            let rendered_exact_tool_id =
+                crate::advisory_prompt::render_governed_advisory_inline_value(exact_tool_id);
             sections.push(format!(
                 "Latest exact refresh target: {rendered_exact_tool_id}"
             ));
         }
 
         if let Some(diagnostics) = self.diagnostics.as_ref() {
-            let rendered_reason = render_tool_discovery_advisory_text(diagnostics.reason.as_str());
+            let rendered_reason = crate::advisory_prompt::render_governed_advisory_inline_value(
+                diagnostics.reason.as_str(),
+            );
             sections.push(format!("Latest discovery diagnostics: {}", rendered_reason));
         }
 
@@ -153,24 +157,32 @@ impl ToolDiscoveryState {
             .iter()
             .take(MAX_RENDERED_TOOL_DISCOVERY_ENTRIES);
         for entry in entries_to_render {
-            let rendered_tool_id = render_tool_discovery_advisory_text(entry.tool_id.as_str());
-            let rendered_summary = render_tool_discovery_advisory_text(entry.summary.as_str());
+            let rendered_tool_id = crate::advisory_prompt::render_governed_advisory_inline_value(
+                entry.tool_id.as_str(),
+            );
+            let rendered_summary = crate::advisory_prompt::render_governed_advisory_inline_value(
+                entry.summary.as_str(),
+            );
 
             entry_lines.push(format!("- {rendered_tool_id}: {rendered_summary}"));
 
             if let Some(search_hint) = entry.search_hint.as_deref() {
-                let rendered_search_hint = render_tool_discovery_advisory_text(search_hint);
+                let rendered_search_hint =
+                    crate::advisory_prompt::render_governed_advisory_inline_value(search_hint);
                 entry_lines.push(format!("  search_hint: {rendered_search_hint}"));
             }
 
             if let Some(argument_hint) = entry.argument_hint.as_deref() {
-                let rendered_argument_hint = render_tool_discovery_advisory_text(argument_hint);
+                let rendered_argument_hint =
+                    crate::advisory_prompt::render_governed_advisory_inline_value(argument_hint);
                 entry_lines.push(format!("  argument_hint: {rendered_argument_hint}"));
             }
 
             if !entry.required_fields.is_empty() {
-                let required_fields =
-                    render_tool_discovery_advisory_list(entry.required_fields.as_slice(), ", ");
+                let required_fields = crate::advisory_prompt::render_governed_advisory_inline_list(
+                    entry.required_fields.as_slice(),
+                    ", ",
+                );
                 entry_lines.push(format!("  required_fields: {required_fields}"));
             }
 
@@ -181,7 +193,9 @@ impl ToolDiscoveryState {
             }
 
             let rendered_refresh_tool_id =
-                render_tool_discovery_advisory_text(entry.tool_id.as_str());
+                crate::advisory_prompt::render_governed_advisory_inline_value(
+                    entry.tool_id.as_str(),
+                );
             entry_lines.push(format!(
                 "  refresh: tool.search {{ \"exact_tool_id\": {rendered_refresh_tool_id} }}"
             ));
@@ -414,51 +428,16 @@ fn tool_discovery_event_ordering(payload: &Value) -> Option<ToolDiscoveryEventOr
     })
 }
 
-fn render_tool_discovery_advisory_text(value: &str) -> String {
-    let compacted = compact_tool_discovery_advisory_text(value);
-    let encoded = serde_json::to_string(&compacted);
+fn render_tool_discovery_advisory_groups(groups: &[Vec<String>]) -> String {
+    let mut rendered_groups = Vec::new();
 
-    encoded.unwrap_or_else(|_| "\"[tool_discovery_text_unrenderable]\"".to_owned())
-}
-
-fn compact_tool_discovery_advisory_text(value: &str) -> String {
-    let trimmed = value.trim();
-    let mut compacted = String::new();
-    let mut pending_space = false;
-
-    for character in trimmed.chars() {
-        let is_spacing = character.is_whitespace() || character.is_control();
-
-        if is_spacing {
-            pending_space = !compacted.is_empty();
-            continue;
-        }
-
-        if pending_space {
-            compacted.push(' ');
-            pending_space = false;
-        }
-
-        compacted.push(character);
+    for group in groups {
+        let rendered_group =
+            crate::advisory_prompt::render_governed_advisory_inline_list(group.as_slice(), " + ");
+        rendered_groups.push(rendered_group);
     }
 
-    compacted
-}
-
-fn render_tool_discovery_advisory_list(values: &[String], separator: &str) -> String {
-    values
-        .iter()
-        .map(|value| render_tool_discovery_advisory_text(value.as_str()))
-        .collect::<Vec<_>>()
-        .join(separator)
-}
-
-fn render_tool_discovery_advisory_groups(groups: &[Vec<String>]) -> String {
-    groups
-        .iter()
-        .map(|group| render_tool_discovery_advisory_list(group.as_slice(), " + "))
-        .collect::<Vec<_>>()
-        .join(" | ")
+    rendered_groups.join(" | ")
 }
 
 #[cfg(test)]

@@ -10,7 +10,8 @@ use crate::KernelContext;
 use crate::config::LoongClawConfig;
 use crate::conversation::{
     ContextArtifactDescriptor, ContextArtifactKind, PromptCompiler, PromptFragment, PromptLane,
-    ToolOutputStreamingPolicy, latest_tool_discovery_state_from_assistant_contents,
+    PromptRenderPolicy, ToolOutputStreamingPolicy,
+    latest_tool_discovery_state_from_assistant_contents,
 };
 use crate::runtime_identity;
 use crate::runtime_self;
@@ -687,6 +688,9 @@ fn append_hydrated_tool_discovery_prompt_fragment(
         ContextArtifactKind::ToolHint,
     )
     .with_dedupe_key("tool-discovery-delta")
+    .with_render_policy(PromptRenderPolicy::GovernedAdvisory {
+        allowed_root_headings: &[],
+    })
     .with_tool_discovery_state(discovery_state);
 
     prompt_fragments.push(fragment);

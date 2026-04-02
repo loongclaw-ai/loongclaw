@@ -753,6 +753,9 @@ mod tests {
                     ContextArtifactKind::ToolHint,
                 )
                 .with_dedupe_key("tool-discovery-delta")
+                .with_render_policy(crate::conversation::PromptRenderPolicy::GovernedAdvisory {
+                    allowed_root_headings: &[],
+                })
                 .with_tool_discovery_state(discovery_state),
             ],
             system_prompt_addition: None,
@@ -856,6 +859,9 @@ mod tests {
                 ContextArtifactKind::ToolHint,
             )
             .with_dedupe_key("tool-discovery-delta")
+            .with_render_policy(crate::conversation::PromptRenderPolicy::GovernedAdvisory {
+                allowed_root_headings: &[],
+            })
             .with_tool_discovery_state(discovery_state.clone())
         };
         let assembled = AssembledConversationContext {
@@ -1005,6 +1011,9 @@ mod tests {
                     ContextArtifactKind::ToolHint,
                 )
                 .with_dedupe_key("tool-discovery-delta")
+                .with_render_policy(crate::conversation::PromptRenderPolicy::GovernedAdvisory {
+                    allowed_root_headings: &[],
+                })
                 .with_tool_discovery_state(discovery_state),
             ],
             system_prompt_addition: None,
