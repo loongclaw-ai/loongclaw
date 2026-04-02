@@ -152,6 +152,7 @@ pub struct BashExecRuntimePolicy {
     pub command: Option<PathBuf>,
     pub warning: Option<String>,
     pub login_shell: bool,
+    pub governance: BashGovernanceRuntimePolicy,
 }
 
 impl BashExecRuntimePolicy {
@@ -173,6 +174,7 @@ pub(super) fn unavailable_bash_runtime_policy() -> super::runtime_config::BashEx
         command: None,
         warning: Some("bash unavailable; hiding bash.exec from runtime tool surface".to_owned()),
         login_shell: false,
+        governance: super::runtime_config::BashGovernanceRuntimePolicy::default(),
     }
 }
 
@@ -268,6 +270,7 @@ fn runtime_tool_view_includes_bash_exec_when_runtime_is_available() {
         command: Some(std::path::PathBuf::from("bash")),
         warning: None,
         login_shell: false,
+        governance: runtime_config::BashGovernanceRuntimePolicy::default(),
     };
     let view = runtime_tool_view_for_runtime_config(&config);
     assert!(view.contains("bash.exec"));
@@ -306,6 +309,7 @@ fn tool_search_includes_bash_exec_when_runtime_is_available() {
         command: Some(std::path::PathBuf::from("bash")),
         warning: None,
         login_shell: false,
+        governance: runtime_config::BashGovernanceRuntimePolicy::default(),
     };
 
     let outcome = execute_tool_core_with_config(
@@ -518,6 +522,7 @@ fn bash_exec_rejects_blank_command() {
         command: Some(std::path::PathBuf::from("bash")),
         warning: None,
         login_shell: false,
+        governance: runtime_config::BashGovernanceRuntimePolicy::default(),
     };
 
     let error = execute_tool_core_with_config(
@@ -557,6 +562,7 @@ fn bash_exec_reports_failed_status_for_non_zero_exit() {
         command: Some(std::path::PathBuf::from("bash")),
         warning: None,
         login_shell: false,
+        governance: runtime_config::BashGovernanceRuntimePolicy::default(),
     };
 
     let outcome = execute_tool_core_with_config(
@@ -588,6 +594,7 @@ fn bash_exec_runs_command_string_via_bash_runtime() {
         command: Some(std::path::PathBuf::from("bash")),
         warning: None,
         login_shell: false,
+        governance: runtime_config::BashGovernanceRuntimePolicy::default(),
     };
 
     let outcome = execute_tool_core_with_config(
@@ -606,6 +613,8 @@ fn bash_exec_runs_command_string_via_bash_runtime() {
 #[cfg(all(feature = "tool-shell", unix))]
 #[test]
 fn bash_exec_honors_cwd() {
+    use std::path::Path;
+
     let root = unique_temp_dir("loongclaw-bash-exec-cwd");
     let subdir = root.join("subdir");
     std::fs::create_dir_all(&subdir).expect("create subdir");
@@ -616,6 +625,7 @@ fn bash_exec_honors_cwd() {
         command: Some(std::path::PathBuf::from("bash")),
         warning: None,
         login_shell: false,
+        governance: runtime_config::BashGovernanceRuntimePolicy::default(),
     };
 
     let outcome = execute_tool_core_with_config(
@@ -630,8 +640,12 @@ fn bash_exec_honors_cwd() {
     )
     .expect("bash command should succeed");
 
-    let expected = subdir.display().to_string();
-    assert_eq!(outcome.payload["stdout"].as_str(), Some(expected.as_str()));
+    let expected = std::fs::canonicalize(&subdir).expect("canonicalize expected cwd");
+    let stdout = outcome.payload["stdout"]
+        .as_str()
+        .expect("bash.exec should return stdout");
+    let actual = std::fs::canonicalize(Path::new(stdout)).expect("canonicalize actual cwd");
+    assert_eq!(actual, expected);
 }
 
 #[cfg(all(feature = "tool-shell", unix))]
@@ -643,6 +657,7 @@ fn bash_exec_times_out_when_timeout_ms_is_small() {
         command: Some(std::path::PathBuf::from("bash")),
         warning: None,
         login_shell: false,
+        governance: runtime_config::BashGovernanceRuntimePolicy::default(),
     };
 
     let error = execute_tool_core_with_config(
