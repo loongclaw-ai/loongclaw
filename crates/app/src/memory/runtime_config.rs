@@ -301,6 +301,33 @@ mod tests {
     }
 
     #[test]
+    fn runtime_config_from_memory_config_carries_personalization() {
+        let _env = ScopedEnv::new();
+        let default_personalization = PersonalizationConfig::default();
+        let schema_version = default_personalization.schema_version;
+        let personalization = PersonalizationConfig {
+            preferred_name: Some("Chum".to_owned()),
+            response_density: Some(crate::config::ResponseDensity::Balanced),
+            initiative_level: Some(crate::config::InitiativeLevel::AskBeforeActing),
+            standing_boundaries: Some("Ask before destructive actions.".to_owned()),
+            timezone: Some("Asia/Shanghai".to_owned()),
+            locale: Some("zh-CN".to_owned()),
+            prompt_state: crate::config::PersonalizationPromptState::Suppressed,
+            schema_version,
+            updated_at_epoch_seconds: Some(1_775_095_200),
+        };
+        let config = MemoryConfig {
+            personalization: Some(personalization),
+            ..MemoryConfig::default()
+        };
+
+        let runtime = MemoryRuntimeConfig::from_memory_config(&config);
+        let expected_personalization = config.trimmed_personalization();
+
+        assert_eq!(runtime.personalization, expected_personalization);
+    }
+
+    #[test]
     fn hydrated_memory_runtime_config_carries_system_policy() {
         let _env = ScopedEnv::new();
         let config = MemoryConfig {

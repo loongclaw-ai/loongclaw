@@ -5101,7 +5101,7 @@ mod tests {
     }
 
     #[test]
-    fn build_doctor_next_steps_keeps_browser_preview_visible_when_channels_are_enabled() {
+    fn build_doctor_next_steps_prioritizes_personalization_when_channels_are_enabled() {
         let checks = vec![DoctorCheck {
             name: "provider credentials".to_owned(),
             level: DoctorCheckLevel::Pass,

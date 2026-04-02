@@ -24,7 +24,8 @@ down the first-run path or mutating runtime identity authority.
       deferred, suppressed, or rerun explicitly later.
 - [ ] Operators can rerun `loong personalize` to update or clear saved
       preferences, and suppression only persists an advisory do-not-suggest
-      state until the command is run explicitly again.
+      state until operators explicitly rerun and save updated preferences,
+      without erasing already saved preferences.
 - [ ] Persisted personalization state remains advisory and is projected through
       the session-profile lane rather than becoming a second runtime identity
       authority.

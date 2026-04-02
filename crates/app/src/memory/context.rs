@@ -176,18 +176,9 @@ pub fn load_prompt_context(
 ) -> Result<Vec<MemoryContextEntry>, String> {
     let mut entries = Vec::new();
 
-    let profile_section = runtime_identity::render_session_profile_section(
-        config.profile_note.as_deref(),
-        config.personalization.as_ref(),
-    );
-    if matches!(config.mode, MemoryMode::ProfilePlusWindow)
-        && let Some(profile_section) = profile_section
-    {
-        entries.push(MemoryContextEntry {
-            kind: MemoryContextKind::Profile,
-            role: "system".to_owned(),
-            content: profile_section,
-        });
+    let profile_entry = build_profile_entry(config);
+    if let Some(profile_entry) = profile_entry {
+        entries.push(profile_entry);
     }
 
     #[cfg(feature = "memory-sqlite")]
@@ -220,6 +211,24 @@ pub fn load_prompt_context(
     }
 
     Ok(entries)
+}
+
+pub(super) fn build_profile_entry(config: &MemoryRuntimeConfig) -> Option<MemoryContextEntry> {
+    let profile_plus_window_mode = matches!(config.mode, MemoryMode::ProfilePlusWindow);
+    if !profile_plus_window_mode {
+        return None;
+    }
+
+    let profile_note = config.profile_note.as_deref();
+    let personalization = config.personalization.as_ref();
+    let profile_section =
+        runtime_identity::render_session_profile_section(profile_note, personalization)?;
+
+    Some(MemoryContextEntry {
+        kind: MemoryContextKind::Profile,
+        role: "system".to_owned(),
+        content: profile_section,
+    })
 }
 
 #[cfg(test)]
@@ -335,6 +344,8 @@ mod tests {
         let _ = std::fs::create_dir_all(&tmp);
         let db_path = tmp.join("personalization.sqlite3");
         let _ = std::fs::remove_file(&db_path);
+        let default_personalization = crate::config::PersonalizationConfig::default();
+        let schema_version = default_personalization.schema_version;
         let personalization = crate::config::PersonalizationConfig {
             preferred_name: Some("Chum".to_owned()),
             response_density: Some(crate::config::ResponseDensity::Thorough),
@@ -343,7 +354,7 @@ mod tests {
             timezone: Some("Asia/Shanghai".to_owned()),
             locale: None,
             prompt_state: crate::config::PersonalizationPromptState::Configured,
-            schema_version: 1,
+            schema_version,
             updated_at_epoch_seconds: Some(1_775_095_200),
         };
         let config = MemoryRuntimeConfig {
@@ -390,6 +401,8 @@ mod tests {
         let _ = std::fs::create_dir_all(&tmp);
         let db_path = tmp.join("window-only-personalization.sqlite3");
         let _ = std::fs::remove_file(&db_path);
+        let default_personalization = crate::config::PersonalizationConfig::default();
+        let schema_version = default_personalization.schema_version;
         let personalization = crate::config::PersonalizationConfig {
             preferred_name: Some("Chum".to_owned()),
             response_density: Some(crate::config::ResponseDensity::Balanced),
@@ -398,7 +411,7 @@ mod tests {
             timezone: Some("Asia/Shanghai".to_owned()),
             locale: None,
             prompt_state: crate::config::PersonalizationPromptState::Configured,
-            schema_version: 1,
+            schema_version,
             updated_at_epoch_seconds: Some(1_775_095_200),
         };
         let config = MemoryRuntimeConfig {
