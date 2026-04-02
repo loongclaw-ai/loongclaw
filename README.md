@@ -104,6 +104,7 @@ From source:
 ```bash
 # Install the Rust toolchain first if you don't have it
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
 ```
 
 ```bash
