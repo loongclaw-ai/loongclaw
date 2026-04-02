@@ -514,30 +514,18 @@ fn build_suppressed_personalization(
 ) -> mvp::config::PersonalizationConfig {
     let updated_at_epoch_seconds = u64::try_from(now.unix_timestamp()).ok();
     let default_personalization = mvp::config::PersonalizationConfig::default();
-    let schema_version = default_personalization.schema_version;
-    let preserved_personalization = existing_personalization
-        .cloned()
-        .unwrap_or(default_personalization);
+    let preserved_personalization = existing_personalization.cloned();
+    let has_existing_personalization = preserved_personalization.is_some();
+    let mut suppressed_personalization =
+        preserved_personalization.unwrap_or(default_personalization);
 
-    let preferred_name = preserved_personalization.preferred_name;
-    let response_density = preserved_personalization.response_density;
-    let initiative_level = preserved_personalization.initiative_level;
-    let standing_boundaries = preserved_personalization.standing_boundaries;
-    let timezone = preserved_personalization.timezone;
-    let locale = preserved_personalization.locale;
-    let prompt_state = mvp::config::PersonalizationPromptState::Suppressed;
+    suppressed_personalization.prompt_state = mvp::config::PersonalizationPromptState::Suppressed;
 
-    mvp::config::PersonalizationConfig {
-        preferred_name,
-        response_density,
-        initiative_level,
-        standing_boundaries,
-        timezone,
-        locale,
-        prompt_state,
-        schema_version,
-        updated_at_epoch_seconds,
+    if !has_existing_personalization {
+        suppressed_personalization.updated_at_epoch_seconds = updated_at_epoch_seconds;
     }
+
+    suppressed_personalization
 }
 
 fn write_personalization_config(
@@ -814,9 +802,23 @@ mod tests {
     fn personalize_cli_suppress_preserves_existing_preferences() {
         let config_path = unique_config_path("suppress-preserve");
         let config_path_string = config_path.display().to_string();
-        let config = configured_personalize_config_for_tests();
+        let custom_schema_version = personalization_schema_version_for_tests() + 7;
+        let preserved_updated_at_epoch_seconds = Some(1_700_000_000);
+        let personalization = mvp::config::PersonalizationConfig {
+            preferred_name: Some("Chum".to_owned()),
+            response_density: Some(mvp::config::ResponseDensity::Balanced),
+            initiative_level: Some(mvp::config::InitiativeLevel::AskBeforeActing),
+            standing_boundaries: Some("Ask before destructive actions.".to_owned()),
+            timezone: Some("Asia/Shanghai".to_owned()),
+            locale: Some("zh-CN".to_owned()),
+            prompt_state: mvp::config::PersonalizationPromptState::Configured,
+            schema_version: custom_schema_version,
+            updated_at_epoch_seconds: preserved_updated_at_epoch_seconds,
+        };
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.memory.profile = mvp::config::MemoryProfile::ProfilePlusWindow;
+        config.memory.personalization = Some(personalization);
         write_config(&config_path, &config);
-        let expected_schema_version = personalization_schema_version_for_tests();
         let mut ui =
             TestPromptUi::with_inputs(["New Name", "3", "3", "New boundary", "UTC", "en-US", "3"]);
 
@@ -851,10 +853,10 @@ mod tests {
             personalization.prompt_state,
             mvp::config::PersonalizationPromptState::Suppressed
         );
-        assert_eq!(personalization.schema_version, expected_schema_version);
+        assert_eq!(personalization.schema_version, custom_schema_version);
         assert_eq!(
             personalization.updated_at_epoch_seconds,
-            Some(1_775_095_200)
+            preserved_updated_at_epoch_seconds
         );
 
         let _ = std::fs::remove_file(config_path);
