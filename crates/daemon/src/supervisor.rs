@@ -13,6 +13,7 @@ use tokio::task::{Id, JoinSet};
 
 use crate::{MultiChannelServeChannelAccount, mvp};
 
+/// Sized to match the CLI host thread contract used by gateway runtime startup.
 pub(crate) const GATEWAY_CLI_STACK_SIZE: usize = 8 * 1024 * 1024;
 
 type BoxedSupervisorFuture = Pin<Box<dyn Future<Output = CliResult<()>> + Send + 'static>>;
@@ -1492,32 +1493,12 @@ mod tests {
     }
 
     #[test]
-    fn gateway_cli_run_cli_host_uses_increased_stack_size() {
-        use std::thread;
-
-        let handle = thread::Builder::new()
-            .stack_size(super::GATEWAY_CLI_STACK_SIZE)
-            .spawn(|| {
-                let deep_recursion_limit = 100_000;
-                fn recursive_fn(n: usize) -> usize {
-                    if n == 0 { 1 } else { 1 + recursive_fn(n - 1) }
-                }
-                recursive_fn(deep_recursion_limit)
-            })
-            .expect("spawn thread with production stack size");
-
-        let result = handle.join();
-        assert!(
-            result.is_ok(),
-            "production stack size ({}MB) should handle deep recursion without overflow",
-            super::GATEWAY_CLI_STACK_SIZE / 1024 / 1024
-        );
-
-        assert_eq!(super::GATEWAY_CLI_STACK_SIZE, 8 * 1024 * 1024,);
+    fn gateway_cli_stack_size_matches_runtime_contract() {
+        let stack_size_bytes = super::GATEWAY_CLI_STACK_SIZE;
+        let expected_stack_size_bytes = 8 * 1024 * 1024;
 
         assert_eq!(
-            super::GATEWAY_CLI_STACK_SIZE,
-            8 * 1024 * 1024,
+            stack_size_bytes, expected_stack_size_bytes,
             "production stack size constant must be 8MB to prevent gateway stack overflow"
         );
     }

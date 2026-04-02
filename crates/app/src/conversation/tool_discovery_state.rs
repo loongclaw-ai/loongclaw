@@ -6,6 +6,7 @@ use crate::tools::ToolView;
 
 pub(crate) const TOOL_DISCOVERY_REFRESHED_EVENT_NAME: &str = "tool_discovery_refreshed";
 const TOOL_DISCOVERY_SCHEMA_VERSION: u8 = 1;
+const MAX_RENDERED_TOOL_DISCOVERY_ENTRIES: usize = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ToolDiscoveryEntry {
@@ -108,8 +109,6 @@ impl ToolDiscoveryState {
     }
 
     pub(crate) fn render_delta_prompt(&self) -> String {
-        const MAX_ENTRIES: usize = 10;
-
         let mut sections = Vec::new();
         let mut entry_lines = Vec::new();
 
@@ -149,7 +148,10 @@ impl ToolDiscoveryState {
         entry_lines.push("Latest discovered tools:".to_owned());
 
         let total_entries = self.entries.len();
-        let entries_to_render = self.entries.iter().take(MAX_ENTRIES);
+        let entries_to_render = self
+            .entries
+            .iter()
+            .take(MAX_RENDERED_TOOL_DISCOVERY_ENTRIES);
         for entry in entries_to_render {
             let rendered_tool_id = render_tool_discovery_advisory_text(entry.tool_id.as_str());
             let rendered_summary = render_tool_discovery_advisory_text(entry.summary.as_str());
@@ -185,11 +187,13 @@ impl ToolDiscoveryState {
             ));
         }
 
-        if total_entries > MAX_ENTRIES {
-            entry_lines.push(format!(
-                "… {} additional tools omitted. Re-run tool.search with a narrower query or exact_tool_id.",
-                total_entries - MAX_ENTRIES
-            ));
+        if total_entries > MAX_RENDERED_TOOL_DISCOVERY_ENTRIES {
+            let omitted_entry_count = total_entries - MAX_RENDERED_TOOL_DISCOVERY_ENTRIES;
+            let omitted_entries_line = format!(
+                "... {omitted_entry_count} additional tools omitted. Re-run tool.search with a narrower query or exact_tool_id."
+            );
+
+            entry_lines.push(omitted_entries_line);
         }
 
         sections.push(entry_lines.join("\n"));
@@ -818,7 +822,6 @@ mod tests {
 
     #[test]
     fn render_delta_prompt_limits_output_to_prevent_stack_overflow() {
-        const MAX_ENTRIES: usize = 10;
         let many_entries: Vec<ToolDiscoveryEntry> = (0..50)
             .map(|i| ToolDiscoveryEntry {
                 tool_id: format!("tool_{i}"),
@@ -842,6 +845,10 @@ mod tests {
 
         let rendered = state.render_delta_prompt();
         let line_count = rendered.lines().count();
+        let omitted_entry_count = 50 - MAX_RENDERED_TOOL_DISCOVERY_ENTRIES;
+        let omitted_entries_line = format!(
+            "... {omitted_entry_count} additional tools omitted. Re-run tool.search with a narrower query or exact_tool_id."
+        );
 
         assert!(
             line_count <= 100,
@@ -857,17 +864,21 @@ mod tests {
 
         let tool_count = rendered.matches("- \"tool_").count();
         assert!(
-            tool_count <= MAX_ENTRIES,
+            tool_count <= MAX_RENDERED_TOOL_DISCOVERY_ENTRIES,
             "should render at most {} tools, got {}",
-            MAX_ENTRIES,
+            MAX_RENDERED_TOOL_DISCOVERY_ENTRIES,
             tool_count
+        );
+
+        assert!(
+            rendered.contains(omitted_entries_line.as_str()),
+            "should report omitted tools when entries exceed the render limit: {rendered}"
         );
     }
 
     #[test]
     fn render_delta_prompt_renders_exactly_max_entries_boundary() {
-        const MAX_ENTRIES: usize = 10;
-        let entries: Vec<ToolDiscoveryEntry> = (0..MAX_ENTRIES)
+        let entries: Vec<ToolDiscoveryEntry> = (0..MAX_RENDERED_TOOL_DISCOVERY_ENTRIES)
             .map(|i| ToolDiscoveryEntry {
                 tool_id: format!("tool_{i}"),
                 summary: format!("Summary for tool {i}"),
@@ -896,9 +907,14 @@ mod tests {
 
         let tool_count = rendered.matches("- \"tool_").count();
         assert_eq!(
-            tool_count, MAX_ENTRIES,
+            tool_count, MAX_RENDERED_TOOL_DISCOVERY_ENTRIES,
             "should render exactly {} tools when entries equals MAX_ENTRIES, got {}: {}",
-            MAX_ENTRIES, tool_count, rendered
+            MAX_RENDERED_TOOL_DISCOVERY_ENTRIES, tool_count, rendered
+        );
+
+        assert!(
+            !rendered.contains("additional tools omitted"),
+            "should not report omitted tools when entries match the render limit: {rendered}"
         );
     }
 }
