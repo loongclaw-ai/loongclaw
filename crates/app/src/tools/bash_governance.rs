@@ -2,7 +2,7 @@ use super::bash_ast::{
     BashCommandAnalysis, MinimalCommandUnit, UnitClassification, UnitOperator,
     UnsupportedStructureKind, analyze_bash_command,
 };
-use super::bash_rules::{CompiledPrefixRule, PrefixRuleDecision};
+use super::bash_rules::{CompiledPrefixRule, CompiledRuleOrigin, PrefixRuleDecision};
 use super::shell_policy_ext::ShellPolicyDefault;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -272,10 +272,33 @@ fn matching_rule_source(
     argv: &[String],
     decision: PrefixRuleDecision,
 ) -> Option<String> {
+    let lowered_argv = argv
+        .iter()
+        .map(|token| token.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+
     rules
         .iter()
-        .find(|rule| rule.decision == decision && prefix_matches(argv, &rule.prefix))
+        .find(|rule| {
+            let command_tokens = command_tokens_for_rule(rule, argv, &lowered_argv);
+            let decision_matches = rule.decision == decision;
+            let prefix_matches_rule = prefix_matches(command_tokens, &rule.prefix);
+
+            decision_matches && prefix_matches_rule
+        })
         .map(|rule| rule.source.clone())
+}
+
+fn command_tokens_for_rule<'a>(
+    rule: &CompiledPrefixRule,
+    argv: &'a [String],
+    lowered_argv: &'a [String],
+) -> &'a [String] {
+    if rule.origin == CompiledRuleOrigin::LegacyShellCompatibility {
+        return lowered_argv;
+    }
+
+    argv
 }
 
 fn prefix_matches(command: &[String], prefix: &[String]) -> bool {
@@ -457,6 +480,26 @@ mod tests {
             outcome.unit_outcomes[0].decision_source,
             UnitDecisionSource::ExplicitDeny {
                 rule_source: "test:deny:rm".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn legacy_shell_deny_rule_matches_mixed_case_command_name() {
+        let rules = PrefixRuleFixture::rules([CompiledPrefixRule {
+            source: "shell_deny:cargo".to_owned(),
+            prefix: vec!["cargo".to_owned()],
+            decision: PrefixRuleDecision::Deny,
+            origin: CompiledRuleOrigin::LegacyShellCompatibility,
+        }]);
+        let outcome =
+            evaluate_bash_governance_for_test("Cargo publish", rules, ShellPolicyDefault::Allow);
+
+        assert_eq!(outcome.final_decision, FinalGovernanceDecision::Deny);
+        assert_eq!(
+            outcome.unit_outcomes[0].decision_source,
+            UnitDecisionSource::ExplicitDeny {
+                rule_source: "shell_deny:cargo".to_owned(),
             }
         );
     }

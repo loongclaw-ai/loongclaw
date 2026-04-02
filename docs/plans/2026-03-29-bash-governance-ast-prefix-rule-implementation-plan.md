@@ -143,7 +143,7 @@ fn tool_runtime_config_projects_bash_rules_dir_override() {
 
     assert_eq!(
         runtime.bash_exec.governance.rules_dir,
-        std::path::PathBuf::from("/tmp/work/custom/rules")
+        std::path::PathBuf::from("custom/rules")
     );
 }
 ```
