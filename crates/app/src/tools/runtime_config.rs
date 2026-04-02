@@ -356,6 +356,7 @@ fn translate_legacy_shell_rules<'a>(
                 source: format!("{source}:{normalized}"),
                 prefix: vec![normalized],
                 decision,
+                origin: bash_rules::CompiledRuleOrigin::LegacyShellCompatibility,
             })
         })
         .collect()

@@ -22,6 +22,13 @@ pub struct CompiledPrefixRule {
     pub source: String,
     pub prefix: Vec<String>,
     pub decision: PrefixRuleDecision,
+    pub origin: CompiledRuleOrigin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CompiledRuleOrigin {
+    RuleFile,
+    LegacyShellCompatibility,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,16 +58,17 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    compile_rules(commands.into_iter().filter_map(|command| {
+    normalize_compiled_rules(commands.into_iter().filter_map(|command| {
         let normalized = command.as_ref().trim().to_ascii_lowercase();
         if normalized.is_empty() {
             return None;
         }
 
-        Some(PrefixRuleSpec {
+        Some(CompiledPrefixRule {
             source: format!("{source}:{normalized}"),
-            pattern: vec![normalized],
+            prefix: vec![normalized],
             decision,
+            origin: CompiledRuleOrigin::LegacyShellCompatibility,
         })
     }))
 }
@@ -151,7 +159,7 @@ where
 {
     let command: Vec<String> = command
         .into_iter()
-        .map(|token| token.as_ref().trim().to_owned())
+        .map(|token| token.as_ref().to_owned())
         .collect();
     let lowered_command: Vec<String> = command
         .iter()
@@ -193,7 +201,7 @@ fn command_tokens_for_rule<'a>(
 }
 
 fn is_legacy_shell_rule(rule: &CompiledPrefixRule) -> bool {
-    rule.source.starts_with("shell_allow:") || rule.source.starts_with("shell_deny:")
+    rule.origin == CompiledRuleOrigin::LegacyShellCompatibility
 }
 
 fn compile_rules<I>(specs: I) -> Vec<CompiledPrefixRule>
@@ -204,6 +212,7 @@ where
         source: spec.source,
         prefix: spec.pattern,
         decision: spec.decision,
+        origin: CompiledRuleOrigin::RuleFile,
     }))
 }
 
@@ -368,11 +377,13 @@ mod tests {
                     source: "shell_allow:cargo".to_owned(),
                     prefix: vec!["cargo".to_owned()],
                     decision: PrefixRuleDecision::Allow,
+                    origin: CompiledRuleOrigin::LegacyShellCompatibility,
                 },
                 CompiledPrefixRule {
                     source: "shell_allow:git".to_owned(),
                     prefix: vec!["git".to_owned()],
                     decision: PrefixRuleDecision::Allow,
+                    origin: CompiledRuleOrigin::LegacyShellCompatibility,
                 },
             ]
         );
@@ -390,11 +401,13 @@ mod tests {
                     source: "shell_deny:cargo".to_owned(),
                     prefix: vec!["cargo".to_owned()],
                     decision: PrefixRuleDecision::Deny,
+                    origin: CompiledRuleOrigin::LegacyShellCompatibility,
                 },
                 CompiledPrefixRule {
                     source: "shell_deny:git".to_owned(),
                     prefix: vec!["git".to_owned()],
                     decision: PrefixRuleDecision::Deny,
+                    origin: CompiledRuleOrigin::LegacyShellCompatibility,
                 },
             ]
         );
@@ -424,6 +437,29 @@ mod tests {
             Some(PrefixRuleDecision::Allow)
         );
         assert_eq!(evaluate_prefix_rules(&rules, ["cargo", "publish"]), None);
+    }
+
+    #[test]
+    fn prefix_rules_preserve_whitespace_in_command_tokens() {
+        let rules = compile_rules([PrefixRuleSpec {
+            source: "rules:custom".to_owned(),
+            pattern: vec!["cargo".to_owned()],
+            decision: PrefixRuleDecision::Allow,
+        }]);
+
+        assert_eq!(evaluate_prefix_rules(&rules, [" cargo"]), None);
+    }
+
+    #[test]
+    fn rule_file_origin_stays_case_sensitive_even_with_legacy_like_source_prefix() {
+        let rules = [CompiledPrefixRule {
+            source: "shell_allow:corp/00-rules.rules#1".to_owned(),
+            prefix: vec!["Cargo".to_owned()],
+            decision: PrefixRuleDecision::Allow,
+            origin: CompiledRuleOrigin::RuleFile,
+        }];
+
+        assert_eq!(evaluate_prefix_rules(&rules, ["cargo"]), None);
     }
 
     #[test]

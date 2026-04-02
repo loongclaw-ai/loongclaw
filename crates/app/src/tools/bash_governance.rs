@@ -2,7 +2,7 @@ use super::bash_ast::{
     BashCommandAnalysis, MinimalCommandUnit, UnitClassification, UnitOperator,
     UnsupportedStructureKind, analyze_bash_command,
 };
-use super::bash_rules::{CompiledPrefixRule, PrefixRuleDecision};
+use super::bash_rules::{CompiledPrefixRule, CompiledRuleOrigin, PrefixRuleDecision};
 use super::shell_policy_ext::ShellPolicyDefault;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -360,6 +360,7 @@ mod tests {
                 ),
                 prefix: pattern.into_iter().map(str::to_owned).collect(),
                 decision,
+                origin: CompiledRuleOrigin::RuleFile,
             }
         }
     }

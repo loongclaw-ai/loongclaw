@@ -267,6 +267,7 @@ fn runtime_tool_view_includes_bash_exec_when_runtime_is_available() {
         available: true,
         command: Some(std::path::PathBuf::from("bash")),
         warning: None,
+        login_shell: false,
     };
     let view = runtime_tool_view_for_runtime_config(&config);
     assert!(view.contains("bash.exec"));
@@ -304,6 +305,7 @@ fn tool_search_includes_bash_exec_when_runtime_is_available() {
         available: true,
         command: Some(std::path::PathBuf::from("bash")),
         warning: None,
+        login_shell: false,
     };
 
     let outcome = execute_tool_core_with_config(
@@ -515,6 +517,7 @@ fn bash_exec_rejects_blank_command() {
         available: true,
         command: Some(std::path::PathBuf::from("bash")),
         warning: None,
+        login_shell: false,
     };
 
     let error = execute_tool_core_with_config(
@@ -553,6 +556,7 @@ fn bash_exec_reports_failed_status_for_non_zero_exit() {
         available: true,
         command: Some(std::path::PathBuf::from("bash")),
         warning: None,
+        login_shell: false,
     };
 
     let outcome = execute_tool_core_with_config(
@@ -583,6 +587,7 @@ fn bash_exec_runs_command_string_via_bash_runtime() {
         available: true,
         command: Some(std::path::PathBuf::from("bash")),
         warning: None,
+        login_shell: false,
     };
 
     let outcome = execute_tool_core_with_config(
@@ -610,6 +615,7 @@ fn bash_exec_honors_cwd() {
         available: true,
         command: Some(std::path::PathBuf::from("bash")),
         warning: None,
+        login_shell: false,
     };
 
     let outcome = execute_tool_core_with_config(
@@ -636,6 +642,7 @@ fn bash_exec_times_out_when_timeout_ms_is_small() {
         available: true,
         command: Some(std::path::PathBuf::from("bash")),
         warning: None,
+        login_shell: false,
     };
 
     let error = execute_tool_core_with_config(

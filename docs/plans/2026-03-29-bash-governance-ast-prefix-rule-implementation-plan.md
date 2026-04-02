@@ -187,7 +187,7 @@ Run:
 
 - `cargo test -p loongclaw-app tool_config_parses_bash_rules_dir_override --lib -- --exact --nocapture`
 - `cargo test -p loongclaw-app bash_tool_config_defaults_to_no_explicit_rules_dir --lib -- --exact --nocapture`
-- `cargo test -p loongclaw-app tool_runtime_config_uses_default_workspace_rules_dir_when_unset --lib -- --exact --nocapture`
+- `cargo test -p loongclaw-app tool_runtime_config_uses_default_home_rules_dir_when_unset --lib -- --exact --nocapture`
 - `cargo test -p loongclaw-app tool_runtime_config_projects_bash_rules_dir_override --lib -- --exact --nocapture`
 - `cargo test -p loongclaw-app bash_governance_runtime_treats_missing_rules_dir_as_empty_rule_set --lib -- --exact --nocapture`
 - `cargo test -p loongclaw-app bash_governance_runtime_preserves_rule_load_error_for_broken_rule_file --lib -- --exact --nocapture`
@@ -294,26 +294,26 @@ Add tests to `crates/app/src/tools/bash_rules.rs`:
 #[test]
 fn shell_allow_entries_translate_to_single_token_allow_prefix_rules() {
     let rules = compile_compatibility_rules(
-        &std::collections::BTreeSet::from(["cargo".to_owned()]),
-        &std::collections::BTreeSet::new(),
-    )
-    .expect("compat rules");
+        "shell_allow",
+        PrefixRuleDecision::Allow,
+        ["cargo"],
+    );
 
     assert!(rules.iter().any(|rule| {
-        rule.decision == PrefixRuleDecision::Allow && rule.pattern == vec!["cargo".to_owned()]
+        rule.decision == PrefixRuleDecision::Allow && rule.prefix == vec!["cargo".to_owned()]
     }));
 }
 
 #[test]
 fn shell_deny_entries_translate_to_single_token_deny_prefix_rules() {
     let rules = compile_compatibility_rules(
-        &std::collections::BTreeSet::new(),
-        &std::collections::BTreeSet::from(["rm".to_owned()]),
-    )
-    .expect("compat rules");
+        "shell_deny",
+        PrefixRuleDecision::Deny,
+        ["rm"],
+    );
 
     assert!(rules.iter().any(|rule| {
-        rule.decision == PrefixRuleDecision::Deny && rule.pattern == vec!["rm".to_owned()]
+        rule.decision == PrefixRuleDecision::Deny && rule.prefix == vec!["rm".to_owned()]
     }));
 }
 ```
@@ -340,17 +340,24 @@ fn rules_dir_loads_rule_files_in_stable_lexical_order() {
     .expect("write rule");
 
     let loaded = load_rules_from_dir(&rules_dir).expect("load rules");
-    assert_eq!(loaded[0].pattern, vec!["cargo".to_owned(), "publish".to_owned()]);
-    assert_eq!(loaded[1].pattern, vec!["cargo".to_owned(), "test".to_owned()]);
+    assert_eq!(loaded[0].prefix, vec!["cargo".to_owned(), "publish".to_owned()]);
+    assert_eq!(loaded[1].prefix, vec!["cargo".to_owned(), "test".to_owned()]);
 }
 
 #[test]
 fn same_decision_duplicate_rules_can_be_normalized_away() {
-    let compiled = compile_rules(vec![
-        PrefixRuleSpec::allow(vec!["cargo".to_owned(), "test".to_owned()]),
-        PrefixRuleSpec::allow(vec!["cargo".to_owned(), "test".to_owned()]),
-    ])
-    .expect("compile rules");
+    let compiled = compile_rules([
+        PrefixRuleSpec {
+            source: "first".to_owned(),
+            pattern: vec!["cargo".to_owned(), "test".to_owned()],
+            decision: PrefixRuleDecision::Allow,
+        },
+        PrefixRuleSpec {
+            source: "second".to_owned(),
+            pattern: vec!["cargo".to_owned(), "test".to_owned()],
+            decision: PrefixRuleDecision::Allow,
+        },
+    ]);
 
     assert_eq!(compiled.len(), 1);
 }
@@ -363,14 +370,18 @@ Add tests:
 ```rust
 #[test]
 fn deny_precedence_holds_even_when_allow_and_deny_come_from_different_sources() {
-    let explicit = vec![PrefixRuleSpec::allow(vec!["cargo".to_owned(), "publish".to_owned()])];
+    let explicit = compile_rules([PrefixRuleSpec {
+        source: "explicit".to_owned(),
+        pattern: vec!["cargo".to_owned(), "publish".to_owned()],
+        decision: PrefixRuleDecision::Allow,
+    }]);
     let compat = compile_compatibility_rules(
-        &std::collections::BTreeSet::new(),
-        &std::collections::BTreeSet::from(["cargo".to_owned()]),
-    )
-    .expect("compat rules");
+        "shell_deny",
+        PrefixRuleDecision::Deny,
+        ["cargo"],
+    );
 
-    let compiled = merge_rule_sources(explicit, compat).expect("merge");
+    let compiled = merge_rule_sources(explicit, compat);
     let decision = evaluate_prefix_rules(
         &compiled,
         &["cargo".to_owned(), "publish".to_owned()],
