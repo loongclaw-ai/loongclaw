@@ -67,7 +67,7 @@ LoongClaw 今天已经不只是一个可运行的助手入口。
 - **🌱 你希望运行时能跟团队一起长**：它想支撑更长期的团队工作流，而不是停在单机 prompt loop。
 
 如果你想读更完整的公开定位和产品立场，可以看
-[Why LoongClaw](site/reference/why-loongclaw.mdx)。
+[LoongClaw 的缘起与定位](site/reference/why-loongclaw.mdx)。
 
 ## 赞助商
 
@@ -147,10 +147,10 @@ api_key = { env = "OPENAI_API_KEY" }
 | 如果你需要…… | 从这里开始 |
 | --- | --- |
 | 先尽快得到第一条有效结果 | `onboard`、`ask`、`chat`、`doctor` |
-| 想直接跟着一条完整的 provider + channel 路径走 | [Common Setups](site/use-loongclaw/common-setups.mdx) 与其下对应的 playbook 页面 |
-| 不靠猜测完成 provider / model 选择 | `onboard`、`list-models`、[Providers And Models](site/use-loongclaw/providers-and-models.mdx) 以及 [Provider Recipes](site/use-loongclaw/provider-recipes.mdx) |
-| 增加交付接入面，但不把支持范围说大 | [Channels](site/use-loongclaw/channels.mdx)、[Gateway And Supervision](site/use-loongclaw/gateway-and-supervision.mdx)、[Channel Recipes](site/use-loongclaw/channel-recipes.mdx) 与完整的 [Channel Setup](docs/product-specs/channel-setup.md) 说明 |
-| 理解当前 runtime surface 以及受治理的扩展边界 | [Use LoongClaw](site/use-loongclaw/overview.mdx)、[Tools And Memory](site/use-loongclaw/tools-and-memory.mdx)、[ARCHITECTURE.md](ARCHITECTURE.md)、[Contributing](CONTRIBUTING.md) |
+| 想直接跟着一条完整的 provider + channel 路径走 | [常见路线](site/use-loongclaw/common-setups.mdx) 与其下对应的 playbook 页面 |
+| 不靠猜测完成 provider / model 选择 | `onboard`、`list-models`、[Provider 与 Model 选择](site/use-loongclaw/providers-and-models.mdx) 以及 [Provider 路线示例](site/use-loongclaw/provider-recipes.mdx) |
+| 增加交付接入面，但不把支持范围说大 | [接入面选择](site/use-loongclaw/channels.mdx)、[Gateway 与监督](site/use-loongclaw/gateway-and-supervision.mdx)、[Channel 路线示例](site/use-loongclaw/channel-recipes.mdx) 与完整的 [Channel Setup](docs/product-specs/channel-setup.md) 说明 |
+| 理解当前 runtime surface 以及受治理的扩展边界 | [使用 LoongClaw](site/use-loongclaw/overview.mdx)、[工具与记忆](site/use-loongclaw/tools-and-memory.mdx)、[ARCHITECTURE.md](ARCHITECTURE.md)、[参与贡献](CONTRIBUTING.md) |
 
 <a id="documentation"></a>
 ## 文档入口
@@ -163,17 +163,17 @@ api_key = { env = "OPENAI_API_KEY" }
 
 | 如果你想…… | 从这里开始 |
 | --- | --- |
-| 快速拿到第一条有效结果 | [Get Started](site/get-started/overview.mdx) |
-| 理解项目为什么存在，以及它背后的产品立场 | [Why LoongClaw](site/reference/why-loongclaw.mdx) |
-| 不自己拼接文档，直接跟一条完整 rollout path 走 | [Common Setups](site/use-loongclaw/common-setups.mdx) |
-| 先理解共享的公开配置形态 | [Configuration Patterns](site/use-loongclaw/configuration-patterns.mdx) |
-| 直接看 provider / channel 的实操路径 | [Provider Guides](site/use-loongclaw/provider-guides/index.mdx)、[Provider Recipes](site/use-loongclaw/provider-recipes.mdx)、[Channel Guides](site/use-loongclaw/channel-guides/index.mdx) 与 [Channel Recipes](site/use-loongclaw/channel-recipes.mdx) |
-| 理解当前操作者模型 | [Use LoongClaw](site/use-loongclaw/overview.mdx) |
-| 评估架构与扩展边界 | [Build On LoongClaw](site/build-on-loongclaw/overview.mdx) |
-| 查看路线、策略、可靠性与发布信息 | [Reference](site/reference/overview.mdx) |
+| 快速拿到第一条有效结果 | [快速上手](site/get-started/overview.mdx) |
+| 理解项目为什么存在，以及它背后的产品立场 | [LoongClaw 的缘起与定位](site/reference/why-loongclaw.mdx) |
+| 不自己拼接文档，直接跟一条完整 rollout path 走 | [常见路线](site/use-loongclaw/common-setups.mdx) |
+| 先理解共享的公开配置形态 | [配置模式](site/use-loongclaw/configuration-patterns.mdx) |
+| 直接看 provider / channel 的实操路径 | [Provider 指南](site/use-loongclaw/provider-guides/index.mdx)、[Provider 路线示例](site/use-loongclaw/provider-recipes.mdx)、[Channel 指南](site/use-loongclaw/channel-guides/index.mdx) 与 [Channel 路线示例](site/use-loongclaw/channel-recipes.mdx) |
+| 理解当前操作者模型 | [使用 LoongClaw](site/use-loongclaw/overview.mdx) |
+| 评估架构与扩展边界 | [扩展 LoongClaw](site/build-on-loongclaw/overview.mdx) |
+| 查看路线、策略、可靠性与发布信息 | [参考资料](site/reference/overview.mdx) |
 | 直接读仓库里的 source-level public contract | [ARCHITECTURE.md](ARCHITECTURE.md)、[Channel Setup](docs/product-specs/channel-setup.md)、[Roadmap](docs/ROADMAP.md) 与 [Reliability](docs/RELIABILITY.md) |
 
-如果你是直接在仓库里读源码文档，建议先从 [Docs Overview](site/index.mdx) 开始。
+如果你是直接在仓库里读源码文档，建议先从 [文档总览](site/index.mdx) 开始。
 
 <a id="architecture"></a>
 ## 架构速览
