@@ -102,6 +102,11 @@ pwsh $script -Onboard
 From source:
 
 ```bash
+# Install the Rust toolchain first if you don't have it
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+```bash
 bash scripts/install.sh --source --onboard
 ```
 

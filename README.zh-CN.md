@@ -102,6 +102,11 @@ pwsh $script -Onboard
 从源码安装：
 
 ```bash
+# 如果没有安装 Rust 工具链，先执行
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+```bash
 bash scripts/install.sh --source --onboard
 ```
 
