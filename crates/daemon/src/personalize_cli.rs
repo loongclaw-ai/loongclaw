@@ -35,7 +35,6 @@ pub(crate) enum PersonalizeCliOutcome {
     Saved { upgraded_memory_profile: bool },
     Skipped,
     Suppressed,
-    SkippedMemoryProfileUpgrade,
 }
 
 pub fn run_personalize_cli(config_path: Option<&str>) -> CliResult<()> {
@@ -423,6 +422,7 @@ fn save_personalization(
     }
 
     let mut upgraded_memory_profile = false;
+    let mut declined_memory_profile_upgrade = false;
     let needs_memory_profile_upgrade =
         config.memory.profile != mvp::config::MemoryProfile::ProfilePlusWindow;
     if needs_memory_profile_upgrade {
@@ -430,12 +430,12 @@ fn save_personalization(
             "Upgrade memory profile to profile_plus_window so these preferences surface in Session Profile?",
             true,
         )?;
-        if !confirmed {
-            ui.print_line("No changes saved.")?;
-            return Ok(PersonalizeCliOutcome::SkippedMemoryProfileUpgrade);
+        if confirmed {
+            config.memory.profile = mvp::config::MemoryProfile::ProfilePlusWindow;
+            upgraded_memory_profile = true;
+        } else {
+            declined_memory_profile_upgrade = true;
         }
-        config.memory.profile = mvp::config::MemoryProfile::ProfilePlusWindow;
-        upgraded_memory_profile = true;
     }
 
     config.memory.personalization = Some(personalization);
@@ -445,6 +445,11 @@ fn save_personalization(
     if upgraded_memory_profile {
         ui.print_line(
             "Memory profile upgraded to profile_plus_window so preferences project into Session Profile.",
+        )?;
+    }
+    if declined_memory_profile_upgrade {
+        ui.print_line(
+            "Saved preferences without changing memory.profile; they will project once profile_plus_window is enabled.",
         )?;
     }
 
@@ -458,6 +463,8 @@ fn build_configured_personalization(
     now: OffsetDateTime,
 ) -> mvp::config::PersonalizationConfig {
     let updated_at_epoch_seconds = u64::try_from(now.unix_timestamp()).ok();
+    let default_personalization = mvp::config::PersonalizationConfig::default();
+    let schema_version = default_personalization.schema_version;
 
     mvp::config::PersonalizationConfig {
         preferred_name: draft.preferred_name,
@@ -467,7 +474,7 @@ fn build_configured_personalization(
         timezone: draft.timezone,
         locale: draft.locale,
         prompt_state: mvp::config::PersonalizationPromptState::Configured,
-        schema_version: 1,
+        schema_version,
         updated_at_epoch_seconds,
     }
 }
@@ -479,6 +486,8 @@ fn suppress_personalization(
     now: OffsetDateTime,
 ) -> CliResult<PersonalizeCliOutcome> {
     let updated_at_epoch_seconds = u64::try_from(now.unix_timestamp()).ok();
+    let default_personalization = mvp::config::PersonalizationConfig::default();
+    let schema_version = default_personalization.schema_version;
     let personalization = mvp::config::PersonalizationConfig {
         preferred_name: None,
         response_density: None,
@@ -487,7 +496,7 @@ fn suppress_personalization(
         timezone: None,
         locale: None,
         prompt_state: mvp::config::PersonalizationPromptState::Suppressed,
-        schema_version: 1,
+        schema_version,
         updated_at_epoch_seconds,
     };
 
@@ -768,7 +777,7 @@ mod tests {
     }
 
     #[test]
-    fn personalize_cli_declined_memory_profile_upgrade_keeps_config_untouched() {
+    fn personalize_cli_declined_memory_profile_upgrade_still_saves_preferences() {
         let config_path = unique_config_path("decline-upgrade");
         let config_path_string = config_path.display().to_string();
         write_default_config(&config_path);
@@ -789,12 +798,33 @@ mod tests {
         let load_result =
             mvp::config::load(Some(config_path_string.as_str())).expect("reload config");
         let (_, loaded_config) = load_result;
+        let personalization = loaded_config
+            .memory
+            .personalization
+            .expect("personalization should still be saved");
 
-        assert_eq!(outcome, PersonalizeCliOutcome::SkippedMemoryProfileUpgrade);
-        assert_eq!(loaded_config.memory.personalization, None);
+        assert_eq!(
+            outcome,
+            PersonalizeCliOutcome::Saved {
+                upgraded_memory_profile: false
+            }
+        );
         assert_eq!(
             loaded_config.memory.profile,
             mvp::config::MemoryProfile::WindowOnly
+        );
+        assert_eq!(personalization.preferred_name.as_deref(), Some("Chum"));
+        assert_eq!(
+            personalization.response_density,
+            Some(mvp::config::ResponseDensity::Balanced)
+        );
+        assert_eq!(
+            personalization.initiative_level,
+            Some(mvp::config::InitiativeLevel::Balanced)
+        );
+        assert_eq!(
+            personalization.standing_boundaries.as_deref(),
+            Some("Ask before destructive actions.")
         );
 
         let _ = std::fs::remove_file(config_path);
