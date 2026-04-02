@@ -15,7 +15,7 @@
 | spec_runtime | `foundation` | `crates/spec/src/spec_runtime.rs` | 3528 | 3600 | 72 | 65 | 65 | 0 | 100.0% | TIGHT | 3455 | 2.1% | PASS | 65 |
 | spec_execution | `foundation` | `crates/spec/src/spec_execution.rs` | 3568 | 3700 | 132 | 48 | 80 | 32 | 96.4% | TIGHT | 3547 | 0.6% | PASS | 43 |
 | provider_mod | `foundation` | `crates/app/src/provider/mod.rs` | 375 | 1000 | 625 | 10 | 20 | 10 | 50.0% | HEALTHY | 375 | 0.0% | PASS | 10 |
-| memory_mod | `foundation` | `crates/app/src/memory/mod.rs` | 358 | 650 | 292 | 14 | 16 | 2 | 87.5% | WATCH | 356 | 0.6% | PASS | 14 |
+| memory_mod | `foundation` | `crates/app/src/memory/mod.rs` | 343 | 650 | 307 | 14 | 16 | 2 | 87.5% | WATCH | 356 | -3.7% | PASS | 14 |
 | acp_manager | `operational_density` | `crates/app/src/acp/manager.rs` | 3391 | 3600 | 209 | 8 | 12 | 4 | 94.2% | WATCH | 3383 | 0.2% | PASS | 8 |
 | acpx_runtime | `operational_density` | `crates/app/src/acp/acpx.rs` | 2716 | 2800 | 84 | 56 | 65 | 9 | 97.0% | TIGHT | 2698 | 0.7% | PASS | 56 |
 | channel_registry | `structural_size` | `crates/app/src/channel/registry.rs` | 10464 | 10500 | 36 | 88 | 90 | 2 | 99.7% | TIGHT | 9922 | 5.5% | PASS | 88 |
@@ -60,7 +60,7 @@
 <!-- arch-hotspot key=spec_runtime lines=3528 functions=65 -->
 <!-- arch-hotspot key=spec_execution lines=3568 functions=48 -->
 <!-- arch-hotspot key=provider_mod lines=375 functions=10 -->
-<!-- arch-hotspot key=memory_mod lines=358 functions=14 -->
+<!-- arch-hotspot key=memory_mod lines=343 functions=14 -->
 <!-- arch-hotspot key=acp_manager lines=3391 functions=8 -->
 <!-- arch-hotspot key=acpx_runtime lines=2716 functions=56 -->
 <!-- arch-hotspot key=channel_registry lines=10464 functions=88 -->
