@@ -2592,7 +2592,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "syn",
+ "syn 2.0.117",
  "time",
  "tokio",
  "tokio-stream",
