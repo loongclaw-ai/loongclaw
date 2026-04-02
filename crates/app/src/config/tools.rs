@@ -18,6 +18,7 @@ pub const DEFAULT_BROWSER_MAX_TEXT_CHARS: usize = 6000;
 pub const DEFAULT_BROWSER_COMPANION_TIMEOUT_SECONDS: u64 = 30;
 pub const DEFAULT_RUNTIME_SELF_MAX_SOURCE_CHARS: usize = 20_000;
 pub const DEFAULT_RUNTIME_SELF_MAX_TOTAL_CHARS: usize = 150_000;
+pub const DEFAULT_EXTERNAL_SKILLS_BLOCKED_DOMAIN_RULES: [&str; 1] = ["*.clawhub.io"];
 pub(crate) const MIN_WEB_FETCH_MAX_BYTES: usize = 1024;
 pub const MAX_WEB_FETCH_MAX_BYTES: usize = 5 * 1024 * 1024;
 pub(crate) const MIN_WEB_FETCH_TIMEOUT_SECONDS: usize = 1;
@@ -469,6 +470,13 @@ fn default_shell_allow() -> Vec<String> {
         .collect()
 }
 
+fn default_external_skills_blocked_domains() -> Vec<String> {
+    DEFAULT_EXTERNAL_SKILLS_BLOCKED_DOMAIN_RULES
+        .iter()
+        .map(|rule| (*rule).to_owned())
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExternalSkillsConfig {
     #[serde(default)]
@@ -477,7 +485,7 @@ pub struct ExternalSkillsConfig {
     pub require_download_approval: bool,
     #[serde(default)]
     pub allowed_domains: Vec<String>,
-    #[serde(default)]
+    #[serde(default = "default_external_skills_blocked_domains")]
     pub blocked_domains: Vec<String>,
     #[serde(default)]
     pub install_root: Option<String>,
@@ -599,7 +607,7 @@ impl Default for ExternalSkillsConfig {
             enabled: false,
             require_download_approval: default_require_download_approval(),
             allowed_domains: Vec::new(),
-            blocked_domains: Vec::new(),
+            blocked_domains: default_external_skills_blocked_domains(),
             install_root: None,
             auto_expose_installed: default_auto_expose_installed(),
         }
@@ -1723,7 +1731,7 @@ blocked_domains = ["internal.example", " INTERNAL.EXAMPLE "]
         assert!(!config.enabled);
         assert!(config.require_download_approval);
         assert!(config.allowed_domains.is_empty());
-        assert!(config.blocked_domains.is_empty());
+        assert_eq!(config.blocked_domains, vec!["*.clawhub.io".to_owned()]);
         assert!(config.install_root.is_none());
         assert!(!config.auto_expose_installed);
     }
@@ -1736,7 +1744,7 @@ blocked_domains = ["internal.example", " INTERNAL.EXAMPLE "]
             allowed_domains: vec![
                 "Skills.SH".to_owned(),
                 "skills.sh".to_owned(),
-                "  CLAWHUB.IO ".to_owned(),
+                "  CLAWHUB.AI ".to_owned(),
             ],
             blocked_domains: vec![
                 "Bad.Example".to_owned(),
@@ -1748,7 +1756,7 @@ blocked_domains = ["internal.example", " INTERNAL.EXAMPLE "]
         };
         assert_eq!(
             config.normalized_allowed_domains(),
-            vec!["clawhub.io".to_owned(), "skills.sh".to_owned()]
+            vec!["clawhub.ai".to_owned(), "skills.sh".to_owned()]
         );
         assert_eq!(
             config.normalized_blocked_domains(),

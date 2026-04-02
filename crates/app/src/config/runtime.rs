@@ -3607,7 +3607,10 @@ model = "gpt-5"
         assert!(!loaded.external_skills.enabled);
         assert!(loaded.external_skills.require_download_approval);
         assert!(loaded.external_skills.allowed_domains.is_empty());
-        assert!(loaded.external_skills.blocked_domains.is_empty());
+        assert_eq!(
+            loaded.external_skills.blocked_domains,
+            vec!["*.clawhub.io".to_owned()]
+        );
         assert!(loaded.external_skills.install_root.is_none());
         assert!(!loaded.external_skills.auto_expose_installed);
 
