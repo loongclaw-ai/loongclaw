@@ -3,6 +3,8 @@ use std::ffi::OsStr;
 #[cfg(feature = "tool-shell")]
 use std::future::Future;
 #[cfg(feature = "tool-shell")]
+use std::io::ErrorKind;
+#[cfg(feature = "tool-shell")]
 use std::path::Path;
 #[cfg(feature = "tool-shell")]
 use std::process::{Output, Stdio};
@@ -21,6 +23,10 @@ pub(super) const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 pub(super) const MAX_TIMEOUT_MS: u64 = 600_000;
 #[cfg(feature = "tool-shell")]
 const OUTPUT_CAP_BYTES: usize = 1_048_576;
+#[cfg(feature = "tool-shell")]
+const SPAWN_RETRY_ATTEMPTS: usize = 5;
+#[cfg(feature = "tool-shell")]
+const SPAWN_RETRY_DELAY: Duration = Duration::from_millis(25);
 
 #[cfg(feature = "tool-shell")]
 pub(super) fn run_tool_async<F>(future: F, tool_label: &str) -> Result<F::Output, String>
@@ -86,6 +92,31 @@ where
 }
 
 #[cfg(feature = "tool-shell")]
+async fn retry_executable_file_busy<T, F>(mut operation: F) -> std::io::Result<T>
+where
+    F: FnMut() -> std::io::Result<T>,
+{
+    let mut attempt = 0;
+
+    loop {
+        attempt += 1;
+
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(error) if should_retry_spawn_error(&error) && attempt < SPAWN_RETRY_ATTEMPTS => {
+                tokio::time::sleep(SPAWN_RETRY_DELAY).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+#[cfg(feature = "tool-shell")]
+fn should_retry_spawn_error(error: &std::io::Error) -> bool {
+    error.kind() == ErrorKind::ExecutableFileBusy
+}
+
+#[cfg(feature = "tool-shell")]
 pub(super) async fn run_process_with_timeout<P, S>(
     program: P,
     args: &[S],
@@ -97,14 +128,16 @@ where
     P: AsRef<OsStr>,
     S: AsRef<OsStr>,
 {
-    let mut child = Command::new(program)
-        .args(args)
-        .current_dir(cwd)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .stdin(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
+    let mut command = Command::new(program);
+    command.args(args);
+    command.current_dir(cwd);
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+    command.stdin(Stdio::null());
+    command.kill_on_drop(true);
+
+    let mut child = retry_executable_file_busy(|| command.spawn())
+        .await
         .map_err(|error| format!("{error_prefix} spawn failed: {error}"))?;
 
     let duration = Duration::from_millis(timeout_ms.max(1));
@@ -158,5 +191,43 @@ where
             let _ = tokio::join!(stdout_task, stderr_task);
             Err(format!("{error_prefix} timed out after {timeout_ms}ms"))
         }
+    }
+}
+
+#[cfg(all(test, feature = "tool-shell"))]
+mod tests {
+    use super::{retry_executable_file_busy, should_retry_spawn_error};
+    use std::io::{Error, ErrorKind};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn should_retry_spawn_error_matches_executable_file_busy() {
+        let busy_error = Error::from(ErrorKind::ExecutableFileBusy);
+        let missing_error = Error::from(ErrorKind::NotFound);
+
+        assert!(should_retry_spawn_error(&busy_error));
+        assert!(!should_retry_spawn_error(&missing_error));
+    }
+
+    #[tokio::test]
+    async fn retry_executable_file_busy_retries_until_success() {
+        let attempts = AtomicUsize::new(0);
+
+        let result = retry_executable_file_busy(|| {
+            let attempt = attempts.fetch_add(1, Ordering::Relaxed);
+
+            if attempt < 2 {
+                return Err(Error::from(ErrorKind::ExecutableFileBusy));
+            }
+
+            Ok("spawned")
+        })
+        .await
+        .expect("executable-file-busy errors should retry");
+
+        let total_attempts = attempts.load(Ordering::Relaxed);
+
+        assert_eq!(result, "spawned");
+        assert_eq!(total_attempts, 3);
     }
 }
