@@ -39,6 +39,15 @@ interface DashboardSnapshot {
   tools: DashboardTools;
 }
 
+interface DashboardPreferencesSourceOverride {
+  promptAddendum?: string;
+}
+
+interface DashboardReloadOptions {
+  forceFormReset?: boolean;
+  preferencesSourceOverride?: DashboardPreferencesSourceOverride;
+}
+
 function wait(ms: number) {
   return new Promise((resolve) => {
     window.setTimeout(resolve, ms);
@@ -121,7 +130,10 @@ export function useDashboardData({
     };
   }
 
-  function buildPreferencesFormSource(snapshot: DashboardSnapshot) {
+  function buildPreferencesFormSource(
+    snapshot: DashboardSnapshot,
+    options?: DashboardPreferencesSourceOverride,
+  ) {
     return {
       personality:
         snapshot.config.personality ||
@@ -131,13 +143,13 @@ export function useDashboardData({
         snapshot.config.memoryProfile ||
         onboardingStatus?.memoryProfile ||
         "window_only",
-      promptAddendum: onboardingStatus?.promptAddendum || "",
+      promptAddendum: options?.promptAddendum ?? onboardingStatus?.promptAddendum ?? "",
     };
   }
 
   function commitDashboardSnapshot(
     snapshot: DashboardSnapshot,
-    options?: { forceFormReset?: boolean },
+    options?: DashboardReloadOptions,
   ) {
     const forceFormReset = options?.forceFormReset ?? false;
 
@@ -150,9 +162,12 @@ export function useDashboardData({
     providerForm.resetFromSource(buildProviderFormSource(snapshot), {
       force: forceFormReset,
     });
-    preferencesForm.resetFromSource(buildPreferencesFormSource(snapshot), {
-      force: forceFormReset,
-    });
+    preferencesForm.resetFromSource(
+      buildPreferencesFormSource(snapshot, options?.preferencesSourceOverride),
+      {
+        force: forceFormReset,
+      },
+    );
   }
 
   async function fetchDashboardSnapshot(): Promise<DashboardSnapshot> {
@@ -182,7 +197,7 @@ export function useDashboardData({
     };
   }
 
-  async function reloadDashboardData(options?: { forceFormReset?: boolean }) {
+  async function reloadDashboardData(options?: DashboardReloadOptions) {
     setError(null);
     const generation = ++dashboardLoadGenerationRef.current;
     const snapshot = await fetchDashboardSnapshot();
@@ -361,15 +376,19 @@ export function useDashboardData({
       if (result.passed) {
         providerApplied = true;
         acceptValidatedOnboardingStatus(result.status);
-        await onboardingApi.savePreferences(
-          buildPreferencesSavePayload({
-            personality: preferencesForm.personality,
-            memoryProfile: preferencesForm.memoryProfile,
-            promptAddendum: preferencesForm.promptAddendum,
-          }),
-        );
+        const savedPreferences = buildPreferencesSavePayload({
+          personality: preferencesForm.personality,
+          memoryProfile: preferencesForm.memoryProfile,
+          promptAddendum: preferencesForm.promptAddendum,
+        });
+        await onboardingApi.savePreferences(savedPreferences);
         refreshOnboardingStatus();
-        await reloadDashboardData({ forceFormReset: true });
+        await reloadDashboardData({
+          forceFormReset: true,
+          preferencesSourceOverride: {
+            promptAddendum: savedPreferences.promptAddendum ?? "",
+          },
+        });
         setSettingsModal({
           phase: "success",
           title: t("dashboard.settings.saved"),

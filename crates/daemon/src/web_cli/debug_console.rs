@@ -156,6 +156,8 @@ fn default_web_log_root() -> PathBuf {
     mvp::config::default_loongclaw_home().join("logs")
 }
 
+const LOG_TAIL_READ_BYTES: u64 = 128 * 1024;
+
 fn append_log_tail(lines: &mut Vec<String>, label: &str, path: PathBuf, max_lines: usize) {
     match read_log_tail_lines(path.as_path(), max_lines) {
         Ok(entries) if entries.is_empty() => {}
@@ -175,10 +177,26 @@ fn read_log_tail_lines(path: &std::path::Path, max_lines: usize) -> Result<Vec<S
         return Ok(vec!["(missing)".to_owned()]);
     }
 
-    let bytes = fs::read(path).map_err(|error| error.to_string())?;
-    let decoded = String::from_utf8_lossy(&bytes);
-    let lines = decoded
-        .replace('\r', "")
+    let file_size = fs::metadata(path).map_err(|error| error.to_string())?.len();
+    let read_start = file_size.saturating_sub(LOG_TAIL_READ_BYTES);
+    let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(read_start))
+        .map_err(|error| error.to_string())?;
+
+    let mut bytes = Vec::with_capacity((file_size - read_start) as usize);
+    std::io::Read::read_to_end(&mut file, &mut bytes).map_err(|error| error.to_string())?;
+
+    let normalized = String::from_utf8_lossy(&bytes).replace('\r', "");
+    let tail = if read_start > 0 {
+        normalized
+            .find('\n')
+            .map(|index| &normalized[index + 1..])
+            .unwrap_or(normalized.as_str())
+    } else {
+        normalized.as_str()
+    };
+
+    let lines = tail
         .lines()
         .rev()
         .take(max_lines)

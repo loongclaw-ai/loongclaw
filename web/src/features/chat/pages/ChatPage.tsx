@@ -19,16 +19,81 @@ function renderInlineBreaks(text: string): ReactNode[] {
   });
 }
 
+function renderInlineContent(text: string): ReactNode[] {
+  const parts = text.split(/(`[^`]+`)/g);
+  return parts.flatMap((part, index) => {
+    if (!part) {
+      return [];
+    }
+
+    if (part.startsWith("`") && part.endsWith("`") && part.length >= 2) {
+      return [<code key={`inline-code-${index}`}>{part.slice(1, -1)}</code>];
+    }
+
+    return renderInlineBreaks(part).map((node, nodeIndex) => (
+      <span key={`inline-text-${index}-${nodeIndex}`}>{node}</span>
+    ));
+  });
+}
+
+type MessageBlock =
+  | { type: "heading"; level: 1 | 2 | 3; text: string }
+  | { type: "paragraph"; text: string }
+  | { type: "unordered-list"; items: string[] }
+  | { type: "ordered-list"; items: string[] }
+  | { type: "blockquote"; text: string }
+  | { type: "code"; language: string | null; text: string }
+  | { type: "table"; headers: string[]; rows: string[][] };
+
+function isTableDivider(line: string): boolean {
+  const normalized = line.trim();
+  if (!normalized.includes("|")) {
+    return false;
+  }
+
+  const cells = normalized
+    .split("|")
+    .map((cell) => cell.trim())
+    .filter(Boolean);
+
+  return (
+    cells.length > 0 &&
+    cells.every((cell) => /^:?-{3,}:?$/.test(cell))
+  );
+}
+
+function parseTableRow(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
 function renderMessageContent(content: string): ReactNode[] {
-  const normalized = content.replace(/\r\n/g, "\n").trim();
-  if (!normalized) {
+  const normalized = content.replace(/\r\n/g, "\n");
+  const rawLines = normalized.split("\n");
+  let start = 0;
+  let end = rawLines.length;
+
+  while (start < end && rawLines[start].trim() === "") {
+    start += 1;
+  }
+  while (end > start && rawLines[end - 1].trim() === "") {
+    end -= 1;
+  }
+
+  const lines = rawLines.slice(start, end);
+  if (lines.length === 0) {
     return [];
   }
 
-  const lines = normalized.split("\n");
-  const blocks: ReactNode[] = [];
+  const parsedBlocks: MessageBlock[] = [];
   let paragraphLines: string[] = [];
   let listItems: string[] = [];
+  let listType: "unordered-list" | "ordered-list" | null = null;
+  let quoteLines: string[] = [];
 
   function flushParagraph() {
     if (paragraphLines.length === 0) {
@@ -36,7 +101,7 @@ function renderMessageContent(content: string): ReactNode[] {
     }
     const text = paragraphLines.join("\n").trim();
     if (text) {
-      blocks.push(<p key={`block-${blocks.length}`}>{renderInlineBreaks(text)}</p>);
+      parsedBlocks.push({ type: "paragraph", text });
     }
     paragraphLines = [];
   }
@@ -45,54 +110,196 @@ function renderMessageContent(content: string): ReactNode[] {
     if (listItems.length === 0) {
       return;
     }
-    blocks.push(
-      <ul key={`block-${blocks.length}`}>
-        {listItems.map((item, itemIndex) => (
-          <li key={`item-${itemIndex}`}>{item}</li>
-        ))}
-      </ul>,
-    );
+    parsedBlocks.push({
+      type: listType ?? "unordered-list",
+      items: [...listItems],
+    });
     listItems = [];
+    listType = null;
   }
 
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
+  function flushQuote() {
+    if (quoteLines.length === 0) {
+      return;
+    }
+    const text = quoteLines.join("\n").trim();
+    if (text) {
+      parsedBlocks.push({ type: "blockquote", text });
+    }
+    quoteLines = [];
+  }
 
-    if (!line) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const rawLine = lines[index];
+    const trimmedLine = rawLine.trim();
+
+    if (!trimmedLine) {
       flushParagraph();
       flushList();
+      flushQuote();
       continue;
     }
 
-    const headingMatch = line.match(/^(#{1,3})\s+(.+)$/);
+    const fenceMatch = rawLine.match(/^\s*```([^`]*)$/);
+    if (fenceMatch) {
+      flushParagraph();
+      flushList();
+      flushQuote();
+      const codeLines: string[] = [];
+      const language = fenceMatch[1].trim() || null;
+      index += 1;
+      while (index < lines.length && !lines[index].match(/^\s*```/)) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      parsedBlocks.push({
+        type: "code",
+        language,
+        text: codeLines.join("\n"),
+      });
+      continue;
+    }
+
+    if (
+      index + 1 < lines.length &&
+      trimmedLine.includes("|") &&
+      isTableDivider(lines[index + 1])
+    ) {
+      flushParagraph();
+      flushList();
+      flushQuote();
+      const headers = parseTableRow(trimmedLine);
+      const rows: string[][] = [];
+      index += 2;
+      while (index < lines.length && lines[index].trim().includes("|")) {
+        rows.push(parseTableRow(lines[index]));
+        index += 1;
+      }
+      index -= 1;
+      parsedBlocks.push({ type: "table", headers, rows });
+      continue;
+    }
+
+    const headingMatch = trimmedLine.match(/^(#{1,3})\s+(.+)$/);
     if (headingMatch) {
       flushParagraph();
       flushList();
+      flushQuote();
       const level = headingMatch[1].length;
       const title = headingMatch[2];
-      if (level === 1) {
-        blocks.push(<h1 key={`block-${blocks.length}`}>{title}</h1>);
-      } else if (level === 2) {
-        blocks.push(<h2 key={`block-${blocks.length}`}>{title}</h2>);
-      } else {
-        blocks.push(<h3 key={`block-${blocks.length}`}>{title}</h3>);
-      }
+      parsedBlocks.push({ type: "heading", level: level as 1 | 2 | 3, text: title });
       continue;
     }
 
-    if (/^[-*]\s+/.test(line)) {
+    const unorderedListMatch = trimmedLine.match(/^[-*]\s+(.+)$/);
+    if (unorderedListMatch) {
       flushParagraph();
-      listItems.push(line.replace(/^[-*]\s+/, ""));
+      flushQuote();
+      if (listType && listType !== "unordered-list") {
+        flushList();
+      }
+      listType = "unordered-list";
+      listItems.push(unorderedListMatch[1]);
+      continue;
+    }
+
+    const orderedListMatch = trimmedLine.match(/^\d+\.\s+(.+)$/);
+    if (orderedListMatch) {
+      flushParagraph();
+      flushQuote();
+      if (listType && listType !== "ordered-list") {
+        flushList();
+      }
+      listType = "ordered-list";
+      listItems.push(orderedListMatch[1]);
+      continue;
+    }
+
+    const quoteMatch = rawLine.match(/^\s*>\s?(.*)$/);
+    if (quoteMatch) {
+      flushParagraph();
+      flushList();
+      quoteLines.push(quoteMatch[1]);
       continue;
     }
 
     flushList();
-    paragraphLines.push(line);
+    flushQuote();
+    paragraphLines.push(rawLine.trimEnd());
   }
 
   flushParagraph();
   flushList();
-  return blocks;
+  flushQuote();
+
+  return parsedBlocks.map((block, blockIndex) => {
+    switch (block.type) {
+      case "heading":
+        if (block.level === 1) {
+          return <h1 key={`block-${blockIndex}`}>{block.text}</h1>;
+        }
+        if (block.level === 2) {
+          return <h2 key={`block-${blockIndex}`}>{block.text}</h2>;
+        }
+        return <h3 key={`block-${blockIndex}`}>{block.text}</h3>;
+      case "paragraph":
+        return <p key={`block-${blockIndex}`}>{renderInlineContent(block.text)}</p>;
+      case "unordered-list":
+        return (
+          <ul key={`block-${blockIndex}`}>
+            {block.items.map((item, itemIndex) => (
+              <li key={`item-${itemIndex}`}>{renderInlineContent(item)}</li>
+            ))}
+          </ul>
+        );
+      case "ordered-list":
+        return (
+          <ol key={`block-${blockIndex}`}>
+            {block.items.map((item, itemIndex) => (
+              <li key={`item-${itemIndex}`}>{renderInlineContent(item)}</li>
+            ))}
+          </ol>
+        );
+      case "blockquote":
+        return (
+          <blockquote key={`block-${blockIndex}`}>
+            {renderInlineContent(block.text)}
+          </blockquote>
+        );
+      case "code":
+        return (
+          <pre key={`block-${blockIndex}`}>
+            {block.language ? <span className="message-code-language">{block.language}</span> : null}
+            <code>{block.text}</code>
+          </pre>
+        );
+      case "table":
+        return (
+          <div key={`block-${blockIndex}`} className="message-table-wrap">
+            <table className="message-table">
+              <thead>
+                <tr>
+                  {block.headers.map((header, headerIndex) => (
+                    <th key={`header-${headerIndex}`}>{renderInlineContent(header)}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {block.rows.map((row, rowIndex) => (
+                  <tr key={`row-${rowIndex}`}>
+                    {row.map((cell, cellIndex) => (
+                      <td key={`cell-${rowIndex}-${cellIndex}`}>{renderInlineContent(cell)}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      default:
+        return null;
+    }
+  });
 }
 
 
