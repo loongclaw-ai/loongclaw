@@ -96,8 +96,11 @@ pub mod migration;
 pub mod next_actions;
 pub mod onboard_cli;
 mod onboard_finalize;
+pub mod onboard_flow;
 mod onboard_preflight;
-pub mod onboard_presentation;
+// onboard_presentation moved to onboard_cli::presentation
+pub mod onboard_state;
+pub(crate) mod onboard_tui;
 mod onboard_types;
 mod onboard_web_search;
 mod onboarding_model_policy;
