@@ -16,6 +16,10 @@ fn cli_personalize_help_mentions_operator_preferences() {
         help.contains("loong onboard"),
         "personalize help should redirect first-time setup back to onboard: {help}"
     );
+    assert!(
+        help.contains("update or clear"),
+        "personalize help should explain that saved preferences can be updated or cleared: {help}"
+    );
 }
 
 #[test]

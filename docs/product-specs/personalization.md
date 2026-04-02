@@ -22,6 +22,9 @@ down the first-run path or mutating runtime identity authority.
       but it is never the primary required action ahead of a first answer.
 - [ ] Personalization results are reviewed before save and can be skipped,
       deferred, suppressed, or rerun explicitly later.
+- [ ] Operators can rerun `loong personalize` to update or clear saved
+      preferences, and suppression only hides proactive suggestions until the
+      command is run explicitly again.
 - [ ] Persisted personalization state remains advisory and is projected through
       the session-profile lane rather than becoming a second runtime identity
       authority.

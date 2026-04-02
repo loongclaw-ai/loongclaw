@@ -9,7 +9,8 @@ use loongclaw_spec::CliResult;
 use time::OffsetDateTime;
 
 use crate::operator_prompt::{
-    OperatorPromptUi, SelectInteractionMode, SelectOption, StdioOperatorUi,
+    OPERATOR_CLEAR_INPUT_TOKEN, OperatorPromptUi, SelectInteractionMode, SelectOption,
+    StdioOperatorUi, prompt_optional_operator_text,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,13 +53,19 @@ pub(crate) fn run_personalize_cli_with_ui(
     let load_result = mvp::config::load(config_path)?;
     let (resolved_path, mut config) = load_result;
     let existing_personalization = config.memory.trimmed_personalization();
+    print_suppressed_recovery_guidance(ui, existing_personalization.as_ref())?;
     let draft = collect_personalization_draft(ui, existing_personalization.as_ref())?;
     let review_action = select_review_action(ui, &draft)?;
 
     match review_action {
-        PersonalizeReviewAction::Save => {
-            save_personalization(ui, &resolved_path, &mut config, draft, now)
-        }
+        PersonalizeReviewAction::Save => save_personalization(
+            ui,
+            &resolved_path,
+            &mut config,
+            existing_personalization.as_ref(),
+            draft,
+            now,
+        ),
         PersonalizeReviewAction::SkipForNow => {
             ui.print_line("No changes saved.")?;
             Ok(PersonalizeCliOutcome::Skipped)
@@ -67,6 +74,25 @@ pub(crate) fn run_personalize_cli_with_ui(
             suppress_personalization(ui, &resolved_path, &mut config, now)
         }
     }
+}
+
+fn print_suppressed_recovery_guidance(
+    ui: &mut impl OperatorPromptUi,
+    existing_personalization: Option<&mvp::config::PersonalizationConfig>,
+) -> CliResult<()> {
+    let Some(personalization) = existing_personalization else {
+        return Ok(());
+    };
+
+    if !personalization.suppresses_suggestions() {
+        return Ok(());
+    }
+
+    ui.print_line(
+        "Personalize suggestions are currently suppressed. Saving preferences here will re-enable them.",
+    )?;
+
+    Ok(())
 }
 
 fn collect_personalization_draft(
@@ -117,46 +143,77 @@ fn prompt_optional_text(
     label: &str,
     current_value: Option<&str>,
 ) -> CliResult<Option<String>> {
-    let raw_value = match current_value {
-        Some(default_value) => ui.prompt_with_default(label, default_value)?,
-        None => ui.prompt_allow_empty(label)?,
-    };
-    let trimmed_value = raw_value.trim();
-    if trimmed_value.is_empty() {
-        return Ok(None);
+    if let Some(default_value) = current_value {
+        let current_value_line = format!("Current value: {default_value}");
+        let clear_hint_line =
+            format!("Press Enter to keep it, or type {OPERATOR_CLEAR_INPUT_TOKEN} to clear it.");
+        ui.print_line(current_value_line.as_str())?;
+        ui.print_line(clear_hint_line.as_str())?;
     }
-    Ok(Some(trimmed_value.to_owned()))
+
+    let selected_value = prompt_optional_operator_text(ui, label, current_value)?;
+
+    Ok(selected_value)
 }
 
 fn select_response_density(
     ui: &mut impl OperatorPromptUi,
     current_value: Option<mvp::config::ResponseDensity>,
 ) -> CliResult<Option<mvp::config::ResponseDensity>> {
-    let options = vec![
-        SelectOption {
-            label: "concise".to_owned(),
-            slug: "concise".to_owned(),
-            description: "keep responses brief and tightly scoped".to_owned(),
+    let mut options = Vec::new();
+    let concise_option_index = options.len();
+    let concise_option = SelectOption {
+        label: "concise".to_owned(),
+        slug: "concise".to_owned(),
+        description: "keep responses brief and tightly scoped".to_owned(),
+        recommended: false,
+    };
+    options.push(concise_option);
+    let balanced_option_index = options.len();
+    let balanced_option = SelectOption {
+        label: "balanced".to_owned(),
+        slug: "balanced".to_owned(),
+        description: "balance speed, clarity, and context".to_owned(),
+        recommended: true,
+    };
+    options.push(balanced_option);
+    let thorough_option_index = options.len();
+    let thorough_option = SelectOption {
+        label: "thorough".to_owned(),
+        slug: "thorough".to_owned(),
+        description: "include deeper context and reasoning when useful".to_owned(),
+        recommended: false,
+    };
+    options.push(thorough_option);
+    let unset_option_index = if current_value.is_none() {
+        let unset_option = SelectOption {
+            label: "leave unset".to_owned(),
+            slug: "unset".to_owned(),
+            description: "do not save a response density preference yet".to_owned(),
             recommended: false,
-        },
-        SelectOption {
-            label: "balanced".to_owned(),
-            slug: "balanced".to_owned(),
-            description: "balance speed, clarity, and context".to_owned(),
-            recommended: true,
-        },
-        SelectOption {
-            label: "thorough".to_owned(),
-            slug: "thorough".to_owned(),
-            description: "include deeper context and reasoning when useful".to_owned(),
+        };
+        options.push(unset_option);
+        Some(options.len() - 1)
+    } else {
+        None
+    };
+    let clear_option_index = if current_value.is_some() {
+        let clear_option = SelectOption {
+            label: "clear current value".to_owned(),
+            slug: "clear".to_owned(),
+            description: "remove the saved response density preference".to_owned(),
             recommended: false,
-        },
-    ];
+        };
+        options.push(clear_option);
+        Some(options.len() - 1)
+    } else {
+        None
+    };
     let default_index = match current_value {
-        Some(mvp::config::ResponseDensity::Concise) => Some(0),
-        Some(mvp::config::ResponseDensity::Balanced) => Some(1),
-        Some(mvp::config::ResponseDensity::Thorough) => Some(2),
-        None => Some(1),
+        Some(mvp::config::ResponseDensity::Concise) => Some(concise_option_index),
+        Some(mvp::config::ResponseDensity::Balanced) => Some(balanced_option_index),
+        Some(mvp::config::ResponseDensity::Thorough) => Some(thorough_option_index),
+        None => unset_option_index,
     };
     let selected_index = ui.select_one(
         "Response density",
@@ -164,44 +221,83 @@ fn select_response_density(
         default_index,
         SelectInteractionMode::List,
     )?;
-    let selected_value = match selected_index {
-        0 => mvp::config::ResponseDensity::Concise,
-        1 => mvp::config::ResponseDensity::Balanced,
-        2 => mvp::config::ResponseDensity::Thorough,
-        _ => return Err("response density selection out of range".to_owned()),
-    };
-    Ok(Some(selected_value))
+    if Some(selected_index) == unset_option_index {
+        return Ok(None);
+    }
+    if Some(selected_index) == clear_option_index {
+        return Ok(None);
+    }
+    if selected_index == concise_option_index {
+        return Ok(Some(mvp::config::ResponseDensity::Concise));
+    }
+    if selected_index == balanced_option_index {
+        return Ok(Some(mvp::config::ResponseDensity::Balanced));
+    }
+    if selected_index == thorough_option_index {
+        return Ok(Some(mvp::config::ResponseDensity::Thorough));
+    }
+
+    Err("response density selection out of range".to_owned())
 }
 
 fn select_initiative_level(
     ui: &mut impl OperatorPromptUi,
     current_value: Option<mvp::config::InitiativeLevel>,
 ) -> CliResult<Option<mvp::config::InitiativeLevel>> {
-    let options = vec![
-        SelectOption {
-            label: "ask before acting".to_owned(),
-            slug: "ask_before_acting".to_owned(),
-            description: "confirm before taking non-trivial action".to_owned(),
+    let mut options = Vec::new();
+    let ask_before_acting_option_index = options.len();
+    let ask_before_acting_option = SelectOption {
+        label: "ask before acting".to_owned(),
+        slug: "ask_before_acting".to_owned(),
+        description: "confirm before taking non-trivial action".to_owned(),
+        recommended: false,
+    };
+    options.push(ask_before_acting_option);
+    let balanced_option_index = options.len();
+    let balanced_option = SelectOption {
+        label: "balanced".to_owned(),
+        slug: "balanced".to_owned(),
+        description: "default initiative with selective confirmation".to_owned(),
+        recommended: true,
+    };
+    options.push(balanced_option);
+    let high_initiative_option_index = options.len();
+    let high_initiative_option = SelectOption {
+        label: "high initiative".to_owned(),
+        slug: "high_initiative".to_owned(),
+        description: "move forward proactively unless risk is high".to_owned(),
+        recommended: false,
+    };
+    options.push(high_initiative_option);
+    let unset_option_index = if current_value.is_none() {
+        let unset_option = SelectOption {
+            label: "leave unset".to_owned(),
+            slug: "unset".to_owned(),
+            description: "do not save an initiative preference yet".to_owned(),
             recommended: false,
-        },
-        SelectOption {
-            label: "balanced".to_owned(),
-            slug: "balanced".to_owned(),
-            description: "default initiative with selective confirmation".to_owned(),
-            recommended: true,
-        },
-        SelectOption {
-            label: "high initiative".to_owned(),
-            slug: "high_initiative".to_owned(),
-            description: "move forward proactively unless risk is high".to_owned(),
+        };
+        options.push(unset_option);
+        Some(options.len() - 1)
+    } else {
+        None
+    };
+    let clear_option_index = if current_value.is_some() {
+        let clear_option = SelectOption {
+            label: "clear current value".to_owned(),
+            slug: "clear".to_owned(),
+            description: "remove the saved initiative preference".to_owned(),
             recommended: false,
-        },
-    ];
+        };
+        options.push(clear_option);
+        Some(options.len() - 1)
+    } else {
+        None
+    };
     let default_index = match current_value {
-        Some(mvp::config::InitiativeLevel::AskBeforeActing) => Some(0),
-        Some(mvp::config::InitiativeLevel::Balanced) => Some(1),
-        Some(mvp::config::InitiativeLevel::HighInitiative) => Some(2),
-        None => Some(1),
+        Some(mvp::config::InitiativeLevel::AskBeforeActing) => Some(ask_before_acting_option_index),
+        Some(mvp::config::InitiativeLevel::Balanced) => Some(balanced_option_index),
+        Some(mvp::config::InitiativeLevel::HighInitiative) => Some(high_initiative_option_index),
+        None => unset_option_index,
     };
     let selected_index = ui.select_one(
         "Initiative level",
@@ -209,13 +305,23 @@ fn select_initiative_level(
         default_index,
         SelectInteractionMode::List,
     )?;
-    let selected_value = match selected_index {
-        0 => mvp::config::InitiativeLevel::AskBeforeActing,
-        1 => mvp::config::InitiativeLevel::Balanced,
-        2 => mvp::config::InitiativeLevel::HighInitiative,
-        _ => return Err("initiative level selection out of range".to_owned()),
-    };
-    Ok(Some(selected_value))
+    if Some(selected_index) == unset_option_index {
+        return Ok(None);
+    }
+    if Some(selected_index) == clear_option_index {
+        return Ok(None);
+    }
+    if selected_index == ask_before_acting_option_index {
+        return Ok(Some(mvp::config::InitiativeLevel::AskBeforeActing));
+    }
+    if selected_index == balanced_option_index {
+        return Ok(Some(mvp::config::InitiativeLevel::Balanced));
+    }
+    if selected_index == high_initiative_option_index {
+        return Ok(Some(mvp::config::InitiativeLevel::HighInitiative));
+    }
+
+    Err("initiative level selection out of range".to_owned())
 }
 
 fn select_review_action(
@@ -291,12 +397,29 @@ fn save_personalization(
     ui: &mut impl OperatorPromptUi,
     resolved_path: &Path,
     config: &mut mvp::config::LoongClawConfig,
+    existing_personalization: Option<&mvp::config::PersonalizationConfig>,
     draft: PersonalizationDraft,
     now: OffsetDateTime,
 ) -> CliResult<PersonalizeCliOutcome> {
+    let existing_has_preferences = existing_personalization
+        .is_some_and(mvp::config::PersonalizationConfig::has_operator_preferences);
     let personalization = build_configured_personalization(draft, now);
     if !personalization.has_operator_preferences() {
-        return Err("personalize save requires at least one operator preference".to_owned());
+        if !existing_has_preferences {
+            return Err("personalize save requires at least one operator preference".to_owned());
+        }
+
+        config.memory.personalization = None;
+        let saved_path = write_personalization_config(config, resolved_path)?;
+        let cleared_message = format!(
+            "Cleared operator preferences from {}.",
+            saved_path.display()
+        );
+        ui.print_line(cleared_message.as_str())?;
+
+        return Ok(PersonalizeCliOutcome::Saved {
+            upgraded_memory_profile: false,
+        });
     }
 
     let mut upgraded_memory_profile = false;
@@ -487,13 +610,34 @@ mod tests {
     }
 
     fn write_default_config(path: &Path) {
+        write_config(path, &mvp::config::LoongClawConfig::default());
+    }
+
+    fn write_config(path: &Path, config: &mvp::config::LoongClawConfig) {
         let path_string = path.display().to_string();
-        mvp::config::write(
-            Some(path_string.as_str()),
-            &mvp::config::LoongClawConfig::default(),
-            true,
-        )
-        .expect("write default config");
+        mvp::config::write(Some(path_string.as_str()), config, true).expect("write config");
+    }
+
+    fn configured_personalization_for_tests() -> mvp::config::PersonalizationConfig {
+        mvp::config::PersonalizationConfig {
+            preferred_name: Some("Chum".to_owned()),
+            response_density: Some(mvp::config::ResponseDensity::Balanced),
+            initiative_level: Some(mvp::config::InitiativeLevel::AskBeforeActing),
+            standing_boundaries: Some("Ask before destructive actions.".to_owned()),
+            timezone: Some("Asia/Shanghai".to_owned()),
+            locale: Some("zh-CN".to_owned()),
+            prompt_state: mvp::config::PersonalizationPromptState::Configured,
+            schema_version: 1,
+            updated_at_epoch_seconds: Some(1_775_095_200),
+        }
+    }
+
+    fn configured_personalize_config_for_tests() -> mvp::config::LoongClawConfig {
+        let personalization = configured_personalization_for_tests();
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.memory.profile = mvp::config::MemoryProfile::ProfilePlusWindow;
+        config.memory.personalization = Some(personalization);
+        config
     }
 
     #[test]
@@ -651,6 +795,215 @@ mod tests {
         assert_eq!(
             loaded_config.memory.profile,
             mvp::config::MemoryProfile::WindowOnly
+        );
+
+        let _ = std::fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn personalize_cli_save_allows_clearing_existing_text_fields() {
+        let config_path = unique_config_path("clear-text");
+        let config_path_string = config_path.display().to_string();
+        let config = configured_personalize_config_for_tests();
+        write_config(&config_path, &config);
+        let mut ui = TestPromptUi::with_inputs(["-", "", "", "-", "", "", "1"]);
+
+        run_personalize_cli_with_ui(Some(config_path_string.as_str()), &mut ui, fixed_now())
+            .expect("clear-text save flow should succeed");
+        let load_result =
+            mvp::config::load(Some(config_path_string.as_str())).expect("reload config");
+        let (_, loaded_config) = load_result;
+        let personalization = loaded_config
+            .memory
+            .personalization
+            .expect("saved personalization");
+
+        assert_eq!(personalization.preferred_name, None);
+        assert_eq!(personalization.standing_boundaries, None);
+        assert_eq!(
+            personalization.response_density,
+            Some(mvp::config::ResponseDensity::Balanced)
+        );
+        assert_eq!(
+            personalization.initiative_level,
+            Some(mvp::config::InitiativeLevel::AskBeforeActing)
+        );
+        assert_eq!(personalization.timezone.as_deref(), Some("Asia/Shanghai"));
+        assert_eq!(personalization.locale.as_deref(), Some("zh-CN"));
+
+        let _ = std::fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn personalize_cli_save_allows_clearing_existing_enum_fields() {
+        let config_path = unique_config_path("clear-enum");
+        let config_path_string = config_path.display().to_string();
+        let mut config = configured_personalize_config_for_tests();
+        config.memory.personalization = Some(mvp::config::PersonalizationConfig {
+            preferred_name: Some("Chum".to_owned()),
+            response_density: Some(mvp::config::ResponseDensity::Balanced),
+            initiative_level: Some(mvp::config::InitiativeLevel::HighInitiative),
+            standing_boundaries: None,
+            timezone: None,
+            locale: None,
+            prompt_state: mvp::config::PersonalizationPromptState::Configured,
+            schema_version: 1,
+            updated_at_epoch_seconds: Some(1_775_095_200),
+        });
+        write_config(&config_path, &config);
+        let mut ui = TestPromptUi::with_inputs(["", "clear", "clear", "", "", "", "1"]);
+
+        run_personalize_cli_with_ui(Some(config_path_string.as_str()), &mut ui, fixed_now())
+            .expect("clear-enum save flow should succeed");
+        let load_result =
+            mvp::config::load(Some(config_path_string.as_str())).expect("reload config");
+        let (_, loaded_config) = load_result;
+        let personalization = loaded_config
+            .memory
+            .personalization
+            .expect("saved personalization");
+
+        assert_eq!(personalization.preferred_name.as_deref(), Some("Chum"));
+        assert_eq!(personalization.response_density, None);
+        assert_eq!(personalization.initiative_level, None);
+
+        let _ = std::fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn personalize_cli_save_clears_personalization_when_all_existing_fields_are_removed() {
+        let config_path = unique_config_path("clear-all");
+        let config_path_string = config_path.display().to_string();
+        let config = configured_personalize_config_for_tests();
+        write_config(&config_path, &config);
+        let mut ui = TestPromptUi::with_inputs(["-", "clear", "clear", "-", "-", "-", "1"]);
+
+        let outcome =
+            run_personalize_cli_with_ui(Some(config_path_string.as_str()), &mut ui, fixed_now())
+                .expect("clear-all save flow should succeed");
+        let load_result =
+            mvp::config::load(Some(config_path_string.as_str())).expect("reload config");
+        let (_, loaded_config) = load_result;
+
+        assert_eq!(
+            outcome,
+            PersonalizeCliOutcome::Saved {
+                upgraded_memory_profile: false
+            }
+        );
+        assert_eq!(loaded_config.memory.personalization, None);
+
+        let _ = std::fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn personalize_cli_save_from_suppressed_state_prints_reenable_guidance() {
+        let config_path = unique_config_path("suppressed-recovery");
+        let config_path_string = config_path.display().to_string();
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.memory.profile = mvp::config::MemoryProfile::ProfilePlusWindow;
+        config.memory.personalization = Some(mvp::config::PersonalizationConfig {
+            preferred_name: None,
+            response_density: None,
+            initiative_level: None,
+            standing_boundaries: None,
+            timezone: None,
+            locale: None,
+            prompt_state: mvp::config::PersonalizationPromptState::Suppressed,
+            schema_version: 1,
+            updated_at_epoch_seconds: Some(1_775_095_200),
+        });
+        write_config(&config_path, &config);
+        let mut ui = TestPromptUi::with_inputs(["Chum", "", "", "", "", "", "1"]);
+
+        let outcome =
+            run_personalize_cli_with_ui(Some(config_path_string.as_str()), &mut ui, fixed_now())
+                .expect("suppressed recovery flow should succeed");
+        let load_result =
+            mvp::config::load(Some(config_path_string.as_str())).expect("reload config");
+        let (_, loaded_config) = load_result;
+        let personalization = loaded_config
+            .memory
+            .personalization
+            .expect("saved personalization");
+
+        assert_eq!(
+            outcome,
+            PersonalizeCliOutcome::Saved {
+                upgraded_memory_profile: false
+            }
+        );
+        assert_eq!(personalization.preferred_name.as_deref(), Some("Chum"));
+        assert_eq!(
+            personalization.prompt_state,
+            mvp::config::PersonalizationPromptState::Configured
+        );
+        assert!(
+            ui.printed_lines
+                .iter()
+                .any(|line| { line.contains("currently suppressed") }),
+            "recovery flow should explain that the current state is suppressed: {:#?}",
+            ui.printed_lines
+        );
+
+        let _ = std::fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn personalize_cli_empty_save_without_existing_preferences_is_invalid() {
+        let config_path = unique_config_path("empty-save");
+        let config_path_string = config_path.display().to_string();
+        write_default_config(&config_path);
+        let mut ui = TestPromptUi::with_inputs(["", "", "", "", "", "", "1"]);
+
+        let error =
+            run_personalize_cli_with_ui(Some(config_path_string.as_str()), &mut ui, fixed_now())
+                .expect_err("empty save should stay invalid");
+        let load_result =
+            mvp::config::load(Some(config_path_string.as_str())).expect("reload config");
+        let (_, loaded_config) = load_result;
+
+        assert!(error.contains("at least one operator preference"));
+        assert_eq!(loaded_config.memory.personalization, None);
+
+        let _ = std::fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn personalize_cli_empty_save_does_not_clear_suppressed_state_without_preferences() {
+        let config_path = unique_config_path("suppressed-empty-save");
+        let config_path_string = config_path.display().to_string();
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.memory.profile = mvp::config::MemoryProfile::ProfilePlusWindow;
+        config.memory.personalization = Some(mvp::config::PersonalizationConfig {
+            preferred_name: None,
+            response_density: None,
+            initiative_level: None,
+            standing_boundaries: None,
+            timezone: None,
+            locale: None,
+            prompt_state: mvp::config::PersonalizationPromptState::Suppressed,
+            schema_version: 1,
+            updated_at_epoch_seconds: Some(1_775_095_200),
+        });
+        write_config(&config_path, &config);
+        let mut ui = TestPromptUi::with_inputs(["", "", "", "", "", "", "1"]);
+
+        let error =
+            run_personalize_cli_with_ui(Some(config_path_string.as_str()), &mut ui, fixed_now())
+                .expect_err("empty suppressed save should stay invalid");
+        let load_result =
+            mvp::config::load(Some(config_path_string.as_str())).expect("reload config");
+        let (_, loaded_config) = load_result;
+        let personalization = loaded_config
+            .memory
+            .personalization
+            .expect("suppressed state should remain present");
+
+        assert!(error.contains("at least one operator preference"));
+        assert_eq!(
+            personalization.prompt_state,
+            mvp::config::PersonalizationPromptState::Suppressed
         );
 
         let _ = std::fs::remove_file(config_path);

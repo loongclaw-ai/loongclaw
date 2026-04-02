@@ -504,7 +504,7 @@ pub enum Commands {
     },
     #[command(
         about = "Capture optional operator preferences for future sessions",
-        long_about = "Capture optional operator preferences for future sessions.\n\nThis command stores advisory working preferences such as preferred name, response density, initiative level, and standing boundaries. It does not replace runtime identity files, and it does not change the primary setup path. If you do not have a config yet, run `loong onboard` first."
+        long_about = "Capture optional operator preferences for future sessions.\n\nThis command stores advisory working preferences such as preferred name, response density, initiative level, and standing boundaries. Rerun it any time to update or clear saved preferences. It does not replace runtime identity files, and it does not change the primary setup path. If you do not have a config yet, run `loong onboard` first."
     )]
     Personalize {
         /// Config file path to update (defaults to auto-discovery)
