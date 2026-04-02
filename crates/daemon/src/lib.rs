@@ -1467,15 +1467,10 @@ fn render_welcome_banner(config_path: &Path, config: &mvp::config::LoongClawConf
     let mut quick_command_lines = Vec::new();
 
     for action in next_actions {
-        let label = match action.kind {
-            next_actions::SetupNextActionKind::Ask => "First answer",
-            next_actions::SetupNextActionKind::Chat => "Chat",
-            next_actions::SetupNextActionKind::Personalize => "Working preferences",
-            next_actions::SetupNextActionKind::Channel => "Channels",
-            next_actions::SetupNextActionKind::BrowserPreview => "Browser preview",
-            next_actions::SetupNextActionKind::Doctor => "Doctor",
-        };
-        quick_command_lines.push(format!("- {label}: {}", action.command));
+        let action_label = action.label;
+        let action_command = action.command;
+        let quick_command_line = format!("- {action_label}: {action_command}");
+        quick_command_lines.push(quick_command_line);
     }
 
     quick_command_lines.push(format!("- Help: {} --help", CLI_COMMAND_NAME));
@@ -1692,6 +1687,14 @@ mod first_run_entry_tests {
         assert!(
             rendered.contains("loong --help"),
             "welcome banner should point users to root help: {rendered}"
+        );
+        assert!(
+            rendered.contains("- first answer:"),
+            "welcome banner should preserve the shared next-action label for ask: {rendered}"
+        );
+        assert!(
+            rendered.contains("- working preferences:"),
+            "welcome banner should preserve the shared next-action label for personalize: {rendered}"
         );
     }
 }
