@@ -31,12 +31,12 @@
   Rather than ending at a thin model wrapper or a terminal-only demo, LoongClaw is being shaped as a governed runtime base for longer-horizon workflow construction, compound task execution, and closed-loop improvement as real work becomes more demanding.
 </p>
 
-<p>
+<p align="center">
   <a href="README.md">English</a> |
   <a href="README.zh-CN.md">简体中文</a>
 </p>
 
-<p>
+<p align="center">
   <a href="site/index.mdx">Documentation</a> •
   <a href="site/get-started/overview.mdx">Get Started</a> •
   <a href="site/use-loongclaw/configuration-patterns.mdx">Configuration</a> •

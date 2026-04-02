@@ -31,12 +31,12 @@
   它的目标不是停在一层轻量模型封装或一个只在终端里演示的 demo，而是成为一个受治理的运行时底座，去承载更长程的工作流构建、复合任务执行与闭环改进。
 </p>
 
-<p>
+<p align="center">
   <a href="README.md">English</a> |
   <a href="README.zh-CN.md">简体中文</a>
 </p>
 
-<p>
+<p align="center">
   <a href="site/index.mdx">文档总览</a> •
   <a href="site/get-started/overview.mdx">快速上手</a> •
   <a href="site/use-loongclaw/configuration-patterns.mdx">配置模式</a> •
