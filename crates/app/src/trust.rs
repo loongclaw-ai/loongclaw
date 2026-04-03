@@ -117,11 +117,32 @@ pub(crate) fn runtime_binding_missing_trust_event(
     }
 }
 
+pub(crate) fn provider_failover_trust_event(
+    provider_id: &str,
+    source_surface: &str,
+    provenance_ref: &str,
+    reason_code: &str,
+    model: &str,
+) -> TrustEventEnvelope {
+    TrustEventEnvelope {
+        event_kind: TrustEventKind::TrustAttested,
+        actor_id: provider_id.to_owned(),
+        actor_kind: TrustActorKind::ProviderRuntime,
+        source_surface: source_surface.to_owned(),
+        trust_state_hint: TrustStateHint::Degraded,
+        provenance_kind: TrustProvenanceKind::RuntimeBinding,
+        provenance_ref: provenance_ref.to_owned(),
+        reason_code: reason_code.to_owned(),
+        evidence_ref: format!("provider:{provider_id}:model:{model}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         TRUST_EVENT_PAYLOAD_KEY, TrustActorKind, TrustEventEnvelope, TrustEventKind,
         TrustProvenanceKind, TrustStateHint, delegate_child_trust_event, embed_trust_event_payload,
+        provider_failover_trust_event,
     };
     use serde_json::json;
 
@@ -179,5 +200,27 @@ mod tests {
             enriched[TRUST_EVENT_PAYLOAD_KEY]["source_surface"],
             "delegate.inline"
         );
+    }
+
+    #[test]
+    fn provider_failover_trust_event_marks_degraded_provider_runtime_state() {
+        let envelope = provider_failover_trust_event(
+            "openai",
+            "provider.failover",
+            "kernel",
+            "rate_limited",
+            "gpt-4o",
+        );
+
+        assert_eq!(envelope.event_kind, TrustEventKind::TrustAttested);
+        assert_eq!(envelope.actor_kind, TrustActorKind::ProviderRuntime);
+        assert_eq!(envelope.trust_state_hint, TrustStateHint::Degraded);
+        assert_eq!(
+            envelope.provenance_kind,
+            TrustProvenanceKind::RuntimeBinding
+        );
+        assert_eq!(envelope.provenance_ref, "kernel");
+        assert_eq!(envelope.reason_code, "rate_limited");
+        assert_eq!(envelope.evidence_ref, "provider:openai:model:gpt-4o");
     }
 }

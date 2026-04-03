@@ -10331,6 +10331,93 @@ async fn handle_turn_with_runtime_direct_core_tool_persists_trust_binding_missin
     assert_eq!(payloads[0]["trust_event"]["provenance_ref"], "direct");
 }
 
+fn provider_failover_error_fixture() -> String {
+    let error = concat!(
+        "provider request failed for every model candidate ",
+        "(last_reason=rate_limited) | provider_failover=",
+        "{\"reason\":\"rate_limited\",",
+        "\"stage\":\"status_failure\",",
+        "\"model\":\"gpt-4o\",",
+        "\"attempt\":2,",
+        "\"max_attempts\":3,",
+        "\"status_code\":429}",
+    );
+
+    error.to_owned()
+}
+
+#[tokio::test]
+async fn handle_turn_with_runtime_inline_provider_error_persists_provider_failover_trust_event() {
+    let runtime = FakeRuntime::new(vec![], Err(provider_failover_error_fixture()));
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &test_config(),
+            "session-provider-failover-inline",
+            "hello",
+            ProviderErrorMode::InlineMessage,
+            &runtime,
+            ConversationRuntimeBinding::direct(),
+        )
+        .await
+        .expect("inline provider error should still return assistant text");
+
+    assert!(reply.contains("[provider_error]"));
+
+    let persisted = runtime.persisted.lock().expect("persisted lock").clone();
+    let payloads =
+        persisted_conversation_event_payloads_by_name(&persisted, "trust_provider_failover");
+
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0]["provider_id"], "openai");
+    assert_eq!(payloads[0]["binding"], "advisory_only");
+    assert_eq!(payloads[0]["provider_failover"]["reason"], "rate_limited");
+    assert_eq!(payloads[0]["provider_failover"]["model"], "gpt-4o");
+    assert_eq!(payloads[0]["trust_event"]["event_kind"], "trust_attested");
+    assert_eq!(payloads[0]["trust_event"]["actor_kind"], "provider_runtime");
+    assert_eq!(payloads[0]["trust_event"]["trust_state_hint"], "degraded");
+    assert_eq!(
+        payloads[0]["trust_event"]["provenance_ref"],
+        "advisory_only"
+    );
+    assert_eq!(payloads[0]["trust_event"]["reason_code"], "rate_limited");
+}
+
+#[tokio::test]
+async fn handle_turn_with_runtime_propagated_provider_error_persists_provider_failover_trust_event()
+{
+    let runtime = FakeRuntime::new(vec![], Err(provider_failover_error_fixture()));
+    let kernel_ctx = test_kernel_context("provider-failover-trust-event");
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let error = coordinator
+        .handle_turn_with_runtime(
+            &test_config(),
+            "session-provider-failover-propagated",
+            "hello",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            ConversationRuntimeBinding::kernel(&kernel_ctx),
+        )
+        .await
+        .expect_err("propagated provider error should still return the raw error");
+
+    assert!(error.contains("provider_failover="));
+
+    let persisted = runtime.persisted.lock().expect("persisted lock").clone();
+    let payloads =
+        persisted_conversation_event_payloads_by_name(&persisted, "trust_provider_failover");
+
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0]["binding"], "kernel");
+    assert_eq!(payloads[0]["trust_event"]["provenance_ref"], "kernel");
+    assert_eq!(
+        payloads[0]["trust_event"]["evidence_ref"],
+        "provider:openai:model:gpt-4o"
+    );
+}
+
 #[test]
 fn format_provider_error_reply_is_stable() {
     let output = format_provider_error_reply("timeout");

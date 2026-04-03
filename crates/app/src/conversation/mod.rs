@@ -20,6 +20,7 @@ mod session_history;
 mod subagent;
 mod tool_discovery_state;
 mod tool_result_compaction;
+mod trust_projection;
 mod turn_budget;
 mod turn_checkpoint;
 mod turn_coordinator;
