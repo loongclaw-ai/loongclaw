@@ -137,15 +137,34 @@ impl OpenaiCodexOauthSession {
         &self,
         payload: &CallbackPayload,
     ) -> CliResult<OpenaiCodexOauthGrant> {
-        let exchanged = exchange_authorization_code(
-            &self.settings,
-            &self.redirect_uri,
-            &self.code_verifier,
-            &payload.code,
-        )?;
-        let access_token = exchange_id_token_for_api_key(&self.settings, &exchanged.id_token)?;
+        let settings = self.settings.clone();
+        let redirect_uri = self.redirect_uri.clone();
+        let code_verifier = self.code_verifier.clone();
+        let code = payload.code.clone();
+        let access_token = run_oauth_exchange_in_blocking_thread(move || {
+            let exchanged = exchange_authorization_code(
+                &settings,
+                redirect_uri.as_str(),
+                code_verifier.as_str(),
+                code.as_str(),
+            )?;
+            exchange_id_token_for_api_key(&settings, exchanged.id_token.as_str())
+        })?;
 
         Ok(OpenaiCodexOauthGrant { access_token })
+    }
+}
+
+fn run_oauth_exchange_in_blocking_thread<T, F>(task: F) -> CliResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> CliResult<T> + Send + 'static,
+{
+    let join_handle = thread::spawn(task);
+    let join_result = join_handle.join();
+    match join_result {
+        Ok(task_result) => task_result,
+        Err(_) => Err("oauth exchange worker panicked".to_owned()),
     }
 }
 

@@ -182,6 +182,12 @@ struct ProviderPickerOption {
     preview: mvp::config::ProviderConfig,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProviderTransportChoice {
+    ChatCompletions,
+    Responses,
+}
+
 #[derive(Clone, Debug)]
 struct WebSearchPickerOption {
     id: &'static str,
@@ -2222,6 +2228,69 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
         format!("{status_label} · {cue}")
     }
 
+    fn provider_requires_custom_transport_inputs(provider: &mvp::config::ProviderConfig) -> bool {
+        provider.kind == mvp::config::ProviderKind::Custom
+    }
+
+    fn provider_requires_custom_base_url(provider: &mvp::config::ProviderConfig) -> bool {
+        provider.kind.requires_custom_base_url()
+    }
+
+    fn provider_transport_choice_options() -> Vec<(ProviderTransportChoice, SelectionItem)> {
+        vec![
+            (
+                ProviderTransportChoice::ChatCompletions,
+                SelectionItem::new(
+                    "Chat Completions",
+                    Some("broad OpenAI-compatible default"),
+                ),
+            ),
+            (
+                ProviderTransportChoice::Responses,
+                SelectionItem::new(
+                    "Responses",
+                    Some("native Responses API when the provider supports it"),
+                ),
+            ),
+        ]
+    }
+
+    fn default_provider_transport_choice(provider: &mvp::config::ProviderConfig) -> usize {
+        match provider.wire_api {
+            mvp::config::ProviderWireApi::ChatCompletions => 0,
+            mvp::config::ProviderWireApi::Responses => 1,
+        }
+    }
+
+    fn apply_provider_transport_choice(
+        provider: &mut mvp::config::ProviderConfig,
+        choice: ProviderTransportChoice,
+    ) {
+        provider.wire_api = match choice {
+            ProviderTransportChoice::ChatCompletions => mvp::config::ProviderWireApi::ChatCompletions,
+            ProviderTransportChoice::Responses => mvp::config::ProviderWireApi::Responses,
+        };
+    }
+
+    fn validate_custom_provider_base_url(base_url: &str) -> CliResult<()> {
+        let trimmed_base_url = base_url.trim();
+        if trimmed_base_url.is_empty() {
+            return Err("base URL cannot be empty".to_owned());
+        }
+
+        let parse_result = reqwest::Url::parse(trimmed_base_url);
+        let Ok(parsed_url) = parse_result else {
+            return Err("base URL must be a valid absolute URL".to_owned());
+        };
+        let scheme = parsed_url.scheme();
+        let supported_scheme = scheme == "http" || scheme == "https";
+        if !supported_scheme {
+            return Err("base URL must use http:// or https://".to_owned());
+        }
+
+        Ok(())
+    }
+
     fn provider_prefers_oauth_route(preview: &mvp::config::ProviderConfig) -> bool {
         let has_oauth_access_token = preview.oauth_access_token.is_some();
         if has_oauth_access_token {
@@ -2525,6 +2594,9 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
         let mut configured_provider = provider.clone();
         let mut sub_step: u8 = 0;
         let mut model_return_step: u8 = 0;
+        let transport_input_step: u8 = 2;
+        let base_url_input_step: u8 = 3;
+        let auth_input_step: u8 = 4;
 
         loop {
             match sub_step {
@@ -2611,13 +2683,13 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
                                     .ok_or_else(|| "reviewed model missing".to_owned())?;
                                 configured_provider.model = reviewed_model;
                                 model_return_step = 0;
-                                sub_step = 2;
+                                sub_step = transport_input_step;
                                 continue;
                             }
                             if strategy == "auto" {
                                 configured_provider.model = "auto".to_owned();
                                 model_return_step = 0;
-                                sub_step = 2;
+                                sub_step = transport_input_step;
                                 continue;
                             }
                             sub_step = 1;
@@ -2647,11 +2719,76 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
                             }
                             configured_provider.model = trimmed_model.to_owned();
                             model_return_step = 1;
-                            sub_step = 2;
+                            sub_step = transport_input_step;
                         }
                     }
                 }
                 2 => {
+                    if !Self::provider_requires_custom_transport_inputs(&configured_provider) {
+                        sub_step = base_url_input_step;
+                        continue;
+                    }
+
+                    let transport_options = Self::provider_transport_choice_options();
+                    let transport_items = transport_options
+                        .iter()
+                        .map(|(_, item)| item.clone())
+                        .collect::<Vec<_>>();
+                    let default_index =
+                        Self::default_provider_transport_choice(&configured_provider);
+
+                    match self.run_selection_loop(
+                        OnboardWizardStep::Authentication,
+                        format!("{provider_label} transport").as_str(),
+                        transport_items,
+                        default_index,
+                        "Enter confirm",
+                    )? {
+                        SelectionLoopResult::Back => {
+                            sub_step = model_return_step;
+                        }
+                        SelectionLoopResult::Selected(index) => {
+                            let selected_choice = transport_options
+                                .get(index)
+                                .map(|(choice, _)| *choice)
+                                .ok_or_else(|| "invalid provider transport selection".to_owned())?;
+                            Self::apply_provider_transport_choice(
+                                &mut configured_provider,
+                                selected_choice,
+                            );
+                            sub_step = base_url_input_step;
+                        }
+                    }
+                }
+                3 => {
+                    if !Self::provider_requires_custom_base_url(&configured_provider) {
+                        sub_step = auth_input_step;
+                        continue;
+                    }
+
+                    let current_base_url = configured_provider.base_url.clone();
+                    match self.run_input_loop(
+                        OnboardWizardStep::Authentication,
+                        format!("{provider_label} base URL:").as_str(),
+                        current_base_url.as_str(),
+                        "Enter confirm base URL",
+                    )? {
+                        InputLoopResult::Back => {
+                            if Self::provider_requires_custom_transport_inputs(&configured_provider)
+                            {
+                                sub_step = transport_input_step;
+                            } else {
+                                sub_step = model_return_step;
+                            }
+                        }
+                        InputLoopResult::Submitted(base_url) => {
+                            Self::validate_custom_provider_base_url(base_url.as_str())?;
+                            configured_provider.set_base_url(base_url.trim().to_owned());
+                            sub_step = auth_input_step;
+                        }
+                    }
+                }
+                4 => {
                     if !configured_provider.requires_explicit_auth_configuration() {
                         let configured_provider = Box::new(configured_provider);
                         return Ok(ProviderConfigurationLoopResult::Configured(
@@ -2692,7 +2829,15 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
                         "Enter confirm env name",
                     )? {
                         InputLoopResult::Back => {
-                            sub_step = model_return_step;
+                            if Self::provider_requires_custom_base_url(&configured_provider) {
+                                sub_step = base_url_input_step;
+                            } else if Self::provider_requires_custom_transport_inputs(
+                                &configured_provider,
+                            ) {
+                                sub_step = transport_input_step;
+                            } else {
+                                sub_step = model_return_step;
+                            }
                         }
                         InputLoopResult::Submitted(env_name) => {
                             let selected_api_key_env = env_name.trim();
@@ -11122,6 +11267,71 @@ mod tests {
             draft.config.provider.oauth_access_token,
             Some(SecretRef::Inline("oauth-derived-token".to_owned()))
         );
+    }
+
+    #[test]
+    fn auth_step_custom_provider_collects_transport_and_base_url() {
+        let source = ScriptedEventSource::new(Vec::new());
+        let runner = RatatuiOnboardRunner::headless(source).unwrap();
+        let mut draft = sample_draft();
+        let provider_options = runner.provider_picker_options(&draft.config.provider);
+        let current_route_is_oauth =
+            RatatuiOnboardRunner::<ScriptedEventSource>::provider_prefers_oauth_route(
+                &draft.config.provider,
+            );
+        let default_provider_index = provider_options
+            .iter()
+            .position(|option| {
+                if option.kind != draft.config.provider.kind {
+                    return false;
+                }
+                let option_route_is_oauth =
+                    RatatuiOnboardRunner::<ScriptedEventSource>::provider_prefers_oauth_route(
+                        &option.preview,
+                    );
+                option_route_is_oauth == current_route_is_oauth
+            })
+            .expect("current provider index");
+        let custom_provider_index = provider_options
+            .iter()
+            .position(|option| option.kind == mvp::config::ProviderKind::Custom)
+            .expect("custom provider option");
+        let current_web_search_provider =
+            crate::onboard_web_search::current_web_search_provider(&draft.config);
+        let default_web_search_requires_credential = mvp::config::web_search_provider_descriptors()
+            .iter()
+            .find(|descriptor| descriptor.id == current_web_search_provider)
+            .is_some_and(|descriptor| descriptor.requires_api_key);
+
+        let mut events =
+            replace_checked_option_from_first_page(default_provider_index, custom_provider_index);
+        events.push(key(KeyCode::Enter));
+        events.push(key(KeyCode::Enter));
+        events.push(key(KeyCode::Down));
+        events.push(key(KeyCode::Enter));
+        events.push(Event::Paste("https://api.example.com/v1".to_owned()));
+        events.push(key(KeyCode::Enter));
+        events.push(Event::Paste("CUSTOM_PROVIDER_API_KEY".to_owned()));
+        events.push(key(KeyCode::Enter));
+        events.push(key(KeyCode::Enter));
+        if default_web_search_requires_credential {
+            events.push(key(KeyCode::Enter));
+        }
+
+        let source = ScriptedEventSource::new(events);
+        let mut runner = RatatuiOnboardRunner::headless(source).unwrap();
+
+        let result = runner.run_authentication_step(&mut draft).unwrap();
+
+        assert_eq!(result, OnboardFlowStepAction::Next);
+        assert_eq!(draft.config.provider.kind, mvp::config::ProviderKind::Custom);
+        assert_eq!(
+            draft.config.provider.wire_api,
+            mvp::config::ProviderWireApi::Responses
+        );
+        assert_eq!(draft.config.provider.base_url, "https://api.example.com/v1");
+        let configured_env = draft.config.provider.configured_api_key_env_override();
+        assert_eq!(configured_env.as_deref(), Some("CUSTOM_PROVIDER_API_KEY"));
     }
 
     #[test]
