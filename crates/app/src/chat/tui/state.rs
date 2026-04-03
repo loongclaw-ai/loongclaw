@@ -438,6 +438,22 @@ impl Pane {
         self.tool_inspector = None;
     }
 
+    pub(super) fn open_tool_inspector_for_index(&mut self, index: usize) -> bool {
+        let tool_calls = self.collect_tool_calls();
+        let selected_tool = match tool_calls.get(index) {
+            Some(selected_tool) => selected_tool,
+            None => return false,
+        };
+        let selected_tool_id = selected_tool.tool_id.to_string();
+
+        self.tool_inspector = Some(ToolInspectorState {
+            selected_tool_id,
+            scroll_offset: 0,
+        });
+
+        true
+    }
+
     pub(super) fn active_tool_inspector(&self) -> Option<ActiveToolInspector<'_>> {
         let tool_calls = self.collect_tool_calls();
         let selected_index = self.selected_tool_call_index(&tool_calls)?;

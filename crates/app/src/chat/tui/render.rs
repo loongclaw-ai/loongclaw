@@ -469,6 +469,14 @@ fn render_help_overlay(frame: &mut Frame<'_>, area: Rect, palette: &Palette) {
                 ("Esc", "Close dialogs"),
             ],
         ),
+        (
+            "Transcript",
+            &[
+                ("Mouse wheel", "Scroll transcript"),
+                ("Drag left", "Update line selection"),
+                ("Enter on tool", "Open selected tool details"),
+            ],
+        ),
     ];
 
     let mut content_lines: Vec<Line<'_>> = Vec::new();

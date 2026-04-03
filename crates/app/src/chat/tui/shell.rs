@@ -641,6 +641,42 @@ fn open_transcript_review(shell: &mut state::Shell) {
     shell.pane.set_status("Transcript review mode".to_owned());
 }
 
+fn transcript_cursor_tool_call_index(shell: &state::Shell) -> Option<usize> {
+    let total_lines = transcript_line_count(shell);
+    let cursor_line = shell.pane.transcript_cursor_line(total_lines)?;
+    let render_width = terminal_render_width();
+    let hit_target = history::transcript_hit_target_at_plain_line(
+        &shell.pane,
+        render_width,
+        cursor_line,
+        shell.show_thinking,
+    )?;
+
+    match hit_target {
+        history::TranscriptHitTarget::ToolCallLine {
+            tool_call_index, ..
+        } => Some(tool_call_index),
+        history::TranscriptHitTarget::PlainLine(_) => None,
+    }
+}
+
+fn open_tool_inspector_from_transcript_cursor(shell: &mut state::Shell) -> bool {
+    let tool_call_index = match transcript_cursor_tool_call_index(shell) {
+        Some(tool_call_index) => tool_call_index,
+        None => return false,
+    };
+    let opened = shell.pane.open_tool_inspector_for_index(tool_call_index);
+    if !opened {
+        return false;
+    }
+
+    if !shell.focus.has(FocusLayer::ToolInspector) {
+        shell.focus.push(FocusLayer::ToolInspector);
+    }
+
+    true
+}
+
 fn close_transcript_review(shell: &mut state::Shell) {
     shell.pane.clear_transcript_selection();
     shell.focus.focus_composer();
@@ -851,6 +887,10 @@ fn apply_terminal_event(
                     return;
                 }
                 KeyCode::Enter => {
+                    let opened_tool_inspector = open_tool_inspector_from_transcript_cursor(shell);
+                    if opened_tool_inspector {
+                        return;
+                    }
                     close_transcript_review(shell);
                     return;
                 }
@@ -1119,7 +1159,7 @@ fn apply_mouse_event(
 
             if in_history {
                 let viewport_row = row.saturating_sub(shell_areas.history.y);
-                let line_index = history::viewport_plain_line_at(
+                let hit_target = history::viewport_hit_target_at(
                     &shell.pane,
                     shell_areas.history.width,
                     shell_areas.history.height,
@@ -1127,8 +1167,20 @@ fn apply_mouse_event(
                     shell.show_thinking,
                 );
 
-                let Some(line_index) = line_index else {
+                let Some(hit_target) = hit_target else {
                     return;
+                };
+                let line_index = match hit_target {
+                    history::TranscriptHitTarget::PlainLine(plain_line_index) => plain_line_index,
+                    history::TranscriptHitTarget::ToolCallLine {
+                        plain_line_index,
+                        tool_call_index,
+                    } => {
+                        shell.pane.set_status(format!(
+                            "Tool {tool_call_index} selected. Press Enter for details."
+                        ));
+                        plain_line_index
+                    }
                 };
 
                 shell.focus.focus_transcript();
@@ -1999,6 +2051,65 @@ mod tests {
             shell.pane.transcript_selection_range(total_lines),
             Some((4, 5))
         );
+    }
+
+    #[test]
+    fn enter_on_tool_line_opens_matching_tool_inspector() {
+        let mut shell = state::Shell::new("test");
+        let mut textarea = tui_textarea::TextArea::default();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut submit_text: Option<String> = None;
+        let review_event = Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        let enter_event = Event::Key(plain_key(KeyCode::Enter));
+
+        shell
+            .pane
+            .start_tool_call("tool-1", "shell.exec", "git status --short");
+        shell
+            .pane
+            .complete_tool_call("tool-1", true, "diff --git a/file b/file", 12);
+
+        apply_terminal_event(
+            &mut shell,
+            &mut textarea,
+            review_event,
+            &tx,
+            &mut submit_text,
+        );
+
+        let width = 80_usize;
+        let total_lines = transcript_line_count(&shell);
+        let tool_line_index = (0..total_lines)
+            .find(|line_index| {
+                matches!(
+                    history::transcript_hit_target_at_plain_line(
+                        &shell.pane,
+                        width,
+                        *line_index,
+                        shell.show_thinking,
+                    ),
+                    Some(history::TranscriptHitTarget::ToolCallLine { .. })
+                )
+            })
+            .expect("tool line should exist");
+        shell.pane.transcript_review.cursor_line = tool_line_index;
+
+        apply_terminal_event(
+            &mut shell,
+            &mut textarea,
+            enter_event,
+            &tx,
+            &mut submit_text,
+        );
+
+        let selected_tool_id = shell
+            .pane
+            .tool_inspector
+            .as_ref()
+            .map(|tool_inspector| tool_inspector.selected_tool_id.as_str());
+
+        assert_eq!(shell.focus.top(), FocusLayer::ToolInspector);
+        assert_eq!(selected_tool_id, Some("tool-1"));
     }
 
     #[test]

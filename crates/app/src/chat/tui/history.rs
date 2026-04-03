@@ -27,10 +27,26 @@ pub(super) trait PaneView {
 
 const JUMP_TO_LATEST_HINT: &str = " End latest ";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TranscriptHitTarget {
+    PlainLine(usize),
+    ToolCallLine {
+        plain_line_index: usize,
+        tool_call_index: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TranscriptLineTargetKind {
+    Plain,
+    ToolCall(usize),
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct TranscriptDocument {
     pub(super) styled_lines: Vec<Line<'static>>,
     pub(super) plain_lines: Vec<String>,
+    pub(super) line_targets: Vec<TranscriptHitTarget>,
 }
 
 // ---------------------------------------------------------------------------
@@ -126,18 +142,39 @@ pub(super) fn viewport_plain_line_at(
     viewport_row: u16,
     show_thinking: bool,
 ) -> Option<usize> {
+    let hit_target = viewport_hit_target_at(pane, width, height, viewport_row, show_thinking)?;
+
+    match hit_target {
+        TranscriptHitTarget::PlainLine(plain_line_index) => Some(plain_line_index),
+        TranscriptHitTarget::ToolCallLine {
+            plain_line_index, ..
+        } => Some(plain_line_index),
+    }
+}
+
+pub(super) fn viewport_hit_target_at(
+    pane: &impl PaneView,
+    width: u16,
+    height: u16,
+    viewport_row: u16,
+    show_thinking: bool,
+) -> Option<TranscriptHitTarget> {
     if width == 0 || height == 0 {
         return None;
     }
 
-    let plain_lines = transcript_plain_lines(pane, usize::from(width), show_thinking);
-    let wrapped_line_to_plain_line =
-        wrapped_line_to_plain_line_map(plain_lines.as_slice(), usize::from(width));
-    if wrapped_line_to_plain_line.is_empty() {
+    let palette = Palette::plain();
+    let document = build_transcript_document(pane, usize::from(width), show_thinking, &palette);
+    let wrapped_line_targets = wrapped_line_to_target_map(
+        document.plain_lines.as_slice(),
+        document.line_targets.as_slice(),
+        usize::from(width),
+    );
+    if wrapped_line_targets.is_empty() {
         return None;
     }
 
-    let total_wrapped_lines = wrapped_line_to_plain_line.len() as u16;
+    let total_wrapped_lines = wrapped_line_targets.len() as u16;
     let max_scroll = total_wrapped_lines.saturating_sub(height);
     let scroll = if pane.scroll_offset() == 0 {
         max_scroll
@@ -147,19 +184,39 @@ pub(super) fn viewport_plain_line_at(
     let clamped_row = viewport_row.min(height.saturating_sub(1));
     let absolute_row = usize::from(scroll.saturating_add(clamped_row));
 
-    wrapped_line_to_plain_line.get(absolute_row).copied()
+    wrapped_line_targets.get(absolute_row).copied()
 }
 
-fn wrapped_line_to_plain_line_map(plain_lines: &[String], width: usize) -> Vec<usize> {
+pub(super) fn transcript_hit_target_at_plain_line(
+    pane: &impl PaneView,
+    width: usize,
+    plain_line_index: usize,
+    show_thinking: bool,
+) -> Option<TranscriptHitTarget> {
+    let palette = Palette::plain();
+    let document = build_transcript_document(pane, width, show_thinking, &palette);
+
+    document.line_targets.get(plain_line_index).copied()
+}
+
+fn wrapped_line_to_target_map(
+    plain_lines: &[String],
+    line_targets: &[TranscriptHitTarget],
+    width: usize,
+) -> Vec<TranscriptHitTarget> {
     let effective_width = width.max(1);
     let mut wrapped_lines = Vec::new();
 
     for (plain_line_index, plain_line) in plain_lines.iter().enumerate() {
         let char_count = plain_line.chars().count();
         let wrapped_line_count = wrapped_line_count(char_count, effective_width);
+        let line_target = line_targets
+            .get(plain_line_index)
+            .copied()
+            .unwrap_or(TranscriptHitTarget::PlainLine(plain_line_index));
 
         for _ in 0..wrapped_line_count {
-            wrapped_lines.push(plain_line_index);
+            wrapped_lines.push(line_target);
         }
     }
 
@@ -206,6 +263,8 @@ fn build_transcript_document(
     palette: &Palette,
 ) -> TranscriptDocument {
     let mut styled_lines: Vec<Line<'static>> = Vec::new();
+    let mut line_target_kinds: Vec<TranscriptLineTargetKind> = Vec::new();
+    let mut tool_call_index = 0_usize;
 
     let show_welcome = pane.messages().is_empty()
         || (pane.messages().len() == 1
@@ -214,12 +273,24 @@ fn build_transcript_document(
                 .first()
                 .is_some_and(|m| m.role == Role::User));
     if show_welcome {
-        styled_lines.extend(render_welcome(width, palette));
+        let welcome_lines = render_welcome(width, palette);
+        let welcome_line_count = welcome_lines.len();
+        styled_lines.extend(welcome_lines);
+        for _ in 0..welcome_line_count {
+            line_target_kinds.push(TranscriptLineTargetKind::Plain);
+        }
     }
 
     for msg in pane.messages() {
-        styled_lines.extend(render_message(msg, width, show_thinking, palette));
+        let rendered_message =
+            render_message(msg, width, show_thinking, palette, &mut tool_call_index);
+        let rendered_line_count = rendered_message.lines.len();
+        styled_lines.extend(rendered_message.lines);
+        line_target_kinds.extend(rendered_message.line_targets);
         styled_lines.push(Line::default());
+        if rendered_line_count > 0 {
+            line_target_kinds.push(TranscriptLineTargetKind::Plain);
+        }
     }
 
     if pane.streaming_active()
@@ -238,11 +309,25 @@ fn build_transcript_document(
     let plain_lines = styled_lines
         .iter()
         .map(transcript_plain_text_for_line)
-        .collect();
+        .collect::<Vec<_>>();
+    let line_targets = line_target_kinds
+        .iter()
+        .enumerate()
+        .map(|(plain_line_index, target_kind)| match target_kind {
+            TranscriptLineTargetKind::Plain => TranscriptHitTarget::PlainLine(plain_line_index),
+            TranscriptLineTargetKind::ToolCall(tool_call_index) => {
+                TranscriptHitTarget::ToolCallLine {
+                    plain_line_index,
+                    tool_call_index: *tool_call_index,
+                }
+            }
+        })
+        .collect::<Vec<_>>();
 
     TranscriptDocument {
         styled_lines,
         plain_lines,
+        line_targets,
     }
 }
 
@@ -305,13 +390,20 @@ fn transcript_plain_text_for_line(line: &Line<'_>) -> String {
 // Per-message rendering
 // ---------------------------------------------------------------------------
 
+struct RenderedMessage {
+    lines: Vec<Line<'static>>,
+    line_targets: Vec<TranscriptLineTargetKind>,
+}
+
 fn render_message(
     msg: &Message,
     width: usize,
     show_thinking: bool,
     palette: &Palette,
-) -> Vec<Line<'static>> {
+    tool_call_index: &mut usize,
+) -> RenderedMessage {
     let mut lines = Vec::new();
+    let mut line_targets = Vec::new();
 
     match msg.role {
         Role::User => {
@@ -323,6 +415,7 @@ fn render_message(
                     .bg(palette.user_msg)
                     .add_modifier(Modifier::BOLD),
             ));
+            line_targets.push(TranscriptLineTargetKind::Plain);
             for part in &msg.parts {
                 if let MessagePart::Text(text) = part {
                     for line_str in text.lines() {
@@ -330,6 +423,7 @@ fn render_message(
                             format!("  {line_str}"),
                             Style::default().fg(palette.text),
                         ));
+                        line_targets.push(TranscriptLineTargetKind::Plain);
                     }
                 }
             }
@@ -354,11 +448,17 @@ fn render_message(
                     Style::default().fg(palette.brand),
                 ),
             ]));
+            line_targets.push(TranscriptLineTargetKind::Plain);
 
             for part in &msg.parts {
                 match part {
                     MessagePart::Text(text) => {
-                        lines.extend(render_markdown(text, palette));
+                        let markdown_lines = render_markdown(text, palette);
+                        let markdown_line_count = markdown_lines.len();
+                        lines.extend(markdown_lines);
+                        for _ in 0..markdown_line_count {
+                            line_targets.push(TranscriptLineTargetKind::Plain);
+                        }
                     }
                     MessagePart::ThinkBlock(text) => {
                         if show_thinking {
@@ -368,6 +468,7 @@ fn render_message(
                                     .fg(palette.think_block)
                                     .add_modifier(Modifier::ITALIC),
                             ));
+                            line_targets.push(TranscriptLineTargetKind::Plain);
                             for line_str in text.lines() {
                                 lines.push(Line::styled(
                                     format!("    {line_str}"),
@@ -375,6 +476,7 @@ fn render_message(
                                         .fg(palette.think_block)
                                         .add_modifier(Modifier::DIM | Modifier::ITALIC),
                                 ));
+                                line_targets.push(TranscriptLineTargetKind::Plain);
                             }
                         } else {
                             lines.push(Line::styled(
@@ -383,6 +485,7 @@ fn render_message(
                                     .fg(palette.think_block)
                                     .add_modifier(Modifier::DIM),
                             ));
+                            line_targets.push(TranscriptLineTargetKind::Plain);
                         }
                     }
                     MessagePart::ToolCall {
@@ -397,6 +500,8 @@ fn render_message(
                             status,
                             palette,
                         ));
+                        line_targets.push(TranscriptLineTargetKind::ToolCall(*tool_call_index));
+                        *tool_call_index += 1;
                     }
                 }
             }
@@ -406,6 +511,7 @@ fn render_message(
                 "\u{2500}".repeat(width),
                 Style::default().fg(palette.brand),
             ));
+            line_targets.push(TranscriptLineTargetKind::Plain);
         }
         Role::System => {
             for part in &msg.parts {
@@ -417,6 +523,7 @@ fn render_message(
                                 .fg(palette.dim)
                                 .add_modifier(Modifier::ITALIC),
                         ));
+                        line_targets.push(TranscriptLineTargetKind::Plain);
                     }
                 }
             }
@@ -429,13 +536,17 @@ fn render_message(
                             line_str.to_owned(),
                             Style::default().fg(palette.text),
                         ));
+                        line_targets.push(TranscriptLineTargetKind::Plain);
                     }
                 }
             }
         }
     }
 
-    lines
+    RenderedMessage {
+        lines,
+        line_targets,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1039,8 +1150,10 @@ mod tests {
             .push(MessagePart::ThinkBlock("deep thought".into()));
 
         let palette = Palette::dark();
-        let lines = render_message(&msg, 60, false, &palette);
+        let mut tool_call_index = 0_usize;
+        let lines = render_message(&msg, 60, false, &palette, &mut tool_call_index);
         let text: String = lines
+            .lines
             .iter()
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.to_string())
@@ -1056,8 +1169,10 @@ mod tests {
             .push(MessagePart::ThinkBlock("deep thought".into()));
 
         let palette = Palette::dark();
-        let lines = render_message(&msg, 60, true, &palette);
+        let mut tool_call_index = 0_usize;
+        let lines = render_message(&msg, 60, true, &palette, &mut tool_call_index);
         let text: String = lines
+            .lines
             .iter()
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.to_string())
