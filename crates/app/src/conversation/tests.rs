@@ -18037,6 +18037,29 @@ async fn handle_turn_with_runtime_kernel_delegate_calls_subagent_lifecycle_hooks
         child.state,
         crate::session::repository::SessionState::Completed
     );
+    let events = repo
+        .list_recent_events(&child.session_id, 10)
+        .expect("list child events");
+    let delegate_started_event = events
+        .iter()
+        .find(|event| event.event_kind == "delegate_started")
+        .expect("delegate_started event");
+    assert_eq!(
+        delegate_started_event.payload_json["trust_event"]["event_kind"],
+        "delegation_created"
+    );
+    assert_eq!(
+        delegate_started_event.payload_json["trust_event"]["actor_kind"],
+        "delegate_child_runtime"
+    );
+    assert_eq!(
+        delegate_started_event.payload_json["trust_event"]["source_surface"],
+        "delegate.inline"
+    );
+    assert_eq!(
+        delegate_started_event.payload_json["trust_event"]["provenance_ref"],
+        "root-session"
+    );
 
     assert_eq!(
         runtime
@@ -20547,6 +20570,22 @@ async fn handle_turn_with_runtime_executes_delegate_async_via_coordinator_withou
         .expect("list child events");
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].event_kind, "delegate_queued");
+    assert_eq!(
+        events[0].payload_json["trust_event"]["event_kind"],
+        "delegation_created"
+    );
+    assert_eq!(
+        events[0].payload_json["trust_event"]["actor_kind"],
+        "delegate_child_runtime"
+    );
+    assert_eq!(
+        events[0].payload_json["trust_event"]["source_surface"],
+        "delegate.async"
+    );
+    assert_eq!(
+        events[0].payload_json["trust_event"]["provenance_ref"],
+        "root-session"
+    );
     assert!(
         repo.load_terminal_outcome(&child.session_id)
             .expect("load terminal outcome")

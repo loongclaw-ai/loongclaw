@@ -744,6 +744,7 @@ fn execute_discoverable_tool_core_with_config(
     request: ToolCoreRequest,
     config: &runtime_config::ToolRuntimeConfig,
 ) -> Result<ToolCoreOutcome, String> {
+    let request = normalize_shell_request_for_execution(request);
     let tool_name = request.tool_name.clone();
     direct_policy_preflight::run(&request, config)?;
     let timeout_seconds = config.tool_execution.timeout_for_tool(&tool_name);

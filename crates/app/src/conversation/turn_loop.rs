@@ -77,8 +77,8 @@ enum RoundFollowup {
     Tool {
         assistant_preface: String,
         payload: ToolDrivenFollowupPayload,
-        loop_warning_reason: Option<String>,
         tool_request_summary: Option<String>,
+        loop_warning_reason: Option<String>,
     },
     Guard {
         assistant_preface: String,
@@ -490,8 +490,8 @@ fn decide_round_kernel_action(
     let followup = RoundFollowup::Tool {
         assistant_preface: evaluation.assistant_preface,
         payload: tool_payload,
-        loop_warning_reason,
         tool_request_summary: evaluation.tool_request_summary,
+        loop_warning_reason,
     };
 
     match round_budget.followup_decision() {
@@ -516,12 +516,13 @@ fn append_round_followup_messages(
         RoundFollowup::Tool {
             assistant_preface,
             payload,
-            loop_warning_reason,
             tool_request_summary,
+            loop_warning_reason,
         } => append_tool_driven_followup_messages(
             &mut session.messages,
             assistant_preface.as_str(),
             &payload,
+            tool_request_summary.as_deref(),
             user_input,
             &mut session.followup_payload_budget,
             loop_warning_reason.as_deref(),
@@ -550,10 +551,10 @@ fn append_tool_driven_followup_messages(
     messages: &mut Vec<Value>,
     assistant_preface: &str,
     payload: &ToolDrivenFollowupPayload,
+    tool_request_summary: Option<&str>,
     user_input: &str,
     followup_payload_budget: &mut FollowupPayloadBudget,
     loop_warning_reason: Option<&str>,
-    tool_request_summary: Option<&str>,
 ) {
     messages.extend(build_tool_driven_followup_tail_with_request_summary(
         assistant_preface,
@@ -1033,6 +1034,7 @@ mod tests {
             &ToolDrivenFollowupPayload::ToolResult {
                 text: r#"[ok] {"payload_truncated":true,"payload_summary":"..."}"#.to_owned(),
             },
+            None,
             "summarize note.md",
             &mut budget,
             None,
@@ -1060,6 +1062,7 @@ mod tests {
             &ToolDrivenFollowupPayload::ToolFailure {
                 reason: "tool_timeout ...(truncated 200 chars)".to_owned(),
             },
+            None,
             "summarize note.md",
             &mut budget,
             None,
@@ -1087,6 +1090,7 @@ mod tests {
             &ToolDrivenFollowupPayload::ToolResult {
                 text: r#"[ok] {"status":"ok","tool":"external_skills.invoke","tool_call_id":"call-1","payload_summary":"{\"skill_id\":\"demo-skill\",\"display_name\":\"Demo Skill\",\"instructions\":\"Follow the managed skill instruction before answering.\"}","payload_chars":180,"payload_truncated":false}"#.to_owned(),
             },
+            None,
             "summarize note.md",
             &mut budget,
             None,
@@ -1139,6 +1143,7 @@ mod tests {
             &mut messages,
             "",
             &ToolDrivenFollowupPayload::ToolResult { text: tool_result },
+            None,
             "apply the skill",
             &mut budget,
             None,
@@ -1164,6 +1169,7 @@ mod tests {
             &mut messages,
             "preface",
             &ToolDrivenFollowupPayload::ToolResult { text: tool_result },
+            None,
             "summarize README.md",
             &mut budget,
             None,
@@ -1213,6 +1219,7 @@ mod tests {
             &mut messages,
             "preface",
             &ToolDrivenFollowupPayload::ToolResult { text: tool_result },
+            None,
             "summarize the test run",
             &mut budget,
             None,
@@ -1302,6 +1309,7 @@ mod tests {
             &mut messages,
             "preface",
             &ToolDrivenFollowupPayload::ToolResult { text: tool_result },
+            None,
             "find the right tool",
             &mut budget,
             None,
@@ -1521,12 +1529,14 @@ mod tests {
         if let RoundKernelDecision::ContinueWithFollowup(RoundFollowup::Tool {
             assistant_preface,
             payload: ToolDrivenFollowupPayload::ToolResult { text },
+            tool_request_summary,
             loop_warning_reason,
             ..
         }) = decision
         {
             assert_eq!(assistant_preface, "preface");
             assert_eq!(text, "tool output");
+            assert!(tool_request_summary.is_none());
             assert_eq!(loop_warning_reason.as_deref(), Some("warning"));
         } else {
             panic!("unexpected decision: {decision:?}");

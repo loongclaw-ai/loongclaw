@@ -46,7 +46,7 @@ use super::lane_arbiter::{ExecutionLane, LaneArbiterPolicy, LaneDecision};
 use super::persistence::{
     format_provider_error_reply, persist_acp_runtime_events, persist_conversation_event,
     persist_reply_turns_raw_with_mode, persist_reply_turns_with_mode, persist_tool_decision,
-    persist_tool_outcome,
+    persist_tool_outcome, provider_error_reply_body,
 };
 use super::plan_executor::{
     PlanExecutor, PlanNodeError, PlanNodeErrorKind, PlanNodeExecutor, PlanRunFailure,
@@ -78,6 +78,10 @@ use super::subagent::{
     ConstrainedSubagentExecution, ConstrainedSubagentMode, ConstrainedSubagentTerminalReason,
 };
 use super::tool_discovery_state::{TOOL_DISCOVERY_REFRESHED_EVENT_NAME, ToolDiscoveryState};
+use super::trust_projection::{
+    build_delegate_queued_child_session_request, build_delegate_started_child_session_request,
+    emit_provider_failover_trust_event_if_needed, emit_runtime_binding_trust_event_if_needed,
+};
 use super::turn_budget::{
     EscalatingAttemptBudget, SafeLaneBackpressureBudget, SafeLaneContinuationBudgetDecision,
     SafeLaneFailureRouteReason, SafeLaneReplanBudget,
@@ -131,9 +135,9 @@ use crate::session::recovery::{
 use crate::session::repository::TransitionApprovalRequestIfCurrentRequest;
 #[cfg(feature = "memory-sqlite")]
 use crate::session::repository::{
-    ApprovalDecision, ApprovalRequestStatus, CreateSessionWithEventRequest,
-    FinalizeSessionTerminalRequest, NewSessionEvent, NewSessionRecord, SessionKind,
-    SessionRepository, SessionState, TransitionSessionWithEventIfCurrentRequest,
+    ApprovalDecision, ApprovalRequestStatus, FinalizeSessionTerminalRequest, NewSessionEvent,
+    NewSessionRecord, SessionKind, SessionRepository, SessionState,
+    TransitionSessionWithEventIfCurrentRequest,
 };
 
 #[derive(Default)]
@@ -886,6 +890,13 @@ impl ResolvedProviderTurn {
         match self {
             Self::PersistReply(reply) => Some(reply.reply.as_str()),
             Self::ReturnError(_) => None,
+        }
+    }
+
+    fn provider_error_text(&self) -> Option<&str> {
+        match self {
+            Self::PersistReply(reply) => provider_error_reply_body(reply.reply.as_str()),
+            Self::ReturnError(error) => Some(error.error.as_str()),
         }
     }
 }
@@ -2551,6 +2562,11 @@ fn build_provider_turn_tool_terminal_events(
 
     events
 }
+
+#[cfg(test)]
+fn summarize_tool_event_request(intent: &ToolIntent) -> Option<String> {
+    summarize_single_tool_followup_request(intent)
+}
 fn provider_turn_observer_supports_streaming(
     config: &LoongClawConfig,
     observer: Option<&ConversationTurnObserverHandle>,
@@ -2731,6 +2747,13 @@ async fn prepare_provider_turn_continue_phase<R: ConversationRuntime + ?Sized>(
         ingress,
     )
     .await;
+    emit_runtime_binding_trust_event_if_needed(
+        runtime,
+        session_id,
+        &lane_execution.turn_result,
+        binding,
+    )
+    .await;
     observe_provider_turn_tool_batch_terminal(observer, &lane_execution.tool_events);
     let loop_verdict = turn_loop_state.observe_turn(turn_loop_policy, &turn);
     let followup_config =
@@ -2746,7 +2769,7 @@ async fn prepare_provider_turn_continue_phase<R: ConversationRuntime + ?Sized>(
 
 async fn resolve_provider_turn_reply<R: ConversationRuntime + ?Sized>(
     runtime: &R,
-    _config: &LoongClawConfig,
+    config: &LoongClawConfig,
     session_id: &str,
     preparation: &ProviderTurnPreparation,
     continue_phase: &ProviderTurnContinuePhase,
@@ -2874,12 +2897,12 @@ async fn resolve_provider_turn_reply<R: ConversationRuntime + ?Sized>(
                         .assistant_preface
                         .as_str(),
                     followup.clone(),
-                    user_input,
-                    loop_warning_reason.as_deref(),
                     current_continue_phase
                         .lane_execution
                         .tool_request_summary
                         .as_deref(),
+                    user_input,
+                    loop_warning_reason.as_deref(),
                 );
                 if current_continue_phase
                     .lane_execution
@@ -3008,8 +3031,12 @@ async fn resolve_provider_turn_reply<R: ConversationRuntime + ?Sized>(
                             provider_round_index = provider_round_index.saturating_add(1);
                             continue;
                         }
-                        ProviderTurnRequestAction::FinalizeInlineProviderError { .. }
-                        | ProviderTurnRequestAction::ReturnError { .. } => {
+                        ProviderTurnRequestAction::FinalizeInlineProviderError {
+                            reply: provider_error_text,
+                        }
+                        | ProviderTurnRequestAction::ReturnError {
+                            error: provider_error_text,
+                        } => {
                             emit_discovery_first_event(
                                 runtime,
                                 session_id,
@@ -3024,6 +3051,14 @@ async fn resolve_provider_turn_reply<R: ConversationRuntime + ?Sized>(
                                         .lane_execution
                                         .raw_tool_output_requested,
                                 }),
+                                binding,
+                            )
+                            .await;
+                            emit_provider_failover_trust_event_if_needed(
+                                config,
+                                runtime,
+                                session_id,
+                                provider_error_text.as_str(),
                                 binding,
                             )
                             .await;
@@ -3096,6 +3131,7 @@ fn build_turn_reply_followup_messages(
         base_messages,
         assistant_preface,
         followup,
+        None,
         user_input,
         None,
         None,
@@ -3106,9 +3142,9 @@ fn build_turn_reply_followup_messages_with_warning(
     base_messages: &[Value],
     assistant_preface: &str,
     followup: ToolDrivenFollowupPayload,
+    tool_request_summary: Option<&str>,
     user_input: &str,
     loop_warning_reason: Option<&str>,
-    tool_request_summary: Option<&str>,
 ) -> Vec<Value> {
     let mut messages = base_messages.to_vec();
     messages.extend(build_tool_driven_followup_tail_with_request_summary(
@@ -3632,6 +3668,12 @@ async fn apply_resolved_provider_turn<R: ConversationRuntime + ?Sized>(
     binding: ConversationRuntimeBinding<'_>,
     observer: Option<&ConversationTurnObserverHandle>,
 ) -> CliResult<String> {
+    if let Some(error_text) = resolved.provider_error_text() {
+        emit_provider_failover_trust_event_if_needed(
+            config, runtime, session_id, error_text, binding,
+        )
+        .await;
+    }
     let terminal_phase = resolved.terminal_phase(&preparation.session);
     let completion_event = match &terminal_phase {
         ProviderTurnTerminalPhase::PersistReply(phase) => {
@@ -3949,26 +3991,15 @@ pub(super) async fn execute_delegate_tool<R: ConversationRuntime + ?Sized>(
                         next_child_depth,
                         active_children,
                     );
-                    Ok((
-                        CreateSessionWithEventRequest {
-                            session: NewSessionRecord {
-                                session_id: child_session_id.clone(),
-                                kind: SessionKind::DelegateChild,
-                                parent_session_id: Some(session_context.session_id.clone()),
-                                label: child_label.clone(),
-                                state: SessionState::Running,
-                            },
-                            event_kind: "delegate_started".to_owned(),
-                            actor_session_id: Some(session_context.session_id.clone()),
-                            event_payload_json: execution
-                                .spawn_payload_with_runtime_self_continuity(
-                                    &delegate_request.task,
-                                    child_label.as_deref(),
-                                    runtime_self_continuity.as_ref(),
-                                ),
-                        },
-                        execution,
-                    ))
+                    let request = build_delegate_started_child_session_request(
+                        &session_context.session_id,
+                        &child_session_id,
+                        child_label.clone(),
+                        &delegate_request.task,
+                        runtime_self_continuity.as_ref(),
+                        &execution,
+                    );
+                    Ok((request, execution))
                 },
             )?;
 
@@ -4030,24 +4061,14 @@ async fn enqueue_delegate_async_with_runtime<R: ConversationRuntime + ?Sized>(
                 next_child_depth,
                 active_children,
             );
-            let event_payload_json = execution.spawn_payload_with_runtime_self_continuity(
+            let request = build_delegate_queued_child_session_request(
+                &session_context.session_id,
+                &child_session_id,
+                child_label.clone(),
                 &task,
-                child_label.as_deref(),
                 runtime_self_continuity.as_ref(),
+                &execution,
             );
-            let session = NewSessionRecord {
-                session_id: child_session_id.clone(),
-                kind: SessionKind::DelegateChild,
-                parent_session_id: Some(session_context.session_id.clone()),
-                label: child_label.clone(),
-                state: SessionState::Ready,
-            };
-            let request = CreateSessionWithEventRequest {
-                session,
-                event_kind: "delegate_queued".to_owned(),
-                actor_session_id: Some(session_context.session_id.clone()),
-                event_payload_json,
-            };
             Ok((request, execution))
         },
     )?;
@@ -4847,7 +4868,6 @@ async fn execute_provider_turn_lane<R: ConversationRuntime + ?Sized>(
         tool_events,
     }
 }
-
 async fn execute_turn_with_safe_lane_plan<R: ConversationRuntime + ?Sized>(
     config: &LoongClawConfig,
     runtime: &R,
@@ -7525,12 +7545,10 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].tool_call_id, "call-shell");
         assert_eq!(events[0].state, ConversationTurnToolState::Denied);
-        let request_summary = events[0]
-            .request_summary
-            .as_deref()
-            .expect("request summary should be present");
+        let request_summary =
+            summarize_tool_event_request(&turn.tool_intents[0]).expect("request summary");
         let request_summary_json: Value =
-            serde_json::from_str(request_summary).expect("request summary should be valid json");
+            serde_json::from_str(&request_summary).expect("request summary should be valid json");
         assert_eq!(
             request_summary_json,
             json!({
@@ -8698,23 +8716,22 @@ mod tests {
             &fallback,
             ConversationRuntimeBinding::direct(),
         );
-        let outcome = crate::tools::approval::execute_approval_tool_with_runtime_support(
-            loongclaw_contracts::ToolCoreRequest {
-                tool_name: "approval_request_resolve".to_owned(),
-                payload: json!({
-                    "approval_request_id": "apr-auto-success",
-                    "decision": "approve_once",
-                    "session_consent_mode": "auto",
-                }),
+        let outcome = crate::tools::approval::ApprovalResolutionRuntime::resolve_approval_request(
+            &approval_runtime,
+            crate::tools::approval::ApprovalResolutionRequest {
+                current_session_id: "root-session".to_owned(),
+                approval_request_id: "apr-auto-success".to_owned(),
+                decision: ApprovalDecision::ApproveOnce,
+                session_consent_mode: Some(ToolConsentMode::Auto),
+                visibility: crate::config::SessionVisibility::Children,
             },
-            "root-session",
-            &memory_config,
-            &ToolConfig::default(),
-            Some(&approval_runtime),
         )
         .await
         .expect("approval request resolve should succeed");
-        assert_eq!(outcome.payload["approval_request"]["status"], "approved");
+        assert_eq!(
+            outcome.approval_request.status,
+            ApprovalRequestStatus::Approved
+        );
 
         let stored = repo
             .load_session_tool_consent("root-session")
@@ -8787,24 +8804,23 @@ mod tests {
             &fallback,
             ConversationRuntimeBinding::direct(),
         );
-        let outcome = crate::tools::approval::execute_approval_tool_with_runtime_support(
-            loongclaw_contracts::ToolCoreRequest {
-                tool_name: "approval_request_resolve".to_owned(),
-                payload: json!({
-                    "approval_request_id": "apr-auto-retry",
-                    "decision": "approve_once",
-                    "session_consent_mode": "auto",
-                }),
+        let outcome = crate::tools::approval::ApprovalResolutionRuntime::resolve_approval_request(
+            &approval_runtime,
+            crate::tools::approval::ApprovalResolutionRequest {
+                current_session_id: "root-session".to_owned(),
+                approval_request_id: "apr-auto-retry".to_owned(),
+                decision: ApprovalDecision::ApproveOnce,
+                session_consent_mode: Some(ToolConsentMode::Auto),
+                visibility: crate::config::SessionVisibility::Children,
             },
-            "root-session",
-            &memory_config,
-            &ToolConfig::default(),
-            Some(&approval_runtime),
         )
         .await
         .expect("approval request retry should succeed");
 
-        assert_eq!(outcome.payload["approval_request"]["status"], "approved");
+        assert_eq!(
+            outcome.approval_request.status,
+            ApprovalRequestStatus::Approved
+        );
 
         let stored = repo
             .load_session_tool_consent("root-session")
