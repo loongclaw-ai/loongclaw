@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use loongclaw_contracts::ToolCoreRequest;
 use loongclaw_contracts::{Capability, PolicyError};
 use loongclaw_kernel::{PolicyExtension, PolicyExtensionContext};
 
@@ -111,6 +112,70 @@ impl FilePolicyExtension {
         let normalized = super::normalize_without_fs(&combined);
         !normalized.starts_with(effective_root)
     }
+
+    fn authorize_request(
+        &self,
+        tool_name: &str,
+        payload: &serde_json::Value,
+        allowed_capabilities: Option<&std::collections::BTreeSet<Capability>>,
+    ) -> Result<(), PolicyError> {
+        let Some(required_capability) = Self::required_capability(tool_name) else {
+            return Ok(());
+        };
+
+        if let Some(allowed_capabilities) = allowed_capabilities {
+            let capability_is_allowed = allowed_capabilities.contains(&required_capability);
+            if !capability_is_allowed {
+                let extension = self.name().to_owned();
+                let reason = format!(
+                    "tool `{tool_name}` requires capability `{required_capability:?}` not granted to token"
+                );
+                let error = PolicyError::ExtensionDenied { extension, reason };
+                return Err(error);
+            }
+        }
+
+        let Some(root) = self.file_root.as_deref() else {
+            return Ok(());
+        };
+
+        let path_key = if tool_name == "claw.migrate" {
+            "input_path"
+        } else {
+            "path"
+        };
+        let raw_path = payload
+            .get(path_key)
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let has_raw_path = !raw_path.is_empty();
+
+        if !has_raw_path {
+            return Ok(());
+        }
+
+        let path_escapes_root = self.path_escapes_root(raw_path);
+        if !path_escapes_root {
+            return Ok(());
+        }
+
+        let extension = self.name().to_owned();
+        let reason = format!("path `{raw_path}` escapes file root `{}`", root.display());
+        let error = PolicyError::ExtensionDenied { extension, reason };
+        Err(error)
+    }
+}
+
+pub(crate) fn authorize_direct_request_with_config(
+    request: &ToolCoreRequest,
+    runtime_config: &super::runtime_config::ToolRuntimeConfig,
+) -> Result<(), String> {
+    let extension = FilePolicyExtension::new(runtime_config.file_root.clone());
+    let tool_name = super::canonical_tool_name(request.tool_name.as_str());
+    let payload = &request.payload;
+    let result = extension.authorize_request(tool_name, payload, None);
+
+    result.map_err(map_direct_policy_error)
 }
 
 impl PolicyExtension for FilePolicyExtension {
@@ -130,41 +195,34 @@ impl PolicyExtension for FilePolicyExtension {
 
         let tool_name = super::canonical_tool_name(raw_tool_name);
 
-        let Some(required_cap) = Self::required_capability(tool_name) else {
+        let required_capability = Self::required_capability(tool_name);
+        if required_capability.is_none() {
             return Ok(());
-        };
-
-        if !context.token.allowed_capabilities.contains(&required_cap) {
-            return Err(PolicyError::ExtensionDenied {
-                extension: self.name().to_owned(),
-                reason: format!(
-                    "tool `{tool_name}` requires capability `{required_cap:?}` not granted to token"
-                ),
-            });
         }
+        let payload = params
+            .get("payload")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        let token_capabilities = &context.token.allowed_capabilities;
 
-        if let Some(ref root) = self.file_root {
-            // claw.migrate uses `input_path`; all other file tools use `path`.
-            let path_key = if tool_name == "claw.migrate" {
-                "input_path"
-            } else {
-                "path"
-            };
-            let raw_path = params
-                .get("payload")
-                .and_then(|p| p.get(path_key))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+        self.authorize_request(tool_name, &payload, Some(token_capabilities))
+    }
+}
 
-            if !raw_path.is_empty() && self.path_escapes_root(raw_path) {
-                return Err(PolicyError::ExtensionDenied {
-                    extension: self.name().to_owned(),
-                    reason: format!("path `{raw_path}` escapes file root `{}`", root.display()),
-                });
-            }
+#[allow(clippy::wildcard_enum_match_arm)]
+fn map_direct_policy_error(error: PolicyError) -> String {
+    match error {
+        PolicyError::ToolCallDenied { reason, .. } => {
+            format!("policy_denied: {reason}")
         }
-
-        Ok(())
+        PolicyError::ExtensionDenied { reason, .. } => {
+            format!("policy_denied: {reason}")
+        }
+        other @ PolicyError::ExpiredToken { .. } => other.to_string(),
+        other @ PolicyError::MissingCapability { .. } => other.to_string(),
+        other @ PolicyError::PackMismatch { .. } => other.to_string(),
+        other @ PolicyError::RevokedToken { .. } => other.to_string(),
+        _ => "policy_denied: request rejected by policy".to_owned(),
     }
 }
 
@@ -590,5 +648,45 @@ mod tests {
         let ext = FilePolicyExtension::new(Some(root_dir.path().to_path_buf()));
         let escape_path = link_dir.join("sub").join("target.txt");
         assert!(ext.path_escapes_root(escape_path.to_str().unwrap()));
+    }
+
+    #[test]
+    fn direct_request_helper_denies_file_read_escape() {
+        let runtime_config = crate::tools::runtime_config::ToolRuntimeConfig {
+            file_root: Some(PathBuf::from("/home/user/project")),
+            ..crate::tools::runtime_config::ToolRuntimeConfig::default()
+        };
+        let request = ToolCoreRequest {
+            tool_name: "file.read".to_owned(),
+            payload: json!({
+                "path": "../../etc/passwd"
+            }),
+        };
+
+        let error = authorize_direct_request_with_config(&request, &runtime_config)
+            .expect_err("direct helper should deny escaped file.read path");
+
+        assert!(error.contains("policy_denied"), "error={error}");
+        assert!(error.contains("escapes file root"), "error={error}");
+    }
+
+    #[test]
+    fn direct_request_helper_denies_claw_migrate_escape() {
+        let runtime_config = crate::tools::runtime_config::ToolRuntimeConfig {
+            file_root: Some(PathBuf::from("/home/user/project")),
+            ..crate::tools::runtime_config::ToolRuntimeConfig::default()
+        };
+        let request = ToolCoreRequest {
+            tool_name: "claw.migrate".to_owned(),
+            payload: json!({
+                "input_path": "../../etc/passwd"
+            }),
+        };
+
+        let error = authorize_direct_request_with_config(&request, &runtime_config)
+            .expect_err("direct helper should deny escaped claw.migrate input path");
+
+        assert!(error.contains("policy_denied"), "error={error}");
+        assert!(error.contains("escapes file root"), "error={error}");
     }
 }

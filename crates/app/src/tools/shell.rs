@@ -12,7 +12,7 @@ use tokio::{io::AsyncReadExt, process::Command};
 
 pub(super) fn execute_shell_tool_with_config(
     request: ToolCoreRequest,
-    config: &super::runtime_config::ToolRuntimeConfig,
+    _config: &super::runtime_config::ToolRuntimeConfig,
 ) -> Result<ToolCoreOutcome, String> {
     #[cfg(not(feature = "tool-shell"))]
     {
@@ -53,24 +53,6 @@ pub(super) fn execute_shell_tool_with_config(
 
         let normalized_command =
             crate::tools::shell_policy_ext::validate_shell_command_name(command)?;
-        let basename = normalized_command.as_str();
-
-        if config.shell_deny.contains(basename) {
-            return Err(format!(
-                "policy_denied: shell command `{basename}` is blocked by shell policy"
-            ));
-        }
-
-        let explicitly_allowed = config.shell_allow.contains(basename);
-        let default_allows = matches!(
-            config.shell_default_mode,
-            crate::tools::shell_policy_ext::ShellPolicyDefault::Allow
-        );
-        if !explicitly_allowed && !default_allows {
-            return Err(format!(
-                "policy_denied: shell command `{basename}` is not in the allow list (default-deny policy)"
-            ));
-        }
 
         let output = run_shell_async(run_shell_command_with_timeout(
             normalized_command.as_str(),

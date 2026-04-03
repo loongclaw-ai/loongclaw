@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use loongclaw_contracts::PolicyError;
+use loongclaw_contracts::ToolCoreRequest;
 use loongclaw_kernel::{PolicyExtension, PolicyExtensionContext};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +47,71 @@ impl ToolPolicyExtension {
             default_mode: rt.shell_default_mode,
         }
     }
+
+    fn authorize_request(
+        &self,
+        tool_name: &str,
+        payload: Option<&serde_json::Value>,
+    ) -> Result<(), PolicyError> {
+        if tool_name != "shell.exec" {
+            return Ok(());
+        }
+
+        let command = payload
+            .and_then(|payload| payload.get("command"))
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+
+        let Some(command) = command else {
+            return Ok(());
+        };
+
+        let basename = match validate_shell_command_name(command) {
+            Ok(command) => command,
+            Err(reason) => {
+                let tool_name = tool_name.to_owned();
+                let error = PolicyError::ToolCallDenied { tool_name, reason };
+                return Err(error);
+            }
+        };
+
+        let command_is_denied = self.hard_deny.contains(basename.as_str());
+        if command_is_denied {
+            let tool_name = tool_name.to_owned();
+            let reason = format!("command `{basename}` is blocked by shell policy");
+            let error = PolicyError::ToolCallDenied { tool_name, reason };
+            return Err(error);
+        }
+
+        let command_is_allowed = self.allow.contains(basename.as_str());
+        if command_is_allowed {
+            return Ok(());
+        }
+
+        match self.default_mode {
+            ShellPolicyDefault::Allow => Ok(()),
+            ShellPolicyDefault::Deny => {
+                let tool_name = tool_name.to_owned();
+                let reason =
+                    format!("command `{basename}` is not in the allow list (default-deny policy)");
+                let error = PolicyError::ToolCallDenied { tool_name, reason };
+                Err(error)
+            }
+        }
+    }
+}
+
+pub(crate) fn authorize_direct_request_with_config(
+    request: &ToolCoreRequest,
+    runtime_config: &super::runtime_config::ToolRuntimeConfig,
+) -> Result<(), String> {
+    let extension = ToolPolicyExtension::from_config(runtime_config);
+    let tool_name = super::canonical_tool_name(request.tool_name.as_str());
+    let payload = &request.payload;
+    let result = extension.authorize_request(tool_name, Some(payload));
+
+    result.map_err(map_direct_policy_error)
 }
 
 pub(crate) fn validate_shell_command_name(command: &str) -> Result<String, String> {
@@ -88,51 +154,7 @@ impl PolicyExtension for ToolPolicyExtension {
         };
 
         let (tool_name, payload) = effective_shell_request(params);
-        if tool_name != "shell.exec" {
-            return Ok(());
-        }
-
-        let command = payload
-            .and_then(|payload| payload.get("command"))
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
-
-        let Some(command) = command else {
-            return Ok(());
-        };
-
-        let basename = match validate_shell_command_name(command) {
-            Ok(command) => command,
-            Err(reason) => {
-                return Err(PolicyError::ToolCallDenied {
-                    tool_name: tool_name.to_owned(),
-                    reason,
-                });
-            }
-        };
-
-        if self.hard_deny.contains(basename.as_str()) {
-            return Err(PolicyError::ToolCallDenied {
-                tool_name: tool_name.to_owned(),
-                reason: format!("command `{basename}` is blocked by shell policy"),
-            });
-        }
-
-        if self.allow.contains(basename.as_str()) {
-            return Ok(());
-        }
-
-        // Default mode for unknown commands
-        match self.default_mode {
-            ShellPolicyDefault::Allow => Ok(()),
-            ShellPolicyDefault::Deny => Err(PolicyError::ToolCallDenied {
-                tool_name: tool_name.to_owned(),
-                reason: format!(
-                    "command `{basename}` is not in the allow list (default-deny policy)"
-                ),
-            }),
-        }
+        self.authorize_request(tool_name, payload)
     }
 }
 
@@ -154,6 +176,23 @@ fn effective_shell_request(params: &serde_json::Value) -> (&str, Option<&serde_j
         .unwrap_or(tool_name);
     let invoked_payload = payload.and_then(|payload| payload.get("arguments"));
     (invoked_tool_name, invoked_payload)
+}
+
+#[allow(clippy::wildcard_enum_match_arm)]
+fn map_direct_policy_error(error: PolicyError) -> String {
+    match error {
+        PolicyError::ToolCallDenied { reason, .. } => {
+            format!("policy_denied: {reason}")
+        }
+        PolicyError::ExtensionDenied { reason, .. } => {
+            format!("policy_denied: {reason}")
+        }
+        other @ PolicyError::ExpiredToken { .. } => other.to_string(),
+        other @ PolicyError::MissingCapability { .. } => other.to_string(),
+        other @ PolicyError::PackMismatch { .. } => other.to_string(),
+        other @ PolicyError::RevokedToken { .. } => other.to_string(),
+        _ => "policy_denied: request rejected by policy".to_owned(),
+    }
 }
 
 #[cfg(test)]
@@ -642,5 +681,22 @@ mod tests {
         let params = shell_params("anything_unknown");
         let ctx = make_context(&pack, &token, &caps, Some(&params));
         assert!(ext.authorize_extension(&ctx).is_ok());
+    }
+
+    #[test]
+    fn direct_request_helper_uses_runtime_shell_policy() {
+        let runtime_config = make_rt(&[], &[], ShellPolicyDefault::Deny);
+        let request = ToolCoreRequest {
+            tool_name: "shell.exec".to_owned(),
+            payload: json!({
+                "command": "echo"
+            }),
+        };
+
+        let error = authorize_direct_request_with_config(&request, &runtime_config)
+            .expect_err("direct helper should enforce runtime shell policy");
+
+        assert!(error.contains("policy_denied"), "error={error}");
+        assert!(error.contains("allow list"), "error={error}");
     }
 }

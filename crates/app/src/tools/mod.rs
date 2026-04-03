@@ -754,6 +754,7 @@ fn execute_discoverable_tool_core_with_config(
     config: &runtime_config::ToolRuntimeConfig,
 ) -> Result<ToolCoreOutcome, String> {
     let tool_name = request.tool_name.clone();
+    apply_direct_tool_policy_extensions(&request, config)?;
     let timeout_seconds = config.tool_execution.timeout_for_tool(&tool_name);
 
     let inner = {
@@ -767,6 +768,15 @@ fn execute_discoverable_tool_core_with_config(
         }
         _ => inner(),
     }
+}
+
+fn apply_direct_tool_policy_extensions(
+    request: &ToolCoreRequest,
+    config: &runtime_config::ToolRuntimeConfig,
+) -> Result<(), String> {
+    shell_policy_ext::authorize_direct_request_with_config(request, config)?;
+    file_policy_ext::authorize_direct_request_with_config(request, config)?;
+    Ok(())
 }
 
 fn tool_uses_dedicated_timeout(tool_name: &str) -> bool {
