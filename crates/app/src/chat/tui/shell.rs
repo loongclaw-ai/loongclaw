@@ -277,7 +277,7 @@ async fn run_turn(
 fn apply_ui_event(shell: &mut state::Shell, event: UiEvent) {
     match event {
         UiEvent::Tick => {
-            shell.pane.tick_spinner();
+            shell.pane.tick_animations();
         }
         UiEvent::Terminal(_) => {}
         UiEvent::Token {
@@ -1279,7 +1279,7 @@ async fn run_inner(
     if shell.dirty {
         // Render a deterministic first frame before the async event loop starts
         // so PTY clients observe a stable fullscreen surface immediately.
-        shell.pane.tick_spinner();
+        shell.pane.tick_animations();
         guard.draw(&shell, &textarea, &palette)?;
         shell.dirty = false;
     }
@@ -1373,7 +1373,7 @@ async fn run_inner(
 
         // ── Phase 2: Render (only when dirty) ─────────────────────────
         if shell.dirty {
-            shell.pane.tick_spinner();
+            shell.pane.tick_animations();
             guard.draw(&shell, &textarea, &palette)?;
             shell.dirty = false;
         }
@@ -1433,7 +1433,9 @@ async fn run_inner(
             }
 
             _ = tick.tick() => {
-                shell.dirty = true; // tick always triggers render
+                if shell.pane.needs_periodic_redraw() {
+                    shell.dirty = true;
+                }
             }
         }
 

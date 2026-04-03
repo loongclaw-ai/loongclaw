@@ -383,17 +383,35 @@ impl Pane {
         pct
     }
 
-    /// Advances spinner and dots frames based on elapsed time since the last
-    /// tick call.
-    pub(super) fn tick_spinner(&mut self) {
+    pub(super) fn needs_periodic_redraw(&self) -> bool {
+        self.agent_running || self.status_message.is_some()
+    }
+
+    /// Advances visible animation state and expires stale transient status
+    /// messages. Returns `true` when the rendered output changed.
+    pub(super) fn tick_animations(&mut self) -> bool {
+        let mut changed = false;
         let elapsed = self.last_spinner_tick.elapsed().as_millis();
-        if elapsed >= SPINNER_INTERVAL_MS {
+
+        if self.agent_running && elapsed >= SPINNER_INTERVAL_MS {
             self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES;
             if elapsed >= DOTS_INTERVAL_MS {
                 self.dots_frame = (self.dots_frame + 1) % DOTS_FRAMES;
             }
             self.last_spinner_tick = Instant::now();
+            changed = true;
         }
+
+        let status_expired = self
+            .status_message
+            .as_ref()
+            .is_some_and(|(_, when)| when.elapsed().as_secs() >= 10);
+        if status_expired {
+            self.status_message = None;
+            changed = true;
+        }
+
+        changed
     }
 
     pub(super) fn set_status(&mut self, msg: String) {
@@ -793,13 +811,39 @@ mod tests {
     }
 
     #[test]
-    fn spinner_tick_advances() {
+    fn spinner_tick_advances_while_agent_running() {
         let mut pane = Pane::new("sess-1");
+        pane.agent_running = true;
         let initial_frame = pane.spinner_frame;
         // Force the tick interval to have elapsed
         pane.last_spinner_tick = Instant::now() - std::time::Duration::from_millis(100);
-        pane.tick_spinner();
+        let changed = pane.tick_animations();
+        assert!(changed);
         assert_ne!(pane.spinner_frame, initial_frame);
+    }
+
+    #[test]
+    fn idle_pane_skips_periodic_redraw() {
+        let pane = Pane::new("sess-1");
+
+        assert!(!pane.needs_periodic_redraw());
+    }
+
+    #[test]
+    fn status_message_keeps_periodic_redraw_until_expired() {
+        let mut pane = Pane::new("sess-1");
+        pane.status_message = Some((
+            "recent status".to_owned(),
+            Instant::now() - std::time::Duration::from_secs(11),
+        ));
+
+        assert!(pane.needs_periodic_redraw());
+
+        let changed = pane.tick_animations();
+
+        assert!(changed);
+        assert!(pane.status_message.is_none());
+        assert!(!pane.needs_periodic_redraw());
     }
 
     #[test]

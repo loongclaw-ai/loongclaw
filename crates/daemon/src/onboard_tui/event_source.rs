@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::time::Duration;
 
 use crossterm::event::{self, Event};
 
@@ -6,11 +7,41 @@ pub(crate) trait OnboardEventSource {
     fn next_event(&mut self) -> std::io::Result<Event>;
 }
 
-pub(crate) struct CrosstermEventSource;
+#[derive(Default)]
+pub(crate) struct CrosstermEventSource {
+    buffered_events: VecDeque<Event>,
+}
 
 impl OnboardEventSource for CrosstermEventSource {
     fn next_event(&mut self) -> std::io::Result<Event> {
-        event::read()
+        if let Some(buffered_event) = self.buffered_events.pop_front() {
+            return Ok(buffered_event);
+        }
+
+        let first_event = event::read()?;
+        if !matches!(
+            first_event,
+            Event::Resize(..) | Event::FocusGained | Event::FocusLost
+        ) {
+            return Ok(first_event);
+        }
+
+        let mut latest_resize_event = first_event;
+        while event::poll(Duration::from_millis(0))? {
+            let pending_event = event::read()?;
+            if matches!(
+                pending_event,
+                Event::Resize(..) | Event::FocusGained | Event::FocusLost
+            ) {
+                latest_resize_event = pending_event;
+                continue;
+            }
+
+            self.buffered_events.push_back(pending_event);
+            break;
+        }
+
+        Ok(latest_resize_event)
     }
 }
 

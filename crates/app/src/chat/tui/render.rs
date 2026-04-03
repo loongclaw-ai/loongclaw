@@ -60,6 +60,11 @@ pub(super) fn draw(
     palette: &Palette,
 ) {
     let area = frame.area();
+    if should_use_compact_shell(area) {
+        render_compact_shell(frame, state, palette);
+        return;
+    }
+
     let input_height = textarea.lines().len() as u16 + 2; // +2 for borders
     let areas = layout::compute(area, input_height);
 
@@ -116,6 +121,102 @@ pub(super) fn draw(
 
     if state.focus().has(FocusLayer::Help) {
         render_help_overlay(frame, area, palette);
+    }
+}
+
+const COMPACT_CHAT_MIN_WIDTH: u16 = 32;
+const COMPACT_CHAT_MIN_HEIGHT: u16 = 10;
+
+fn should_use_compact_shell(area: Rect) -> bool {
+    area.width < COMPACT_CHAT_MIN_WIDTH || area.height < COMPACT_CHAT_MIN_HEIGHT
+}
+
+fn render_compact_shell(frame: &mut Frame<'_>, state: &impl ShellView, palette: &Palette) {
+    let area = frame.area();
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let pane = state.pane();
+    let scroll_offset = PaneView::scroll_offset(pane);
+    let transcript_width = usize::from(area.width.saturating_sub(2).max(1));
+    let transcript_lines =
+        history::transcript_plain_lines(pane, transcript_width, state.show_thinking());
+    let visible_body_lines = usize::from(area.height.saturating_sub(2).max(1));
+
+    let body_lines = if transcript_lines.is_empty() {
+        vec!["Ready for chat.".to_owned()]
+    } else {
+        let start_index = transcript_lines.len().saturating_sub(visible_body_lines);
+        transcript_lines
+            .into_iter()
+            .skip(start_index)
+            .collect::<Vec<_>>()
+    };
+
+    let header_line = Line::from(vec![
+        Span::styled(
+            " LOONGCLAW ",
+            Style::default()
+                .fg(palette.brand)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            compact_focus_label(state.focus().top()),
+            Style::default().fg(palette.info),
+        ),
+        Span::styled(" | ", Style::default().fg(palette.separator)),
+        Span::styled(
+            compact_scroll_label(scroll_offset),
+            Style::default().fg(if scroll_offset == 0 {
+                palette.success
+            } else {
+                palette.warning
+            }),
+        ),
+    ]);
+    frame.render_widget(
+        Paragraph::new(header_line),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+
+    let footer_hint = pane
+        .input_hint()
+        .unwrap_or("Keep resizing for the full layout.");
+    let footer_line = Line::styled(footer_hint.to_owned(), Style::default().fg(palette.dim));
+    let footer_area = Rect::new(
+        area.x,
+        area.y + area.height.saturating_sub(1),
+        area.width,
+        1,
+    );
+    frame.render_widget(Paragraph::new(footer_line), footer_area);
+
+    let body_height = area.height.saturating_sub(2);
+    if body_height == 0 {
+        return;
+    }
+
+    let body_area = Rect::new(area.x, area.y + 1, area.width, body_height);
+    let body_widget = Paragraph::new(body_lines.join("\n")).wrap(Wrap { trim: false });
+    frame.render_widget(body_widget, body_area);
+}
+
+fn compact_focus_label(focus: FocusLayer) -> &'static str {
+    match focus {
+        FocusLayer::Composer => "COMPOSE",
+        FocusLayer::Transcript => "REVIEW",
+        FocusLayer::Help => "HELP",
+        FocusLayer::ToolInspector => "TOOL",
+        FocusLayer::ClarifyDialog => "QUESTION",
+    }
+}
+
+fn compact_scroll_label(scroll_offset: u16) -> &'static str {
+    if scroll_offset == 0 {
+        "LIVE"
+    } else {
+        "SCROLLED"
     }
 }
 
@@ -882,6 +983,31 @@ mod tests {
         assert!(
             text.contains("replace: draft -> final"),
             "tool inspector should render multiline args content"
+        );
+    }
+
+    #[test]
+    fn draw_uses_compact_shell_on_narrow_terminal() {
+        let backend = TestBackend::new(28, 8);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let shell = TestShell::idle();
+        let palette = Palette::dark();
+        let textarea = tui_textarea::TextArea::default();
+
+        terminal
+            .draw(|f| {
+                draw(f, &shell, &textarea, &palette);
+            })
+            .expect("draw");
+
+        let text = buffer_text(&terminal);
+        assert!(
+            text.contains("LOONGCLAW"),
+            "compact shell should keep the product identity visible: {text:?}"
+        );
+        assert!(
+            text.contains("Type a message"),
+            "compact shell should still render body content on narrow terminals: {text:?}"
         );
     }
 

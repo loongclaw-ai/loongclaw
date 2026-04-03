@@ -62,8 +62,10 @@ const HERO_INTRO_LINES: [&str; 2] = [
     "We found a reusable setup on this machine.",
     "Choose the fastest way to first success.",
 ];
-const MIN_FULL_SCREEN_WIDTH: u16 = 72;
-const MIN_FULL_SCREEN_HEIGHT: u16 = 22;
+const FULL_LAYOUT_WIDTH: u16 = 72;
+const FULL_LAYOUT_HEIGHT: u16 = 22;
+const MIN_RENDER_WIDTH: u16 = 24;
+const MIN_RENDER_HEIGHT: u16 = 8;
 const INLINE_LOGO_MIN_WIDTH: u16 = 14;
 const INLINE_LOGO_MIN_HEIGHT: u16 = 6;
 #[allow(dead_code)]
@@ -201,6 +203,13 @@ struct OnboardAcpBackendOption {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalDensity {
+    Full,
+    Compact,
+    Minimal,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct BrandStageMetrics {
     column_width: u16,
     wordmark_height: u16,
@@ -245,7 +254,7 @@ impl RatatuiOnboardRunner<CrosstermEventSource> {
 
         Ok(Self {
             terminal,
-            event_source: CrosstermEventSource,
+            event_source: CrosstermEventSource::default(),
             owns_tty: true,
             provider_selection_plan: ProviderSelectionPlan::default(),
             openai_codex_oauth_start: crate::openai_codex_oauth::start_openai_codex_oauth_flow,
@@ -311,20 +320,94 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
     // Terminal size guard
     // -----------------------------------------------------------------------
 
-    /// Returns `true` when the terminal area is too small to render dialog
-    /// boxes without garbled output.
-    fn is_terminal_too_small(area: Rect) -> bool {
-        area.width < MIN_FULL_SCREEN_WIDTH || area.height < MIN_FULL_SCREEN_HEIGHT
+    fn terminal_density(area: Rect) -> TerminalDensity {
+        if area.width < MIN_RENDER_WIDTH || area.height < MIN_RENDER_HEIGHT {
+            return TerminalDensity::Minimal;
+        }
+
+        if area.width < FULL_LAYOUT_WIDTH || area.height < FULL_LAYOUT_HEIGHT {
+            return TerminalDensity::Compact;
+        }
+
+        TerminalDensity::Full
     }
 
-    /// Render a minimal "resize your terminal" fallback message.
-    fn render_too_small_fallback(frame: &mut ratatui::Frame<'_>) {
-        let msg = Paragraph::new(format!(
-            "Terminal too small.\nResize to at least {}x{}.",
-            MIN_FULL_SCREEN_WIDTH, MIN_FULL_SCREEN_HEIGHT
-        ))
-        .alignment(Alignment::Center);
-        frame.render_widget(msg, frame.area());
+    fn render_shell_background(frame: &mut ratatui::Frame<'_>) {
+        let palette = Self::palette();
+        let background = Block::default().style(Style::default().bg(palette.surface));
+        frame.render_widget(background, frame.area());
+    }
+
+    fn render_minimal_shell(frame: &mut ratatui::Frame<'_>, title: &str, footer_hint: &str) {
+        Self::render_shell_background(frame);
+
+        let palette = Self::palette();
+        let area = frame.area();
+        let title_text = title.trim();
+        let help_line = if area.width < 28 {
+            if footer_hint.contains("Enter") {
+                "Enter  Esc".to_owned()
+            } else {
+                "Esc  ?".to_owned()
+            }
+        } else {
+            Self::showcase_control_copy(footer_hint, true)
+        };
+        let compact_label = Self::compact_brand_label(area.width);
+        let mut lines = Vec::new();
+        if !compact_label.is_empty() {
+            lines.push(Line::styled(
+                format!(" {compact_label} "),
+                Style::default()
+                    .fg(palette.brand)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            lines.push(Line::default());
+        }
+        lines.push(Line::styled(
+            title_text.to_owned(),
+            Style::default()
+                .fg(palette.text)
+                .add_modifier(Modifier::BOLD),
+        ));
+        lines.push(Line::styled(
+            "Compact fullscreen mode is active.",
+            Style::default().fg(palette.secondary_text),
+        ));
+        lines.push(Line::styled(
+            format!("Current size: {}x{}", area.width, area.height),
+            Style::default().fg(palette.secondary_text),
+        ));
+        lines.push(Line::styled(
+            format!(
+                "Widen toward {}x{} for the full deck.",
+                FULL_LAYOUT_WIDTH, FULL_LAYOUT_HEIGHT
+            ),
+            Style::default().fg(palette.muted_text),
+        ));
+        lines.push(Line::default());
+        lines.push(Line::styled(
+            help_line,
+            Style::default().fg(palette.secondary_text),
+        ));
+        let paragraph = Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: false });
+        frame.render_widget(paragraph, area);
+    }
+
+    fn compact_brand_label(width: u16) -> &'static str {
+        if width >= 10 {
+            return "LOONGCLAW";
+        }
+        if width >= 5 {
+            return "LOONG";
+        }
+        if width >= 2 {
+            return "LC";
+        }
+
+        ""
     }
 
     fn brand_wordmark_lines(width: u16) -> Vec<Line<'static>> {
@@ -524,26 +607,44 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
         }
 
         let palette = Self::palette();
+        let compact_label = Self::compact_brand_label(width);
+        if compact_label.is_empty() {
+            return Vec::new();
+        }
+
         vec![Line::from(Span::styled(
-            "LOONGCLAW",
+            compact_label,
             Style::default()
                 .fg(palette.brand)
                 .add_modifier(Modifier::BOLD),
         ))]
     }
 
+    #[cfg(test)]
     fn screen_header_line(title: &str, hint: &str) -> Line<'static> {
+        Self::screen_header_line_for_width(title, hint, u16::MAX)
+    }
+
+    fn screen_header_line_for_width(title: &str, hint: &str, width: u16) -> Line<'static> {
         let palette = Self::palette();
+        let brand_label = Self::compact_brand_label(width);
+        let hint_text = if width >= 44 {
+            hint.to_owned()
+        } else if hint.contains("Esc") && hint.contains("?") {
+            "Esc  ?".to_owned()
+        } else {
+            hint.to_owned()
+        };
         Line::from(vec![
             Span::styled(
-                " LOONGCLAW ",
+                format!(" {brand_label} "),
                 Style::default()
                     .fg(palette.brand)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(format!(" {title} "), Style::default().fg(palette.text)),
             Span::raw(" "),
-            Span::styled(hint.to_owned(), Style::default().fg(palette.muted_text)),
+            Span::styled(hint_text, Style::default().fg(palette.muted_text)),
         ])
     }
 
@@ -4442,18 +4543,26 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
 
         self.terminal
             .draw(|frame| {
-                if Self::is_terminal_too_small(frame.area()) {
-                    Self::render_too_small_fallback(frame);
+                let density = Self::terminal_density(frame.area());
+                if density == TerminalDensity::Minimal {
+                    Self::render_minimal_shell(frame, &title_owned, &hint_owned);
                     return;
                 }
 
-                frame.render_widget(Clear, frame.area());
-                let areas = layout::compute_layout(frame.area(), true);
+                Self::render_shell_background(frame);
+                let wide_spine = density == TerminalDensity::Full;
+                let areas = layout::compute_layout(frame.area(), wide_spine);
                 frame.render_widget(
-                    Paragraph::new(Self::screen_header_line(&title_owned, &header_hint_owned)),
+                    Paragraph::new(Self::screen_header_line_for_width(
+                        &title_owned,
+                        &header_hint_owned,
+                        areas.header.width,
+                    )),
                     areas.header,
                 );
-                frame.render_widget(ProgressSpineWidget::new(step), areas.spine);
+                if wide_spine {
+                    frame.render_widget(ProgressSpineWidget::new(step), areas.spine);
+                }
                 let content_area = Self::shell_content_area(areas.content);
                 render_content(frame, content_area);
                 let footer_line =
@@ -4481,15 +4590,19 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
 
         self.terminal
             .draw(|frame| {
-                if Self::is_terminal_too_small(frame.area()) {
-                    Self::render_too_small_fallback(frame);
+                if Self::terminal_density(frame.area()) == TerminalDensity::Minimal {
+                    Self::render_minimal_shell(frame, &title_owned, &hint_owned);
                     return;
                 }
 
-                frame.render_widget(Clear, frame.area());
+                Self::render_shell_background(frame);
                 let areas = layout::compute_layout(frame.area(), false);
                 frame.render_widget(
-                    Paragraph::new(Self::screen_header_line(&title_owned, &header_hint_owned)),
+                    Paragraph::new(Self::screen_header_line_for_width(
+                        &title_owned,
+                        &header_hint_owned,
+                        areas.header.width,
+                    )),
                     areas.header,
                 );
                 let content_area = Self::shell_content_area(areas.content);
@@ -4541,15 +4654,19 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
         let captured_logo_area = None;
         self.terminal
             .draw(|frame| {
-                if Self::is_terminal_too_small(frame.area()) {
-                    Self::render_too_small_fallback(frame);
+                if Self::terminal_density(frame.area()) == TerminalDensity::Minimal {
+                    Self::render_minimal_shell(frame, &title_owned, &footer_hint_owned);
                     return;
                 }
 
-                frame.render_widget(Clear, frame.area());
+                Self::render_shell_background(frame);
                 let shell = Self::showcase_shell_sections(frame.area());
                 frame.render_widget(
-                    Paragraph::new(Self::screen_header_line(&title_owned, "Esc cancel  ? help")),
+                    Paragraph::new(Self::screen_header_line_for_width(
+                        &title_owned,
+                        "Esc cancel  ? help",
+                        shell[0].width,
+                    )),
                     shell[0],
                 );
 
@@ -7788,6 +7905,48 @@ mod tests {
         assert_eq!(support.terminal, InlineLogoTerminal::WezTerm);
         assert_eq!(support.protocol, InlineLogoProtocol::Iterm2);
         assert!(!support.tmux_passthrough);
+    }
+
+    #[test]
+    fn terminal_density_prefers_compact_mode_before_minimal_fallback() {
+        let compact_area = Rect::new(0, 0, 60, 18);
+        let minimal_area = Rect::new(0, 0, 20, 6);
+        let full_area = Rect::new(0, 0, 96, 28);
+
+        assert_eq!(
+            RatatuiOnboardRunner::<ScriptedEventSource>::terminal_density(compact_area),
+            TerminalDensity::Compact
+        );
+        assert_eq!(
+            RatatuiOnboardRunner::<ScriptedEventSource>::terminal_density(minimal_area),
+            TerminalDensity::Minimal
+        );
+        assert_eq!(
+            RatatuiOnboardRunner::<ScriptedEventSource>::terminal_density(full_area),
+            TerminalDensity::Full
+        );
+    }
+
+    #[test]
+    fn minimal_shell_keeps_branded_resize_copy_visible() {
+        let backend = TestBackend::new(20, 6);
+        let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+
+        terminal
+            .draw(|frame| {
+                RatatuiOnboardRunner::<ScriptedEventSource>::render_minimal_shell(
+                    frame,
+                    "hero",
+                    "Enter begin  ? help  Esc cancel",
+                );
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(
+            rendered.contains("LOONGCLAW") || rendered.contains("LOONG") || rendered.contains("LC"),
+            "minimal shell should keep product branding visible: {rendered}"
+        );
     }
 
     #[test]
