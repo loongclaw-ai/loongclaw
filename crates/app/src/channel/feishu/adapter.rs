@@ -13,19 +13,24 @@ use crate::channel::feishu::api::resources::docs::{
 };
 use crate::channel::feishu::api::resources::messages::{
     self, FeishuMessageHistoryQuery, FeishuOutboundMessageBody, fetch_message_detail,
-    fetch_message_history, reply_outbound_message, send_outbound_message, update_card,
+    fetch_message_history, update_card,
 };
 use crate::channel::feishu::api::{
     FeishuOperatorOutboundMessageInput, resolve_operator_outbound_message_body,
 };
-use crate::channel::traits::documents::{Document, DocumentContent, DocumentType, DocumentsApi};
+use crate::channel::feishu::send::deliver_feishu_message_body;
+use crate::channel::traits::documents::{
+    Document, DocumentContent, DocumentCreateApi, DocumentReadApi, DocumentType, DocumentWriteApi,
+    DocumentsApi,
+};
 use crate::channel::traits::error::{ApiError, ApiResult};
 use crate::channel::traits::messaging::{
-    Message, MessageContent, MessagingApi, PaginatedResult, Pagination, SendOptions,
+    Message, MessageContent, MessageDeleteApi, MessageEditApi, MessageQueryApi, MessageSendApi,
+    MessagingApi, PaginatedResult, Pagination, SendOptions,
 };
 use crate::channel::{
     ChannelAdapter, ChannelInboundMessage, ChannelOutboundMessage, ChannelOutboundTarget,
-    ChannelOutboundTargetKind, ChannelPlatform, ChannelSession,
+    ChannelPlatform, ChannelSession,
 };
 use crate::config::{FeishuIntegrationConfig, ResolvedFeishuChannelConfig};
 
@@ -39,6 +44,13 @@ pub(super) const FEISHU_ACK_REACTIONS: &[&str] = &[
     "DONE",
     "CheckMark",
 ];
+const FEISHU_MESSAGE_HISTORY_MAX_PAGE_SIZE: usize = 50;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TenantAccessTokenResolution {
+    Fresh,
+    PreferCached,
+}
 
 fn pick_uniform_index(len: usize) -> usize {
     debug_assert!(len > 0);
@@ -223,47 +235,15 @@ impl FeishuAdapter {
         target: &ChannelOutboundTarget,
         body: &FeishuOutboundMessageBody,
     ) -> CliResult<()> {
-        if target.platform != ChannelPlatform::Feishu {
-            return Err(format!(
-                "feishu adapter cannot send to {} target",
-                target.platform.as_str()
-            ));
-        }
-
-        let token = self.tenant_access_token()?;
-        match target.kind {
-            ChannelOutboundTargetKind::MessageReply => {
-                messages::reply_outbound_message(
-                    &self.client,
-                    token,
-                    target.trimmed_id()?,
-                    body,
-                    target.feishu_reply_in_thread().unwrap_or(false),
-                    target.idempotency_key(),
-                )
-                .await?;
-                Ok(())
-            }
-            ChannelOutboundTargetKind::ReceiveId => {
-                messages::send_outbound_message(
-                    &self.client,
-                    token,
-                    target
-                        .feishu_receive_id_type()
-                        .unwrap_or(self.receive_id_type.as_str()),
-                    target.trimmed_id()?,
-                    body,
-                    target.idempotency_key(),
-                )
-                .await?;
-                Ok(())
-            }
-            ChannelOutboundTargetKind::Conversation
-            | ChannelOutboundTargetKind::Address
-            | ChannelOutboundTargetKind::Endpoint => {
-                Err("feishu adapter only supports message_reply or receive_id targets".to_owned())
-            }
-        }
+        deliver_feishu_message_body(
+            &self.client,
+            self.tenant_access_token()?,
+            self.receive_id_type.as_str(),
+            target,
+            body,
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn append_document_content_with_token(
@@ -318,6 +298,472 @@ impl FeishuAdapter {
 
         let _ = insert_summary;
         Ok(())
+    }
+
+    async fn resolve_api_tenant_access_token(
+        &self,
+        resolution: TenantAccessTokenResolution,
+    ) -> ApiResult<String> {
+        if matches!(resolution, TenantAccessTokenResolution::PreferCached)
+            && let Some(token) = self.tenant_access_token.as_deref()
+        {
+            return Ok(token.to_owned());
+        }
+        convert_cli_result(self.client.get_tenant_access_token().await)
+    }
+
+    async fn send_message_via_api(
+        &self,
+        target: &ChannelOutboundTarget,
+        content: &MessageContent,
+        _options: Option<SendOptions>,
+    ) -> ApiResult<Message> {
+        // Validate platform
+        if target.platform != ChannelPlatform::Feishu {
+            return Err(ApiError::InvalidRequest(
+                "Target platform must be Feishu".to_owned(),
+            ));
+        }
+
+        // Convert content to Feishu format
+        let body = convert_message_content_to_feishu(content)?;
+
+        // Get tenant access token
+        let token = self
+            .resolve_api_tenant_access_token(TenantAccessTokenResolution::PreferCached)
+            .await?;
+
+        // Extract receive parameters
+        let (receive_id, receive_id_type) = extract_receive_params(target)?;
+
+        // Use caller-provided idempotency key or generate one
+        let uuid = target
+            .idempotency_key()
+            .filter(|key| !key.is_empty())
+            .map(|key| key.to_owned())
+            .or_else(|| Some(generate_idempotency_key()));
+
+        let mut send_target = ChannelOutboundTarget::feishu_receive_id(receive_id.clone())
+            .with_feishu_receive_id_type(receive_id_type.clone());
+        if let Some(uuid) = uuid {
+            send_target = send_target.with_idempotency_key(uuid);
+        }
+
+        let receipt = convert_cli_result(
+            deliver_feishu_message_body(
+                &self.client,
+                &token,
+                self.receive_id_type.as_str(),
+                &send_target,
+                &body,
+            )
+            .await,
+        )?;
+
+        // Build the normalized message directly from the send receipt and target.
+        Ok(Message {
+            id: receipt.message_id,
+            session: ChannelSession::new(ChannelPlatform::Feishu, receive_id),
+            sender_id: String::new(),
+            content: content.clone(),
+            timestamp: Utc::now(),
+            parent_id: None,
+            raw: None,
+        })
+    }
+
+    async fn reply_via_api(
+        &self,
+        target: &ChannelOutboundTarget,
+        content: &MessageContent,
+        options: Option<SendOptions>,
+    ) -> ApiResult<Message> {
+        // Validate platform
+        if target.platform != ChannelPlatform::Feishu {
+            return Err(ApiError::InvalidRequest(
+                "Target platform must be Feishu".to_owned(),
+            ));
+        }
+
+        // For replies, the target ID should be the message_id
+        let message_id = target.id.trim();
+        if message_id.is_empty() {
+            return Err(ApiError::InvalidRequest(
+                "Message ID is required for reply".to_owned(),
+            ));
+        }
+
+        // Get tenant access token
+        let token = self
+            .resolve_api_tenant_access_token(TenantAccessTokenResolution::PreferCached)
+            .await?;
+
+        // Prefer the real parent message detail when available, but honor explicit chat context
+        // from inbound-driven reply targets when the parent message can no longer be queried.
+        let fallback_parent_session = target
+            .feishu_reply_chat_id()
+            .map(|chat_id| ChannelSession::new(ChannelPlatform::Feishu, chat_id.to_owned()));
+
+        let parent_session = match fetch_message_detail(&self.client, &token, message_id).await {
+            Ok(parent_detail) => ChannelSession::new(
+                ChannelPlatform::Feishu,
+                parent_detail.chat_id.unwrap_or_default(),
+            ),
+            Err(error) => match convert_string_error_to_api_error(&error) {
+                ApiError::NotFound(_) => fallback_parent_session.ok_or_else(|| {
+                    ApiError::NotFound(format!(
+                        "reply target `{message_id}` requires parent chat context when message detail is unavailable"
+                    ))
+                })?,
+                api_error @ ApiError::Auth(_)
+                | api_error @ ApiError::RateLimited { .. }
+                | api_error @ ApiError::InvalidRequest(_)
+                | api_error @ ApiError::Network(_)
+                | api_error @ ApiError::Server(_)
+                | api_error @ ApiError::NotSupported(_)
+                | api_error @ ApiError::Platform { .. }
+                | api_error @ ApiError::Other(_) => return Err(api_error),
+            },
+        };
+
+        // Convert content to Feishu format
+        let body = convert_message_content_to_feishu(content)?;
+
+        // Callers can override thread behavior per-send; otherwise preserve target defaults.
+        let reply_in_thread = options
+            .as_ref()
+            .map(|o| o.reply_in_thread)
+            .unwrap_or_else(|| target.feishu_reply_in_thread().unwrap_or(false));
+
+        // Use caller-provided idempotency key or generate one
+        let uuid = target
+            .idempotency_key()
+            .filter(|key| !key.is_empty())
+            .map(|key| key.to_owned())
+            .or_else(|| Some(generate_idempotency_key()));
+
+        let mut reply_target = ChannelOutboundTarget::feishu_message_reply(message_id.to_owned())
+            .with_feishu_reply_in_thread(reply_in_thread);
+        if let Some(uuid) = uuid {
+            reply_target = reply_target.with_idempotency_key(uuid);
+        }
+
+        let receipt = convert_cli_result(
+            deliver_feishu_message_body(
+                &self.client,
+                &token,
+                self.receive_id_type.as_str(),
+                &reply_target,
+                &body,
+            )
+            .await,
+        )?;
+
+        Ok(Message {
+            id: receipt.message_id,
+            session: parent_session,
+            sender_id: String::new(),
+            content: content.clone(),
+            timestamp: Utc::now(),
+            parent_id: Some(message_id.to_owned()),
+            raw: None,
+        })
+    }
+
+    async fn get_message_via_api(&self, id: &str) -> ApiResult<Option<Message>> {
+        let message_id = id.trim();
+        if message_id.is_empty() {
+            return Err(ApiError::InvalidRequest(
+                "Message ID cannot be empty".to_owned(),
+            ));
+        }
+
+        let token = self
+            .resolve_api_tenant_access_token(TenantAccessTokenResolution::Fresh)
+            .await?;
+
+        match fetch_message_detail(&self.client, &token, message_id).await {
+            Ok(detail) => {
+                let message = convert_feishu_message_to_generic(detail)?;
+                Ok(Some(message))
+            }
+            Err(err) => {
+                let api_err = convert_string_error_to_api_error(&err);
+                match api_err {
+                    ApiError::NotFound(_) => Ok(None),
+                    ApiError::Auth(_)
+                    | ApiError::RateLimited { .. }
+                    | ApiError::InvalidRequest(_)
+                    | ApiError::Network(_)
+                    | ApiError::Server(_)
+                    | ApiError::NotSupported(_)
+                    | ApiError::Platform { .. }
+                    | ApiError::Other(_) => Err(api_err),
+                }
+            }
+        }
+    }
+
+    async fn list_messages_via_api(
+        &self,
+        session: &ChannelSession,
+        pagination: Option<Pagination>,
+    ) -> ApiResult<PaginatedResult<Message>> {
+        // Validate platform
+        if session.platform != ChannelPlatform::Feishu {
+            return Err(ApiError::InvalidRequest(
+                "Session platform must be Feishu".to_owned(),
+            ));
+        }
+
+        let token = self
+            .resolve_api_tenant_access_token(TenantAccessTokenResolution::Fresh)
+            .await?;
+
+        let page_size = pagination
+            .as_ref()
+            .and_then(|p| p.limit)
+            .map(|l| l.min(FEISHU_MESSAGE_HISTORY_MAX_PAGE_SIZE))
+            .unwrap_or(20);
+
+        let query = FeishuMessageHistoryQuery {
+            container_id_type: "chat".to_owned(),
+            container_id: session.conversation_id.clone(),
+            start_time: None,
+            end_time: None,
+            sort_type: Some("ByCreateTimeDesc".to_owned()),
+            page_size: Some(page_size),
+            page_token: pagination.and_then(|p| p.cursor),
+        };
+
+        let page = convert_cli_result(fetch_message_history(&self.client, &token, &query).await)?;
+
+        let messages: Vec<Message> = page
+            .items
+            .into_iter()
+            .filter_map(|detail| convert_feishu_message_to_generic(detail).ok())
+            .collect();
+
+        Ok(PaginatedResult {
+            items: messages,
+            has_more: page.has_more,
+            next_cursor: page.page_token,
+        })
+    }
+
+    async fn search_messages_via_api(
+        &self,
+        query: &str,
+        _pagination: Option<Pagination>,
+    ) -> ApiResult<PaginatedResult<Message>> {
+        let search_query = query.trim();
+        if search_query.is_empty() {
+            return Err(ApiError::InvalidRequest(
+                "Search query cannot be empty".to_owned(),
+            ));
+        }
+
+        Err(ApiError::NotSupported(
+            "Message search requires user access token (not yet implemented)".to_owned(),
+        ))
+    }
+
+    async fn delete_message_via_api(&self, id: &str) -> ApiResult<()> {
+        let message_id = id.trim();
+        if message_id.is_empty() {
+            return Err(ApiError::InvalidRequest(
+                "Message ID cannot be empty".to_owned(),
+            ));
+        }
+
+        let token = self
+            .resolve_api_tenant_access_token(TenantAccessTokenResolution::Fresh)
+            .await?;
+        convert_cli_result(messages::delete_message(&self.client, &token, message_id).await)
+    }
+
+    async fn edit_message_via_api(&self, id: &str, content: &MessageContent) -> ApiResult<Message> {
+        let message_id = id.trim();
+        if message_id.is_empty() {
+            return Err(ApiError::InvalidRequest(
+                "Message ID cannot be empty".to_owned(),
+            ));
+        }
+
+        let token = self
+            .resolve_api_tenant_access_token(TenantAccessTokenResolution::Fresh)
+            .await?;
+
+        match content {
+            MessageContent::Text { text } => {
+                let body = serde_json::json!({ "text": text });
+                convert_cli_result(
+                    messages::edit_message(&self.client, &token, message_id, "text", body).await,
+                )?;
+            }
+            MessageContent::Markdown { text } => {
+                let card_content = serde_json::json!({
+                    "config": { "wide_screen_mode": true },
+                    "elements": [
+                        {
+                            "tag": "div",
+                            "text": {
+                                "tag": "lark_md",
+                                "content": text
+                            }
+                        }
+                    ]
+                });
+                convert_cli_result(
+                    update_card(&self.client, &token, message_id, &card_content).await,
+                )?;
+            }
+            MessageContent::Rich { .. }
+            | MessageContent::File { .. }
+            | MessageContent::Image { .. }
+            | MessageContent::Audio { .. }
+            | MessageContent::Media { .. }
+            | MessageContent::ShareChat { .. }
+            | MessageContent::ShareUser { .. } => {
+                return Err(ApiError::NotSupported(
+                    "Only text and markdown messages can be edited".to_owned(),
+                ));
+            }
+        }
+
+        Ok(Message {
+            id: message_id.to_owned(),
+            session: ChannelSession::new(ChannelPlatform::Feishu, String::new()),
+            sender_id: String::new(),
+            content: content.clone(),
+            timestamp: Utc::now(),
+            parent_id: None,
+            raw: None,
+        })
+    }
+
+    async fn create_document_via_api(
+        &self,
+        title: &str,
+        content: Option<&DocumentContent>,
+        parent_id: Option<&str>,
+    ) -> ApiResult<Document> {
+        let token = self
+            .resolve_api_tenant_access_token(TenantAccessTokenResolution::Fresh)
+            .await?;
+
+        let metadata = convert_cli_result(
+            create_feishu_document(&self.client, &token, Some(title), parent_id).await,
+        )?;
+
+        let mut document = convert_feishu_document_metadata_to_document(metadata);
+
+        if let Some(content) = content {
+            let document_id = document.id.clone();
+            let initial_content = content.clone();
+
+            self.append_document_content_with_token(&token, &document_id, content)
+                .await?;
+
+            document.content = Some(initial_content);
+        }
+
+        Ok(document)
+    }
+
+    async fn get_document_via_api(&self, id: &str) -> ApiResult<Option<Document>> {
+        let document_id = id.trim();
+        if document_id.is_empty() {
+            return Err(ApiError::InvalidRequest(
+                "Document ID cannot be empty".to_owned(),
+            ));
+        }
+
+        let token = self
+            .resolve_api_tenant_access_token(TenantAccessTokenResolution::Fresh)
+            .await?;
+
+        let metadata = match fetch_document_metadata(&self.client, &token, document_id).await {
+            Ok(metadata) => metadata,
+            Err(err) => {
+                let api_err = convert_string_error_to_api_error(&err);
+                match api_err {
+                    ApiError::NotFound(_) => return Ok(None),
+                    ApiError::Auth(_)
+                    | ApiError::RateLimited { .. }
+                    | ApiError::InvalidRequest(_)
+                    | ApiError::Network(_)
+                    | ApiError::Server(_)
+                    | ApiError::NotSupported(_)
+                    | ApiError::Platform { .. }
+                    | ApiError::Other(_) => return Err(api_err),
+                }
+            }
+        };
+
+        let content = match fetch_document_content(&self.client, &token, document_id, None).await {
+            Ok(content) => content,
+            Err(err) => {
+                let api_err = convert_string_error_to_api_error(&err);
+                match api_err {
+                    ApiError::NotFound(_) => return Ok(None),
+                    ApiError::Auth(_)
+                    | ApiError::RateLimited { .. }
+                    | ApiError::InvalidRequest(_)
+                    | ApiError::Network(_)
+                    | ApiError::Server(_)
+                    | ApiError::NotSupported(_)
+                    | ApiError::Platform { .. }
+                    | ApiError::Other(_) => return Err(api_err),
+                }
+            }
+        };
+
+        let document = convert_feishu_document_snapshot_to_document(metadata, content);
+        Ok(Some(document))
+    }
+
+    async fn get_document_content_via_api(&self, id: &str) -> ApiResult<Option<DocumentContent>> {
+        let document_id = id.trim();
+        if document_id.is_empty() {
+            return Err(ApiError::InvalidRequest(
+                "Document ID cannot be empty".to_owned(),
+            ));
+        }
+
+        let token = self
+            .resolve_api_tenant_access_token(TenantAccessTokenResolution::Fresh)
+            .await?;
+
+        match fetch_document_content(&self.client, &token, document_id, None).await {
+            Ok(content) => Ok(Some(DocumentContent::Text(content.content))),
+            Err(err) => {
+                let api_err = convert_string_error_to_api_error(&err);
+                match api_err {
+                    ApiError::NotFound(_) => Ok(None),
+                    ApiError::Auth(_)
+                    | ApiError::RateLimited { .. }
+                    | ApiError::InvalidRequest(_)
+                    | ApiError::Network(_)
+                    | ApiError::Server(_)
+                    | ApiError::NotSupported(_)
+                    | ApiError::Platform { .. }
+                    | ApiError::Other(_) => Err(api_err),
+                }
+            }
+        }
+    }
+
+    async fn append_to_document_via_api(
+        &self,
+        id: &str,
+        content: &DocumentContent,
+    ) -> ApiResult<()> {
+        let token = self
+            .resolve_api_tenant_access_token(TenantAccessTokenResolution::Fresh)
+            .await?;
+        self.append_document_content_with_token(&token, id, content)
+            .await
     }
 }
 
@@ -385,59 +831,14 @@ impl ChannelAdapter for FeishuAdapter {
 }
 
 #[async_trait]
-impl MessagingApi for FeishuAdapter {
+impl MessageSendApi for FeishuAdapter {
     async fn send_message(
         &self,
         target: &ChannelOutboundTarget,
         content: &MessageContent,
-        _options: Option<SendOptions>,
+        options: Option<SendOptions>,
     ) -> ApiResult<Message> {
-        // Validate platform
-        if target.platform != ChannelPlatform::Feishu {
-            return Err(ApiError::InvalidRequest(
-                "Target platform must be Feishu".to_owned(),
-            ));
-        }
-
-        // Convert content to Feishu format
-        let body = convert_message_content_to_feishu(content)?;
-
-        // Get tenant access token
-        let token = convert_cli_result(self.client.get_tenant_access_token().await)?;
-
-        // Extract receive parameters
-        let (receive_id, receive_id_type) = extract_receive_params(target)?;
-
-        // Use caller-provided idempotency key or generate one
-        let uuid = target
-            .idempotency_key()
-            .filter(|key| !key.is_empty())
-            .map(|key| key.to_owned())
-            .or_else(|| Some(generate_idempotency_key()));
-
-        // Send the message
-        let receipt = convert_cli_result(
-            send_outbound_message(
-                &self.client,
-                &token,
-                &receive_id_type,
-                &receive_id,
-                &body,
-                uuid.as_deref(),
-            )
-            .await,
-        )?;
-
-        // Build message from receipt data directly
-        Ok(Message {
-            id: receipt.message_id,
-            session: ChannelSession::new(ChannelPlatform::Feishu, receive_id),
-            sender_id: String::new(),
-            content: content.clone(),
-            timestamp: Utc::now(),
-            parent_id: None,
-            raw: None,
-        })
+        self.send_message_via_api(target, content, options).await
     }
 
     async fn reply(
@@ -446,104 +847,14 @@ impl MessagingApi for FeishuAdapter {
         content: &MessageContent,
         options: Option<SendOptions>,
     ) -> ApiResult<Message> {
-        // Validate platform
-        if target.platform != ChannelPlatform::Feishu {
-            return Err(ApiError::InvalidRequest(
-                "Target platform must be Feishu".to_owned(),
-            ));
-        }
-
-        // For replies, the target ID should be the message_id
-        let message_id = target.id.trim();
-        if message_id.is_empty() {
-            return Err(ApiError::InvalidRequest(
-                "Message ID is required for reply".to_owned(),
-            ));
-        }
-
-        // Get tenant access token
-        let token = convert_cli_result(self.client.get_tenant_access_token().await)?;
-
-        // Fetch parent message to get session info
-        let parent_detail =
-            convert_cli_result(fetch_message_detail(&self.client, &token, message_id).await)?;
-        let parent_session = ChannelSession::new(
-            ChannelPlatform::Feishu,
-            parent_detail.chat_id.unwrap_or_default(),
-        );
-
-        // Convert content to Feishu format
-        let body = convert_message_content_to_feishu(content)?;
-
-        // Determine if we should reply in thread
-        // Priority: SendOptions.reply_in_thread > target.feishu_reply_in_thread()
-        let reply_in_thread = options
-            .as_ref()
-            .map(|o| o.reply_in_thread)
-            .unwrap_or_else(|| target.feishu_reply_in_thread().unwrap_or(false));
-
-        // Use caller-provided idempotency key or generate one
-        let uuid = target
-            .idempotency_key()
-            .filter(|key| !key.is_empty())
-            .map(|key| key.to_owned())
-            .or_else(|| Some(generate_idempotency_key()));
-
-        // Send the reply
-        let receipt = convert_cli_result(
-            reply_outbound_message(
-                &self.client,
-                &token,
-                message_id,
-                &body,
-                reply_in_thread,
-                uuid.as_deref(),
-            )
-            .await,
-        )?;
-
-        // Build the reply message
-        Ok(Message {
-            id: receipt.message_id,
-            session: parent_session,
-            sender_id: String::new(),
-            content: content.clone(),
-            timestamp: Utc::now(),
-            parent_id: Some(message_id.to_owned()),
-            raw: None,
-        })
+        self.reply_via_api(target, content, options).await
     }
+}
 
+#[async_trait]
+impl MessageQueryApi for FeishuAdapter {
     async fn get_message(&self, id: &str) -> ApiResult<Option<Message>> {
-        let message_id = id.trim();
-        if message_id.is_empty() {
-            return Err(ApiError::InvalidRequest(
-                "Message ID cannot be empty".to_owned(),
-            ));
-        }
-
-        let token = convert_cli_result(self.client.get_tenant_access_token().await)?;
-
-        match fetch_message_detail(&self.client, &token, message_id).await {
-            Ok(detail) => {
-                let message = convert_feishu_message_to_generic(detail)?;
-                Ok(Some(message))
-            }
-            Err(err) => {
-                let api_err = convert_string_error_to_api_error(&err);
-                match api_err {
-                    ApiError::NotFound(_) => Ok(None),
-                    ApiError::Auth(_)
-                    | ApiError::RateLimited { .. }
-                    | ApiError::InvalidRequest(_)
-                    | ApiError::Network(_)
-                    | ApiError::Server(_)
-                    | ApiError::NotSupported(_)
-                    | ApiError::Platform { .. }
-                    | ApiError::Other(_) => Err(api_err),
-                }
-            }
-        }
+        self.get_message_via_api(id).await
     }
 
     async fn list_messages(
@@ -551,260 +862,107 @@ impl MessagingApi for FeishuAdapter {
         session: &ChannelSession,
         pagination: Option<Pagination>,
     ) -> ApiResult<PaginatedResult<Message>> {
-        // Validate platform
-        if session.platform != ChannelPlatform::Feishu {
-            return Err(ApiError::InvalidRequest(
-                "Session platform must be Feishu".to_owned(),
-            ));
-        }
-
-        let token = convert_cli_result(self.client.get_tenant_access_token().await)?;
-
-        // Build the query
-        let page_size = pagination
-            .as_ref()
-            .and_then(|p| p.limit)
-            .map(|l| l.min(50))
-            .unwrap_or(20);
-
-        let query = FeishuMessageHistoryQuery {
-            container_id_type: "chat".to_owned(),
-            container_id: session.conversation_id.clone(),
-            start_time: None,
-            end_time: None,
-            sort_type: Some("ByCreateTimeDesc".to_owned()),
-            page_size: Some(page_size),
-            page_token: pagination.and_then(|p| p.cursor),
-        };
-
-        let page = convert_cli_result(fetch_message_history(&self.client, &token, &query).await)?;
-
-        // Convert directly from history items — no individual detail fetches needed
-        let messages: Vec<Message> = page
-            .items
-            .into_iter()
-            .filter_map(|detail| convert_feishu_message_to_generic(detail).ok())
-            .collect();
-
-        Ok(PaginatedResult {
-            items: messages,
-            has_more: page.has_more,
-            next_cursor: page.page_token,
-        })
+        self.list_messages_via_api(session, pagination).await
     }
 
     async fn search_messages(
         &self,
         query: &str,
-        _pagination: Option<Pagination>,
+        pagination: Option<Pagination>,
     ) -> ApiResult<PaginatedResult<Message>> {
-        let search_query = query.trim();
-        if search_query.is_empty() {
-            return Err(ApiError::InvalidRequest(
-                "Search query cannot be empty".to_owned(),
-            ));
-        }
-
-        // Note: Feishu message search requires user access token
-        // This is a limitation - we need a user grant to search messages
-        Err(ApiError::NotSupported(
-            "Message search requires user access token (not yet implemented)".to_owned(),
-        ))
-    }
-
-    async fn edit_message(&self, id: &str, content: &MessageContent) -> ApiResult<Message> {
-        let message_id = id.trim();
-        if message_id.is_empty() {
-            return Err(ApiError::InvalidRequest(
-                "Message ID cannot be empty".to_owned(),
-            ));
-        }
-
-        let token = convert_cli_result(self.client.get_tenant_access_token().await)?;
-
-        match content {
-            MessageContent::Text { text } => {
-                // Edit text message using PUT API
-                let body = serde_json::json!({ "text": text });
-                convert_cli_result(
-                    messages::edit_message(&self.client, &token, message_id, "text", body).await,
-                )?;
-            }
-            MessageContent::Markdown { text } => {
-                // Update interactive card using PATCH API
-                let card_content = serde_json::json!({
-                    "config": { "wide_screen_mode": true },
-                    "elements": [
-                        {
-                            "tag": "div",
-                            "text": {
-                                "tag": "lark_md",
-                                "content": text
-                            }
-                        }
-                    ]
-                });
-                convert_cli_result(
-                    update_card(&self.client, &token, message_id, &card_content).await,
-                )?;
-            }
-            MessageContent::Rich { .. }
-            | MessageContent::File { .. }
-            | MessageContent::Image { .. }
-            | MessageContent::Audio { .. }
-            | MessageContent::Media { .. }
-            | MessageContent::ShareChat { .. }
-            | MessageContent::ShareUser { .. } => {
-                return Err(ApiError::NotSupported(
-                    "Only text and markdown messages can be edited".to_owned(),
-                ));
-            }
-        }
-
-        // Return message with updated content
-        Ok(Message {
-            id: message_id.to_owned(),
-            session: ChannelSession::new(ChannelPlatform::Feishu, String::new()),
-            sender_id: String::new(),
-            content: content.clone(),
-            timestamp: Utc::now(),
-            parent_id: None,
-            raw: None,
-        })
-    }
-
-    async fn delete_message(&self, id: &str) -> ApiResult<()> {
-        let message_id = id.trim();
-        if message_id.is_empty() {
-            return Err(ApiError::InvalidRequest(
-                "Message ID cannot be empty".to_owned(),
-            ));
-        }
-
-        let token = convert_cli_result(self.client.get_tenant_access_token().await)?;
-
-        convert_cli_result(messages::delete_message(&self.client, &token, message_id).await)
+        self.search_messages_via_api(query, pagination).await
     }
 }
 
 #[async_trait]
-impl DocumentsApi for FeishuAdapter {
-    /// Creates a new Feishu document.
-    ///
-    /// If content is provided, it will be appended to the document after creation.
+impl MessageDeleteApi for FeishuAdapter {
+    async fn delete_message(&self, id: &str) -> ApiResult<()> {
+        self.delete_message_via_api(id).await
+    }
+}
+
+#[async_trait]
+impl MessageEditApi for FeishuAdapter {
+    async fn edit_message(&self, id: &str, content: &MessageContent) -> ApiResult<Message> {
+        self.edit_message_via_api(id, content).await
+    }
+}
+
+#[async_trait]
+impl MessagingApi for FeishuAdapter {
+    async fn send_message(
+        &self,
+        target: &ChannelOutboundTarget,
+        content: &MessageContent,
+        options: Option<SendOptions>,
+    ) -> ApiResult<Message> {
+        MessageSendApi::send_message(self, target, content, options).await
+    }
+
+    async fn reply(
+        &self,
+        target: &ChannelOutboundTarget,
+        content: &MessageContent,
+        options: Option<SendOptions>,
+    ) -> ApiResult<Message> {
+        MessageSendApi::reply(self, target, content, options).await
+    }
+
+    async fn get_message(&self, id: &str) -> ApiResult<Option<Message>> {
+        MessageQueryApi::get_message(self, id).await
+    }
+
+    async fn list_messages(
+        &self,
+        session: &ChannelSession,
+        pagination: Option<Pagination>,
+    ) -> ApiResult<PaginatedResult<Message>> {
+        MessageQueryApi::list_messages(self, session, pagination).await
+    }
+
+    async fn search_messages(
+        &self,
+        query: &str,
+        pagination: Option<Pagination>,
+    ) -> ApiResult<PaginatedResult<Message>> {
+        MessageQueryApi::search_messages(self, query, pagination).await
+    }
+
+    async fn edit_message(&self, id: &str, content: &MessageContent) -> ApiResult<Message> {
+        MessageEditApi::edit_message(self, id, content).await
+    }
+
+    async fn delete_message(&self, id: &str) -> ApiResult<()> {
+        MessageDeleteApi::delete_message(self, id).await
+    }
+}
+
+#[async_trait]
+impl DocumentCreateApi for FeishuAdapter {
     async fn create_document(
         &self,
         title: &str,
         content: Option<&DocumentContent>,
         parent_id: Option<&str>,
     ) -> ApiResult<Document> {
-        let token = convert_cli_result(self.client.get_tenant_access_token().await)?;
-
-        // Create empty document
-        let metadata = convert_cli_result(
-            create_feishu_document(&self.client, &token, Some(title), parent_id).await,
-        )?;
-
-        let mut document = convert_feishu_document_metadata_to_document(metadata);
-
-        // If content is provided, append it to the document
-        if let Some(content) = content {
-            let document_id = document.id.clone();
-            let initial_content = content.clone();
-
-            self.append_document_content_with_token(&token, &document_id, content)
-                .await?;
-
-            document.content = Some(initial_content);
-        }
-
-        Ok(document)
+        self.create_document_via_api(title, content, parent_id)
+            .await
     }
+}
 
-    /// Gets a Feishu document by ID.
-    ///
-    /// Returns the document metadata together with plain text content.
-    /// Some fields may be None if not returned by Feishu API.
+#[async_trait]
+impl DocumentReadApi for FeishuAdapter {
     async fn get_document(&self, id: &str) -> ApiResult<Option<Document>> {
-        let document_id = id.trim();
-        if document_id.is_empty() {
-            return Err(ApiError::InvalidRequest(
-                "Document ID cannot be empty".to_owned(),
-            ));
-        }
-
-        let token = convert_cli_result(self.client.get_tenant_access_token().await)?;
-
-        let metadata = match fetch_document_metadata(&self.client, &token, document_id).await {
-            Ok(metadata) => metadata,
-            Err(err) => {
-                let api_err = convert_string_error_to_api_error(&err);
-                match api_err {
-                    ApiError::NotFound(_) => return Ok(None),
-                    ApiError::Auth(_)
-                    | ApiError::RateLimited { .. }
-                    | ApiError::InvalidRequest(_)
-                    | ApiError::Network(_)
-                    | ApiError::Server(_)
-                    | ApiError::NotSupported(_)
-                    | ApiError::Platform { .. }
-                    | ApiError::Other(_) => return Err(api_err),
-                }
-            }
-        };
-
-        let content = match fetch_document_content(&self.client, &token, document_id, None).await {
-            Ok(content) => content,
-            Err(err) => {
-                let api_err = convert_string_error_to_api_error(&err);
-                match api_err {
-                    ApiError::NotFound(_) => return Ok(None),
-                    ApiError::Auth(_)
-                    | ApiError::RateLimited { .. }
-                    | ApiError::InvalidRequest(_)
-                    | ApiError::Network(_)
-                    | ApiError::Server(_)
-                    | ApiError::NotSupported(_)
-                    | ApiError::Platform { .. }
-                    | ApiError::Other(_) => return Err(api_err),
-                }
-            }
-        };
-
-        let document = convert_feishu_document_snapshot_to_document(metadata, content);
-        Ok(Some(document))
+        self.get_document_via_api(id).await
     }
 
-    /// Gets the content of a Feishu document.
     async fn get_document_content(&self, id: &str) -> ApiResult<Option<DocumentContent>> {
-        let document_id = id.trim();
-        if document_id.is_empty() {
-            return Err(ApiError::InvalidRequest(
-                "Document ID cannot be empty".to_owned(),
-            ));
-        }
-
-        let token = convert_cli_result(self.client.get_tenant_access_token().await)?;
-
-        match fetch_document_content(&self.client, &token, document_id, None).await {
-            Ok(content) => Ok(Some(DocumentContent::Text(content.content))),
-            Err(err) => {
-                let api_err = convert_string_error_to_api_error(&err);
-                match api_err {
-                    ApiError::NotFound(_) => Ok(None),
-                    ApiError::Auth(_)
-                    | ApiError::RateLimited { .. }
-                    | ApiError::InvalidRequest(_)
-                    | ApiError::Network(_)
-                    | ApiError::Server(_)
-                    | ApiError::NotSupported(_)
-                    | ApiError::Platform { .. }
-                    | ApiError::Other(_) => Err(api_err),
-                }
-            }
-        }
+        self.get_document_content_via_api(id).await
     }
+}
 
+#[async_trait]
+impl DocumentWriteApi for FeishuAdapter {
     /// Updates document content.
     ///
     /// Not supported by Feishu; use append_to_document instead.
@@ -821,9 +979,61 @@ impl DocumentsApi for FeishuAdapter {
     /// Converts the content to Feishu blocks and inserts them.
     /// Supports Text and Markdown content types.
     async fn append_to_document(&self, id: &str, content: &DocumentContent) -> ApiResult<()> {
-        let token = convert_cli_result(self.client.get_tenant_access_token().await)?;
-        self.append_document_content_with_token(&token, id, content)
-            .await
+        self.append_to_document_via_api(id, content).await
+    }
+
+    /// Lists documents in a container.
+    ///
+    /// Not supported by Feishu.
+    async fn delete_document(&self, _id: &str) -> ApiResult<()> {
+        Err(ApiError::NotSupported(
+            "delete_document not supported by Feishu".to_owned(),
+        ))
+    }
+
+    /// Moves a document to a different parent.
+    ///
+    /// Not supported by Feishu.
+    async fn move_document(&self, _id: &str, _new_parent_id: &str) -> ApiResult<Document> {
+        Err(ApiError::NotSupported(
+            "move_document not supported by Feishu".to_owned(),
+        ))
+    }
+}
+
+#[async_trait]
+impl DocumentsApi for FeishuAdapter {
+    /// Creates a new Feishu document.
+    ///
+    /// If content is provided, it will be appended to the document after creation.
+    async fn create_document(
+        &self,
+        title: &str,
+        content: Option<&DocumentContent>,
+        parent_id: Option<&str>,
+    ) -> ApiResult<Document> {
+        DocumentCreateApi::create_document(self, title, content, parent_id).await
+    }
+
+    /// Gets a Feishu document by ID.
+    ///
+    /// Returns the document metadata together with plain text content.
+    /// Some fields may be None if not returned by Feishu API.
+    async fn get_document(&self, id: &str) -> ApiResult<Option<Document>> {
+        DocumentReadApi::get_document(self, id).await
+    }
+
+    /// Gets the content of a Feishu document.
+    async fn get_document_content(&self, id: &str) -> ApiResult<Option<DocumentContent>> {
+        DocumentReadApi::get_document_content(self, id).await
+    }
+
+    async fn update_document(&self, id: &str, content: &DocumentContent) -> ApiResult<()> {
+        DocumentWriteApi::update_document(self, id, content).await
+    }
+
+    async fn append_to_document(&self, id: &str, content: &DocumentContent) -> ApiResult<()> {
+        DocumentWriteApi::append_to_document(self, id, content).await
     }
 
     /// Lists documents in a container.
@@ -852,22 +1062,12 @@ impl DocumentsApi for FeishuAdapter {
         ))
     }
 
-    /// Deletes a document.
-    ///
-    /// Not supported by Feishu.
-    async fn delete_document(&self, _id: &str) -> ApiResult<()> {
-        Err(ApiError::NotSupported(
-            "delete_document not supported by Feishu".to_owned(),
-        ))
+    async fn delete_document(&self, id: &str) -> ApiResult<()> {
+        DocumentWriteApi::delete_document(self, id).await
     }
 
-    /// Moves a document to a different parent.
-    ///
-    /// Not supported by Feishu.
-    async fn move_document(&self, _id: &str, _new_parent_id: &str) -> ApiResult<Document> {
-        Err(ApiError::NotSupported(
-            "move_document not supported by Feishu".to_owned(),
-        ))
+    async fn move_document(&self, id: &str, new_parent_id: &str) -> ApiResult<Document> {
+        DocumentWriteApi::move_document(self, id, new_parent_id).await
     }
 }
 
@@ -921,12 +1121,16 @@ fn convert_feishu_document_snapshot_to_document(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::channel::traits::{
+        DocumentCreateApi, DocumentReadApi, DocumentWriteApi, MessageDeleteApi, MessageEditApi,
+        MessageQueryApi, MessageSendApi,
+    };
     use crate::config::LoongClawConfig;
     use axum::{
         Json, Router,
         body::to_bytes,
         extract::{Request, State},
-        routing::{get, post},
+        routing::{get, post, put},
     };
     use serde_json::json;
     use std::sync::Arc;
@@ -1000,6 +1204,14 @@ mod tests {
             .expect("resolve feishu test account")
     }
 
+    fn assert_message_send_api<T: MessageSendApi>() {}
+    fn assert_message_query_api<T: MessageQueryApi>() {}
+    fn assert_message_edit_api<T: MessageEditApi>() {}
+    fn assert_message_delete_api<T: MessageDeleteApi>() {}
+    fn assert_document_create_api<T: DocumentCreateApi>() {}
+    fn assert_document_read_api<T: DocumentReadApi>() {}
+    fn assert_document_write_api<T: DocumentWriteApi>() {}
+
     #[test]
     fn feishu_ack_reaction_picker_only_returns_valid_candidates() {
         for _ in 0..128 {
@@ -1066,6 +1278,622 @@ mod tests {
                     "emoji_type": "THUMBSUP"
                 }
             })
+        );
+
+        server.abort();
+    }
+
+    #[test]
+    fn feishu_adapter_narrow_trait_impls_compile() {
+        assert_message_send_api::<FeishuAdapter>();
+        assert_message_query_api::<FeishuAdapter>();
+        assert_message_edit_api::<FeishuAdapter>();
+        assert_message_delete_api::<FeishuAdapter>();
+        assert_document_create_api::<FeishuAdapter>();
+        assert_document_read_api::<FeishuAdapter>();
+        assert_document_write_api::<FeishuAdapter>();
+    }
+
+    #[tokio::test]
+    async fn feishu_adapter_message_send_api_supports_post_targets() {
+        let requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+        let state = MockServerState {
+            requests: requests.clone(),
+        };
+        let router = Router::new()
+            .route(
+                "/open-apis/auth/v3/tenant_access_token/internal",
+                post({
+                    let state = state.clone();
+                    move |request| {
+                        let state = state.clone();
+                        async move {
+                            record_request(State(state), request).await;
+                            Json(json!({
+                                "code": 0,
+                                "tenant_access_token": "t-token-message-send-api"
+                            }))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/open-apis/im/v1/messages",
+                post({
+                    let state = state.clone();
+                    move |request| {
+                        let state = state.clone();
+                        async move {
+                            record_request(State(state), request).await;
+                            Json(json!({
+                                "code": 0,
+                                "data": {
+                                    "message_id": "om_message_send_api_1"
+                                }
+                            }))
+                        }
+                    }
+                }),
+            );
+        let (base_url, server) = spawn_mock_feishu_server(router).await;
+        let adapter = FeishuAdapter::new(&resolved_config(&base_url)).expect("build adapter");
+
+        let message = MessageSendApi::send_message(
+            &adapter,
+            &ChannelOutboundTarget::feishu_receive_id("oc_demo")
+                .with_feishu_receive_id_type("chat_id")
+                .with_idempotency_key("message-send-api-uuid"),
+            &MessageContent::Rich {
+                content: json!({
+                    "zh_cn": {
+                        "title": "Trait send",
+                        "content": [[{
+                            "tag": "text",
+                            "text": "trait powered"
+                        }]]
+                    }
+                }),
+            },
+            None,
+        )
+        .await
+        .expect("send message through narrow trait");
+
+        assert_eq!(message.id, "om_message_send_api_1");
+        assert_eq!(message.session.conversation_id, "oc_demo");
+
+        let requests = requests.lock().await.clone();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].path, "/open-apis/im/v1/messages");
+        assert!(
+            requests[1]
+                .query
+                .as_deref()
+                .is_some_and(|query| query.contains("receive_id_type=chat_id"))
+        );
+        assert_eq!(
+            requests[1].authorization.as_deref(),
+            Some("Bearer t-token-message-send-api")
+        );
+        assert!(
+            requests[1]
+                .body
+                .contains("\"uuid\":\"message-send-api-uuid\"")
+        );
+        assert!(requests[1].body.contains("\"msg_type\":\"post\""));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn feishu_adapter_message_query_api_gets_message() {
+        let requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+        let state = MockServerState {
+            requests: requests.clone(),
+        };
+        let router = Router::new()
+            .route(
+                "/open-apis/auth/v3/tenant_access_token/internal",
+                post({
+                    let state = state.clone();
+                    move |request| {
+                        let state = state.clone();
+                        async move {
+                            record_request(State(state), request).await;
+                            Json(json!({
+                                "code": 0,
+                                "tenant_access_token": "t-token-message-query-api"
+                            }))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/open-apis/im/v1/messages/om_message_query_1",
+                get({
+                    let state = state.clone();
+                    move |request| {
+                        let state = state.clone();
+                        async move {
+                            record_request(State(state), request).await;
+                            Json(json!({
+                                "code": 0,
+                                "data": {
+                                    "items": [{
+                                        "message_id": "om_message_query_1",
+                                        "chat_id": "oc_demo",
+                                        "msg_type": "text",
+                                        "create_time": "1704067200000",
+                                        "body": {
+                                            "content": "{\"text\":\"hello from narrow query\"}"
+                                        },
+                                        "sender": {
+                                            "id": "ou_sender",
+                                            "sender_type": "user"
+                                        }
+                                    }]
+                                }
+                            }))
+                        }
+                    }
+                }),
+            );
+        let (base_url, server) = spawn_mock_feishu_server(router).await;
+        let adapter = FeishuAdapter::new(&resolved_config(&base_url)).expect("build adapter");
+
+        let message = MessageQueryApi::get_message(&adapter, "om_message_query_1")
+            .await
+            .expect("query message should succeed")
+            .expect("message should exist");
+
+        assert_eq!(message.id, "om_message_query_1");
+        assert_eq!(message.session.conversation_id, "oc_demo");
+        assert_eq!(message.sender_id, "ou_sender");
+        assert_eq!(
+            message.content,
+            MessageContent::Text {
+                text: "hello from narrow query".to_owned()
+            }
+        );
+
+        let requests = requests.lock().await.clone();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[1].path,
+            "/open-apis/im/v1/messages/om_message_query_1"
+        );
+        assert_eq!(
+            requests[1].authorization.as_deref(),
+            Some("Bearer t-token-message-query-api")
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn feishu_adapter_api_traits_do_not_reuse_cached_tenant_tokens() {
+        let requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+        let token_fetches = Arc::new(Mutex::new(0usize));
+        let state = MockServerState {
+            requests: requests.clone(),
+        };
+        let router = Router::new()
+            .route(
+                "/open-apis/auth/v3/tenant_access_token/internal",
+                post({
+                    let state = state.clone();
+                    let token_fetches = token_fetches.clone();
+                    move |request| {
+                        let state = state.clone();
+                        let token_fetches = token_fetches.clone();
+                        async move {
+                            record_request(State(state), request).await;
+                            let mut count = token_fetches.lock().await;
+                            *count += 1;
+                            Json(json!({
+                                "code": 0,
+                                "tenant_access_token": format!("t-token-api-{}", *count)
+                            }))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/open-apis/im/v1/messages/om_message_query_cached",
+                get({
+                    let state = state.clone();
+                    move |request| {
+                        let state = state.clone();
+                        async move {
+                            record_request(State(state), request).await;
+                            Json(json!({
+                                "code": 0,
+                                "data": {
+                                    "items": [{
+                                        "message_id": "om_message_query_cached",
+                                        "chat_id": "oc_demo",
+                                        "msg_type": "text",
+                                        "create_time": "1704067200000",
+                                        "body": {
+                                            "content": "{\"text\":\"fresh token path\"}"
+                                        },
+                                        "sender": {
+                                            "id": "ou_sender",
+                                            "sender_type": "user"
+                                        }
+                                    }]
+                                }
+                            }))
+                        }
+                    }
+                }),
+            );
+        let (base_url, server) = spawn_mock_feishu_server(router).await;
+        let mut adapter = FeishuAdapter::new(&resolved_config(&base_url)).expect("build adapter");
+
+        adapter
+            .refresh_tenant_token()
+            .await
+            .expect("prime cached tenant token");
+
+        let message = MessageQueryApi::get_message(&adapter, "om_message_query_cached")
+            .await
+            .expect("query message should succeed")
+            .expect("message should exist");
+
+        assert_eq!(message.id, "om_message_query_cached");
+
+        let requests = requests.lock().await.clone();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(
+            requests[2].authorization.as_deref(),
+            Some("Bearer t-token-api-2")
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn feishu_adapter_message_send_api_reply_preserves_parent_session() {
+        let requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+        let state = MockServerState {
+            requests: requests.clone(),
+        };
+        let router = Router::new()
+            .route(
+                "/open-apis/auth/v3/tenant_access_token/internal",
+                post({
+                    let state = state.clone();
+                    move |request| {
+                        let state = state.clone();
+                        async move {
+                            record_request(State(state), request).await;
+                            Json(json!({
+                                "code": 0,
+                                "tenant_access_token": "t-token-message-reply-api"
+                            }))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/open-apis/im/v1/messages/om_parent_reply_1",
+                get({
+                    let state = state.clone();
+                    move |request| {
+                        let state = state.clone();
+                        async move {
+                            record_request(State(state), request).await;
+                            Json(json!({
+                                "code": 0,
+                                "data": {
+                                    "items": [{
+                                        "message_id": "om_parent_reply_1",
+                                        "chat_id": "oc_reply_parent_chat",
+                                        "msg_type": "text",
+                                        "create_time": "1704067200000",
+                                        "body": {
+                                            "content": "{\"text\":\"hello from parent\"}"
+                                        },
+                                        "sender": {
+                                            "id": "ou_sender",
+                                            "sender_type": "user"
+                                        }
+                                    }]
+                                }
+                            }))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/open-apis/im/v1/messages/om_parent_reply_1/reply",
+                post({
+                    let state = state.clone();
+                    move |request| {
+                        let state = state.clone();
+                        async move {
+                            record_request(State(state), request).await;
+                            Json(json!({
+                                "code": 0,
+                                "data": {
+                                    "message_id": "om_reply_1",
+                                    "root_id": "om_parent_reply_1",
+                                    "parent_id": "om_parent_reply_1"
+                                }
+                            }))
+                        }
+                    }
+                }),
+            );
+        let (base_url, server) = spawn_mock_feishu_server(router).await;
+        let adapter = FeishuAdapter::new(&resolved_config(&base_url)).expect("build adapter");
+
+        let message = MessageSendApi::reply(
+            &adapter,
+            &ChannelOutboundTarget::feishu_message_reply("om_parent_reply_1")
+                .with_feishu_reply_in_thread(true),
+            &MessageContent::Text {
+                text: "reply body".to_owned(),
+            },
+            None,
+        )
+        .await
+        .expect("reply through narrow trait");
+
+        assert_eq!(message.id, "om_reply_1");
+        assert_eq!(message.session.conversation_id, "oc_reply_parent_chat");
+        assert_eq!(message.parent_id.as_deref(), Some("om_parent_reply_1"));
+
+        let requests = requests.lock().await.clone();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(
+            requests[1].path,
+            "/open-apis/im/v1/messages/om_parent_reply_1"
+        );
+        assert_eq!(
+            requests[2].path,
+            "/open-apis/im/v1/messages/om_parent_reply_1/reply"
+        );
+        assert!(requests[2].body.contains("\"reply_in_thread\":true"));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn feishu_adapter_message_send_api_reply_uses_target_chat_context_when_parent_missing() {
+        let requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+        let state = MockServerState {
+            requests: requests.clone(),
+        };
+        let router = Router::new()
+            .route(
+                "/open-apis/auth/v3/tenant_access_token/internal",
+                post({
+                    let state = state.clone();
+                    move |request| {
+                        let state = state.clone();
+                        async move {
+                            record_request(State(state), request).await;
+                            Json(json!({
+                                "code": 0,
+                                "tenant_access_token": "t-token-message-reply-fallback"
+                            }))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/open-apis/im/v1/messages/om_parent_reply_missing",
+                get({
+                    let state = state.clone();
+                    move |request| {
+                        let state = state.clone();
+                        async move {
+                            record_request(State(state), request).await;
+                            Json(json!({
+                                "code": 10029,
+                                "msg": "message_id not exist"
+                            }))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/open-apis/im/v1/messages/om_parent_reply_missing/reply",
+                post({
+                    let state = state.clone();
+                    move |request| {
+                        let state = state.clone();
+                        async move {
+                            record_request(State(state), request).await;
+                            Json(json!({
+                                "code": 0,
+                                "data": {
+                                    "message_id": "om_reply_fallback_1",
+                                    "root_id": "om_parent_reply_missing",
+                                    "parent_id": "om_parent_reply_missing"
+                                }
+                            }))
+                        }
+                    }
+                }),
+            );
+        let (base_url, server) = spawn_mock_feishu_server(router).await;
+        let adapter = FeishuAdapter::new(&resolved_config(&base_url)).expect("build adapter");
+
+        let message = MessageSendApi::reply(
+            &adapter,
+            &ChannelOutboundTarget::feishu_message_reply("om_parent_reply_missing")
+                .with_feishu_reply_chat_id("oc_reply_fallback"),
+            &MessageContent::Text {
+                text: "reply body".to_owned(),
+            },
+            None,
+        )
+        .await
+        .expect("reply through narrow trait should use fallback chat context");
+
+        assert_eq!(message.id, "om_reply_fallback_1");
+        assert_eq!(message.session.conversation_id, "oc_reply_fallback");
+        assert_eq!(
+            message.parent_id.as_deref(),
+            Some("om_parent_reply_missing")
+        );
+
+        let requests = requests.lock().await.clone();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(
+            requests[1].path,
+            "/open-apis/im/v1/messages/om_parent_reply_missing"
+        );
+        assert_eq!(
+            requests[2].path,
+            "/open-apis/im/v1/messages/om_parent_reply_missing/reply"
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn feishu_adapter_message_send_api_reply_returns_not_found_without_chat_context() {
+        let requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+        let state = MockServerState {
+            requests: requests.clone(),
+        };
+        let router = Router::new()
+            .route(
+                "/open-apis/auth/v3/tenant_access_token/internal",
+                post({
+                    let state = state.clone();
+                    move |request| {
+                        let state = state.clone();
+                        async move {
+                            record_request(State(state), request).await;
+                            Json(json!({
+                                "code": 0,
+                                "tenant_access_token": "t-token-message-reply-missing"
+                            }))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/open-apis/im/v1/messages/om_parent_reply_missing_no_context",
+                get({
+                    let state = state.clone();
+                    move |request| {
+                        let state = state.clone();
+                        async move {
+                            record_request(State(state), request).await;
+                            Json(json!({
+                                "code": 10029,
+                                "msg": "message_id not exist"
+                            }))
+                        }
+                    }
+                }),
+            );
+        let (base_url, server) = spawn_mock_feishu_server(router).await;
+        let adapter = FeishuAdapter::new(&resolved_config(&base_url)).expect("build adapter");
+
+        let error = MessageSendApi::reply(
+            &adapter,
+            &ChannelOutboundTarget::feishu_message_reply("om_parent_reply_missing_no_context"),
+            &MessageContent::Text {
+                text: "reply body".to_owned(),
+            },
+            None,
+        )
+        .await
+        .expect_err("reply should fail without parent detail or explicit chat context");
+
+        assert!(matches!(error, ApiError::NotFound(_)));
+
+        let requests = requests.lock().await.clone();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[1].path,
+            "/open-apis/im/v1/messages/om_parent_reply_missing_no_context"
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn feishu_adapter_message_edit_api_edits_text_messages() {
+        let requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+        let state = MockServerState {
+            requests: requests.clone(),
+        };
+        let router = Router::new()
+            .route(
+                "/open-apis/auth/v3/tenant_access_token/internal",
+                post({
+                    let state = state.clone();
+                    move |request| {
+                        let state = state.clone();
+                        async move {
+                            record_request(State(state), request).await;
+                            Json(json!({
+                                "code": 0,
+                                "tenant_access_token": "t-token-message-edit-api"
+                            }))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/open-apis/im/v1/messages/om_edit_1",
+                put({
+                    let state = state.clone();
+                    move |request| {
+                        let state = state.clone();
+                        async move {
+                            record_request(State(state), request).await;
+                            Json(json!({
+                                "code": 0,
+                                "data": {
+                                    "message_id": "om_edit_1"
+                                }
+                            }))
+                        }
+                    }
+                }),
+            );
+        let (base_url, server) = spawn_mock_feishu_server(router).await;
+        let adapter = FeishuAdapter::new(&resolved_config(&base_url)).expect("build adapter");
+
+        let message = MessageEditApi::edit_message(
+            &adapter,
+            "om_edit_1",
+            &MessageContent::Text {
+                text: "edited body".to_owned(),
+            },
+        )
+        .await
+        .expect("edit through narrow trait");
+
+        assert_eq!(message.id, "om_edit_1");
+        assert_eq!(
+            message.content,
+            MessageContent::Text {
+                text: "edited body".to_owned()
+            }
+        );
+
+        let requests = requests.lock().await.clone();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].path, "/open-apis/im/v1/messages/om_edit_1");
+        assert_eq!(
+            requests[1].authorization.as_deref(),
+            Some("Bearer t-token-message-edit-api")
+        );
+        assert!(requests[1].body.contains("\"msg_type\":\"text\""));
+        assert!(
+            requests[1]
+                .body
+                .contains("\\\"text\\\":\\\"edited body\\\"")
         );
 
         server.abort();
@@ -1499,7 +2327,7 @@ mod tests {
         let (base_url, server) = spawn_mock_feishu_server(router).await;
         let adapter = FeishuAdapter::new(&resolved_config(&base_url)).expect("build adapter");
 
-        let document = DocumentsApi::create_document(
+        let document = DocumentCreateApi::create_document(
             &adapter,
             "Release Plan",
             Some(&DocumentContent::Markdown("# Release Plan".to_owned())),
@@ -1610,7 +2438,7 @@ mod tests {
         let (base_url, server) = spawn_mock_feishu_server(router).await;
         let adapter = FeishuAdapter::new(&resolved_config(&base_url)).expect("build adapter");
 
-        let document = DocumentsApi::get_document(&adapter, "doxcnCreated")
+        let document = DocumentReadApi::get_document(&adapter, "doxcnCreated")
             .await
             .expect("get document should succeed")
             .expect("document should exist");
@@ -1703,7 +2531,7 @@ mod tests {
         let (base_url, server) = spawn_mock_feishu_server(router).await;
         let adapter = FeishuAdapter::new(&resolved_config(&base_url)).expect("build adapter");
 
-        let document = DocumentsApi::get_document(&adapter, "doxcnMissing")
+        let document = DocumentReadApi::get_document(&adapter, "doxcnMissing")
             .await
             .expect("get document should not fail");
 
@@ -1714,6 +2542,117 @@ mod tests {
         assert_eq!(
             requests[1].path,
             "/open-apis/docx/v1/documents/doxcnMissing"
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn feishu_adapter_document_write_api_appends_markdown_content() {
+        let requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+        let state = MockServerState {
+            requests: requests.clone(),
+        };
+        let router = Router::new()
+            .route(
+                "/open-apis/auth/v3/tenant_access_token/internal",
+                post({
+                    let state = state.clone();
+                    move |request| {
+                        let state = state.clone();
+                        async move {
+                            record_request(State(state), request).await;
+                            Json(json!({
+                                "code": 0,
+                                "tenant_access_token": "t-token-doc-append"
+                            }))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/open-apis/docx/v1/documents/blocks/convert",
+                post({
+                    let state = state.clone();
+                    move |request| {
+                        let state = state.clone();
+                        async move {
+                            record_request(State(state), request).await;
+                            Json(json!({
+                                "code": 0,
+                                "data": {
+                                    "first_level_block_ids": ["tmp-append"],
+                                    "blocks": [
+                                        {
+                                            "block_id": "tmp-append",
+                                            "block_type": 2,
+                                            "text": {
+                                                "elements": [
+                                                    {
+                                                        "text_run": {
+                                                            "content": "Appended content"
+                                                        }
+                                                    }
+                                                ]
+                                            },
+                                            "children": []
+                                        }
+                                    ]
+                                }
+                            }))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/open-apis/docx/v1/documents/doxcnAppend/blocks/doxcnAppend/descendant",
+                post({
+                    let state = state.clone();
+                    move |request| {
+                        let state = state.clone();
+                        async move {
+                            record_request(State(state), request).await;
+                            Json(json!({
+                                "code": 0,
+                                "data": {
+                                    "block_id_relations": [
+                                        {
+                                            "block_id": "blk_appended",
+                                            "temporary_block_id": "tmp-append"
+                                        }
+                                    ]
+                                }
+                            }))
+                        }
+                    }
+                }),
+            );
+        let (base_url, server) = spawn_mock_feishu_server(router).await;
+        let adapter = FeishuAdapter::new(&resolved_config(&base_url)).expect("build adapter");
+
+        DocumentWriteApi::append_to_document(
+            &adapter,
+            "doxcnAppend",
+            &DocumentContent::Markdown("Appended content".to_owned()),
+        )
+        .await
+        .expect("append document through narrow trait");
+
+        let requests = requests.lock().await.clone();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(
+            requests[1].path,
+            "/open-apis/docx/v1/documents/blocks/convert"
+        );
+        assert!(requests[1].body.contains("\"content_type\":\"markdown\""));
+        assert!(requests[1].body.contains("Appended content"));
+        assert_eq!(
+            requests[2].path,
+            "/open-apis/docx/v1/documents/doxcnAppend/blocks/doxcnAppend/descendant"
+        );
+        assert_eq!(
+            requests[2].authorization.as_deref(),
+            Some("Bearer t-token-doc-append")
         );
 
         server.abort();
