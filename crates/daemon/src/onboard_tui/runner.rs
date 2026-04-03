@@ -1552,22 +1552,25 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
     ) -> Option<Rect> {
         let hero_lines = Self::welcome_hero_wordmark_lines(area.width);
         if !hero_lines.is_empty() {
+            let use_shadow_layer = hero_lines.len() > 1;
             let shadow_style = Self::welcome_wordmark_shadow_style();
-            let shadow_width = area.width.saturating_sub(1).max(1);
-            let shadow_height = area.height.saturating_sub(1).max(1);
-            let shadow_area = Rect::new(
-                area.x.saturating_add(1),
-                area.y.saturating_add(1),
-                shadow_width,
-                shadow_height,
-            );
+            if use_shadow_layer {
+                let shadow_width = area.width.saturating_sub(1).max(1);
+                let shadow_height = area.height.saturating_sub(1).max(1);
+                let shadow_area = Rect::new(
+                    area.x.saturating_add(1),
+                    area.y.saturating_add(1),
+                    shadow_width,
+                    shadow_height,
+                );
 
-            frame.render_widget(
-                Paragraph::new(hero_lines.clone())
-                    .alignment(Alignment::Center)
-                    .style(shadow_style),
-                shadow_area,
-            );
+                frame.render_widget(
+                    Paragraph::new(hero_lines.clone())
+                        .alignment(Alignment::Center)
+                        .style(shadow_style),
+                    shadow_area,
+                );
+            }
             frame.render_widget(
                 Paragraph::new(hero_lines)
                     .alignment(Alignment::Center)
@@ -9017,6 +9020,32 @@ mod tests {
             "second render should clear stale stage copy: {rendered}"
         );
         assert!(rendered.contains("Short"));
+    }
+
+    #[test]
+    fn welcome_brand_media_compact_wordmark_does_not_duplicate_with_shadow() {
+        let backend = TestBackend::new(24, 8);
+        let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+
+        terminal
+            .draw(|frame| {
+                let area = Rect::new(0, 0, 20, 4);
+                let _ = RatatuiOnboardRunner::<ScriptedEventSource>::render_welcome_brand_media(
+                    frame,
+                    area,
+                    false,
+                    Style::default(),
+                );
+            })
+            .expect("welcome brand render should succeed");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        let duplicate_count = rendered.matches("LOONGCLAW").count();
+
+        assert_eq!(
+            duplicate_count, 1,
+            "compact wordmark should render once without a second shadow copy: {rendered}"
+        );
     }
 
     #[test]

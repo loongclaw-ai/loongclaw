@@ -11,6 +11,7 @@ use ratatui::{
     },
 };
 
+use super::commands;
 use super::dialog::ClarifyDialog;
 use super::focus::{FocusLayer, FocusStack};
 use super::history::{self, PaneView};
@@ -96,6 +97,8 @@ pub(super) fn draw(
         state.focus().top(),
         palette,
     );
+
+    render_command_palette(frame, areas.input, textarea, state.focus().top(), palette);
 
     // 6. Status bar
     status_bar::render_status_bar(
@@ -218,6 +221,71 @@ fn compact_scroll_label(scroll_offset: u16) -> &'static str {
     } else {
         "SCROLLED"
     }
+}
+
+fn render_command_palette(
+    frame: &mut Frame<'_>,
+    input_area: Rect,
+    textarea: &tui_textarea::TextArea<'_>,
+    focus: FocusLayer,
+    palette: &Palette,
+) {
+    if focus != FocusLayer::Composer {
+        return;
+    }
+
+    let draft_text = textarea.lines().join("\n");
+    let draft_prefix = draft_text.trim();
+    if !draft_prefix.starts_with('/') {
+        return;
+    }
+
+    let matches = commands::completions(draft_prefix);
+    if matches.is_empty() {
+        return;
+    }
+
+    let max_visible_matches = 5_usize;
+    let visible_matches = matches
+        .into_iter()
+        .take(max_visible_matches)
+        .collect::<Vec<_>>();
+    let popup_height = visible_matches.len() as u16 + 2;
+    let popup_width = input_area.width.clamp(28, 72);
+    let popup_x = input_area.x;
+    let popup_y = input_area.y.saturating_sub(popup_height.saturating_sub(1));
+    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(palette.info))
+        .title(Span::styled(
+            " Commands ",
+            Style::default()
+                .fg(palette.info)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner_area = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let mut lines = Vec::new();
+    for (command_name, command_help) in visible_matches {
+        let command_span = Span::styled(
+            format!("{command_name:<12}"),
+            Style::default()
+                .fg(palette.text)
+                .add_modifier(Modifier::BOLD),
+        );
+        let separator_span = Span::styled(" ", Style::default().fg(palette.separator));
+        let help_span = Span::styled(command_help.to_owned(), Style::default().fg(palette.dim));
+        let line = Line::from(vec![command_span, separator_span, help_span]);
+        lines.push(line);
+    }
+
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, inner_area);
 }
 
 // ---------------------------------------------------------------------------
@@ -1008,6 +1076,32 @@ mod tests {
         assert!(
             text.contains("Type a message"),
             "compact shell should still render body content on narrow terminals: {text:?}"
+        );
+    }
+
+    #[test]
+    fn draw_shows_slash_command_palette_for_matching_prefix() {
+        let backend = TestBackend::new(90, 20);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let shell = TestShell::idle();
+        let palette = Palette::dark();
+        let mut textarea = tui_textarea::TextArea::default();
+        textarea.insert_str("/re");
+
+        terminal
+            .draw(|f| {
+                draw(f, &shell, &textarea, &palette);
+            })
+            .expect("draw");
+
+        let text = buffer_text(&terminal);
+        assert!(
+            text.contains("Commands"),
+            "slash palette should be visible: {text:?}"
+        );
+        assert!(
+            text.contains("/review"),
+            "matching command should be rendered: {text:?}"
         );
     }
 
