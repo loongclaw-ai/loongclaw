@@ -11,6 +11,10 @@ pub(crate) const BROWSER_COMPANION_RUNTIME_GATE_CHECK_NAME: &str = "browser comp
 const BROWSER_COMPANION_VERSION_ARG: &str = "--version";
 const BROWSER_COMPANION_PROBE_ATTEMPTS: usize = 3;
 
+fn browser_companion_probe_timeout_seconds(timeout_seconds: u64) -> u64 {
+    timeout_seconds.max(1)
+}
+
 // Shared readiness snapshot for doctor/onboard so the companion lane is probed once.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BrowserCompanionDiagnostics {
@@ -39,6 +43,7 @@ impl BrowserCompanionDiagnostics {
                 command,
                 timeout_seconds,
             } => {
+                let timeout_seconds = browser_companion_probe_timeout_seconds(*timeout_seconds);
                 format!(
                     "command `{command} {BROWSER_COMPANION_VERSION_ARG}` timed out after {}s",
                     timeout_seconds
@@ -143,7 +148,7 @@ pub(crate) async fn collect_browser_companion_diagnostics(
 
     let runtime_ready = runtime.is_runtime_ready();
     let expected_version = runtime.expected_version;
-    let probe_timeout_seconds = runtime.timeout_seconds;
+    let probe_timeout_seconds = browser_companion_probe_timeout_seconds(runtime.timeout_seconds);
     let Some(command) = runtime.command else {
         return Some(BrowserCompanionDiagnostics {
             command: None,
@@ -284,7 +289,8 @@ fn wait_for_browser_companion_probe_output(
     mut child: std::process::Child,
     timeout_seconds: u64,
 ) -> Result<Output, BrowserCompanionProbeError> {
-    let timeout_duration = Duration::from_secs(timeout_seconds.max(1));
+    let timeout_seconds = browser_companion_probe_timeout_seconds(timeout_seconds);
+    let timeout_duration = Duration::from_secs(timeout_seconds);
     let wait_result = child.wait_timeout(timeout_duration);
     let status_option = wait_result.map_err(|error| {
         let error_message = error.to_string();
@@ -343,15 +349,11 @@ fn observed_version_matches_expected(observed_version: &str, expected_version: &
 mod tests {
     use super::*;
     #[cfg(unix)]
-    use std::ffi::OsString;
-    #[cfg(unix)]
     use std::io::Write;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     #[cfg(unix)]
     use std::path::{Path, PathBuf};
-    #[cfg(unix)]
-    use std::sync::MutexGuard;
     #[cfg(unix)]
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -383,55 +385,17 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn set_browser_companion_env_var(key: &str, value: &str) {
-        // SAFETY: daemon tests serialize process env mutations behind
-        // `lock_daemon_test_environment`, so no concurrent env readers/writers
-        // observe racy updates while these tests run.
-        #[allow(unsafe_code, clippy::disallowed_methods)]
-        unsafe {
-            std::env::set_var(key, value);
-        }
-    }
-
-    #[cfg(unix)]
-    fn remove_browser_companion_env_var(key: &str) {
-        // SAFETY: daemon tests serialize process env mutations behind
-        // `lock_daemon_test_environment`, so removing the variable here is
-        // coordinated with all other env-mutating daemon tests.
-        #[allow(unsafe_code, clippy::disallowed_methods)]
-        unsafe {
-            std::env::remove_var(key);
-        }
-    }
-
-    #[cfg(unix)]
     struct BrowserCompanionEnvGuard {
-        _lock: MutexGuard<'static, ()>,
-        saved_ready: Option<OsString>,
+        _env: crate::test_support::ScopedEnv,
     }
 
     #[cfg(unix)]
     impl BrowserCompanionEnvGuard {
         fn runtime_gate_closed() -> Self {
-            let lock = crate::test_support::lock_daemon_test_environment();
             let key = "LOONGCLAW_BROWSER_COMPANION_READY";
-            let saved_ready = std::env::var_os(key);
-            remove_browser_companion_env_var(key);
-            Self {
-                _lock: lock,
-                saved_ready,
-            }
-        }
-    }
-
-    #[cfg(unix)]
-    impl Drop for BrowserCompanionEnvGuard {
-        fn drop(&mut self) {
-            let key = "LOONGCLAW_BROWSER_COMPANION_READY";
-            match self.saved_ready.take() {
-                Some(value) => set_browser_companion_env_var(key, &value.to_string_lossy()),
-                None => remove_browser_companion_env_var(key),
-            }
+            let mut env = crate::test_support::ScopedEnv::new();
+            env.remove(key.to_owned());
+            Self { _env: env }
         }
     }
 
@@ -485,6 +449,7 @@ mod tests {
         config.tools.browser_companion.enabled = true;
         config.tools.browser_companion.command = Some(script_path.display().to_string());
         config.tools.browser_companion.expected_version = Some("1.5.0".to_owned());
+        config.tools.browser_companion.timeout_seconds = 5;
 
         let diagnostics = collect_browser_companion_diagnostics(&config)
             .await
