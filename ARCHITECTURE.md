@@ -117,6 +117,8 @@ mechanically where possible.
 | Harness engineering & backpressure | [Harness Engineering](docs/design-docs/harness-engineering.md) |
 | Design decisions, patterns & catalog | [Design Docs Index](docs/design-docs/index.md) |
 | Security model & gaps | [Security](docs/SECURITY.md) |
+| Threat boundaries and residual risks | [Threat Model](docs/THREAT_MODEL.md) |
+| Agent-risk control coverage baseline | [Agent Risk Mapping](docs/AGENT_RISK_MAPPING.md) |
 | Stage-based roadmap | [Roadmap](docs/ROADMAP.md) |
 | Build and kernel invariants | [Reliability](docs/RELIABILITY.md) |
 | Domain quality grades | [Quality Score](docs/QUALITY_SCORE.md) |

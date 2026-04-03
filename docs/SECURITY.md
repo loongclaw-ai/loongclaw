@@ -126,5 +126,7 @@ Current evidence surfaces that emit or expose this vocabulary:
 ## See Also
 
 - [Design Docs Index](design-docs/index.md) — security-related design decisions
+- [Threat Model](THREAT_MODEL.md) — trust boundaries, attack surfaces, mitigations, and residual risks
+- [Agent Risk Mapping](AGENT_RISK_MAPPING.md) — current control coverage baseline across common agent-risk areas
 - [Layered Kernel Design](design-docs/layered-kernel-design.md) — L1 security layer specification
 - [Core Beliefs](design-docs/core-beliefs.md) — principle #3: capability-gated by default

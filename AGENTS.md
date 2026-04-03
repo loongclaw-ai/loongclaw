@@ -9,6 +9,8 @@ This file is the **map** — keep it short (~100 lines). Deeper context lives in
 - [Core Beliefs](docs/design-docs/core-beliefs.md) — kernel and engineering principles
 - [Layered Kernel Design](docs/design-docs/layered-kernel-design.md) — layered model and boundary rules
 - [Roadmap](docs/ROADMAP.md) — stage-based milestones and acceptance criteria
+- [Threat Model](docs/THREAT_MODEL.md) — trust boundaries, attack surfaces, and residual risks
+- [Agent Risk Mapping](docs/AGENT_RISK_MAPPING.md) — current control coverage across common agent-risk areas
 - [Reliability](docs/RELIABILITY.md) — invariants and operating expectations
 - [Product Specs](docs/product-specs/index.md) — user-facing requirements
 - [Contributing Guide](CONTRIBUTING.md) — contributor workflow and recipes
@@ -78,6 +80,8 @@ Use `task verify` for the stricter local superset (architecture, conventions, do
 | Roadmap | `docs/ROADMAP.md` |
 | Reliability invariants | `docs/RELIABILITY.md` |
 | Security model & gaps | `docs/SECURITY.md` |
+| Threat boundaries & residual risks | `docs/THREAT_MODEL.md` |
+| Agent-risk control coverage | `docs/AGENT_RISK_MAPPING.md` |
 | Quality scores & gaps | `docs/QUALITY_SCORE.md` |
 | Product sense & principles | `docs/PRODUCT_SENSE.md` |
 | Release process docs | `docs/releases/` |
