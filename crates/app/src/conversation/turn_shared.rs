@@ -188,10 +188,53 @@ pub(crate) fn summarize_single_tool_followup_request(intent: &ToolIntent) -> Opt
 fn tool_followup_request_entry(intent: &ToolIntent) -> Value {
     let tool_name = effective_followup_tool_name(intent);
     let request = effective_followup_request(intent);
+    let request = sanitize_followup_request_summary(tool_name.as_str(), request);
     serde_json::json!({
         "tool": tool_name,
         "request": request,
     })
+}
+
+fn sanitize_followup_request_summary(tool_name: &str, request: Value) -> Value {
+    if tool_name != crate::tools::SHELL_EXEC_TOOL_NAME {
+        return request;
+    }
+
+    sanitize_shell_followup_request_summary(request)
+}
+
+fn sanitize_shell_followup_request_summary(request: Value) -> Value {
+    let Value::Object(request_object) = request else {
+        return request;
+    };
+
+    let command = request_object
+        .get("command")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let timeout_ms = request_object.get("timeout_ms").cloned();
+    let args_redacted = request_object
+        .get("args")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .filter(|count| *count > 0);
+
+    let mut sanitized_request = serde_json::Map::new();
+
+    if let Some(command) = command {
+        sanitized_request.insert("command".to_owned(), Value::String(command));
+    }
+
+    if let Some(timeout_ms) = timeout_ms {
+        sanitized_request.insert("timeout_ms".to_owned(), timeout_ms);
+    }
+
+    if let Some(args_redacted) = args_redacted {
+        let args_redacted = serde_json::Number::from(args_redacted);
+        sanitized_request.insert("args_redacted".to_owned(), Value::Number(args_redacted));
+    }
+
+    Value::Object(sanitized_request)
 }
 
 pub(crate) fn effective_followup_tool_name(intent: &ToolIntent) -> String {
