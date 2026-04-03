@@ -85,6 +85,7 @@ dunce = "1"
 tokio-stream = { version = "0.1", features = ["sync"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+wait-timeout = "0.2"
 
 [[bin]]
 name = "loong"
