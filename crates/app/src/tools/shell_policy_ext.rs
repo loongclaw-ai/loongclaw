@@ -52,6 +52,20 @@ impl ToolPolicyExtension {
     }
 }
 
+const REPAIRABLE_TOOL_INPUT_PREFIX: &str = "tool input needs repair: ";
+
+pub(crate) fn repairable_tool_input_reason(msg: String) -> String {
+    format!("{REPAIRABLE_TOOL_INPUT_PREFIX}{msg}")
+}
+
+pub(crate) fn is_repairable_tool_input_reason(s: &str) -> bool {
+    s.starts_with(REPAIRABLE_TOOL_INPUT_PREFIX)
+}
+
+pub(crate) fn strip_repairable_tool_input_prefix(s: &str) -> &str {
+    s.strip_prefix(REPAIRABLE_TOOL_INPUT_PREFIX).unwrap_or(s)
+}
+
 pub(crate) fn validate_shell_command_name(command: &str) -> Result<String, String> {
     let trimmed = command.trim();
     if trimmed.is_empty() {

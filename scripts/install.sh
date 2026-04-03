@@ -359,7 +359,7 @@ install_binary_pair() {
 
   mkdir -p "${prefix}"
   install -m 755 "${source_path}" "${prefix}/${primary_output_name}"
-  install -m 755 "${source_path}" "${prefix}/${legacy_output_name}"
+  ln -sf "${primary_output_name}" "${prefix}/${legacy_output_name}"
 }
 
 install_web_search_provider_display_name() {
@@ -852,7 +852,7 @@ else
 fi
 
 printf '==> Installed loong to %s\n' "${prefix}/${bin_name}"
-printf '==> Installed compatible loongclaw command to %s\n' "${prefix}/${legacy_bin_name}"
+printf '==> Installed loongclaw symlink to %s\n' "${prefix}/${legacy_bin_name}"
 
 if [[ "${run_onboard}" -eq 1 ]]; then
   printf '==> Running guided onboarding\n'

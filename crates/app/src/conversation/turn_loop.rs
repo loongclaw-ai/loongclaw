@@ -25,7 +25,7 @@ use super::turn_shared::{
     build_tool_loop_guard_tail, decide_provider_turn_request_action,
     reduce_followup_payload_for_model, request_completion_with_raw_fallback,
     summarize_single_tool_followup_request, summarize_tool_followup_request,
-    summarize_tool_followup_tool_names, tool_loop_circuit_breaker_reply,
+    tool_loop_circuit_breaker_reply,
     user_requested_raw_tool_output,
 };
 
@@ -1539,6 +1539,7 @@ mod tests {
         let evaluation = RoundKernelEvaluation {
             assistant_preface: "preface".to_owned(),
             had_tool_intents: true,
+            tool_request_summary: None,
             turn_result: TurnResult::FinalText("tool output".to_owned()),
             loop_verdict: Some(ToolLoopSupervisorVerdict::InjectWarning {
                 reason: "warning".to_owned(),
@@ -1571,6 +1572,7 @@ mod tests {
         let evaluation = RoundKernelEvaluation {
             assistant_preface: "preface".to_owned(),
             had_tool_intents: true,
+            tool_request_summary: None,
             turn_result: TurnResult::FinalText("tool output".to_owned()),
             loop_verdict: Some(ToolLoopSupervisorVerdict::HardStop {
                 reason: "stop".to_owned(),
@@ -1608,6 +1610,7 @@ mod tests {
         let evaluation = RoundKernelEvaluation {
             assistant_preface: "preface".to_owned(),
             had_tool_intents: true,
+            tool_request_summary: None,
             turn_result: TurnResult::ToolError(TurnFailure::retryable(
                 "tool_failed",
                 "tool failure",
@@ -1651,6 +1654,7 @@ mod tests {
         let evaluation = RoundKernelEvaluation {
             assistant_preface: "preface".to_owned(),
             had_tool_intents: true,
+            tool_request_summary: None,
             turn_result: TurnResult::FinalText("tool output".to_owned()),
             loop_verdict: Some(ToolLoopSupervisorVerdict::InjectWarning {
                 reason: "warning".to_owned(),

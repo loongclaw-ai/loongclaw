@@ -2016,6 +2016,10 @@ pub(crate) fn effective_result_tool_name(intent: &ToolIntent) -> String {
         .to_owned()
 }
 
+fn effective_denied_tool_name(intent: &ToolIntent) -> String {
+    crate::tools::canonical_tool_name(intent.tool_name.as_str()).to_owned()
+}
+
 fn build_tool_decision_trace_record(
     intent: &ToolIntent,
     decision: ToolDecisionTelemetry,
