@@ -496,6 +496,10 @@ loongclaw skills install-bundled github-issues
 # 对 bundled-only 技能先做检查，再决定是否安装
 loongclaw skills info native-mcp
 
+# 查看或安装一个 bundled pack
+loongclaw skills info anthropic-office
+loongclaw skills install-bundled anthropic-office
+
 # 在显式审批边界内下载远端 skill 包
 loongclaw skills fetch https://skills.sh/release-guard.tgz --approve-download
 
@@ -531,6 +535,12 @@ loongclaw skills fetch https://skills.sh/release-guard.tgz \
 - `Anthropic Office pack` 会安装 `docx`、`pdf`、`pptx`、`xlsx`
 - `Minimax Office pack` 会安装 `minimax-docx`、`minimax-pdf`、`minimax-xlsx`
 - `skill-creator` 仍然保持独立，不会并入 Office pack
+
+现在 pack id 也已经是一等的操作者入口：
+
+- `loongclaw skills info anthropic-office`
+- `loongclaw skills install-bundled anthropic-office`
+- `loongclaw skills info minimax-office`
 
 <a id="core-capabilities"></a>
 ## 核心能力

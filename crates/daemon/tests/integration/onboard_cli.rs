@@ -102,19 +102,9 @@ fn is_scripted_preinstalled_skill_input(raw: &str) -> bool {
         return true;
     }
     trimmed.split(',').map(str::trim).all(|token| {
-        matches!(
-            token,
-            "find-skills"
-                | "github-issues"
-                | "agent-browser"
-                | "skill-creator"
-                | "anthropic-office"
-                | "minimax-office"
-                | "design-md"
-                | "systematic-debugging"
-                | "plan"
-                | "larksuite-cli"
-        )
+        mvp::tools::bundled_preinstall_targets()
+            .iter()
+            .any(|target| target.install_id == token)
     })
 }
 

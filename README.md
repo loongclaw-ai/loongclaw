@@ -741,6 +741,10 @@ loongclaw skills install-bundled github-issues
 # Inspect a bundled-only skill before installing it
 loongclaw skills info native-mcp
 
+# Inspect or install a bundled pack
+loongclaw skills info anthropic-office
+loongclaw skills install-bundled anthropic-office
+
 # Download a remote skill package under the external-skills policy boundary
 loong skills fetch https://skills.sh/release-guard.tgz --approve-download
 
@@ -779,6 +783,12 @@ list while still shipping both families as bundled assets:
 - `Anthropic Office pack` installs `docx`, `pdf`, `pptx`, and `xlsx`
 - `Minimax Office pack` installs `minimax-docx`, `minimax-pdf`, and `minimax-xlsx`
 - `skill-creator` stays separate and is not part of the Office pack grouping
+
+Pack ids are first-class for operator workflows now:
+
+- `loongclaw skills info anthropic-office`
+- `loongclaw skills install-bundled anthropic-office`
+- `loongclaw skills info minimax-office`
 
 <a id="core-capabilities"></a>
 

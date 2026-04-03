@@ -1211,6 +1211,10 @@ fn execute_external_skills_list_for_audience(
 ) -> Result<ToolCoreOutcome, String> {
     let inventory = discover_skill_inventory(config)?;
     let filtered = filter_inventory_for_audience(inventory, audience);
+    let bundled_packs = match audience {
+        SkillAudience::Operator => json!(super::bundled_skills::bundled_skill_packs()),
+        SkillAudience::Model => json!([]),
+    };
     Ok(ToolCoreOutcome {
         status: "ok".to_owned(),
         payload: json!({
@@ -1218,6 +1222,7 @@ fn execute_external_skills_list_for_audience(
             "tool_name": tool_name,
             "skills": serialize_skill_entries_for_audience(filtered.skills, audience),
             "shadowed_skills": serialize_skill_entries_for_audience(filtered.shadowed_skills, audience),
+            "bundled_packs": bundled_packs,
         }),
     })
 }
@@ -3265,7 +3270,16 @@ fn serialize_skill_entry_for_audience(
     audience: SkillAudience,
 ) -> Value {
     match audience {
-        SkillAudience::Operator => json!(entry),
+        SkillAudience::Operator => {
+            let mut value = serde_json::to_value(&entry).unwrap_or_else(|_| json!({}));
+            if let Some(object) = value.as_object_mut() {
+                object.insert(
+                    "pack_memberships".to_owned(),
+                    pack_membership_payload_from_skill(entry.skill_id.as_str()),
+                );
+            }
+            value
+        }
         SkillAudience::Model => json!(DiscoveredSkillModelView::from(entry)),
     }
 }
@@ -3275,7 +3289,12 @@ fn serialize_skill_entries_for_audience(
     audience: SkillAudience,
 ) -> Value {
     match audience {
-        SkillAudience::Operator => json!(entries),
+        SkillAudience::Operator => json!(
+            entries
+                .into_iter()
+                .map(|entry| serialize_skill_entry_for_audience(entry, SkillAudience::Operator))
+                .collect::<Vec<_>>()
+        ),
         SkillAudience::Model => json!(
             entries
                 .into_iter()
@@ -3755,6 +3774,22 @@ fn metadata_payload_from_skill(skill: &DiscoveredSkillEntry) -> Value {
         "allowed_tools": skill.allowed_tools,
         "blocked_tools": skill.blocked_tools,
     })
+}
+
+fn pack_membership_payload_from_skill(skill_id: &str) -> Value {
+    json!(
+        super::bundled_skills::bundled_skill_pack_memberships(skill_id)
+            .into_iter()
+            .map(|pack| {
+                json!({
+                    "pack_id": pack.pack_id,
+                    "display_name": pack.display_name,
+                    "onboarding_visible": pack.onboarding_visible,
+                    "recommended": pack.recommended,
+                })
+            })
+            .collect::<Vec<_>>()
+    )
 }
 
 fn runtime_config_selector_enabled(
@@ -5342,6 +5377,7 @@ mod tests {
             assert_eq!(operator_skill["allowed_tools"], json!(["shell.exec"]));
             assert_eq!(operator_skill["blocked_tools"], json!(["web.fetch"]));
             assert_eq!(operator_skill["eligibility"]["available"], json!(true));
+            assert_eq!(operator_skill["pack_memberships"], json!([]));
 
             let inspect_outcome =
                 execute_external_skills_operator_inspect_tool_with_config("release-guard", &config)
@@ -5357,6 +5393,10 @@ mod tests {
             assert_eq!(
                 inspect_outcome.payload["skill"]["eligibility"]["available"],
                 json!(true)
+            );
+            assert_eq!(
+                inspect_outcome.payload["skill"]["pack_memberships"],
+                json!([])
             );
 
             let invoke_outcome = crate::tools::execute_tool_core_with_config(
@@ -5383,6 +5423,58 @@ mod tests {
                     .expect("invocation summary should be text")
                     .contains("allowed_tools=shell.exec"),
                 "tool restrictions should surface in invocation summary"
+            );
+
+            fs::remove_dir_all(&root).ok();
+        });
+    }
+
+    #[test]
+    fn operator_list_and_inspect_surface_pack_memberships_for_bundled_skills() {
+        with_managed_runtime_test(|| {
+            let root = unique_temp_dir("loongclaw-ext-skill-pack-memberships");
+            fs::create_dir_all(&root).expect("create fixture root");
+            let config = managed_runtime_config(&root);
+
+            crate::tools::execute_tool_core_with_config(
+                ToolCoreRequest {
+                    tool_name: "external_skills.install".to_owned(),
+                    payload: json!({
+                        "bundled_skill_id": "docx"
+                    }),
+                },
+                &config,
+            )
+            .expect("bundled install should succeed");
+
+            let operator_list = execute_external_skills_operator_list_tool_with_config(&config)
+                .expect("operator list should succeed");
+            let operator_skill = operator_list.payload["skills"]
+                .as_array()
+                .expect("skills should be an array")
+                .iter()
+                .find(|skill| skill["skill_id"] == "docx")
+                .cloned()
+                .expect("docx should be listed");
+            assert!(
+                operator_skill["pack_memberships"]
+                    .as_array()
+                    .expect("pack memberships should be an array")
+                    .iter()
+                    .any(|pack| pack["pack_id"] == "anthropic-office"),
+                "bundled operator list should expose anthropic office pack membership"
+            );
+
+            let inspect_outcome =
+                execute_external_skills_operator_inspect_tool_with_config("docx", &config)
+                    .expect("operator inspect should succeed");
+            assert!(
+                inspect_outcome.payload["skill"]["pack_memberships"]
+                    .as_array()
+                    .expect("pack memberships should be an array")
+                    .iter()
+                    .any(|pack| pack["pack_id"] == "anthropic-office"),
+                "bundled operator inspect should expose anthropic office pack membership"
             );
 
             fs::remove_dir_all(&root).ok();

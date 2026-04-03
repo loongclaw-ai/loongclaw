@@ -75,114 +75,6 @@ const DEFAULT_ONBOARD_PASTE_DRAIN_WINDOW: Duration = Duration::from_millis(75);
 const ONBOARD_LINE_READER_BUFFER_SIZE: usize = 64;
 const PREINSTALLED_SKILLS_PROMPT_LABEL: &str = "preinstalled skills";
 
-const LARKSUITE_CLI_BUNDLED_SKILL_IDS: &[&str] = &[
-    "lark-approval",
-    "lark-base",
-    "lark-calendar",
-    "lark-contact",
-    "lark-doc",
-    "lark-drive",
-    "lark-event",
-    "lark-im",
-    "lark-mail",
-    "lark-minutes",
-    "lark-openapi-explorer",
-    "lark-shared",
-    "lark-sheets",
-    "lark-skill-maker",
-    "lark-task",
-    "lark-vc",
-    "lark-whiteboard",
-    "lark-wiki",
-    "lark-workflow-meeting-summary",
-    "lark-workflow-standup-report",
-];
-
-const ANTHROPIC_OFFICE_BUNDLED_SKILL_IDS: &[&str] = &["docx", "pdf", "pptx", "xlsx"];
-const MINIMAX_OFFICE_BUNDLED_SKILL_IDS: &[&str] = &["minimax-docx", "minimax-pdf", "minimax-xlsx"];
-
-#[derive(Debug, Clone, Copy)]
-struct PreinstalledSkillChoice {
-    slug: &'static str,
-    label: &'static str,
-    description: &'static str,
-    skill_ids: &'static [&'static str],
-    recommended: bool,
-}
-
-const PREINSTALLED_SKILL_CHOICES: &[PreinstalledSkillChoice] = &[
-    PreinstalledSkillChoice {
-        slug: "find-skills",
-        label: "find-skills",
-        description: "discover and install additional skills from curated sources",
-        skill_ids: &["find-skills"],
-        recommended: true,
-    },
-    PreinstalledSkillChoice {
-        slug: "github-issues",
-        label: "github-issues",
-        description: "manage GitHub issues with gh-first workflow guidance",
-        skill_ids: &["github-issues"],
-        recommended: true,
-    },
-    PreinstalledSkillChoice {
-        slug: "agent-browser",
-        label: "agent-browser",
-        description: "browser automation helper with packaged references and templates",
-        skill_ids: &["agent-browser"],
-        recommended: true,
-    },
-    PreinstalledSkillChoice {
-        slug: "skill-creator",
-        label: "skill-creator",
-        description: "Anthropic's multi-file skill authoring and evaluation workflow",
-        skill_ids: &["skill-creator"],
-        recommended: false,
-    },
-    PreinstalledSkillChoice {
-        slug: "anthropic-office",
-        label: "Anthropic Office pack",
-        description: "install Anthropic's docx, pdf, pptx, and xlsx document workflow skills",
-        skill_ids: ANTHROPIC_OFFICE_BUNDLED_SKILL_IDS,
-        recommended: false,
-    },
-    PreinstalledSkillChoice {
-        slug: "minimax-office",
-        label: "Minimax Office pack",
-        description: "install Minimax's advanced docx, pdf, and xlsx document workflow skills",
-        skill_ids: MINIMAX_OFFICE_BUNDLED_SKILL_IDS,
-        recommended: false,
-    },
-    PreinstalledSkillChoice {
-        slug: "design-md",
-        label: "design-md",
-        description: "generate semantic DESIGN.md files from Stitch design projects",
-        skill_ids: &["design-md"],
-        recommended: false,
-    },
-    PreinstalledSkillChoice {
-        slug: "systematic-debugging",
-        label: "systematic-debugging",
-        description: "structured debugging workflow before proposing fixes",
-        skill_ids: &["systematic-debugging"],
-        recommended: true,
-    },
-    PreinstalledSkillChoice {
-        slug: "plan",
-        label: "plan",
-        description: "write concise execution plans before implementation work",
-        skill_ids: &["plan"],
-        recommended: false,
-    },
-    PreinstalledSkillChoice {
-        slug: "larksuite-cli",
-        label: "Larksuite CLI pack",
-        description: "install the bundled Lark/Feishu workflow skill collection",
-        skill_ids: LARKSUITE_CLI_BUNDLED_SKILL_IDS,
-        recommended: false,
-    },
-];
-
 #[derive(Debug, Clone)]
 pub struct OnboardCommandOptions {
     pub output: Option<String>,
@@ -1047,13 +939,13 @@ fn render_preinstalled_skills_selection_screen_lines_with_style(
     width: usize,
     color_enabled: bool,
 ) -> Vec<String> {
-    let options = PREINSTALLED_SKILL_CHOICES
+    let options = mvp::tools::bundled_preinstall_targets()
         .iter()
-        .map(|choice| OnboardScreenOption {
-            key: choice.slug.to_owned(),
-            label: choice.label.to_owned(),
-            detail_lines: vec![choice.description.to_owned()],
-            recommended: choice.recommended,
+        .map(|target| OnboardScreenOption {
+            key: target.install_id.to_owned(),
+            label: target.display_name.to_owned(),
+            detail_lines: vec![target.summary.to_owned()],
+            recommended: target.recommended,
         })
         .collect();
     render_onboard_choice_screen(
@@ -1086,17 +978,13 @@ fn parse_preinstalled_skill_selection(raw: &str) -> CliResult<Vec<String>> {
         .map(str::trim)
         .filter(|token| !token.is_empty())
     {
-        let Some(choice) = PREINSTALLED_SKILL_CHOICES.iter().find(|choice| {
-            choice.slug.eq_ignore_ascii_case(token)
-                || (choice.skill_ids.len() == 1
-                    && choice
-                        .skill_ids
-                        .first()
-                        .is_some_and(|skill_id| skill_id.eq_ignore_ascii_case(token)))
-        }) else {
-            let supported = PREINSTALLED_SKILL_CHOICES
+        let Some(choice) = mvp::tools::bundled_preinstall_targets()
+            .iter()
+            .find(|choice| choice.install_id.eq_ignore_ascii_case(token))
+        else {
+            let supported = mvp::tools::bundled_preinstall_targets()
                 .iter()
-                .map(|choice| choice.slug)
+                .map(|choice| choice.install_id)
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(format!(
@@ -8534,6 +8422,15 @@ mod tests {
                 "did not expect onboarding preinstall screen to advertise `{hidden}`: {joined}"
             );
         }
+    }
+
+    #[test]
+    fn onboarding_preinstall_targets_are_derived_from_app_registry() {
+        let anthropic = mvp::tools::bundled_preinstall_targets()
+            .iter()
+            .find(|target| target.install_id == "anthropic-office")
+            .expect("anthropic office pack should be exposed by app registry");
+        assert_eq!(anthropic.skill_ids, &["docx", "pdf", "pptx", "xlsx"]);
     }
 
     #[test]

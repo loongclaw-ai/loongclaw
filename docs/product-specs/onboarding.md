@@ -39,6 +39,8 @@ next.
 - [ ] When multiple bundled skill families overlap in capability, onboarding
       can surface pack-level choices instead of every individual skill, so the
       first-run selection list stays readable.
+- [ ] Bundled pack ids remain available outside onboarding through the skills
+      CLI, including pack-level `info` and `install-bundled` flows.
 - [ ] When the user selects bundled skills during onboarding, the flow persists
       the managed external-skills runtime settings and installs the selected
       skills before reporting success.
