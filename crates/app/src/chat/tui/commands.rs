@@ -3,7 +3,12 @@ pub(super) enum SlashCommand {
     Help,
     Clear,
     Model,
+    Status,
     Review,
+    Tools,
+    Latest,
+    Top,
+    Copy,
     ThinkOn,
     ThinkOff,
     Exit,
@@ -14,7 +19,12 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/help", "Show available commands"),
     ("/clear", "Clear conversation history"),
     ("/model", "Show current model info"),
+    ("/status", "Show current session and token status"),
     ("/review", "Toggle transcript review mode (or Ctrl+R)"),
+    ("/tools", "Open the latest tool details"),
+    ("/latest", "Jump transcript to latest output"),
+    ("/top", "Jump transcript to oldest visible output"),
+    ("/copy", "Copy current selection or cursor line"),
     ("/think-on", "Enable thinking blocks (or Ctrl+T)"),
     ("/think-off", "Disable thinking blocks (or Ctrl+T)"),
     ("/exit", "Exit the TUI"),
@@ -30,7 +40,12 @@ pub(super) fn parse(input: &str) -> Option<SlashCommand> {
         "/help" => SlashCommand::Help,
         "/clear" => SlashCommand::Clear,
         "/model" => SlashCommand::Model,
+        "/status" => SlashCommand::Status,
         "/review" => SlashCommand::Review,
+        "/tools" => SlashCommand::Tools,
+        "/latest" => SlashCommand::Latest,
+        "/top" => SlashCommand::Top,
+        "/copy" => SlashCommand::Copy,
         "/think-on" => SlashCommand::ThinkOn,
         "/think-off" => SlashCommand::ThinkOff,
         "/exit" | "/quit" | "/q" => SlashCommand::Exit,
@@ -55,7 +70,12 @@ mod tests {
         assert_eq!(parse("/help"), Some(SlashCommand::Help));
         assert_eq!(parse("/clear"), Some(SlashCommand::Clear));
         assert_eq!(parse("/model"), Some(SlashCommand::Model));
+        assert_eq!(parse("/status"), Some(SlashCommand::Status));
         assert_eq!(parse("/review"), Some(SlashCommand::Review));
+        assert_eq!(parse("/tools"), Some(SlashCommand::Tools));
+        assert_eq!(parse("/latest"), Some(SlashCommand::Latest));
+        assert_eq!(parse("/top"), Some(SlashCommand::Top));
+        assert_eq!(parse("/copy"), Some(SlashCommand::Copy));
         assert_eq!(parse("/think-on"), Some(SlashCommand::ThinkOn));
         assert_eq!(parse("/think-off"), Some(SlashCommand::ThinkOff));
         assert_eq!(parse("/exit"), Some(SlashCommand::Exit));

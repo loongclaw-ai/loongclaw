@@ -417,19 +417,6 @@ fn transcript_navigation_action(key: KeyEvent) -> Option<HistoryNavigationAction
     }
 }
 
-#[allow(clippy::wildcard_enum_match_arm)]
-fn transcript_focus_returns_to_composer(key: KeyEvent) -> bool {
-    match key.code {
-        KeyCode::Backspace => true,
-        KeyCode::Left => true,
-        KeyCode::Right => true,
-        KeyCode::Home => true,
-        KeyCode::End => true,
-        KeyCode::Char(_) if !key.modifiers.intersects(KeyModifiers::CONTROL) => true,
-        _ => false,
-    }
-}
-
 fn history_page_step(textarea: &tui_textarea::TextArea<'_>) -> u16 {
     let terminal_size = crossterm::terminal::size();
     let (width, height) = terminal_size.unwrap_or((80, 24));
@@ -830,8 +817,6 @@ fn apply_terminal_event(
         return;
     };
 
-    let mut continue_in_composer = false;
-
     match shell.focus.top() {
         FocusLayer::ClarifyDialog => {
             if let Some(ref mut dialog) = shell.pane.clarify_dialog {
@@ -987,12 +972,10 @@ fn apply_terminal_event(
                 | KeyCode::KeypadBegin
                 | KeyCode::Media(_)
                 | KeyCode::Modifier(_) => {
-                    if transcript_focus_returns_to_composer(key) {
-                        close_transcript_review(shell);
-                        continue_in_composer = true;
-                    } else {
-                        return;
-                    }
+                    shell.pane.set_status(
+                        "Transcript is focused. Press Tab or click the input box.".to_owned(),
+                    );
+                    return;
                 }
             }
         }
@@ -1057,7 +1040,7 @@ fn apply_terminal_event(
         _ => {}
     }
 
-    if !continue_in_composer && shell.focus.top() != FocusLayer::Composer {
+    if shell.focus.top() != FocusLayer::Composer {
         return;
     }
 
@@ -1312,8 +1295,34 @@ fn handle_slash_command(shell: &mut state::Shell, cmd: SlashCommand) {
             };
             shell.pane.set_status(format!("Model: {model}"));
         }
+        SlashCommand::Status => {
+            let model = if shell.pane.model.is_empty() {
+                "(unknown)".to_owned()
+            } else {
+                shell.pane.model.clone()
+            };
+            let total_tokens = shell.pane.total_tokens();
+            let session_id = shell.pane.session_id.clone();
+            shell.pane.set_status(format!(
+                "Session {session_id} | {model} | {total_tokens} tokens"
+            ));
+        }
         SlashCommand::Review => {
             toggle_transcript_review(shell);
+        }
+        SlashCommand::Tools => {
+            open_tool_inspector(shell);
+        }
+        SlashCommand::Latest => {
+            shell.pane.scroll_offset = 0;
+            shell.pane.set_status("Jumped to latest output".to_owned());
+        }
+        SlashCommand::Top => {
+            shell.pane.scroll_offset = u16::MAX;
+            shell.pane.set_status("Viewing oldest output".to_owned());
+        }
+        SlashCommand::Copy => {
+            copy_transcript_selection(shell);
         }
         SlashCommand::ThinkOn => {
             shell.show_thinking = true;
@@ -1967,7 +1976,7 @@ mod tests {
     }
 
     #[test]
-    fn typing_while_transcript_focused_returns_to_composer_and_keeps_draft() {
+    fn typing_while_transcript_focused_keeps_focus_and_draft_unchanged() {
         let mut shell = state::Shell::new("test");
         let mut textarea = tui_textarea::TextArea::default();
         let (tx, _rx) = mpsc::unbounded_channel();
@@ -1982,8 +1991,8 @@ mod tests {
 
         let draft_text = textarea.lines().join("\n");
 
-        assert_eq!(shell.focus.top(), FocusLayer::Composer);
-        assert_eq!(draft_text, "draft!");
+        assert_eq!(shell.focus.top(), FocusLayer::Transcript);
+        assert_eq!(draft_text, "draft");
     }
 
     #[test]
