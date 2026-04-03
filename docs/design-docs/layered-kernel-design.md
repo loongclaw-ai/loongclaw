@@ -37,8 +37,12 @@ Scope:
 Rules:
 
 - Every external action must pass L1.
-- Tool plane core/extension execution must call `PolicyEngine::check_tool_call` before dispatch
-  (Rule of Two: model intent plus deterministic policy decision).
+- Tool plane core/extension execution must route deterministic request-policy approval through the
+  kernel authorization stack before dispatch: token/capability validation in `PolicyEngine::authorize`
+  plus tool-specific tightening in `PolicyExtensionChain` (Rule of Two: model intent plus
+  deterministic policy decision).
+- The deprecated `PolicyEngine::check_tool_call` hook remains compatibility-only and must not be
+  treated as the live request-policy seam.
 - Policy extensions can only tighten behavior, never weaken core policy.
 - Denials are auditable and deterministic.
 - Human approval gate should default to medium-balanced mode:

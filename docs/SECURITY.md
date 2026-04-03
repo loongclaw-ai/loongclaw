@@ -75,7 +75,7 @@ Tool-specific request approval currently lives in the `PolicyExtensionChain`; th
 
 ### Audit System
 
-- 7 event kinds with atomic sequencing
+- 10 event kinds with atomic sequencing
 - Production app runtimes default to durable JSONL retention via `[audit].mode = "fanout"`
 - Default journal path: `~/.loongclaw/audit/events.jsonl`
 - `LoongClawKernel::new()` and spec/test/demo helpers may still opt into explicit in-memory audit seams when side-effect-free snapshot reporting is required
