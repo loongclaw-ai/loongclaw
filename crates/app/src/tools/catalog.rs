@@ -722,6 +722,19 @@ fn build_tool_catalog() -> ToolCatalog {
             provider_definition_builder: sessions_history_definition,
         },
         ToolDescriptor {
+            name: "sessions_search",
+            provider_name: "sessions_search",
+            aliases: &[],
+            description: "Search visible session history using bounded full-text lookup",
+            execution_kind: ToolExecutionKind::App,
+            availability: runtime_session_tool_availability(),
+            exposure: ToolExposureClass::Discoverable,
+            visibility_gate: ToolVisibilityGate::Sessions,
+            capability_action_class: CapabilityActionClass::ExecuteExisting,
+            policy: PARALLEL_SAFE_TOOL_POLICY_DESCRIPTOR,
+            provider_definition_builder: sessions_search_definition,
+        },
+        ToolDescriptor {
             name: "sessions_list",
             provider_name: "sessions_list",
             aliases: &[],
@@ -2269,6 +2282,41 @@ fn sessions_history_definition(descriptor: &ToolDescriptor) -> Value {
     })
 }
 
+fn sessions_search_definition(descriptor: &ToolDescriptor) -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": descriptor.provider_name,
+            "description": descriptor.description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Text to search for in visible session turns."
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional visible session identifier to narrow the search scope."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 200,
+                        "description": "Maximum search hits to return."
+                    },
+                    "include_archived": {
+                        "type": "boolean",
+                        "description": "When true, archived visible sessions remain searchable."
+                    }
+                },
+                "required": ["query"],
+                "additionalProperties": false
+            }
+        }
+    })
+}
+
 fn session_events_definition(descriptor: &ToolDescriptor) -> Value {
     json!({
         "type": "function",
@@ -2605,6 +2653,9 @@ fn tool_argument_hint(name: &str) -> &'static str {
         "delegate" | "delegate_async" => "task:string,label?:string,timeout_seconds?:integer",
         "session_archive" | "session_cancel" | "session_events" | "session_recover"
         | "session_status" | "session_wait" | "sessions_history" => "session_id:string",
+        "sessions_search" => {
+            "query:string,session_id?:string,limit?:integer,include_archived?:boolean"
+        }
         "sessions_list" => "limit?:integer,state?:string",
         "sessions_send" => "session_id:string,text:string",
         "web.search" => "query:string,provider?:string,max_results?:integer",
@@ -2694,6 +2745,12 @@ fn tool_parameter_types(name: &str) -> &'static [(&'static str, &'static str)] {
         ],
         "session_archive" | "session_cancel" | "session_events" | "session_recover"
         | "session_status" | "session_wait" | "sessions_history" => &[("session_id", "string")],
+        "sessions_search" => &[
+            ("query", "string"),
+            ("session_id", "string"),
+            ("limit", "integer"),
+            ("include_archived", "boolean"),
+        ],
         "sessions_list" => &[("limit", "integer"), ("state", "string")],
         "sessions_send" => &[("session_id", "string"), ("text", "string")],
         "web.search" => &[
@@ -2731,6 +2788,7 @@ fn tool_required_fields(name: &str) -> &'static [&'static str] {
         "delegate" | "delegate_async" => &["task"],
         "session_archive" | "session_cancel" | "session_events" | "session_recover"
         | "session_status" | "session_wait" | "sessions_history" => &["session_id"],
+        "sessions_search" => &["query"],
         "sessions_send" => &["session_id", "text"],
         "web.search" => &["query"],
         _ => &[],
@@ -2766,9 +2824,8 @@ fn tool_tags(name: &str) -> &'static [&'static str] {
         "provider.switch" => &["provider", "switch", "model", "runtime"],
         "delegate" | "delegate_async" => &["session", "delegate", "child"],
         "session_archive" | "session_cancel" | "session_events" | "session_recover"
-        | "session_status" | "session_wait" | "sessions_history" | "sessions_list" => {
-            &["session", "history", "runtime"]
-        }
+        | "session_status" | "session_wait" | "sessions_history" | "sessions_list"
+        | "sessions_search" => &["session", "history", "runtime"],
         "sessions_send" => &["session", "message", "channel"],
         "web.search" => &["web", "search", "discover", "external"],
         _ => &[],

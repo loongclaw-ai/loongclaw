@@ -230,6 +230,15 @@ pub struct SessionSummaryRecord {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct SessionSearchHitRecord {
+    pub turn_id: i64,
+    pub session_id: String,
+    pub role: String,
+    pub content_snippet: String,
+    pub ts: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct SessionObservationRecord {
     pub session: SessionSummaryRecord,
     pub terminal_outcome: Option<SessionTerminalOutcomeRecord>,
@@ -736,6 +745,32 @@ impl SessionRepository {
             sort_session_summaries(&mut sessions);
         }
         Ok(sessions)
+    }
+
+    pub fn search_turns_for_session_ids(
+        &self,
+        session_ids: &[String],
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<SessionSearchHitRecord>, String> {
+        let normalized_query = normalize_required_text(query, "query")?;
+        if session_ids.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let match_query = build_turn_search_match_query(&normalized_query);
+
+        let normalized_session_ids = session_ids
+            .iter()
+            .map(|session_id| normalize_required_text(session_id, "session_id"))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let conn = self.open_connection()?;
+        Self::search_turns_for_session_ids_with_conn(
+            &conn,
+            normalized_session_ids.as_slice(),
+            match_query.as_str(),
+            limit,
+        )
     }
 
     pub fn is_session_visible(
@@ -1632,6 +1667,77 @@ impl SessionRepository {
         raw.map(SessionSummaryRecord::try_from_raw).transpose()
     }
 
+    fn search_turns_for_session_ids_with_conn(
+        conn: &Connection,
+        session_ids: &[String],
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<SessionSearchHitRecord>, String> {
+        if session_ids.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut sql = String::from(
+            "SELECT
+                turns.id,
+                turns.session_id,
+                turns.role,
+                snippet(turns_fts, 0, '[', ']', ' ... ', 16) AS content_snippet,
+                turns.ts
+             FROM turns_fts
+             JOIN turns ON turns_fts.rowid = turns.id
+             WHERE turns.session_id IN (",
+        );
+
+        for index in 0..session_ids.len() {
+            if index > 0 {
+                sql.push_str(", ");
+            }
+
+            let placeholder = format!("?{}", index + 1);
+            sql.push_str(&placeholder);
+        }
+        sql.push_str(") AND turns_fts MATCH ?");
+        let limit_placeholder_index = session_ids.len() + 2;
+        let order_clause = format!(
+            " ORDER BY bm25(turns_fts), turns.ts DESC, turns.id DESC LIMIT ?{limit_placeholder_index}"
+        );
+        sql.push_str(&order_clause);
+
+        let mut bind_values = Vec::with_capacity(session_ids.len() + 2);
+        for session_id in session_ids {
+            let value = rusqlite::types::Value::from(session_id.clone());
+            bind_values.push(value);
+        }
+        bind_values.push(rusqlite::types::Value::from(query.to_owned()));
+        bind_values.push(rusqlite::types::Value::from(limit as i64));
+
+        let mut statement = conn
+            .prepare(&sql)
+            .map_err(|error| format!("prepare session search query failed: {error}"))?;
+        let bind_params = rusqlite::params_from_iter(bind_values.iter());
+        let rows = statement
+            .query_map(bind_params, |row| {
+                Ok(RawSessionSearchHitRecord {
+                    turn_id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    role: row.get(2)?,
+                    content_snippet: row.get(3)?,
+                    ts: row.get(4)?,
+                })
+            })
+            .map_err(|error| format!("query session search failed: {error}"))?;
+
+        let mut hits = Vec::new();
+        for row in rows {
+            let raw = row.map_err(|error| format!("decode session search row failed: {error}"))?;
+            let hit = SessionSearchHitRecord::from_raw(raw);
+            hits.push(hit);
+        }
+
+        Ok(hits)
+    }
+
     fn load_session_summary_with_legacy_fallback_with_conn(
         conn: &Connection,
         session_id: &str,
@@ -1913,6 +2019,15 @@ struct RawSessionSummaryRecord {
 }
 
 #[derive(Debug)]
+struct RawSessionSearchHitRecord {
+    turn_id: i64,
+    session_id: String,
+    role: String,
+    content_snippet: String,
+    ts: i64,
+}
+
+#[derive(Debug)]
 struct RawSessionEventRecord {
     id: i64,
     session_id: String,
@@ -1988,6 +2103,18 @@ impl SessionSummaryRecord {
             last_turn_at: raw.last_turn_at,
             last_error: raw.last_error,
         })
+    }
+}
+
+impl SessionSearchHitRecord {
+    fn from_raw(raw: RawSessionSearchHitRecord) -> Self {
+        Self {
+            turn_id: raw.turn_id,
+            session_id: raw.session_id,
+            role: raw.role,
+            content_snippet: raw.content_snippet,
+            ts: raw.ts,
+        }
     }
 }
 
@@ -2071,6 +2198,28 @@ fn normalize_optional_text(value: Option<String>) -> Option<String> {
         let trimmed = raw.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_owned())
     })
+}
+
+fn build_turn_search_match_query(raw_query: &str) -> String {
+    let mut terms = Vec::new();
+
+    for part in raw_query.split_whitespace() {
+        let trimmed_part = part.trim();
+        if trimmed_part.is_empty() {
+            continue;
+        }
+
+        let escaped_part = trimmed_part.replace('"', "\"\"");
+        let term = format!("\"{escaped_part}\"");
+        terms.push(term);
+    }
+
+    if terms.is_empty() {
+        let escaped_query = raw_query.trim().replace('"', "\"\"");
+        return format!("\"{escaped_query}\"");
+    }
+
+    terms.join(" AND ")
 }
 
 fn unix_ts_now() -> i64 {
@@ -2334,6 +2483,84 @@ mod tests {
         assert_eq!(second.parent_session_id, None);
         assert_eq!(second.label.as_deref(), Some("Root"));
         assert_eq!(repo.list_sessions().expect("list sessions").len(), 1);
+    }
+
+    #[test]
+    fn session_repository_search_turns_filters_to_requested_sessions() {
+        let config = isolated_memory_config("session-search-scope");
+        let repo = SessionRepository::new(&config).expect("repository");
+
+        repo.create_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create root");
+        repo.create_session(NewSessionRecord {
+            session_id: "child-a".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Child A".to_owned()),
+            state: SessionState::Completed,
+        })
+        .expect("create child a");
+        repo.create_session(NewSessionRecord {
+            session_id: "child-b".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Child B".to_owned()),
+            state: SessionState::Completed,
+        })
+        .expect("create child b");
+
+        append_turn_direct("child-a", "user", "deploy freeze window", &config)
+            .expect("append child a turn");
+        append_turn_direct("child-b", "user", "release note draft", &config)
+            .expect("append child b turn");
+
+        let session_ids = vec!["child-a".to_owned()];
+        let hits = repo
+            .search_turns_for_session_ids(&session_ids, "deploy freeze", 10)
+            .expect("search turns");
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session_id, "child-a");
+        assert_eq!(hits[0].role, "user");
+        assert!(hits[0].content_snippet.contains("deploy"));
+    }
+
+    #[test]
+    fn session_repository_search_turns_escapes_query_text() {
+        let config = isolated_memory_config("session-search-query");
+        let repo = SessionRepository::new(&config).expect("repository");
+
+        repo.create_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create root");
+
+        append_turn_direct(
+            "root-session",
+            "assistant",
+            "quoted \"release\" note",
+            &config,
+        )
+        .expect("append root turn");
+
+        let session_ids = vec!["root-session".to_owned()];
+        let hits = repo
+            .search_turns_for_session_ids(&session_ids, "\"release\" note", 10)
+            .expect("search turns with quoted query");
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session_id, "root-session");
+        assert!(hits[0].content_snippet.contains("release"));
     }
 
     #[test]

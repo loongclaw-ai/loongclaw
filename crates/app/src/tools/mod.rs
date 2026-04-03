@@ -281,8 +281,8 @@ fn execute_app_tool_with_browser_companion_readiness(
                 tool_config,
             )
         }
-        "sessions_list" | "sessions_history" | "session_status" | "session_events"
-        | "session_archive" | "session_cancel" | "session_recover" => {
+        "sessions_list" | "sessions_history" | "sessions_search" | "session_status"
+        | "session_events" | "session_archive" | "session_cancel" | "session_recover" => {
             session::execute_session_tool_with_policies(
                 request,
                 current_session_id,
@@ -1792,6 +1792,7 @@ mod tests {
             "session_wait",
             "sessions_history",
             "sessions_list",
+            "sessions_search",
             "web.fetch",
             "web.search",
         ]);

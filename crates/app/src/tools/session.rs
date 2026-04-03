@@ -31,8 +31,8 @@ use crate::session::{
 
 #[cfg(feature = "memory-sqlite")]
 use crate::session::repository::{
-    SessionEventRecord, SessionKind, SessionObservationRecord, SessionRepository, SessionState,
-    SessionSummaryRecord, SessionTerminalOutcomeRecord,
+    SessionEventRecord, SessionKind, SessionObservationRecord, SessionRepository,
+    SessionSearchHitRecord, SessionState, SessionSummaryRecord, SessionTerminalOutcomeRecord,
 };
 
 #[cfg(feature = "memory-sqlite")]
@@ -111,6 +111,15 @@ struct SessionsListRequest {
     overdue_only: bool,
     include_archived: bool,
     include_delegate_lifecycle: bool,
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionsSearchRequest {
+    query: String,
+    session_id: Option<String>,
+    limit: usize,
+    include_archived: bool,
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -280,6 +289,9 @@ pub fn execute_session_tool_with_policies(
             }
             "sessions_history" => {
                 execute_sessions_history(payload, current_session_id, config, tool_config)
+            }
+            "sessions_search" => {
+                execute_sessions_search(payload, current_session_id, config, tool_config)
             }
             "session_status" => {
                 execute_session_status(payload, current_session_id, config, tool_config)
@@ -490,6 +502,120 @@ fn execute_sessions_history(
             "session_id": target_session_id,
             "limit": limit,
             "turns": turns,
+        }),
+    })
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn parse_sessions_search_request(
+    payload: &Value,
+    tool_config: &ToolConfig,
+) -> Result<SessionsSearchRequest, String> {
+    let query = required_payload_string(payload, "query", "session tool")?;
+    let session_id = optional_payload_string(payload, "session_id");
+    let default_limit = tool_config.sessions.history_limit.min(20);
+    let limit = optional_payload_limit(
+        payload,
+        "limit",
+        default_limit,
+        tool_config.sessions.history_limit,
+    );
+    let include_archived = payload
+        .get("include_archived")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    Ok(SessionsSearchRequest {
+        query,
+        session_id,
+        limit,
+        include_archived,
+    })
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn session_search_hit_json(
+    hit: SessionSearchHitRecord,
+    session_by_id: &BTreeMap<String, SessionSummaryRecord>,
+) -> Value {
+    let session_summary = session_by_id.get(&hit.session_id);
+    let session_label = session_summary.and_then(|session| session.label.clone());
+    let session_state = session_summary
+        .map(|session| session.state.as_str().to_owned())
+        .unwrap_or_else(|| "unknown".to_owned());
+    let session_archived = session_summary
+        .map(|session| session.archived_at.is_some())
+        .unwrap_or(false);
+
+    json!({
+        "turn_id": hit.turn_id,
+        "session_id": hit.session_id,
+        "session_label": session_label,
+        "session_state": session_state,
+        "session_archived": session_archived,
+        "role": hit.role,
+        "ts": hit.ts,
+        "snippet": hit.content_snippet,
+    })
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn execute_sessions_search(
+    payload: Value,
+    current_session_id: &str,
+    config: &MemoryRuntimeConfig,
+    tool_config: &ToolConfig,
+) -> Result<ToolCoreOutcome, String> {
+    let request = parse_sessions_search_request(&payload, tool_config)?;
+    let repo = SessionRepository::new(config)?;
+    let mut visible_sessions = repo.list_visible_sessions(current_session_id)?;
+
+    if tool_config.sessions.visibility == SessionVisibility::SelfOnly {
+        visible_sessions.retain(|session| session.session_id == current_session_id);
+    }
+    if !request.include_archived {
+        visible_sessions.retain(|session| session.archived_at.is_none());
+    }
+
+    if let Some(target_session_id) = request.session_id.as_deref() {
+        ensure_visible(
+            &repo,
+            current_session_id,
+            target_session_id,
+            tool_config.sessions.visibility,
+        )?;
+        visible_sessions.retain(|session| session.session_id == target_session_id);
+    }
+
+    let mut session_by_id = BTreeMap::new();
+    for session in visible_sessions {
+        let session_id = session.session_id.clone();
+        session_by_id.insert(session_id, session);
+    }
+
+    let searchable_session_ids = session_by_id.keys().cloned().collect::<Vec<_>>();
+    let hits = repo.search_turns_for_session_ids(
+        searchable_session_ids.as_slice(),
+        request.query.as_str(),
+        request.limit,
+    )?;
+    let matched_count = hits.len();
+    let results = hits
+        .into_iter()
+        .map(|hit| session_search_hit_json(hit, &session_by_id))
+        .collect::<Vec<_>>();
+    let returned_count = results.len();
+
+    Ok(ToolCoreOutcome {
+        status: "ok".to_owned(),
+        payload: json!({
+            "current_session_id": current_session_id,
+            "query": request.query,
+            "session_id": request.session_id,
+            "include_archived": request.include_archived,
+            "matched_count": matched_count,
+            "returned_count": returned_count,
+            "results": results,
         }),
     })
 }
@@ -3176,6 +3302,129 @@ mod tests {
         assert_eq!(turns[0]["content"], "hello");
         assert_eq!(turns[1]["role"], "assistant");
         assert_eq!(turns[1]["content"], "world");
+    }
+
+    #[test]
+    fn sessions_search_returns_hits_for_visible_sessions() {
+        let config = isolated_memory_config("sessions-search");
+        let repo = SessionRepository::new(&config).expect("repository");
+        repo.create_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create root");
+        repo.create_session(NewSessionRecord {
+            session_id: "child-session".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Child".to_owned()),
+            state: SessionState::Completed,
+        })
+        .expect("create child");
+
+        append_turn_direct("child-session", "user", "deploy freeze window", &config)
+            .expect("append user turn");
+        append_turn_direct(
+            "child-session",
+            "assistant",
+            "draft the release note",
+            &config,
+        )
+        .expect("append assistant turn");
+
+        let outcome = execute_session_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "sessions_search".to_owned(),
+                payload: json!({
+                    "query": "deploy freeze",
+                    "limit": 10
+                }),
+            },
+            "root-session",
+            &config,
+        )
+        .expect("sessions_search outcome");
+
+        let results = outcome.payload["results"]
+            .as_array()
+            .expect("results array");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["session_id"], "child-session");
+        assert_eq!(results[0]["session_label"], "Child");
+        assert_eq!(results[0]["role"], "user");
+        assert!(
+            results[0]["snippet"]
+                .as_str()
+                .expect("snippet should exist")
+                .contains("deploy")
+        );
+    }
+
+    #[test]
+    fn sessions_search_excludes_archived_sessions_by_default() {
+        let config = isolated_memory_config("sessions-search-archived");
+        let repo = SessionRepository::new(&config).expect("repository");
+        repo.create_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create root");
+        repo.create_session(NewSessionRecord {
+            session_id: "archived-child".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Archived".to_owned()),
+            state: SessionState::Completed,
+        })
+        .expect("create child");
+        repo.append_event(NewSessionEvent {
+            session_id: "archived-child".to_owned(),
+            event_kind: "session_archived".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({"reason": "done"}),
+        })
+        .expect("archive child");
+        append_turn_direct(
+            "archived-child",
+            "assistant",
+            "deploy freeze window",
+            &config,
+        )
+        .expect("append archived turn");
+
+        let hidden = execute_session_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "sessions_search".to_owned(),
+                payload: json!({
+                    "query": "deploy freeze"
+                }),
+            },
+            "root-session",
+            &config,
+        )
+        .expect("sessions_search outcome");
+        assert_eq!(hidden.payload["matched_count"], 0);
+
+        let included = execute_session_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "sessions_search".to_owned(),
+                payload: json!({
+                    "query": "deploy freeze",
+                    "include_archived": true
+                }),
+            },
+            "root-session",
+            &config,
+        )
+        .expect("sessions_search include archived outcome");
+        assert_eq!(included.payload["matched_count"], 1);
+        assert_eq!(included.payload["results"][0]["session_archived"], true);
     }
 
     #[test]

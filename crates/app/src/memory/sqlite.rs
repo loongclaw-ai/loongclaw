@@ -102,8 +102,8 @@ impl PromptWindowQueryDiagnostics {
 }
 
 const SUMMARY_FORMAT_VERSION: i64 = 1;
-const SQLITE_MEMORY_SCHEMA_VERSION: i64 = 4;
-const SQLITE_CURRENT_SCHEMA_OBJECT_COUNT: i64 = 9;
+const SQLITE_MEMORY_SCHEMA_VERSION: i64 = 5;
+const SQLITE_CURRENT_SCHEMA_OBJECT_COUNT: i64 = 13;
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 const SQLITE_PREPARED_STATEMENT_CACHE_CAPACITY: usize = 16;
 const SQL_INSERT_TURN: &str = "INSERT INTO turns(session_id, session_turn_index, role, content, ts) VALUES (?1, ?2, ?3, ?4, ?5)";
@@ -141,19 +141,21 @@ const SQL_SELECT_SESSION_TURN_COUNT: &str = "SELECT turn_count
              WHERE session_id = ?1";
 const SQL_COUNT_CURRENT_SCHEMA_OBJECTS: &str = "SELECT COUNT(*)
              FROM sqlite_master
-             WHERE (type = 'table' AND name IN (
-                        'turns',
-                        'memory_session_state',
-                        'memory_summary_checkpoints',
-                        'memory_summary_checkpoint_bodies',
-                        'approval_requests',
-                        'approval_grants'
-                    ))
-                OR (type = 'index' AND name IN (
-                        'idx_turns_session_id',
-                        'idx_turns_session_turn_index',
-                        'idx_approval_requests_session_status_requested_at'
-                    ))";
+             WHERE name IN (
+                 'turns',
+                 'memory_session_state',
+                 'memory_summary_checkpoints',
+                 'memory_summary_checkpoint_bodies',
+                 'approval_requests',
+                 'approval_grants',
+                 'turns_fts',
+                 'idx_turns_session_id',
+                 'idx_turns_session_turn_index',
+                 'idx_approval_requests_session_status_requested_at',
+                 'turns_fts_ai',
+                 'turns_fts_ad',
+                 'turns_fts_au'
+             )";
 const SQL_QUERY_RECENT_PROMPT_TURNS_WITH_CHECKPOINT_META: &str = "SELECT turns.id,
              turns.role,
              turns.content,
@@ -1329,6 +1331,7 @@ fn open_sqlite_connection_with_diagnostics(
         ensure_turn_session_index_and_state_metadata(&conn)?;
         ensure_approval_lifecycle_tables(&conn)?;
         ensure_summary_checkpoint_storage_layout(&conn)?;
+        ensure_turn_search_storage(&conn)?;
         write_sqlite_user_version(&conn, SQLITE_MEMORY_SCHEMA_VERSION)?;
     }
     diagnostics.schema_upgrade_ms = elapsed_ms(schema_upgrade_started_at);
@@ -1499,6 +1502,44 @@ fn ensure_approval_lifecycle_tables(conn: &Connection) -> Result<(), String> {
         ",
     )
     .map_err(|error| format!("ensure approval lifecycle storage failed: {error}"))?;
+
+    Ok(())
+}
+
+fn ensure_turn_search_storage(conn: &Connection) -> Result<(), String> {
+    #[cfg(test)]
+    test_support::record_sqlite_schema_repair("turn_search");
+
+    conn.execute_batch(
+        "
+        CREATE VIRTUAL TABLE IF NOT EXISTS turns_fts
+          USING fts5(content, content='turns', content_rowid='id');
+        CREATE TRIGGER IF NOT EXISTS turns_fts_ai
+          AFTER INSERT ON turns
+        BEGIN
+          INSERT INTO turns_fts(rowid, content)
+          VALUES (new.id, new.content);
+        END;
+        CREATE TRIGGER IF NOT EXISTS turns_fts_ad
+          AFTER DELETE ON turns
+        BEGIN
+          INSERT INTO turns_fts(turns_fts, rowid, content)
+          VALUES ('delete', old.id, old.content);
+        END;
+        CREATE TRIGGER IF NOT EXISTS turns_fts_au
+          AFTER UPDATE ON turns
+        BEGIN
+          INSERT INTO turns_fts(turns_fts, rowid, content)
+          VALUES ('delete', old.id, old.content);
+          INSERT INTO turns_fts(rowid, content)
+          VALUES (new.id, new.content);
+        END;
+        ",
+    )
+    .map_err(|error| format!("ensure turn search storage failed: {error}"))?;
+
+    conn.execute("INSERT INTO turns_fts(turns_fts) VALUES ('rebuild')", [])
+        .map_err(|error| format!("rebuild turn search index failed: {error}"))?;
 
     Ok(())
 }
