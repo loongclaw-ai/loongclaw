@@ -112,9 +112,10 @@ use super::turn_shared::{
     ToolDrivenReplyBaseDecision, ToolDrivenReplyPhase, build_tool_driven_followup_tail,
     build_tool_loop_guard_tail, decide_provider_turn_request_action,
     format_approval_required_reply, next_conversation_turn_id, reduce_followup_payload_for_model,
-    request_completion_with_raw_fallback, tool_driven_followup_payload,
-    tool_loop_circuit_breaker_reply, tool_result_contains_truncation_signal,
-    user_requested_raw_tool_output,
+    request_completion_with_raw_fallback, summarize_single_tool_followup_request,
+    summarize_tool_followup_request, summarize_tool_followup_tool_names,
+    tool_driven_followup_payload, tool_loop_circuit_breaker_reply,
+    tool_result_contains_truncation_signal, user_requested_raw_tool_output,
 };
 #[cfg(test)]
 use super::turn_shared::{ReplyResolutionMode, ToolDrivenFollowupKind};
@@ -2542,6 +2543,9 @@ fn build_provider_turn_tool_terminal_events(
     events
 }
 
+fn summarize_tool_event_request(intent: &ToolIntent) -> Option<String> {
+    summarize_single_tool_followup_request(intent)
+}
 fn provider_turn_observer_supports_streaming(
     config: &LoongClawConfig,
     observer: Option<&ConversationTurnObserverHandle>,
@@ -5149,9 +5153,10 @@ async fn execute_provider_turn_lane<R: ConversationRuntime + ?Sized>(
     ingress: Option<&ConversationIngressContext>,
 ) -> ProviderTurnLaneExecution {
     let had_tool_intents = !turn.tool_intents.is_empty();
-    let requires_provider_turn_followup = turn.tool_intents.iter().any(|intent| {
-        crate::tools::canonical_tool_name(intent.tool_name.as_str()) == "tool.search"
-    });
+    let requires_provider_turn_followup = turn
+        .tool_intents
+        .iter()
+        .any(|intent| effective_followup_tool_name(intent) == "tool.search");
     let assistant_preface = turn.assistant_text.clone();
     let lane = preparation.lane_plan.decision.lane;
     let session_context = match runtime.session_context(config, session_id, binding) {
@@ -5159,10 +5164,13 @@ async fn execute_provider_turn_lane<R: ConversationRuntime + ?Sized>(
         Err(error) => {
             let turn_result = TurnResult::non_retryable_tool_error("session_context_failed", error);
             let tool_events = build_provider_turn_tool_terminal_events(turn, &turn_result, None);
+            let tool_request_summary =
+                summarize_provider_lane_tool_request(turn, &turn_result, None);
             return ProviderTurnLaneExecution {
                 lane,
                 assistant_preface,
                 had_tool_intents,
+                tool_request_summary,
                 requires_provider_turn_followup,
                 raw_tool_output_requested: preparation.raw_tool_output_requested,
                 turn_result,
@@ -5288,6 +5296,11 @@ async fn execute_provider_turn_lane<R: ConversationRuntime + ?Sized>(
         &turn_result,
         fast_lane_tool_batch_trace.as_ref(),
     );
+    let tool_request_summary = summarize_provider_lane_tool_request(
+        turn,
+        &turn_result,
+        fast_lane_tool_batch_trace.as_ref(),
+    );
 
     ProviderTurnLaneExecution {
         lane,
@@ -5299,6 +5312,51 @@ async fn execute_provider_turn_lane<R: ConversationRuntime + ?Sized>(
         safe_lane_terminal_route,
         tool_events,
     }
+}
+
+fn summarize_provider_lane_tool_request(
+    turn: &ProviderTurn,
+    turn_result: &TurnResult,
+    trace: Option<&ToolBatchExecutionTrace>,
+) -> Option<String> {
+    match turn_result {
+        TurnResult::FinalText(_) | TurnResult::StreamingText(_) | TurnResult::StreamingDone(_) => {
+            summarize_tool_followup_request(&turn.tool_intents)
+        }
+        TurnResult::NeedsApproval(_)
+        | TurnResult::ToolDenied(_)
+        | TurnResult::ToolError(_)
+        | TurnResult::ProviderError(_) => summarize_failed_provider_lane_tool_request(turn, trace),
+    }
+}
+
+fn summarize_failed_provider_lane_tool_request(
+    turn: &ProviderTurn,
+    trace: Option<&ToolBatchExecutionTrace>,
+) -> Option<String> {
+    let failed_tool_call_id = trace.and_then(first_failed_provider_lane_tool_call_id);
+    if let Some(failed_tool_call_id) = failed_tool_call_id {
+        let failed_intent = turn
+            .tool_intents
+            .iter()
+            .find(|intent| intent.tool_call_id == failed_tool_call_id)?;
+        return summarize_single_tool_followup_request(failed_intent);
+    }
+
+    match turn.tool_intents.as_slice() {
+        [intent] => summarize_single_tool_followup_request(intent),
+        _ => None,
+    }
+}
+
+fn first_failed_provider_lane_tool_call_id(trace: &ToolBatchExecutionTrace) -> Option<&str> {
+    let failed_outcome = trace.intent_outcomes.iter().find(|intent_outcome| {
+        !matches!(
+            intent_outcome.status,
+            ToolBatchExecutionIntentStatus::Completed
+        )
+    })?;
+    Some(failed_outcome.tool_call_id.as_str())
 }
 
 async fn execute_turn_with_safe_lane_plan<R: ConversationRuntime + ?Sized>(
@@ -7954,6 +8012,44 @@ mod tests {
         assert_eq!(events[1].detail.as_deref(), Some("second tool failed"));
     }
 
+    #[test]
+    fn build_provider_turn_tool_terminal_events_attach_canonical_shell_request_summary() {
+        let turn = ProviderTurn {
+            assistant_text: String::new(),
+            tool_intents: vec![ToolIntent {
+                tool_name: "shell.exec".to_owned(),
+                args_json: json!({"command": "ls /root"}),
+                source: "provider_tool_call".to_owned(),
+                session_id: "session-a".to_owned(),
+                turn_id: "turn-a".to_owned(),
+                tool_call_id: "call-shell".to_owned(),
+            }],
+            raw_meta: Value::Null,
+        };
+        let turn_result = TurnResult::ToolDenied(TurnFailure::policy_denied(
+            "shell_policy_denied",
+            "policy_denied: command contains embedded whitespace",
+        ));
+
+        let events = build_provider_turn_tool_terminal_events(&turn, &turn_result, None);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tool_call_id, "call-shell");
+        assert_eq!(events[0].state, ConversationTurnToolState::Denied);
+        let request_summary = events[0]
+            .request_summary
+            .as_deref()
+            .expect("request summary should be present");
+        let request_summary_json: Value =
+            serde_json::from_str(request_summary).expect("request summary should be valid json");
+        assert_eq!(
+            request_summary_json,
+            json!({
+                "tool": "shell.exec",
+                "request": {"command": "ls", "args": ["/root"]}
+            })
+        );
+    }
     #[cfg(feature = "memory-sqlite")]
     fn finalize_recovered_child(
         repo: &SessionRepository,

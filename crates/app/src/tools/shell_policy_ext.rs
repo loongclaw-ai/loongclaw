@@ -55,7 +55,10 @@ impl ToolPolicyExtension {
 pub(crate) fn validate_shell_command_name(command: &str) -> Result<String, String> {
     let trimmed = command.trim();
     if trimmed.is_empty() {
-        return Err("shell.exec requires payload.command".to_owned());
+        let reason = repairable_tool_input_reason(
+            "shell.exec requires payload.command. Provide a bare executable in payload.command and move arguments into payload.args.".to_owned(),
+        );
+        return Err(reason);
     }
 
     if trimmed.contains(char::is_whitespace) {
@@ -576,6 +579,21 @@ mod tests {
         assert!(
             reason.contains("lowercase"),
             "expected lowercase rejection, got: {reason}"
+        );
+    }
+
+    #[test]
+    fn empty_shell_command_reason_is_marked_repairable() {
+        let error =
+            validate_shell_command_name("   ").expect_err("blank shell command should be denied");
+
+        assert!(
+            is_repairable_tool_input_reason(error.as_str()),
+            "expected repairable prefix, got: {error}"
+        );
+        assert!(
+            strip_repairable_tool_input_prefix(error.as_str()).contains("payload.command"),
+            "expected payload.command guidance, got: {error}"
         );
     }
 

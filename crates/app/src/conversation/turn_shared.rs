@@ -5,8 +5,8 @@ use super::runtime::ConversationRuntime;
 use super::runtime_binding::ConversationRuntimeBinding;
 use super::tool_result_compaction::compact_tool_search_payload_summary_str;
 use super::turn_engine::{
-    ApprovalRequirement, ApprovalRequirementKind, ProviderTurn, ToolResultPayloadSemantics,
-    TurnResult,
+    ApprovalRequirement, ApprovalRequirementKind, ProviderTurn, ToolIntent,
+    ToolResultPayloadSemantics, TurnResult,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -19,6 +19,7 @@ use crate::CliResult;
 
 pub const TOOL_FOLLOWUP_PROMPT: &str = "Use the tool result above to answer the original user request in natural language. Do not include raw JSON, payload wrappers, or status markers unless the user explicitly asks for raw output.";
 pub const DISCOVERY_RESULT_FOLLOWUP_PROMPT: &str = "The tool result above is a discovery result, not the final evidence. Choose the best matching discovered tool, reuse its lease when invoking it, continue with the next tool call needed to satisfy the original user request, and only answer directly if the discovery results already contain the final user-facing information.";
+pub const TOOL_FAILURE_FOLLOWUP_PROMPT: &str = "A tool call failed. Inspect the attempted tool request and failure above before answering. If the failure is repairable, correct the tool arguments and retry with a materially different call. If the failure is a policy denial or cannot be repaired safely, explain the constraint and continue with the best possible answer.";
 pub const TOOL_TRUNCATION_HINT_PROMPT: &str = "One or more tool results were truncated for context safety. If exact missing details are needed, explicitly state the truncation and request a narrower rerun.";
 pub const EXTERNAL_SKILL_FOLLOWUP_PROMPT: &str = "An external skill has been loaded into runtime context. Follow its instructions while answering the original user request. Do not restate the skill verbatim unless the user explicitly asks for it.";
 pub const TOOL_LOOP_GUARD_PROMPT: &str = "Detected tool-loop behavior across rounds. Do not repeat identical or cyclical tool calls without new evidence. Adjust strategy (different tool, arguments, or decomposition) or provide the best possible final answer and clearly state remaining gaps.";
@@ -166,6 +167,80 @@ pub fn tool_driven_followup_payload(
     }
 }
 
+pub(crate) fn summarize_tool_followup_request(intents: &[ToolIntent]) -> Option<String> {
+    match intents {
+        [] => None,
+        [intent] => summarize_single_tool_followup_request(intent),
+        intents => serde_json::to_string(
+            &intents
+                .iter()
+                .map(tool_followup_request_entry)
+                .collect::<Vec<_>>(),
+        )
+        .ok(),
+    }
+}
+
+pub(crate) fn summarize_single_tool_followup_request(intent: &ToolIntent) -> Option<String> {
+    let entry = tool_followup_request_entry(intent);
+    serde_json::to_string(&entry).ok()
+}
+
+pub(crate) fn summarize_tool_followup_tool_names(intents: &[ToolIntent]) -> String {
+    intents
+        .iter()
+        .map(effective_followup_tool_name)
+        .collect::<Vec<_>>()
+        .join("||")
+}
+
+fn tool_followup_request_entry(intent: &ToolIntent) -> Value {
+    let tool_name = effective_followup_tool_name(intent);
+    let request = effective_followup_request(intent);
+    serde_json::json!({
+        "tool": tool_name,
+        "request": request,
+    })
+}
+
+pub(crate) fn effective_followup_tool_name(intent: &ToolIntent) -> String {
+    let canonical_tool_name = crate::tools::canonical_tool_name(intent.tool_name.as_str());
+    if canonical_tool_name != "tool.invoke" {
+        return canonical_tool_name.to_owned();
+    }
+
+    intent
+        .args_json
+        .get("tool_id")
+        .and_then(Value::as_str)
+        .map(crate::tools::canonical_tool_name)
+        .unwrap_or(canonical_tool_name)
+        .to_owned()
+}
+
+pub(crate) fn effective_followup_request(intent: &ToolIntent) -> Value {
+    let canonical_tool_name = crate::tools::canonical_tool_name(intent.tool_name.as_str());
+    if canonical_tool_name != "tool.invoke" {
+        return crate::tools::normalize_shell_payload_for_request(
+            canonical_tool_name,
+            intent.args_json.clone(),
+        );
+    }
+
+    let invoked_tool_name = intent
+        .args_json
+        .get("tool_id")
+        .and_then(Value::as_str)
+        .map(crate::tools::canonical_tool_name)
+        .unwrap_or(canonical_tool_name);
+    let request_payload = intent
+        .args_json
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| intent.args_json.clone());
+
+    crate::tools::normalize_shell_payload_for_request(invoked_tool_name, request_payload)
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolDrivenReplyBaseDecision {
     FinalizeDirect {

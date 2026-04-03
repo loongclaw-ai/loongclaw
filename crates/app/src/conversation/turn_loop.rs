@@ -15,7 +15,8 @@ use super::runtime::{ConversationRuntime, DefaultConversationRuntime};
 use super::runtime_binding::ConversationRuntimeBinding;
 use super::turn_budget::{TurnRoundBudget, TurnRoundBudgetDecision};
 use super::turn_engine::{
-    DefaultAppToolDispatcher, ProviderTurn, ToolIntent, TurnEngine, TurnResult, TurnValidation,
+    DefaultAppToolDispatcher, ProviderTurn, ToolBatchExecutionIntentStatus,
+    ToolBatchExecutionTrace, ToolIntent, TurnEngine, TurnResult, TurnValidation,
 };
 use super::turn_observer::map_streaming_callback_data_to_token_event;
 use super::turn_shared::{
@@ -23,7 +24,9 @@ use super::turn_shared::{
     ToolDrivenReplyBaseDecision, ToolDrivenReplyPhase, build_tool_driven_followup_tail,
     build_tool_loop_guard_tail, decide_provider_turn_request_action,
     reduce_followup_payload_for_model, request_completion_with_raw_fallback,
-    tool_loop_circuit_breaker_reply, user_requested_raw_tool_output,
+    summarize_single_tool_followup_request, summarize_tool_followup_request,
+    summarize_tool_followup_tool_names, tool_loop_circuit_breaker_reply,
+    user_requested_raw_tool_output,
 };
 
 #[derive(Default)]
@@ -43,6 +46,7 @@ struct TurnLoopSessionState {
 struct RoundKernelEvaluation {
     assistant_preface: String,
     had_tool_intents: bool,
+    tool_request_summary: Option<String>,
     turn_result: TurnResult,
     loop_verdict: Option<ToolLoopSupervisorVerdict>,
 }
@@ -394,12 +398,18 @@ async fn evaluate_round_kernel(
             .conversation
             .fast_lane_parallel_tool_execution_max_in_flight(),
     );
-    let turn_result = match engine.validate_turn_in_context(turn, session_context) {
-        Ok(TurnValidation::FinalText(text)) => TurnResult::FinalText(text),
-        Err(failure) => TurnResult::ToolDenied(failure),
+    let (turn_result, turn_trace) = match engine.validate_turn_in_context(turn, session_context) {
+        Ok(TurnValidation::FinalText(text)) => (TurnResult::FinalText(text), None),
+        Err(failure) => (TurnResult::ToolDenied(failure), None),
         Ok(TurnValidation::ToolExecutionRequired) => {
             engine
-                .execute_turn_in_context(turn, session_context, app_dispatcher, binding, None)
+                .execute_turn_in_context_with_trace(
+                    turn,
+                    session_context,
+                    app_dispatcher,
+                    binding,
+                    None,
+                )
                 .await
         }
     };
@@ -423,9 +433,56 @@ async fn evaluate_round_kernel(
     RoundKernelEvaluation {
         assistant_preface: turn.assistant_text.clone(),
         had_tool_intents,
+        tool_request_summary: summarize_round_tool_request(turn, &turn_result, turn_trace.as_ref()),
         turn_result,
         loop_verdict,
     }
+}
+
+fn summarize_round_tool_request(
+    turn: &ProviderTurn,
+    turn_result: &TurnResult,
+    turn_trace: Option<&ToolBatchExecutionTrace>,
+) -> Option<String> {
+    match turn_result {
+        TurnResult::FinalText(_) | TurnResult::StreamingText(_) | TurnResult::StreamingDone(_) => {
+            summarize_tool_followup_request(&turn.tool_intents)
+        }
+        TurnResult::NeedsApproval(_)
+        | TurnResult::ToolDenied(_)
+        | TurnResult::ToolError(_)
+        | TurnResult::ProviderError(_) => summarize_failed_round_tool_request(turn, turn_trace),
+    }
+}
+
+fn summarize_failed_round_tool_request(
+    turn: &ProviderTurn,
+    turn_trace: Option<&ToolBatchExecutionTrace>,
+) -> Option<String> {
+    let failed_tool_call_id = first_failed_tool_call_id(turn_trace);
+    if let Some(failed_tool_call_id) = failed_tool_call_id {
+        let failed_intent = turn
+            .tool_intents
+            .iter()
+            .find(|intent| intent.tool_call_id == failed_tool_call_id)?;
+        return summarize_single_tool_followup_request(failed_intent);
+    }
+
+    match turn.tool_intents.as_slice() {
+        [intent] => summarize_single_tool_followup_request(intent),
+        _ => None,
+    }
+}
+
+fn first_failed_tool_call_id(turn_trace: Option<&ToolBatchExecutionTrace>) -> Option<&str> {
+    let turn_trace = turn_trace?;
+    let failed_outcome = turn_trace.intent_outcomes.iter().find(|intent_outcome| {
+        !matches!(
+            intent_outcome.status,
+            ToolBatchExecutionIntentStatus::Completed
+        )
+    })?;
+    Some(failed_outcome.tool_call_id.as_str())
 }
 
 impl RoundKernelEvaluation {

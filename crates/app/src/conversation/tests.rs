@@ -10031,6 +10031,194 @@ async fn handle_turn_with_runtime_tool_error_returns_natural_language_fallback()
     assert_eq!(visible_turns[1].2, reply);
 }
 
+#[cfg(feature = "tool-shell")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_turn_with_runtime_repairable_shell_failure_followup_includes_failed_request_context()
+ {
+    use crate::test_support::TurnTestHarness;
+
+    let harness = TurnTestHarness::new();
+    let runtime = FakeRuntime::with_turn_and_completion(
+        vec![],
+        Ok(ProviderTurn {
+            assistant_text: "Trying the shell command now.".to_owned(),
+            tool_intents: vec![provider_tool_intent(
+                "shell.exec",
+                json!({"command": "/bin/echo", "args": ["hello"]}),
+                "session-shell-followup",
+                "turn-shell-followup",
+                "call-shell-followup",
+            )],
+            raw_meta: Value::Null,
+        }),
+        Ok("MODEL_SHELL_REPAIR_REPLY".to_owned()),
+    );
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &test_config(),
+            "session-shell-followup",
+            "say hello in the shell",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            ConversationRuntimeBinding::kernel(&harness.kernel_ctx),
+        )
+        .await
+        .expect("repairable shell failure should still return completion fallback");
+
+    assert_eq!(reply, "MODEL_SHELL_REPAIR_REPLY");
+
+    let completion_requests = runtime
+        .completion_requested_messages
+        .lock()
+        .expect("completion request lock")
+        .clone();
+    assert_eq!(completion_requests.len(), 1);
+
+    let followup_messages = &completion_requests[0];
+    assert!(
+        followup_messages.iter().any(|message| {
+            message.get("role").and_then(Value::as_str) == Some("assistant")
+                && message
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .is_some_and(|content| {
+                        content.starts_with("[tool_request]\n")
+                            && content.contains("\"tool\":\"shell.exec\"")
+                            && content.contains("\"command\":\"/bin/echo\"")
+                    })
+        }),
+        "completion followup should include the failed canonical request: {followup_messages:?}"
+    );
+    assert!(
+        followup_messages.iter().any(|message| {
+            message.get("role").and_then(Value::as_str) == Some("assistant")
+                && message
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .is_some_and(|content| {
+                        content.starts_with("[tool_failure]\n")
+                            && content.contains("tool input needs repair")
+                    })
+        }),
+        "completion followup should include the repairable failure reason: {followup_messages:?}"
+    );
+    assert!(
+        followup_messages.iter().any(|message| {
+            message.get("role").and_then(Value::as_str) == Some("user")
+                && message
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .is_some_and(|content| {
+                        content.contains("Repair guidance for shell.exec:")
+                            && content.contains(
+                                "Use a bare lowercase executable name in `payload.command`.",
+                            )
+                            && content
+                                .contains("The failed request used `/bin/echo`; retry with `echo`")
+                    })
+        }),
+        "completion followup should include shell repair guidance: {followup_messages:?}"
+    );
+}
+
+#[cfg(feature = "tool-shell")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_turn_with_runtime_multi_intent_shell_failure_followup_uses_failed_request_only() {
+    use crate::test_support::TurnTestHarness;
+
+    let harness = TurnTestHarness::with_tool_config(
+        std::collections::BTreeSet::from([
+            loongclaw_contracts::Capability::InvokeTool,
+            loongclaw_contracts::Capability::FilesystemRead,
+            loongclaw_contracts::Capability::FilesystemWrite,
+        ]),
+        crate::tools::runtime_config::ToolRuntimeConfig {
+            shell_allow: std::collections::BTreeSet::from(["ls".to_owned(), "echo".to_owned()]),
+            ..crate::tools::runtime_config::ToolRuntimeConfig::default()
+        },
+    );
+    let runtime = FakeRuntime::with_turn_and_completion(
+        vec![],
+        Ok(ProviderTurn {
+            assistant_text: "Trying both shell commands now.".to_owned(),
+            tool_intents: vec![
+                provider_tool_intent(
+                    "shell.exec",
+                    json!({"command": "ls", "args": ["."]}),
+                    "session-shell-followup-multi",
+                    "turn-shell-followup-multi",
+                    "call-shell-followup-multi-1",
+                ),
+                provider_tool_intent(
+                    "shell.exec",
+                    json!({"command": "/bin/echo", "args": ["hello"]}),
+                    "session-shell-followup-multi",
+                    "turn-shell-followup-multi",
+                    "call-shell-followup-multi-2",
+                ),
+            ],
+            raw_meta: Value::Null,
+        }),
+        Ok("MODEL_SHELL_MULTI_REPAIR_REPLY".to_owned()),
+    );
+    let mut config = test_config();
+    config.conversation.safe_lane_max_tool_steps_per_turn = 2;
+    config.conversation.fast_lane_max_tool_steps_per_turn = 2;
+    config.conversation.turn_loop.max_tool_steps_per_round = 2;
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "session-shell-followup-multi",
+            "say hello in the shell twice",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            ConversationRuntimeBinding::kernel(&harness.kernel_ctx),
+        )
+        .await
+        .expect("repairable shell failure should still return completion fallback");
+
+    assert_eq!(reply, "MODEL_SHELL_MULTI_REPAIR_REPLY");
+
+    let completion_requests = runtime
+        .completion_requested_messages
+        .lock()
+        .expect("completion request lock")
+        .clone();
+    assert_eq!(completion_requests.len(), 1);
+
+    let followup_messages = &completion_requests[0];
+    assert!(
+        followup_messages.iter().any(|message| {
+            message.get("role").and_then(Value::as_str) == Some("assistant")
+                && message
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .is_some_and(|content| {
+                        content.starts_with("[tool_request]\n")
+                            && content.contains("\"tool\":\"shell.exec\"")
+                            && content.contains("\"command\":\"/bin/echo\"")
+                            && !content.contains("\"command\":\"echo\",\"args\":[\"ok\"]")
+                    })
+        }),
+        "completion followup should include only the failed request: {followup_messages:?}"
+    );
+    assert!(
+        followup_messages.iter().any(|message| {
+            message.get("role").and_then(Value::as_str) == Some("user")
+                && message
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .is_some_and(|content| {
+                        content.contains("The failed request used `/bin/echo`; retry with `echo`")
+                    })
+        }),
+        "completion followup should use the failed shell command in repair guidance: {followup_messages:?}"
+    );
+}
 #[tokio::test]
 async fn handle_turn_with_runtime_tool_failure_completion_error_uses_raw_reason_without_markers() {
     let runtime = FakeRuntime::with_turn_and_completion(

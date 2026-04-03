@@ -2591,15 +2591,15 @@ impl TurnEngine {
                     ));
                 }
             } else {
+                if intent.source.starts_with("provider_") {
+                    return Err(concealed_provider_tool_denial());
+                }
                 if !session_context
                     .tool_view
                     .contains(resolved_tool.canonical_name)
                 {
                     let reason = format!("tool_not_visible: {}", intent.tool_name);
                     return Err(TurnFailure::policy_denied("tool_not_visible", reason));
-                }
-                if intent.source.starts_with("provider_") {
-                    return Err(concealed_provider_tool_denial());
                 }
             }
         }
@@ -3458,6 +3458,87 @@ mod tests {
 
     fn kernel_context(agent_id: &str) -> KernelContext {
         test_kernel_context(agent_id)
+    }
+
+    #[test]
+    fn validate_turn_in_context_conceals_provider_hidden_tool_invoke_alias_denial() {
+        let turn = ProviderTurn {
+            assistant_text: String::new(),
+            tool_intents: vec![ToolIntent {
+                tool_name: "tool_invoke".to_owned(),
+                args_json: json!({
+                    "tool_id": "shell.exec",
+                    "arguments": {"command": "echo hello"},
+                }),
+                source: "provider_tool_call".to_owned(),
+                session_id: "session-provider-hidden-tool-invoke".to_owned(),
+                turn_id: "turn-provider-hidden-tool-invoke".to_owned(),
+                tool_call_id: "call-provider-hidden-tool-invoke".to_owned(),
+            }],
+            raw_meta: Value::Null,
+        };
+        let session_context = SessionContext::root_with_tool_view(
+            "session-provider-hidden-tool-invoke",
+            crate::tools::ToolView::from_tool_names(std::iter::empty::<&str>()),
+        );
+
+        let failure = TurnEngine::new(4)
+            .validate_turn_in_context(&turn, &session_context)
+            .expect_err("provider hidden tool.invoke alias should be concealed");
+
+        assert_eq!(failure.code, "tool_not_found");
+        assert_eq!(
+            failure.reason,
+            "tool_not_found: requested tool is not available"
+        );
+    }
+
+    #[test]
+    fn prepare_tool_intent_uses_inner_shell_metadata_for_tool_invoke_core_requests() {
+        use crate::test_support::TurnTestHarness;
+
+        let harness = TurnTestHarness::new();
+        let (tool_name, args_json) = crate::tools::synthesize_test_provider_tool_call(
+            "shell.exec",
+            json!({
+                "command": "/bin/echo",
+                "args": ["hello"],
+            }),
+        );
+        let intent = ToolIntent {
+            tool_name,
+            args_json,
+            source: "provider_tool_call".to_owned(),
+            session_id: "session-shell-invoke-trace".to_owned(),
+            turn_id: "turn-shell-invoke-trace".to_owned(),
+            tool_call_id: "call-shell-invoke-trace".to_owned(),
+        };
+        let session_context =
+            SessionContext::root_with_tool_view("session-shell-invoke-trace", runtime_tool_view());
+        let engine = TurnEngine::new(4);
+        let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+        let prepared_intent = runtime.block_on(async {
+            engine
+                .prepare_tool_intent(
+                    &intent,
+                    &session_context,
+                    &DefaultAppToolDispatcher::runtime(),
+                    ConversationRuntimeBinding::kernel(&harness.kernel_ctx),
+                    None,
+                )
+                .await
+                .expect("tool.invoke shell request should prepare successfully")
+        });
+
+        assert_eq!(prepared_intent.request.tool_name, "tool.invoke");
+        assert_eq!(prepared_intent.intent.tool_name, "shell.exec");
+        assert_eq!(
+            prepared_intent.intent.args_json,
+            json!({
+                "command": "/bin/echo",
+                "args": ["hello"],
+            })
+        );
     }
 
     fn delegate_async_turn(session_id: &str, turn_id: &str, tool_call_id: &str) -> ProviderTurn {

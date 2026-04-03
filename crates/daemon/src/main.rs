@@ -84,10 +84,10 @@ async fn main() {
     mvp::config::set_active_cli_command_name(mvp::config::detect_invoked_cli_command_name());
     let cli = parse_cli();
     let command = cli.command.unwrap_or_else(resolve_default_entry_command);
-    let command_kind = command_kind(&command);
+    let command_kind = command.command_kind_for_logging();
     tracing::debug!(
         target: "loongclaw.daemon",
-        command_kind = %command_kind,
+        command_kind,
         "parsed CLI command"
     );
     let result = match command {
