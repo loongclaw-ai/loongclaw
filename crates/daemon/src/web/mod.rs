@@ -288,6 +288,7 @@ struct DashboardConfigPayload {
     personality: String,
     prompt_mode: &'static str,
     prompt_addendum_configured: bool,
+    prompt_addendum: String,
     memory_profile: String,
     memory_system: &'static str,
     sqlite_path: String,

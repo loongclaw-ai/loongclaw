@@ -182,7 +182,6 @@ function buildConnectivityCopy(
 export default function DashboardPage() {
   const { t } = useTranslation();
   const connection = useWebConnection();
-  const { onboardingStatus } = connection;
 
   // These forms depend on initial data but manage their own state
   const providerForm = useProviderConfigForm({
@@ -193,9 +192,9 @@ export default function DashboardPage() {
   });
 
   const preferencesForm = usePreferencesForm({
-    personality: onboardingStatus?.personality || "calm_engineering",
-    memoryProfile: onboardingStatus?.memoryProfile || "window_only",
-    promptAddendum: onboardingStatus?.promptAddendum || "",
+    personality: "calm_engineering",
+    memoryProfile: "window_only",
+    promptAddendum: "",
   });
 
   const { state, actions } = useDashboardData({

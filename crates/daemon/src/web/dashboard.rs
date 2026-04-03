@@ -132,6 +132,12 @@ pub(super) async fn dashboard_config(
                 .as_deref()
                 .map(str::trim)
                 .is_some_and(|value| !value.is_empty()),
+            prompt_addendum: snapshot
+                .config
+                .cli
+                .system_prompt_addendum
+                .clone()
+                .unwrap_or_default(),
             memory_profile: snapshot
                 .config
                 .memory
