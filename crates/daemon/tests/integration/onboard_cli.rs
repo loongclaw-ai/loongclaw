@@ -96,6 +96,28 @@ fn scripted_input_not_cancelled(raw: String) -> loongclaw_daemon::CliResult<Stri
     Ok(raw)
 }
 
+fn is_scripted_preinstalled_skill_input(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    trimmed.split(',').map(str::trim).all(|token| {
+        matches!(
+            token,
+            "find-skills"
+                | "github-issues"
+                | "agent-browser"
+                | "skill-creator"
+                | "anthropic-office"
+                | "minimax-office"
+                | "design-md"
+                | "systematic-debugging"
+                | "plan"
+                | "larksuite-cli"
+        )
+    })
+}
+
 struct DetectedEnvironmentGuard {
     _lock: MutexGuard<'static, ()>,
     saved: Vec<(String, Option<OsString>)>,
@@ -310,6 +332,29 @@ impl loongclaw_daemon::onboard_cli::OnboardUi for ScriptedOnboardUi {
     fn prompt_required(&mut self, label: &str) -> loongclaw_daemon::CliResult<String> {
         self.outputs.push(format!("PROMPT {label}"));
         self.next_input(label)
+    }
+
+    fn prompt_allow_empty(&mut self, label: &str) -> loongclaw_daemon::CliResult<String> {
+        self.outputs.push(format!("PROMPT {label}"));
+        match self.inputs.front() {
+            Some(value)
+                if label == "preinstalled skills"
+                    && !is_scripted_preinstalled_skill_input(value) =>
+            {
+                Ok(String::new())
+            }
+            Some(_) => Ok(self.inputs.pop_front().ok_or_else(|| {
+                format!(
+                    "missing scripted input for {label}; transcript so far:\n{}",
+                    self.outputs.join("\n")
+                )
+            })?),
+            None if label == "preinstalled skills" => Ok(String::new()),
+            None => Err(format!(
+                "missing scripted input for {label}; transcript so far:\n{}",
+                self.outputs.join("\n")
+            )),
+        }
     }
 
     fn prompt_confirm(
@@ -6281,6 +6326,130 @@ async fn onboard_current_setup_shortcut_flow_skips_detailed_edit_screens() {
         !joined.contains("adjust cli behavior"),
         "current-setup fast lane should skip the CLI behavior screen: {transcript:#?}"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn onboard_current_setup_shortcut_can_install_selected_bundled_skills() {
+    let output_path = unique_temp_path("current-shortcut-preinstall-config.toml");
+    let mut existing = mvp::config::LoongClawConfig::default();
+    existing.provider.model = "gpt-4.1".to_owned();
+    existing.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
+        "inline-secret".to_owned(),
+    ));
+    mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
+
+    let transcript = run_scripted_onboard_flow(
+        loongclaw_daemon::onboard_cli::OnboardCommandOptions {
+            output: output_path.to_str().map(str::to_owned),
+            force: false,
+            non_interactive: false,
+            accept_risk: true,
+            provider: None,
+            model: None,
+            api_key_env: None,
+            web_search_provider: None,
+            web_search_api_key_env: None,
+            personality: None,
+            memory_profile: None,
+            system_prompt: None,
+            skip_model_probe: true,
+        },
+        ["1", "1", "find-skills,agent-browser", "y", "y", "o"],
+        None,
+        None,
+    )
+    .await
+    .expect("run scripted onboarding with bundled skill selection");
+
+    assert!(
+        transcript
+            .iter()
+            .any(|line| line.contains("preinstalled skills")),
+        "onboarding transcript should include the bundled skill selection step: {transcript:#?}"
+    );
+
+    let (_, config) =
+        mvp::config::load(output_path.to_str()).expect("load written onboarding config");
+    assert!(
+        config.external_skills.enabled,
+        "selecting bundled skills should enable the external-skills runtime"
+    );
+    assert!(
+        config.external_skills.auto_expose_installed,
+        "selecting bundled skills should auto-expose installed skills"
+    );
+
+    let install_root = config
+        .external_skills
+        .resolved_install_root()
+        .expect("bundled skill selection should persist a managed install root");
+    assert!(
+        install_root.join("find-skills").join("SKILL.md").exists(),
+        "selected bundled skills should be installed into the managed runtime"
+    );
+    assert!(
+        install_root
+            .join("agent-browser")
+            .join("references")
+            .join("authentication.md")
+            .exists(),
+        "onboarding should install full bundled skill directories"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn onboard_current_setup_shortcut_can_install_minimax_office_pack() {
+    let output_path = unique_temp_path("current-shortcut-minimax-office-config.toml");
+    let mut existing = mvp::config::LoongClawConfig::default();
+    existing.provider.model = "gpt-4.1".to_owned();
+    existing.provider.api_key = Some(loongclaw_contracts::SecretRef::Inline(
+        "inline-secret".to_owned(),
+    ));
+    mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
+
+    let transcript = run_scripted_onboard_flow(
+        loongclaw_daemon::onboard_cli::OnboardCommandOptions {
+            output: output_path.to_str().map(str::to_owned),
+            force: false,
+            non_interactive: false,
+            accept_risk: true,
+            provider: None,
+            model: None,
+            api_key_env: None,
+            web_search_provider: None,
+            web_search_api_key_env: None,
+            personality: None,
+            memory_profile: None,
+            system_prompt: None,
+            skip_model_probe: true,
+        },
+        ["1", "1", "minimax-office", "y", "y", "o"],
+        None,
+        None,
+    )
+    .await
+    .expect("run scripted onboarding with minimax office pack");
+
+    assert!(
+        transcript
+            .iter()
+            .any(|line| line.contains("preinstalled skills")),
+        "onboarding transcript should include the bundled skill selection step: {transcript:#?}"
+    );
+
+    let (_, config) =
+        mvp::config::load(output_path.to_str()).expect("load written onboarding config");
+    let install_root = config
+        .external_skills
+        .resolved_install_root()
+        .expect("minimax office pack should persist an install root");
+
+    for skill_id in ["minimax-docx", "minimax-pdf", "minimax-xlsx"] {
+        assert!(
+            install_root.join(skill_id).join("SKILL.md").exists(),
+            "minimax office pack should install `{skill_id}`"
+        );
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]

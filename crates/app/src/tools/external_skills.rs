@@ -744,9 +744,15 @@ pub(super) fn execute_external_skills_install_tool_with_config(
                         "external_skills.install does not recognize bundled skill `{bundled_skill_id}`"
                     )
                 })?;
+            let bundled_markdown =
+                super::bundled_skills::bundled_external_skill_markdown(&bundled)?;
+            let bundled_dir = super::bundled_skills::bundled_external_skill_dir(&bundled)
+                .ok_or_else(|| {
+                    format!("missing bundled external skill directory for `{bundled_skill_id}`")
+                })?;
             let skill_id = normalize_skill_id(bundled.skill_id)?;
-            let display_name = derive_skill_display_name(bundled.instructions, bundled.skill_id);
-            let summary = derive_skill_summary(bundled.instructions);
+            let display_name = derive_skill_display_name(bundled_markdown, bundled.skill_id);
+            let summary = derive_skill_summary(bundled_markdown);
             let incoming_root = unique_managed_install_transition_path(
                 &install_root,
                 skill_id.as_str(),
@@ -759,14 +765,8 @@ pub(super) fn execute_external_skills_install_tool_with_config(
                     incoming_root.display()
                 )
             })?;
-            let installed_skill_md_path = incoming_root.join(DEFAULT_SKILL_FILENAME);
-            fs::write(&installed_skill_md_path, bundled.instructions).map_err(|error| {
-                format!(
-                    "failed to write bundled external skill source {}: {error}",
-                    installed_skill_md_path.display()
-                )
-            })?;
-            let digest = hex::encode(Sha256::digest(bundled.instructions.as_bytes()));
+            copy_embedded_dir_recursive(bundled_dir, &incoming_root)?;
+            let digest = digest_embedded_dir(bundled_dir);
             incoming_cleanup.disarm();
             (
                 skill_id,
@@ -3531,6 +3531,72 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn copy_embedded_dir_recursive(
+    source: &include_dir::Dir<'static>,
+    destination: &Path,
+) -> Result<(), String> {
+    fs::create_dir_all(destination).map_err(|error| {
+        format!(
+            "failed to create bundled external skill destination {}: {error}",
+            destination.display()
+        )
+    })?;
+    for entry in source.entries() {
+        match entry {
+            include_dir::DirEntry::Dir(dir) => {
+                let Some(name) = dir.path().file_name() else {
+                    return Err(format!(
+                        "bundled external skill directory `{}` has no terminal name",
+                        dir.path().display()
+                    ));
+                };
+                copy_embedded_dir_recursive(dir, &destination.join(name))?;
+            }
+            include_dir::DirEntry::File(file) => {
+                let Some(name) = file.path().file_name() else {
+                    return Err(format!(
+                        "bundled external skill file `{}` has no terminal name",
+                        file.path().display()
+                    ));
+                };
+                fs::write(destination.join(name), file.contents()).map_err(|error| {
+                    format!(
+                        "failed to write bundled external skill file {}: {error}",
+                        destination.join(name).display()
+                    )
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn digest_embedded_dir(source: &include_dir::Dir<'static>) -> String {
+    fn update_dir(hasher: &mut Sha256, dir: &include_dir::Dir<'static>) {
+        for entry in dir.entries() {
+            match entry {
+                include_dir::DirEntry::Dir(child) => {
+                    hasher.update(b"dir:");
+                    hasher.update(child.path().to_string_lossy().as_bytes());
+                    hasher.update(b"\n");
+                    update_dir(hasher, child);
+                }
+                include_dir::DirEntry::File(file) => {
+                    hasher.update(b"file:");
+                    hasher.update(file.path().to_string_lossy().as_bytes());
+                    hasher.update(b"\n");
+                    hasher.update(file.contents());
+                    hasher.update(b"\n");
+                }
+            }
+        }
+    }
+
+    let mut hasher = Sha256::new();
+    update_dir(&mut hasher, source);
+    format!("{:x}", hasher.finalize())
+}
+
 fn load_installed_skill_index(root: &Path) -> Result<InstalledSkillIndex, String> {
     let index_path = root.join(DEFAULT_INDEX_FILENAME);
     if !index_path.exists() {
@@ -4770,6 +4836,143 @@ mod tests {
             assert!(
                 installed_skill_body.contains("agent-browser"),
                 "bundled preview instructions should preserve the packaged browser companion guidance"
+            );
+
+            fs::remove_dir_all(&root).ok();
+        });
+    }
+
+    #[test]
+    fn install_from_bundled_skill_id_copies_packaged_reference_files() {
+        with_managed_runtime_test(|| {
+            let root = unique_temp_dir("loongclaw-ext-skill-install-bundled-directory");
+            fs::create_dir_all(&root).expect("create fixture root");
+            let config = managed_runtime_config(&root);
+
+            let outcome = crate::tools::execute_tool_core_with_config(
+                ToolCoreRequest {
+                    tool_name: "external_skills.install".to_owned(),
+                    payload: json!({
+                        "bundled_skill_id": "agent-browser"
+                    }),
+                },
+                &config,
+            )
+            .expect("bundled install should succeed");
+
+            assert_eq!(outcome.status, "ok");
+            assert_eq!(outcome.payload["skill_id"], "agent-browser");
+
+            let installed_root = root.join("external-skills-installed").join("agent-browser");
+            assert!(
+                installed_root.join("SKILL.md").exists(),
+                "bundled install should keep SKILL.md"
+            );
+            assert!(
+                installed_root
+                    .join("references")
+                    .join("authentication.md")
+                    .exists(),
+                "bundled install should copy packaged references, not only SKILL.md"
+            );
+            assert!(
+                installed_root
+                    .join("templates")
+                    .join("authenticated-session.sh")
+                    .exists(),
+                "bundled install should copy packaged templates"
+            );
+
+            fs::remove_dir_all(&root).ok();
+        });
+    }
+
+    #[test]
+    fn install_from_bundled_skill_id_copies_packaged_templates_for_github_issues() {
+        with_managed_runtime_test(|| {
+            let root = unique_temp_dir("loongclaw-ext-skill-install-bundled-github-issues");
+            fs::create_dir_all(&root).expect("create fixture root");
+            let config = managed_runtime_config(&root);
+
+            let outcome = crate::tools::execute_tool_core_with_config(
+                ToolCoreRequest {
+                    tool_name: "external_skills.install".to_owned(),
+                    payload: json!({
+                        "bundled_skill_id": "github-issues"
+                    }),
+                },
+                &config,
+            )
+            .expect("bundled install should succeed");
+
+            assert_eq!(outcome.status, "ok");
+            assert_eq!(outcome.payload["skill_id"], "github-issues");
+
+            let installed_root = root.join("external-skills-installed").join("github-issues");
+            assert!(
+                installed_root.join("SKILL.md").exists(),
+                "bundled install should keep SKILL.md"
+            );
+            assert!(
+                installed_root
+                    .join("templates")
+                    .join("bug-report.md")
+                    .exists(),
+                "bundled install should copy packaged templates for github-issues"
+            );
+            assert!(
+                installed_root
+                    .join("templates")
+                    .join("feature-request.md")
+                    .exists(),
+                "bundled install should copy all bundled templates"
+            );
+
+            fs::remove_dir_all(&root).ok();
+        });
+    }
+
+    #[test]
+    fn install_from_bundled_skill_id_copies_packaged_assets_for_minimax_docx() {
+        with_managed_runtime_test(|| {
+            let root = unique_temp_dir("loongclaw-ext-skill-install-bundled-minimax-docx");
+            fs::create_dir_all(&root).expect("create fixture root");
+            let config = managed_runtime_config(&root);
+
+            let outcome = crate::tools::execute_tool_core_with_config(
+                ToolCoreRequest {
+                    tool_name: "external_skills.install".to_owned(),
+                    payload: json!({
+                        "bundled_skill_id": "minimax-docx"
+                    }),
+                },
+                &config,
+            )
+            .expect("bundled install should succeed");
+
+            assert_eq!(outcome.status, "ok");
+            assert_eq!(outcome.payload["skill_id"], "minimax-docx");
+
+            let installed_root = root.join("external-skills-installed").join("minimax-docx");
+            assert!(installed_root.join("SKILL.md").exists());
+            assert!(
+                installed_root
+                    .join("references")
+                    .join("design_principles.md")
+                    .exists(),
+                "minimax-docx should keep bundled references"
+            );
+            assert!(
+                installed_root.join("scripts").join("setup.sh").exists(),
+                "minimax-docx should keep bundled scripts"
+            );
+            assert!(
+                installed_root
+                    .join("assets")
+                    .join("styles")
+                    .join("default_styles.xml")
+                    .exists(),
+                "minimax-docx should keep bundled assets"
             );
 
             fs::remove_dir_all(&root).ok();
