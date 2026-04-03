@@ -1720,6 +1720,9 @@ mod tests {
     use crate::config::{AcpBackendProfilesConfig, AcpConfig, AcpxBackendConfig, LoongClawConfig};
 
     #[cfg(unix)]
+    const ACPX_FAKE_RUNTIME_STARTUP_TIMEOUT_MS: u64 = 60_000;
+
+    #[cfg(unix)]
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         static NEXT_TEMP_DIR_SEED: AtomicU64 = AtomicU64::new(1);
         let seed = NEXT_TEMP_DIR_SEED.fetch_add(1, Ordering::Relaxed);
@@ -1899,18 +1902,28 @@ mod tests {
 
     #[cfg(unix)]
     fn fake_acpx_config(script_path: &Path, cwd: &Path) -> LoongClawConfig {
+        let command = script_path.display().to_string();
+        let working_directory = cwd.display().to_string();
+        let expected_version = "0.1.16".to_owned();
+        let permission_mode = "approve-reads".to_owned();
+        let non_interactive_permissions = "fail".to_owned();
+        let timeout_seconds = 12.5;
+        let queue_owner_ttl_seconds = 0.25;
+        let startup_timeout_ms = ACPX_FAKE_RUNTIME_STARTUP_TIMEOUT_MS;
+
         LoongClawConfig {
             acp: AcpConfig {
+                startup_timeout_ms: Some(startup_timeout_ms),
                 allow_mcp_server_injection: false,
                 backends: AcpBackendProfilesConfig {
                     acpx: Some(AcpxBackendConfig {
-                        command: Some(script_path.display().to_string()),
-                        expected_version: Some("0.1.16".to_owned()),
-                        cwd: Some(cwd.display().to_string()),
-                        permission_mode: Some("approve-reads".to_owned()),
-                        non_interactive_permissions: Some("fail".to_owned()),
-                        timeout_seconds: Some(12.5),
-                        queue_owner_ttl_seconds: Some(0.25),
+                        command: Some(command),
+                        expected_version: Some(expected_version),
+                        cwd: Some(working_directory),
+                        permission_mode: Some(permission_mode),
+                        non_interactive_permissions: Some(non_interactive_permissions),
+                        timeout_seconds: Some(timeout_seconds),
+                        queue_owner_ttl_seconds: Some(queue_owner_ttl_seconds),
                         ..AcpxBackendConfig::default()
                     }),
                 },
@@ -1918,6 +1931,18 @@ mod tests {
             },
             ..LoongClawConfig::default()
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn fake_acpx_config_uses_explicit_process_test_startup_timeout() {
+        let temp_dir = unique_temp_dir("loongclaw-acpx-config-timeout");
+        let script_path = temp_dir.join("fake-acpx");
+
+        let config = fake_acpx_config(&script_path, &temp_dir);
+        let startup_timeout_ms = config.acp.startup_timeout_ms();
+
+        assert_eq!(startup_timeout_ms, ACPX_FAKE_RUNTIME_STARTUP_TIMEOUT_MS);
     }
 
     #[tokio::test]
