@@ -3813,7 +3813,18 @@ where
         approval_request: &ApprovalRequestRecord,
     ) -> Result<bool, String> {
         let execution_kind = self.replay_execution_kind(approval_request)?;
-        Ok(execution_kind == ToolExecutionKind::Core)
+        if execution_kind == ToolExecutionKind::Core {
+            return Ok(true);
+        }
+
+        let tool_name = approval_request
+            .request_payload_json
+            .get("tool_name")
+            .and_then(Value::as_str)
+            .map(crate::tools::canonical_tool_name)
+            .ok_or_else(|| "approval_request_invalid_payload: missing tool_name".to_owned())?;
+
+        Ok(tool_name == "delegate_async")
     }
 
     fn ensure_resolution_binding_allows_decision(
@@ -4601,6 +4612,10 @@ async fn execute_delegate_async_tool<R: ConversationRuntime + ?Sized>(
     payload: Value,
     binding: ConversationRuntimeBinding<'_>,
 ) -> Result<loongclaw_contracts::ToolCoreOutcome, String> {
+    if !binding.allows_mutation() {
+        return Err("app_tool_denied: governed_runtime_binding_required".to_owned());
+    }
+
     let delegate_request = crate::tools::delegate::parse_delegate_request_with_default_timeout(
         &payload,
         config.tools.delegate.timeout_seconds,

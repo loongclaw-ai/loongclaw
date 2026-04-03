@@ -19989,6 +19989,305 @@ async fn spawn_background_delegate_with_runtime_uses_default_timeout_when_omitte
 
 #[cfg(feature = "memory-sqlite")]
 #[tokio::test]
+async fn handle_turn_with_runtime_delegate_async_direct_binding_fails_before_persisting_approval() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-delegate-async", "direct-preflight-denied")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    enable_guided_autonomy(&mut config);
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+
+    let spawner = Arc::new(FakeAsyncDelegateSpawner::default());
+    let runtime = FakeRuntime::with_turns_and_completions(
+        vec![],
+        vec![Ok(ProviderTurn {
+            assistant_text: "Delegating async.".to_owned(),
+            tool_intents: vec![provider_tool_intent(
+                "delegate_async",
+                json!({
+                    "task": "child async task",
+                    "label": "async-child"
+                }),
+                "root-session",
+                "turn-delegate-async-direct",
+                "call-delegate-async-direct",
+            )],
+            raw_meta: Value::Null,
+        })],
+        vec![],
+    )
+    .with_async_delegate_spawner(spawner.clone())
+    .with_durable_memory_config(memory_config.clone());
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "root-session",
+            "show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            ConversationRuntimeBinding::direct(),
+        )
+        .await
+        .expect("delegate_async direct denial reply");
+
+    assert!(
+        reply.contains("governed_runtime_binding_required"),
+        "expected governed runtime binding denial, got: {reply}"
+    );
+    assert_eq!(
+        repo.list_sessions()
+            .expect("list sessions after direct denial")
+            .len(),
+        1,
+        "direct delegate_async denial should not create a child session"
+    );
+    assert_eq!(
+        spawner
+            .requests
+            .lock()
+            .expect("async delegate requests lock")
+            .len(),
+        0,
+        "direct delegate_async denial should not dispatch the async spawner"
+    );
+    assert!(
+        repo.list_approval_requests_for_session("root-session", None)
+            .expect("list approval requests after direct denial")
+            .is_empty(),
+        "direct delegate_async denial should happen before approval request persistence"
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn handle_turn_with_runtime_delegate_async_direct_binding_still_fails_when_preapproved() {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id("conversation-delegate-async", "direct-preapproved-denied")
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    enable_guided_autonomy(&mut config);
+    preapprove_tool_call(&mut config, "delegate_async");
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+
+    let spawner = Arc::new(FakeAsyncDelegateSpawner::default());
+    let runtime = FakeRuntime::with_turns_and_completions(
+        vec![],
+        vec![Ok(ProviderTurn {
+            assistant_text: "Delegating async.".to_owned(),
+            tool_intents: vec![provider_tool_intent(
+                "delegate_async",
+                json!({
+                    "task": "child async task",
+                    "label": "async-child"
+                }),
+                "root-session",
+                "turn-delegate-async-preapproved",
+                "call-delegate-async-preapproved",
+            )],
+            raw_meta: Value::Null,
+        })],
+        vec![],
+    )
+    .with_async_delegate_spawner(spawner.clone())
+    .with_durable_memory_config(memory_config.clone());
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "root-session",
+            "show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            ConversationRuntimeBinding::direct(),
+        )
+        .await
+        .expect("delegate_async preapproved direct denial reply");
+
+    assert!(
+        reply.contains("governed_runtime_binding_required"),
+        "expected governed runtime binding denial, got: {reply}"
+    );
+    assert_eq!(
+        repo.list_visible_sessions("root-session")
+            .expect("list visible sessions after preapproved denial")
+            .into_iter()
+            .filter(|session| session.parent_session_id.as_deref() == Some("root-session"))
+            .count(),
+        0,
+        "preapproved direct delegate_async denial should not create a child session"
+    );
+    assert_eq!(
+        spawner
+            .requests
+            .lock()
+            .expect("async delegate requests lock")
+            .len(),
+        0,
+        "preapproved direct delegate_async denial should not dispatch the async spawner"
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn handle_turn_with_runtime_approval_request_resolve_keeps_delegate_async_pending_without_kernel_binding()
+ {
+    let db_path = std::env::temp_dir().join(format!(
+        "{}.sqlite3",
+        unique_acp_test_id(
+            "conversation-approval-resolve",
+            "delegate-async-direct-pending"
+        )
+    ));
+    let _ = std::fs::remove_file(&db_path);
+
+    let mut config = test_config();
+    config.memory.sqlite_path = db_path.display().to_string();
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+    repo.ensure_approval_request(crate::session::repository::NewApprovalRequestRecord {
+        approval_request_id: "apr-delegate-async-direct".to_owned(),
+        session_id: "root-session".to_owned(),
+        turn_id: "turn-delegate-async-parent".to_owned(),
+        tool_call_id: "call-delegate-async-parent".to_owned(),
+        tool_name: "delegate_async".to_owned(),
+        approval_key: "tool:delegate_async".to_owned(),
+        request_payload_json: json!({
+            "session_id": "root-session",
+            "parent_session_id": Value::Null,
+            "turn_id": "turn-delegate-async-parent",
+            "tool_call_id": "call-delegate-async-parent",
+            "tool_name": "delegate_async",
+            "args_json": {
+                "task": "child async task",
+                "label": "async-child"
+            },
+            "source": "provider_tool_call",
+            "execution_kind": "app"
+        }),
+        governance_snapshot_json: json!({
+            "governance_scope": "topology_mutation",
+            "risk_class": "high",
+            "approval_mode": "policy_driven",
+            "rule_id": "governed_tool_requires_approval",
+            "reason": "operator approval required before running `delegate_async`"
+        }),
+    })
+    .expect("seed approval request");
+
+    let spawner = Arc::new(FakeAsyncDelegateSpawner::default());
+    let runtime = FakeRuntime::with_turns_and_completions(
+        vec![],
+        vec![Ok(ProviderTurn {
+            assistant_text: "resolving async approval".to_owned(),
+            tool_intents: vec![provider_tool_intent(
+                "approval_request_resolve",
+                json!({
+                    "approval_request_id": "apr-delegate-async-direct",
+                    "decision": "approve_once"
+                }),
+                "root-session",
+                "turn-approval-resolve",
+                "call-approval-resolve",
+            )],
+            raw_meta: Value::Null,
+        })],
+        vec![],
+    )
+    .with_async_delegate_spawner(spawner.clone())
+    .with_durable_memory_config(memory_config.clone());
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &config,
+            "root-session",
+            "show raw json tool output",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            ConversationRuntimeBinding::direct(),
+        )
+        .await
+        .expect("approval resolve direct denial reply");
+
+    assert!(
+        reply.contains("governed_runtime_binding_required"),
+        "expected governed runtime binding denial, got: {reply}"
+    );
+    assert_eq!(
+        repo.list_visible_sessions("root-session")
+            .expect("list visible sessions after approval replay denial")
+            .into_iter()
+            .filter(|session| session.parent_session_id.as_deref() == Some("root-session"))
+            .count(),
+        0,
+        "direct approval replay should not create a delegate_async child session"
+    );
+    assert_eq!(
+        spawner
+            .requests
+            .lock()
+            .expect("async delegate requests lock")
+            .len(),
+        0,
+        "direct approval replay should not dispatch the async spawner"
+    );
+
+    let request = repo
+        .load_approval_request("apr-delegate-async-direct")
+        .expect("load approval request")
+        .expect("approval request row");
+    assert_eq!(
+        request.status,
+        crate::session::repository::ApprovalRequestStatus::Pending
+    );
+    assert_eq!(request.decision, None);
+    assert_eq!(request.resolved_by_session_id, None);
+    assert!(request.executed_at.is_none(), "request={request:?}");
+    assert!(request.last_error.is_none(), "request={request:?}");
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
 async fn handle_turn_with_runtime_delegate_async_queue_failure_rolls_back_child_creation() {
     let db_path = std::env::temp_dir().join(format!(
         "{}.sqlite3",
