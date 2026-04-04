@@ -2576,11 +2576,13 @@ fn stream_download_to_unique_path<R: Read>(
     filename: &str,
     surface_name: &str,
 ) -> Result<StreamedDownload, String> {
+    const MAX_PERSIST_COLLISION_RETRIES: usize = 16;
+
     let mut budget = super::download_guard::ByteBudget::new(max_bytes);
 
     budget.reject_if_content_length_exceeds(content_length, surface_name)?;
 
-    let target_path = unique_output_path(output_dir, filename);
+    let mut target_path = unique_output_path(output_dir, filename);
     let mut temp_file = TempFileBuilder::new()
         .prefix(".download-")
         .tempfile_in(output_dir)
@@ -2618,13 +2620,38 @@ fn stream_download_to_unique_path<R: Read>(
         .map_err(|error| format!("failed to flush {surface_name} body: {error}"))?;
     drop(writer);
 
-    temp_file.persist(&target_path).map_err(|error| {
-        format!(
-            "failed to persist downloaded artifact {}: {}",
-            target_path.display(),
-            error.error
-        )
-    })?;
+    // Claim the final name without clobbering a sibling download that won the
+    // same derived filename race first.
+    for attempt in 0..MAX_PERSIST_COLLISION_RETRIES {
+        let persist_result = temp_file.persist_noclobber(&target_path);
+
+        match persist_result {
+            Ok(_) => {
+                break;
+            }
+            Err(error) if error.error.kind() == ErrorKind::AlreadyExists => {
+                let is_last_attempt = attempt + 1 == MAX_PERSIST_COLLISION_RETRIES;
+
+                if is_last_attempt {
+                    return Err(format!(
+                        "failed to persist downloaded artifact {} after {} name collisions",
+                        target_path.display(),
+                        MAX_PERSIST_COLLISION_RETRIES
+                    ));
+                }
+
+                temp_file = error.file;
+                target_path = unique_output_path(output_dir, filename);
+            }
+            Err(error) => {
+                return Err(format!(
+                    "failed to persist downloaded artifact {}: {}",
+                    target_path.display(),
+                    error.error
+                ));
+            }
+        }
+    }
 
     let sha256 = hex::encode(hasher.finalize());
 

@@ -2750,7 +2750,6 @@ mod tests {
             timestamp_epoch_s,
             agent_id: agent_id.map(str::to_owned),
             kind,
-            integrity: None,
         }
     }
 

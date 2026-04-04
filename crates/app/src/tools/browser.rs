@@ -938,14 +938,21 @@ mod tests {
         let address = listener.local_addr().expect("listener addr");
         let handle = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept stream");
-            let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: 10\r\nConnection: close\r\n\r\ntiny";
+            let body = "<html><body>too large</body></html>";
+            let response = build_http_response("200 OK", "text/html; charset=utf-8", body, None);
+            let mut request_buffer = [0_u8; 4_096];
+
+            stream
+                .set_read_timeout(Some(Duration::from_millis(200)))
+                .expect("set read timeout");
+            let _ = stream.read(&mut request_buffer);
             stream
                 .write_all(response.as_bytes())
                 .expect("write response");
         });
 
         let mut config = local_browser_config();
-        config.web_fetch.max_bytes = 4;
+        config.web_fetch.max_bytes = 8;
 
         let error = execute_browser_tool_with_config(
             scoped_request(
@@ -957,7 +964,7 @@ mod tests {
         )
         .expect_err("oversize declared content length should fail closed");
 
-        assert!(error.contains("Content-Length"));
+        assert!(error.contains("max_bytes limit"));
         handle.join().expect("server thread");
     }
 

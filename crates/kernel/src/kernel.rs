@@ -859,7 +859,6 @@ impl<P: PolicyEngine> LoongClawKernel<P> {
             timestamp_epoch_s,
             agent_id,
             kind,
-            integrity: None,
         }
     }
 }

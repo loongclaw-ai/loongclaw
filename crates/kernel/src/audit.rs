@@ -4,9 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 // Re-export data types from contracts
-pub use loongclaw_contracts::{
-    AuditEvent, AuditEventKind, AuditIntegrity, ExecutionPlane, PlaneTier,
-};
+pub use loongclaw_contracts::{AuditEvent, AuditEventKind, ExecutionPlane, PlaneTier};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::errors::AuditError;
@@ -69,6 +68,21 @@ pub struct AuditVerificationReport {
     pub last_entry_hash: Option<String>,
     pub first_invalid_line: Option<usize>,
     pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PersistedAuditIntegrity {
+    algorithm: String,
+    prev_hash: Option<String>,
+    entry_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PersistedAuditEvent {
+    #[serde(flatten)]
+    event: AuditEvent,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    integrity: Option<PersistedAuditIntegrity>,
 }
 
 fn prepare_audit_journal_parent(path: &Path) -> Result<(), AuditError> {
@@ -174,16 +188,34 @@ fn compute_audit_event_entry_hash(
 }
 
 fn event_with_integrity(
-    mut event: AuditEvent,
+    event: AuditEvent,
     prev_hash: Option<String>,
     entry_hash: String,
-) -> AuditEvent {
-    event.integrity = Some(AuditIntegrity {
+) -> PersistedAuditEvent {
+    let integrity = PersistedAuditIntegrity {
         algorithm: "sha256".to_owned(),
         prev_hash,
         entry_hash,
-    });
-    event
+    };
+
+    PersistedAuditEvent {
+        event,
+        integrity: Some(integrity),
+    }
+}
+
+fn decode_persisted_audit_event_line(
+    line: &str,
+    journal_path: &Path,
+    line_number: &str,
+) -> Result<PersistedAuditEvent, AuditError> {
+    serde_json::from_str::<PersistedAuditEvent>(line).map_err(|error| {
+        AuditError::Sink(format!(
+            "failed to decode audit journal `{}` at {}: {error}",
+            journal_path.display(),
+            line_number
+        ))
+    })
 }
 
 fn load_last_audit_entry_hash(path: &Path) -> Result<Option<String>, AuditError> {
@@ -216,15 +248,8 @@ fn load_last_audit_entry_hash(path: &Path) -> Result<Option<String>, AuditError>
         return Ok(None);
     };
 
-    let event = serde_json::from_str::<AuditEvent>(&line).map_err(|error| {
-        AuditError::Sink(format!(
-            "failed to decode audit journal tail `{}`: {error}",
-            path.display()
-        ))
-    })?;
-
-    let integrity = event.integrity;
-    let last_hash = integrity.and_then(|value| {
+    let persisted_event = decode_persisted_audit_event_line(&line, path, "tail line")?;
+    let last_hash = persisted_event.integrity.and_then(|value| {
         let hash = value.entry_hash;
         let trimmed_hash = hash.trim();
         if trimmed_hash.is_empty() {
@@ -258,6 +283,7 @@ pub fn verify_jsonl_audit_journal(path: &Path) -> Result<AuditVerificationReport
     let mut total_events = 0usize;
     let mut verified_events = 0usize;
     let mut previous_hash: Option<String> = None;
+    let mut protected_chain_started = false;
 
     for (index, line_result) in reader.lines().enumerate() {
         let line_number = index + 1;
@@ -273,23 +299,22 @@ pub fn verify_jsonl_audit_journal(path: &Path) -> Result<AuditVerificationReport
         }
 
         total_events += 1;
-        let event = serde_json::from_str::<AuditEvent>(&line).map_err(|error| {
-            AuditError::Sink(format!(
-                "failed to decode audit journal `{}` at line {}: {error}",
-                path.display(),
-                line_number
-            ))
-        })?;
+        let line_label = format!("line {line_number}");
+        let persisted_event = decode_persisted_audit_event_line(&line, path, &line_label)?;
+        let event = persisted_event.event;
+        let Some(integrity) = persisted_event.integrity.as_ref() else {
+            if protected_chain_started {
+                return Ok(AuditVerificationReport {
+                    total_events,
+                    verified_events,
+                    valid: false,
+                    last_entry_hash: previous_hash,
+                    first_invalid_line: Some(line_number),
+                    reason: Some("missing integrity envelope".to_owned()),
+                });
+            }
 
-        let Some(integrity) = event.integrity.as_ref() else {
-            return Ok(AuditVerificationReport {
-                total_events,
-                verified_events,
-                valid: false,
-                last_entry_hash: previous_hash,
-                first_invalid_line: Some(line_number),
-                reason: Some("missing integrity envelope".to_owned()),
-            });
+            continue;
         };
 
         if integrity.algorithm.trim() != "sha256" {
@@ -305,6 +330,8 @@ pub fn verify_jsonl_audit_journal(path: &Path) -> Result<AuditVerificationReport
                 )),
             });
         }
+
+        protected_chain_started = true;
 
         if integrity.prev_hash != previous_hash {
             return Ok(AuditVerificationReport {
@@ -346,7 +373,7 @@ pub fn verify_jsonl_audit_journal(path: &Path) -> Result<AuditVerificationReport
 }
 
 fn serialize_audit_event_line(
-    event: &AuditEvent,
+    event: &PersistedAuditEvent,
     journal_path: &Path,
 ) -> Result<Vec<u8>, AuditError> {
     let mut encoded = serde_json::to_vec(event).map_err(|error| {
@@ -368,8 +395,8 @@ impl AuditSink for JsonlAuditSink {
         let previous_hash = guard.last_entry_hash.clone();
         let entry_hash =
             compute_audit_event_entry_hash(&event, previous_hash.as_deref(), &self.path)?;
-        let event = event_with_integrity(event, previous_hash, entry_hash.clone());
-        let encoded = serialize_audit_event_line(&event, &self.path)?;
+        let persisted_event = event_with_integrity(event, previous_hash, entry_hash.clone());
+        let encoded = serialize_audit_event_line(&persisted_event, &self.path)?;
 
         lock_audit_journal(&guard.file, &self.path)?;
 
