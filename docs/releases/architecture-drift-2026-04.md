@@ -24,6 +24,7 @@
 | channel_mod | `structural_size,operational_density` | `crates/app/src/channel/mod.rs` | 1784 | 6400 | 4616 | 0 | 110 | 110 | 27.9% | HEALTHY | 1779 | 0.3% | PASS | 0 |
 | turn_coordinator | `structural_size,operational_density` | `crates/app/src/conversation/turn_coordinator.rs` | 10782 | 11200 | 418 | 96 | 120 | 24 | 96.3% | TIGHT | 10831 | -0.5% | PASS | 98 |
 | tools_mod | `structural_size` | `crates/app/src/tools/mod.rs` | 14990 | 15000 | 10 | 54 | 70 | 16 | 99.9% | TIGHT | 14472 | 3.6% | PASS | 54 |
+<<<<<<< HEAD
 | daemon_lib | `structural_size` | `crates/daemon/src/lib.rs` | 6482 | 6500 | 18 | 210 | 210 | 0 | 100.0% | TIGHT | 6324 | 2.5% | PASS | 210 |
 | onboard_cli | `structural_size` | `crates/daemon/src/onboard_cli.rs` | 9519 | 9800 | 281 | 228 | 250 | 22 | 97.1% | TIGHT | 9519 | 0.0% | PASS | 228 |
 
