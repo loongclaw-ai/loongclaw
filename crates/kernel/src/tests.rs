@@ -110,6 +110,37 @@ fn jsonl_audit_sink_writes_integrity_sidecar_and_verifies() {
 }
 
 #[test]
+fn jsonl_audit_sink_reloads_integrity_state_for_concurrent_writers() {
+    let path = fresh_audit_temp_path("jsonl-concurrent-writers");
+    let first_sink = JsonlAuditSink::new(path.clone()).expect("first jsonl sink should initialize");
+    let second_sink =
+        JsonlAuditSink::new(path.clone()).expect("second jsonl sink should initialize");
+
+    first_sink
+        .record(sample_audit_event("evt-1", 100))
+        .expect("first event should record");
+    second_sink
+        .record(sample_audit_event("evt-2", 101))
+        .expect("second event should record");
+
+    let report =
+        verify_jsonl_audit_journal_integrity(&path).expect("integrity verification should work");
+
+    assert_eq!(report.protected_entries, 2);
+    assert_eq!(report.last_event_id.as_deref(), Some("evt-2"));
+    assert!(matches!(
+        report.status,
+        AuditJournalIntegrityStatus::Verified
+    ));
+
+    let paths = derive_jsonl_audit_integrity_paths(&path);
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_file(paths.integrity_journal_path);
+    let _ = fs::remove_file(paths.key_path);
+    let _ = fs::remove_file(paths.seal_path);
+}
+
+#[test]
 fn verify_jsonl_audit_journal_integrity_reports_missing_sidecar_files() {
     let path = fresh_audit_temp_path("jsonl-missing-integrity");
     let event = sample_audit_event("evt-legacy", 100);

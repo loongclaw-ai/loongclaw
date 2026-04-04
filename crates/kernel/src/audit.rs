@@ -173,6 +173,16 @@ impl AuditFileLock {
         unlock_audit_file(&file, &self.path)?;
         Ok(file)
     }
+
+    fn unlock(mut self) -> Result<(), AuditError> {
+        let Some(file) = self.file.take() else {
+            return Err(AuditError::Sink(
+                "audit file lock should still hold a file".to_owned(),
+            ));
+        };
+
+        unlock_audit_file(&file, &self.path)
+    }
 }
 
 impl Drop for AuditFileLock {
@@ -1108,10 +1118,28 @@ impl AuditSink for JsonlAuditSink {
         })?;
 
         let encoded = serialize_audit_event_line(&event, &self.path)?;
+        let journal_lock = AuditFileLock::new(
+            open_existing_read_write_file(&self.path, "audit journal")?,
+            &self.path,
+        )?;
+        let integrity_journal_lock = AuditFileLock::new(
+            open_existing_read_append_file(&self.integrity_paths.integrity_journal_path)?,
+            &self.integrity_paths.integrity_journal_path,
+        )?;
+        let integrity_seal_lock = AuditFileLock::new(
+            open_existing_read_write_file(&self.integrity_paths.seal_path, "audit integrity seal")?,
+            &self.integrity_paths.seal_path,
+        )?;
+
+        let refreshed_state =
+            load_audit_integrity_state(&self.path, &self.integrity_paths, &self.integrity_key)?;
+        let previous_state = refreshed_state.clone();
+        *integrity_state = refreshed_state.clone();
+
         let line_sha256 = compute_sha256(&encoded);
         let chain_hmac = compute_chain_hmac(
             &self.integrity_key,
-            &integrity_state.last_chain_hmac,
+            &refreshed_state.last_chain_hmac,
             &line_sha256,
         )?;
         let integrity_record = AuditIntegrityRecord {
@@ -1123,15 +1151,6 @@ impl AuditSink for JsonlAuditSink {
             &integrity_record,
             &self.integrity_paths.integrity_journal_path,
         )?;
-
-        let previous_state = integrity_state.clone();
-
-        lock_audit_file(&journal, &self.path)?;
-        lock_audit_file(
-            &integrity_journal,
-            &self.integrity_paths.integrity_journal_path,
-        )?;
-        lock_audit_file(&integrity_seal, &self.integrity_paths.seal_path)?;
 
         let write_result = journal
             .write_all(&encoded)
@@ -1220,13 +1239,9 @@ impl AuditSink for JsonlAuditSink {
             *integrity_state = previous_state;
         }
 
-        let unlock_seal_result =
-            unlock_audit_file(&integrity_seal, &self.integrity_paths.seal_path);
-        let unlock_integrity_result = unlock_audit_file(
-            &integrity_journal,
-            &self.integrity_paths.integrity_journal_path,
-        );
-        let unlock_journal_result = unlock_audit_file(&journal, &self.path);
+        let unlock_seal_result = integrity_seal_lock.unlock();
+        let unlock_integrity_result = integrity_journal_lock.unlock();
+        let unlock_journal_result = journal_lock.unlock();
 
         match (
             write_result,
