@@ -224,6 +224,7 @@ pub enum ToolVisibilityGate {
     BrowserCompanion,
     BashRuntime,
     ExternalSkills,
+    MemorySearchCorpus,
     MemoryFileRoot,
     WebFetch,
     WebSearch,
@@ -1137,11 +1138,11 @@ fn build_tool_catalog() -> ToolCatalog {
             name: "memory_search",
             provider_name: "memory_search",
             aliases: &[],
-            description: "Search durable workspace memory files with bounded citation-bearing snippets",
+            description: "Search durable workspace memory files and canonical cross-session recall with bounded snippets",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
             exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::MemoryFileRoot,
+            visibility_gate: ToolVisibilityGate::MemorySearchCorpus,
             capability_action_class: CapabilityActionClass::ExecuteExisting,
             policy: PARALLEL_SAFE_TOOL_POLICY_DESCRIPTOR,
             provider_definition_builder: memory_search_definition,
@@ -1637,6 +1638,10 @@ fn tool_visibility_gate_enabled_for_runtime_view(
         ToolVisibilityGate::BrowserCompanion => false,
         ToolVisibilityGate::BashRuntime => false,
         ToolVisibilityGate::ExternalSkills => external_skills_enabled,
+        ToolVisibilityGate::MemorySearchCorpus => config
+            .file_root
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty()),
         ToolVisibilityGate::MemoryFileRoot => config
             .file_root
             .as_deref()
@@ -1675,16 +1680,7 @@ fn tool_visibility_gate_enabled_for_runtime_policy(
         ToolVisibilityGate::BrowserCompanion => config.browser_companion.is_runtime_ready(),
         ToolVisibilityGate::BashRuntime => config.bash_exec.is_discoverable(),
         ToolVisibilityGate::ExternalSkills => config.external_skills.enabled,
-        ToolVisibilityGate::MemoryFileRoot => {
-            let has_file_root = config
-                .file_root
-                .as_ref()
-                .is_some_and(|value| !value.as_os_str().is_empty());
-
-            if !has_file_root {
-                return false;
-            }
-
+        ToolVisibilityGate::MemorySearchCorpus => {
             #[cfg(feature = "tool-file")]
             {
                 super::memory_tools::memory_corpus_available(config)
@@ -1692,7 +1688,24 @@ fn tool_visibility_gate_enabled_for_runtime_policy(
 
             #[cfg(not(feature = "tool-file"))]
             {
-                has_file_root
+                config
+                    .file_root
+                    .as_ref()
+                    .is_some_and(|value| !value.as_os_str().is_empty())
+            }
+        }
+        ToolVisibilityGate::MemoryFileRoot => {
+            #[cfg(feature = "tool-file")]
+            {
+                super::memory_tools::workspace_memory_corpus_available(config)
+            }
+
+            #[cfg(not(feature = "tool-file"))]
+            {
+                config
+                    .file_root
+                    .as_ref()
+                    .is_some_and(|value| !value.as_os_str().is_empty())
             }
         }
         ToolVisibilityGate::WebFetch => config.web_fetch.enabled,
@@ -2510,7 +2523,7 @@ fn memory_search_definition(descriptor: &ToolDescriptor) -> Value {
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Natural-language lookup query for durable workspace memory."
+                        "description": "Natural-language lookup query for durable workspace memory and canonical cross-session recall."
                     },
                     "max_results": {
                         "type": "integer",
@@ -4249,6 +4262,38 @@ mod tests {
         assert!(tool_visibility_gate_enabled_for_runtime_policy(
             ToolVisibilityGate::MemoryFileRoot,
             &visible_runtime
+        ));
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn memory_search_corpus_visibility_gate_allows_canonical_memory_without_workspace_files() {
+        let runtime_dir = tempdir().expect("tempdir");
+        let db_path = runtime_dir.path().join("memory.sqlite3");
+        let memory_config = crate::memory::runtime_config::MemoryRuntimeConfig {
+            sqlite_path: Some(db_path.clone()),
+            ..crate::memory::runtime_config::MemoryRuntimeConfig::default()
+        };
+        crate::memory::append_turn_direct(
+            "canonical-search-gate-session",
+            "assistant",
+            "Rollback checklist includes smoke tests and release notes.",
+            &memory_config,
+        )
+        .expect("append canonical turn");
+
+        let runtime = ToolRuntimeConfig {
+            file_root: None,
+            memory_sqlite_path: Some(db_path),
+            ..ToolRuntimeConfig::default()
+        };
+        assert!(tool_visibility_gate_enabled_for_runtime_policy(
+            ToolVisibilityGate::MemorySearchCorpus,
+            &runtime
+        ));
+        assert!(!tool_visibility_gate_enabled_for_runtime_policy(
+            ToolVisibilityGate::MemoryFileRoot,
+            &runtime
         ));
     }
 
