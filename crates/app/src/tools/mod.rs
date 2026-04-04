@@ -94,7 +94,11 @@ pub(crate) const BROWSER_SESSION_SCOPE_FIELD: &str = "__loongclaw_browser_scope"
 pub const BROWSER_COMPANION_PREVIEW_SKILL_ID: &str =
     bundled_skills::BROWSER_COMPANION_PREVIEW_SKILL_ID;
 pub const BROWSER_COMPANION_COMMAND: &str = bundled_skills::BROWSER_COMPANION_COMMAND;
-pub use bundled_skills::{BundledPreinstallTarget, BundledPreinstallTargetKind, BundledSkillPack};
+pub use bundled_skills::{
+    BundledPreinstallTarget, BundledPreinstallTargetKind, BundledSkillPack,
+    bundled_preinstall_targets, bundled_skill_pack, bundled_skill_pack_memberships,
+    bundled_skill_packs,
+};
 
 const BROWSER_COMPANION_TOOL_PREFIX: &str = "browser.companion.";
 const DELEGATE_ASYNC_TOOL_NAME: &str = "delegate_async";
@@ -128,24 +132,6 @@ pub fn external_skills_operator_inspect_with_config(
     config: &runtime_config::ToolRuntimeConfig,
 ) -> Result<ToolCoreOutcome, String> {
     external_skills::execute_external_skills_operator_inspect_tool_with_config(skill_id, config)
-}
-
-pub fn bundled_skill_packs() -> &'static [bundled_skills::BundledSkillPack] {
-    bundled_skills::bundled_skill_packs()
-}
-
-pub fn bundled_skill_pack(pack_id: &str) -> Option<&'static bundled_skills::BundledSkillPack> {
-    bundled_skills::bundled_skill_pack(pack_id)
-}
-
-pub fn bundled_skill_pack_memberships(
-    skill_id: &str,
-) -> Vec<&'static bundled_skills::BundledSkillPack> {
-    bundled_skills::bundled_skill_pack_memberships(skill_id)
-}
-
-pub fn bundled_preinstall_targets() -> &'static [bundled_skills::BundledPreinstallTarget] {
-    bundled_skills::bundled_preinstall_targets()
 }
 
 pub(crate) fn discover_installable_external_skill_roots(

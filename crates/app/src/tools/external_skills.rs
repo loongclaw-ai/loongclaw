@@ -3613,7 +3613,8 @@ fn digest_embedded_dir(source: &include_dir::Dir<'static>) -> String {
 
     let mut hasher = Sha256::new();
     update_dir(&mut hasher, source);
-    format!("{:x}", hasher.finalize())
+    let digest = hasher.finalize();
+    hex::encode(digest)
 }
 
 fn load_installed_skill_index(root: &Path) -> Result<InstalledSkillIndex, String> {
