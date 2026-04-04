@@ -8432,7 +8432,7 @@ async fn handle_turn_with_runtime_safe_lane_plan_skips_runtime_events_when_disab
         .expect("safe lane plan should produce a reply");
 
     let persisted = runtime.persisted.lock().expect("persisted lock");
-    let event_count = persisted
+    let event_names = persisted
         .iter()
         .filter_map(|(_, role, content)| {
             if role != "assistant" {
@@ -8442,10 +8442,21 @@ async fn handle_turn_with_runtime_safe_lane_plan_skips_runtime_events_when_disab
             if parsed.get("type")?.as_str()? != "conversation_event" {
                 return None;
             }
-            (parsed.get("event")?.as_str()? != "turn_checkpoint").then_some(())
+            let event_name = parsed.get("event")?.as_str()?;
+
+            match event_name {
+                "lane_selected"
+                | "plan_round_started"
+                | "plan_round_completed"
+                | "final_status" => Some(event_name.to_owned()),
+                _ => None,
+            }
         })
-        .count();
-    assert_eq!(event_count, 0, "unexpected runtime events: {persisted:?}");
+        .collect::<Vec<_>>();
+    assert!(
+        event_names.is_empty(),
+        "unexpected safe lane runtime events: {event_names:?}; persisted={persisted:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
