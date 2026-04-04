@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, path::Path};
+use std::path::Path;
 
 use serde::Serialize;
 
@@ -51,6 +51,25 @@ mod surface_support;
 #[path = "registry_plugin_bridge_tests.rs"]
 mod plugin_bridge_tests;
 
+pub use super::catalog::{
+    CHANNEL_OPERATION_SEND_ID, CHANNEL_OPERATION_SERVE_ID, ChannelCapability,
+    ChannelCatalogCommandFamilyDescriptor, ChannelCatalogImplementationStatus,
+    ChannelCatalogOperation, ChannelCatalogOperationAvailability,
+    ChannelCatalogOperationRequirement, ChannelCommandFamilyDescriptor, ChannelDoctorCheckSpec,
+    ChannelDoctorCheckTrigger, ChannelDoctorOperationSpec, ChannelOnboardingDescriptor,
+    ChannelOnboardingStrategy, ChannelOperationDescriptor, ChannelRuntimeCommandDescriptor,
+    FEISHU_RUNTIME_COMMAND_DESCRIPTOR, MATRIX_RUNTIME_COMMAND_DESCRIPTOR,
+    TELEGRAM_RUNTIME_COMMAND_DESCRIPTOR, WECOM_RUNTIME_COMMAND_DESCRIPTOR,
+    WHATSAPP_RUNTIME_COMMAND_DESCRIPTOR, catalog_only_channel_entries, list_channel_catalog,
+    normalize_channel_catalog_id, normalize_channel_platform,
+    resolve_channel_catalog_command_family_descriptor, resolve_channel_catalog_entry,
+    resolve_channel_catalog_operation, resolve_channel_command_family_descriptor,
+    resolve_channel_doctor_operation_spec, resolve_channel_onboarding_descriptor,
+    resolve_channel_operation_descriptor, resolve_channel_runtime_command_descriptor,
+};
+pub(crate) use super::catalog::{
+    catalog_only_channel_entries_from, resolve_channel_selection_order,
+};
 use bridge::{
     ONEBOT_CHANNEL_REGISTRY_DESCRIPTOR, QQBOT_CHANNEL_REGISTRY_DESCRIPTOR,
     WEIXIN_CHANNEL_REGISTRY_DESCRIPTOR,
@@ -70,9 +89,6 @@ use plugin_bridge::{
 };
 use surface_support::build_channel_surfaces;
 
-pub const CHANNEL_OPERATION_SEND_ID: &str = "send";
-pub const CHANNEL_OPERATION_SERVE_ID: &str = "serve";
-
 const DISCORD_APPLICATION_ID_ENV: &str = "DISCORD_APPLICATION_ID";
 const SLACK_APP_TOKEN_ENV: &str = "SLACK_APP_TOKEN";
 const SLACK_SIGNING_SECRET_ENV: &str = "SLACK_SIGNING_SECRET";
@@ -89,220 +105,6 @@ const ZALO_APP_SECRET_ENV: &str = "ZALO_APP_SECRET";
 const ZALO_PERSONAL_ACCESS_TOKEN_ENV: &str = "ZALO_PERSONAL_ACCESS_TOKEN";
 const WEBCHAT_PUBLIC_BASE_URL_ENV: &str = "WEBCHAT_PUBLIC_BASE_URL";
 const WEBCHAT_SESSION_SIGNING_SECRET_ENV: &str = "WEBCHAT_SESSION_SIGNING_SECRET";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChannelRuntimeCommandDescriptor {
-    pub channel_id: &'static str,
-    pub platform: ChannelPlatform,
-    pub serve_bootstrap_agent_id: &'static str,
-}
-
-pub const TELEGRAM_RUNTIME_COMMAND_DESCRIPTOR: ChannelRuntimeCommandDescriptor =
-    ChannelRuntimeCommandDescriptor {
-        channel_id: "telegram",
-        platform: ChannelPlatform::Telegram,
-        serve_bootstrap_agent_id: "channel-telegram",
-    };
-
-pub const FEISHU_RUNTIME_COMMAND_DESCRIPTOR: ChannelRuntimeCommandDescriptor =
-    ChannelRuntimeCommandDescriptor {
-        channel_id: "feishu",
-        platform: ChannelPlatform::Feishu,
-        serve_bootstrap_agent_id: "channel-feishu",
-    };
-
-pub const MATRIX_RUNTIME_COMMAND_DESCRIPTOR: ChannelRuntimeCommandDescriptor =
-    ChannelRuntimeCommandDescriptor {
-        channel_id: "matrix",
-        platform: ChannelPlatform::Matrix,
-        serve_bootstrap_agent_id: "channel-matrix",
-    };
-
-pub const WECOM_RUNTIME_COMMAND_DESCRIPTOR: ChannelRuntimeCommandDescriptor =
-    ChannelRuntimeCommandDescriptor {
-        channel_id: "wecom",
-        platform: ChannelPlatform::Wecom,
-        serve_bootstrap_agent_id: "channel-wecom",
-    };
-
-pub const WHATSAPP_RUNTIME_COMMAND_DESCRIPTOR: ChannelRuntimeCommandDescriptor =
-    ChannelRuntimeCommandDescriptor {
-        channel_id: "whatsapp",
-        platform: ChannelPlatform::WhatsApp,
-        serve_bootstrap_agent_id: "channel-whatsapp",
-    };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChannelCommandFamilyDescriptor {
-    pub runtime: ChannelRuntimeCommandDescriptor,
-    pub catalog: ChannelCatalogCommandFamilyDescriptor,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChannelCatalogCommandFamilyDescriptor {
-    pub channel_id: &'static str,
-    pub default_send_target_kind: ChannelCatalogTargetKind,
-    pub send: ChannelCatalogOperation,
-    pub serve: ChannelCatalogOperation,
-}
-
-impl ChannelCommandFamilyDescriptor {
-    pub fn channel_id(self) -> &'static str {
-        self.catalog.channel_id
-    }
-
-    pub fn default_send_target_kind(self) -> ChannelCatalogTargetKind {
-        self.catalog.default_send_target_kind
-    }
-
-    pub fn send(self) -> ChannelCatalogOperation {
-        self.catalog.send
-    }
-
-    pub fn serve(self) -> ChannelCatalogOperation {
-        self.catalog.serve
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct ChannelCatalogOperation {
-    pub id: &'static str,
-    pub label: &'static str,
-    pub command: &'static str,
-    pub availability: ChannelCatalogOperationAvailability,
-    pub tracks_runtime: bool,
-    pub requirements: &'static [ChannelCatalogOperationRequirement],
-    pub supported_target_kinds: &'static [ChannelCatalogTargetKind],
-}
-
-impl ChannelCatalogOperation {
-    pub fn supports_target_kind(self, kind: ChannelCatalogTargetKind) -> bool {
-        self.supported_target_kinds.contains(&kind)
-    }
-
-    pub fn default_target_kind(self) -> Option<ChannelCatalogTargetKind> {
-        self.supported_target_kinds.first().copied()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct ChannelCatalogOperationRequirement {
-    pub id: &'static str,
-    pub label: &'static str,
-    pub config_paths: &'static [&'static str],
-    pub env_pointer_paths: &'static [&'static str],
-    pub default_env_var: Option<&'static str>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ChannelCatalogOperationAvailability {
-    Implemented,
-    Stub,
-}
-
-impl ChannelCatalogOperationAvailability {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Implemented => "implemented",
-            Self::Stub => "stub",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ChannelCapability {
-    RuntimeBacked,
-    PluginBacked,
-    MultiAccount,
-    Send,
-    Serve,
-    RuntimeTracking,
-}
-
-impl ChannelCapability {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::RuntimeBacked => "runtime_backed",
-            Self::PluginBacked => "plugin_backed",
-            Self::MultiAccount => "multi_account",
-            Self::Send => "send",
-            Self::Serve => "serve",
-            Self::RuntimeTracking => "runtime_tracking",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ChannelOnboardingStrategy {
-    ManualConfig,
-    PluginBridge,
-    Planned,
-}
-
-impl ChannelOnboardingStrategy {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::ManualConfig => "manual_config",
-            Self::PluginBridge => "plugin_bridge",
-            Self::Planned => "planned",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct ChannelOnboardingDescriptor {
-    pub strategy: ChannelOnboardingStrategy,
-    pub setup_hint: &'static str,
-    pub status_command: &'static str,
-    pub repair_command: Option<&'static str>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChannelDoctorCheckTrigger {
-    OperationHealth,
-    ReadyRuntime,
-    PluginBridgeHealth,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChannelDoctorCheckSpec {
-    pub name: &'static str,
-    pub trigger: ChannelDoctorCheckTrigger,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChannelDoctorOperationSpec {
-    pub checks: &'static [ChannelDoctorCheckSpec],
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChannelOperationDescriptor {
-    pub operation: ChannelCatalogOperation,
-    pub doctor: Option<ChannelDoctorOperationSpec>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ChannelCatalogImplementationStatus {
-    RuntimeBacked,
-    ConfigBacked,
-    PluginBacked,
-    Stub,
-}
-
-impl ChannelCatalogImplementationStatus {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::RuntimeBacked => "runtime_backed",
-            Self::ConfigBacked => "config_backed",
-            Self::PluginBacked => "plugin_backed",
-            Self::Stub => "stub",
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ChannelCatalogEntry {
@@ -407,13 +209,13 @@ pub struct ChannelSurface {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ChannelRuntimeDescriptor {
-    family: ChannelCommandFamilyDescriptor,
+    pub(super) family: ChannelCommandFamilyDescriptor,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ChannelRegistryOperationDescriptor {
-    operation: ChannelCatalogOperation,
-    doctor_checks: &'static [ChannelDoctorCheckSpec],
+    pub(super) operation: ChannelCatalogOperation,
+    pub(super) doctor_checks: &'static [ChannelDoctorCheckSpec],
 }
 
 pub(crate) type ChannelSnapshotBuilder =
@@ -421,10 +223,10 @@ pub(crate) type ChannelSnapshotBuilder =
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ChannelRegistryDescriptor {
-    id: &'static str,
-    runtime: Option<ChannelRuntimeDescriptor>,
+    pub(super) id: &'static str,
+    pub(super) runtime: Option<ChannelRuntimeDescriptor>,
     snapshot_builder: Option<ChannelSnapshotBuilder>,
-    selection_order: u16,
+    pub(super) selection_order: u16,
     selection_label: &'static str,
     blurb: &'static str,
     implementation_status: ChannelCatalogImplementationStatus,
@@ -432,8 +234,8 @@ pub(crate) struct ChannelRegistryDescriptor {
     label: &'static str,
     aliases: &'static [&'static str],
     transport: &'static str,
-    onboarding: ChannelOnboardingDescriptor,
-    operations: &'static [ChannelRegistryOperationDescriptor],
+    pub(super) onboarding: ChannelOnboardingDescriptor,
+    pub(super) operations: &'static [ChannelRegistryOperationDescriptor],
 }
 
 const TELEGRAM_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
@@ -3316,7 +3118,9 @@ const CHANNEL_REGISTRY: &[ChannelRegistryDescriptor] = &[
     },
 ];
 
-fn find_channel_registry_descriptor(raw: &str) -> Option<&'static ChannelRegistryDescriptor> {
+pub(super) fn find_channel_registry_descriptor(
+    raw: &str,
+) -> Option<&'static ChannelRegistryDescriptor> {
     let normalized = raw.trim().to_ascii_lowercase();
     if normalized.is_empty() {
         return None;
@@ -3332,13 +3136,13 @@ fn find_channel_registry_descriptor(raw: &str) -> Option<&'static ChannelRegistr
     })
 }
 
-fn sorted_channel_registry_descriptors() -> Vec<&'static ChannelRegistryDescriptor> {
+pub(super) fn sorted_channel_registry_descriptors() -> Vec<&'static ChannelRegistryDescriptor> {
     let mut descriptors = CHANNEL_REGISTRY.iter().collect::<Vec<_>>();
     descriptors.sort_by_key(|descriptor| (descriptor.selection_order, descriptor.id));
     descriptors
 }
 
-fn channel_catalog_entry_from_descriptor(
+pub(super) fn channel_catalog_entry_from_descriptor(
     descriptor: &ChannelRegistryDescriptor,
 ) -> ChannelCatalogEntry {
     let mut supported_target_kinds = Vec::new();
@@ -3371,128 +3175,6 @@ fn channel_catalog_entry_from_descriptor(
             .map(|descriptor| descriptor.operation)
             .collect(),
     }
-}
-
-pub fn resolve_channel_onboarding_descriptor(raw: &str) -> Option<ChannelOnboardingDescriptor> {
-    find_channel_registry_descriptor(raw).map(|descriptor| descriptor.onboarding)
-}
-
-pub fn list_channel_catalog() -> Vec<ChannelCatalogEntry> {
-    sorted_channel_registry_descriptors()
-        .into_iter()
-        .map(channel_catalog_entry_from_descriptor)
-        .collect()
-}
-
-pub(crate) fn resolve_channel_selection_order(raw: &str) -> Option<u16> {
-    let descriptor = find_channel_registry_descriptor(raw)?;
-    Some(descriptor.selection_order)
-}
-
-pub fn normalize_channel_catalog_id(raw: &str) -> Option<&'static str> {
-    find_channel_registry_descriptor(raw).map(|descriptor| descriptor.id)
-}
-
-pub fn resolve_channel_catalog_entry(raw: &str) -> Option<ChannelCatalogEntry> {
-    find_channel_registry_descriptor(raw).map(channel_catalog_entry_from_descriptor)
-}
-
-pub fn resolve_channel_catalog_operation(
-    raw_channel_id: &str,
-    operation_id: &str,
-) -> Option<ChannelCatalogOperation> {
-    resolve_channel_operation_descriptor(raw_channel_id, operation_id)
-        .map(|descriptor| descriptor.operation)
-}
-
-pub fn resolve_channel_operation_descriptor(
-    raw_channel_id: &str,
-    operation_id: &str,
-) -> Option<ChannelOperationDescriptor> {
-    let descriptor = find_channel_registry_descriptor(raw_channel_id)?
-        .operations
-        .iter()
-        .find(|descriptor| descriptor.operation.id == operation_id)?;
-    Some(ChannelOperationDescriptor {
-        operation: descriptor.operation,
-        doctor: (!descriptor.doctor_checks.is_empty()).then_some(ChannelDoctorOperationSpec {
-            checks: descriptor.doctor_checks,
-        }),
-    })
-}
-
-pub fn resolve_channel_doctor_operation_spec(
-    raw_channel_id: &str,
-    operation_id: &str,
-) -> Option<ChannelDoctorOperationSpec> {
-    resolve_channel_operation_descriptor(raw_channel_id, operation_id)
-        .and_then(|descriptor| descriptor.doctor)
-}
-
-pub fn catalog_only_channel_entries(
-    snapshots: &[ChannelStatusSnapshot],
-) -> Vec<ChannelCatalogEntry> {
-    let catalog = list_channel_catalog();
-    catalog_only_channel_entries_from(&catalog, snapshots)
-}
-
-fn catalog_only_channel_entries_from(
-    catalog: &[ChannelCatalogEntry],
-    snapshots: &[ChannelStatusSnapshot],
-) -> Vec<ChannelCatalogEntry> {
-    let snapshot_ids = snapshots
-        .iter()
-        .map(|snapshot| snapshot.id)
-        .collect::<BTreeSet<_>>();
-    catalog
-        .iter()
-        .filter(|entry| !snapshot_ids.contains(entry.id))
-        .cloned()
-        .collect()
-}
-
-pub fn normalize_channel_platform(raw: &str) -> Option<ChannelPlatform> {
-    find_channel_registry_descriptor(raw).and_then(|descriptor| {
-        descriptor
-            .runtime
-            .map(|runtime| runtime.family.runtime.platform)
-    })
-}
-
-pub fn resolve_channel_command_family_descriptor(
-    raw: &str,
-) -> Option<ChannelCommandFamilyDescriptor> {
-    find_channel_registry_descriptor(raw)
-        .and_then(|descriptor| descriptor.runtime.map(|runtime| runtime.family))
-}
-
-pub fn resolve_channel_catalog_command_family_descriptor(
-    raw: &str,
-) -> Option<ChannelCatalogCommandFamilyDescriptor> {
-    let descriptor = find_channel_registry_descriptor(raw)?;
-    let send = descriptor
-        .operations
-        .iter()
-        .find(|descriptor| descriptor.operation.id == CHANNEL_OPERATION_SEND_ID)?
-        .operation;
-    let serve = descriptor
-        .operations
-        .iter()
-        .find(|descriptor| descriptor.operation.id == CHANNEL_OPERATION_SERVE_ID)?
-        .operation;
-    Some(ChannelCatalogCommandFamilyDescriptor {
-        channel_id: descriptor.id,
-        default_send_target_kind: send.default_target_kind()?,
-        send,
-        serve,
-    })
-}
-
-pub fn resolve_channel_runtime_command_descriptor(
-    raw: &str,
-) -> Option<ChannelRuntimeCommandDescriptor> {
-    find_channel_registry_descriptor(raw)
-        .and_then(|descriptor| descriptor.runtime.map(|runtime| runtime.family.runtime))
 }
 
 pub fn channel_inventory(config: &LoongClawConfig) -> ChannelInventory {
