@@ -1,4 +1,4 @@
-# LoongClaw Agent Guide
+# Loong Agent Guide
 
 This document is intentionally mirrored in `CLAUDE.md` and `AGENTS.md`.
 

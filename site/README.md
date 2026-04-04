@@ -1,6 +1,6 @@
 # Mintlify Docs Source
 
-This directory is the public Mintlify docs source for LoongClaw.
+This directory is the public Mintlify docs source for Loong.
 
 Current scope:
 
@@ -78,7 +78,7 @@ Mintlify repository setup:
 Mintlify connection checklist:
 
 1. Open Mintlify dashboard `Git Settings` and install the Mintlify GitHub App for this repository.
-2. Grant repository access only to the LoongClaw repo that actually hosts the docs source.
+2. Grant repository access only to the Loong repo that actually hosts the docs source.
 3. Choose the publishing branch that should trigger production docs updates.
 4. Enable monorepo mode and set the docs path to `/site` with no trailing slash.
 5. Verify Mintlify resolves `site/docs.json` from that path before treating the site as connected.
@@ -89,8 +89,8 @@ The current scaffold keeps a compact information architecture:
 
 - `Overview`
 - `Get Started`
-- `Use LoongClaw`
-- `Build On LoongClaw`
+- `Use Loong`
+- `Build On Loong`
 - `Reference`
 
 Supporting public markdown remains under `docs/` as repository reference material and source-facing documentation. It should support the site and contributor workflow rather than grow into a second landing surface.

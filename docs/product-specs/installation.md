@@ -2,7 +2,7 @@
 
 ## User Story
 
-As a new LoongClaw user, I want one documented install path that is easy to run
+As a new Loong user, I want one documented install path that is easy to run
 and honest about what it can do today, so that I can get to `onboard`, `ask`,
 or `chat` without reverse-engineering release or source workflows.
 

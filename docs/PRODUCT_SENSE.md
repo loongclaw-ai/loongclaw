@@ -1,7 +1,7 @@
 # Product Sense
 
 This file is the repository-native product-direction reference for the current
-LoongClaw MVP.
+Loong MVP.
 
 The reader-facing summary for this material lives in
 [`../site/reference/roadmap-and-product.mdx`](../site/reference/roadmap-and-product.mdx).
@@ -38,7 +38,7 @@ or a dumping ground for future product notes.
 
 ## Target Users
 
-LoongClaw is not only a runtime for developers. The current MVP is aimed at:
+Loong is not only a runtime for developers. The current MVP is aimed at:
 
 1. **Individuals and operators** who want a private assistant they can run locally and trust.
 2. **Channel and workflow operators** who want the same assistant behavior to extend from the local CLI into gateway-backed service channels and config-backed outbound delivery surfaces.
@@ -51,13 +51,13 @@ LoongClaw is not only a runtime for developers. The current MVP is aimed at:
 3. **Assistant-first surfaces** — user-facing capability should feel like “my assistant can do this”, not only “the platform exposes an adapter”.
 4. **Progressive disclosure** — `onboard`, `ask`, `chat`, and `doctor` carry the common path; each surface should lead with the next user action before exposing runtime detail.
 5. **One runtime, one local control plane, many surfaces** — CLI ask, interactive chat, and future HTTP or browser surfaces should share the same conversation, memory, tool, provider, and session semantics.
-6. **Fail loud with a repair path** — when setup or runtime health breaks, LoongClaw must point users toward `doctor` instead of leaving them in silent failure.
+6. **Fail loud with a repair path** — when setup or runtime health breaks, Loong must point users toward `doctor` instead of leaving them in silent failure.
 
 ## Current MVP Journey
 
 The current product contract is:
 
-1. Install LoongClaw through the documented bootstrap installer, which prefers
+1. Install Loong through the documented bootstrap installer, which prefers
    checksum-verified GitHub Release binaries and keeps an explicit `--source`
    fallback from a local checkout.
 2. Run `loong onboard`.

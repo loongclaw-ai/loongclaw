@@ -1,10 +1,10 @@
-# 🐉 LoongClaw - 面向垂域智能体的安全基座
+# 🐉 Loong - 面向垂域智能体的安全基座
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="./assets/logo/loongclaw-logo-dark.png" />
     <source media="(prefers-color-scheme: light)" srcset="./assets/logo/loongclaw-logo-light.png" />
-    <img src="./assets/logo/loongclaw-logo-light.png" alt="LoongClaw" width="800" />
+    <img src="./assets/logo/loongclaw-logo-light.png" alt="Loong" width="800" />
   </picture>
 </p>
 <p align="center"><strong><em>“发轫于东，以会群友”</em></strong></p>
@@ -25,7 +25,7 @@
   <a href="https://loongclaw.ai/wechat.jpg"><img src="https://img.shields.io/badge/WeChat-QR-07C160?logo=wechat&logoColor=white&style=flat-square" alt="WeChat QR" /></a>
 </p>
 
-***安全、可扩展、可持续演进***——LoongClaw 是一套基于 Rust 构建的垂域智能体基座，在安全可控的基础上承载长程工作流构建、复合任务执行与闭环改进，让人与 AI 在真实场景中持续协作。
+***安全、可扩展、可持续演进***——Loong 是一套基于 Rust 构建的垂域智能体基座，在安全可控的基础上承载长程工作流构建、复合任务执行与闭环改进，让人与 AI 在真实场景中持续协作。
 
 <p align="center">
   <a href="README.md">English</a> |
@@ -35,14 +35,14 @@
 <p align="center">
   <a href="site/index.mdx">文档总览</a> •
   <a href="site/get-started/overview.mdx">快速上手</a> •
-  <a href="site/use-loongclaw/configuration-patterns.mdx">配置模式</a> •
-  <a href="site/use-loongclaw/common-setups.mdx">常见路线</a> •
-  <a href="site/build-on-loongclaw/overview.mdx">扩展 LoongClaw</a> •
+  <a href="site/use-loong/configuration-patterns.mdx">配置模式</a> •
+  <a href="site/use-loong/common-setups.mdx">常见路线</a> •
+  <a href="site/build-on-loong/overview.mdx">扩展 Loong</a> •
   <a href="CONTRIBUTING.md">参与贡献</a>
 </p>
 
-<a id="why-loongclaw"></a>
-## 为什么选 LoongClaw
+<a id="why-loong"></a>
+## 为什么选 Loong
 
 **因为它已经具备你在观察、操作、扩展过程中所需的核心能力：**
 
@@ -58,7 +58,7 @@
 - **🌱 不是玩具**：面向长期使用设计，能跟着你的需求一起成长。
 
 另外，如果你想读更完整的公开定位和产品立场，可以看
-[LoongClaw 的缘起与定位](site/reference/why-loongclaw.mdx)。
+[Loong 的缘起与定位](site/reference/why-loong.mdx)。
 
 ## 赞助商
 
@@ -81,7 +81,7 @@
 <a id="quick-start"></a>
 ## 快速开始
 
-> LoongClaw 当前主命令是 `loong`，`loongclaw` 仍保留为兼容入口。
+> Loong 当前主命令是 `loong`，`loongclaw` 仍保留为兼容入口。
 
 ### 脚本安装（推荐）
 
@@ -168,10 +168,10 @@ api_key = { env = "OPENAI_API_KEY" }
 | 如果你需要…… | 从这里开始 |
 | --- | --- |
 | 先尽快得到第一条有效结果 | `onboard`、`ask`、`chat`、`doctor` |
-| 想直接跟着一条完整的 provider + channel 路径走 | [常见路线](site/use-loongclaw/common-setups.mdx) 与其下对应的 playbook 页面 |
-| 不靠猜测完成 provider / model 选择 | `onboard`、`list-models`、[Provider 与 Model 选择](site/use-loongclaw/providers-and-models.mdx) 以及 [Provider 路线示例](site/use-loongclaw/provider-recipes.mdx) |
-| 增加交付接入频道，但不把支持范围说大 | [接入频道选择](site/use-loongclaw/channels.mdx)、[Gateway 与监督](site/use-loongclaw/gateway-and-supervision.mdx)、[Channel 路线示例](site/use-loongclaw/channel-recipes.mdx) 与完整的 [Channel Setup](docs/product-specs/channel-setup.md) 说明 |
-| 理解当前 runtime surface 以及受治理的扩展边界 | [使用 LoongClaw](site/use-loongclaw/overview.mdx)、[工具与记忆](site/use-loongclaw/tools-and-memory.mdx)、[ARCHITECTURE.md](ARCHITECTURE.md)、[参与贡献](CONTRIBUTING.md) |
+| 想直接跟着一条完整的 provider + channel 路径走 | [常见路线](site/use-loong/common-setups.mdx) 与其下对应的 playbook 页面 |
+| 不靠猜测完成 provider / model 选择 | `onboard`、`list-models`、[Provider 与 Model 选择](site/use-loong/providers-and-models.mdx) 以及 [Provider 路线示例](site/use-loong/provider-recipes.mdx) |
+| 增加交付接入频道，但不把支持范围说大 | [接入频道选择](site/use-loong/channels.mdx)、[Gateway 与监督](site/use-loong/gateway-and-supervision.mdx)、[Channel 路线示例](site/use-loong/channel-recipes.mdx) 与完整的 [Channel Setup](docs/product-specs/channel-setup.md) 说明 |
+| 理解当前 runtime surface 以及受治理的扩展边界 | [使用 Loong](site/use-loong/overview.mdx)、[工具与记忆](site/use-loong/tools-and-memory.mdx)、[ARCHITECTURE.md](ARCHITECTURE.md)、[参与贡献](CONTRIBUTING.md) |
 
 <a id="documentation"></a>
 ## 文档入口
@@ -185,12 +185,12 @@ api_key = { env = "OPENAI_API_KEY" }
 | 如果你想…… | 从这里开始 |
 | --- | --- |
 | 快速拿到第一条有效结果 | [快速上手](site/get-started/overview.mdx) |
-| 理解项目为什么存在，以及它背后的产品立场 | [LoongClaw 的缘起与定位](site/reference/why-loongclaw.mdx) |
-| 不自己拼接文档，直接跟一条完整 rollout path 走 | [常见路线](site/use-loongclaw/common-setups.mdx) |
-| 先理解共享的公开配置形态 | [配置模式](site/use-loongclaw/configuration-patterns.mdx) |
-| 直接看 provider / channel 的实操路径 | [Provider 指南](site/use-loongclaw/provider-guides/index.mdx)、[Provider 路线示例](site/use-loongclaw/provider-recipes.mdx)、[Channel 指南](site/use-loongclaw/channel-guides/index.mdx) 与 [Channel 路线示例](site/use-loongclaw/channel-recipes.mdx) |
-| 理解当前操作者模型 | [使用 LoongClaw](site/use-loongclaw/overview.mdx) |
-| 评估架构与扩展边界 | [扩展 LoongClaw](site/build-on-loongclaw/overview.mdx) |
+| 理解项目为什么存在，以及它背后的产品立场 | [Loong 的缘起与定位](site/reference/why-loong.mdx) |
+| 不自己拼接文档，直接跟一条完整 rollout path 走 | [常见路线](site/use-loong/common-setups.mdx) |
+| 先理解共享的公开配置形态 | [配置模式](site/use-loong/configuration-patterns.mdx) |
+| 直接看 provider / channel 的实操路径 | [Provider 指南](site/use-loong/provider-guides/index.mdx)、[Provider 路线示例](site/use-loong/provider-recipes.mdx)、[Channel 指南](site/use-loong/channel-guides/index.mdx) 与 [Channel 路线示例](site/use-loong/channel-recipes.mdx) |
+| 理解当前操作者模型 | [使用 Loong](site/use-loong/overview.mdx) |
+| 评估架构与扩展边界 | [扩展 Loong](site/build-on-loong/overview.mdx) |
 | 查看路线、策略、可靠性与发布信息 | [参考资料](site/reference/overview.mdx) |
 | 直接读仓库里的 source-level public contract | [ARCHITECTURE.md](ARCHITECTURE.md)、[Channel Setup](docs/product-specs/channel-setup.md)、[Roadmap](docs/ROADMAP.md) 与 [Reliability](docs/RELIABILITY.md) |
 
@@ -199,7 +199,7 @@ api_key = { env = "OPENAI_API_KEY" }
 <a id="architecture"></a>
 ## 架构速览
 
-LoongClaw 目前是一个 7-crate Rust workspace，但更有用的 public 读法不只是
+Loong 目前是一个 7-crate Rust workspace，但更有用的 public 读法不只是
 “谁依赖谁”。按源码里的真实 ownership 来看，它其实更接近五层：稳定
 contract 词汇层、受治理的 kernel、product/runtime layer、deterministic
 spec/bench rails，以及 daemon assembly layer。
@@ -236,7 +236,7 @@ contracts  (stable contract vocabulary)
 
 欢迎贡献。先从 [CONTRIBUTING.md](CONTRIBUTING.md) 开始。
 
-如果你想先看哪些方向最值得补强，可以读 [Contribution Areas](site/build-on-loongclaw/contribution-areas.mdx)。
+如果你想先看哪些方向最值得补强，可以读 [Contribution Areas](site/build-on-loong/contribution-areas.mdx)。
 
 ## Star History
 

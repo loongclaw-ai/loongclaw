@@ -1,7 +1,7 @@
 # Internal Integration Quickstart
 
 Use this guide when you are adding or evolving a repository-owned surface in
-LoongClaw.
+Loong.
 
 ## Start Here
 

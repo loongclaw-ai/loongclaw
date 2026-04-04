@@ -1,4 +1,4 @@
-# LoongClaw Roadmap
+# Loong Roadmap
 
 Last updated: 2026-03-29
 
@@ -51,7 +51,7 @@ Build a layered Agentic OS kernel that is:
 
 - minimal at the core
 - strong at policy and safety boundaries
-- deeply integrable in both directions (others integrate LoongClaw, LoongClaw integrates others)
+- deeply integrable in both directions (others integrate Loong, Loong integrates others)
 - hot-pluggable and community-extensible without core mutation
 - customizable into vertical domain systems through declarative packs
 
@@ -256,7 +256,7 @@ Current baseline already in place:
   - structured runtime evidence (`status_code`, `response_json`)
 - builtin-only memory-system foundation for `dev`:
   - typed memory-system metadata and registry seam
-  - hydrated memory orchestration over LoongClaw-owned canonical history
+  - hydrated memory orchestration over Loong-owned canonical history
   - operator diagnostics for selected system, capability set, and effective
     memory fail-open policy
 
@@ -332,7 +332,7 @@ Focus: 15-minute vertical customization workflow.
 
 This stage is still outcome-first rather than package-first. It depends on the
 runtime, plugin, and product-surface foundations above being explicit before
-LoongClaw turns them into reusable vertical-pack flows.
+Loong turns them into reusable vertical-pack flows.
 
 ### Pack Authoring Direction
 
@@ -582,7 +582,7 @@ instead of feature-driven growth inside large files.
 
 ### D8: Local product control plane foundation
 
-LoongClaw now has enough real runtime substrate that the next platform risk is
+Loong now has enough real runtime substrate that the next platform risk is
 surface drift rather than missing primitives.
 
 Current baseline:
@@ -632,7 +632,7 @@ Current first-slice mapping:
 
 ### D10: First-party workflow packs on hardened primitives
 
-Once the runtime base is harder, LoongClaw should turn that into a small set of first-party
+Once the runtime base is harder, Loong should turn that into a small set of first-party
 workflow packs that prove the kernel's value in operator-facing tasks such as release/review work,
 issue triage, or channel support.
 

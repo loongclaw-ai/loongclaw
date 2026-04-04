@@ -1,6 +1,6 @@
 # Reliability
 
-Reliability expectations and invariants for LoongClaw.
+Reliability expectations and invariants for Loong.
 
 The public reader-facing summary for this material lives in
 [`../site/reference/security-and-reliability.mdx`](../site/reference/security-and-reliability.mdx).

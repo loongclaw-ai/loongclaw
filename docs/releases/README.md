@@ -1,6 +1,6 @@
 # Release Directory
 
-This directory is the tracked public release trail for LoongClaw.
+This directory is the tracked public release trail for Loong.
 
 Top-level files here should stay focused on shipped release history, not on
 release-governance support material.

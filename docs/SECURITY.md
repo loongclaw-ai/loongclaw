@@ -1,6 +1,6 @@
 # Security
 
-Security domain index for LoongClaw. For vulnerability reporting, see [SECURITY.md](../SECURITY.md) at repository root.
+Security domain index for Loong. For vulnerability reporting, see [SECURITY.md](../SECURITY.md) at repository root.
 
 The public reader-facing summary for this material lives in
 [`../site/reference/security-and-reliability.mdx`](../site/reference/security-and-reliability.mdx).
@@ -44,7 +44,7 @@ contributors, and maintainers.
 
 ## Security Model
 
-LoongClaw implements a multi-layer security model. Higher layers add defense-in-depth:
+Loong implements a multi-layer security model. Higher layers add defense-in-depth:
 
 | Layer | Mechanism | Version | Status |
 |-------|-----------|---------|--------|
@@ -251,7 +251,7 @@ Provider runtime binding:
 
 ### Shared Execution Security Tiers
 
-LoongClaw now uses one shared execution-tier vocabulary across the process, browser, and WASM
+Loong now uses one shared execution-tier vocabulary across the process, browser, and WASM
 lanes. The first slice standardizes the contract and the emitted evidence; it does not attempt a
 full sandbox rewrite for every lane at once.
 

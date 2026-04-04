@@ -1,14 +1,14 @@
 # Contribution Areas We Especially Welcome
 
 This file is the repository-native contributor reference for where different
-kinds of people can help LoongClaw most effectively.
+kinds of people can help Loong most effectively.
 
 The shorter public overview lives under
-[`../../site/build-on-loongclaw/contribution-areas.mdx`](../../site/build-on-loongclaw/contribution-areas.mdx).
+[`../../site/build-on-loong/contribution-areas.mdx`](../../site/build-on-loong/contribution-areas.mdx).
 This file stays in the repository because contributors often still want the
 deeper examples and source-level starting points behind that public overview.
 
-LoongClaw needs more than one kind of contributor. We care about thoughtful software, durable
+Loong needs more than one kind of contributor. We care about thoughtful software, durable
 engineering, and a healthy community around the work.
 
 You do not need to match every category below. If you bring depth, curiosity, clear communication,
@@ -30,7 +30,7 @@ community care all shape whether a project becomes genuinely useful and sustaina
 
 | If you are trying to... | Start here | Why |
 | --- | --- | --- |
-| get the short public overview first | [`../../site/build-on-loongclaw/contribution-areas.mdx`](../../site/build-on-loongclaw/contribution-areas.mdx) | this is the docs-site entrypoint |
+| get the short public overview first | [`../../site/build-on-loong/contribution-areas.mdx`](../../site/build-on-loong/contribution-areas.mdx) | this is the docs-site entrypoint |
 | understand contribution workflow and validation rules | [`../../CONTRIBUTING.md`](../../CONTRIBUTING.md) | that file is the repository-native contributor guide |
 | decide where your background can create the most leverage | this file | this page keeps the deeper area map and repository starting points |
 
@@ -46,10 +46,10 @@ community care all shape whether a project becomes genuinely useful and sustaina
 
 | Area | We especially welcome | Why it matters here | Good starting points |
 | --- | --- | --- | --- |
-| Product and interface design | Designers with taste, product-minded frontend engineers, and people who care about clarity and trust | LoongClaw should feel calm, legible, and humane, not only technically capable | `README.md`, `docs/product-specs/`, onboarding, ask/chat/doctor flows |
+| Product and interface design | Designers with taste, product-minded frontend engineers, and people who care about clarity and trust | Loong should feel calm, legible, and humane, not only technically capable | `README.md`, `docs/product-specs/`, onboarding, ask/chat/doctor flows |
 | Frontend and interaction engineering | Engineers who can turn rough product surfaces into polished, reliable interfaces | The project needs strong UX and interaction work across CLI, channel flows, and future frontend surfaces | `docs/product-specs/`, `crates/app/src/channel/`, user-facing docs |
 | Rust and systems engineering | Engineers with deep Rust experience and high standards for performance, memory safety, and clean architecture | The runtime lives or dies by its boundaries, reliability, and long-term maintainability | `crates/kernel/`, `crates/app/`, `docs/design-docs/`, `ARCHITECTURE.md` |
-| Hardware, robotics, and embodied AI | Engineers who understand real-world devices, robotics constraints, or embodied assistant workflows | LoongClaw should grow beyond a narrow software-only shell and learn from real operational environments | `docs/ROADMAP.md`, channel and tool surfaces, device-oriented integrations |
+| Hardware, robotics, and embodied AI | Engineers who understand real-world devices, robotics constraints, or embodied assistant workflows | Loong should grow beyond a narrow software-only shell and learn from real operational environments | `docs/ROADMAP.md`, channel and tool surfaces, device-oriented integrations |
 | Cross-platform delivery | Engineers comfortable with macOS, Windows, Linux, Android, iOS, and packaging or install flows | A private assistant runtime only becomes practical when it is dependable across the systems people actually use | `scripts/install.sh`, `scripts/install.ps1`, `.github/workflows/release.yml`, platform support issues |
 | Testing, QA, CI, and operations | People who enjoy validation, release hygiene, failure analysis, observability, and operational tooling | Strong product trust depends on fast feedback loops and boringly reliable releases | `.github/workflows/`, `scripts/`, `docs/releases/`, `docs/RELIABILITY.md` |
 | Documentation and docs-site clarity | Contributors who like writing guides, improving examples, clarifying onboarding, or making the public docs easier to scan and trust | Good docs lower the barrier to contribution and real adoption, and the public docs surface should stay clear without turning the repository into a multi-locale markdown mirror | `README.md`, `README.zh-CN.md`, `CONTRIBUTING.md`, `docs/`, `site/`, issue templates |
@@ -70,7 +70,7 @@ If you email us, it is especially helpful to include:
 - where you are based or what time zone you usually work in
 - your strongest skills or the kinds of problems you are best at
 - the area you would most like to own or help push forward
-- what you hope LoongClaw could become, or what part of the project excites you
+- what you hope Loong could become, or what part of the project excites you
 - roughly how much time or energy you expect to contribute
 - any links to GitHub, past work, writing, design, demos, or projects you want us to see
 

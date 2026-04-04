@@ -1,6 +1,6 @@
 # Repository Docs Map
 
-This directory is the repository-native documentation map for LoongClaw.
+This directory is the repository-native documentation map for Loong.
 
 The public reader-facing docs surface lives under [`site/`](../site/README.md).
 The files under `docs/` remain useful because they are the source-facing
@@ -13,7 +13,7 @@ Not every file under `docs/` belongs in the normal public reading path.
 
 | If you are trying to... | Start here | Why |
 | --- | --- | --- |
-| read LoongClaw like a public docs site visitor | [`../site/index.mdx`](../site/index.mdx) | `site/` is the main reader-facing docs surface |
+| read Loong like a public docs site visitor | [`../site/index.mdx`](../site/index.mdx) | `site/` is the main reader-facing docs surface |
 | understand runtime shape, boundaries, and crate responsibilities | [`design-docs/index.md`](design-docs/index.md) | source-facing architecture references live there |
 | edit or review user-facing behavior contracts | [`product-specs/index.md`](product-specs/index.md) | product-spec markdown is the source contract behind the docs site |
 | check roadmap, reliability, product, or security references from the repository | [`ROADMAP.md`](ROADMAP.md), [`RELIABILITY.md`](RELIABILITY.md), [`PRODUCT_SENSE.md`](PRODUCT_SENSE.md), [`SECURITY.md`](SECURITY.md) | these are the repository-native reference documents |

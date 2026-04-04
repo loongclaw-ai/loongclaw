@@ -1,6 +1,6 @@
-# LoongClaw Architecture
+# Loong Architecture
 
-LoongClaw is structured as a 7-crate Rust workspace with a strict acyclic
+Loong is structured as a 7-crate Rust workspace with a strict acyclic
 dependency graph. The kernel enforces layered execution planes separating
 contracts, security, execution, and orchestration concerns.
 
@@ -18,7 +18,7 @@ maintainers who need the codebase-level structure behind the Mintlify docs.
 
 | If you are trying to... | Start here |
 | --- | --- |
-| read the public builder-facing architecture summary first | [site/build-on-loongclaw/architecture.mdx](site/build-on-loongclaw/architecture.mdx) |
+| read the public builder-facing architecture summary first | [site/build-on-loong/architecture.mdx](site/build-on-loong/architecture.mdx) |
 | understand the crate DAG and where changes usually belong in the repo | this file |
 | inspect the full layer specification | [Layered Kernel Design](docs/design-docs/layered-kernel-design.md) |
 | understand the broader repository docs layering | [docs/README.md](docs/README.md) |

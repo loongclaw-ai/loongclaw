@@ -1,10 +1,10 @@
-# Contributing to LoongClaw
+# Contributing to Loong
 
-Thanks for spending time on LoongClaw.
+Thanks for spending time on Loong.
 
 This file is the repository-native contributor guide. The shorter public
 contributor entrypoint lives under
-[`site/build-on-loongclaw/contributing.mdx`](site/build-on-loongclaw/contributing.mdx).
+[`site/build-on-loong/contributing.mdx`](site/build-on-loong/contributing.mdx).
 This guide stays in the repository because contributors and maintainers still
 need the deeper workflow, validation, and recipe material behind that public
 entrypoint.
@@ -22,9 +22,9 @@ We care about clear ownership, thoughtful engineering, and kind collaboration.
 
 | If you want to... | Start here | Then continue to... |
 | --- | --- | --- |
-| land a small docs, test, or contained bug-fix patch | [Contribution Workflow](site/build-on-loongclaw/contribution-workflow.mdx) and [Contribution Tracks](#contribution-tracks) | [Standard Workflow](#standard-workflow) |
-| improve docs placement, Mintlify structure, or public docs wording | [Docs Workflow](site/build-on-loongclaw/docs-workflow.mdx) | [Documentation Language Scope](#documentation-language-scope) and [Standard Workflow](#standard-workflow) |
-| change runtime behavior, policy, or architecture-sensitive code | [Architecture](site/build-on-loongclaw/architecture.mdx) | [Contribution Tracks](#contribution-tracks), [CI And Required Checks](#ci-and-required-checks), and [Repository Recipes](#repository-recipes) |
+| land a small docs, test, or contained bug-fix patch | [Contribution Workflow](site/build-on-loong/contribution-workflow.mdx) and [Contribution Tracks](#contribution-tracks) | [Standard Workflow](#standard-workflow) |
+| improve docs placement, Mintlify structure, or public docs wording | [Docs Workflow](site/build-on-loong/docs-workflow.mdx) | [Documentation Language Scope](#documentation-language-scope) and [Standard Workflow](#standard-workflow) |
+| change runtime behavior, policy, or architecture-sensitive code | [Architecture](site/build-on-loong/architecture.mdx) | [Contribution Tracks](#contribution-tracks), [CI And Required Checks](#ci-and-required-checks), and [Repository Recipes](#repository-recipes) |
 | understand where your background is most useful | [Contribution Areas We Especially Welcome](docs/references/contribution-areas.md) | [How To Join In](#how-to-join-in) |
 | read the full repository-native contributor guide directly | this file | the [Section Map](#section-map) and the sections below |
 
@@ -74,7 +74,7 @@ the shorter Mintlify contributor entrypoint.
 
 ### Contribution Tracks
 
-LoongClaw uses two tracks for OSS contribution risk.
+Loong uses two tracks for OSS contribution risk.
 
 ### Track A: Routine and low-risk changes
 
@@ -224,7 +224,7 @@ If you email us, it is especially helpful to include:
 - where you are based or what time zone you usually work in
 - your strongest skills or the kinds of problems you are best at
 - the area you would most like to own or help push forward
-- what you hope LoongClaw could become, or what part of the project excites you
+- what you hope Loong could become, or what part of the project excites you
 - roughly how much time or energy you expect to contribute
 - any links to GitHub, past work, writing, design, demos, or projects you want us to see
 
@@ -299,7 +299,7 @@ The shipped channel reference implementations are `telegram`, `feishu`, and `mat
 
 ### Responsible Agent-Assisted Contribution
 
-LoongClaw is built with the expectation that human engineers and agents will increasingly work
+Loong is built with the expectation that human engineers and agents will increasingly work
 together. We think that trend is real, durable, and worth embracing. Used well, agent-assisted
 coding can significantly improve iteration speed, reduce routine friction, and help contributors
 cover more ground across design, implementation, testing, docs, and review.
@@ -349,7 +349,7 @@ if [ -f ~/.loongclaw/audit/events.jsonl ]; then tail -n 20 ~/.loongclaw/audit/ev
 The app runtime defaults to durable audit retention with
 `[audit].mode = "fanout"`, so security-critical audit events persist across
 restarts under `~/.loongclaw/audit/events.jsonl`. Use `doctor --fix` if you
-want LoongClaw to pre-create the audit journal directory before a debugging
+want Loong to pre-create the audit journal directory before a debugging
 session. Reach for `audit recent` when you need the latest bounded event window
 and `audit summary` when you need a quick rollup before diving into raw JSONL.
 

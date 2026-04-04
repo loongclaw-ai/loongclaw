@@ -1,6 +1,6 @@
 # Product Specs
 
-This directory is the repository-native map for LoongClaw's source-facing
+This directory is the repository-native map for Loong's source-facing
 product contracts.
 
 The public reader path lives under `site/`. This index exists for maintainers,
@@ -28,7 +28,7 @@ source contract.
 
 | If you are trying to... | Start here | Why |
 | --- | --- | --- |
-| read the public operator-facing docs first | [`../../site/use-loongclaw/overview.mdx`](../../site/use-loongclaw/overview.mdx) | `site/` is the main reader-facing docs surface |
+| read the public operator-facing docs first | [`../../site/use-loong/overview.mdx`](../../site/use-loong/overview.mdx) | `site/` is the main reader-facing docs surface |
 | read first-run docs like a public reader | [`../../site/get-started/overview.mdx`](../../site/get-started/overview.mdx) | tutorials and onboarding flows belong there |
 | edit the source-level product contract in the repository | this index | this directory is the source-facing contract map |
 | understand the broader repository docs split | [`../README.md`](../README.md) | it explains the repo-native docs layering |

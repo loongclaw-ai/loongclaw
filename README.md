@@ -1,10 +1,10 @@
-# 🐉 LoongClaw - Rust Foundation for Vertical AI Agents
+# 🐉 Loong - Rust Foundation for Vertical AI Agents
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="./assets/logo/loongclaw-logo-dark.png" />
     <source media="(prefers-color-scheme: light)" srcset="./assets/logo/loongclaw-logo-light.png" />
-    <img src="./assets/logo/loongclaw-logo-light.png" alt="LoongClaw" width="800" />
+    <img src="./assets/logo/loongclaw-logo-light.png" alt="Loong" width="800" />
   </picture>
 </p>
 <p align="center"><strong><em>"Originated from the East, here to benefit the world"</em></strong></p>
@@ -25,7 +25,7 @@
   <a href="https://loongclaw.ai/wechat.jpg"><img src="https://img.shields.io/badge/WeChat-QR-07C160?logo=wechat&logoColor=white&style=flat-square" alt="WeChat QR" /></a>
 </p>
 
-***Secure, extensible, and sustainably evolvable*** — LoongClaw is an agent foundation for vertical AI agents, built in Rust. On a secure and controlled foundation, it supports longer-horizon workflow construction, compound task execution, and closed-loop improvement — enabling people and AI to collaborate in real-world scenarios.
+***Secure, extensible, and sustainably evolvable*** — Loong is an agent foundation for vertical AI agents, built in Rust. On a secure and controlled foundation, it supports longer-horizon workflow construction, compound task execution, and closed-loop improvement — enabling people and AI to collaborate in real-world scenarios.
 
 <p align="center">
   <a href="README.md">English</a> |
@@ -35,14 +35,14 @@
 <p align="center">
   <a href="site/index.mdx">Documentation</a> •
   <a href="site/get-started/overview.mdx">Get Started</a> •
-  <a href="site/use-loongclaw/configuration-patterns.mdx">Configuration</a> •
-  <a href="site/use-loongclaw/common-setups.mdx">Playbooks</a> •
-  <a href="site/build-on-loongclaw/overview.mdx">Build On LoongClaw</a> •
+  <a href="site/use-loong/configuration-patterns.mdx">Configuration</a> •
+  <a href="site/use-loong/common-setups.mdx">Playbooks</a> •
+  <a href="site/build-on-loong/overview.mdx">Build On Loong</a> •
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
-<a id="why-loongclaw"></a>
-## Why LoongClaw
+<a id="why-loong"></a>
+## Why Loong
 
 **Because it already has the core capabilities you need to inspect, operate, and extend:**
 
@@ -58,7 +58,7 @@
 - **🌱 Not a toy**: designed for long-term use, grows with your needs over time.
 
 Also, if you want the longer public rationale behind this positioning, read
-[Why LoongClaw](site/reference/why-loongclaw.mdx).
+[Why Loong](site/reference/why-loong.mdx).
 
 ## Sponsors
 
@@ -81,7 +81,7 @@ Also, if you want the longer public rationale behind this positioning, read
 <a id="quick-start"></a>
 ## Quick Start
 
-> LoongClaw uses `loong` as the primary command. `loongclaw` remains as a compatibility entrypoint.
+> Loong uses `loong` as the primary command. `loongclaw` remains as a compatibility entrypoint.
 
 ### Script Install (Recommended)
 
@@ -168,10 +168,10 @@ api_key = { env = "OPENAI_API_KEY" }
 | If you are trying to... | Start here |
 | --- | --- |
 | reach first value quickly | `onboard`, `ask`, `chat`, and `doctor` |
-| follow one complete provider-plus-channel rollout path | [Common Setups](site/use-loongclaw/common-setups.mdx) and the dedicated playbooks under it |
-| choose a provider or model without guessing | `onboard`, `list-models`, [Providers And Models](site/use-loongclaw/providers-and-models.mdx), and [Provider Recipes](site/use-loongclaw/provider-recipes.mdx) |
-| add channels without overclaiming support | [Channels](site/use-loongclaw/channels.mdx), [Gateway And Supervision](site/use-loongclaw/gateway-and-supervision.mdx), [Channel Recipes](site/use-loongclaw/channel-recipes.mdx), and the full [Channel Setup](docs/product-specs/channel-setup.md) contract |
-| understand the current runtime surface and governed extension seams | [Use LoongClaw](site/use-loongclaw/overview.mdx), [Tools And Memory](site/use-loongclaw/tools-and-memory.mdx), [ARCHITECTURE.md](ARCHITECTURE.md), and [Contributing](CONTRIBUTING.md) |
+| follow one complete provider-plus-channel rollout path | [Common Setups](site/use-loong/common-setups.mdx) and the dedicated playbooks under it |
+| choose a provider or model without guessing | `onboard`, `list-models`, [Providers And Models](site/use-loong/providers-and-models.mdx), and [Provider Recipes](site/use-loong/provider-recipes.mdx) |
+| add channels without overclaiming support | [Channels](site/use-loong/channels.mdx), [Gateway And Supervision](site/use-loong/gateway-and-supervision.mdx), [Channel Recipes](site/use-loong/channel-recipes.mdx), and the full [Channel Setup](docs/product-specs/channel-setup.md) contract |
+| understand the current runtime surface and governed extension seams | [Use Loong](site/use-loong/overview.mdx), [Tools And Memory](site/use-loong/tools-and-memory.mdx), [ARCHITECTURE.md](ARCHITECTURE.md), and [Contributing](CONTRIBUTING.md) |
 
 <a id="documentation"></a>
 ## Documentation
@@ -186,12 +186,12 @@ material that Mintlify deploys.
 | If you want to... | Start here |
 | --- | --- |
 | get first value quickly | [Get Started](site/get-started/overview.mdx) |
-| understand why the project exists and what stance shapes it | [Why LoongClaw](site/reference/why-loongclaw.mdx) |
-| follow one complete rollout path without stitching docs together | [Common Setups](site/use-loongclaw/common-setups.mdx) |
-| understand the shared public config shape first | [Configuration Patterns](site/use-loongclaw/configuration-patterns.mdx) |
-| follow the practical provider and channel setup paths | [Provider Guides](site/use-loongclaw/provider-guides/index.mdx), [Provider Recipes](site/use-loongclaw/provider-recipes.mdx), [Channel Guides](site/use-loongclaw/channel-guides/index.mdx), and [Channel Recipes](site/use-loongclaw/channel-recipes.mdx) |
-| understand the current operator model | [Use LoongClaw](site/use-loongclaw/overview.mdx) |
-| evaluate the architecture and extension seams | [Build On LoongClaw](site/build-on-loongclaw/overview.mdx) |
+| understand why the project exists and what stance shapes it | [Why Loong](site/reference/why-loong.mdx) |
+| follow one complete rollout path without stitching docs together | [Common Setups](site/use-loong/common-setups.mdx) |
+| understand the shared public config shape first | [Configuration Patterns](site/use-loong/configuration-patterns.mdx) |
+| follow the practical provider and channel setup paths | [Provider Guides](site/use-loong/provider-guides/index.mdx), [Provider Recipes](site/use-loong/provider-recipes.mdx), [Channel Guides](site/use-loong/channel-guides/index.mdx), and [Channel Recipes](site/use-loong/channel-recipes.mdx) |
+| understand the current operator model | [Use Loong](site/use-loong/overview.mdx) |
+| evaluate the architecture and extension seams | [Build On Loong](site/build-on-loong/overview.mdx) |
 | check roadmap, policy, reliability, and releases | [Reference](site/reference/overview.mdx) |
 | read the source-level public contracts in the repo | [ARCHITECTURE.md](ARCHITECTURE.md), [Channel Setup](docs/product-specs/channel-setup.md), [Roadmap](docs/ROADMAP.md), and [Reliability](docs/RELIABILITY.md) |
 
@@ -201,7 +201,7 @@ start at [Docs Overview](site/index.mdx).
 <a id="architecture"></a>
 ## Architecture At A Glance
 
-LoongClaw is organized as a 7-crate Rust workspace, but the more useful public
+Loong is organized as a 7-crate Rust workspace, but the more useful public
 reading is not just "which crate depends on which." The codebase is really split
 across five ownership layers: a stable contract vocabulary, a governed kernel,
 a product/runtime layer, deterministic spec and benchmark rails, and a daemon
@@ -240,7 +240,7 @@ For the full layered execution model, see [ARCHITECTURE.md](ARCHITECTURE.md) and
 
 Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
-If you want to help where it matters most right now, read [Contribution Areas](site/build-on-loongclaw/contribution-areas.mdx).
+If you want to help where it matters most right now, read [Contribution Areas](site/build-on-loong/contribution-areas.mdx).
 
 ## Star History
 

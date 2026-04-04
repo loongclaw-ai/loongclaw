@@ -1,11 +1,11 @@
 # Channel Setup
 
-This file is the repository-native source contract for LoongClaw's shipped
+This file is the repository-native source contract for Loong's shipped
 channel surfaces, outbound-only delivery inventory, and current gateway owner
 model.
 
 The public reader-facing docs path for this area lives under
-`site/use-loongclaw/`, especially `configuration-patterns.mdx`,
+`site/use-loong/`, especially `configuration-patterns.mdx`,
 `channels.mdx`, `channel-guides/index.mdx`, `channel-recipes.mdx`, and
 `gateway-and-supervision.mdx`. This file stays longer because it is the
 source-level contract behind those pages.
@@ -14,11 +14,11 @@ source-level contract behind those pages.
 
 | If you are trying to... | Start here |
 | --- | --- |
-| read the public config shape first | [`../../site/use-loongclaw/configuration-patterns.mdx`](../../site/use-loongclaw/configuration-patterns.mdx) |
-| read the public operator docs first | [`../../site/use-loongclaw/channels.mdx`](../../site/use-loongclaw/channels.mdx), [`../../site/use-loongclaw/channel-guides/index.mdx`](../../site/use-loongclaw/channel-guides/index.mdx), and [`../../site/use-loongclaw/channel-recipes.mdx`](../../site/use-loongclaw/channel-recipes.mdx) |
-| follow one complete provider-plus-channel rollout | [`../../site/use-loongclaw/common-setups.mdx`](../../site/use-loongclaw/common-setups.mdx) and the playbooks under it |
+| read the public config shape first | [`../../site/use-loong/configuration-patterns.mdx`](../../site/use-loong/configuration-patterns.mdx) |
+| read the public operator docs first | [`../../site/use-loong/channels.mdx`](../../site/use-loong/channels.mdx), [`../../site/use-loong/channel-guides/index.mdx`](../../site/use-loong/channel-guides/index.mdx), and [`../../site/use-loong/channel-recipes.mdx`](../../site/use-loong/channel-recipes.mdx) |
+| follow one complete provider-plus-channel rollout | [`../../site/use-loong/common-setups.mdx`](../../site/use-loong/common-setups.mdx) and the playbooks under it |
 | review the source-level contract for shipped channel surfaces | this file |
-| check the current gateway owner contract | this file and [`../../site/use-loongclaw/gateway-and-supervision.mdx`](../../site/use-loongclaw/gateway-and-supervision.mdx) |
+| check the current gateway owner contract | this file and [`../../site/use-loong/gateway-and-supervision.mdx`](../../site/use-loong/gateway-and-supervision.mdx) |
 
 ## Read This File When
 
@@ -32,7 +32,7 @@ source-level contract behind those pages.
 
 ## User Story
 
-As a user who wants LoongClaw outside the terminal, I want channel setup to be
+As a user who wants Loong outside the terminal, I want channel setup to be
 legible so that I know which surfaces are available today and what each one
 needs.
 
@@ -55,7 +55,7 @@ needs.
       compatibility wrapper for shipped runtime-backed surfaces rather than the
       long-term product noun.
 - [ ] WeCom setup guidance documents the official AIBot long-connection flow
-      and never presents webhook callback mode as a supported LoongClaw
+      and never presents webhook callback mode as a supported Loong
       integration path.
 - [ ] Channel setup never implies a channel is ready until its required
       credentials and runtime prerequisites are satisfied.
@@ -114,7 +114,7 @@ needs.
 
 ## Expansion Model
 
-LoongClaw keeps channel expansion in four explicit layers so planned surfaces
+Loong keeps channel expansion in four explicit layers so planned surfaces
 do not overclaim runtime support:
 
 - the channel catalog is the superset and can model planned surfaces before a
@@ -218,7 +218,7 @@ long-connection transport:
 - optional transport tuning belongs in `wecom.websocket_url`,
   `wecom.ping_interval_s`, and `wecom.reconnect_interval_s`
 
-LoongClaw does not support a WeCom webhook callback mode on this surface. The
+Loong does not support a WeCom webhook callback mode on this surface. The
 runtime contract is explicitly the official AIBot websocket subscription flow.
 
 ### Config-Backed Outbound Surfaces
@@ -250,7 +250,7 @@ simplest config-backed outbound bucket for this spec slice:
   commands
 - these surfaces remain outbound-only even when their upstream platforms also
   support richer bot or event contracts
-- they should not be described as shipped serve runtimes until LoongClaw owns
+- they should not be described as shipped serve runtimes until Loong owns
   the corresponding inbound contract and gateway supervision model
 
 #### Detailed Outbound Surface Notes
@@ -278,12 +278,12 @@ Generic Webhook is shipped as a minimal config-backed outbound POST surface:
 Signal is shipped through a `signal-cli` REST bridge send surface:
 
 - configure `signal.account`
-- use `signal.service_url` to point at the bridge; when unset, LoongClaw
+- use `signal.service_url` to point at the bridge; when unset, Loong
   defaults to `http://127.0.0.1:8080`
 - because outbound HTTP delivery defaults to public-only mode, the default
   local bridge requires `[outbound_http] allow_private_hosts = true`
 - use `signal-send` with a Signal account target such as an E.164 number
-- `signal-serve` remains planned until LoongClaw owns a real inbound listener
+- `signal-serve` remains planned until Loong owns a real inbound listener
   contract
 
 ##### Email
@@ -298,7 +298,7 @@ Email is shipped through an SMTP outbound surface:
 - use `email-send` with an email address target
 - the outbound surface sends plain-text mail and derives the subject from the
   first non-empty line of the message body
-- `email-serve` remains planned until LoongClaw owns an IMAP-backed reply-loop
+- `email-serve` remains planned until Loong owns an IMAP-backed reply-loop
   runtime
 
 ##### Microsoft Teams
@@ -312,7 +312,7 @@ Microsoft Teams is shipped through the incoming webhook send surface:
 - `teams.app_id`, `teams.app_password`, `teams.tenant_id`, and
   `teams.allowed_conversation_ids` remain reserved for the planned bot event
   runtime and are not required for send readiness today
-- `teams-serve` remains planned until LoongClaw owns the bot-framework style
+- `teams-serve` remains planned until Loong owns the bot-framework style
   inbound contract
 
 ##### Twitch
@@ -327,7 +327,7 @@ Twitch is shipped through the official Twitch Chat API send surface:
 - use `twitch.default_account` and `twitch.accounts.<account>` when the
   deployment needs multiple Twitch identities or environment-specific tokens
 - use `twitch-send` with a channel login or broadcaster id target
-- LoongClaw validates the token at send time to derive the sender user id and
+- Loong validates the token at send time to derive the sender user id and
   client id instead of duplicating those identifiers in config
 - `twitch.api_base_url` and `twitch.oauth_base_url` stay overridable for tests
   and controlled environments
@@ -360,7 +360,7 @@ channel_names = ["backup-stream"]
 
 Resolution notes:
 
-- when `--account` is omitted, LoongClaw selects `twitch.default_account` if it
+- when `--account` is omitted, Loong selects `twitch.default_account` if it
   is configured, otherwise it falls back to the single configured account or the
   sorted first account key
 - `twitch.accounts.<account>.access_token` or
@@ -374,15 +374,15 @@ Resolution notes:
 Tlon is shipped through the outbound Urbit ship poke surface:
 
 - configure `tlon.ship`, `tlon.url`, and `tlon.code`
-- `tlon.url` may omit the scheme; LoongClaw normalizes bare hosts to `https://`
+- `tlon.url` may omit the scheme; Loong normalizes bare hosts to `https://`
 - use `tlon-send` with DM targets such as `~sampel-palnet` or
   `dm:~sampel-palnet`
 - use `tlon-send` with group targets such as `chat/~host-ship/channel` or
   `group:~host-ship/channel`
-- LoongClaw authenticates to the configured ship, reuses the returned session
+- Loong authenticates to the configured ship, reuses the returned session
   cookie for one HTTP poke, and fails fast if login or poke acknowledgement
   does not succeed
-- `tlon-serve` remains planned until LoongClaw owns a stable inbound Urbit
+- `tlon-serve` remains planned until Loong owns a stable inbound Urbit
   subscription and reply-loop runtime
 
 ##### Nextcloud Talk
@@ -391,7 +391,7 @@ Nextcloud Talk is shipped through the official bot API send surface:
 
 - configure `nextcloud_talk.server_url` and `nextcloud_talk.shared_secret`
 - use `nextcloud-talk-send` with a conversation token target
-- `nextcloud-talk-serve` remains planned until LoongClaw owns the inbound bot
+- `nextcloud-talk-serve` remains planned until Loong owns the inbound bot
   callback contract
 
 ##### Synology Chat
@@ -405,7 +405,7 @@ Synology Chat is shipped through the incoming webhook send surface:
   to direct-message a specific Synology Chat user
 - `synology_chat.token` is reserved for a future outbound webhook serve
   contract and is not required for send readiness today
-- `synology-chat-serve` remains planned until LoongClaw owns the outbound
+- `synology-chat-serve` remains planned until Loong owns the outbound
   webhook callback contract
 
 ##### IRC
@@ -416,13 +416,13 @@ IRC is shipped through a config-backed socket send surface:
   endpoint, or an `ircs://host[:port]` endpoint
 - configure `irc.nickname` for the bot identity used during registration
 - optionally configure `irc.username`, `irc.realname`, and `irc.password`
-- when `irc.password` is set, use an `ircs://` endpoint so LoongClaw does not
+- when `irc.password` is set, use an `ircs://` endpoint so Loong does not
   send `PASS` over plaintext transport
 - optionally configure `irc.channel_names` when the operator wants status
   snapshots to advertise the preferred channel set for that account
 - use `irc-send` with a single conversation target such as `#ops` for a
   channel or a nick for a direct message
-- `irc-serve` remains planned until LoongClaw owns a long-lived relay-loop
+- `irc-serve` remains planned until Loong owns a long-lived relay-loop
   contract for IRC traffic
 
 ##### iMessage / BlueBubbles
@@ -433,7 +433,7 @@ iMessage is shipped through a BlueBubbles bridge send surface:
 - use `imessage-send` with a BlueBubbles `chatGuid` target
 - `imessage.allowed_chat_ids` remains reserved for a future inbound bridge-sync
   runtime and is not required for send readiness today
-- `imessage-serve` remains planned until LoongClaw owns the inbound bridge
+- `imessage-serve` remains planned until Loong owns the inbound bridge
   synchronization contract
 
 ##### Nostr
@@ -442,7 +442,7 @@ Nostr is shipped as a signed relay-publish surface:
 
 - configure one or more relay URLs through `nostr.relay_urls`
 - configure a signing key through `nostr.private_key`; both raw hex and `nsec`
-  input are accepted, but LoongClaw normalizes internally to the standard hex
+  input are accepted, but Loong normalizes internally to the standard hex
   representation
 - use `nostr-send` to publish a regular text-note event and wait for relay `OK`
   acknowledgements from the configured relay set

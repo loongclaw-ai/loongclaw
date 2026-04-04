@@ -999,7 +999,7 @@ GitHub automation. Normal contributors should usually start with
 
 | If you are trying to... | Start here | Why |
 | --- | --- | --- |
-| follow the normal public contribution path | [`../../site/build-on-loongclaw/contribution-workflow.mdx`](../../site/build-on-loongclaw/contribution-workflow.mdx) and [`../../CONTRIBUTING.md`](../../CONTRIBUTING.md) | those are the primary contributor-facing guides |
+| follow the normal public contribution path | [`../../site/build-on-loong/contribution-workflow.mdx`](../../site/build-on-loong/contribution-workflow.mdx) and [`../../CONTRIBUTING.md`](../../CONTRIBUTING.md) | those are the primary contributor-facing guides |
 | understand where your background is most useful | [`contribution-areas.md`](contribution-areas.md) | this is the contributor-facing reference |
 | inspect maintainer intake wiring, branch governance, labels, and automation | this file | this is the repository support reference used by templates and automation |
 

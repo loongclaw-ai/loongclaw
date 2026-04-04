@@ -2,7 +2,7 @@
 
 ## User Story
 
-As a LoongClaw operator, I want a clear diagnostics and repair command so that I
+As a Loong operator, I want a clear diagnostics and repair command so that I
 can recover a broken setup without reverse-engineering runtime internals.
 
 ## Acceptance Criteria

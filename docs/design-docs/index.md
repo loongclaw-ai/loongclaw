@@ -1,6 +1,6 @@
 # Design Documents Index
 
-This directory is the repository-native map for LoongClaw's public architecture
+This directory is the repository-native map for Loong's public architecture
 references.
 
 The Mintlify site under `site/` is the public builder-facing reading path. This
@@ -17,7 +17,7 @@ markdown behind that shorter public architecture summary.
 
 | If you are trying to... | Start here | Why |
 | --- | --- | --- |
-| read the public builder-facing overview first | [`../../site/build-on-loongclaw/overview.mdx`](../../site/build-on-loongclaw/overview.mdx) | `site/` is the public builder hub |
+| read the public builder-facing overview first | [`../../site/build-on-loong/overview.mdx`](../../site/build-on-loong/overview.mdx) | `site/` is the public builder hub |
 | edit repository-native architecture references | this index | this directory is the source-facing architecture map |
 | understand the overall repository docs layering | [`../README.md`](../README.md) | it explains how repo-native docs differ from Mintlify pages |
 
