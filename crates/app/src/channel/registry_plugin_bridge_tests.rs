@@ -279,69 +279,6 @@ fn resolve_channel_catalog_entry_exposes_plugin_bridge_stable_targets() {
 }
 
 #[test]
-fn resolve_channel_catalog_entry_exposes_channel_bridge_scaffold_profiles() {
-    let weixin = resolve_channel_plugin_bridge_scaffold_profile("wechat")
-        .expect("weixin bridge scaffold profile");
-    let qqbot = resolve_channel_plugin_bridge_scaffold_profile("qq")
-        .expect("qqbot bridge scaffold profile");
-    let onebot = resolve_channel_plugin_bridge_scaffold_profile("onebot-v11")
-        .expect("onebot bridge scaffold profile");
-    let telegram = resolve_channel_plugin_bridge_scaffold_profile("telegram");
-
-    assert_eq!(weixin.channel_id, "weixin");
-    assert_eq!(weixin.required_setup_surface, "channel");
-    assert_eq!(weixin.transport_family, "wechat_clawbot_ilink_bridge");
-    assert_eq!(
-        weixin.target_contract,
-        "weixin:<account>:contact:<id> | weixin:<account>:room:<id>"
-    );
-    assert_eq!(weixin.account_scope.as_deref(), Some("multi_account"));
-    assert_eq!(
-        weixin.required_config_keys,
-        vec![
-            "weixin.enabled".to_owned(),
-            "weixin.bridge_url".to_owned(),
-            "weixin.bridge_access_token".to_owned(),
-        ]
-    );
-
-    assert_eq!(qqbot.channel_id, "qqbot");
-    assert_eq!(
-        qqbot.transport_family,
-        "qq_official_bot_gateway_or_plugin_bridge"
-    );
-    assert_eq!(
-        qqbot.target_contract,
-        "qqbot:<account>:c2c:<openid> | qqbot:<account>:group:<openid> | qqbot:<account>:channel:<id>"
-    );
-    assert_eq!(
-        qqbot.required_config_keys,
-        vec![
-            "qqbot.enabled".to_owned(),
-            "qqbot.app_id".to_owned(),
-            "qqbot.client_secret".to_owned(),
-        ]
-    );
-
-    assert_eq!(onebot.channel_id, "onebot");
-    assert_eq!(onebot.transport_family, "onebot_v11_bridge");
-    assert_eq!(
-        onebot.target_contract,
-        "onebot:<account>:private:<user_id> | onebot:<account>:group:<group_id>"
-    );
-    assert_eq!(
-        onebot.required_config_keys,
-        vec![
-            "onebot.enabled".to_owned(),
-            "onebot.websocket_url".to_owned(),
-            "onebot.access_token".to_owned(),
-        ]
-    );
-
-    assert!(telegram.is_none());
-}
-
-#[test]
 fn validate_plugin_channel_bridge_manifest_reports_contract_mismatches() {
     let compatible_manifest = sample_channel_bridge_manifest(Some("weixin"), Some("channel"));
     let compatible_validation = validate_plugin_channel_bridge_manifest(&compatible_manifest)

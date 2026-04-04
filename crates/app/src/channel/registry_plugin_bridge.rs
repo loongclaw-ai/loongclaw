@@ -17,17 +17,6 @@ pub struct ChannelPluginBridgeContract {
     pub account_scope_note: Option<&'static str>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ChannelPluginBridgeScaffoldProfile {
-    pub channel_id: String,
-    pub required_setup_surface: String,
-    pub adapter_family: String,
-    pub transport_family: String,
-    pub target_contract: String,
-    pub account_scope: Option<String>,
-    pub required_config_keys: Vec<String>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ChannelPluginBridgeStableTarget {
     pub template: &'static str,
@@ -260,36 +249,6 @@ pub(super) fn channel_surface_plugin_bridge_discovery_by_id(
         managed_install_root_display,
         grouped_matches,
     )
-}
-
-pub fn resolve_channel_plugin_bridge_scaffold_profile(
-    raw_channel_id: &str,
-) -> Option<ChannelPluginBridgeScaffoldProfile> {
-    let descriptor = find_channel_registry_descriptor(raw_channel_id)?;
-    let plugin_bridge_contract = plugin_bridge_contract_from_descriptor(descriptor)?;
-    let target_contract = render_bridge_scaffold_target_contract(&plugin_bridge_contract);
-    let has_target_contract = !target_contract.is_empty();
-
-    if !has_target_contract {
-        return None;
-    }
-
-    let channel_id = descriptor.id.to_owned();
-    let required_setup_surface = plugin_bridge_contract.required_setup_surface.to_owned();
-    let adapter_family = "channel-bridge".to_owned();
-    let transport_family = descriptor.transport.to_owned();
-    let account_scope = bridge_scaffold_account_scope(descriptor.capabilities);
-    let required_config_keys = bridge_scaffold_required_config_keys(descriptor);
-
-    Some(ChannelPluginBridgeScaffoldProfile {
-        channel_id,
-        required_setup_surface,
-        adapter_family,
-        transport_family,
-        target_contract,
-        account_scope,
-        required_config_keys,
-    })
 }
 
 pub fn validate_plugin_channel_bridge_manifest(
@@ -963,53 +922,4 @@ fn normalized_manifest_setup_surface(
     }
 
     Some(trimmed.to_ascii_lowercase())
-}
-
-fn render_bridge_scaffold_target_contract(contract: &ChannelPluginBridgeContract) -> String {
-    let stable_targets = &contract.stable_targets;
-    let templates = stable_targets.iter().map(|target| target.template);
-    let collected_templates = templates.collect::<Vec<_>>();
-
-    collected_templates.join(" | ")
-}
-
-fn bridge_scaffold_account_scope(capabilities: &[ChannelCapability]) -> Option<String> {
-    let supports_multi_account = capabilities.contains(&ChannelCapability::MultiAccount);
-
-    if !supports_multi_account {
-        return None;
-    }
-
-    Some("multi_account".to_owned())
-}
-
-fn bridge_scaffold_required_config_keys(descriptor: &ChannelRegistryDescriptor) -> Vec<String> {
-    let send_operation = descriptor
-        .operations
-        .iter()
-        .find(|operation| operation.operation.id == CHANNEL_OPERATION_SEND_ID);
-    let Some(send_operation) = send_operation else {
-        return Vec::new();
-    };
-
-    let mut required_config_keys = Vec::new();
-    let mut seen_required_config_keys = BTreeSet::new();
-
-    for requirement in send_operation.operation.requirements {
-        for config_path in requirement.config_paths {
-            let is_account_scoped_template = config_path.contains("<account>");
-            if is_account_scoped_template {
-                continue;
-            }
-
-            let inserted = seen_required_config_keys.insert((*config_path).to_owned());
-            if !inserted {
-                continue;
-            }
-
-            required_config_keys.push((*config_path).to_owned());
-        }
-    }
-
-    required_config_keys
 }

@@ -63,8 +63,7 @@ pub use plugin_bridge::{
     ChannelPluginBridgeContract, ChannelPluginBridgeDiscovery,
     ChannelPluginBridgeDiscoveryAmbiguityStatus, ChannelPluginBridgeDiscoveryStatus,
     ChannelPluginBridgeManifestStatus, ChannelPluginBridgeManifestValidation,
-    ChannelPluginBridgeScaffoldProfile, ChannelPluginBridgeSelectionStatus,
-    ChannelPluginBridgeStableTarget,
+    ChannelPluginBridgeSelectionStatus, ChannelPluginBridgeStableTarget,
 };
 use plugin_bridge::{
     channel_surface_plugin_bridge_discovery_by_id, plugin_bridge_contract_from_descriptor,
@@ -3396,12 +3395,6 @@ pub fn normalize_channel_catalog_id(raw: &str) -> Option<&'static str> {
 
 pub fn resolve_channel_catalog_entry(raw: &str) -> Option<ChannelCatalogEntry> {
     find_channel_registry_descriptor(raw).map(channel_catalog_entry_from_descriptor)
-}
-
-pub fn resolve_channel_plugin_bridge_scaffold_profile(
-    raw_channel_id: &str,
-) -> Option<ChannelPluginBridgeScaffoldProfile> {
-    plugin_bridge::resolve_channel_plugin_bridge_scaffold_profile(raw_channel_id)
 }
 
 pub fn resolve_channel_catalog_operation(
