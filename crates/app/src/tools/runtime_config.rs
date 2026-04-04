@@ -638,6 +638,7 @@ impl ToolExecutionConfig {
 #[derive(Debug, Clone)]
 pub struct ToolRuntimeConfig {
     pub file_root: Option<PathBuf>,
+    pub memory_sqlite_path: Option<PathBuf>,
     pub shell_allow: BTreeSet<String>,
     pub shell_deny: BTreeSet<String>,
     pub shell_default_mode: ShellPolicyDefault,
@@ -663,6 +664,7 @@ impl Default for ToolRuntimeConfig {
     fn default() -> Self {
         Self {
             file_root: None,
+            memory_sqlite_path: None,
             shell_allow: crate::config::DEFAULT_SHELL_ALLOW
                 .iter()
                 .map(|s| (*s).to_owned())
@@ -716,6 +718,7 @@ impl ToolRuntimeConfig {
         );
         Self {
             file_root: Some(config.tools.resolved_file_root()),
+            memory_sqlite_path: Some(config.memory.resolved_sqlite_path()),
             shell_allow,
             shell_deny,
             shell_default_mode: ShellPolicyDefault::parse(&config.tools.shell_default_mode),
@@ -847,6 +850,9 @@ impl ToolRuntimeConfig {
     /// `LOONGCLAW_FILE_ROOT`.
     pub fn from_env() -> Self {
         let file_root = std::env::var("LOONGCLAW_FILE_ROOT").ok().map(PathBuf::from);
+        let memory_sqlite_path = std::env::var("LOONGCLAW_SQLITE_PATH")
+            .ok()
+            .map(PathBuf::from);
         let config_path = std::env::var("LOONGCLAW_CONFIG_PATH")
             .ok()
             .map(PathBuf::from);
@@ -990,6 +996,7 @@ impl ToolRuntimeConfig {
 
         Self {
             file_root,
+            memory_sqlite_path,
             shell_allow,
             shell_deny,
             shell_default_mode: ShellPolicyDefault::Deny,
@@ -1550,6 +1557,7 @@ mod tests {
         for key in [
             "LOONGCLAW_CONFIG_PATH",
             "LOONGCLAW_FILE_ROOT",
+            "LOONGCLAW_SQLITE_PATH",
             "LOONGCLAW_TOOL_SESSIONS_ENABLED",
             "LOONGCLAW_TOOL_SESSIONS_ALLOW_MUTATION",
             "LOONGCLAW_TOOL_MESSAGES_ENABLED",
@@ -2039,6 +2047,31 @@ mod tests {
             ..ToolRuntimeConfig::default()
         };
         assert_eq!(config.file_root, Some(PathBuf::from("/tmp/test-root")));
+    }
+
+    #[test]
+    fn memory_sqlite_path_uses_injected_config() {
+        let config = crate::config::LoongClawConfig::default();
+        let runtime = ToolRuntimeConfig::from_loongclaw_config(&config, None);
+
+        assert_eq!(
+            runtime.memory_sqlite_path,
+            Some(config.memory.resolved_sqlite_path())
+        );
+    }
+
+    #[test]
+    fn memory_sqlite_path_from_env_uses_legacy_override() {
+        let mut env = ScopedEnv::new();
+        clear_tool_runtime_env(&mut env);
+        env.set("LOONGCLAW_SQLITE_PATH", "/tmp/tool-runtime-memory.sqlite3");
+
+        let runtime = ToolRuntimeConfig::from_env();
+
+        assert_eq!(
+            runtime.memory_sqlite_path,
+            Some(PathBuf::from("/tmp/tool-runtime-memory.sqlite3"))
+        );
     }
 
     #[test]
