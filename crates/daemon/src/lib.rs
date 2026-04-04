@@ -1360,7 +1360,6 @@ impl Commands {
             Self::MatrixServe { .. } => "matrix_serve",
             Self::WecomSend { .. } => "wecom_send",
             Self::WecomServe { .. } => "wecom_serve",
-            Self::WhatsappServe { .. } => "whatsapp_serve",
             Self::DiscordSend { .. } => "discord_send",
             Self::DingtalkSend { .. } => "dingtalk_send",
             Self::SlackSend { .. } => "slack_send",
