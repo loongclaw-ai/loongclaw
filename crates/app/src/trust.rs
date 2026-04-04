@@ -109,6 +109,11 @@ pub(crate) fn delegate_child_trust_event(
     }
 }
 
+/// Build the additive trust envelope for a missing runtime binding.
+///
+/// `provenance_ref` is usually `"kernel"` for kernel-bound sessions and
+/// `"direct"` for direct bindings that reached a core-only path without kernel
+/// context.
 pub(crate) fn runtime_binding_missing_trust_event(
     session_id: &str,
     source_surface: &str,

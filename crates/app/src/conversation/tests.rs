@@ -8260,6 +8260,14 @@ async fn handle_turn_with_runtime_safe_lane_plan_path_bypasses_turn_step_limit()
         !reply.contains("max_tool_steps_exceeded"),
         "plan path should not use TurnEngine max_tool_steps gate, got: {reply}"
     );
+
+    let persisted = runtime.persisted.lock().expect("persisted lock").clone();
+    let payloads =
+        persisted_conversation_event_payloads_by_name(&persisted, "trust_binding_missing");
+
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0]["failure_code"], "no_kernel_context");
+    assert_eq!(payloads[0]["trust_event"]["provenance_ref"], "direct");
 }
 
 #[tokio::test]
@@ -10431,6 +10439,59 @@ async fn handle_turn_with_runtime_propagated_provider_error_persists_provider_fa
         payloads[0]["trust_event"]["evidence_ref"],
         "provider:openai:model:gpt-4o:stage:status_failure"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_turn_with_runtime_discovery_first_followup_provider_error_persists_provider_failover_trust_event()
+ {
+    let kernel_ctx = test_kernel_context("provider-failover-followup-trust-event");
+    let runtime = FakeRuntime::with_turns_and_completions(
+        vec![],
+        vec![
+            Ok(ProviderTurn {
+                assistant_text: "Let me search for the right tool first.".to_owned(),
+                tool_intents: vec![provider_tool_intent(
+                    "tool.search",
+                    json!({"query": "read note.md", "limit": 3}),
+                    "session-provider-failover-followup",
+                    "turn-provider-failover-followup",
+                    "call-provider-failover-followup-search",
+                )],
+                raw_meta: Value::Null,
+            }),
+            Err(provider_failover_error_fixture()),
+        ],
+        vec![],
+    );
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &test_config(),
+            "session-provider-failover-followup",
+            "search for the right tool, then read note.md",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            ConversationRuntimeBinding::kernel(&kernel_ctx),
+        )
+        .await
+        .expect("followup provider error should fall back to the last raw reply");
+
+    assert_eq!(*runtime.turn_calls.lock().expect("turn calls lock"), 2);
+    assert!(
+        !reply.is_empty(),
+        "followup provider error should keep the last raw reply"
+    );
+
+    let persisted = runtime.persisted.lock().expect("persisted lock").clone();
+    let payloads =
+        persisted_conversation_event_payloads_by_name(&persisted, "trust_provider_failover");
+
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0]["binding"], "kernel");
+    assert_eq!(payloads[0]["provider_failover"]["reason"], "rate_limited");
+    assert_eq!(payloads[0]["trust_event"]["provenance_ref"], "kernel");
+    assert_eq!(payloads[0]["trust_event"]["reason_code"], "rate_limited");
 }
 
 #[tokio::test]
@@ -12776,6 +12837,10 @@ async fn autonomy_policy_turn_engine_guided_acquisition_requires_approval_for_ca
     assert_eq!(trust_event["actor_kind"], "conversation_runtime");
     assert_eq!(trust_event["trust_state_hint"], "unknown");
     assert_eq!(trust_event["provenance_ref"], "kernel");
+    assert_eq!(
+        trust_event["reason_code"],
+        "autonomy_policy_capability_acquisition_requires_approval"
+    );
     assert_eq!(
         trust_event["evidence_ref"],
         format!("approval_request:{approval_request_id}")
@@ -19013,9 +19078,9 @@ async fn handle_turn_with_runtime_requires_approval_before_shell_exec_execution(
     assert_eq!(payload_tool_name, "shell.exec");
     assert_eq!(payload_command, command);
     assert_eq!(trust_event["event_kind"], "approval_required");
+    assert_eq!(trust_event["actor_kind"], "conversation_runtime");
     assert_eq!(trust_event["provenance_ref"], "kernel");
     assert_eq!(trust_event["reason_code"], "shell_exec_requires_approval");
-    assert_eq!(trust_event["provenance_ref"], "kernel");
 }
 
 #[cfg(all(feature = "memory-sqlite", feature = "tool-shell"))]

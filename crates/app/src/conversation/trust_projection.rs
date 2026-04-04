@@ -26,12 +26,21 @@ pub(super) async fn emit_runtime_binding_trust_event_if_needed<R: ConversationRu
     turn_result: &TurnResult,
     binding: ConversationRuntimeBinding<'_>,
 ) {
+    const NO_KERNEL_CONTEXT_REASON: &str = "no_kernel_context";
+
     let TurnResult::ToolDenied(failure) = turn_result else {
         return;
     };
-    if failure.code != "no_kernel_context" {
+    let missing_kernel_context =
+        failure.code == NO_KERNEL_CONTEXT_REASON || failure.reason == NO_KERNEL_CONTEXT_REASON;
+    let failure_code = if missing_kernel_context {
+        Some(NO_KERNEL_CONTEXT_REASON)
+    } else {
+        None
+    };
+    let Some(failure_code) = failure_code else {
         return;
-    }
+    };
 
     let provenance_ref = if binding.is_kernel_bound() {
         "kernel"
@@ -42,14 +51,19 @@ pub(super) async fn emit_runtime_binding_trust_event_if_needed<R: ConversationRu
         runtime_binding_missing_trust_event(session_id, "conversation.binding", provenance_ref);
     let payload = json!({
         "source": "conversation_runtime",
-        "failure_code": failure.code,
+        "failure_code": failure_code,
     });
     let payload = embed_trust_event_payload(payload, trust_event);
     let extracted = extract_trust_event_payload(&payload);
     if extracted.is_none() {
         return;
     }
-    let _ = persist_conversation_event(
+    let binding_kind = if binding.is_kernel_bound() {
+        "kernel"
+    } else {
+        "direct"
+    };
+    let persist_result = persist_conversation_event(
         runtime,
         session_id,
         "trust_binding_missing",
@@ -57,6 +71,15 @@ pub(super) async fn emit_runtime_binding_trust_event_if_needed<R: ConversationRu
         binding,
     )
     .await;
+    if let Err(error) = persist_result {
+        tracing::warn!(
+            session_id,
+            event_kind = "trust_binding_missing",
+            binding_kind,
+            %error,
+            "failed to persist trust event"
+        );
+    }
 }
 
 pub(super) async fn emit_provider_failover_trust_event_if_needed<
@@ -105,7 +128,12 @@ pub(super) async fn emit_provider_failover_trust_event_if_needed<
     if extracted.is_none() {
         return;
     }
-    let _ = persist_conversation_event(
+    let binding_kind = if binding.is_kernel_bound() {
+        "kernel"
+    } else {
+        "direct"
+    };
+    let persist_result = persist_conversation_event(
         runtime,
         session_id,
         "trust_provider_failover",
@@ -113,6 +141,15 @@ pub(super) async fn emit_provider_failover_trust_event_if_needed<
         binding,
     )
     .await;
+    if let Err(error) = persist_result {
+        tracing::warn!(
+            session_id,
+            event_kind = "trust_provider_failover",
+            binding_kind,
+            %error,
+            "failed to persist trust event"
+        );
+    }
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -213,6 +250,12 @@ fn build_delegate_child_event_payload(
         child_label,
         runtime_self_continuity,
     );
+    let payload_with_trust =
+        embed_trust_event_payload(event_payload_json.clone(), trust_event.clone());
+    let extracted_trust_event = extract_trust_event_payload(&payload_with_trust);
+    if extracted_trust_event.as_ref() != Some(&trust_event) {
+        return event_payload_json;
+    }
 
-    embed_trust_event_payload(event_payload_json, trust_event)
+    payload_with_trust
 }
