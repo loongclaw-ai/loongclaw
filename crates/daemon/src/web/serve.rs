@@ -281,7 +281,7 @@ pub(super) async fn serve_web_static(
     } else {
         static_root.join("index.html")
     };
-    let bytes = fs::read(&effective_path).map_err(|error| {
+    let bytes = tokio::fs::read(&effective_path).await.map_err(|error| {
         WebApiError::internal(format!(
             "read web static asset `{}` failed: {error}",
             effective_path.display()

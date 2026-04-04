@@ -115,7 +115,7 @@ struct WebApiState {
     web_install_mode: &'static str,
     exact_origin: Option<String>,
     static_root: Option<PathBuf>,
-    turn_streams: Mutex<HashMap<String, mpsc::UnboundedReceiver<String>>>,
+    turn_streams: Mutex<HashMap<String, (i64, mpsc::UnboundedReceiver<String>)>>,
     debug_state: StdMutex<DebugConsoleRuntimeState>,
 }
 

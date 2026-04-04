@@ -96,12 +96,14 @@ pub(super) async fn chat_turn(
 
     let turn_id = generate_turn_id();
     let (sender, receiver) = mpsc::unbounded_channel();
+    let now = OffsetDateTime::now_utc().unix_timestamp();
 
-    state
-        .turn_streams
-        .lock()
-        .await
-        .insert(turn_id.clone(), receiver);
+    {
+        let mut streams = state.turn_streams.lock().await;
+        // GC: Clear out unconsumed streams older than 60 seconds to prevent memory leaks
+        streams.retain(|_, (ts, _)| now - *ts < 60);
+        streams.insert(turn_id.clone(), (now, receiver));
+    }
 
     let state_for_turn = state.clone();
     let session_id = id.clone();
@@ -137,6 +139,7 @@ pub(super) async fn chat_turn_stream(
         .lock()
         .await
         .remove(&turn_id)
+        .map(|(_, rx)| rx)
         .ok_or_else(|| WebApiError::not_found(format!("turn `{turn_id}` was not found")))?;
 
     let body_stream = stream::unfold(receiver, |mut receiver| async move {
