@@ -1,4 +1,6 @@
 use std::collections::BTreeSet;
+#[cfg(not(feature = "tool-file"))]
+use std::path::Path;
 use std::sync::OnceLock;
 
 use serde::Serialize;
@@ -1642,14 +1644,29 @@ fn tool_visibility_gate_enabled_for_runtime_view(
         ToolVisibilityGate::MemorySearchCorpus => config
             .file_root
             .as_deref()
-            .is_some_and(|value| !value.trim().is_empty()),
+            .is_some_and(text_has_non_whitespace_segments),
         ToolVisibilityGate::MemoryFileRoot => config
             .file_root
             .as_deref()
-            .is_some_and(|value| !value.trim().is_empty()),
+            .is_some_and(text_has_non_whitespace_segments),
         ToolVisibilityGate::WebFetch => config.web.enabled,
         ToolVisibilityGate::WebSearch => config.web_search.enabled,
     }
+}
+
+fn text_has_non_whitespace_segments(value: &str) -> bool {
+    !value.trim().is_empty()
+}
+
+#[cfg(not(feature = "tool-file"))]
+fn path_has_non_whitespace_segments<P>(path: P) -> bool
+where
+    P: AsRef<Path>,
+{
+    let path_ref = path.as_ref();
+    let path_text = path_ref.as_os_str().to_string_lossy();
+
+    !path_text.trim().is_empty()
 }
 
 fn tool_visibility_gate_enabled_for_runtime_policy(
@@ -1691,8 +1708,8 @@ fn tool_visibility_gate_enabled_for_runtime_policy(
             {
                 config
                     .file_root
-                    .as_ref()
-                    .is_some_and(|value| !value.as_os_str().is_empty())
+                    .as_deref()
+                    .is_some_and(path_has_non_whitespace_segments)
             }
         }
         ToolVisibilityGate::MemoryFileRoot => {
@@ -1705,8 +1722,8 @@ fn tool_visibility_gate_enabled_for_runtime_policy(
             {
                 config
                     .file_root
-                    .as_ref()
-                    .is_some_and(|value| !value.as_os_str().is_empty())
+                    .as_deref()
+                    .is_some_and(path_has_non_whitespace_segments)
             }
         }
         ToolVisibilityGate::WebFetch => config.web_fetch.enabled,
@@ -4263,6 +4280,32 @@ mod tests {
         assert!(tool_visibility_gate_enabled_for_runtime_policy(
             ToolVisibilityGate::MemoryFileRoot,
             &visible_runtime
+        ));
+    }
+
+    #[test]
+    fn memory_file_root_visibility_gate_rejects_whitespace_only_paths() {
+        let view_config = ToolConfig {
+            file_root: Some("   ".to_owned()),
+            ..ToolConfig::default()
+        };
+        let runtime_config = ToolRuntimeConfig {
+            file_root: Some(std::path::PathBuf::from("   ")),
+            ..ToolRuntimeConfig::default()
+        };
+
+        assert!(!tool_visibility_gate_enabled_for_runtime_view(
+            ToolVisibilityGate::MemoryFileRoot,
+            &view_config,
+            false
+        ));
+        assert!(!tool_visibility_gate_enabled_for_runtime_policy(
+            ToolVisibilityGate::MemoryFileRoot,
+            &runtime_config
+        ));
+        assert!(!tool_visibility_gate_enabled_for_runtime_policy(
+            ToolVisibilityGate::MemorySearchCorpus,
+            &runtime_config
         ));
     }
 

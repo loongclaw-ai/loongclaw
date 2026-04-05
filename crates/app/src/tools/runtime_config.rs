@@ -850,9 +850,13 @@ impl ToolRuntimeConfig {
     /// `LOONGCLAW_FILE_ROOT`.
     pub fn from_env() -> Self {
         let file_root = std::env::var("LOONGCLAW_FILE_ROOT").ok().map(PathBuf::from);
-        let memory_sqlite_path = std::env::var("LOONGCLAW_SQLITE_PATH")
-            .ok()
+        let memory_sqlite_path = std::env::var_os("LOONGCLAW_SQLITE_PATH")
+            .filter(|value| !value.is_empty())
             .map(PathBuf::from);
+        let memory_sqlite_path = memory_sqlite_path.or_else(|| {
+            let default_config = crate::config::LoongClawConfig::default();
+            Some(default_config.memory.resolved_sqlite_path())
+        });
         let config_path = std::env::var("LOONGCLAW_CONFIG_PATH")
             .ok()
             .map(PathBuf::from);
@@ -2072,6 +2076,37 @@ mod tests {
         assert_eq!(
             runtime.memory_sqlite_path,
             Some(PathBuf::from("/tmp/tool-runtime-memory.sqlite3"))
+        );
+    }
+
+    #[test]
+    fn memory_sqlite_path_from_env_falls_back_to_loongclaw_home() {
+        let mut env = ScopedEnv::new();
+        let runtime_home = std::env::temp_dir().join("loongclaw-tool-runtime-home");
+        clear_tool_runtime_env(&mut env);
+        env.set("LOONGCLAW_HOME", &runtime_home);
+
+        let runtime = ToolRuntimeConfig::from_env();
+
+        assert_eq!(
+            runtime.memory_sqlite_path,
+            Some(runtime_home.join("memory.sqlite3"))
+        );
+    }
+
+    #[test]
+    fn empty_legacy_memory_sqlite_path_falls_back_to_loongclaw_home() {
+        let mut env = ScopedEnv::new();
+        let runtime_home = std::env::temp_dir().join("loongclaw-tool-runtime-empty-sqlite-path");
+        clear_tool_runtime_env(&mut env);
+        env.set("LOONGCLAW_HOME", &runtime_home);
+        env.set("LOONGCLAW_SQLITE_PATH", "");
+
+        let runtime = ToolRuntimeConfig::from_env();
+
+        assert_eq!(
+            runtime.memory_sqlite_path,
+            Some(runtime_home.join("memory.sqlite3"))
         );
     }
 

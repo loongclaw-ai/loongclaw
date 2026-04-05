@@ -400,13 +400,18 @@ fn build_builtin_retrieval_request(
 }
 
 fn retrieval_query_from_recent_window(recent_window: &[WindowTurn]) -> Option<String> {
-    recent_window
-        .iter()
-        .rev()
-        .find(|turn| turn.role == "user")
-        .map(|turn| turn.content.trim())
-        .filter(|content| !content.is_empty())
-        .map(ToOwned::to_owned)
+    recent_window.iter().rev().find_map(|turn| {
+        if turn.role != "user" {
+            return None;
+        }
+
+        let trimmed_content = turn.content.trim();
+        if trimmed_content.is_empty() {
+            return None;
+        }
+
+        Some(trimmed_content.to_owned())
+    })
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -423,7 +428,8 @@ fn render_cross_session_recall_block(hits: &[super::sqlite::CanonicalMemorySearc
             .session_turn_index
             .map(|value| format!("turn {value}"))
             .unwrap_or_else(|| "turn ?".to_owned());
-        let role_label = hit.record.role.as_deref().unwrap_or("assistant");
+        let role_label = hit.record.role.as_deref();
+        let content = truncate_recall_content(hit.record.content.as_str(), 280);
         sections.push(format!(
             "### {} · {} · {} · {}",
             hit.record.session_id,
@@ -431,10 +437,11 @@ fn render_cross_session_recall_block(hits: &[super::sqlite::CanonicalMemorySearc
             hit.record.scope.as_str(),
             hit.record.kind.as_str()
         ));
-        sections.push(format!(
-            "{role_label}: {}",
-            truncate_recall_content(hit.record.content.as_str(), 280)
-        ));
+        let recall_line = match role_label {
+            Some(role_label) => format!("{role_label}: {content}"),
+            None => content,
+        };
+        sections.push(recall_line);
     }
 
     sections.join("\n\n")
@@ -779,7 +786,7 @@ mod tests {
             profile: MemoryProfile::WindowPlusSummary,
             mode: MemoryMode::WindowPlusSummary,
             sqlite_path: Some(db_path.clone()),
-            sliding_window: 4,
+            sliding_window: 8,
             ..crate::memory::runtime_config::MemoryRuntimeConfig::default()
         };
 
@@ -983,7 +990,7 @@ mod tests {
         let retrieval_request = envelope
             .retrieval_request
             .expect("window-plus-summary should advertise retrieval request");
-        assert_eq!(retrieval_request.budget_items, config.sliding_window);
+        assert_eq!(retrieval_request.budget_items, 6);
         assert_eq!(
             retrieval_request.allowed_kinds,
             vec![
@@ -1006,6 +1013,62 @@ mod tests {
 
         let _ = std::fs::remove_file(&db_path);
         let _ = std::fs::remove_dir(&tmp);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn retrieval_query_from_recent_window_skips_blank_latest_user_turn() {
+        let recent_window = vec![
+            WindowTurn {
+                role: "user".to_owned(),
+                content: "release rollback plan".to_owned(),
+                ts: None,
+            },
+            WindowTurn {
+                role: "assistant".to_owned(),
+                content: "working on it".to_owned(),
+                ts: None,
+            },
+            WindowTurn {
+                role: "user".to_owned(),
+                content: "   ".to_owned(),
+                ts: None,
+            },
+        ];
+
+        let query =
+            retrieval_query_from_recent_window(recent_window.as_slice()).expect("query fallback");
+
+        assert_eq!(query, "release rollback plan");
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn render_cross_session_recall_block_keeps_roleless_records_neutral() {
+        let hits = vec![crate::memory::CanonicalMemorySearchHit {
+            record: crate::memory::CanonicalMemoryRecord {
+                session_id: "workspace-session".to_owned(),
+                scope: crate::memory::MemoryScope::Workspace,
+                kind: crate::memory::CanonicalMemoryKind::ImportedProfile,
+                role: None,
+                content: "Imported release checklist with smoke tests.".to_owned(),
+                metadata: serde_json::json!({
+                    "source": "workspace-import"
+                }),
+            },
+            session_turn_index: Some(2),
+        }];
+
+        let rendered = render_cross_session_recall_block(hits.as_slice());
+
+        assert!(
+            rendered.contains("Imported release checklist with smoke tests."),
+            "expected rendered recall content: {rendered}"
+        );
+        assert!(
+            !rendered.contains("assistant: Imported release checklist with smoke tests."),
+            "roleless recall should not fabricate assistant provenance: {rendered}"
+        );
     }
 
     #[cfg(feature = "memory-sqlite")]

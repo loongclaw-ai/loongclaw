@@ -1,8 +1,11 @@
 use std::io::ErrorKind;
 use std::process::Output;
+use std::process::Stdio;
 use std::time::Duration;
 
 use loongclaw_app as mvp;
+use tokio::io::AsyncRead;
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -22,7 +25,7 @@ fn browser_companion_probe_timeout_duration(timeout_seconds: u64) -> Duration {
     let slack_millis = normalized_seconds.saturating_mul(100);
     let bounded_slack_millis = slack_millis.min(500);
     let slack_duration = Duration::from_millis(bounded_slack_millis);
-    base_duration + slack_duration
+    base_duration.saturating_add(slack_duration)
 }
 
 // Shared readiness snapshot for doctor/onboard so the companion lane is probed once.
@@ -246,10 +249,30 @@ async fn probe_browser_companion_version(
         let mut probe = Command::new(command);
         probe.arg(BROWSER_COMPANION_VERSION_ARG);
         probe.kill_on_drop(true);
+        probe.stdout(Stdio::piped());
+        probe.stderr(Stdio::piped());
 
-        let probe_result = timeout(timeout_duration, probe.output()).await;
+        let mut child = match probe.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                if error.kind() == ErrorKind::NotFound {
+                    return Err(BrowserCompanionProbeError::MissingBinary);
+                }
+
+                let error_message = error.to_string();
+                return Err(BrowserCompanionProbeError::SpawnFailed(error_message));
+            }
+        };
+        let probe_result = timeout(timeout_duration, child.wait()).await;
         match probe_result {
-            Ok(Ok(output)) => {
+            Ok(Ok(status)) => {
+                let stdout = read_probe_pipe(&mut child.stdout).await?;
+                let stderr = read_probe_pipe(&mut child.stderr).await?;
+                let output = Output {
+                    status,
+                    stdout,
+                    stderr,
+                };
                 return interpret_browser_companion_probe_output(output);
             }
             Ok(Err(error)) => {
@@ -260,11 +283,31 @@ async fn probe_browser_companion_version(
                 let error_message = error.to_string();
                 return Err(BrowserCompanionProbeError::SpawnFailed(error_message));
             }
-            Err(_) => {}
+            Err(_) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+            }
         }
     }
 
     Err(BrowserCompanionProbeError::TimedOut)
+}
+
+async fn read_probe_pipe<R>(pipe: &mut Option<R>) -> Result<Vec<u8>, BrowserCompanionProbeError>
+where
+    R: AsyncRead + Unpin,
+{
+    let Some(reader) = pipe.as_mut() else {
+        return Ok(Vec::new());
+    };
+
+    let mut bytes = Vec::new();
+    reader
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|error| BrowserCompanionProbeError::SpawnFailed(error.to_string()))?;
+
+    Ok(bytes)
 }
 
 fn interpret_browser_companion_probe_output(
@@ -551,5 +594,12 @@ mod tests {
             "loongclaw-browser-companion 11.5.0",
             "1.5.0"
         ));
+    }
+
+    #[test]
+    fn browser_companion_probe_timeout_duration_saturates() {
+        let timeout_duration = browser_companion_probe_timeout_duration(u64::MAX);
+
+        assert_eq!(timeout_duration, Duration::MAX);
     }
 }

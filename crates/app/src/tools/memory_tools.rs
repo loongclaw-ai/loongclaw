@@ -507,7 +507,7 @@ fn search_canonical_memory_results(
     Ok(hits
         .into_iter()
         .map(|hit| {
-            let score = line_match_score(query, query_tokens, hit.record.content.as_str());
+            let score = canonical_memory_match_score(query, query_tokens, &hit);
             let scope = hit.record.scope.as_str().to_owned();
             let kind = hit.record.kind.as_str().to_owned();
             MemorySearchResult {
@@ -523,8 +523,35 @@ fn search_canonical_memory_results(
                 score,
             }
         })
-        .filter(|result| result.score > 0)
         .collect())
+}
+
+fn canonical_memory_match_score(
+    query: &str,
+    query_tokens: &[String],
+    hit: &crate::memory::CanonicalMemorySearchHit,
+) -> u32 {
+    let content_score = line_match_score(query, query_tokens, hit.record.content.as_str());
+    let session_id_score = line_match_score(query, query_tokens, hit.record.session_id.as_str());
+    let scope_score = line_match_score(query, query_tokens, hit.record.scope.as_str());
+    let kind_score = line_match_score(query, query_tokens, hit.record.kind.as_str());
+    let role_score = hit
+        .record
+        .role
+        .as_deref()
+        .map(|value| line_match_score(query, query_tokens, value))
+        .unwrap_or(0);
+    let metadata_text = hit.record.metadata.to_string();
+    let metadata_score = line_match_score(query, query_tokens, metadata_text.as_str());
+
+    let strongest_metadata_score = session_id_score
+        .max(scope_score)
+        .max(kind_score)
+        .max(role_score)
+        .max(metadata_score);
+    let strongest_score = content_score.max(strongest_metadata_score);
+
+    strongest_score.max(1)
 }
 
 fn memory_search_result_payload(result: &MemorySearchResult) -> Value {
@@ -610,6 +637,66 @@ mod tests {
                 .as_str()
                 .is_some_and(|value| value.contains("17:00 Beijing time")),
             "expected canonical snippet in result payload: {results:?}"
+        );
+    }
+
+    #[cfg(all(feature = "tool-file", feature = "memory-sqlite"))]
+    #[test]
+    fn memory_search_tool_preserves_metadata_only_canonical_hits() {
+        let root = unique_temp_dir("loongclaw-memory-search-canonical-metadata");
+        let db_path = root.join("memory.sqlite3");
+
+        std::fs::create_dir_all(&root).expect("create root dir");
+
+        let memory_config = crate::memory::runtime_config::MemoryRuntimeConfig {
+            sqlite_path: Some(db_path.clone()),
+            ..crate::memory::runtime_config::MemoryRuntimeConfig::default()
+        };
+        let payload = json!({
+            "type": crate::memory::CANONICAL_MEMORY_RECORD_TYPE,
+            "_loongclaw_internal": true,
+            "scope": "workspace",
+            "kind": "imported_profile",
+            "content": "release checklist",
+            "metadata": {
+                "source": "workspace-import"
+            },
+        })
+        .to_string();
+        crate::memory::append_turn_direct(
+            "metadata-session",
+            "assistant",
+            &payload,
+            &memory_config,
+        )
+        .expect("append structured canonical turn");
+
+        let runtime_config = super::super::runtime_config::ToolRuntimeConfig {
+            file_root: None,
+            memory_sqlite_path: Some(db_path),
+            ..super::super::runtime_config::ToolRuntimeConfig::default()
+        };
+        let outcome = super::super::execute_tool_core_with_config(
+            ToolCoreRequest {
+                tool_name: "memory_search".to_owned(),
+                payload: json!({
+                    "query": "workspace-import",
+                    "max_results": 4
+                }),
+            },
+            &runtime_config,
+        )
+        .expect("memory search should succeed");
+
+        let results = outcome.payload["results"].as_array().expect("results");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["source"], "canonical_session");
+        assert_eq!(results[0]["session_id"], "metadata-session");
+        assert_eq!(results[0]["scope"], "workspace");
+        assert_eq!(results[0]["kind"], "imported_profile");
+        assert!(
+            results[0]["score"].as_u64().is_some_and(|value| value > 0),
+            "metadata-only matches should keep a stable score: {results:?}"
         );
     }
 }

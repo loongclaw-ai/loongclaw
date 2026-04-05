@@ -103,7 +103,8 @@ impl PromptWindowQueryDiagnostics {
 }
 
 const SUMMARY_FORMAT_VERSION: i64 = 1;
-const SQLITE_MEMORY_SCHEMA_VERSION: i64 = 8;
+const SQLITE_MEMORY_SCHEMA_VERSION: i64 = 9;
+const CANONICAL_REBUILD_BATCH_SIZE: i64 = 256;
 const SQLITE_CURRENT_SCHEMA_OBJECT_COUNT: i64 = 18;
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 const SQLITE_PREPARED_STATEMENT_CACHE_CAPACITY: usize = 16;
@@ -134,9 +135,11 @@ const SQL_INSERT_CANONICAL_RECORD: &str = "INSERT INTO memory_canonical_records(
              ts
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)";
 const SQL_SELECT_TURNS_FOR_CANONICAL_REBUILD: &str =
-    "SELECT session_id, session_turn_index, role, content, ts
+    "SELECT id, session_id, session_turn_index, role, content, ts
              FROM turns
-             ORDER BY id ASC";
+             WHERE id > ?1
+             ORDER BY id ASC
+             LIMIT ?2";
 const SQL_COUNT_TURNS: &str = "SELECT COUNT(*) FROM turns";
 const SQL_COUNT_CANONICAL_RECORDS: &str = "SELECT COUNT(*) FROM memory_canonical_records";
 const SQL_COUNT_CANONICAL_FTS_ROWS: &str = "SELECT COUNT(*) FROM memory_canonical_records_fts";
@@ -168,7 +171,7 @@ const SQL_SEARCH_CANONICAL_RECORDS: &str = "SELECT record.session_id,
                     session.session_id IS NULL
                     OR (session.kind = 'root' AND archived.archived_at IS NULL)
                )
-             ORDER BY bm25(memory_canonical_records_fts), record.ts DESC
+             ORDER BY bm25(memory_canonical_records_fts), record.ts DESC, record.record_id DESC
              LIMIT ?3";
 const SQL_QUERY_RECENT_TURNS_NO_ID: &str = "SELECT role, content, ts, session_turn_index
              FROM turns
@@ -1444,26 +1447,103 @@ fn open_sqlite_connection_with_diagnostics(
             CREATE INDEX IF NOT EXISTS idx_memory_canonical_records_scope_kind_ts
               ON memory_canonical_records(scope, kind, ts DESC, record_id);
             CREATE VIRTUAL TABLE IF NOT EXISTS memory_canonical_records_fts
-              USING fts5(content, content='memory_canonical_records', content_rowid='record_id');
+              USING fts5(
+                content,
+                session_id,
+                scope,
+                kind,
+                role,
+                metadata_json,
+                content='memory_canonical_records',
+                content_rowid='record_id'
+              );
             CREATE TRIGGER IF NOT EXISTS memory_canonical_records_ai
               AFTER INSERT ON memory_canonical_records
             BEGIN
-              INSERT INTO memory_canonical_records_fts(rowid, content)
-              VALUES (new.record_id, new.content);
+              INSERT INTO memory_canonical_records_fts(
+                rowid,
+                content,
+                session_id,
+                scope,
+                kind,
+                role,
+                metadata_json
+              )
+              VALUES (
+                new.record_id,
+                new.content,
+                new.session_id,
+                new.scope,
+                new.kind,
+                COALESCE(new.role, ''),
+                new.metadata_json
+              );
             END;
             CREATE TRIGGER IF NOT EXISTS memory_canonical_records_ad
               AFTER DELETE ON memory_canonical_records
             BEGIN
-              INSERT INTO memory_canonical_records_fts(memory_canonical_records_fts, rowid, content)
-              VALUES ('delete', old.record_id, old.content);
+              INSERT INTO memory_canonical_records_fts(
+                memory_canonical_records_fts,
+                rowid,
+                content,
+                session_id,
+                scope,
+                kind,
+                role,
+                metadata_json
+              )
+              VALUES (
+                'delete',
+                old.record_id,
+                old.content,
+                old.session_id,
+                old.scope,
+                old.kind,
+                COALESCE(old.role, ''),
+                old.metadata_json
+              );
             END;
             CREATE TRIGGER IF NOT EXISTS memory_canonical_records_au
               AFTER UPDATE ON memory_canonical_records
             BEGIN
-              INSERT INTO memory_canonical_records_fts(memory_canonical_records_fts, rowid, content)
-              VALUES ('delete', old.record_id, old.content);
-              INSERT INTO memory_canonical_records_fts(rowid, content)
-              VALUES (new.record_id, new.content);
+              INSERT INTO memory_canonical_records_fts(
+                memory_canonical_records_fts,
+                rowid,
+                content,
+                session_id,
+                scope,
+                kind,
+                role,
+                metadata_json
+              )
+              VALUES (
+                'delete',
+                old.record_id,
+                old.content,
+                old.session_id,
+                old.scope,
+                old.kind,
+                COALESCE(old.role, ''),
+                old.metadata_json
+              );
+              INSERT INTO memory_canonical_records_fts(
+                rowid,
+                content,
+                session_id,
+                scope,
+                kind,
+                role,
+                metadata_json
+              )
+              VALUES (
+                new.record_id,
+                new.content,
+                new.session_id,
+                new.scope,
+                new.kind,
+                COALESCE(new.role, ''),
+                new.metadata_json
+              );
             END;
             CREATE TABLE IF NOT EXISTS approval_requests(
               approval_request_id TEXT PRIMARY KEY,
@@ -1511,7 +1591,7 @@ fn open_sqlite_connection_with_diagnostics(
         diagnostics.schema_init_ms = elapsed_ms(schema_init_started_at);
     }
 
-    if user_version < SQLITE_MEMORY_SCHEMA_VERSION {
+    if user_version < SQLITE_MEMORY_SCHEMA_VERSION || !current_schema_ready {
         ensure_turn_session_index_and_state_metadata(&conn)?;
         ensure_approval_lifecycle_tables(&conn)?;
         ensure_session_tool_consent_storage(&mut conn)?;
@@ -1552,11 +1632,15 @@ fn write_sqlite_user_version(conn: &Connection, version: i64) -> Result<(), Stri
 }
 
 fn sqlite_current_schema_objects_ready(conn: &Connection) -> Result<bool, String> {
-    conn.query_row(SQL_COUNT_CURRENT_SCHEMA_OBJECTS, [], |row| {
-        row.get::<_, i64>(0)
-    })
-    .map(|count| count == SQLITE_CURRENT_SCHEMA_OBJECT_COUNT)
-    .map_err(|error| format!("probe sqlite current schema objects failed: {error}"))
+    let object_count = conn
+        .query_row(SQL_COUNT_CURRENT_SCHEMA_OBJECTS, [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map_err(|error| format!("probe sqlite current schema objects failed: {error}"))?;
+    let object_count_ready = object_count == SQLITE_CURRENT_SCHEMA_OBJECT_COUNT;
+    let canonical_fts_ready = !canonical_record_fts_needs_rebuild(conn)?;
+
+    Ok(object_count_ready && canonical_fts_ready)
 }
 
 fn ensure_turn_session_index_and_state_metadata(conn: &Connection) -> Result<(), String> {
@@ -1762,32 +1846,249 @@ fn ensure_canonical_record_storage(conn: &Connection) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_memory_canonical_records_scope_kind_ts
           ON memory_canonical_records(scope, kind, ts DESC, record_id);
         CREATE VIRTUAL TABLE IF NOT EXISTS memory_canonical_records_fts
-          USING fts5(content, content='memory_canonical_records', content_rowid='record_id');
+          USING fts5(
+            content,
+            session_id,
+            scope,
+            kind,
+            role,
+            metadata_json,
+            content='memory_canonical_records',
+            content_rowid='record_id'
+          );
         CREATE TRIGGER IF NOT EXISTS memory_canonical_records_ai
           AFTER INSERT ON memory_canonical_records
         BEGIN
-          INSERT INTO memory_canonical_records_fts(rowid, content)
-          VALUES (new.record_id, new.content);
+          INSERT INTO memory_canonical_records_fts(
+            rowid,
+            content,
+            session_id,
+            scope,
+            kind,
+            role,
+            metadata_json
+          )
+          VALUES (
+            new.record_id,
+            new.content,
+            new.session_id,
+            new.scope,
+            new.kind,
+            COALESCE(new.role, ''),
+            new.metadata_json
+          );
         END;
         CREATE TRIGGER IF NOT EXISTS memory_canonical_records_ad
           AFTER DELETE ON memory_canonical_records
         BEGIN
-          INSERT INTO memory_canonical_records_fts(memory_canonical_records_fts, rowid, content)
-          VALUES ('delete', old.record_id, old.content);
+          INSERT INTO memory_canonical_records_fts(
+            memory_canonical_records_fts,
+            rowid,
+            content,
+            session_id,
+            scope,
+            kind,
+            role,
+            metadata_json
+          )
+          VALUES (
+            'delete',
+            old.record_id,
+            old.content,
+            old.session_id,
+            old.scope,
+            old.kind,
+            COALESCE(old.role, ''),
+            old.metadata_json
+          );
         END;
         CREATE TRIGGER IF NOT EXISTS memory_canonical_records_au
           AFTER UPDATE ON memory_canonical_records
         BEGIN
-          INSERT INTO memory_canonical_records_fts(memory_canonical_records_fts, rowid, content)
-          VALUES ('delete', old.record_id, old.content);
-          INSERT INTO memory_canonical_records_fts(rowid, content)
-          VALUES (new.record_id, new.content);
+          INSERT INTO memory_canonical_records_fts(
+            memory_canonical_records_fts,
+            rowid,
+            content,
+            session_id,
+            scope,
+            kind,
+            role,
+            metadata_json
+          )
+          VALUES (
+            'delete',
+            old.record_id,
+            old.content,
+            old.session_id,
+            old.scope,
+            old.kind,
+            COALESCE(old.role, ''),
+            old.metadata_json
+          );
+          INSERT INTO memory_canonical_records_fts(
+            rowid,
+            content,
+            session_id,
+            scope,
+            kind,
+            role,
+            metadata_json
+          )
+          VALUES (
+            new.record_id,
+            new.content,
+            new.session_id,
+            new.scope,
+            new.kind,
+            COALESCE(new.role, ''),
+            new.metadata_json
+          );
         END;
         ",
     )
     .map_err(|error| format!("ensure canonical memory storage failed: {error}"))?;
 
+    if canonical_record_fts_needs_rebuild(conn)? {
+        recreate_canonical_record_fts_index(conn)?;
+    }
+
     rebuild_canonical_record_storage_if_needed(conn)?;
+
+    Ok(())
+}
+
+fn canonical_record_fts_needs_rebuild(conn: &Connection) -> Result<bool, String> {
+    let columns = sqlite_table_columns(conn, "memory_canonical_records_fts")?;
+    if columns.is_empty() {
+        return Ok(false);
+    }
+
+    let required_columns = [
+        "content",
+        "session_id",
+        "scope",
+        "kind",
+        "role",
+        "metadata_json",
+    ];
+    let has_all_required_columns = required_columns.iter().all(|required_column| {
+        columns
+            .iter()
+            .any(|current_column| current_column == required_column)
+    });
+
+    Ok(!has_all_required_columns)
+}
+
+fn recreate_canonical_record_fts_index(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        DROP TRIGGER IF EXISTS memory_canonical_records_ai;
+        DROP TRIGGER IF EXISTS memory_canonical_records_ad;
+        DROP TRIGGER IF EXISTS memory_canonical_records_au;
+        DROP TABLE IF EXISTS memory_canonical_records_fts;
+        CREATE VIRTUAL TABLE memory_canonical_records_fts
+          USING fts5(
+            content,
+            session_id,
+            scope,
+            kind,
+            role,
+            metadata_json,
+            content='memory_canonical_records',
+            content_rowid='record_id'
+          );
+        CREATE TRIGGER memory_canonical_records_ai
+          AFTER INSERT ON memory_canonical_records
+        BEGIN
+          INSERT INTO memory_canonical_records_fts(
+            rowid,
+            content,
+            session_id,
+            scope,
+            kind,
+            role,
+            metadata_json
+          )
+          VALUES (
+            new.record_id,
+            new.content,
+            new.session_id,
+            new.scope,
+            new.kind,
+            COALESCE(new.role, ''),
+            new.metadata_json
+          );
+        END;
+        CREATE TRIGGER memory_canonical_records_ad
+          AFTER DELETE ON memory_canonical_records
+        BEGIN
+          INSERT INTO memory_canonical_records_fts(
+            memory_canonical_records_fts,
+            rowid,
+            content,
+            session_id,
+            scope,
+            kind,
+            role,
+            metadata_json
+          )
+          VALUES (
+            'delete',
+            old.record_id,
+            old.content,
+            old.session_id,
+            old.scope,
+            old.kind,
+            COALESCE(old.role, ''),
+            old.metadata_json
+          );
+        END;
+        CREATE TRIGGER memory_canonical_records_au
+          AFTER UPDATE ON memory_canonical_records
+        BEGIN
+          INSERT INTO memory_canonical_records_fts(
+            memory_canonical_records_fts,
+            rowid,
+            content,
+            session_id,
+            scope,
+            kind,
+            role,
+            metadata_json
+          )
+          VALUES (
+            'delete',
+            old.record_id,
+            old.content,
+            old.session_id,
+            old.scope,
+            old.kind,
+            COALESCE(old.role, ''),
+            old.metadata_json
+          );
+          INSERT INTO memory_canonical_records_fts(
+            rowid,
+            content,
+            session_id,
+            scope,
+            kind,
+            role,
+            metadata_json
+          )
+          VALUES (
+            new.record_id,
+            new.content,
+            new.session_id,
+            new.scope,
+            new.kind,
+            COALESCE(new.role, ''),
+            new.metadata_json
+          );
+        END;
+        ",
+    )
+    .map_err(|error| format!("recreate canonical memory FTS index failed: {error}"))?;
 
     Ok(())
 }
@@ -3159,6 +3460,7 @@ fn rebuild_canonical_record_storage_if_needed(conn: &Connection) -> Result<(), S
 
     #[derive(Debug)]
     struct PersistedTurnRow {
+        turn_id: i64,
         session_id: String,
         session_turn_index: i64,
         role: String,
@@ -3166,45 +3468,59 @@ fn rebuild_canonical_record_storage_if_needed(conn: &Connection) -> Result<(), S
         ts: i64,
     }
 
-    let mut select_turns = prepare_cached_sqlite_statement(
-        conn,
-        SQL_SELECT_TURNS_FOR_CANONICAL_REBUILD,
-        "prepare canonical rebuild turn query failed",
-    )?;
-    let rows = select_turns
-        .query_map([], |row| {
-            Ok(PersistedTurnRow {
-                session_id: row.get(0)?,
-                session_turn_index: row.get(1)?,
-                role: row.get(2)?,
-                content: row.get(3)?,
-                ts: row.get(4)?,
-            })
-        })
-        .map_err(|error| format!("query canonical rebuild turns failed: {error}"))?;
-    let turns = rows
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("read canonical rebuild turns failed: {error}"))?;
-    drop(select_turns);
-
     conn.execute_batch("SAVEPOINT canonical_rebuild")
         .map_err(|error| format!("begin canonical rebuild savepoint failed: {error}"))?;
 
     let rebuild_result = (|| {
         conn.execute("DELETE FROM memory_canonical_records", [])
             .map_err(|error| format!("clear canonical records before rebuild failed: {error}"))?;
-        for turn in &turns {
-            insert_canonical_record(
+        let mut last_turn_id = 0_i64;
+
+        loop {
+            let mut select_turns = prepare_cached_sqlite_statement(
                 conn,
-                build_canonical_insert_input(
-                    turn.session_id.as_str(),
-                    turn.session_turn_index,
-                    turn.role.as_str(),
-                    turn.content.as_str(),
-                    turn.ts,
-                ),
+                SQL_SELECT_TURNS_FOR_CANONICAL_REBUILD,
+                "prepare canonical rebuild turn query failed",
             )?;
+            let rows = select_turns
+                .query_map(
+                    rusqlite::params![last_turn_id, CANONICAL_REBUILD_BATCH_SIZE],
+                    |row| {
+                        Ok(PersistedTurnRow {
+                            turn_id: row.get(0)?,
+                            session_id: row.get(1)?,
+                            session_turn_index: row.get(2)?,
+                            role: row.get(3)?,
+                            content: row.get(4)?,
+                            ts: row.get(5)?,
+                        })
+                    },
+                )
+                .map_err(|error| format!("query canonical rebuild turns failed: {error}"))?;
+            let turns = rows
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("read canonical rebuild turns failed: {error}"))?;
+            drop(select_turns);
+
+            if turns.is_empty() {
+                break;
+            }
+
+            for turn in &turns {
+                last_turn_id = turn.turn_id;
+                insert_canonical_record(
+                    conn,
+                    build_canonical_insert_input(
+                        turn.session_id.as_str(),
+                        turn.session_turn_index,
+                        turn.role.as_str(),
+                        turn.content.as_str(),
+                        turn.ts,
+                    ),
+                )?;
+            }
         }
+
         Ok(())
     })();
 
@@ -8082,6 +8398,127 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].record.scope, MemoryScope::Workspace);
         assert_eq!(hits[0].record.kind, CanonicalMemoryKind::ImportedProfile);
+        assert_eq!(hits[0].record.metadata["source"], "workspace-import");
+
+        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn canonical_memory_search_matches_metadata_only_queries() {
+        let tmp = std::env::temp_dir().join(format!(
+            "loongclaw-canonical-memory-metadata-only-search-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).expect("create temp dir");
+        let db_path = tmp.join("canonical-metadata-only-search.sqlite3");
+        let _ = fs::remove_file(&db_path);
+
+        let config = MemoryRuntimeConfig {
+            sqlite_path: Some(db_path.clone()),
+            ..MemoryRuntimeConfig::default()
+        };
+
+        let payload = json!({
+            "type": crate::memory::CANONICAL_MEMORY_RECORD_TYPE,
+            "_loongclaw_internal": true,
+            "scope": "workspace",
+            "kind": "imported_profile",
+            "content": "release checklist",
+            "metadata": {
+                "source": "workspace-import"
+            },
+        })
+        .to_string();
+
+        append_turn_direct("workspace-session", "assistant", &payload, &config)
+            .expect("append structured canonical payload");
+
+        let hits = search_canonical_records_for_recall("workspace-import", 4, None, &config)
+            .expect("search canonical memory by metadata");
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].record.scope, MemoryScope::Workspace);
+        assert_eq!(hits[0].record.kind, CanonicalMemoryKind::ImportedProfile);
+        assert_eq!(hits[0].record.metadata["source"], "workspace-import");
+
+        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn ensure_memory_db_ready_repairs_stale_canonical_fts_metadata_schema() {
+        let tmp = std::env::temp_dir().join(format!(
+            "loongclaw-canonical-memory-stale-fts-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).expect("create temp dir");
+        let db_path = tmp.join("stale-canonical-fts.sqlite3");
+        let _ = fs::remove_file(&db_path);
+
+        let config = MemoryRuntimeConfig {
+            sqlite_path: Some(db_path.clone()),
+            ..MemoryRuntimeConfig::default()
+        };
+        ensure_memory_db_ready(None, &config).expect("initialize sqlite db");
+
+        let conn = Connection::open(&db_path).expect("open sqlite db");
+        conn.execute_batch(
+            "
+            DROP TRIGGER IF EXISTS memory_canonical_records_ai;
+            DROP TRIGGER IF EXISTS memory_canonical_records_ad;
+            DROP TRIGGER IF EXISTS memory_canonical_records_au;
+            DROP TABLE IF EXISTS memory_canonical_records_fts;
+            CREATE VIRTUAL TABLE memory_canonical_records_fts
+              USING fts5(content, content='memory_canonical_records', content_rowid='record_id');
+            CREATE TRIGGER memory_canonical_records_ai
+              AFTER INSERT ON memory_canonical_records
+            BEGIN
+              INSERT INTO memory_canonical_records_fts(rowid, content)
+              VALUES (new.record_id, new.content);
+            END;
+            CREATE TRIGGER memory_canonical_records_ad
+              AFTER DELETE ON memory_canonical_records
+            BEGIN
+              INSERT INTO memory_canonical_records_fts(memory_canonical_records_fts, rowid, content)
+              VALUES ('delete', old.record_id, old.content);
+            END;
+            CREATE TRIGGER memory_canonical_records_au
+              AFTER UPDATE ON memory_canonical_records
+            BEGIN
+              INSERT INTO memory_canonical_records_fts(memory_canonical_records_fts, rowid, content)
+              VALUES ('delete', old.record_id, old.content);
+              INSERT INTO memory_canonical_records_fts(rowid, content)
+              VALUES (new.record_id, new.content);
+            END;
+            PRAGMA user_version = 8;
+            ",
+        )
+        .expect("degrade canonical FTS schema");
+        drop(conn);
+
+        let payload = json!({
+            "type": crate::memory::CANONICAL_MEMORY_RECORD_TYPE,
+            "_loongclaw_internal": true,
+            "scope": "workspace",
+            "kind": "imported_profile",
+            "content": "release checklist",
+            "metadata": {
+                "source": "workspace-import"
+            },
+        })
+        .to_string();
+        append_turn_direct("workspace-session", "assistant", &payload, &config)
+            .expect("append structured canonical payload");
+
+        ensure_memory_db_ready(None, &config).expect("repair stale canonical FTS schema");
+
+        let hits = search_canonical_records_for_recall("workspace-import", 4, None, &config)
+            .expect("search canonical memory after repair");
+
+        assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].record.metadata["source"], "workspace-import");
 
         let _ = fs::remove_file(&db_path);

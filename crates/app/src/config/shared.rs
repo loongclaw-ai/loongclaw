@@ -504,7 +504,8 @@ fn resolve_user_home(
     home: Option<&std::ffi::OsStr>,
     userprofile: Option<&std::ffi::OsStr>,
 ) -> PathBuf {
-    home.or(userprofile)
+    home.filter(|value| !value.is_empty())
+        .or_else(|| userprofile.filter(|value| !value.is_empty()))
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
 }
@@ -515,6 +516,7 @@ fn resolve_loongclaw_home(
     userprofile: Option<&std::ffi::OsStr>,
 ) -> PathBuf {
     loongclaw_home
+        .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| resolve_user_home(home, userprofile).join(".loongclaw"))
 }
@@ -916,11 +918,56 @@ mod tests {
     }
 
     #[test]
+    fn resolve_user_home_treats_empty_home_as_unset() {
+        let userprofile = if cfg!(windows) {
+            PathBuf::from(r"C:\Users\loongclaw-test-userprofile")
+        } else {
+            PathBuf::from("/tmp/loongclaw-test-userprofile")
+        };
+        let resolved = resolve_user_home(
+            Some(std::ffi::OsStr::new("")),
+            Some(userprofile.as_os_str()),
+        );
+
+        assert_eq!(resolved, userprofile);
+    }
+
+    #[test]
     fn default_loongclaw_home_uses_override_env_when_present() {
         let mut env = ScopedEnv::new();
         let override_home = std::env::temp_dir().join("loongclaw-home-env-override");
         env.set(LOONGCLAW_HOME_ENV, &override_home);
 
         assert_eq!(default_loongclaw_home(), override_home);
+    }
+
+    #[test]
+    fn resolve_loongclaw_home_treats_empty_override_as_unset() {
+        let home = if cfg!(windows) {
+            PathBuf::from(r"C:\Users\loongclaw-test-home")
+        } else {
+            PathBuf::from("/tmp/loongclaw-test-home")
+        };
+        let resolved =
+            resolve_loongclaw_home(Some(std::ffi::OsStr::new("")), Some(home.as_os_str()), None);
+
+        assert_eq!(resolved, home.join(".loongclaw"));
+    }
+
+    #[test]
+    fn default_loongclaw_home_treats_empty_override_env_as_unset() {
+        let mut env = ScopedEnv::new();
+        let home = if cfg!(windows) {
+            PathBuf::from(r"C:\Users\loongclaw-test-home")
+        } else {
+            PathBuf::from("/tmp/loongclaw-test-home")
+        };
+        env.set(LOONGCLAW_HOME_ENV, "");
+        env.set("HOME", &home);
+        env.remove("USERPROFILE");
+
+        let resolved = default_loongclaw_home();
+
+        assert_eq!(resolved, home.join(".loongclaw"));
     }
 }
