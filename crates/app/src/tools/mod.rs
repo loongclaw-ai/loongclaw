@@ -511,7 +511,7 @@ fn required_capabilities_for_tool_name_and_payload(
             caps.insert(Capability::FilesystemWrite);
             caps.insert(Capability::NetworkEgress);
         }
-        "config.import" => {
+        config_import::CONFIG_IMPORT_TOOL_NAME => {
             caps.insert(Capability::FilesystemRead);
             let mode_requires_write =
                 config_import::config_import_mode_requires_write_value(payload);
@@ -814,7 +814,9 @@ fn dispatch_tool_request(
     config: &runtime_config::ToolRuntimeConfig,
 ) -> Result<ToolCoreOutcome, String> {
     match request.tool_name.as_str() {
-        "config.import" => config_import::execute_config_import_tool_with_config(request, config),
+        config_import::CONFIG_IMPORT_TOOL_NAME => {
+            config_import::execute_config_import_tool_with_config(request, config)
+        }
         "external_skills.resolve" => {
             external_skills::execute_external_skills_resolve_tool_with_config(request, config)
         }
@@ -2530,212 +2532,6 @@ mod tests {
         assert_eq!(canonical_tool_name("file.read"), "file.read");
     }
 
-    #[test]
-    fn required_capabilities_follow_effective_tool_request() {
-        let direct_file_read = ToolCoreRequest {
-            tool_name: "file.read".to_owned(),
-            payload: json!({"path": "README.md"}),
-        };
-        assert_eq!(
-            required_capabilities_for_request(&direct_file_read),
-            BTreeSet::from([Capability::InvokeTool, Capability::FilesystemRead])
-        );
-
-        let direct_file_write = ToolCoreRequest {
-            tool_name: "file.write".to_owned(),
-            payload: json!({"path": "notes.txt", "content": "hello"}),
-        };
-        assert_eq!(
-            required_capabilities_for_request(&direct_file_write),
-            BTreeSet::from([Capability::InvokeTool, Capability::FilesystemWrite])
-        );
-
-        let direct_file_edit = ToolCoreRequest {
-            tool_name: "file.edit".to_owned(),
-            payload: json!({"path": "notes.txt", "old_string": "a", "new_string": "b"}),
-        };
-        assert_eq!(
-            required_capabilities_for_request(&direct_file_edit),
-            BTreeSet::from([Capability::InvokeTool, Capability::FilesystemWrite])
-        );
-
-        let direct_memory_search = ToolCoreRequest {
-            tool_name: "memory_search".to_owned(),
-            payload: json!({"query": "deploy freeze"}),
-        };
-        assert_eq!(
-            required_capabilities_for_request(&direct_memory_search),
-            BTreeSet::from([Capability::InvokeTool, Capability::FilesystemRead])
-        );
-
-        let direct_memory_get = ToolCoreRequest {
-            tool_name: "memory_get".to_owned(),
-            payload: json!({"path": "MEMORY.md"}),
-        };
-        assert_eq!(
-            required_capabilities_for_request(&direct_memory_get),
-            BTreeSet::from([Capability::InvokeTool, Capability::FilesystemRead])
-        );
-
-        let direct_web_fetch = ToolCoreRequest {
-            tool_name: "web.fetch".to_owned(),
-            payload: json!({"url": "https://example.com"}),
-        };
-        assert_eq!(
-            required_capabilities_for_request(&direct_web_fetch),
-            BTreeSet::from([Capability::InvokeTool, Capability::NetworkEgress])
-        );
-
-        let direct_web_search = ToolCoreRequest {
-            tool_name: "web.search".to_owned(),
-            payload: json!({"query": "loongclaw"}),
-        };
-        assert_eq!(
-            required_capabilities_for_request(&direct_web_search),
-            BTreeSet::from([Capability::InvokeTool, Capability::NetworkEgress])
-        );
-
-        let direct_browser_open = ToolCoreRequest {
-            tool_name: "browser.open".to_owned(),
-            payload: json!({"url": "https://example.com"}),
-        };
-        assert_eq!(
-            required_capabilities_for_request(&direct_browser_open),
-            BTreeSet::from([Capability::InvokeTool, Capability::NetworkEgress])
-        );
-
-        let direct_browser_extract = ToolCoreRequest {
-            tool_name: "browser.extract".to_owned(),
-            payload: json!({"mode": "page_text"}),
-        };
-        assert_eq!(
-            required_capabilities_for_request(&direct_browser_extract),
-            BTreeSet::from([Capability::InvokeTool])
-        );
-
-        let direct_browser_click = ToolCoreRequest {
-            tool_name: "browser.click".to_owned(),
-            payload: json!({"id": 1}),
-        };
-        assert_eq!(
-            required_capabilities_for_request(&direct_browser_click),
-            BTreeSet::from([Capability::InvokeTool, Capability::NetworkEgress])
-        );
-
-        let direct_bash_exec = ToolCoreRequest {
-            tool_name: "bash.exec".to_owned(),
-            payload: json!({"command": "printf ok"}),
-        };
-        assert_eq!(
-            required_capabilities_for_request(&direct_bash_exec),
-            BTreeSet::from([
-                Capability::InvokeTool,
-                Capability::FilesystemRead,
-                Capability::FilesystemWrite,
-                Capability::NetworkEgress,
-            ])
-        );
-
-        let invoked_file_read = ToolCoreRequest {
-            tool_name: "tool.invoke".to_owned(),
-            payload: json!({
-                "tool_id": "file.read",
-                "lease": "unused",
-                "arguments": {"path": "README.md"}
-            }),
-        };
-        assert_eq!(
-            required_capabilities_for_request(&invoked_file_read),
-            BTreeSet::from([Capability::InvokeTool, Capability::FilesystemRead])
-        );
-
-        let invoked_memory_search = ToolCoreRequest {
-            tool_name: "tool.invoke".to_owned(),
-            payload: json!({
-                "tool_id": "memory_search",
-                "lease": "unused",
-                "arguments": {"query": "deploy freeze"}
-            }),
-        };
-        assert_eq!(
-            required_capabilities_for_request(&invoked_memory_search),
-            BTreeSet::from([Capability::InvokeTool, Capability::FilesystemRead])
-        );
-
-        let invoked_web_fetch = ToolCoreRequest {
-            tool_name: "tool.invoke".to_owned(),
-            payload: json!({
-                "tool_id": "web.fetch",
-                "lease": "unused",
-                "arguments": {"url": "https://example.com"}
-            }),
-        };
-        assert_eq!(
-            required_capabilities_for_request(&invoked_web_fetch),
-            BTreeSet::from([Capability::InvokeTool, Capability::NetworkEgress])
-        );
-
-        let invoked_bash_exec = ToolCoreRequest {
-            tool_name: "tool.invoke".to_owned(),
-            payload: json!({
-                "tool_id": "bash.exec",
-                "lease": "unused",
-                "arguments": {"command": "printf ok"}
-            }),
-        };
-        assert_eq!(
-            required_capabilities_for_request(&invoked_bash_exec),
-            BTreeSet::from([
-                Capability::InvokeTool,
-                Capability::FilesystemRead,
-                Capability::FilesystemWrite,
-                Capability::NetworkEgress,
-            ])
-        );
-
-        let invoked_claw_plan = ToolCoreRequest {
-            tool_name: "tool.invoke".to_owned(),
-            payload: json!({
-                "tool_id": "config.import",
-                "lease": "unused",
-                "arguments": {"mode": "plan", "input_path": "imports/nanobot"}
-            }),
-        };
-        assert_eq!(
-            required_capabilities_for_request(&invoked_claw_plan),
-            BTreeSet::from([Capability::InvokeTool, Capability::FilesystemRead])
-        );
-
-        let invoked_claw_apply = ToolCoreRequest {
-            tool_name: "tool.invoke".to_owned(),
-            payload: json!({
-                "tool_id": "config.import",
-                "lease": "unused",
-                "arguments": {
-                    "mode": "apply",
-                    "input_path": "imports/nanobot",
-                    "output_path": "loongclaw.toml"
-                }
-            }),
-        };
-        assert_eq!(
-            required_capabilities_for_request(&invoked_claw_apply),
-            BTreeSet::from([
-                Capability::InvokeTool,
-                Capability::FilesystemRead,
-                Capability::FilesystemWrite,
-            ])
-        );
-
-        let malformed_invoke = ToolCoreRequest {
-            tool_name: "tool.invoke".to_owned(),
-            payload: json!({"lease": "unused"}),
-        };
-        assert_eq!(
-            required_capabilities_for_request(&malformed_invoke),
-            BTreeSet::from([Capability::InvokeTool])
-        );
-    }
     #[cfg(feature = "tool-file")]
     #[test]
     fn runtime_tool_view_hides_memory_tools_when_memory_corpus_is_empty() {
@@ -14075,41 +13871,45 @@ mod tests {
             file_root: Some(root.clone()),
             ..runtime_config::ToolRuntimeConfig::default()
         };
-        let outcome = execute_tool_core_with_config(
-            ToolCoreRequest {
-                tool_name: "claw_migrate".to_owned(),
-                payload: json!({
-                    "mode": "apply",
-                    "source": "nanobot",
-                    "input_path": ".",
-                    "output_path": "generated/loongclaw.toml",
-                    "force": true
-                }),
-            },
-            &config,
-        )
-        .expect("config import apply should succeed");
+        let tool_names = ["claw_migrate", "claw.migrate"];
 
-        assert_eq!(outcome.status, "ok");
-        assert_eq!(outcome.payload["mode"], "apply");
-        assert_eq!(outcome.payload["config_written"], true);
-        assert_eq!(
-            outcome.payload["next_step"]
-                .as_str()
-                .expect("next_step should be present")
-                .split_whitespace()
-                .next(),
-            Some("loong")
-        );
-        assert_eq!(
-            outcome.payload["output_path"]
-                .as_str()
-                .expect("output path should exist"),
-            fs::canonicalize(&output_path)
-                .expect("output path should canonicalize")
-                .display()
-                .to_string()
-        );
+        for tool_name in tool_names {
+            let outcome = execute_tool_core_with_config(
+                ToolCoreRequest {
+                    tool_name: tool_name.to_owned(),
+                    payload: json!({
+                        "mode": "apply",
+                        "source": "nanobot",
+                        "input_path": ".",
+                        "output_path": "generated/loongclaw.toml",
+                        "force": true
+                    }),
+                },
+                &config,
+            )
+            .expect("config import apply should succeed");
+
+            assert_eq!(outcome.status, "ok");
+            assert_eq!(outcome.payload["mode"], "apply");
+            assert_eq!(outcome.payload["config_written"], true);
+            assert_eq!(
+                outcome.payload["next_step"]
+                    .as_str()
+                    .expect("next_step should be present")
+                    .split_whitespace()
+                    .next(),
+                Some("loong")
+            );
+            assert_eq!(
+                outcome.payload["output_path"]
+                    .as_str()
+                    .expect("output path should exist"),
+                fs::canonicalize(&output_path)
+                    .expect("output path should canonicalize")
+                    .display()
+                    .to_string()
+            );
+        }
 
         let raw = fs::read_to_string(&output_path).expect("output config should exist");
         assert!(raw.contains("prompt_pack_id = \"loongclaw-core-v1\""));

@@ -7,18 +7,12 @@ use serde_json::json;
 
 #[test]
 fn spec_requires_native_tool_executor_detects_aliases_and_extension() {
-    let alias_spec = make_runner_spec(OperationSpec::ToolCore {
-        tool_name: "claw_migrate".to_owned(),
-        required_capabilities: BTreeSet::from([Capability::InvokeTool]),
-        payload: json!({"mode": "plan"}),
-        core: None,
-    });
-    let canonical_spec = make_runner_spec(OperationSpec::ToolCore {
-        tool_name: "config.import".to_owned(),
-        required_capabilities: BTreeSet::from([Capability::InvokeTool]),
-        payload: json!({"mode": "plan"}),
-        core: None,
-    });
+    let native_tool_names = [
+        "claw.migrate",
+        "claw_migrate",
+        "config.import",
+        "config_import",
+    ];
     let extension_spec = make_runner_spec(OperationSpec::ToolExtension {
         extension_action: "plan".to_owned(),
         required_capabilities: BTreeSet::from([Capability::InvokeTool]),
@@ -33,8 +27,19 @@ fn spec_requires_native_tool_executor_detects_aliases_and_extension() {
         core: None,
     });
 
-    assert!(spec_requires_native_tool_executor(&alias_spec));
-    assert!(spec_requires_native_tool_executor(&canonical_spec));
+    for tool_name in native_tool_names {
+        let spec = make_runner_spec(OperationSpec::ToolCore {
+            tool_name: tool_name.to_owned(),
+            required_capabilities: BTreeSet::from([Capability::InvokeTool]),
+            payload: json!({"mode": "plan"}),
+            core: None,
+        });
+
+        assert!(
+            spec_requires_native_tool_executor(&spec),
+            "expected `{tool_name}` to require a native tool executor"
+        );
+    }
     assert!(spec_requires_native_tool_executor(&extension_spec));
     assert!(!spec_requires_native_tool_executor(&unrelated_spec));
 }

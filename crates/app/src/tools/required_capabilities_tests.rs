@@ -192,23 +192,23 @@ fn required_capabilities_follow_effective_tool_request() {
         ])
     );
 
-    let invoked_claw_plan = ToolCoreRequest {
+    let invoked_config_import_plan = ToolCoreRequest {
         tool_name: "tool.invoke".to_owned(),
         payload: json!({
-            "tool_id": "claw.migrate",
+            "tool_id": "config.import",
             "lease": "unused",
             "arguments": {"mode": "plan", "input_path": "imports/nanobot"}
         }),
     };
     assert_eq!(
-        required_capabilities_for_request(&invoked_claw_plan),
+        required_capabilities_for_request(&invoked_config_import_plan),
         BTreeSet::from([Capability::InvokeTool, Capability::FilesystemRead])
     );
 
-    let invoked_claw_apply = ToolCoreRequest {
+    let invoked_config_import_apply = ToolCoreRequest {
         tool_name: "tool.invoke".to_owned(),
         payload: json!({
-            "tool_id": "claw.migrate",
+            "tool_id": "config.import",
             "lease": "unused",
             "arguments": {
                 "mode": "apply",
@@ -218,7 +218,49 @@ fn required_capabilities_follow_effective_tool_request() {
         }),
     };
     assert_eq!(
-        required_capabilities_for_request(&invoked_claw_apply),
+        required_capabilities_for_request(&invoked_config_import_apply),
+        BTreeSet::from([
+            Capability::InvokeTool,
+            Capability::FilesystemRead,
+            Capability::FilesystemWrite,
+        ])
+    );
+
+    let invoked_config_import_apply_selected = ToolCoreRequest {
+        tool_name: "tool.invoke".to_owned(),
+        payload: json!({
+            "tool_id": "config.import",
+            "lease": "unused",
+            "arguments": {
+                "mode": "apply_selected",
+                "input_path": "imports/nanobot",
+                "output_path": "loongclaw.toml",
+                "source_id": "source-1"
+            }
+        }),
+    };
+    assert_eq!(
+        required_capabilities_for_request(&invoked_config_import_apply_selected),
+        BTreeSet::from([
+            Capability::InvokeTool,
+            Capability::FilesystemRead,
+            Capability::FilesystemWrite,
+        ])
+    );
+
+    let invoked_config_import_rollback = ToolCoreRequest {
+        tool_name: "tool.invoke".to_owned(),
+        payload: json!({
+            "tool_id": "config.import",
+            "lease": "unused",
+            "arguments": {
+                "mode": "rollback_last_apply",
+                "output_path": "loongclaw.toml"
+            }
+        }),
+    };
+    assert_eq!(
+        required_capabilities_for_request(&invoked_config_import_rollback),
         BTreeSet::from([
             Capability::InvokeTool,
             Capability::FilesystemRead,

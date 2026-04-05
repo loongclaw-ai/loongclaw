@@ -177,12 +177,12 @@ fn cli_import_help_explains_explicit_power_user_flow() {
 }
 
 #[test]
-fn cli_migrate_help_explains_explicit_migration_flow() {
+fn cli_migrate_help_explains_explicit_config_import_flow() {
     let help = render_cli_help(["migrate"]);
 
     assert!(
-        help.contains("Power-user migration flow"),
-        "migrate help should explain when to use the explicit migration command: {help}"
+        help.contains("Power-user config import flow"),
+        "migrate help should explain when to use the explicit config import command: {help}"
     );
     assert!(
         help.contains("--mode <MODE>"),

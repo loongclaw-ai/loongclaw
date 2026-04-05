@@ -201,7 +201,9 @@ pub fn build_cli_command(command_name: &'static str) -> clap::Command {
             command.long_about(render_import_long_about(command_name))
         })
         .mut_subcommand("migrate", |command| {
-            command.long_about(render_migrate_long_about(command_name))
+            command
+                .about("Preview or apply config import modes explicitly")
+                .long_about(render_migrate_long_about(command_name))
         })
         .mut_subcommand("ask", |command| {
             command.long_about(render_ask_long_about(command_name))
@@ -567,8 +569,8 @@ pub enum Commands {
         exclude: Vec<String>,
     },
     #[command(
-        about = "Preview or apply legacy agent workspace migration explicitly",
-        long_about = "Power-user migration flow for discovering, previewing, or applying legacy agent workspace nativeization explicitly.\n\nUse this when you want exact CLI control over migration mode selection and output handling for older workspace roots and compatibility imports. If you want the guided path, use `loong onboard` instead.\n\nMode quick reference:\n- discover, plan_many, recommend_primary, merge_profiles, map_external_skills: require `--input`\n- plan: requires `--input`; `--output` is optional preview target\n- apply: requires `--input` and `--output`\n- apply_selected: requires `--input` and `--output`; use `--source-id` to pin one discovered source, and `--apply-external-skills-plan` to bridge installable local external skills into the managed runtime\n- rollback_last_apply: requires `--output`"
+        about = "Preview or apply config import modes explicitly",
+        long_about = "Power-user config import flow for discovering, previewing, or applying external workspace state explicitly.\n\nUse this when you want exact CLI control over import mode selection and output handling for compatibility sources and older workspace roots. If you want the guided path, use `loong onboard` instead.\n\nMode quick reference:\n- discover, plan_many, recommend_primary, merge_profiles, map_external_skills: require `--input`\n- plan: requires `--input`; `--output` is optional preview target\n- apply: requires `--input` and `--output`\n- apply_selected: requires `--input` and `--output`; use `--source-id` to pin one discovered source, and `--apply-external-skills-plan` to bridge installable local external skills into the managed runtime\n- rollback_last_apply: requires `--output`"
     )]
     Migrate {
         /// Path to the legacy agent workspace or root to inspect

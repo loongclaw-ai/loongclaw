@@ -261,6 +261,9 @@ fn translate_migrate_cli_error(options: &MigrateCommandOptions, error: String) -
     let leaf = error
         .strip_prefix("tool execution failed: ")
         .unwrap_or(&error);
+    if leaf.starts_with("policy_denied: ") {
+        return leaf.to_owned();
+    }
     if let Some((_, reason)) = leaf.split_once(" denied request: ")
         && leaf.starts_with("policy extension ")
     {
