@@ -132,9 +132,10 @@ fn collect_session_search_artifact_includes_visible_hits() {
     assert_eq!(artifact.scope_session_id, "root-session");
     assert_eq!(artifact.query, "deploy freeze");
     assert_eq!(artifact.returned_count, 2);
-    assert_eq!(artifact.hits.len(), 2);
-    assert_eq!(artifact.hits[0].session.session_id, "child-session");
-    assert_eq!(artifact.hits[1].session.session_id, "root-session");
+    assert_eq!(artifact.matched_session_count, 2);
+    assert_eq!(artifact.results.len(), 2);
+    assert_eq!(artifact.results[0].session_id, "child-session");
+    assert_eq!(artifact.results[1].session_id, "root-session");
 }
 
 #[test]
@@ -189,7 +190,7 @@ fn load_session_search_artifact_round_trips_written_json() {
 
     assert_eq!(loaded.scope_session_id, "root-session");
     assert_eq!(loaded.returned_count, 1);
-    assert_eq!(loaded.hits.len(), 1);
+    assert_eq!(loaded.results.len(), 1);
 }
 
 #[test]
@@ -211,29 +212,23 @@ fn load_session_search_artifact_rejects_inconsistent_counts() {
             "query": "deploy freeze",
             "limit": 5,
             "include_archived": false,
-            "visibility": "children",
+            "include_turns": true,
+            "include_events": true,
             "returned_count": 2,
-            "hits": [{
-                "session": {
-                    "session_id": "child-session",
-                    "kind": "delegate_child",
-                    "parent_session_id": "root-session",
-                    "label": "Child",
-                    "state": "running",
-                    "created_at": 1,
-                    "updated_at": 2,
-                    "archived": false,
-                    "archived_at": null,
-                    "turn_count": 1,
-                    "last_turn_at": 2,
-                    "last_error": null
-                },
-                "turn_id": 12,
-                "session_turn_index": 2,
+            "matched_session_count": 1,
+            "searched_session_count": 2,
+            "results": [{
+                "session_id": "child-session",
+                "label": "Child",
+                "session_state": "running",
+                "archived": false,
+                "source": "turn",
+                "source_id": 12,
                 "role": "assistant",
+                "event_kind": null,
                 "ts": 123,
                 "snippet": "deploy freeze checklist updated",
-                "content_chars": 32
+                "score": 140
             }]
         }))
         .expect("encode invalid artifact"),
@@ -247,5 +242,5 @@ fn load_session_search_artifact_rejects_inconsistent_counts() {
         .expect_err("inconsistent returned_count should fail");
 
     assert!(error.contains("returned_count=2"));
-    assert!(error.contains("contains 1 hit"));
+    assert!(error.contains("contains 1 result"));
 }

@@ -446,29 +446,23 @@ fn format_session_search_text_includes_hit_summary() {
             query: "deploy freeze".to_owned(),
             limit: 5,
             include_archived: false,
-            visibility: "children".to_owned(),
+            include_turns: true,
+            include_events: true,
             returned_count: 1,
-            hits: vec![SessionSearchArtifactHit {
-                session: SessionSearchArtifactHitSession {
-                    session_id: "child-session".to_owned(),
-                    kind: "delegate_child".to_owned(),
-                    parent_session_id: Some("root-session".to_owned()),
-                    label: Some("Child".to_owned()),
-                    state: "running".to_owned(),
-                    created_at: 1,
-                    updated_at: 2,
-                    archived: false,
-                    archived_at: None,
-                    turn_count: 3,
-                    last_turn_at: Some(2),
-                    last_error: None,
-                },
-                turn_id: 12,
-                session_turn_index: 2,
-                role: "assistant".to_owned(),
+            matched_session_count: 1,
+            searched_session_count: 2,
+            results: vec![SessionSearchArtifactResult {
+                session_id: "child-session".to_owned(),
+                label: Some("Child".to_owned()),
+                session_state: "running".to_owned(),
+                archived: false,
+                source: "turn".to_owned(),
+                source_id: 12,
+                role: Some("assistant".to_owned()),
+                event_kind: None,
                 ts: 123,
                 snippet: "deploy freeze checklist updated".to_owned(),
-                content_chars: 32,
+                score: 140,
             }],
         },
     );
@@ -477,6 +471,7 @@ fn format_session_search_text_includes_hit_summary() {
     assert!(rendered.contains("returned_count=1"));
     assert!(rendered.contains("output=/tmp/session-search.json"));
     assert!(rendered.contains("session=child-session"));
+    assert!(rendered.contains("source=turn"));
     assert!(rendered.contains("role=assistant"));
     assert!(rendered.contains("deploy freeze checklist updated"));
 }
@@ -496,29 +491,23 @@ fn format_session_search_inspect_text_summarizes_first_hit() {
             query: "deploy freeze".to_owned(),
             limit: 5,
             include_archived: false,
-            visibility: "children".to_owned(),
+            include_turns: true,
+            include_events: true,
             returned_count: 1,
-            hits: vec![SessionSearchArtifactHit {
-                session: SessionSearchArtifactHitSession {
-                    session_id: "child-session".to_owned(),
-                    kind: "delegate_child".to_owned(),
-                    parent_session_id: Some("root-session".to_owned()),
-                    label: Some("Child".to_owned()),
-                    state: "running".to_owned(),
-                    created_at: 1,
-                    updated_at: 2,
-                    archived: false,
-                    archived_at: None,
-                    turn_count: 3,
-                    last_turn_at: Some(2),
-                    last_error: None,
-                },
-                turn_id: 12,
-                session_turn_index: 2,
-                role: "assistant".to_owned(),
+            matched_session_count: 1,
+            searched_session_count: 2,
+            results: vec![SessionSearchArtifactResult {
+                session_id: "child-session".to_owned(),
+                label: Some("Child".to_owned()),
+                session_state: "running".to_owned(),
+                archived: false,
+                source: "turn".to_owned(),
+                source_id: 12,
+                role: Some("assistant".to_owned()),
+                event_kind: None,
                 ts: 123,
                 snippet: "deploy freeze checklist updated".to_owned(),
-                content_chars: 32,
+                score: 140,
             }],
         },
     );
@@ -526,8 +515,9 @@ fn format_session_search_inspect_text_summarizes_first_hit() {
     assert!(rendered.contains("artifact=/tmp/session-search.json"));
     assert!(rendered.contains("scope_session_id=root-session"));
     assert!(rendered.contains("query=deploy freeze"));
-    assert!(rendered.contains("first_hit_session_id=child-session"));
-    assert!(rendered.contains("first_hit_role=assistant"));
+    assert!(rendered.contains("first_result_session_id=child-session"));
+    assert!(rendered.contains("first_result_source=turn"));
+    assert!(rendered.contains("first_result_role=assistant"));
 }
 
 #[test]

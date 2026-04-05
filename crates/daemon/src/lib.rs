@@ -148,15 +148,14 @@ pub use loongclaw_spec::programmatic::{
     acquire_programmatic_circuit_slot, record_programmatic_circuit_outcome,
 };
 pub use observability::{debug_variant_name, init_tracing, summarize_error};
-use task_execution::execute_daemon_task_with_supervisor;
-pub use task_execution::{DaemonTaskExecution, run_demo, run_task_cli};
 pub use session_cli::{
     SESSION_SEARCH_ARTIFACT_JSON_SCHEMA_VERSION, SessionSearchArtifactDocument,
-    SessionSearchArtifactHit, SessionSearchArtifactHitSession, SessionSearchArtifactSchema,
-    collect_session_search_artifact, format_session_search_inspect_text,
-    format_session_search_text, load_session_search_artifact, run_session_search_cli,
-    run_session_search_inspect_cli,
+    SessionSearchArtifactResult, SessionSearchArtifactSchema, collect_session_search_artifact,
+    format_session_search_inspect_text, format_session_search_text, load_session_search_artifact,
+    run_session_search_cli, run_session_search_inspect_cli,
 };
+use task_execution::execute_daemon_task_with_supervisor;
+pub use task_execution::{DaemonTaskExecution, run_demo, run_task_cli};
 pub use tlon_cli::TLON_SEND_CLI_SPEC;
 use tlon_cli::{default_tlon_send_target_kind, parse_tlon_send_target_kind};
 pub use trajectory_cli::{

@@ -17,30 +17,18 @@ pub struct SessionSearchArtifactSchema {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionSearchArtifactHitSession {
+pub struct SessionSearchArtifactResult {
     pub session_id: String,
-    pub kind: String,
-    pub parent_session_id: Option<String>,
     pub label: Option<String>,
-    pub state: String,
-    pub created_at: i64,
-    pub updated_at: i64,
+    pub session_state: String,
     pub archived: bool,
-    pub archived_at: Option<i64>,
-    pub turn_count: usize,
-    pub last_turn_at: Option<i64>,
-    pub last_error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionSearchArtifactHit {
-    pub session: SessionSearchArtifactHitSession,
-    pub turn_id: i64,
-    pub session_turn_index: usize,
-    pub role: String,
+    pub source: String,
+    pub source_id: i64,
+    pub role: Option<String>,
+    pub event_kind: Option<String>,
     pub ts: i64,
     pub snippet: String,
-    pub content_chars: usize,
+    pub score: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,9 +39,12 @@ pub struct SessionSearchArtifactDocument {
     pub query: String,
     pub limit: usize,
     pub include_archived: bool,
-    pub visibility: String,
+    pub include_turns: bool,
+    pub include_events: bool,
     pub returned_count: usize,
-    pub hits: Vec<SessionSearchArtifactHit>,
+    pub matched_session_count: usize,
+    pub searched_session_count: usize,
+    pub results: Vec<SessionSearchArtifactResult>,
 }
 
 pub fn run_session_search_cli(
@@ -120,7 +111,7 @@ pub fn collect_session_search_artifact(
         tool_name: "session_search".to_owned(),
         payload: serde_json::json!({
             "query": query,
-            "limit": limit,
+            "max_results": limit,
             "include_archived": include_archived,
         }),
     };
@@ -133,35 +124,49 @@ pub fn collect_session_search_artifact(
     )?
     .payload;
 
-    let filters = payload
-        .get("filters")
-        .and_then(Value::as_object)
-        .ok_or_else(|| "session-search tool payload is missing `filters`".to_owned())?;
-    let visibility = filters
-        .get("visibility")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "session-search tool payload is missing `filters.visibility`".to_owned())?;
-    validate_session_search_visibility(visibility)?;
-
     let returned_count = payload
         .get("returned_count")
         .and_then(Value::as_u64)
         .ok_or_else(|| "session-search tool payload is missing `returned_count`".to_owned())?
         as usize;
 
-    let hits_value = payload
-        .get("hits")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "session-search tool payload is missing `hits`".to_owned())?;
+    let matched_session_count = payload
+        .get("matched_session_count")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            "session-search tool payload is missing `matched_session_count`".to_owned()
+        })? as usize;
 
-    let hits = hits_value
+    let searched_session_count = payload
+        .get("searched_session_count")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            "session-search tool payload is missing `searched_session_count`".to_owned()
+        })? as usize;
+
+    let include_turns = payload
+        .get("include_turns")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| "session-search tool payload is missing `include_turns`".to_owned())?;
+
+    let include_events = payload
+        .get("include_events")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| "session-search tool payload is missing `include_events`".to_owned())?;
+
+    let results_value = payload
+        .get("results")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "session-search tool payload is missing `results`".to_owned())?;
+
+    let results = results_value
         .iter()
-        .map(parse_session_search_hit)
+        .map(parse_session_search_result)
         .collect::<CliResult<Vec<_>>>()?;
-    let hit_count = hits.len();
-    if returned_count != hit_count {
+    let result_count = results.len();
+    if returned_count != result_count {
         return Err(format!(
-            "session-search tool payload returned_count={returned_count} but parsed {hit_count} hit(s)"
+            "session-search tool payload returned_count={returned_count} but parsed {result_count} result(s)"
         ));
     }
 
@@ -180,143 +185,100 @@ pub fn collect_session_search_artifact(
         query: query.to_owned(),
         limit,
         include_archived,
-        visibility: visibility.to_owned(),
+        include_turns,
+        include_events,
         returned_count,
-        hits,
+        matched_session_count,
+        searched_session_count,
+        results,
     };
 
     Ok((resolved_path, artifact))
 }
 
-fn parse_session_search_hit(value: &Value) -> CliResult<SessionSearchArtifactHit> {
-    let session_value = value
-        .get("session")
-        .ok_or_else(|| "session-search artifact hit is missing `session`".to_owned())?;
-
-    let session = parse_session_search_hit_session(session_value)?;
-
-    let turn_id = value
-        .get("turn_id")
-        .and_then(Value::as_i64)
-        .ok_or_else(|| "session-search artifact hit is missing `turn_id`".to_owned())?;
-
-    let session_turn_index = value
-        .get("session_turn_index")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| "session-search artifact hit is missing `session_turn_index`".to_owned())?
-        as usize;
-
-    let role = value
-        .get("role")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "session-search artifact hit is missing `role`".to_owned())?
-        .to_owned();
-
-    let ts = value
-        .get("ts")
-        .and_then(Value::as_i64)
-        .ok_or_else(|| "session-search artifact hit is missing `ts`".to_owned())?;
-
-    let snippet = value
-        .get("snippet")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "session-search artifact hit is missing `snippet`".to_owned())?
-        .to_owned();
-
-    let content_chars = value
-        .get("content_chars")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| "session-search artifact hit is missing `content_chars`".to_owned())?
-        as usize;
-
-    let hit = SessionSearchArtifactHit {
-        session,
-        turn_id,
-        session_turn_index,
-        role,
-        ts,
-        snippet,
-        content_chars,
-    };
-
-    Ok(hit)
-}
-
-fn parse_session_search_hit_session(value: &Value) -> CliResult<SessionSearchArtifactHitSession> {
+fn parse_session_search_result(value: &Value) -> CliResult<SessionSearchArtifactResult> {
     let session_id = value
         .get("session_id")
         .and_then(Value::as_str)
-        .ok_or_else(|| "session-search artifact hit session is missing `session_id`".to_owned())?
+        .ok_or_else(|| "session-search artifact result is missing `session_id`".to_owned())?
         .to_owned();
-
-    let kind = value
-        .get("kind")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "session-search artifact hit session is missing `kind`".to_owned())?
-        .to_owned();
-
-    let parent_session_id = value
-        .get("parent_session_id")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
 
     let label = value
         .get("label")
         .and_then(Value::as_str)
         .map(str::to_owned);
 
-    let state = value
-        .get("state")
+    let session_state = value
+        .get("session_state")
         .and_then(Value::as_str)
-        .ok_or_else(|| "session-search artifact hit session is missing `state`".to_owned())?
+        .ok_or_else(|| "session-search artifact result is missing `session_state`".to_owned())?
         .to_owned();
-
-    let created_at = value
-        .get("created_at")
-        .and_then(Value::as_i64)
-        .ok_or_else(|| "session-search artifact hit session is missing `created_at`".to_owned())?;
-
-    let updated_at = value
-        .get("updated_at")
-        .and_then(Value::as_i64)
-        .ok_or_else(|| "session-search artifact hit session is missing `updated_at`".to_owned())?;
 
     let archived = value
         .get("archived")
         .and_then(Value::as_bool)
-        .ok_or_else(|| "session-search artifact hit session is missing `archived`".to_owned())?;
+        .ok_or_else(|| "session-search artifact result is missing `archived`".to_owned())?;
 
-    let archived_at = value.get("archived_at").and_then(Value::as_i64);
+    let source = value
+        .get("source")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "session-search artifact result is missing `source`".to_owned())?
+        .to_owned();
+    validate_session_search_source(source.as_str())?;
 
-    let turn_count = value
-        .get("turn_count")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| "session-search artifact hit session is missing `turn_count`".to_owned())?
-        as usize;
+    let source_id = value
+        .get("source_id")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| "session-search artifact result is missing `source_id`".to_owned())?;
 
-    let last_turn_at = value.get("last_turn_at").and_then(Value::as_i64);
+    let role = value.get("role").and_then(Value::as_str).map(str::to_owned);
 
-    let last_error = value
-        .get("last_error")
+    let event_kind = value
+        .get("event_kind")
         .and_then(Value::as_str)
         .map(str::to_owned);
 
-    let session = SessionSearchArtifactHitSession {
+    let ts = value
+        .get("ts")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| "session-search artifact result is missing `ts`".to_owned())?;
+
+    let snippet = value
+        .get("snippet")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "session-search artifact result is missing `snippet`".to_owned())?
+        .to_owned();
+
+    let score = value
+        .get("score")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "session-search artifact result is missing `score`".to_owned())?
+        as u32;
+
+    let result = SessionSearchArtifactResult {
         session_id,
-        kind,
-        parent_session_id,
         label,
-        state,
-        created_at,
-        updated_at,
+        session_state,
         archived,
-        archived_at,
-        turn_count,
-        last_turn_at,
-        last_error,
+        source,
+        source_id,
+        role,
+        event_kind,
+        ts,
+        snippet,
+        score,
     };
 
-    Ok(session)
+    Ok(result)
+}
+
+fn validate_session_search_source(source: &str) -> CliResult<()> {
+    let supported_source = matches!(source, "turn" | "event");
+    if supported_source {
+        return Ok(());
+    }
+
+    Err(format!("uses unsupported source {source}"))
 }
 
 pub fn format_session_search_text(
@@ -339,17 +301,31 @@ pub fn format_session_search_text(
             artifact.returned_count,
             output_label
         ),
+        format!(
+            "matched_session_count={} searched_session_count={} include_turns={} include_events={}",
+            artifact.matched_session_count,
+            artifact.searched_session_count,
+            artifact.include_turns,
+            artifact.include_events
+        ),
     ];
 
-    if artifact.hits.is_empty() {
-        lines.push("hits: -".to_owned());
+    if artifact.results.is_empty() {
+        lines.push("results: -".to_owned());
         return lines.join("\n") + "\n";
     }
 
-    for hit in &artifact.hits {
+    for result in &artifact.results {
+        let source_role = result.role.as_deref().unwrap_or("-");
+        let source_event_kind = result.event_kind.as_deref().unwrap_or("-");
         let line = format!(
-            "- session={} turn_index={} role={} snippet={}",
-            hit.session.session_id, hit.session_turn_index, hit.role, hit.snippet
+            "- session={} source={} role={} event_kind={} score={} snippet={}",
+            result.session_id,
+            result.source,
+            source_role,
+            source_event_kind,
+            result.score,
+            result.snippet
         );
         lines.push(line);
     }
@@ -409,41 +385,44 @@ pub fn load_session_search_artifact(
         ));
     }
 
-    validate_session_search_visibility(&artifact.visibility)
-        .map_err(|error| format!("session-search artifact {} {error}", raw_path.display()))?;
-    let hit_count = artifact.hits.len();
-    if artifact.returned_count != hit_count {
+    let result_count = artifact.results.len();
+    if artifact.returned_count != result_count {
         return Err(format!(
-            "session-search artifact {} says returned_count={} but contains {} hit(s)",
+            "session-search artifact {} says returned_count={} but contains {} result(s)",
             raw_path.display(),
             artifact.returned_count,
-            hit_count
+            result_count
         ));
     }
 
-    Ok(artifact)
-}
-
-fn validate_session_search_visibility(visibility: &str) -> CliResult<()> {
-    let supported_visibility = matches!(visibility, "self" | "children");
-    if supported_visibility {
-        return Ok(());
+    for result in &artifact.results {
+        validate_session_search_source(result.source.as_str()).map_err(|error| {
+            format!(
+                "session-search artifact {} result `{}` {error}",
+                raw_path.display(),
+                result.source_id
+            )
+        })?;
     }
 
-    Err(format!("uses unsupported visibility {visibility}"))
+    Ok(artifact)
 }
 
 pub fn format_session_search_inspect_text(
     artifact_path: &str,
     artifact: &SessionSearchArtifactDocument,
 ) -> String {
-    let first_hit = artifact.hits.first();
-    let first_hit_session_id = match first_hit {
-        Some(hit) => hit.session.session_id.as_str(),
+    let first_result = artifact.results.first();
+    let first_result_session_id = match first_result {
+        Some(result) => result.session_id.as_str(),
         None => "-",
     };
-    let first_hit_role = match first_hit {
-        Some(hit) => hit.role.as_str(),
+    let first_result_source = match first_result {
+        Some(result) => result.source.as_str(),
+        None => "-",
+    };
+    let first_result_role = match first_result {
+        Some(result) => result.role.as_deref().unwrap_or("-"),
         None => "-",
     };
 
@@ -453,9 +432,13 @@ pub fn format_session_search_inspect_text(
         format!("scope_session_id={}", artifact.scope_session_id),
         format!("query={}", artifact.query),
         format!("returned_count={}", artifact.returned_count),
-        format!("visibility={}", artifact.visibility),
-        format!("first_hit_session_id={first_hit_session_id}"),
-        format!("first_hit_role={first_hit_role}"),
+        format!("matched_session_count={}", artifact.matched_session_count),
+        format!("searched_session_count={}", artifact.searched_session_count),
+        format!("include_turns={}", artifact.include_turns),
+        format!("include_events={}", artifact.include_events),
+        format!("first_result_session_id={first_result_session_id}"),
+        format!("first_result_source={first_result_source}"),
+        format!("first_result_role={first_result_role}"),
     ];
     let rendered = lines.join("\n");
     rendered + "\n"
