@@ -355,6 +355,12 @@ async fn main() {
         Commands::ListMemorySystems { config, json } => {
             run_list_memory_systems_cli(config.as_deref(), json)
         }
+        Commands::ListMcpServers { config, json } => {
+            run_list_mcp_servers_cli(config.as_deref(), json)
+        }
+        Commands::ShowMcpServer { config, name, json } => {
+            run_show_mcp_server_cli(config.as_deref(), name.as_str(), json)
+        }
         Commands::ListAcpBackends { config, json } => {
             run_list_acp_backends_cli(config.as_deref(), json)
         }

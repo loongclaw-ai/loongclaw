@@ -121,6 +121,7 @@ mod latest_selector_process_support;
 mod logging;
 mod managed_bridge_fixtures;
 mod managed_bridge_parity;
+mod mcp;
 mod memory_context_benchmark_cli;
 mod migrate_cli;
 mod migration;

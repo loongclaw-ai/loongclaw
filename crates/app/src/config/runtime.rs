@@ -8,6 +8,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::CliResult;
+use crate::mcp::McpConfig;
 
 use super::{
     OnebotChannelConfig, QqbotChannelConfig, WeixinChannelConfig,
@@ -149,6 +150,8 @@ pub struct LoongClawConfig {
     pub tools: ToolConfig,
     #[serde(default)]
     pub external_skills: ExternalSkillsConfig,
+    #[serde(default)]
+    pub mcp: McpConfig,
     #[serde(default)]
     pub memory: MemoryConfig,
     #[serde(default)]

@@ -10,6 +10,7 @@ mod runtime;
 mod shared;
 mod tools;
 
+pub use crate::mcp::{McpConfig, McpServerConfig, McpServerTransportConfig};
 #[allow(unused_imports)]
 pub use audit::{AuditConfig, AuditMode};
 #[allow(unused_imports)]

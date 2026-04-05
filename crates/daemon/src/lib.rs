@@ -728,6 +728,22 @@ pub enum Commands {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
+    /// List configured MCP servers and their runtime-visible inventory state
+    ListMcpServers {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Show one configured MCP server and its runtime-visible inventory state
+    ShowMcpServer {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long)]
+        name: String,
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
     /// List available ACP runtime backends and current control-plane selection
     ListAcpBackends {
         #[arg(long)]
@@ -3777,6 +3793,58 @@ pub fn run_list_memory_systems_cli(config_path: Option<&str>, as_json: bool) -> 
     Ok(())
 }
 
+pub fn run_list_mcp_servers_cli(config_path: Option<&str>, as_json: bool) -> CliResult<()> {
+    let (resolved_path, config) = mvp::config::load(config_path)?;
+    let snapshot = mvp::mcp::collect_mcp_runtime_snapshot(&config)?;
+
+    if as_json {
+        let payload =
+            build_mcp_servers_cli_json_payload(&resolved_path.display().to_string(), &snapshot);
+        let pretty = serde_json::to_string_pretty(&payload)
+            .map_err(|error| format!("serialize MCP server output failed: {error}"))?;
+        println!("{pretty}");
+        return Ok(());
+    }
+
+    println!(
+        "{}",
+        render_mcp_servers_snapshot_text(&resolved_path.display().to_string(), &snapshot)
+    );
+    Ok(())
+}
+
+pub fn run_show_mcp_server_cli(
+    config_path: Option<&str>,
+    server_name: &str,
+    as_json: bool,
+) -> CliResult<()> {
+    let (resolved_path, config) = mvp::config::load(config_path)?;
+    let snapshot = mvp::mcp::collect_mcp_runtime_snapshot(&config)?;
+    let normalized_name = normalize_mcp_server_name(server_name)?;
+    let maybe_server = snapshot
+        .servers
+        .iter()
+        .find(|server| server.name == normalized_name);
+    let Some(server) = maybe_server else {
+        return Err(format!(
+            "MCP server `{normalized_name}` was not found in the runtime snapshot"
+        ));
+    };
+
+    if as_json {
+        let payload =
+            build_mcp_server_detail_cli_json_payload(&resolved_path.display().to_string(), server);
+        let pretty = serde_json::to_string_pretty(&payload)
+            .map_err(|error| format!("serialize MCP server detail output failed: {error}"))?;
+        println!("{pretty}");
+        return Ok(());
+    }
+
+    let rendered = render_mcp_server_detail_text(&resolved_path.display().to_string(), server);
+    println!("{rendered}");
+    Ok(())
+}
+
 pub fn run_list_acp_backends_cli(config_path: Option<&str>, as_json: bool) -> CliResult<()> {
     let (resolved_path, config) = mvp::config::load(config_path)?;
     let snapshot = mvp::acp::collect_acp_runtime_snapshot(&config)?;
@@ -5714,7 +5782,242 @@ fn runtime_snapshot_acp_json(snapshot: &mvp::acp::AcpRuntimeSnapshot) -> Value {
             .map(|metadata| acp_backend_metadata_json(metadata, None))
             .collect::<Vec<_>>(),
         "control_plane": acp_control_plane_json(&snapshot.control_plane),
+        "mcp": mcp_runtime_snapshot_json(&snapshot.mcp),
     })
+}
+
+pub fn build_mcp_servers_cli_json_payload(
+    config_path: &str,
+    snapshot: &mvp::mcp::McpRuntimeSnapshot,
+) -> Value {
+    json!({
+        "config": config_path,
+        "server_count": snapshot.servers.len(),
+        "servers": snapshot.servers.iter().map(mcp_runtime_server_json).collect::<Vec<_>>(),
+        "missing_selected_servers": snapshot.missing_selected_servers,
+    })
+}
+
+pub fn build_mcp_server_detail_cli_json_payload(
+    config_path: &str,
+    server: &mvp::mcp::McpRuntimeServerSnapshot,
+) -> Value {
+    let server_json = mcp_runtime_server_json(server);
+    json!({
+        "config": config_path,
+        "server": server_json,
+    })
+}
+
+fn mcp_runtime_snapshot_json(snapshot: &mvp::mcp::McpRuntimeSnapshot) -> Value {
+    json!({
+        "servers": snapshot
+            .servers
+            .iter()
+            .map(mcp_runtime_server_json)
+            .collect::<Vec<_>>(),
+        "missing_selected_servers": snapshot.missing_selected_servers,
+    })
+}
+
+fn mcp_runtime_server_json(server: &mvp::mcp::McpRuntimeServerSnapshot) -> Value {
+    json!({
+        "name": server.name,
+        "enabled": server.enabled,
+        "required": server.required,
+        "selected_for_acp_bootstrap": server.selected_for_acp_bootstrap,
+        "origins": server.origins.iter().map(|origin| {
+            json!({
+                "kind": match origin.kind {
+                    mvp::mcp::McpServerOriginKind::Config => "config",
+                    mvp::mcp::McpServerOriginKind::Plugin => "plugin",
+                    mvp::mcp::McpServerOriginKind::Managed => "managed",
+                    mvp::mcp::McpServerOriginKind::AcpBackendProfile => "acp_backend_profile",
+                    mvp::mcp::McpServerOriginKind::AcpBootstrapSelection => "acp_bootstrap_selection",
+                },
+                "source_id": origin.source_id,
+            })
+        }).collect::<Vec<_>>(),
+        "status": {
+            "kind": match server.status.kind {
+                mvp::mcp::McpServerStatusKind::Pending => "pending",
+                mvp::mcp::McpServerStatusKind::Connected => "connected",
+                mvp::mcp::McpServerStatusKind::NeedsAuth => "needs_auth",
+                mvp::mcp::McpServerStatusKind::Failed => "failed",
+                mvp::mcp::McpServerStatusKind::Disabled => "disabled",
+            },
+            "auth": match server.status.auth {
+                mvp::mcp::McpAuthStatus::Unknown => "unknown",
+                mvp::mcp::McpAuthStatus::Unsupported => "unsupported",
+                mvp::mcp::McpAuthStatus::NotLoggedIn => "not_logged_in",
+                mvp::mcp::McpAuthStatus::BearerToken => "bearer_token",
+                mvp::mcp::McpAuthStatus::OAuth => "oauth",
+            },
+            "last_error": server.status.last_error,
+        },
+        "transport": match &server.transport {
+            mvp::mcp::McpTransportSnapshot::Stdio {
+                command,
+                args,
+                cwd,
+                env_var_names,
+            } => json!({
+                "transport": "stdio",
+                "command": command,
+                "args": args,
+                "cwd": cwd,
+                "env_var_names": env_var_names,
+            }),
+            mvp::mcp::McpTransportSnapshot::StreamableHttp {
+                url,
+                bearer_token_env_var,
+                http_header_names,
+                env_http_header_names,
+            } => json!({
+                "transport": "streamable_http",
+                "url": url,
+                "bearer_token_env_var": bearer_token_env_var,
+                "http_header_names": http_header_names,
+                "env_http_header_names": env_http_header_names,
+            }),
+        },
+        "enabled_tools": server.enabled_tools,
+        "disabled_tools": server.disabled_tools,
+        "startup_timeout_ms": server.startup_timeout_ms,
+        "tool_timeout_ms": server.tool_timeout_ms,
+    })
+}
+
+fn render_mcp_servers_snapshot_text(
+    config_path: &str,
+    snapshot: &mvp::mcp::McpRuntimeSnapshot,
+) -> String {
+    let mut lines = vec![format!("config={config_path}")];
+    if snapshot.servers.is_empty() {
+        lines.push("mcp_servers=none".to_owned());
+    } else {
+        lines.push(format!("mcp_servers={}", snapshot.servers.len()));
+        for server in &snapshot.servers {
+            let status = match server.status.kind {
+                mvp::mcp::McpServerStatusKind::Pending => "pending",
+                mvp::mcp::McpServerStatusKind::Connected => "connected",
+                mvp::mcp::McpServerStatusKind::NeedsAuth => "needs_auth",
+                mvp::mcp::McpServerStatusKind::Failed => "failed",
+                mvp::mcp::McpServerStatusKind::Disabled => "disabled",
+            };
+            let auth = match server.status.auth {
+                mvp::mcp::McpAuthStatus::Unknown => "unknown",
+                mvp::mcp::McpAuthStatus::Unsupported => "unsupported",
+                mvp::mcp::McpAuthStatus::NotLoggedIn => "not_logged_in",
+                mvp::mcp::McpAuthStatus::BearerToken => "bearer_token",
+                mvp::mcp::McpAuthStatus::OAuth => "oauth",
+            };
+            let origins = server
+                .origins
+                .iter()
+                .map(|origin| match origin.kind {
+                    mvp::mcp::McpServerOriginKind::Config => "config",
+                    mvp::mcp::McpServerOriginKind::Plugin => "plugin",
+                    mvp::mcp::McpServerOriginKind::Managed => "managed",
+                    mvp::mcp::McpServerOriginKind::AcpBackendProfile => "acp_backend_profile",
+                    mvp::mcp::McpServerOriginKind::AcpBootstrapSelection => {
+                        "acp_bootstrap_selection"
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            let transport = match &server.transport {
+                mvp::mcp::McpTransportSnapshot::Stdio { command, .. } => {
+                    format!("stdio:{command}")
+                }
+                mvp::mcp::McpTransportSnapshot::StreamableHttp { url, .. } => {
+                    format!("streamable_http:{url}")
+                }
+            };
+            lines.push(format!(
+                "- {} status={} auth={} selected_for_acp_bootstrap={} origins={} transport={}",
+                server.name, status, auth, server.selected_for_acp_bootstrap, origins, transport
+            ));
+        }
+    }
+    if !snapshot.missing_selected_servers.is_empty() {
+        lines.push(format!(
+            "missing_selected_servers={}",
+            snapshot.missing_selected_servers.join(",")
+        ));
+    }
+    lines.join("\n")
+}
+
+fn render_mcp_server_detail_text(
+    config_path: &str,
+    server: &mvp::mcp::McpRuntimeServerSnapshot,
+) -> String {
+    let status = match server.status.kind {
+        mvp::mcp::McpServerStatusKind::Pending => "pending",
+        mvp::mcp::McpServerStatusKind::Connected => "connected",
+        mvp::mcp::McpServerStatusKind::NeedsAuth => "needs_auth",
+        mvp::mcp::McpServerStatusKind::Failed => "failed",
+        mvp::mcp::McpServerStatusKind::Disabled => "disabled",
+    };
+    let auth = match server.status.auth {
+        mvp::mcp::McpAuthStatus::Unknown => "unknown",
+        mvp::mcp::McpAuthStatus::Unsupported => "unsupported",
+        mvp::mcp::McpAuthStatus::NotLoggedIn => "not_logged_in",
+        mvp::mcp::McpAuthStatus::BearerToken => "bearer_token",
+        mvp::mcp::McpAuthStatus::OAuth => "oauth",
+    };
+    let transport = match &server.transport {
+        mvp::mcp::McpTransportSnapshot::Stdio { command, .. } => format!("stdio:{command}"),
+        mvp::mcp::McpTransportSnapshot::StreamableHttp { url, .. } => {
+            format!("streamable_http:{url}")
+        }
+    };
+    let origin_labels = server
+        .origins
+        .iter()
+        .map(|origin| match origin.kind {
+            mvp::mcp::McpServerOriginKind::Config => "config",
+            mvp::mcp::McpServerOriginKind::Plugin => "plugin",
+            mvp::mcp::McpServerOriginKind::Managed => "managed",
+            mvp::mcp::McpServerOriginKind::AcpBackendProfile => "acp_backend_profile",
+            mvp::mcp::McpServerOriginKind::AcpBootstrapSelection => "acp_bootstrap_selection",
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut lines = Vec::new();
+    lines.push(format!("config={config_path}"));
+    lines.push(format!("name={}", server.name));
+    lines.push(format!("enabled={}", server.enabled));
+    lines.push(format!("required={}", server.required));
+    lines.push(format!(
+        "selected_for_acp_bootstrap={}",
+        server.selected_for_acp_bootstrap
+    ));
+    lines.push(format!("status={status}"));
+    lines.push(format!("auth={auth}"));
+    lines.push(format!("transport={transport}"));
+    lines.push(format!("origins={origin_labels}"));
+    if !server.enabled_tools.is_empty() {
+        let enabled_tools = server.enabled_tools.join(",");
+        lines.push(format!("enabled_tools={enabled_tools}"));
+    }
+    if !server.disabled_tools.is_empty() {
+        let disabled_tools = server.disabled_tools.join(",");
+        lines.push(format!("disabled_tools={disabled_tools}"));
+    }
+    if let Some(last_error) = &server.status.last_error {
+        lines.push(format!("last_error={last_error}"));
+    }
+    lines.join("\n")
+}
+
+fn normalize_mcp_server_name(raw: &str) -> CliResult<String> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Err("MCP server name must not be empty".to_owned());
+    }
+    Ok(normalized)
 }
 
 fn runtime_snapshot_tool_runtime_json(
