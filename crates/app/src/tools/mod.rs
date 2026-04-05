@@ -325,6 +325,7 @@ fn execute_app_tool_with_browser_companion_readiness(
         | "session_tool_policy_clear"
         | "session_status"
         | "session_events"
+        | "session_search"
         | "session_archive"
         | "session_cancel"
         | "session_recover" => session::execute_session_tool_with_policies(
@@ -1961,6 +1962,7 @@ mod tests {
             "provider.switch",
             "session_events",
             "session_tool_policy_status",
+            "session_search",
             "session_status",
             "session_wait",
             "sessions_history",
@@ -2003,6 +2005,7 @@ mod tests {
             "provider.switch",
             "session_events",
             "session_tool_policy_status",
+            "session_search",
             "session_status",
             "session_wait",
             "sessions_history",
@@ -2073,6 +2076,7 @@ mod tests {
             "delegate_async",
             "session_events",
             "session_tool_policy_status",
+            "session_search",
             "session_status",
             "session_wait",
             "sessions_history",

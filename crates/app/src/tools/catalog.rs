@@ -840,6 +840,19 @@ fn build_tool_catalog() -> ToolCatalog {
             provider_definition_builder: sessions_list_definition,
         },
         ToolDescriptor {
+            name: "session_search",
+            provider_name: "session_search",
+            aliases: &[],
+            description: "Search transcript turns across visible sessions",
+            execution_kind: ToolExecutionKind::App,
+            availability: runtime_session_tool_availability(),
+            exposure: ToolExposureClass::Discoverable,
+            visibility_gate: ToolVisibilityGate::Sessions,
+            capability_action_class: CapabilityActionClass::ExecuteExisting,
+            policy: PARALLEL_SAFE_TOOL_POLICY_DESCRIPTOR,
+            provider_definition_builder: session_search_definition,
+        },
+        ToolDescriptor {
             name: "sessions_send",
             provider_name: "sessions_send",
             aliases: &[],
@@ -2922,6 +2935,37 @@ fn session_events_definition(descriptor: &ToolDescriptor) -> Value {
     })
 }
 
+fn session_search_definition(descriptor: &ToolDescriptor) -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": descriptor.provider_name,
+            "description": descriptor.description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search string to match against visible session transcript turns."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 200,
+                        "description": "Maximum matching transcript turns to return."
+                    },
+                    "include_archived": {
+                        "type": "boolean",
+                        "description": "When true, include archived visible sessions in the search scope."
+                    }
+                },
+                "required": ["query"],
+                "additionalProperties": false
+            }
+        }
+    })
+}
+
 fn session_status_definition(descriptor: &ToolDescriptor) -> Value {
     json!({
         "type": "function",
@@ -3525,6 +3569,7 @@ fn tool_argument_hint(name: &str) -> &'static str {
         }
         "session_archive" | "session_cancel" | "session_events" | "session_recover"
         | "session_status" | "session_wait" | "sessions_history" => "session_id:string",
+        "session_search" => "query:string,limit?:integer,include_archived?:boolean",
         "sessions_list" => "limit?:integer,offset?:integer,state?:string",
         "sessions_send" => "session_id:string,text:string",
         "web.search" => "query:string,provider?:string,max_results?:integer",
@@ -3947,6 +3992,11 @@ fn tool_parameter_types(name: &str) -> &'static [(&'static str, &'static str)] {
         ],
         "session_archive" | "session_cancel" | "session_events" | "session_recover"
         | "session_status" | "session_wait" | "sessions_history" => &[("session_id", "string")],
+        "session_search" => &[
+            ("query", "string"),
+            ("limit", "integer"),
+            ("include_archived", "boolean"),
+        ],
         "sessions_list" => &[
             ("limit", "integer"),
             ("offset", "integer"),
@@ -4027,6 +4077,7 @@ fn tool_required_fields(name: &str) -> &'static [&'static str] {
         "session_tool_policy_set" => &[],
         "session_archive" | "session_cancel" | "session_events" | "session_recover"
         | "session_status" | "session_wait" | "sessions_history" => &["session_id"],
+        "session_search" => &["query"],
         "sessions_send" => &["session_id", "text"],
         "web.search" => &["query"],
         _ => &[],
@@ -4107,9 +4158,8 @@ fn tool_tags(name: &str) -> &'static [&'static str] {
             &["session", "policy", "tools", "security"]
         }
         "session_archive" | "session_cancel" | "session_events" | "session_recover"
-        | "session_status" | "session_wait" | "sessions_history" | "sessions_list" => {
-            &["session", "history", "runtime"]
-        }
+        | "session_status" | "session_wait" | "sessions_history" | "sessions_list"
+        | "session_search" => &["session", "history", "runtime"],
         "sessions_send" => &["session", "message", "channel"],
         "web.search" => &["web", "search", "discover", "external"],
         _ => &[],

@@ -41,8 +41,8 @@ use crate::tools::runtime_config::ToolRuntimeNarrowing;
 #[cfg(feature = "memory-sqlite")]
 use crate::session::repository::{
     NewSessionRecord, NewSessionToolPolicyRecord, SessionEventRecord, SessionKind,
-    SessionObservationRecord, SessionRepository, SessionState, SessionSummaryRecord,
-    SessionTerminalOutcomeRecord, SessionToolPolicyRecord,
+    SessionObservationRecord, SessionRepository, SessionSearchHit, SessionState,
+    SessionSummaryRecord, SessionTerminalOutcomeRecord, SessionToolPolicyRecord,
 };
 
 #[cfg(feature = "memory-sqlite")]
@@ -140,6 +140,14 @@ struct SessionsListRequest {
     overdue_only: bool,
     include_archived: bool,
     include_delegate_lifecycle: bool,
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionSearchRequest {
+    query: String,
+    limit: usize,
+    include_archived: bool,
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -312,6 +320,9 @@ pub fn execute_session_tool_with_policies(
             "sessions_list" => {
                 execute_sessions_list(payload, current_session_id, config, tool_config)
             }
+            "session_search" => {
+                execute_session_search(payload, current_session_id, config, tool_config)
+            }
             "session_events" => {
                 execute_session_events(payload, current_session_id, config, tool_config)
             }
@@ -475,6 +486,50 @@ fn execute_sessions_list(
             "returned_count": returned_count,
             "has_more": has_more,
             "sessions": session_payloads,
+        }),
+    })
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn execute_session_search(
+    payload: Value,
+    current_session_id: &str,
+    config: &MemoryRuntimeConfig,
+    tool_config: &ToolConfig,
+) -> Result<ToolCoreOutcome, String> {
+    let repo = SessionRepository::new(config)?;
+    let request = parse_session_search_request(&payload, tool_config)?;
+    let include_descendants = tool_config.sessions.visibility != SessionVisibility::SelfOnly;
+    let hits = repo.search_visible_session_turns(
+        current_session_id,
+        &request.query,
+        request.limit,
+        request.include_archived,
+        include_descendants,
+    )?;
+    let returned_count = hits.len();
+    let mut rendered_hits = Vec::with_capacity(returned_count);
+
+    for hit in hits {
+        let workflow = load_session_workflow_record(&repo, &hit.session, None)?;
+        let rendered_hit = session_search_hit_json(hit, workflow, &request.query);
+        rendered_hits.push(rendered_hit);
+    }
+
+    Ok(ToolCoreOutcome {
+        status: "ok".to_owned(),
+        payload: json!({
+            "current_session_id": current_session_id,
+            "query": request.query,
+            "filters": {
+                "include_archived": request.include_archived,
+                "visibility": match tool_config.sessions.visibility {
+                    SessionVisibility::SelfOnly => "self",
+                    SessionVisibility::Children => "children",
+                },
+            },
+            "returned_count": returned_count,
+            "hits": rendered_hits,
         }),
     })
 }
@@ -2843,6 +2898,26 @@ fn parse_sessions_list_request(
 }
 
 #[cfg(feature = "memory-sqlite")]
+fn parse_session_search_request(
+    payload: &Value,
+    tool_config: &ToolConfig,
+) -> Result<SessionSearchRequest, String> {
+    Ok(SessionSearchRequest {
+        query: required_payload_string(payload, "query", "session tool")?,
+        limit: optional_payload_limit(
+            payload,
+            "limit",
+            tool_config.sessions.list_limit,
+            tool_config.sessions.history_limit,
+        ),
+        include_archived: payload
+            .get("include_archived")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    })
+}
+
+#[cfg(feature = "memory-sqlite")]
 fn optional_payload_session_state(
     payload: &Value,
     field: &str,
@@ -3223,6 +3298,65 @@ fn session_runtime_self_continuity_json(
 }
 
 #[cfg(feature = "memory-sqlite")]
+fn session_search_hit_json(
+    hit: SessionSearchHit,
+    workflow: SessionWorkflowRecord,
+    query: &str,
+) -> Value {
+    json!({
+        "session": session_summary_json(hit.session, workflow),
+        "turn_id": hit.turn_id,
+        "session_turn_index": hit.session_turn_index,
+        "role": hit.role,
+        "ts": hit.ts,
+        "snippet": session_search_snippet(&hit.content, query, 240),
+        "content_chars": hit.content.chars().count(),
+    })
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn session_search_snippet(content: &str, query: &str, max_chars: usize) -> String {
+    if content.chars().count() <= max_chars {
+        return content.to_owned();
+    }
+
+    if let Some(start) = content.find(query) {
+        let end = start.saturating_add(query.len()).min(content.len());
+        let prefix = trim_chars_from_end(&content[..start], max_chars / 3);
+        let suffix = trim_chars_from_start(&content[end..], max_chars / 2);
+        let mut snippet = String::new();
+        if prefix.len() < start {
+            snippet.push_str("...");
+        }
+        snippet.push_str(&prefix);
+        snippet.push_str(&content[start..end]);
+        snippet.push_str(&suffix);
+        if end + suffix.len() < content.len() {
+            snippet.push_str("...");
+        }
+        return snippet;
+    }
+
+    let mut trimmed = trim_chars_from_start(content, max_chars);
+    if trimmed.chars().count() < content.chars().count() {
+        trimmed.push_str("...");
+    }
+    trimmed
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn trim_chars_from_start(text: &str, max_chars: usize) -> String {
+    text.chars().take(max_chars).collect()
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn trim_chars_from_end(text: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let start = chars.len().saturating_sub(max_chars);
+    chars.get(start..).unwrap_or(&[]).iter().collect()
+}
+
+#[cfg(feature = "memory-sqlite")]
 pub(super) fn session_event_json(event: SessionEventRecord) -> Value {
     json!({
         "id": event.id,
@@ -3419,6 +3553,221 @@ mod tests {
         assert!(ids.contains(&"root-session"));
         assert!(ids.contains(&"child-session"));
         assert!(!ids.contains(&"other-session"));
+    }
+
+    #[test]
+    fn session_search_returns_visible_hits_with_session_summary() {
+        let config = isolated_memory_config("session-search-visible");
+        let repo = SessionRepository::new(&config).expect("repository");
+        repo.create_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create root");
+        repo.create_session(NewSessionRecord {
+            session_id: "child-session".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Child".to_owned()),
+            state: SessionState::Running,
+        })
+        .expect("create child");
+        repo.create_session(NewSessionRecord {
+            session_id: "other-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Other".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create other");
+
+        append_turn_direct(
+            "root-session",
+            "user",
+            "deploy freeze starts Friday",
+            &config,
+        )
+        .expect("append root hit");
+        append_turn_direct(
+            "child-session",
+            "assistant",
+            "deploy freeze checklist updated",
+            &config,
+        )
+        .expect("append child hit");
+        append_turn_direct("other-session", "user", "deploy freeze hidden", &config)
+            .expect("append hidden hit");
+
+        let outcome = execute_session_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "session_search".to_owned(),
+                payload: json!({
+                    "query": "deploy freeze",
+                    "limit": 10
+                }),
+            },
+            "root-session",
+            &config,
+        )
+        .expect("session_search outcome");
+
+        let hits = outcome.payload["hits"].as_array().expect("hits array");
+        assert_eq!(outcome.payload["returned_count"], 2);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0]["session"]["session_id"], "child-session");
+        assert_eq!(hits[1]["session"]["session_id"], "root-session");
+        assert!(
+            hits.iter().all(|hit| hit["snippet"].as_str().is_some()),
+            "expected snippets for each hit: {hits:?}"
+        );
+        assert!(
+            hits.iter()
+                .all(|hit| hit["session"]["session_id"] != "other-session"),
+            "non-visible sessions should not be searched: {hits:?}"
+        );
+    }
+
+    #[test]
+    fn session_search_respects_self_visibility_policy() {
+        let config = isolated_memory_config("session-search-self-only");
+        let repo = SessionRepository::new(&config).expect("repository");
+        repo.create_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create root");
+        repo.create_session(NewSessionRecord {
+            session_id: "child-session".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Child".to_owned()),
+            state: SessionState::Running,
+        })
+        .expect("create child");
+
+        append_turn_direct("root-session", "user", "deploy freeze root note", &config)
+            .expect("append root hit");
+        append_turn_direct(
+            "child-session",
+            "assistant",
+            "deploy freeze child note",
+            &config,
+        )
+        .expect("append child hit");
+
+        let mut tool_config = ToolConfig::default();
+        tool_config.sessions.visibility = SessionVisibility::SelfOnly;
+
+        let outcome = execute_session_tool_with_policies(
+            ToolCoreRequest {
+                tool_name: "session_search".to_owned(),
+                payload: json!({
+                    "query": "deploy freeze"
+                }),
+            },
+            "root-session",
+            &config,
+            &tool_config,
+        )
+        .expect("session_search outcome");
+
+        let hits = outcome.payload["hits"].as_array().expect("hits array");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0]["session"]["session_id"], "root-session");
+        assert_eq!(outcome.payload["filters"]["visibility"], "self");
+    }
+
+    #[test]
+    fn session_search_excludes_archived_sessions_by_default() {
+        let config = isolated_memory_config("session-search-archived");
+        let repo = SessionRepository::new(&config).expect("repository");
+        repo.create_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create root");
+        repo.create_session(NewSessionRecord {
+            session_id: "archived-child".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Archived".to_owned()),
+            state: SessionState::Running,
+        })
+        .expect("create archived child");
+
+        append_turn_direct(
+            "archived-child",
+            "assistant",
+            "deploy freeze archived detail",
+            &config,
+        )
+        .expect("append archived hit");
+
+        repo.finalize_session_terminal(
+            "archived-child",
+            FinalizeSessionTerminalRequest {
+                state: SessionState::Completed,
+                last_error: None,
+                event_kind: "delegate_completed".to_owned(),
+                actor_session_id: Some("root-session".to_owned()),
+                event_payload_json: json!({ "result": "ok" }),
+                outcome_status: "ok".to_owned(),
+                outcome_payload_json: json!({ "child_session_id": "archived-child" }),
+            },
+        )
+        .expect("finalize child");
+        execute_session_mutation_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "session_archive".to_owned(),
+                payload: json!({
+                    "session_id": "archived-child"
+                }),
+            },
+            "root-session",
+            &config,
+        )
+        .expect("archive child");
+
+        let hidden_outcome = execute_session_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "session_search".to_owned(),
+                payload: json!({
+                    "query": "deploy freeze"
+                }),
+            },
+            "root-session",
+            &config,
+        )
+        .expect("default session_search outcome");
+        assert_eq!(hidden_outcome.payload["returned_count"], 0);
+
+        let visible_outcome = execute_session_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "session_search".to_owned(),
+                payload: json!({
+                    "query": "deploy freeze",
+                    "include_archived": true
+                }),
+            },
+            "root-session",
+            &config,
+        )
+        .expect("archived session_search outcome");
+        let hits = visible_outcome.payload["hits"]
+            .as_array()
+            .expect("hits array");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0]["session"]["session_id"], "archived-child");
+        assert_eq!(visible_outcome.payload["filters"]["include_archived"], true);
     }
 
     #[test]
