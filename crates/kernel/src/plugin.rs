@@ -103,6 +103,53 @@ impl PluginSetup {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginOwnershipSlotMode {
+    Exclusive,
+    Shared,
+    Advisory,
+}
+
+impl PluginOwnershipSlotMode {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Exclusive => "exclusive",
+            Self::Shared => "shared",
+            Self::Advisory => "advisory",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct PluginOwnershipSlot {
+    pub slot: String,
+    pub key: String,
+    pub mode: PluginOwnershipSlotMode,
+}
+
+impl PluginOwnershipSlot {
+    #[must_use]
+    pub fn normalized(self) -> Self {
+        Self {
+            slot: normalize_optional_manifest_string(Some(self.slot)).unwrap_or_default(),
+            key: normalize_optional_manifest_string(Some(self.key)).unwrap_or_default(),
+            mode: self.mode,
+        }
+    }
+
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        !self.slot.is_empty() && !self.key.is_empty()
+    }
+
+    #[must_use]
+    pub fn canonical_label(&self) -> String {
+        format!("{}#{}@{}", self.slot, self.key, self.mode.as_str())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginManifest {
     pub plugin_id: String,
@@ -124,6 +171,8 @@ pub struct PluginManifest {
     pub defer_loading: bool,
     #[serde(default)]
     pub setup: Option<PluginSetup>,
+    #[serde(default)]
+    pub slots: Vec<PluginOwnershipSlot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -730,6 +779,12 @@ fn first_manifest_conflict(
         return setup_conflict;
     }
 
+    let slots_conflict =
+        compare_optional_fill_sequence("slots", &package_manifest.slots, &source_manifest.slots);
+    if slots_conflict.is_some() {
+        return slots_conflict;
+    }
+
     compare_manifest_value(
         "defer_loading",
         &package_manifest.defer_loading,
@@ -889,7 +944,22 @@ fn normalize_plugin_manifest(mut manifest: PluginManifest) -> PluginManifest {
     let normalized_setup = manifest.setup.take().map(PluginSetup::normalized);
     let canonical_setup = normalized_setup.filter(|setup| !setup.is_effectively_empty());
     manifest.setup = canonical_setup;
+    manifest.slots = normalize_manifest_slots(manifest.slots);
     manifest
+}
+
+fn normalize_manifest_slots(slots: Vec<PluginOwnershipSlot>) -> Vec<PluginOwnershipSlot> {
+    let mut normalized_slots = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    for slot in slots.into_iter().map(PluginOwnershipSlot::normalized) {
+        let signature = (slot.slot.clone(), slot.key.clone(), slot.mode);
+        if seen.insert(signature) {
+            normalized_slots.push(slot);
+        }
+    }
+
+    normalized_slots
 }
 
 fn normalize_optional_manifest_string(raw: Option<String>) -> Option<String> {
@@ -1079,7 +1149,24 @@ mod tests {
     "default_env_var": " TAVILY_API_KEY ",
     "docs_urls": ["https://docs.example.com/tavily", "https://docs.example.com/tavily"],
     "remediation": " set a Tavily credential before enabling search "
-  }
+  },
+  "slots": [
+    {
+      "slot": " provider:web_search ",
+      "key": " tavily ",
+      "mode": "exclusive"
+    },
+    {
+      "slot": "tool:search",
+      "key": "web",
+      "mode": "shared"
+    },
+    {
+      "slot": "provider:web_search",
+      "key": "tavily",
+      "mode": "exclusive"
+    }
+  ]
 }
 "#,
         )
@@ -1130,6 +1217,21 @@ mod tests {
                 docs_urls: vec!["https://docs.example.com/tavily".to_owned()],
                 remediation: Some("set a Tavily credential before enabling search".to_owned()),
             })
+        );
+        assert_eq!(
+            report.descriptors[0].manifest.slots,
+            vec![
+                PluginOwnershipSlot {
+                    slot: "provider:web_search".to_owned(),
+                    key: "tavily".to_owned(),
+                    mode: PluginOwnershipSlotMode::Exclusive,
+                },
+                PluginOwnershipSlot {
+                    slot: "tool:search".to_owned(),
+                    key: "web".to_owned(),
+                    mode: PluginOwnershipSlotMode::Shared,
+                },
+            ]
         );
     }
 
@@ -1263,6 +1365,85 @@ mod tests {
                 field: "provider_id".to_owned(),
                 package_value: "\"package-provider\"".to_owned(),
                 source_value: "\"source-provider\"".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn scanner_fails_when_package_manifest_conflicts_with_source_slot_claims() {
+        let root = unique_tmp_dir("loongclaw-plugin-slot-conflict");
+        let package_root = root.join("pkg");
+        fs::create_dir_all(&package_root).expect("create temp root");
+
+        let manifest_file = package_root.join(PACKAGE_MANIFEST_FILE_NAME);
+        fs::write(
+            &manifest_file,
+            r#"
+{
+  "plugin_id": "package-plugin",
+  "provider_id": "package-provider",
+  "connector_name": "package-connector",
+  "channel_id": "package-channel",
+  "endpoint": "https://package.example/invoke",
+  "capabilities": ["InvokeConnector"],
+  "metadata": {
+    "bridge_kind": "http_json"
+  },
+  "slots": [
+    {
+      "slot": "provider:web_search",
+      "key": "default",
+      "mode": "exclusive"
+    }
+  ]
+}
+"#,
+        )
+        .expect("write package manifest");
+
+        let source_file = package_root.join("plugin.py");
+        fs::write(
+            &source_file,
+            r#"
+# LOONGCLAW_PLUGIN_START
+# {
+#   "plugin_id": "package-plugin",
+#   "provider_id": "package-provider",
+#   "connector_name": "package-connector",
+#   "channel_id": "package-channel",
+#   "endpoint": "https://package.example/invoke",
+#   "capabilities": ["InvokeConnector"],
+#   "metadata": {"bridge_kind":"http_json"},
+#   "slots": [
+#     {
+#       "slot": "provider:web_search",
+#       "key": "default",
+#       "mode": "shared"
+#     }
+#   ]
+# }
+# LOONGCLAW_PLUGIN_END
+"#,
+        )
+        .expect("write source plugin");
+
+        let scanner = PluginScanner::new();
+        let error = scanner
+            .scan_path(&root)
+            .expect_err("conflicting slot claims should fail");
+
+        assert_eq!(
+            error,
+            IntegrationError::PluginManifestConflict {
+                package_manifest_path: manifest_file.display().to_string(),
+                source_path: source_file.display().to_string(),
+                field: "slots".to_owned(),
+                package_value:
+                    "[{\"slot\":\"provider:web_search\",\"key\":\"default\",\"mode\":\"exclusive\"}]"
+                        .to_owned(),
+                source_value:
+                    "[{\"slot\":\"provider:web_search\",\"key\":\"default\",\"mode\":\"shared\"}]"
+                        .to_owned(),
             }
         );
     }
@@ -1575,6 +1756,7 @@ mod tests {
                     output_examples: Vec::new(),
                     defer_loading: false,
                     setup: None,
+                    slots: Vec::new(),
                 },
             }],
         };
@@ -1642,6 +1824,7 @@ mod tests {
                         output_examples: Vec::new(),
                         defer_loading: false,
                         setup: None,
+                        slots: Vec::new(),
                     },
                 },
                 PluginDescriptor {
@@ -1664,6 +1847,7 @@ mod tests {
                         output_examples: Vec::new(),
                         defer_loading: false,
                         setup: None,
+                        slots: Vec::new(),
                     },
                 },
             ],

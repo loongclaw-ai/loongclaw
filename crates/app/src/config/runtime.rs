@@ -28,7 +28,7 @@ use super::{
         format_config_validation_issues,
     },
     tools::{
-        DEFAULT_WEB_SEARCH_PROVIDER, ExternalSkillsConfig, ToolConfig,
+        DEFAULT_WEB_SEARCH_PROVIDER, ExternalSkillsConfig, RuntimePluginsConfig, ToolConfig,
         WEB_SEARCH_BRAVE_API_KEY_ENV, WEB_SEARCH_EXA_API_KEY_ENV, WEB_SEARCH_JINA_API_KEY_ENV,
         WEB_SEARCH_JINA_AUTH_TOKEN_ENV, WEB_SEARCH_PERPLEXITY_API_KEY_ENV,
         WEB_SEARCH_PROVIDER_VALID_VALUES, WEB_SEARCH_TAVILY_API_KEY_ENV,
@@ -130,6 +130,8 @@ pub struct LoongClawConfig {
     pub tools: ToolConfig,
     #[serde(default)]
     pub external_skills: ExternalSkillsConfig,
+    #[serde(default)]
+    pub runtime_plugins: RuntimePluginsConfig,
     #[serde(default)]
     pub memory: MemoryConfig,
     #[serde(default)]
@@ -3283,6 +3285,26 @@ model = "gpt-5"
         assert!(loaded.external_skills.blocked_domains.is_empty());
         assert!(loaded.external_skills.install_root.is_none());
         assert!(!loaded.external_skills.auto_expose_installed);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    #[cfg(feature = "config-toml")]
+    fn write_default_config_keeps_runtime_plugins_guardrails() {
+        let path = unique_config_path("loongclaw-config-runtime-plugins");
+        let path_string = path.display().to_string();
+
+        write(Some(&path_string), &LoongClawConfig::default(), true)
+            .expect("default config write should pass");
+
+        let raw = fs::read_to_string(&path).expect("read written config");
+        assert!(raw.contains("[runtime_plugins]"));
+        assert!(raw.contains("enabled = false"));
+
+        let (_, loaded) = load(Some(&path_string)).expect("config load should pass");
+        assert!(!loaded.runtime_plugins.enabled);
+        assert!(loaded.runtime_plugins.roots.is_empty());
 
         let _ = fs::remove_file(path);
     }

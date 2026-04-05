@@ -618,6 +618,7 @@ mod tests {
                 output_examples: Vec::new(),
                 defer_loading: false,
                 setup: None,
+                slots: Vec::new(),
             },
         }
     }

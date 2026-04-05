@@ -15,8 +15,9 @@ use std::{
 
 use clap::{Parser, Subcommand, ValueEnum};
 use kernel::{
-    Capability, ConnectorCommand, FixedClock, InMemoryAuditSink, TaskIntent, ToolCoreOutcome,
-    ToolCoreRequest,
+    BridgeSupportMatrix, Capability, ConnectorCommand, FixedClock, InMemoryAuditSink,
+    PluginActivationStatus, PluginScanner, PluginSetupReadinessContext, PluginTranslator,
+    TaskIntent, ToolCoreOutcome, ToolCoreRequest,
 };
 use loongclaw_contracts::SecretRef;
 use serde::{Deserialize, Serialize};
@@ -100,6 +101,7 @@ mod provider_route_diagnostics;
 pub mod runtime_capability_cli;
 pub mod runtime_experiment_cli;
 pub mod runtime_restore_cli;
+mod runtime_snapshot_render;
 pub mod skills_cli;
 pub mod source_presentation;
 pub mod supervisor;
@@ -108,6 +110,9 @@ pub use loongclaw_spec::programmatic::{
     acquire_programmatic_circuit_slot, record_programmatic_circuit_outcome,
 };
 pub use observability::init_tracing;
+pub use runtime_snapshot_render::{
+    build_runtime_snapshot_cli_json_payload, render_runtime_snapshot_text,
+};
 
 #[allow(
     clippy::expect_used,
@@ -1746,6 +1751,7 @@ pub struct RuntimeSnapshotCliState {
     pub capability_snapshot: String,
     pub capability_snapshot_sha256: String,
     pub external_skills: RuntimeSnapshotExternalSkillsState,
+    pub runtime_plugins: RuntimeSnapshotRuntimePluginsState,
     pub restore_spec: RuntimeSnapshotRestoreSpec,
 }
 
@@ -1807,6 +1813,47 @@ pub struct RuntimeSnapshotExternalSkillsState {
     pub inventory: Value,
     pub resolved_skill_count: usize,
     pub shadowed_skill_count: usize,
+    pub blocked_skill_count: usize,
+    pub ineligible_skill_count: usize,
+    pub blocked_skill_ids: Vec<String>,
+    pub ineligible_skill_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeSnapshotRuntimePluginsState {
+    pub enabled: bool,
+    pub roots: Vec<String>,
+    pub inventory_status: RuntimeSnapshotInventoryStatus,
+    pub inventory_error: Option<String>,
+    pub scanned_root_count: usize,
+    pub scanned_file_count: usize,
+    pub discovered_plugin_count: usize,
+    pub translated_plugin_count: usize,
+    pub ready_plugin_count: usize,
+    pub setup_incomplete_plugin_count: usize,
+    pub blocked_plugin_count: usize,
+    pub plugins: Vec<RuntimeSnapshotRuntimePluginState>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeSnapshotRuntimePluginState {
+    pub plugin_id: String,
+    pub provider_id: String,
+    pub connector_name: String,
+    pub source_path: String,
+    pub source_kind: String,
+    pub package_root: String,
+    pub package_manifest_path: Option<String>,
+    pub bridge_kind: String,
+    pub adapter_family: String,
+    pub setup_mode: Option<String>,
+    pub setup_surface: Option<String>,
+    pub slot_claims: Vec<String>,
+    pub conflicting_slot_claims: Vec<String>,
+    pub status: String,
+    pub reason: String,
+    pub missing_required_env_vars: Vec<String>,
+    pub missing_required_config_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1933,6 +1980,7 @@ pub fn collect_runtime_snapshot_cli_state(
     );
     let (external_skills, snapshot_tool_runtime) =
         collect_runtime_snapshot_external_skills_state(&tool_runtime);
+    let runtime_plugins = collect_runtime_snapshot_runtime_plugins_state(&config);
     let tool_view = mvp::tools::runtime_tool_view_for_runtime_config(&snapshot_tool_runtime);
     let visible_tool_names = tool_view
         .tool_names()
@@ -1957,6 +2005,7 @@ pub fn collect_runtime_snapshot_cli_state(
         capability_snapshot,
         capability_snapshot_sha256,
         external_skills,
+        runtime_plugins,
         restore_spec,
     })
 }
@@ -2048,7 +2097,7 @@ fn runtime_snapshot_provider_credentials_resolved(provider: &mvp::config::Provid
     })
 }
 
-fn collect_runtime_snapshot_external_skills_state(
+pub(crate) fn collect_runtime_snapshot_external_skills_state(
     tool_runtime: &mvp::tools::runtime_config::ToolRuntimeConfig,
 ) -> (
     RuntimeSnapshotExternalSkillsState,
@@ -2057,6 +2106,7 @@ fn collect_runtime_snapshot_external_skills_state(
     let empty_inventory = json!({
         "skills": [],
         "shadowed_skills": [],
+        "blocked_skill_errors": {},
     });
 
     let (effective_policy, override_active) =
@@ -2072,10 +2122,15 @@ fn collect_runtime_snapshot_external_skills_state(
                         inventory: json!({
                             "skills": [],
                             "shadowed_skills": [],
+                            "blocked_skill_errors": {},
                             "error": error,
                         }),
                         resolved_skill_count: 0,
                         shadowed_skill_count: 0,
+                        blocked_skill_count: 0,
+                        ineligible_skill_count: 0,
+                        blocked_skill_ids: Vec::new(),
+                        ineligible_skill_ids: Vec::new(),
                     },
                     tool_runtime.clone(),
                 );
@@ -2095,30 +2150,47 @@ fn collect_runtime_snapshot_external_skills_state(
                 inventory: empty_inventory,
                 resolved_skill_count: 0,
                 shadowed_skill_count: 0,
+                blocked_skill_count: 0,
+                ineligible_skill_count: 0,
+                blocked_skill_ids: Vec::new(),
+                ineligible_skill_ids: Vec::new(),
             },
             effective_tool_runtime,
         );
     }
 
-    match mvp::tools::execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "external_skills.list".to_owned(),
-            payload: json!({}),
-        },
-        &effective_tool_runtime,
-    ) {
-        Ok(outcome) => (
-            RuntimeSnapshotExternalSkillsState {
-                policy: effective_policy,
-                override_active,
-                inventory_status: RuntimeSnapshotInventoryStatus::Ok,
-                inventory_error: None,
-                resolved_skill_count: json_array_len(outcome.payload.get("skills")),
-                shadowed_skill_count: json_array_len(outcome.payload.get("shadowed_skills")),
-                inventory: outcome.payload,
-            },
-            effective_tool_runtime,
-        ),
+    match mvp::tools::external_skills_operator_list_with_config(&effective_tool_runtime) {
+        Ok(outcome) => {
+            let blocked_skill_ids = json_object_keys(outcome.payload.get("blocked_skill_errors"));
+            let ineligible_skill_ids = json_array_matching_string_field(
+                outcome.payload.get("skills"),
+                "skill_id",
+                |skill| {
+                    skill
+                        .get("eligibility")
+                        .and_then(Value::as_object)
+                        .and_then(|eligibility| eligibility.get("available"))
+                        .and_then(Value::as_bool)
+                        == Some(false)
+                },
+            );
+            (
+                RuntimeSnapshotExternalSkillsState {
+                    policy: effective_policy,
+                    override_active,
+                    inventory_status: RuntimeSnapshotInventoryStatus::Ok,
+                    inventory_error: None,
+                    resolved_skill_count: json_array_len(outcome.payload.get("skills")),
+                    shadowed_skill_count: json_array_len(outcome.payload.get("shadowed_skills")),
+                    blocked_skill_count: blocked_skill_ids.len(),
+                    ineligible_skill_count: ineligible_skill_ids.len(),
+                    blocked_skill_ids,
+                    ineligible_skill_ids,
+                    inventory: outcome.payload,
+                },
+                effective_tool_runtime,
+            )
+        }
         Err(error) => (
             RuntimeSnapshotExternalSkillsState {
                 policy: effective_policy,
@@ -2128,14 +2200,240 @@ fn collect_runtime_snapshot_external_skills_state(
                 inventory: json!({
                     "skills": [],
                     "shadowed_skills": [],
+                    "blocked_skill_errors": {},
                     "error": error,
                 }),
                 resolved_skill_count: 0,
                 shadowed_skill_count: 0,
+                blocked_skill_count: 0,
+                ineligible_skill_count: 0,
+                blocked_skill_ids: Vec::new(),
+                ineligible_skill_ids: Vec::new(),
             },
             effective_tool_runtime,
         ),
     }
+}
+
+pub(crate) fn collect_runtime_snapshot_runtime_plugins_state(
+    config: &mvp::config::LoongClawConfig,
+) -> RuntimeSnapshotRuntimePluginsState {
+    let roots = config
+        .runtime_plugins
+        .resolved_roots()
+        .into_iter()
+        .map(|root| root.display().to_string())
+        .collect::<Vec<_>>();
+
+    if !config.runtime_plugins.enabled {
+        return RuntimeSnapshotRuntimePluginsState {
+            enabled: false,
+            roots,
+            inventory_status: RuntimeSnapshotInventoryStatus::Disabled,
+            inventory_error: None,
+            scanned_root_count: 0,
+            scanned_file_count: 0,
+            discovered_plugin_count: 0,
+            translated_plugin_count: 0,
+            ready_plugin_count: 0,
+            setup_incomplete_plugin_count: 0,
+            blocked_plugin_count: 0,
+            plugins: Vec::new(),
+        };
+    }
+
+    let resolved_roots = config.runtime_plugins.resolved_roots();
+    if resolved_roots.is_empty() {
+        return RuntimeSnapshotRuntimePluginsState {
+            enabled: true,
+            roots,
+            inventory_status: RuntimeSnapshotInventoryStatus::Error,
+            inventory_error: Some(
+                "runtime_plugins.enabled=true but no runtime plugin roots are configured"
+                    .to_owned(),
+            ),
+            scanned_root_count: 0,
+            scanned_file_count: 0,
+            discovered_plugin_count: 0,
+            translated_plugin_count: 0,
+            ready_plugin_count: 0,
+            setup_incomplete_plugin_count: 0,
+            blocked_plugin_count: 0,
+            plugins: Vec::new(),
+        };
+    }
+
+    let scanner = PluginScanner::new();
+    let mut combined = kernel::PluginScanReport::default();
+    let mut descriptors = Vec::new();
+    for root in &resolved_roots {
+        let report = match scanner.scan_path(root) {
+            Ok(report) => report,
+            Err(error) => {
+                return RuntimeSnapshotRuntimePluginsState {
+                    enabled: true,
+                    roots,
+                    inventory_status: RuntimeSnapshotInventoryStatus::Error,
+                    inventory_error: Some(format!(
+                        "runtime plugin scan failed for {}: {error}",
+                        root.display()
+                    )),
+                    scanned_root_count: 0,
+                    scanned_file_count: 0,
+                    discovered_plugin_count: 0,
+                    translated_plugin_count: 0,
+                    ready_plugin_count: 0,
+                    setup_incomplete_plugin_count: 0,
+                    blocked_plugin_count: 0,
+                    plugins: Vec::new(),
+                };
+            }
+        };
+        combined.scanned_files += report.scanned_files;
+        combined.matched_plugins += report.matched_plugins;
+        descriptors.extend(report.descriptors);
+    }
+    combined.descriptors = descriptors;
+
+    let translator = PluginTranslator::new();
+    let translation = translator.translate_scan_report(&combined);
+    let readiness_context = runtime_plugin_setup_readiness_context(config);
+    let activation = translator.plan_activation(
+        &translation,
+        &BridgeSupportMatrix::default(),
+        &readiness_context,
+    );
+
+    let plugins = activation
+        .candidates
+        .iter()
+        .zip(translation.entries.iter())
+        .map(|(candidate, entry)| RuntimeSnapshotRuntimePluginState {
+            plugin_id: candidate.plugin_id.clone(),
+            provider_id: entry.provider_id.clone(),
+            connector_name: entry.connector_name.clone(),
+            source_path: candidate.source_path.clone(),
+            source_kind: candidate.source_kind.as_str().to_owned(),
+            package_root: candidate.package_root.clone(),
+            package_manifest_path: candidate.package_manifest_path.clone(),
+            bridge_kind: candidate.bridge_kind.as_str().to_owned(),
+            adapter_family: candidate.adapter_family.clone(),
+            setup_mode: entry
+                .setup
+                .as_ref()
+                .map(|setup| setup.mode.as_str().to_owned()),
+            setup_surface: entry.setup.as_ref().and_then(|setup| setup.surface.clone()),
+            slot_claims: candidate.slot_claims.clone(),
+            conflicting_slot_claims: candidate.conflicting_slot_claims.clone(),
+            status: runtime_plugin_activation_status(candidate.status).to_owned(),
+            reason: candidate.reason.clone(),
+            missing_required_env_vars: candidate.missing_required_env_vars.clone(),
+            missing_required_config_keys: candidate.missing_required_config_keys.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    RuntimeSnapshotRuntimePluginsState {
+        enabled: true,
+        roots,
+        inventory_status: RuntimeSnapshotInventoryStatus::Ok,
+        inventory_error: None,
+        scanned_root_count: resolved_roots.len(),
+        scanned_file_count: combined.scanned_files,
+        discovered_plugin_count: combined.matched_plugins,
+        translated_plugin_count: translation.translated_plugins,
+        ready_plugin_count: activation.ready_plugins,
+        setup_incomplete_plugin_count: activation.setup_incomplete_plugins,
+        blocked_plugin_count: activation.blocked_plugins,
+        plugins,
+    }
+}
+
+fn runtime_plugin_setup_readiness_context(
+    config: &mvp::config::LoongClawConfig,
+) -> PluginSetupReadinessContext {
+    let verified_env_vars = std::env::vars_os()
+        .filter_map(|(key, value)| {
+            if value.is_empty() {
+                return None;
+            }
+            Some(key.to_string_lossy().to_string())
+        })
+        .collect();
+    let mut verified_config_keys = BTreeSet::new();
+    if let Ok(value) = serde_json::to_value(config) {
+        collect_config_paths(&value, None, &mut verified_config_keys);
+    }
+    PluginSetupReadinessContext {
+        verified_env_vars,
+        verified_config_keys,
+    }
+}
+
+fn collect_config_paths(value: &Value, prefix: Option<&str>, out: &mut BTreeSet<String>) {
+    match value {
+        Value::Object(map) => {
+            if let Some(prefix) = prefix
+                && !prefix.is_empty()
+            {
+                out.insert(prefix.to_owned());
+            }
+            for (key, child) in map {
+                let next = match prefix {
+                    Some(prefix) if !prefix.is_empty() => format!("{prefix}.{key}"),
+                    _ => key.clone(),
+                };
+                collect_config_paths(child, Some(next.as_str()), out);
+            }
+        }
+        Value::Array(_) | Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+            if let Some(prefix) = prefix
+                && !prefix.is_empty()
+            {
+                out.insert(prefix.to_owned());
+            }
+        }
+    }
+}
+
+fn runtime_plugin_activation_status(status: PluginActivationStatus) -> &'static str {
+    match status {
+        PluginActivationStatus::Ready => "ready",
+        PluginActivationStatus::SetupIncomplete => "setup_incomplete",
+        PluginActivationStatus::BlockedUnsupportedBridge => "blocked_unsupported_bridge",
+        PluginActivationStatus::BlockedUnsupportedAdapterFamily => {
+            "blocked_unsupported_adapter_family"
+        }
+        PluginActivationStatus::BlockedInvalidOwnershipSlots => "blocked_invalid_ownership_slots",
+        PluginActivationStatus::BlockedOwnershipConflict => "blocked_ownership_conflict",
+    }
+}
+
+fn json_object_keys(value: Option<&Value>) -> Vec<String> {
+    let mut keys = value
+        .and_then(Value::as_object)
+        .map(|items| items.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    keys.sort();
+    keys
+}
+
+fn json_array_matching_string_field(
+    value: Option<&Value>,
+    field: &str,
+    predicate: impl Fn(&Value) -> bool,
+) -> Vec<String> {
+    let mut values = value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| predicate(item))
+                .filter_map(|item| item.get(field).and_then(Value::as_str).map(str::to_owned))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    values.sort();
+    values
 }
 
 fn runtime_snapshot_effective_external_skills_policy(
@@ -2561,6 +2859,10 @@ mod runtime_snapshot_restore_spec_tests {
                 }),
                 resolved_skill_count: 1,
                 shadowed_skill_count: 0,
+                blocked_skill_count: 0,
+                ineligible_skill_count: 0,
+                blocked_skill_ids: Vec::new(),
+                ineligible_skill_ids: Vec::new(),
             },
             &mut warnings,
         );
@@ -2777,7 +3079,7 @@ mod runtime_snapshot_restore_spec_tests {
         runtime.browser_companion.ready = true;
         runtime.browser_companion.command = Some("browser-companion".to_owned());
 
-        let json = runtime_snapshot_tool_runtime_json(&runtime);
+        let json = crate::runtime_snapshot_render::runtime_snapshot_tool_runtime_json(&runtime);
 
         assert_eq!(json["browser"]["execution_tier"], json!("restricted"));
         assert_eq!(
@@ -4779,448 +5081,6 @@ pub async fn run_multi_channel_serve_cli(
 
 pub fn parse_json_payload(raw: &str, context: &str) -> CliResult<Value> {
     serde_json::from_str(raw).map_err(|error| format!("invalid JSON for {context}: {error}"))
-}
-
-pub fn build_runtime_snapshot_cli_json_payload(snapshot: &RuntimeSnapshotCliState) -> Value {
-    json!({
-        "config": snapshot.config,
-        "schema": {
-            "version": RUNTIME_SNAPSHOT_CLI_JSON_SCHEMA_VERSION,
-            "surface": "runtime_snapshot",
-            "purpose": "experiment_reproducibility",
-        },
-        "provider": runtime_snapshot_provider_json(&snapshot.provider),
-        "context_engine": runtime_snapshot_context_engine_json(&snapshot.context_engine),
-        "memory_system": runtime_snapshot_memory_system_json(&snapshot.memory_system),
-        "acp": runtime_snapshot_acp_json(&snapshot.acp),
-        "channels": {
-            "enabled_channel_ids": snapshot.enabled_channel_ids,
-            "enabled_service_channel_ids": snapshot.enabled_service_channel_ids,
-            "inventory": build_channels_cli_json_payload(&snapshot.config, &snapshot.channels),
-        },
-        "tool_runtime": runtime_snapshot_tool_runtime_json(&snapshot.tool_runtime),
-        "tools": {
-            "visible_tool_count": snapshot.visible_tool_names.len(),
-            "visible_tool_names": snapshot.visible_tool_names,
-            "capability_snapshot_sha256": snapshot.capability_snapshot_sha256,
-            "capability_snapshot": snapshot.capability_snapshot,
-        },
-        "external_skills": runtime_snapshot_external_skills_json(&snapshot.external_skills),
-    })
-}
-
-pub fn render_runtime_snapshot_text(snapshot: &RuntimeSnapshotCliState) -> String {
-    let mut lines = vec![
-        format!("config={}", snapshot.config),
-        format!(
-            "provider active_profile={} active_label=\"{}\" last_provider={}",
-            snapshot.provider.active_profile_id,
-            snapshot.provider.active_label,
-            snapshot.provider.last_provider_id.as_deref().unwrap_or("-")
-        ),
-        format!(
-            "provider saved_profiles={}",
-            render_string_list(
-                snapshot
-                    .provider
-                    .saved_profile_ids
-                    .iter()
-                    .map(String::as_str)
-            )
-        ),
-    ];
-
-    for profile in &snapshot.provider.profiles {
-        lines.push(format!(
-            "  profile {} active={} default_for_kind={} kind={} model={} wire_api={} credential_resolved={} auth_env={} endpoint={} models_endpoint={} temperature={} max_tokens={} timeout_ms={} retries={} headers={} preferred_models={}",
-            profile.profile_id,
-            profile.is_active,
-            profile.default_for_kind,
-            profile.kind.as_str(),
-            profile.model,
-            profile.wire_api.as_str(),
-            profile.credential_resolved,
-            profile.auth_env.as_deref().unwrap_or("-"),
-            profile.endpoint,
-            profile.models_endpoint,
-            profile.temperature,
-            profile
-                .max_tokens
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "-".to_owned()),
-            profile.request_timeout_ms,
-            profile.retry_max_attempts,
-            render_string_list(profile.header_names.iter().map(String::as_str)),
-            render_string_list(profile.preferred_models.iter().map(String::as_str))
-        ));
-    }
-
-    lines.push(format!(
-        "context_engine selected={} source={} api_version={} capabilities={}",
-        snapshot.context_engine.selected_metadata.id,
-        snapshot.context_engine.selected.source.as_str(),
-        snapshot.context_engine.selected_metadata.api_version,
-        format_capability_names(&snapshot.context_engine.selected_metadata.capability_names())
-    ));
-    lines.push(format!(
-        "context_engine compaction=enabled:{} min_messages:{} trigger_estimated_tokens:{} fail_open:{}",
-        snapshot.context_engine.compaction.enabled,
-        snapshot
-            .context_engine
-            .compaction
-            .min_messages
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "-".to_owned()),
-        snapshot
-            .context_engine
-            .compaction
-            .trigger_estimated_tokens
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "-".to_owned()),
-        snapshot.context_engine.compaction.fail_open
-    ));
-    lines.push(format!(
-        "memory selected={} source={} api_version={} capabilities={} summary={}",
-        snapshot.memory_system.selected_metadata.id,
-        snapshot.memory_system.selected.source.as_str(),
-        snapshot.memory_system.selected_metadata.api_version,
-        format_capability_names(&snapshot.memory_system.selected_metadata.capability_names()),
-        snapshot.memory_system.selected_metadata.summary
-    ));
-    lines.push(format!(
-        "memory policy=backend:{} profile:{} mode:{} ingest_mode:{} fail_open:{} strict_mode_requested:{} strict_mode_active:{} effective_fail_open:{}",
-        snapshot.memory_system.policy.backend.as_str(),
-        snapshot.memory_system.policy.profile.as_str(),
-        snapshot.memory_system.policy.mode.as_str(),
-        snapshot.memory_system.policy.ingest_mode.as_str(),
-        snapshot.memory_system.policy.fail_open,
-        snapshot.memory_system.policy.strict_mode_requested,
-        snapshot.memory_system.policy.strict_mode_active,
-        snapshot.memory_system.policy.effective_fail_open
-    ));
-    lines.push(format!(
-        "acp enabled={} selected={} source={} api_version={} capabilities={} dispatch_enabled={} routing={} thread_routing={} default_agent={} allowed_agents={} allowed_channels={} allowed_account_ids={} bootstrap_mcp_servers={} working_directory={}",
-        snapshot.acp.control_plane.enabled,
-        snapshot.acp.selected_metadata.id,
-        snapshot.acp.selected.source.as_str(),
-        snapshot.acp.selected_metadata.api_version,
-        format_capability_names(&snapshot.acp.selected_metadata.capability_names()),
-        snapshot.acp.control_plane.dispatch_enabled,
-        snapshot.acp.control_plane.conversation_routing.as_str(),
-        snapshot.acp.control_plane.thread_routing.as_str(),
-        snapshot.acp.control_plane.default_agent,
-        render_string_list(snapshot.acp.control_plane.allowed_agents.iter().map(String::as_str)),
-        render_string_list(snapshot.acp.control_plane.allowed_channels.iter().map(String::as_str)),
-        render_string_list(
-            snapshot
-                .acp
-                .control_plane
-                .allowed_account_ids
-                .iter()
-                .map(String::as_str)
-        ),
-        render_string_list(
-            snapshot
-                .acp
-                .control_plane
-                .bootstrap_mcp_servers
-                .iter()
-                .map(String::as_str)
-        ),
-        snapshot
-            .acp
-            .control_plane
-            .working_directory
-            .as_deref()
-            .unwrap_or("-")
-    ));
-    lines.push(format!(
-        "channels enabled={} service_enabled={} configured_accounts={} surfaces={}",
-        render_string_list(snapshot.enabled_channel_ids.iter().map(String::as_str)),
-        render_string_list(
-            snapshot
-                .enabled_service_channel_ids
-                .iter()
-                .map(String::as_str)
-        ),
-        snapshot.channels.channels.len(),
-        snapshot.channels.channel_surfaces.len()
-    ));
-    for surface in &snapshot.channels.channel_surfaces {
-        lines.push(format!(
-            "  channel {} implementation_status={} configured_accounts={} default_configured_account={} aliases={}",
-            surface.catalog.id,
-            surface.catalog.implementation_status.as_str(),
-            surface.configured_accounts.len(),
-            surface
-                .default_configured_account_id
-                .as_deref()
-                .unwrap_or("-"),
-            render_string_list(surface.catalog.aliases.iter().copied())
-        ));
-    }
-    lines.push(format!(
-        "tool_runtime shell_default={} shell_allow={} shell_deny={} sessions_enabled={} messages_enabled={} delegate_enabled={}",
-        shell_policy_default_str(snapshot.tool_runtime.shell_default_mode),
-        render_string_list(snapshot.tool_runtime.shell_allow.iter().map(String::as_str)),
-        render_string_list(snapshot.tool_runtime.shell_deny.iter().map(String::as_str)),
-        snapshot.tool_runtime.sessions_enabled,
-        snapshot.tool_runtime.messages_enabled,
-        snapshot.tool_runtime.delegate_enabled
-    ));
-    lines.push(format!(
-        "tool_runtime browser enabled={} tier={} max_sessions={} max_links={} max_text_chars={}",
-        snapshot.tool_runtime.browser.enabled,
-        snapshot.tool_runtime.browser_execution_security_tier(),
-        snapshot.tool_runtime.browser.max_sessions,
-        snapshot.tool_runtime.browser.max_links,
-        snapshot.tool_runtime.browser.max_text_chars
-    ));
-    lines.push(format!(
-        "tool_runtime browser_companion enabled={} ready={} tier={} command={} expected_version={}",
-        snapshot.tool_runtime.browser_companion.enabled,
-        snapshot.tool_runtime.browser_companion.ready,
-        snapshot
-            .tool_runtime
-            .browser_companion_execution_security_tier(),
-        snapshot
-            .tool_runtime
-            .browser_companion
-            .command
-            .as_deref()
-            .unwrap_or("-"),
-        snapshot
-            .tool_runtime
-            .browser_companion
-            .expected_version
-            .as_deref()
-            .unwrap_or("-")
-    ));
-    lines.push(format!(
-        "tool_runtime web_fetch enabled={} allow_private_hosts={} timeout_seconds={} max_bytes={} max_redirects={} allowed_domains={} blocked_domains={}",
-        snapshot.tool_runtime.web_fetch.enabled,
-        snapshot.tool_runtime.web_fetch.allow_private_hosts,
-        snapshot.tool_runtime.web_fetch.timeout_seconds,
-        snapshot.tool_runtime.web_fetch.max_bytes,
-        snapshot.tool_runtime.web_fetch.max_redirects,
-        render_string_list(snapshot.tool_runtime.web_fetch.allowed_domains.iter().map(String::as_str)),
-        render_string_list(snapshot.tool_runtime.web_fetch.blocked_domains.iter().map(String::as_str))
-    ));
-    lines.push(format!(
-        "tools visible_count={} capability_snapshot_sha256={} visible_names={}",
-        snapshot.visible_tool_names.len(),
-        snapshot.capability_snapshot_sha256,
-        render_string_list(snapshot.visible_tool_names.iter().map(String::as_str))
-    ));
-    lines.push(format!(
-        "external_skills inventory_status={} override_active={} enabled={} require_download_approval={} auto_expose_installed={} install_root={} resolved_skills={} shadowed_skills={} inventory_error={}",
-        snapshot.external_skills.inventory_status.as_str(),
-        snapshot.external_skills.override_active,
-        snapshot.external_skills.policy.enabled,
-        snapshot.external_skills.policy.require_download_approval,
-        snapshot.external_skills.policy.auto_expose_installed,
-        snapshot
-            .external_skills
-            .policy
-            .install_root
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "-".to_owned()),
-        snapshot.external_skills.resolved_skill_count,
-        snapshot.external_skills.shadowed_skill_count,
-        snapshot
-            .external_skills
-            .inventory_error
-            .as_deref()
-            .unwrap_or("-")
-    ));
-
-    if let Some(skills) = snapshot
-        .external_skills
-        .inventory
-        .get("skills")
-        .and_then(Value::as_array)
-    {
-        for skill in skills {
-            lines.push(format!(
-                "  external_skill {} scope={} active={} sha256={}",
-                json_string_field(skill, "skill_id"),
-                json_string_field(skill, "scope"),
-                skill
-                    .get("active")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-                json_string_field(skill, "sha256")
-            ));
-        }
-    }
-
-    lines
-        .into_iter()
-        .chain([
-            "capability_snapshot:".to_owned(),
-            snapshot.capability_snapshot.clone(),
-        ])
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn runtime_snapshot_provider_json(snapshot: &RuntimeSnapshotProviderState) -> Value {
-    json!({
-        "active_profile_id": snapshot.active_profile_id,
-        "active_label": snapshot.active_label,
-        "last_provider_id": snapshot.last_provider_id,
-        "saved_profile_ids": snapshot.saved_profile_ids,
-        "profiles": snapshot
-            .profiles
-            .iter()
-            .map(runtime_snapshot_provider_profile_json)
-            .collect::<Vec<_>>(),
-    })
-}
-
-fn runtime_snapshot_provider_profile_json(profile: &RuntimeSnapshotProviderProfileState) -> Value {
-    json!({
-        "profile_id": profile.profile_id,
-        "is_active": profile.is_active,
-        "default_for_kind": profile.default_for_kind,
-        "kind": profile.kind.as_str(),
-        "model": profile.model,
-        "wire_api": profile.wire_api.as_str(),
-        "base_url": profile.base_url,
-        "endpoint": profile.endpoint,
-        "models_endpoint": profile.models_endpoint,
-        "protocol_family": profile.protocol_family,
-        "credential_resolved": profile.credential_resolved,
-        "auth_env": profile.auth_env,
-        "reasoning_effort": profile.reasoning_effort,
-        "temperature": profile.temperature,
-        "max_tokens": profile.max_tokens,
-        "request_timeout_ms": profile.request_timeout_ms,
-        "retry_max_attempts": profile.retry_max_attempts,
-        "header_names": profile.header_names,
-        "preferred_models": profile.preferred_models,
-    })
-}
-
-fn runtime_snapshot_context_engine_json(
-    snapshot: &mvp::conversation::ContextEngineRuntimeSnapshot,
-) -> Value {
-    json!({
-        "selected": context_engine_metadata_json(
-            &snapshot.selected_metadata,
-            Some(snapshot.selected.source.as_str())
-        ),
-        "available": snapshot
-            .available
-            .iter()
-            .map(|metadata| context_engine_metadata_json(metadata, None))
-            .collect::<Vec<_>>(),
-        "compaction": {
-            "enabled": snapshot.compaction.enabled,
-            "min_messages": snapshot.compaction.min_messages,
-            "trigger_estimated_tokens": snapshot.compaction.trigger_estimated_tokens,
-            "fail_open": snapshot.compaction.fail_open,
-        },
-    })
-}
-
-fn runtime_snapshot_memory_system_json(
-    snapshot: &mvp::memory::MemorySystemRuntimeSnapshot,
-) -> Value {
-    json!({
-        "selected": memory_system_metadata_json(
-            &snapshot.selected_metadata,
-            Some(snapshot.selected.source.as_str())
-        ),
-        "available": snapshot
-            .available
-            .iter()
-            .map(|metadata| memory_system_metadata_json(metadata, None))
-            .collect::<Vec<_>>(),
-        "policy": memory_system_policy_json(&snapshot.policy),
-    })
-}
-
-fn runtime_snapshot_acp_json(snapshot: &mvp::acp::AcpRuntimeSnapshot) -> Value {
-    json!({
-        "enabled": snapshot.control_plane.enabled,
-        "selected": acp_backend_metadata_json(
-            &snapshot.selected_metadata,
-            Some(snapshot.selected.source.as_str())
-        ),
-        "available": snapshot
-            .available
-            .iter()
-            .map(|metadata| acp_backend_metadata_json(metadata, None))
-            .collect::<Vec<_>>(),
-        "control_plane": acp_control_plane_json(&snapshot.control_plane),
-    })
-}
-
-fn runtime_snapshot_tool_runtime_json(
-    runtime: &mvp::tools::runtime_config::ToolRuntimeConfig,
-) -> Value {
-    json!({
-        "file_root": runtime
-            .file_root
-            .as_ref()
-            .map(|path| path.display().to_string()),
-        "shell": {
-            "default_mode": shell_policy_default_str(runtime.shell_default_mode),
-            "allow": runtime.shell_allow.iter().collect::<Vec<_>>(),
-            "deny": runtime.shell_deny.iter().collect::<Vec<_>>(),
-        },
-        "sessions_enabled": runtime.sessions_enabled,
-        "messages_enabled": runtime.messages_enabled,
-        "delegate_enabled": runtime.delegate_enabled,
-        "browser": {
-            "enabled": runtime.browser.enabled,
-            "execution_tier": runtime.browser_execution_security_tier().as_str(),
-            "max_sessions": runtime.browser.max_sessions,
-            "max_links": runtime.browser.max_links,
-            "max_text_chars": runtime.browser.max_text_chars,
-        },
-        "browser_companion": {
-            "enabled": runtime.browser_companion.enabled,
-            "ready": runtime.browser_companion.ready,
-            "execution_tier": runtime.browser_companion_execution_security_tier().as_str(),
-            "command": runtime.browser_companion.command,
-            "expected_version": runtime.browser_companion.expected_version,
-        },
-        "web_fetch": {
-            "enabled": runtime.web_fetch.enabled,
-            "allow_private_hosts": runtime.web_fetch.allow_private_hosts,
-            "allowed_domains": runtime.web_fetch.allowed_domains.iter().collect::<Vec<_>>(),
-            "blocked_domains": runtime.web_fetch.blocked_domains.iter().collect::<Vec<_>>(),
-            "timeout_seconds": runtime.web_fetch.timeout_seconds,
-            "max_bytes": runtime.web_fetch.max_bytes,
-            "max_redirects": runtime.web_fetch.max_redirects,
-        },
-    })
-}
-
-fn runtime_snapshot_external_skills_json(snapshot: &RuntimeSnapshotExternalSkillsState) -> Value {
-    json!({
-        "policy": {
-            "enabled": snapshot.policy.enabled,
-            "require_download_approval": snapshot.policy.require_download_approval,
-            "allowed_domains": snapshot.policy.allowed_domains.iter().collect::<Vec<_>>(),
-            "blocked_domains": snapshot.policy.blocked_domains.iter().collect::<Vec<_>>(),
-            "install_root": snapshot
-                .policy
-                .install_root
-                .as_ref()
-                .map(|path| path.display().to_string()),
-            "auto_expose_installed": snapshot.policy.auto_expose_installed,
-        },
-        "override_active": snapshot.override_active,
-        "inventory_status": snapshot.inventory_status.as_str(),
-        "inventory_error": snapshot.inventory_error,
-        "resolved_skill_count": snapshot.resolved_skill_count,
-        "shadowed_skill_count": snapshot.shadowed_skill_count,
-        "inventory": snapshot.inventory,
-    })
 }
 
 fn shell_policy_default_str(

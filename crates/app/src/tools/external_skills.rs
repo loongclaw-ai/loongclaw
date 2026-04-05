@@ -983,6 +983,11 @@ fn execute_external_skills_list_for_audience(
             "tool_name": tool_name,
             "skills": serialize_skill_entries_for_audience(filtered.skills, audience),
             "shadowed_skills": serialize_skill_entries_for_audience(filtered.shadowed_skills, audience),
+            "blocked_skill_errors": if audience == SkillAudience::Operator {
+                json!(filtered.blocked_skill_errors)
+            } else {
+                json!({})
+            },
         }),
     })
 }

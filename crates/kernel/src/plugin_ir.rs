@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     contracts::Capability,
-    plugin::{PluginDescriptor, PluginManifest, PluginScanReport, PluginSetup, PluginSourceKind},
+    plugin::{
+        PluginDescriptor, PluginManifest, PluginOwnershipSlot, PluginOwnershipSlotMode,
+        PluginScanReport, PluginSetup, PluginSourceKind,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -58,6 +61,7 @@ pub struct PluginIR {
     pub package_root: String,
     pub package_manifest_path: Option<String>,
     pub setup: Option<PluginSetup>,
+    pub slots: Vec<PluginOwnershipSlot>,
     pub runtime: PluginRuntimeProfile,
 }
 
@@ -157,6 +161,8 @@ pub enum PluginActivationStatus {
     SetupIncomplete,
     BlockedUnsupportedBridge,
     BlockedUnsupportedAdapterFamily,
+    BlockedInvalidOwnershipSlots,
+    BlockedOwnershipConflict,
 }
 
 /// Captures activation planning details for a single plugin candidate.
@@ -175,6 +181,10 @@ pub struct PluginActivationCandidate {
     pub missing_required_env_vars: Vec<String>,
     #[serde(default)]
     pub missing_required_config_keys: Vec<String>,
+    #[serde(default)]
+    pub slot_claims: Vec<String>,
+    #[serde(default)]
+    pub conflicting_slot_claims: Vec<String>,
     pub bootstrap_hint: String,
 }
 
@@ -273,6 +283,7 @@ impl PluginTranslator {
             package_root: descriptor.package_root.clone(),
             package_manifest_path: descriptor.package_manifest_path.clone(),
             setup: descriptor.manifest.setup.clone(),
+            slots: descriptor.manifest.slots.clone(),
             runtime,
         }
     }
@@ -285,6 +296,7 @@ impl PluginTranslator {
         setup_readiness_context: &PluginSetupReadinessContext,
     ) -> PluginActivationPlan {
         let mut plan = PluginActivationPlan::default();
+        let slot_conflict_state = evaluate_slot_conflicts(&translation.entries);
 
         for ir in &translation.entries {
             plan.total_plugins = plan.total_plugins.saturating_add(1);
@@ -292,8 +304,28 @@ impl PluginTranslator {
             let setup_readiness =
                 evaluate_plugin_setup_readiness(ir.setup.as_ref(), setup_readiness_context);
             let setup_is_incomplete = !setup_readiness.ready;
+            let plugin_key = activation_plugin_key(ir);
+            let slot_claims = slot_claim_strings(&ir.slots);
+            let conflicting_slot_claims = slot_conflict_state
+                .conflicting_slot_claims_by_plugin
+                .get(&plugin_key)
+                .cloned()
+                .unwrap_or_default();
+            let invalid_slot_reasons = slot_conflict_state
+                .invalid_reasons_by_plugin
+                .get(&plugin_key)
+                .cloned()
+                .unwrap_or_default();
 
-            let (status, reason) = if !matrix.is_bridge_supported(ir.runtime.bridge_kind) {
+            let (status, reason) = if !invalid_slot_reasons.is_empty() {
+                (
+                    PluginActivationStatus::BlockedInvalidOwnershipSlots,
+                    format!(
+                        "plugin ownership slots are invalid: {}",
+                        invalid_slot_reasons.join("; ")
+                    ),
+                )
+            } else if !matrix.is_bridge_supported(ir.runtime.bridge_kind) {
                 (
                     PluginActivationStatus::BlockedUnsupportedBridge,
                     format!(
@@ -307,6 +339,14 @@ impl PluginTranslator {
                     format!(
                         "adapter family {} is not supported by current runtime matrix",
                         ir.runtime.adapter_family
+                    ),
+                )
+            } else if !conflicting_slot_claims.is_empty() {
+                (
+                    PluginActivationStatus::BlockedOwnershipConflict,
+                    format!(
+                        "plugin ownership slot conflict on {}",
+                        conflicting_slot_claims.join(", ")
                     ),
                 )
             } else if setup_is_incomplete {
@@ -329,7 +369,9 @@ impl PluginTranslator {
                     plan.setup_incomplete_plugins = plan.setup_incomplete_plugins.saturating_add(1)
                 }
                 PluginActivationStatus::BlockedUnsupportedBridge
-                | PluginActivationStatus::BlockedUnsupportedAdapterFamily => {
+                | PluginActivationStatus::BlockedUnsupportedAdapterFamily
+                | PluginActivationStatus::BlockedInvalidOwnershipSlots
+                | PluginActivationStatus::BlockedOwnershipConflict => {
                     plan.blocked_plugins = plan.blocked_plugins.saturating_add(1)
                 }
             }
@@ -346,6 +388,8 @@ impl PluginTranslator {
                 reason,
                 missing_required_env_vars: setup_readiness.missing_required_env_vars,
                 missing_required_config_keys: setup_readiness.missing_required_config_keys,
+                slot_claims,
+                conflicting_slot_claims,
                 bootstrap_hint: bootstrap_hint(ir),
             });
         }
@@ -386,6 +430,104 @@ fn format_plugin_setup_incomplete_reason(readiness: &PluginSetupReadiness) -> St
 
     let combined_reasons = reasons.join("; ");
     format!("plugin setup is incomplete: {combined_reasons}")
+}
+
+type ActivationPluginKey = (String, String);
+
+#[derive(Debug, Default)]
+struct SlotConflictState {
+    invalid_reasons_by_plugin: BTreeMap<ActivationPluginKey, Vec<String>>,
+    conflicting_slot_claims_by_plugin: BTreeMap<ActivationPluginKey, Vec<String>>,
+}
+
+fn activation_plugin_key(ir: &PluginIR) -> ActivationPluginKey {
+    (ir.source_path.clone(), ir.plugin_id.clone())
+}
+
+fn slot_claim_strings(slots: &[PluginOwnershipSlot]) -> Vec<String> {
+    slots
+        .iter()
+        .cloned()
+        .map(PluginOwnershipSlot::normalized)
+        .map(|slot| slot.canonical_label())
+        .collect()
+}
+
+fn evaluate_slot_conflicts(entries: &[PluginIR]) -> SlotConflictState {
+    let mut state = SlotConflictState::default();
+    let mut claimants_by_surface: BTreeMap<
+        (String, String),
+        Vec<(ActivationPluginKey, PluginOwnershipSlotMode)>,
+    > = BTreeMap::new();
+
+    for ir in entries {
+        let plugin_key = activation_plugin_key(ir);
+
+        for raw_slot in &ir.slots {
+            let slot = raw_slot.clone().normalized();
+            if !slot.is_valid() {
+                let reason = format_invalid_slot_reason(&slot);
+                let reasons = state
+                    .invalid_reasons_by_plugin
+                    .entry(plugin_key.clone())
+                    .or_default();
+                if !reasons.iter().any(|existing| existing == &reason) {
+                    reasons.push(reason);
+                }
+                continue;
+            }
+
+            if matches!(slot.mode, PluginOwnershipSlotMode::Advisory) {
+                continue;
+            }
+
+            claimants_by_surface
+                .entry((slot.slot.clone(), slot.key.clone()))
+                .or_default()
+                .push((plugin_key.clone(), slot.mode));
+        }
+    }
+
+    for ((slot, key), claimants) in claimants_by_surface {
+        if !slot_surface_has_conflict(&claimants) {
+            continue;
+        }
+
+        for (plugin_key, mode) in claimants {
+            let conflicting_claims = state
+                .conflicting_slot_claims_by_plugin
+                .entry(plugin_key)
+                .or_default();
+            let label = format!("{slot}#{key}@{}", mode.as_str());
+            if !conflicting_claims.iter().any(|existing| existing == &label) {
+                conflicting_claims.push(label);
+            }
+        }
+    }
+
+    state
+}
+
+fn slot_surface_has_conflict(claimants: &[(ActivationPluginKey, PluginOwnershipSlotMode)]) -> bool {
+    if claimants.len() <= 1 {
+        return false;
+    }
+
+    claimants
+        .iter()
+        .any(|(_, mode)| matches!(mode, PluginOwnershipSlotMode::Exclusive))
+}
+
+fn format_invalid_slot_reason(slot: &PluginOwnershipSlot) -> String {
+    match (slot.slot.is_empty(), slot.key.is_empty()) {
+        (true, true) => format!(
+            "slot claim `{}` is missing both slot and key",
+            slot.canonical_label()
+        ),
+        (true, false) => format!("slot claim `{}` is missing slot", slot.canonical_label()),
+        (false, true) => format!("slot claim `{}` is missing key", slot.canonical_label()),
+        (false, false) => format!("slot claim `{}` is invalid", slot.canonical_label()),
+    }
 }
 
 fn infer_runtime_profile(language: &str, manifest: &PluginManifest) -> PluginRuntimeProfile {
@@ -538,7 +680,10 @@ fn bootstrap_hint(ir: &PluginIR) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugin::{PluginManifest, PluginSetup, PluginSetupMode, PluginSourceKind};
+    use crate::plugin::{
+        PluginManifest, PluginOwnershipSlot, PluginOwnershipSlotMode, PluginSetup, PluginSetupMode,
+        PluginSourceKind,
+    };
 
     fn descriptor(language: &str, metadata: BTreeMap<String, String>) -> PluginDescriptor {
         let source_kind = if language == "manifest" {
@@ -586,7 +731,16 @@ mod tests {
                     docs_urls: vec!["https://docs.example.com/tavily".to_owned()],
                     remediation: Some("set a Tavily credential before enabling search".to_owned()),
                 }),
+                slots: Vec::new(),
             },
+        }
+    }
+
+    fn slot_claim(slot: &str, key: &str, mode: PluginOwnershipSlotMode) -> PluginOwnershipSlot {
+        PluginOwnershipSlot {
+            slot: slot.to_owned(),
+            key: key.to_owned(),
+            mode,
         }
     }
 
@@ -726,6 +880,167 @@ mod tests {
         assert_eq!(
             plan.candidates[0].missing_required_config_keys,
             vec!["tools.web_search.default_provider".to_owned()]
+        );
+    }
+
+    #[test]
+    fn activation_plan_blocks_invalid_slot_declarations() {
+        let mut descriptor = descriptor("manifest", BTreeMap::new());
+        descriptor.path = "/tmp/invalid/loongclaw.plugin.json".to_owned();
+        descriptor.package_root = "/tmp/invalid".to_owned();
+        descriptor.package_manifest_path = Some(descriptor.path.clone());
+        descriptor.manifest.slots = vec![slot_claim(
+            "provider:web_search",
+            " ",
+            PluginOwnershipSlotMode::Exclusive,
+        )];
+
+        let translator = PluginTranslator::new();
+        let translation = translator.translate_scan_report(&PluginScanReport {
+            scanned_files: 1,
+            matched_plugins: 1,
+            descriptors: vec![descriptor],
+        });
+
+        let matrix = BridgeSupportMatrix {
+            supported_bridges: BTreeSet::from([PluginBridgeKind::HttpJson]),
+            supported_adapter_families: BTreeSet::new(),
+        };
+        let setup_readiness_context = PluginSetupReadinessContext {
+            verified_env_vars: BTreeSet::from(["TAVILY_API_KEY".to_owned()]),
+            verified_config_keys: BTreeSet::from(["tools.web_search.default_provider".to_owned()]),
+        };
+        let plan = translator.plan_activation(&translation, &matrix, &setup_readiness_context);
+
+        assert_eq!(plan.ready_plugins, 0);
+        assert_eq!(plan.blocked_plugins, 1);
+        assert!(matches!(
+            plan.candidates[0].status,
+            PluginActivationStatus::BlockedInvalidOwnershipSlots
+        ));
+        assert!(plan.candidates[0].reason.contains("missing key"));
+        assert_eq!(
+            plan.candidates[0].slot_claims,
+            vec!["provider:web_search#@exclusive".to_owned()]
+        );
+    }
+
+    #[test]
+    fn activation_plan_blocks_exclusive_slot_conflicts() {
+        let mut first = descriptor("manifest", BTreeMap::new());
+        first.path = "/tmp/tavily/loongclaw.plugin.json".to_owned();
+        first.package_root = "/tmp/tavily".to_owned();
+        first.package_manifest_path = Some(first.path.clone());
+        first.manifest.plugin_id = "tavily-search".to_owned();
+        first.manifest.provider_id = "tavily".to_owned();
+        first.manifest.connector_name = "tavily-http".to_owned();
+        first.manifest.slots = vec![slot_claim(
+            "provider:web_search",
+            "default",
+            PluginOwnershipSlotMode::Exclusive,
+        )];
+
+        let mut second = descriptor("manifest", BTreeMap::new());
+        second.path = "/tmp/serper/loongclaw.plugin.json".to_owned();
+        second.package_root = "/tmp/serper".to_owned();
+        second.package_manifest_path = Some(second.path.clone());
+        second.manifest.plugin_id = "serper-search".to_owned();
+        second.manifest.provider_id = "serper".to_owned();
+        second.manifest.connector_name = "serper-http".to_owned();
+        second.manifest.endpoint = Some("https://example.com/serper".to_owned());
+        second.manifest.slots = vec![slot_claim(
+            "provider:web_search",
+            "default",
+            PluginOwnershipSlotMode::Exclusive,
+        )];
+
+        let translator = PluginTranslator::new();
+        let translation = translator.translate_scan_report(&PluginScanReport {
+            scanned_files: 2,
+            matched_plugins: 2,
+            descriptors: vec![first, second],
+        });
+
+        let matrix = BridgeSupportMatrix {
+            supported_bridges: BTreeSet::from([PluginBridgeKind::HttpJson]),
+            supported_adapter_families: BTreeSet::new(),
+        };
+        let setup_readiness_context = PluginSetupReadinessContext {
+            verified_env_vars: BTreeSet::from(["TAVILY_API_KEY".to_owned()]),
+            verified_config_keys: BTreeSet::from(["tools.web_search.default_provider".to_owned()]),
+        };
+        let plan = translator.plan_activation(&translation, &matrix, &setup_readiness_context);
+
+        assert_eq!(plan.ready_plugins, 0);
+        assert_eq!(plan.blocked_plugins, 2);
+        assert!(plan.candidates.iter().all(|candidate| matches!(
+            candidate.status,
+            PluginActivationStatus::BlockedOwnershipConflict
+        )));
+        assert!(plan.candidates.iter().all(|candidate| {
+            candidate
+                .conflicting_slot_claims
+                .contains(&"provider:web_search#default@exclusive".to_owned())
+        }));
+    }
+
+    #[test]
+    fn activation_plan_allows_shared_slot_claims_to_coexist() {
+        let mut first = descriptor("manifest", BTreeMap::new());
+        first.path = "/tmp/tavily/loongclaw.plugin.json".to_owned();
+        first.package_root = "/tmp/tavily".to_owned();
+        first.package_manifest_path = Some(first.path.clone());
+        first.manifest.plugin_id = "tavily-search".to_owned();
+        first.manifest.provider_id = "tavily".to_owned();
+        first.manifest.connector_name = "tavily-http".to_owned();
+        first.manifest.slots = vec![slot_claim(
+            "tool:search",
+            "web",
+            PluginOwnershipSlotMode::Shared,
+        )];
+
+        let mut second = descriptor("manifest", BTreeMap::new());
+        second.path = "/tmp/openrouter/loongclaw.plugin.json".to_owned();
+        second.package_root = "/tmp/openrouter".to_owned();
+        second.package_manifest_path = Some(second.path.clone());
+        second.manifest.plugin_id = "openrouter-search".to_owned();
+        second.manifest.provider_id = "openrouter".to_owned();
+        second.manifest.connector_name = "openrouter-search".to_owned();
+        second.manifest.endpoint = Some("https://example.com/openrouter".to_owned());
+        second.manifest.slots = vec![slot_claim(
+            "tool:search",
+            "web",
+            PluginOwnershipSlotMode::Shared,
+        )];
+
+        let translator = PluginTranslator::new();
+        let translation = translator.translate_scan_report(&PluginScanReport {
+            scanned_files: 2,
+            matched_plugins: 2,
+            descriptors: vec![first, second],
+        });
+
+        let matrix = BridgeSupportMatrix {
+            supported_bridges: BTreeSet::from([PluginBridgeKind::HttpJson]),
+            supported_adapter_families: BTreeSet::new(),
+        };
+        let setup_readiness_context = PluginSetupReadinessContext {
+            verified_env_vars: BTreeSet::from(["TAVILY_API_KEY".to_owned()]),
+            verified_config_keys: BTreeSet::from(["tools.web_search.default_provider".to_owned()]),
+        };
+        let plan = translator.plan_activation(&translation, &matrix, &setup_readiness_context);
+
+        assert_eq!(plan.ready_plugins, 2);
+        assert_eq!(plan.blocked_plugins, 0);
+        assert!(
+            plan.candidates
+                .iter()
+                .all(|candidate| matches!(candidate.status, PluginActivationStatus::Ready))
+        );
+        assert!(
+            plan.candidates
+                .iter()
+                .all(|candidate| candidate.conflicting_slot_claims.is_empty())
         );
     }
 

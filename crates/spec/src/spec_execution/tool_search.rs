@@ -74,6 +74,7 @@ pub(super) fn execute_tool_search(
             .or_else(|| provider.metadata.get("entrypoint_hint"))
             .cloned();
         let mut source_language = provider.metadata.get("source_language").cloned();
+        let slot_claims = metadata_strings(&provider.metadata, "plugin_slots_json");
         let mut resolved_bridge_kind = bridge_kind;
 
         if let (Some(source_path), Some(plugin_id)) = (
@@ -106,6 +107,7 @@ pub(super) fn execute_tool_search(
                 adapter_family,
                 entrypoint_hint,
                 source_language,
+                slot_claims,
                 setup_mode,
                 setup_surface,
                 setup_required_env_vars,
@@ -155,6 +157,11 @@ pub(super) fn execute_tool_search(
                     adapter_family: adapter_family.clone(),
                     entrypoint_hint: entrypoint_hint.clone(),
                     source_language: source_language.clone(),
+                    slot_claims: manifest
+                        .slots
+                        .iter()
+                        .map(kernel::PluginOwnershipSlot::canonical_label)
+                        .collect(),
                     setup_mode: manifest
                         .setup
                         .as_ref()
@@ -228,6 +235,13 @@ pub(super) fn execute_tool_search(
             }
             if entry.source_language.is_none() {
                 entry.source_language = source_language.clone();
+            }
+            if entry.slot_claims.is_empty() {
+                entry.slot_claims = manifest
+                    .slots
+                    .iter()
+                    .map(kernel::PluginOwnershipSlot::canonical_label)
+                    .collect();
             }
             if entry.setup_mode.is_none() {
                 entry.setup_mode = manifest
@@ -355,6 +369,7 @@ pub(super) fn execute_tool_search(
             adapter_family: entry.adapter_family,
             entrypoint_hint: entry.entrypoint_hint,
             source_language: entry.source_language,
+            slot_claims: entry.slot_claims,
             setup_mode: entry.setup_mode,
             setup_surface: entry.setup_surface,
             setup_required_env_vars: entry.setup_required_env_vars,
@@ -476,6 +491,11 @@ fn tool_search_score(entry: &ToolSearchEntry, query: &str, tokens: &[String]) ->
         .as_deref()
         .unwrap_or_default()
         .to_ascii_lowercase();
+    let slot_claims: Vec<String> = entry
+        .slot_claims
+        .iter()
+        .map(|value| value.to_ascii_lowercase())
+        .collect();
     let setup_mode = entry
         .setup_mode
         .as_deref()
@@ -560,6 +580,11 @@ fn tool_search_score(entry: &ToolSearchEntry, query: &str, tokens: &[String]) ->
     if source_language.contains(query) {
         score = score.saturating_add(10);
     }
+    if slot_claims.iter().any(|value| value == query) {
+        score = score.saturating_add(36);
+    } else if slot_claims.iter().any(|value| value.contains(query)) {
+        score = score.saturating_add(20);
+    }
     if setup_mode.contains(query) {
         score = score.saturating_add(12);
     }
@@ -612,7 +637,7 @@ fn tool_search_score(entry: &ToolSearchEntry, query: &str, tokens: &[String]) ->
     }
 
     let haystack = format!(
-        "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+        "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
         connector,
         provider,
         tool_id,
@@ -624,6 +649,7 @@ fn tool_search_score(entry: &ToolSearchEntry, query: &str, tokens: &[String]) ->
         adapter_family,
         entrypoint_hint,
         source_language,
+        slot_claims.join(" "),
         setup_mode,
         setup_surface,
         setup_default_env_var,
@@ -700,6 +726,11 @@ mod tests {
                     "plugin_setup_remediation".to_owned(),
                     "set a Tavily credential before enabling search".to_owned(),
                 ),
+                (
+                    "plugin_slots_json".to_owned(),
+                    "[\"provider:web_search#default@exclusive\",\"tool:search#web@shared\"]"
+                        .to_owned(),
+                ),
                 ("bridge_kind".to_owned(), "http_json".to_owned()),
             ]),
         };
@@ -732,6 +763,13 @@ mod tests {
         assert_eq!(
             results[0].setup_required_env_vars,
             vec!["TAVILY_API_KEY".to_owned()]
+        );
+        assert_eq!(
+            results[0].slot_claims,
+            vec![
+                "provider:web_search#default@exclusive".to_owned(),
+                "tool:search#web@shared".to_owned()
+            ]
         );
         assert!(!results[0].setup_ready);
         assert_eq!(

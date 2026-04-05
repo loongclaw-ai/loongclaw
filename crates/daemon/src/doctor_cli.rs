@@ -162,6 +162,8 @@ pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
         &mut fixes,
         "create tool file root",
     ));
+    checks.extend(collect_runtime_plugins_doctor_checks(&config));
+    checks.extend(collect_external_skills_doctor_checks(&config_path, &config));
     checks.extend(collect_browser_companion_doctor_checks(&config).await);
 
     checks.extend(check_feishu_integration(&config, options.fix, &mut fixes));
@@ -288,6 +290,210 @@ fn check_directory_ready(
 fn check_channel_surfaces(config: &mvp::config::LoongClawConfig) -> Vec<DoctorCheck> {
     let snapshots = mvp::channel::channel_status_snapshots(config);
     build_channel_surface_checks(&snapshots)
+}
+
+fn collect_runtime_plugins_doctor_checks(
+    config: &mvp::config::LoongClawConfig,
+) -> Vec<DoctorCheck> {
+    let state = crate::collect_runtime_snapshot_runtime_plugins_state(config);
+    let mut checks = vec![DoctorCheck {
+        name: "runtime plugins runtime".to_owned(),
+        level: if state.enabled {
+            DoctorCheckLevel::Pass
+        } else {
+            DoctorCheckLevel::Warn
+        },
+        detail: format!(
+            "enabled={} roots={} scanned_roots={}",
+            state.enabled,
+            doctor_render_string_list(&state.roots),
+            state.scanned_root_count,
+        ),
+    }];
+
+    if !state.enabled {
+        return checks;
+    }
+
+    let inventory_level = match state.inventory_status {
+        crate::RuntimeSnapshotInventoryStatus::Error => DoctorCheckLevel::Fail,
+        crate::RuntimeSnapshotInventoryStatus::Disabled => DoctorCheckLevel::Warn,
+        crate::RuntimeSnapshotInventoryStatus::Ok => {
+            if state.setup_incomplete_plugin_count > 0 || state.blocked_plugin_count > 0 {
+                DoctorCheckLevel::Warn
+            } else {
+                DoctorCheckLevel::Pass
+            }
+        }
+    };
+    let inventory_detail = if let Some(error) = state.inventory_error.as_deref() {
+        format!(
+            "inventory_status={} error={error}",
+            state.inventory_status.as_str()
+        )
+    } else {
+        let blocked_ids = state
+            .plugins
+            .iter()
+            .filter(|plugin| plugin.status.starts_with("blocked_"))
+            .map(|plugin| plugin.plugin_id.as_str())
+            .collect::<Vec<_>>();
+        let setup_incomplete_ids = state
+            .plugins
+            .iter()
+            .filter(|plugin| plugin.status == "setup_incomplete")
+            .map(|plugin| plugin.plugin_id.as_str())
+            .collect::<Vec<_>>();
+        format!(
+            "inventory_status={} discovered={} translated={} ready={} setup_incomplete={} blocked={} blocked_ids={} setup_incomplete_ids={}",
+            state.inventory_status.as_str(),
+            state.discovered_plugin_count,
+            state.translated_plugin_count,
+            state.ready_plugin_count,
+            state.setup_incomplete_plugin_count,
+            state.blocked_plugin_count,
+            doctor_render_string_list(
+                &blocked_ids
+                    .iter()
+                    .map(|id| (*id).to_owned())
+                    .collect::<Vec<_>>(),
+            ),
+            doctor_render_string_list(
+                &setup_incomplete_ids
+                    .iter()
+                    .map(|id| (*id).to_owned())
+                    .collect::<Vec<_>>(),
+            ),
+        )
+    };
+    checks.push(DoctorCheck {
+        name: "runtime plugins inventory".to_owned(),
+        level: inventory_level,
+        detail: inventory_detail,
+    });
+
+    checks
+}
+
+fn collect_external_skills_doctor_checks(
+    config_path: &Path,
+    config: &mvp::config::LoongClawConfig,
+) -> Vec<DoctorCheck> {
+    let tool_runtime = mvp::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(
+        config,
+        Some(config_path),
+    );
+    let (state, _) = crate::collect_runtime_snapshot_external_skills_state(&tool_runtime);
+    let install_root = state
+        .policy
+        .install_root
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "-".to_owned());
+
+    let mut checks = vec![DoctorCheck {
+        name: "external skills runtime".to_owned(),
+        level: if state.policy.enabled {
+            DoctorCheckLevel::Pass
+        } else {
+            DoctorCheckLevel::Warn
+        },
+        detail: format!(
+            "enabled={} override_active={} auto_expose_installed={} require_download_approval={} install_root={}",
+            state.policy.enabled,
+            state.override_active,
+            state.policy.auto_expose_installed,
+            state.policy.require_download_approval,
+            install_root,
+        ),
+    }];
+
+    if !state.policy.enabled {
+        return checks;
+    }
+
+    let blocked_skill_ids = external_skill_inventory_blocked_ids(&state.inventory);
+    let ineligible_skill_ids = external_skill_inventory_ineligible_ids(&state.inventory);
+    let inventory_level = match state.inventory_status {
+        crate::RuntimeSnapshotInventoryStatus::Error => DoctorCheckLevel::Fail,
+        crate::RuntimeSnapshotInventoryStatus::Disabled => DoctorCheckLevel::Warn,
+        crate::RuntimeSnapshotInventoryStatus::Ok => {
+            if state.shadowed_skill_count > 0
+                || state.blocked_skill_count > 0
+                || state.ineligible_skill_count > 0
+            {
+                DoctorCheckLevel::Warn
+            } else {
+                DoctorCheckLevel::Pass
+            }
+        }
+    };
+    let inventory_detail = if let Some(error) = state.inventory_error.as_deref() {
+        format!(
+            "inventory_status={} error={error}",
+            state.inventory_status.as_str()
+        )
+    } else {
+        format!(
+            "inventory_status={} resolved={} shadowed={} blocked={} ineligible={} blocked_ids={} ineligible_ids={}",
+            state.inventory_status.as_str(),
+            state.resolved_skill_count,
+            state.shadowed_skill_count,
+            state.blocked_skill_count,
+            state.ineligible_skill_count,
+            doctor_render_string_list(&blocked_skill_ids),
+            doctor_render_string_list(&ineligible_skill_ids),
+        )
+    };
+    checks.push(DoctorCheck {
+        name: "external skills inventory".to_owned(),
+        level: inventory_level,
+        detail: inventory_detail,
+    });
+
+    checks
+}
+
+fn external_skill_inventory_blocked_ids(inventory: &serde_json::Value) -> Vec<String> {
+    let mut ids = Vec::new();
+    if let Some(items) = inventory
+        .get("blocked_skill_errors")
+        .and_then(serde_json::Value::as_object)
+    {
+        ids.extend(items.keys().cloned());
+    }
+    ids.sort();
+    ids
+}
+
+fn external_skill_inventory_ineligible_ids(inventory: &serde_json::Value) -> Vec<String> {
+    let mut ids = Vec::new();
+    if let Some(items) = inventory
+        .get("skills")
+        .and_then(serde_json::Value::as_array)
+    {
+        for skill in items {
+            let available = skill
+                .get("eligibility")
+                .and_then(|eligibility| eligibility.get("available"))
+                .and_then(serde_json::Value::as_bool);
+            if available == Some(false)
+                && let Some(skill_id) = skill.get("skill_id").and_then(serde_json::Value::as_str)
+            {
+                ids.push(skill_id.to_owned());
+            }
+        }
+    }
+    ids.sort();
+    ids
+}
+
+fn doctor_render_string_list(values: &[String]) -> String {
+    if values.is_empty() {
+        "-".to_owned()
+    } else {
+        values.join(",")
+    }
 }
 
 fn audit_retention_doctor_check(audit: &mvp::config::AuditConfig) -> DoctorCheck {
@@ -1410,6 +1616,12 @@ async fn collect_browser_companion_doctor_checks(
         return Vec::new();
     };
 
+    browser_companion_doctor_checks_from_diagnostics(&diagnostics)
+}
+
+fn browser_companion_doctor_checks_from_diagnostics(
+    diagnostics: &crate::browser_companion_diagnostics::BrowserCompanionDiagnostics,
+) -> Vec<DoctorCheck> {
     let install_level = if diagnostics.install_ready() {
         DoctorCheckLevel::Pass
     } else {
@@ -1706,6 +1918,84 @@ fn build_doctor_next_steps_with_path_env(
         );
     }
 
+    let runtime_snapshot_json_command = format!(
+        "{} runtime-snapshot --json --config {}",
+        mvp::config::CLI_COMMAND_NAME,
+        crate::cli_handoff::shell_quote_argument(&config_path_display),
+    );
+    if checks.iter().any(|check| {
+        check.name == "runtime plugins runtime" && check.level != DoctorCheckLevel::Pass
+    }) {
+        push_unique_step(
+            &mut steps,
+            format!(
+                "Review runtime plugin roots in config, then re-run diagnostics: {rerun_command}"
+            ),
+        );
+        push_unique_step(
+            &mut steps,
+            format!("Inspect runtime plugin inventory: {runtime_snapshot_json_command}"),
+        );
+    }
+    if checks.iter().any(|check| {
+        check.name == "runtime plugins inventory" && check.level != DoctorCheckLevel::Pass
+    }) {
+        push_unique_step(
+            &mut steps,
+            format!("Inspect runtime plugin inventory: {runtime_snapshot_json_command}"),
+        );
+        push_unique_step(
+            &mut steps,
+            format!(
+                "Review [runtime_plugins].roots and package manifests, then re-run diagnostics: {rerun_command}"
+            ),
+        );
+    }
+
+    let skills_list_command =
+        crate::cli_handoff::format_subcommand_with_config("skills list", &config_path_display);
+    let skills_policy_get_command = crate::cli_handoff::format_subcommand_with_config(
+        "skills policy get",
+        &config_path_display,
+    );
+    let skills_policy_enable_command = format!(
+        "{} skills policy set --enabled true --approve-policy-update --config {}",
+        mvp::config::CLI_COMMAND_NAME,
+        crate::cli_handoff::shell_quote_argument(&config_path_display),
+    );
+    if checks.iter().any(|check| {
+        check.name == "external skills runtime" && check.level != DoctorCheckLevel::Pass
+    }) {
+        push_unique_step(
+            &mut steps,
+            format!("Inspect external skills policy: {skills_policy_get_command}"),
+        );
+        push_unique_step(
+            &mut steps,
+            format!("Enable external skills runtime: {skills_policy_enable_command}"),
+        );
+    }
+    if let Some(external_skills_inventory_check) = checks.iter().find(|check| {
+        check.name == "external skills inventory" && check.level != DoctorCheckLevel::Pass
+    }) {
+        push_unique_step(
+            &mut steps,
+            format!("Inspect external skills inventory: {skills_list_command}"),
+        );
+        if let Some(skill_id) =
+            doctor_first_external_skill_problem_id(external_skills_inventory_check.detail.as_str())
+        {
+            let inspect_command = crate::cli_handoff::format_subcommand_with_config(
+                format!("skills info {skill_id}").as_str(),
+                &config_path_display,
+            );
+            push_unique_step(
+                &mut steps,
+                format!("Inspect problematic external skill: {inspect_command}"),
+            );
+        }
+    }
+
     let channel_actions =
         crate::migration::channels::collect_channel_next_actions(config, &config_path_display);
     if checks.iter().any(|check| {
@@ -1780,6 +2070,33 @@ fn build_doctor_next_steps_with_path_env(
     }
 
     steps
+}
+
+fn doctor_first_external_skill_problem_id(detail: &str) -> Option<String> {
+    doctor_parse_external_skill_id_list(detail, "blocked_ids=")
+        .into_iter()
+        .next()
+        .or_else(|| {
+            doctor_parse_external_skill_id_list(detail, "ineligible_ids=")
+                .into_iter()
+                .next()
+        })
+}
+
+fn doctor_parse_external_skill_id_list(detail: &str, marker: &str) -> Vec<String> {
+    let Some(start) = detail.find(marker) else {
+        return Vec::new();
+    };
+    let tail = &detail[start + marker.len()..];
+    let raw = tail.split_whitespace().next().unwrap_or_default();
+    if raw.is_empty() || raw == "-" {
+        return Vec::new();
+    }
+    raw.split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "-")
+        .map(str::to_owned)
+        .collect()
 }
 
 fn doctor_ready_for_first_turn(checks: &[DoctorCheck]) -> bool {
@@ -1887,16 +2204,10 @@ fn push_unique_step(steps: &mut Vec<String>, step: String) {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
-    use std::ffi::OsString;
     use std::fs::Permissions;
-    #[cfg(unix)]
-    use std::io::Write;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
-    #[cfg(unix)]
-    use std::sync::MutexGuard;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1920,20 +2231,64 @@ mod tests {
         temp_dir
     }
 
-    #[cfg(unix)]
-    fn write_browser_companion_script(script_path: &Path, body: &str) {
-        let mut file = std::fs::File::create(script_path).expect("create browser companion script");
-        file.write_all(body.as_bytes())
-            .expect("write browser companion script");
-        let mut permissions = file.metadata().expect("script metadata").permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(script_path, permissions).expect("chmod browser companion script");
+    fn external_skills_temp_dir(label: &str) -> PathBuf {
+        browser_companion_temp_dir(&format!("external-skills-{label}"))
     }
 
-    #[cfg(unix)]
-    struct BrowserCompanionEnvGuard {
-        _lock: MutexGuard<'static, ()>,
-        saved_ready: Option<OsString>,
+    fn external_skills_test_config(
+        root: &Path,
+        enabled: bool,
+    ) -> (PathBuf, mvp::config::LoongClawConfig) {
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.tools.file_root = Some(root.display().to_string());
+        config.external_skills.enabled = enabled;
+        config.external_skills.auto_expose_installed = true;
+        config.external_skills.install_root =
+            Some(root.join("managed-skills").display().to_string());
+        let config_path = root.join("loongclaw.toml");
+        (config_path, config)
+    }
+
+    fn write_external_skill_source(root: &Path, skill_id: &str, content: &str) {
+        let skill_root = root.join("source").join(skill_id);
+        std::fs::create_dir_all(&skill_root).expect("create external skill source");
+        std::fs::write(skill_root.join("SKILL.md"), content).expect("write external skill source");
+    }
+
+    fn install_external_skill_for_doctor(
+        config: &mvp::config::LoongClawConfig,
+        config_path: &Path,
+        skill_id: &str,
+    ) {
+        let runtime_config = mvp::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(
+            config,
+            Some(config_path),
+        );
+        mvp::tools::execute_tool_core_with_config(
+            kernel::ToolCoreRequest {
+                tool_name: "external_skills.install".to_owned(),
+                payload: serde_json::json!({
+                    "path": format!("source/{skill_id}")
+                }),
+            },
+            &runtime_config,
+        )
+        .expect("install external skill for doctor");
+    }
+
+    fn runtime_plugins_test_config(root: &Path, enabled: bool) -> mvp::config::LoongClawConfig {
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.tools.file_root = Some(root.display().to_string());
+        config.runtime_plugins.enabled = enabled;
+        config.runtime_plugins.roots = vec![root.join("runtime-plugins").display().to_string()];
+        config
+    }
+
+    fn write_runtime_plugin_package_for_doctor(root: &Path, plugin_id: &str, body: &str) {
+        let plugin_root = root.join("runtime-plugins").join(plugin_id);
+        std::fs::create_dir_all(&plugin_root).expect("create runtime plugin root");
+        std::fs::write(plugin_root.join("loongclaw.plugin.json"), body)
+            .expect("write runtime plugin manifest");
     }
 
     struct PermissionRestore {
@@ -1950,64 +2305,6 @@ mod tests {
     impl Drop for PermissionRestore {
         fn drop(&mut self) {
             let _ = std::fs::set_permissions(&self.path, self.permissions.clone());
-        }
-    }
-
-    #[cfg(unix)]
-    fn set_browser_companion_env_var(key: &str, value: &str) {
-        // SAFETY: daemon tests serialize process env mutations behind
-        // `lock_daemon_test_environment`, so no concurrent env readers/writers
-        // observe racy updates while these tests run.
-        #[allow(unsafe_code, clippy::disallowed_methods)]
-        unsafe {
-            std::env::set_var(key, value);
-        }
-    }
-
-    #[cfg(unix)]
-    fn remove_browser_companion_env_var(key: &str) {
-        // SAFETY: daemon tests serialize process env mutations behind
-        // `lock_daemon_test_environment`, so removing the variable here is
-        // coordinated with all other env-mutating daemon tests.
-        #[allow(unsafe_code, clippy::disallowed_methods)]
-        unsafe {
-            std::env::remove_var(key);
-        }
-    }
-
-    #[cfg(unix)]
-    impl BrowserCompanionEnvGuard {
-        fn runtime_gate_closed() -> Self {
-            Self::set_ready(None)
-        }
-
-        fn runtime_gate_open() -> Self {
-            Self::set_ready(Some("true"))
-        }
-
-        fn set_ready(value: Option<&str>) -> Self {
-            let lock = crate::test_support::lock_daemon_test_environment();
-            let key = "LOONGCLAW_BROWSER_COMPANION_READY";
-            let saved_ready = std::env::var_os(key);
-            match value {
-                Some(value) => set_browser_companion_env_var(key, value),
-                None => remove_browser_companion_env_var(key),
-            }
-            Self {
-                _lock: lock,
-                saved_ready,
-            }
-        }
-    }
-
-    #[cfg(unix)]
-    impl Drop for BrowserCompanionEnvGuard {
-        fn drop(&mut self) {
-            let key = "LOONGCLAW_BROWSER_COMPANION_READY";
-            match self.saved_ready.take() {
-                Some(value) => set_browser_companion_env_var(key, &value.to_string_lossy()),
-                None => remove_browser_companion_env_var(key),
-            }
         }
     }
 
@@ -3363,14 +3660,18 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
-    #[tokio::test(flavor = "current_thread")]
-    async fn browser_companion_doctor_checks_warn_when_command_is_missing() {
-        let _env_guard = BrowserCompanionEnvGuard::runtime_gate_closed();
-        let mut config = mvp::config::LoongClawConfig::default();
-        config.tools.browser_companion.enabled = true;
+    #[test]
+    fn browser_companion_doctor_checks_warn_when_command_is_missing() {
+        let diagnostics = crate::browser_companion_diagnostics::BrowserCompanionDiagnostics {
+            command: None,
+            expected_version: None,
+            observed_version: None,
+            runtime_ready: false,
+            install_status:
+                crate::browser_companion_diagnostics::BrowserCompanionInstallStatus::MissingCommand,
+        };
 
-        let checks = collect_browser_companion_doctor_checks(&config).await;
+        let checks = browser_companion_doctor_checks_from_diagnostics(&diagnostics);
 
         assert!(
             checks.iter().any(|check| {
@@ -3382,23 +3683,21 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
-    #[tokio::test(flavor = "current_thread")]
-    async fn browser_companion_doctor_checks_warn_when_expected_version_mismatches() {
-        let _env_guard = BrowserCompanionEnvGuard::runtime_gate_closed();
-        let temp_dir = browser_companion_temp_dir("version-mismatch");
-        let script_path = temp_dir.join("browser-companion");
-        write_browser_companion_script(
-            &script_path,
-            "#!/bin/sh\necho 'loongclaw-browser-companion 1.4.0'\n",
-        );
+    #[test]
+    fn browser_companion_doctor_checks_warn_when_expected_version_mismatches() {
+        let diagnostics = crate::browser_companion_diagnostics::BrowserCompanionDiagnostics {
+            command: Some("/tmp/browser-companion".to_owned()),
+            expected_version: Some("1.5.0".to_owned()),
+            observed_version: Some("loongclaw-browser-companion 1.4.0".to_owned()),
+            runtime_ready: false,
+            install_status: crate::browser_companion_diagnostics::BrowserCompanionInstallStatus::VersionMismatch {
+                command: "/tmp/browser-companion".to_owned(),
+                expected_version: "1.5.0".to_owned(),
+                observed_version: "loongclaw-browser-companion 1.4.0".to_owned(),
+            },
+        };
 
-        let mut config = mvp::config::LoongClawConfig::default();
-        config.tools.browser_companion.enabled = true;
-        config.tools.browser_companion.command = Some(script_path.display().to_string());
-        config.tools.browser_companion.expected_version = Some("1.5.0".to_owned());
-
-        let checks = collect_browser_companion_doctor_checks(&config).await;
+        let checks = browser_companion_doctor_checks_from_diagnostics(&diagnostics);
 
         assert!(
             checks.iter().any(|check| {
@@ -3413,23 +3712,18 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
-    #[tokio::test(flavor = "current_thread")]
-    async fn browser_companion_doctor_checks_warn_when_runtime_gate_is_closed() {
-        let _env_guard = BrowserCompanionEnvGuard::runtime_gate_closed();
-        let temp_dir = browser_companion_temp_dir("runtime-gate");
-        let script_path = temp_dir.join("browser-companion");
-        write_browser_companion_script(
-            &script_path,
-            "#!/bin/sh\necho 'loongclaw-browser-companion 1.5.0'\n",
-        );
+    #[test]
+    fn browser_companion_doctor_checks_warn_when_runtime_gate_is_closed() {
+        let diagnostics = crate::browser_companion_diagnostics::BrowserCompanionDiagnostics {
+            command: Some("/tmp/browser-companion".to_owned()),
+            expected_version: Some("1.5.0".to_owned()),
+            observed_version: Some("loongclaw-browser-companion 1.5.0".to_owned()),
+            runtime_ready: false,
+            install_status:
+                crate::browser_companion_diagnostics::BrowserCompanionInstallStatus::Ready,
+        };
 
-        let mut config = mvp::config::LoongClawConfig::default();
-        config.tools.browser_companion.enabled = true;
-        config.tools.browser_companion.command = Some(script_path.display().to_string());
-        config.tools.browser_companion.expected_version = Some("1.5.0".to_owned());
-
-        let checks = collect_browser_companion_doctor_checks(&config).await;
+        let checks = browser_companion_doctor_checks_from_diagnostics(&diagnostics);
 
         assert!(
             checks.iter().any(|check| {
@@ -3441,23 +3735,18 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
-    #[tokio::test(flavor = "current_thread")]
-    async fn browser_companion_doctor_checks_pass_when_runtime_gate_is_open() {
-        let _env_guard = BrowserCompanionEnvGuard::runtime_gate_open();
-        let temp_dir = browser_companion_temp_dir("runtime-ready");
-        let script_path = temp_dir.join("browser-companion");
-        write_browser_companion_script(
-            &script_path,
-            "#!/bin/sh\necho 'loongclaw-browser-companion 1.5.0'\n",
-        );
+    #[test]
+    fn browser_companion_doctor_checks_pass_when_runtime_gate_is_open() {
+        let diagnostics = crate::browser_companion_diagnostics::BrowserCompanionDiagnostics {
+            command: Some("/tmp/browser-companion".to_owned()),
+            expected_version: Some("1.5.0".to_owned()),
+            observed_version: Some("loongclaw-browser-companion 1.5.0".to_owned()),
+            runtime_ready: true,
+            install_status:
+                crate::browser_companion_diagnostics::BrowserCompanionInstallStatus::Ready,
+        };
 
-        let mut config = mvp::config::LoongClawConfig::default();
-        config.tools.browser_companion.enabled = true;
-        config.tools.browser_companion.command = Some(script_path.display().to_string());
-        config.tools.browser_companion.expected_version = Some("1.5.0".to_owned());
-
-        let checks = collect_browser_companion_doctor_checks(&config).await;
+        let checks = browser_companion_doctor_checks_from_diagnostics(&diagnostics);
 
         assert!(
             checks.iter().any(|check| {
@@ -3777,6 +4066,245 @@ mod tests {
                 step == "Optional browser preview: loongclaw skills enable-browser-preview --config '/tmp/loongclaw.toml'"
             }),
             "doctor should keep a browser preview action visible even when channel actions are available: {next_steps:#?}"
+        );
+    }
+
+    #[test]
+    fn collect_external_skills_doctor_checks_warns_when_runtime_is_disabled() {
+        let root = external_skills_temp_dir("disabled");
+        let mut env = ScopedEnv::new();
+        let root_env = root.display().to_string();
+        env.set("HOME", &root_env);
+        env.set("USERPROFILE", &root_env);
+        let (config_path, config) = external_skills_test_config(&root, false);
+
+        let checks = collect_external_skills_doctor_checks(&config_path, &config);
+
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].name, "external skills runtime");
+        assert_eq!(checks[0].level, DoctorCheckLevel::Warn);
+        assert!(checks[0].detail.contains("enabled=false"));
+
+        std::fs::remove_dir_all(&root).ok();
+        drop(env);
+    }
+
+    #[test]
+    fn collect_external_skills_doctor_checks_passes_for_healthy_inventory() {
+        let root = external_skills_temp_dir("healthy");
+        let mut env = ScopedEnv::new();
+        let root_env = root.display().to_string();
+        env.set("HOME", &root_env);
+        env.set("USERPROFILE", &root_env);
+        let (config_path, config) = external_skills_test_config(&root, true);
+        write_external_skill_source(
+            &root,
+            "healthy-skill",
+            "# Healthy Skill\n\nHealthy managed skill instructions.\n",
+        );
+        install_external_skill_for_doctor(&config, &config_path, "healthy-skill");
+
+        let checks = collect_external_skills_doctor_checks(&config_path, &config);
+
+        assert!(
+            checks.iter().any(|check| {
+                check.name == "external skills runtime"
+                    && check.level == DoctorCheckLevel::Pass
+                    && check.detail.contains("enabled=true")
+            }),
+            "expected runtime check to pass for enabled external skills: {checks:#?}"
+        );
+        assert!(
+            checks.iter().any(|check| {
+                check.name == "external skills inventory"
+                    && check.level == DoctorCheckLevel::Pass
+                    && check.detail.contains("resolved=1")
+                    && check.detail.contains("shadowed=0")
+                    && check.detail.contains("blocked=0")
+                    && check.detail.contains("ineligible=0")
+            }),
+            "expected healthy inventory summary to pass: {checks:#?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+        drop(env);
+    }
+
+    #[test]
+    fn collect_external_skills_doctor_checks_warns_for_ineligible_skill_inventory() {
+        let root = external_skills_temp_dir("ineligible");
+        let mut env = ScopedEnv::new();
+        let root_env = root.display().to_string();
+        env.set("HOME", &root_env);
+        env.set("USERPROFILE", &root_env);
+        let (config_path, config) = external_skills_test_config(&root, true);
+        write_external_skill_source(
+            &root,
+            "ineligible-skill",
+            "---\nrequired_bins:\n- definitely-missing-loongclaw-binary\n---\n\n# Ineligible Skill\n\nNeeds a missing binary.\n",
+        );
+        install_external_skill_for_doctor(&config, &config_path, "ineligible-skill");
+
+        let checks = collect_external_skills_doctor_checks(&config_path, &config);
+
+        assert!(
+            checks.iter().any(|check| {
+                check.name == "external skills inventory"
+                    && check.level == DoctorCheckLevel::Warn
+                    && check.detail.contains("ineligible=1")
+                    && check.detail.contains("ineligible-skill")
+            }),
+            "expected inventory warning for ineligible managed skill: {checks:#?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+        drop(env);
+    }
+
+    #[test]
+    fn build_doctor_next_steps_guides_external_skills_runtime_enablement() {
+        let checks = vec![DoctorCheck {
+            name: "external skills runtime".to_owned(),
+            level: DoctorCheckLevel::Warn,
+            detail: "enabled=false override_active=false auto_expose_installed=true require_download_approval=true install_root=/tmp/managed-skills".to_owned(),
+        }];
+        let config = mvp::config::LoongClawConfig::default();
+
+        let next_steps =
+            build_doctor_next_steps(&checks, Path::new("/tmp/loongclaw.toml"), &config, false);
+
+        assert!(
+            next_steps.iter().any(|step| {
+                step == "Inspect external skills policy: loongclaw skills policy get --config '/tmp/loongclaw.toml'"
+            }),
+            "doctor should surface the policy inspection command for a disabled runtime: {next_steps:#?}"
+        );
+        assert!(
+            next_steps.iter().any(|step| {
+                step == "Enable external skills runtime: loongclaw skills policy set --enabled true --approve-policy-update --config '/tmp/loongclaw.toml'"
+            }),
+            "doctor should surface a concrete enable command for the disabled runtime: {next_steps:#?}"
+        );
+    }
+
+    #[test]
+    fn build_doctor_next_steps_guides_external_skills_inventory_repair() {
+        let checks = vec![DoctorCheck {
+            name: "external skills inventory".to_owned(),
+            level: DoctorCheckLevel::Warn,
+            detail: "inventory_status=ok resolved=2 shadowed=1 blocked=1 ineligible=1 blocked_ids=blocked-skill ineligible_ids=ineligible-skill".to_owned(),
+        }];
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.external_skills.enabled = true;
+
+        let next_steps =
+            build_doctor_next_steps(&checks, Path::new("/tmp/loongclaw.toml"), &config, false);
+
+        assert!(
+            next_steps.iter().any(|step| {
+                step == "Inspect external skills inventory: loongclaw skills list --config '/tmp/loongclaw.toml'"
+            }),
+            "doctor should point operators at the inventory view for skill-health issues: {next_steps:#?}"
+        );
+        assert!(
+            next_steps.iter().any(|step| {
+                step == "Inspect problematic external skill: loongclaw skills info blocked-skill --config '/tmp/loongclaw.toml'"
+            }),
+            "doctor should surface a concrete inspect command for the first blocked/ineligible skill: {next_steps:#?}"
+        );
+    }
+
+    #[test]
+    fn collect_runtime_plugins_doctor_checks_warns_when_runtime_is_disabled() {
+        let root = external_skills_temp_dir("runtime-plugins-disabled");
+        let config = runtime_plugins_test_config(&root, false);
+
+        let checks = collect_runtime_plugins_doctor_checks(&config);
+
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].name, "runtime plugins runtime");
+        assert_eq!(checks[0].level, DoctorCheckLevel::Warn);
+        assert!(checks[0].detail.contains("enabled=false"));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn collect_runtime_plugins_doctor_checks_warns_for_setup_incomplete_inventory() {
+        let root = external_skills_temp_dir("runtime-plugins-setup-incomplete");
+        let mut env = ScopedEnv::new();
+        let root_env = root.display().to_string();
+        env.set("HOME", &root_env);
+        env.set("USERPROFILE", &root_env);
+        let config = runtime_plugins_test_config(&root, true);
+        write_runtime_plugin_package_for_doctor(
+            &root,
+            "demo-plugin",
+            r#"{
+  "plugin_id": "demo-plugin",
+  "provider_id": "demo-provider",
+  "connector_name": "demo-connector",
+  "endpoint": "https://example.com/invoke",
+  "capabilities": ["InvokeConnector"],
+  "metadata": {
+    "bridge_kind": "http_json"
+  },
+  "setup": {
+    "mode": "metadata_only",
+    "surface": "web_search",
+    "required_env_vars": ["MISSING_RUNTIME_PLUGIN_KEY"],
+    "required_config_keys": ["tools.web_search.default_provider"]
+  }
+}"#,
+        );
+
+        let checks = collect_runtime_plugins_doctor_checks(&config);
+
+        assert!(
+            checks.iter().any(|check| {
+                check.name == "runtime plugins runtime"
+                    && check.level == DoctorCheckLevel::Pass
+                    && check.detail.contains("enabled=true")
+            }),
+            "runtime plugins discovery should be active: {checks:#?}"
+        );
+        assert!(
+            checks.iter().any(|check| {
+                check.name == "runtime plugins inventory"
+                    && check.level == DoctorCheckLevel::Warn
+                    && check.detail.contains("setup_incomplete=1")
+                    && check.detail.contains("setup_incomplete_ids=demo-plugin")
+            }),
+            "setup-incomplete runtime plugins should warn with concrete ids: {checks:#?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+        drop(env);
+    }
+
+    #[test]
+    fn build_doctor_next_steps_guides_runtime_plugin_inventory_repair() {
+        let checks = vec![DoctorCheck {
+            name: "runtime plugins inventory".to_owned(),
+            level: DoctorCheckLevel::Warn,
+            detail: "inventory_status=ok discovered=1 translated=1 ready=0 setup_incomplete=1 blocked=0 blocked_ids=- setup_incomplete_ids=demo-plugin".to_owned(),
+        }];
+        let config = mvp::config::LoongClawConfig::default();
+
+        let next_steps =
+            build_doctor_next_steps(&checks, Path::new("/tmp/loongclaw.toml"), &config, false);
+
+        assert!(
+            next_steps.iter().any(|step| {
+                step == "Inspect runtime plugin inventory: loongclaw runtime-snapshot --json --config '/tmp/loongclaw.toml'"
+            }),
+            "doctor should point operators at runtime snapshot json for plugin inventory details: {next_steps:#?}"
+        );
+        assert!(
+            next_steps.iter().any(|step| {
+                step == "Review [runtime_plugins].roots and package manifests, then re-run diagnostics: loongclaw doctor --config '/tmp/loongclaw.toml'"
+            }),
+            "doctor should surface a concrete repair loop for runtime plugin inventory issues: {next_steps:#?}"
         );
     }
 }

@@ -440,6 +440,14 @@ pub struct ExternalSkillsConfig {
     pub auto_expose_installed: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct RuntimePluginsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub roots: Vec<String>,
+}
+
 impl Default for ToolConfig {
     fn default() -> Self {
         Self {
@@ -852,6 +860,12 @@ impl ExternalSkillsConfig {
 
     pub fn resolved_install_root(&self) -> Option<PathBuf> {
         self.install_root.as_deref().map(expand_path)
+    }
+}
+
+impl RuntimePluginsConfig {
+    pub fn resolved_roots(&self) -> Vec<PathBuf> {
+        self.roots.iter().map(|root| expand_path(root)).collect()
     }
 }
 
@@ -1636,6 +1650,28 @@ timeout_seconds = 7
         assert_eq!(
             config.normalized_blocked_domains(),
             vec!["internal.example".to_owned()]
+        );
+    }
+
+    #[test]
+    fn runtime_plugins_defaults_to_safe_off_mode() {
+        let config = RuntimePluginsConfig::default();
+        assert!(!config.enabled);
+        assert!(config.roots.is_empty());
+    }
+
+    #[test]
+    fn runtime_plugins_resolved_roots_expand_user_home() {
+        let config = RuntimePluginsConfig {
+            enabled: true,
+            roots: vec!["~/runtime-plugins".to_owned()],
+        };
+
+        let roots = config.resolved_roots();
+        assert_eq!(roots.len(), 1);
+        assert!(
+            roots[0].to_string_lossy().contains("runtime-plugins"),
+            "expected expanded plugin root to preserve tail path"
         );
     }
 }

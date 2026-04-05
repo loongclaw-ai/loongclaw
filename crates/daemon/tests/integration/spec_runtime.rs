@@ -1267,6 +1267,159 @@ async fn execute_spec_surfaces_setup_incomplete_plugins_without_marking_them_rea
 }
 
 #[tokio::test]
+async fn execute_spec_blocks_plugins_with_exclusive_slot_conflicts() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be monotonic")
+        .as_nanos();
+    let plugin_root = std::env::temp_dir().join(format!("loongclaw-plugin-slot-conflict-{unique}"));
+    let tavily_root = plugin_root.join("tavily");
+    let serper_root = plugin_root.join("serper");
+    fs::create_dir_all(&tavily_root).expect("create tavily root");
+    fs::create_dir_all(&serper_root).expect("create serper root");
+
+    fs::write(
+        tavily_root.join("loongclaw.plugin.json"),
+        r#"
+{
+  "plugin_id": "tavily-search",
+  "provider_id": "tavily",
+  "connector_name": "tavily-http",
+  "endpoint": "https://api.tavily.com/search",
+  "capabilities": ["InvokeConnector"],
+  "metadata": {
+    "bridge_kind": "http_json",
+    "adapter_family": "web-search"
+  },
+  "slots": [
+    {
+      "slot": "provider:web_search",
+      "key": "default",
+      "mode": "exclusive"
+    }
+  ]
+}
+"#,
+    )
+    .expect("write tavily manifest");
+
+    fs::write(
+        serper_root.join("loongclaw.plugin.json"),
+        r#"
+{
+  "plugin_id": "serper-search",
+  "provider_id": "serper",
+  "connector_name": "serper-http",
+  "endpoint": "https://api.serper.dev/search",
+  "capabilities": ["InvokeConnector"],
+  "metadata": {
+    "bridge_kind": "http_json",
+    "adapter_family": "web-search"
+  },
+  "slots": [
+    {
+      "slot": "provider:web_search",
+      "key": "default",
+      "mode": "exclusive"
+    }
+  ]
+}
+"#,
+    )
+    .expect("write serper manifest");
+
+    let spec = RunnerSpec {
+        pack: VerticalPackManifest {
+            pack_id: "spec-plugin-slot-conflict".to_owned(),
+            domain: "ops".to_owned(),
+            version: "0.1.0".to_owned(),
+            default_route: ExecutionRoute {
+                harness_kind: HarnessKind::EmbeddedPi,
+                adapter: Some("pi-local".to_owned()),
+            },
+            allowed_connectors: BTreeSet::new(),
+            granted_capabilities: BTreeSet::from([Capability::ObserveTelemetry]),
+            metadata: BTreeMap::new(),
+        },
+        agent_id: "agent-plugin-slot-conflict".to_owned(),
+        ttl_s: 120,
+        approval: Some(HumanApprovalSpec {
+            mode: HumanApprovalMode::Disabled,
+            ..HumanApprovalSpec::default()
+        }),
+        defaults: None,
+        self_awareness: None,
+        plugin_scan: Some(PluginScanSpec {
+            enabled: true,
+            roots: vec![plugin_root.display().to_string()],
+        }),
+        bridge_support: Some(BridgeSupportSpec {
+            enabled: true,
+            supported_bridges: vec![PluginBridgeKind::HttpJson],
+            supported_adapter_families: Vec::new(),
+            enforce_supported: true,
+            policy_version: None,
+            expected_checksum: None,
+            expected_sha256: None,
+            execute_process_stdio: false,
+            execute_http_json: false,
+            allowed_process_commands: Vec::new(),
+            enforce_execution_success: false,
+            security_scan: None,
+        }),
+        bootstrap: None,
+        auto_provision: None,
+        hotfixes: Vec::new(),
+        plugin_setup_readiness: Some(PluginSetupReadinessSpec {
+            inherit_process_env: false,
+            verified_env_vars: Vec::new(),
+            verified_config_keys: Vec::new(),
+        }),
+        operation: OperationSpec::ToolSearch {
+            query: "web_search".to_owned(),
+            limit: 5,
+            include_deferred: true,
+            include_examples: false,
+        },
+    };
+
+    let report = execute_spec(&spec, true).await;
+
+    assert_eq!(report.operation_kind, "blocked");
+    assert!(report.blocked_reason.is_some());
+    assert_eq!(report.plugin_activation_plans.len(), 1);
+    assert_eq!(report.plugin_activation_plans[0].ready_plugins, 0);
+    assert_eq!(report.plugin_activation_plans[0].blocked_plugins, 2);
+    assert!(
+        report.plugin_activation_plans[0]
+            .candidates
+            .iter()
+            .all(|candidate| matches!(
+                candidate.status,
+                loongclaw_daemon::kernel::PluginActivationStatus::BlockedOwnershipConflict
+            ))
+    );
+    assert!(
+        report.plugin_activation_plans[0]
+            .candidates
+            .iter()
+            .all(|candidate| candidate.slot_claims
+                == vec!["provider:web_search#default@exclusive".to_owned()])
+    );
+    assert!(
+        report.plugin_activation_plans[0]
+            .candidates
+            .iter()
+            .all(|candidate| candidate.conflicting_slot_claims
+                == vec!["provider:web_search#default@exclusive".to_owned()])
+    );
+    assert!(report.integration_catalog.provider("tavily").is_none());
+    assert!(report.integration_catalog.provider("serper").is_none());
+}
+
+#[tokio::test]
 async fn execute_spec_bootstrap_applies_only_bridges_allowed_by_bootstrap_policy() {
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -6045,7 +6198,14 @@ async fn execute_spec_tool_search_uses_explicit_plugin_setup_readiness_context()
     "default_env_var": "TAVILY_API_KEY",
     "docs_urls": ["https://docs.example.com/tavily"],
     "remediation": "set a Tavily credential before enabling search"
-  }
+  },
+  "slots": [
+    {
+      "slot": "provider:web_search",
+      "key": "default",
+      "mode": "exclusive"
+    }
+  ]
 }
 "#,
     )
@@ -6134,12 +6294,25 @@ async fn execute_spec_tool_search_uses_explicit_plugin_setup_readiness_context()
     assert_eq!(report.outcome["results"][0]["provider_id"], "tavily");
     assert_eq!(report.outcome["results"][0]["setup_ready"], true);
     assert_eq!(
+        report.outcome["results"][0]["slot_claims"],
+        json!(["provider:web_search#default@exclusive"])
+    );
+    assert_eq!(
         report.outcome["results"][0]["missing_required_env_vars"],
         json!([])
     );
     assert_eq!(
         report.outcome["results"][0]["missing_required_config_keys"],
         json!([])
+    );
+    assert_eq!(
+        report.plugin_activation_plans[0].candidates[0].slot_claims,
+        vec!["provider:web_search#default@exclusive".to_owned()]
+    );
+    assert!(
+        report.plugin_activation_plans[0].candidates[0]
+            .conflicting_slot_claims
+            .is_empty()
     );
 }
 

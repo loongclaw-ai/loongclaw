@@ -1358,24 +1358,55 @@ async fn run_process(
         drop(stdin);
     }
 
-    let output = timeout(Duration::from_millis(timeout_ms), child.wait_with_output())
-        .await
-        .map_err(|error| {
-            format!(
-                "ACPX command timed out after {timeout_ms}ms: {} {} ({error})",
+    let Some(stdout) = child.stdout.take() else {
+        return Err("ACPX command spawned without stdout pipe".to_owned());
+    };
+    let Some(stderr) = child.stderr.take() else {
+        return Err("ACPX command spawned without stderr pipe".to_owned());
+    };
+
+    let stdout_task = tokio::spawn(read_acpx_stream_to_string(stdout, "stdout"));
+    let stderr_task = tokio::spawn(read_acpx_stream_to_string(stderr, "stderr"));
+    let duration = Duration::from_millis(timeout_ms);
+
+    let output = match timeout(duration, child.wait()).await {
+        Ok(Ok(status)) => {
+            let stdout = join_acpx_stream_task(stdout_task, "stdout").await?;
+            let stderr = join_acpx_stream_task(stderr_task, "stderr").await?;
+            AcpxCommandOutput {
+                stdout,
+                stderr,
+                exit_code: status.code(),
+            }
+        }
+        Ok(Err(error)) => {
+            terminate_child_process(&mut child).await;
+            stdout_task.abort();
+            stderr_task.abort();
+            let _ = tokio::join!(stdout_task, stderr_task);
+            return Err(format!("wait for ACPX command failed: {error}"));
+        }
+        Err(error) => {
+            terminate_child_process(&mut child).await;
+
+            let _stdout = join_acpx_stream_task(stdout_task, "stdout").await?;
+            let stderr = join_acpx_stream_task(stderr_task, "stderr").await?;
+            let stderr_trimmed = stderr.trim().to_owned();
+            let stderr_suffix = if stderr_trimmed.is_empty() {
+                String::new()
+            } else {
+                format!(" stderr={stderr_trimmed}")
+            };
+
+            return Err(format!(
+                "ACPX command timed out after {timeout_ms}ms: {} {} ({error}){stderr_suffix}",
                 command,
                 args.join(" ")
-            )
-        })
-        .and_then(|result| {
-            result.map_err(|error| format!("wait for ACPX command failed: {error}"))
-        })?;
+            ));
+        }
+    };
 
-    Ok(AcpxCommandOutput {
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        exit_code: output.status.code(),
-    })
+    Ok(output)
 }
 
 async fn collect_stderr_task(
@@ -1397,7 +1428,64 @@ fn abort_stderr_task(task: &mut Option<tokio::task::JoinHandle<Result<String, St
     }
 }
 
+async fn read_acpx_stream_to_string<R>(stream: R, label: &str) -> Result<String, String>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut contents = String::new();
+    let mut reader = BufReader::new(stream);
+    reader
+        .read_to_string(&mut contents)
+        .await
+        .map_err(|error| format!("read ACPX {label} failed: {error}"))?;
+    Ok(contents)
+}
+
+async fn join_acpx_stream_task(
+    task: tokio::task::JoinHandle<Result<String, String>>,
+    label: &str,
+) -> CliResult<String> {
+    match task.await {
+        Ok(Ok(contents)) => Ok(contents),
+        Ok(Err(error)) => Err(error),
+        Err(error) => Err(format!("join ACPX {label} reader failed: {error}")),
+    }
+}
+
 async fn terminate_child_process(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    {
+        let group_id = child.id().map(|pid| format!("-{pid}"));
+        if let Some(group_id) = group_id {
+            let mut terminate_group = Command::new("kill");
+            terminate_group
+                .arg("-TERM")
+                .arg(group_id.as_str())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let _ = terminate_group.status().await;
+
+            let graceful_wait = timeout(Duration::from_millis(200), child.wait()).await;
+            match graceful_wait {
+                Ok(Ok(_status)) => return,
+                Ok(Err(_error)) => return,
+                Err(_elapsed) => {}
+            }
+
+            let mut force_kill_group = Command::new("kill");
+            force_kill_group
+                .arg("-KILL")
+                .arg(group_id.as_str())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let _ = force_kill_group.status().await;
+            let _ = child.wait().await;
+            return;
+        }
+    }
+
     let _ = child.start_kill();
     let _ = child.wait().await;
 }
@@ -1449,16 +1537,18 @@ async fn spawn_acpx_child(
 ) -> CliResult<tokio::process::Child> {
     retry_executable_file_busy(|| {
         let mut process = Command::new(command);
-        process
-            .args(args)
-            .current_dir(cwd)
-            .stdin(if pipe_stdin {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        process.args(args);
+        process.current_dir(cwd);
+        process.kill_on_drop(true);
+        #[cfg(unix)]
+        process.process_group(0);
+        process.stdin(if pipe_stdin {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        });
+        process.stdout(Stdio::piped());
+        process.stderr(Stdio::piped());
         process.spawn()
     })
     .await
@@ -2507,6 +2597,81 @@ exit 0
                 .last()
                 .and_then(|event| value_string(event, "stopReason")),
             Some("cancelled".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn run_process_timeout_terminates_hung_child() {
+        let temp_dir = unique_temp_dir("loongclaw-acpx-timeout");
+        let log_path = temp_dir.join("calls.log");
+        let sleep_marker = "sleep 29";
+        let list_sleep_pids = |marker: &str| {
+            let output = std::process::Command::new("ps")
+                .args(["-ax", "-o", "pid=,command="])
+                .output()
+                .expect("list running processes");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            stdout
+                .lines()
+                .filter_map(|line| {
+                    if !line.contains(marker) {
+                        return None;
+                    }
+                    let mut parts = line.split_whitespace();
+                    let pid = parts.next()?;
+                    Some(pid.to_owned())
+                })
+                .collect::<Vec<_>>()
+        };
+        let baseline_sleep_pids = list_sleep_pids(sleep_marker);
+        let script_body = r#"
+sleep 29 &
+child_pid=$!
+wait "$child_pid"
+"#
+        .to_string();
+        let script_path =
+            write_fake_acpx_script(&temp_dir, "fake-acpx", &log_path, script_body.as_str());
+        let command = script_path.display().to_string();
+        let cwd = temp_dir.display().to_string();
+        let args = Vec::<String>::new();
+
+        let error = run_process(command.as_str(), &args, cwd.as_str(), 250, None)
+            .await
+            .expect_err("hung fake acpx command should time out");
+
+        assert!(
+            error.contains("timed out after 250ms"),
+            "expected timeout error, got: {error}"
+        );
+
+        let baseline_sleep_pid_set = baseline_sleep_pids.into_iter().collect::<BTreeSet<_>>();
+        let mut leaked_sleep_pids = list_sleep_pids(sleep_marker)
+            .into_iter()
+            .filter(|pid| !baseline_sleep_pid_set.contains(pid))
+            .collect::<Vec<_>>();
+        for _attempt in 0..40 {
+            if leaked_sleep_pids.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            leaked_sleep_pids = list_sleep_pids(sleep_marker)
+                .into_iter()
+                .filter(|pid| !baseline_sleep_pid_set.contains(pid))
+                .collect::<Vec<_>>();
+        }
+
+        for pid in &leaked_sleep_pids {
+            let _ = std::process::Command::new("kill")
+                .arg("-KILL")
+                .arg(pid.as_str())
+                .status();
+        }
+
+        assert!(
+            leaked_sleep_pids.is_empty(),
+            "expected timeout cleanup to terminate fake acpx process tree"
         );
     }
 

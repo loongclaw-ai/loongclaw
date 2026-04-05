@@ -1007,6 +1007,10 @@ fn enrich_scan_report_with_translation(
                 .or_insert_with(|| descriptor.manifest.defer_loading.to_string());
             let setup = descriptor.manifest.setup.clone();
             insert_plugin_setup_metadata(&mut descriptor.manifest.metadata, setup.as_ref());
+            insert_plugin_slot_metadata(
+                &mut descriptor.manifest.metadata,
+                &descriptor.manifest.slots,
+            );
             if let Some(summary) = descriptor.manifest.summary.clone() {
                 descriptor
                     .manifest
@@ -1161,6 +1165,25 @@ fn insert_plugin_setup_metadata(
     if let Some(remediation) = setup.remediation.clone() {
         let remediation_key = "plugin_setup_remediation".to_owned();
         metadata.insert(remediation_key, remediation);
+    }
+}
+
+fn insert_plugin_slot_metadata(
+    metadata: &mut BTreeMap<String, String>,
+    slots: &[kernel::PluginOwnershipSlot],
+) {
+    if slots.is_empty() {
+        metadata.remove("plugin_slots_json");
+        return;
+    }
+
+    if let Ok(raw_json) = serde_json::to_string(
+        &slots
+            .iter()
+            .map(kernel::PluginOwnershipSlot::canonical_label)
+            .collect::<Vec<_>>(),
+    ) {
+        metadata.insert("plugin_slots_json".to_owned(), raw_json);
     }
 }
 
@@ -1754,8 +1777,8 @@ mod plugin_metadata_tests {
     use super::*;
     use kernel::{
         Capability, PluginBridgeKind, PluginDescriptor, PluginIR, PluginManifest,
-        PluginRuntimeProfile, PluginScanReport, PluginSetup, PluginSetupMode, PluginSourceKind,
-        PluginTranslationReport,
+        PluginOwnershipSlot, PluginOwnershipSlotMode, PluginRuntimeProfile, PluginScanReport,
+        PluginSetup, PluginSetupMode, PluginSourceKind, PluginTranslationReport,
     };
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -1802,6 +1825,18 @@ mod plugin_metadata_tests {
                     docs_urls: vec!["https://docs.example.com/tavily".to_owned()],
                     remediation: Some("set a Tavily credential before enabling search".to_owned()),
                 }),
+                slots: vec![
+                    PluginOwnershipSlot {
+                        slot: "provider:web_search".to_owned(),
+                        key: "default".to_owned(),
+                        mode: PluginOwnershipSlotMode::Exclusive,
+                    },
+                    PluginOwnershipSlot {
+                        slot: "tool:search".to_owned(),
+                        key: "web".to_owned(),
+                        mode: PluginOwnershipSlotMode::Shared,
+                    },
+                ],
             },
         }
     }
@@ -1823,6 +1858,7 @@ mod plugin_metadata_tests {
                 package_root: descriptor.package_root.clone(),
                 package_manifest_path: descriptor.package_manifest_path.clone(),
                 setup: descriptor.manifest.setup.clone(),
+                slots: descriptor.manifest.slots.clone(),
                 runtime: PluginRuntimeProfile {
                     source_language: descriptor.language.clone(),
                     bridge_kind: PluginBridgeKind::HttpJson,
@@ -1879,6 +1915,10 @@ mod plugin_metadata_tests {
                 .get("plugin_setup_required_env_vars_json")
                 .map(String::as_str),
             Some("[\"TAVILY_API_KEY\"]")
+        );
+        assert_eq!(
+            metadata.get("plugin_slots_json").map(String::as_str),
+            Some("[\"provider:web_search#default@exclusive\",\"tool:search#web@shared\"]")
         );
     }
 

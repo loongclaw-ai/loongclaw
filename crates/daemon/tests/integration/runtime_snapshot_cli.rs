@@ -174,6 +174,47 @@ fn install_demo_skill(root: &Path, config: &mvp::config::LoongClawConfig, config
     .expect("install demo skill");
 }
 
+fn install_demo_runtime_plugin_package(root: &Path, config_path: &Path) {
+    write_file(
+        root,
+        "runtime-plugins/search/loongclaw.plugin.json",
+        r#"{
+  "plugin_id": "demo-search-plugin",
+  "provider_id": "demo-search",
+  "connector_name": "demo-search-http",
+  "endpoint": "https://example.com/search",
+  "capabilities": ["InvokeConnector"],
+  "metadata": {
+    "bridge_kind": "http_json",
+    "adapter_family": "web-search"
+  },
+  "summary": "Demo runtime plugin package",
+  "slots": [
+    {
+      "slot": "provider:web_search",
+      "key": "demo",
+      "mode": "shared"
+    }
+  ],
+  "setup": {
+    "mode": "metadata_only",
+    "surface": "web_search",
+    "required_env_vars": ["RUNTIME_PLUGIN_DEMO_KEY"],
+    "required_config_keys": ["tools.web_search.default_provider"]
+  }
+}"#,
+    );
+
+    let (path_string, mut reloaded) = mvp::config::load(Some(
+        config_path.to_str().expect("config path should be utf-8"),
+    ))
+    .expect("reload config");
+    reloaded.runtime_plugins.enabled = true;
+    reloaded.runtime_plugins.roots = vec![root.join("runtime-plugins").display().to_string()];
+    mvp::config::write(Some(&path_string.display().to_string()), &reloaded, true)
+        .expect("rewrite config fixture with runtime plugin roots");
+}
+
 fn array_contains_string(array: &Value, needle: &str) -> bool {
     array.as_array().is_some_and(|items| {
         items
@@ -208,13 +249,17 @@ fn array_object_with_string_field<'a>(
 #[test]
 fn runtime_snapshot_json_payload_includes_provider_tool_and_external_skill_inventory() {
     let root = unique_temp_dir("loongclaw-runtime-snapshot-json");
+    let root_env = root.display().to_string();
     let _env = RuntimeSnapshotEnvGuard::set(&[
         ("DEEPSEEK_API_KEY", None),
         ("LOONGCLAW_BROWSER_COMPANION_READY", Some("true")),
         ("OPENAI_API_KEY", None),
+        ("HOME", Some(root_env.as_str())),
+        ("USERPROFILE", Some(root_env.as_str())),
     ]);
     let (config_path, config) = write_runtime_snapshot_config(&root);
     install_demo_skill(&root, &config, &config_path);
+    install_demo_runtime_plugin_package(&root, &config_path);
 
     let snapshot = collect_runtime_snapshot_cli_state(Some(
         config_path.to_str().expect("config path should be utf-8"),
@@ -245,6 +290,29 @@ fn runtime_snapshot_json_payload_includes_provider_tool_and_external_skill_inven
         "skill_id",
         "demo-skill"
     ));
+    assert_eq!(payload["external_skills"]["blocked_skill_count"], 0);
+    assert_eq!(payload["external_skills"]["ineligible_skill_count"], 0);
+    assert_eq!(payload["external_skills"]["blocked_skill_ids"], json!([]));
+    assert_eq!(
+        payload["external_skills"]["ineligible_skill_ids"],
+        json!([])
+    );
+    assert_eq!(
+        payload["external_skills"]["inventory"]["blocked_skill_errors"],
+        json!({})
+    );
+    assert_eq!(payload["runtime_plugins"]["enabled"], true);
+    assert_eq!(payload["runtime_plugins"]["discovered_plugin_count"], 1);
+    assert_eq!(payload["runtime_plugins"]["ready_plugin_count"], 0);
+    assert_eq!(
+        payload["runtime_plugins"]["setup_incomplete_plugin_count"],
+        1
+    );
+    assert!(array_contains_object_field(
+        &payload["runtime_plugins"]["plugins"],
+        "plugin_id",
+        "demo-search-plugin"
+    ));
     assert!(
         payload["tools"]["capability_snapshot_sha256"]
             .as_str()
@@ -258,6 +326,7 @@ fn runtime_snapshot_json_payload_includes_provider_tool_and_external_skill_inven
 #[test]
 fn runtime_snapshot_json_payload_marks_x_api_key_profiles_as_credential_resolved() {
     let root = unique_temp_dir("loongclaw-runtime-snapshot-x-api-key");
+    let root_env = root.display().to_string();
     let _env = RuntimeSnapshotEnvGuard::set(&[
         ("RUNTIME_SNAPSHOT_DEEPSEEK_KEY", Some("demo-token")),
         (
@@ -265,6 +334,8 @@ fn runtime_snapshot_json_payload_marks_x_api_key_profiles_as_credential_resolved
             Some("anthropic-demo-token"),
         ),
         ("LOONGCLAW_BROWSER_COMPANION_READY", Some("true")),
+        ("HOME", Some(root_env.as_str())),
+        ("USERPROFILE", Some(root_env.as_str())),
     ]);
     let (config_path, mut config) = write_runtime_snapshot_config(&root);
     config.providers.insert(
@@ -304,12 +375,16 @@ fn runtime_snapshot_json_payload_marks_x_api_key_profiles_as_credential_resolved
 #[test]
 fn runtime_snapshot_json_payload_reflects_effective_external_skills_policy_override() {
     let root = unique_temp_dir("loongclaw-runtime-snapshot-policy-override");
+    let root_env = root.display().to_string();
     let _env = RuntimeSnapshotEnvGuard::set(&[
         ("RUNTIME_SNAPSHOT_DEEPSEEK_KEY", Some("demo-token")),
         ("LOONGCLAW_BROWSER_COMPANION_READY", Some("true")),
+        ("HOME", Some(root_env.as_str())),
+        ("USERPROFILE", Some(root_env.as_str())),
     ]);
     let (config_path, config) = write_runtime_snapshot_config(&root);
     install_demo_skill(&root, &config, &config_path);
+    install_demo_runtime_plugin_package(&root, &config_path);
 
     let enabled_snapshot = collect_runtime_snapshot_cli_state(Some(
         config_path.to_str().expect("config path should be utf-8"),
@@ -386,6 +461,13 @@ fn runtime_snapshot_json_payload_reflects_effective_external_skills_policy_overr
     assert_eq!(payload["external_skills"]["override_active"], true);
     assert_eq!(payload["external_skills"]["inventory_status"], "disabled");
     assert_eq!(payload["external_skills"]["resolved_skill_count"], 0);
+    assert_eq!(payload["external_skills"]["blocked_skill_count"], 0);
+    assert_eq!(payload["external_skills"]["ineligible_skill_count"], 0);
+    assert_eq!(payload["external_skills"]["blocked_skill_ids"], json!([]));
+    assert_eq!(
+        payload["external_skills"]["ineligible_skill_ids"],
+        json!([])
+    );
     assert!(!array_contains_string(
         &payload["tools"]["visible_tool_names"],
         "external_skills.list"
@@ -405,12 +487,16 @@ fn runtime_snapshot_json_payload_reflects_effective_external_skills_policy_overr
 #[test]
 fn runtime_snapshot_text_highlights_experiment_relevant_sections() {
     let root = unique_temp_dir("loongclaw-runtime-snapshot-text");
+    let root_env = root.display().to_string();
     let _env = RuntimeSnapshotEnvGuard::set(&[
         ("RUNTIME_SNAPSHOT_DEEPSEEK_KEY", Some("demo-token")),
         ("LOONGCLAW_BROWSER_COMPANION_READY", Some("true")),
+        ("HOME", Some(root_env.as_str())),
+        ("USERPROFILE", Some(root_env.as_str())),
     ]);
     let (config_path, config) = write_runtime_snapshot_config(&root);
     install_demo_skill(&root, &config, &config_path);
+    install_demo_runtime_plugin_package(&root, &config_path);
 
     let snapshot = collect_runtime_snapshot_cli_state(Some(
         config_path.to_str().expect("config path should be utf-8"),
@@ -423,7 +509,11 @@ fn runtime_snapshot_text_highlights_experiment_relevant_sections() {
     assert!(rendered.contains("memory selected="));
     assert!(rendered.contains("acp enabled=true"));
     assert!(rendered.contains("tools visible_count="));
+    assert!(rendered.contains("runtime_plugins inventory_status=ok enabled=true"));
+    assert!(rendered.contains("demo-search-plugin"));
     assert!(rendered.contains("external_skills inventory_status=ok override_active=false"));
+    assert!(rendered.contains("blocked_skills=0 ineligible_skills=0"));
+    assert!(rendered.contains("blocked_ids=- ineligible_ids=-"));
     assert!(rendered.contains("demo-skill"));
 
     fs::remove_dir_all(&root).ok();
