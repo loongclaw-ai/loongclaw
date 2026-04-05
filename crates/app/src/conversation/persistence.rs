@@ -4,13 +4,15 @@ use crate::CliResult;
 use crate::acp::{
     AcpTurnResult, PersistedAcpRuntimeEventContext, build_persisted_runtime_event_records,
 };
+use crate::config::ProviderConfig;
 use crate::memory::{
     build_conversation_event_content, build_tool_decision_content, build_tool_outcome_content,
 };
 
+use super::analytics::TURN_USAGE_EVENT_NAME;
 use super::runtime::ConversationRuntime;
 use super::runtime_binding::ConversationRuntimeBinding;
-use super::turn_engine::{ToolDecision, ToolOutcome};
+use super::turn_engine::{ProviderUsage, ToolDecision, ToolOutcome};
 use super::turn_shared::ReplyPersistenceMode;
 
 pub(super) fn format_provider_error_reply(error: &str) -> String {
@@ -182,6 +184,45 @@ pub(super) async fn persist_conversation_event<R: ConversationRuntime + ?Sized>(
     runtime
         .persist_turn(session_id, "assistant", &content, binding)
         .await
+}
+
+pub(super) async fn persist_turn_usage_event<R: ConversationRuntime + ?Sized>(
+    runtime: &R,
+    session_id: &str,
+    provider_profile_id: Option<&str>,
+    provider: &ProviderConfig,
+    usage: &ProviderUsage,
+    binding: ConversationRuntimeBinding<'_>,
+) -> CliResult<()> {
+    let input_tokens = usage.input_tokens.unwrap_or(0);
+    let output_tokens = usage.output_tokens.unwrap_or(0);
+    let total_tokens = u64::from(input_tokens).saturating_add(u64::from(output_tokens));
+
+    if total_tokens == 0 {
+        return Ok(());
+    }
+
+    let provider_profile_id = provider_profile_id.unwrap_or("default");
+    let resolved_model = provider
+        .resolved_model()
+        .unwrap_or_else(|| "auto".to_owned());
+    let provider_kind = provider.kind.as_str();
+    let wire_api = provider.wire_api.as_str();
+    let reasoning_effort = provider
+        .reasoning_effort
+        .map(|effort| effort.as_str().to_owned());
+    let payload = json!({
+        "provider_profile_id": provider_profile_id,
+        "provider_kind": provider_kind,
+        "model": resolved_model,
+        "wire_api": wire_api,
+        "reasoning_effort": reasoning_effort,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+    });
+
+    persist_conversation_event(runtime, session_id, TURN_USAGE_EVENT_NAME, payload, binding).await
 }
 
 pub(super) async fn persist_acp_runtime_events<R: ConversationRuntime + ?Sized>(

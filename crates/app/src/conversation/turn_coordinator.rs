@@ -43,7 +43,7 @@ use super::ingress::ConversationIngressContext;
 use super::lane_arbiter::{ExecutionLane, LaneArbiterPolicy, LaneDecision};
 use super::persistence::{
     format_provider_error_reply, persist_acp_runtime_events, persist_conversation_event,
-    persist_reply_turns_raw_with_mode, persist_reply_turns_with_mode,
+    persist_reply_turns_raw_with_mode, persist_reply_turns_with_mode, persist_turn_usage_event,
 };
 use super::plan_executor::{
     PlanExecutor, PlanNodeError, PlanNodeErrorKind, PlanNodeExecutor, PlanRunFailure,
@@ -3676,6 +3676,21 @@ async fn apply_resolved_provider_turn<R: ConversationRuntime + ?Sized>(
         (Some(_), false) | (None, true) | (None, false) => None,
     };
 
+    if apply_result.is_ok() {
+        let active_provider_id = config.active_provider_id();
+        let active_provider = &config.provider;
+        let usage_event_result = persist_turn_usage_event(
+            runtime,
+            session_id,
+            active_provider_id,
+            active_provider,
+            &usage,
+            binding,
+        )
+        .await;
+        let _ = usage_event_result;
+    }
+
     if let Some(event) = completion_observation {
         observe_turn_phase(observer, event);
     }
@@ -4049,6 +4064,35 @@ where
     }
 }
 
+#[cfg(feature = "memory-sqlite")]
+pub(crate) async fn execute_approval_tool_with_runtime_support<R: ConversationRuntime + ?Sized>(
+    config: &LoongClawConfig,
+    runtime: &R,
+    current_session_id: &str,
+    request: loongclaw_contracts::ToolCoreRequest,
+    binding: ConversationRuntimeBinding<'_>,
+) -> Result<loongclaw_contracts::ToolCoreOutcome, String> {
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let session_context = runtime.session_context(config, current_session_id, binding)?;
+    let effective_tool_config = effective_tool_config_for_session(&config.tools, &session_context);
+    let fallback = DefaultAppToolDispatcher::with_config(memory_config.clone(), config.clone());
+    let approval_runtime = CoordinatorApprovalResolutionRuntime {
+        config,
+        runtime,
+        fallback: &fallback,
+        binding,
+    };
+
+    crate::tools::approval::execute_approval_tool_with_runtime_support(
+        request,
+        current_session_id,
+        &memory_config,
+        &effective_tool_config,
+        Some(&approval_runtime),
+    )
+    .await
+}
+
 struct CoordinatorAppToolDispatcher<'a, R: ?Sized> {
     config: &'a LoongClawConfig,
     runtime: &'a R,
@@ -4120,22 +4164,13 @@ where
 
                 #[cfg(feature = "memory-sqlite")]
                 {
-                    let memory_config =
-                        MemoryRuntimeConfig::from_memory_config(&self.config.memory);
-                    let effective_tool_config =
-                        effective_tool_config_for_session(&self.config.tools, session_context);
-                    let approval_runtime = CoordinatorApprovalResolutionRuntime {
-                        config: self.config,
-                        runtime: self.runtime,
-                        fallback: self.fallback,
-                        binding,
-                    };
-                    crate::tools::approval::execute_approval_tool_with_runtime_support(
-                        request,
+                    let _ = session_context;
+                    execute_approval_tool_with_runtime_support(
+                        self.config,
+                        self.runtime,
                         &session_context.session_id,
-                        &memory_config,
-                        &effective_tool_config,
-                        Some(&approval_runtime),
+                        request,
+                        binding,
                     )
                     .await
                 }

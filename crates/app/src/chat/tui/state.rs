@@ -3,6 +3,7 @@ use std::time::Instant;
 use super::dialog::ClarifyDialog;
 use super::focus::FocusStack;
 use super::message::{Message, MessagePart, ToolStatus};
+use super::stats;
 
 const SPINNER_INTERVAL_MS: u128 = 80;
 const DOTS_INTERVAL_MS: u128 = 300;
@@ -21,6 +22,50 @@ pub(super) struct TranscriptReviewState {
     pub(super) anchor_line: Option<usize>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(super) struct ComposerSuggestionContext {
+    pub(super) worktree_dirty: Option<bool>,
+    pub(super) visible_sessions: Option<usize>,
+    pub(super) visible_session_suggestions: Vec<VisibleSessionSuggestion>,
+    pub(super) model_selection_suggestions: Vec<ModelSelectionSuggestion>,
+    pub(super) running_tasks: Option<usize>,
+    pub(super) overdue_tasks: Option<usize>,
+    pub(super) pending_approvals: Option<usize>,
+    pub(super) attention_approvals: Option<usize>,
+    pub(super) approval_request_suggestions: Vec<ApprovalRequestSuggestion>,
+    pub(super) has_explicit_permission_policy: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct VisibleSessionSuggestion {
+    pub(super) session_id: String,
+    pub(super) label: Option<String>,
+    pub(super) state: String,
+    pub(super) kind: String,
+    pub(super) task_phase: Option<String>,
+    pub(super) overdue: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ApprovalRequestSuggestion {
+    pub(super) approval_request_id: String,
+    pub(super) tool_name: String,
+    pub(super) status: String,
+    pub(super) session_id: String,
+    pub(super) needs_attention: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ModelSelectionSuggestion {
+    pub(super) selector: String,
+    pub(super) profile_id: String,
+    pub(super) kind: String,
+    pub(super) model: String,
+    pub(super) active: bool,
+    pub(super) reasoning_efforts: Vec<String>,
+    pub(super) current_reasoning_effort: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ToolCallRecord<'a> {
     pub(super) tool_id: &'a str,
@@ -35,6 +80,29 @@ pub(super) struct ActiveToolInspector<'a> {
     pub(super) scroll_offset: u16,
     pub(super) position: usize,
     pub(super) total: usize,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct StatsOverlayState {
+    pub(super) snapshot: stats::StatsSnapshot,
+    pub(super) active_tab: stats::StatsTab,
+    pub(super) date_range: stats::StatsDateRange,
+    pub(super) copy_status: Option<String>,
+}
+
+impl StatsOverlayState {
+    pub(super) fn new(
+        snapshot: stats::StatsSnapshot,
+        active_tab: stats::StatsTab,
+        date_range: stats::StatsDateRange,
+    ) -> Self {
+        Self {
+            snapshot,
+            active_tab,
+            date_range,
+            copy_status: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +130,7 @@ pub(super) struct Pane {
     pub(super) staged_message: Option<String>,
     pub(super) tool_inspector: Option<ToolInspectorState>,
     pub(super) transcript_review: TranscriptReviewState,
+    pub(super) composer_suggestion_context: ComposerSuggestionContext,
 }
 
 impl Pane {
@@ -91,6 +160,7 @@ impl Pane {
                 cursor_line: 0,
                 anchor_line: None,
             },
+            composer_suggestion_context: ComposerSuggestionContext::default(),
         }
     }
 
@@ -220,6 +290,11 @@ impl Pane {
     pub(super) fn show_surface_lines(&mut self, lines: &[String]) {
         let content = lines.join("\n");
         self.messages.clear();
+        self.messages.push(Message::surface(content));
+    }
+
+    pub(super) fn add_surface_lines(&mut self, lines: &[String]) {
+        let content = lines.join("\n");
         self.messages.push(Message::surface(content));
     }
 
@@ -370,6 +445,17 @@ impl Pane {
 
     pub(super) fn total_tokens(&self) -> u32 {
         self.input_tokens.saturating_add(self.output_tokens)
+    }
+
+    pub(super) fn tool_call_count(&self) -> usize {
+        self.collect_tool_calls().len()
+    }
+
+    pub(super) fn recent_tool_calls(&self, limit: usize) -> Vec<ToolCallRecord<'_>> {
+        let tool_calls = self.collect_tool_calls();
+        let retained = tool_calls.len().saturating_sub(limit);
+
+        tool_calls.into_iter().skip(retained).collect()
     }
 
     /// Returns context usage as a fraction in `[0.0, 1.0]`.
@@ -689,6 +775,9 @@ enum ToolInspectorDirection {
 #[derive(Debug, Clone)]
 pub(super) struct Shell {
     pub(super) pane: Pane,
+    pub(super) runtime_config: Option<crate::config::LoongClawConfig>,
+    pub(super) runtime_config_path: Option<std::path::PathBuf>,
+    pub(super) stats_overlay: Option<StatsOverlayState>,
     pub(super) running: bool,
     pub(super) show_thinking: bool,
     pub(super) focus: FocusStack,
@@ -700,6 +789,9 @@ impl Shell {
     pub(super) fn new(session_id: &str) -> Self {
         Self {
             pane: Pane::new(session_id),
+            runtime_config: None,
+            runtime_config_path: None,
+            stats_overlay: None,
             running: true,
             show_thinking: true,
             focus: FocusStack::new(),

@@ -19,6 +19,48 @@ pub(crate) struct TuiRuntime {
     pub(super) model_label: String,
 }
 
+fn normalized_session_id(session_hint: Option<&str>) -> String {
+    session_hint
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map_or_else(|| "default".to_owned(), |s| s.to_owned())
+}
+
+impl TuiRuntime {
+    pub(crate) fn switched_session(&self, session_id: &str) -> Self {
+        let session_id = normalized_session_id(Some(session_id));
+        let session_address = ConversationSessionAddress::from_session_id(session_id.clone());
+
+        Self {
+            resolved_path: self.resolved_path.clone(),
+            config: self.config.clone(),
+            session_id,
+            session_address,
+            turn_coordinator: ConversationTurnCoordinator::new(),
+            kernel_ctx: self.kernel_ctx.clone(),
+            model_label: self.model_label.clone(),
+        }
+    }
+
+    pub(crate) fn with_provider_runtime_config(&self, config: LoongClawConfig) -> Self {
+        let model_label = config
+            .provider
+            .resolved_model()
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| "auto".to_owned());
+
+        Self {
+            resolved_path: self.resolved_path.clone(),
+            config,
+            session_id: self.session_id.clone(),
+            session_address: self.session_address.clone(),
+            turn_coordinator: ConversationTurnCoordinator::new(),
+            kernel_ctx: self.kernel_ctx.clone(),
+            model_label,
+        }
+    }
+}
+
 /// Initialize a self-contained TUI runtime from config path and optional
 /// session hint.  This is the TUI equivalent of
 /// `initialize_cli_turn_runtime` but carries only the state the TUI
@@ -29,11 +71,7 @@ pub(crate) fn initialize(
 ) -> CliResult<TuiRuntime> {
     let (resolved_path, config) = crate::config::load(config_path)?;
 
-    // Session ID: use hint or fall back to "default".
-    let session_id = session_hint
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map_or_else(|| "default".to_owned(), |s| s.to_owned());
+    let session_id = normalized_session_id(session_hint);
 
     // Export runtime environment variables derived from config.
     crate::runtime_env::initialize_runtime_environment(&config, Some(&resolved_path));

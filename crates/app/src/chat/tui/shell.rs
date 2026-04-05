@@ -1,6 +1,10 @@
+use std::fs;
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::process::Command;
 use std::time::Instant;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use crossterm::event::{
@@ -12,19 +16,23 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use futures_util::{FutureExt as _, StreamExt};
+use loongclaw_contracts::ToolCoreRequest;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::style::Style;
+use serde_json::{Value, json};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::sync::mpsc;
 
 use crate::CliResult;
 use crate::acp::AcpConversationTurnOptions;
 use crate::conversation::{
-    ConversationRuntimeBinding, ConversationTurnObserverHandle, ProviderErrorMode,
+    ConversationRuntimeBinding, ConversationTurnObserverHandle, DefaultConversationRuntime,
+    ProviderErrorMode, resolve_context_engine, resolve_context_engine_selection,
 };
 
 use super::boot::{TuiBootFlow, TuiBootScreen, TuiBootTransition};
-use super::commands::{self, SlashCommand};
+use super::commands::{self, ParsedSlashCommand, SlashCommand};
 use super::dialog::ClarifyDialog;
 use super::events::UiEvent;
 use super::focus::{FocusLayer, FocusStack};
@@ -36,6 +44,7 @@ use super::observer::build_tui_observer;
 use super::render::{self, ShellView};
 use super::spinner::SpinnerView;
 use super::state;
+use super::stats;
 use super::status_bar::StatusBarView;
 use super::theme::Palette;
 
@@ -125,6 +134,125 @@ impl InputView for state::Pane {
     fn input_hint(&self) -> Option<&str> {
         self.input_hint_override.as_deref()
     }
+    fn input_placeholder(&self) -> Option<String> {
+        composer_placeholder(self)
+    }
+}
+
+const STARTER_COMPOSER_PLACEHOLDERS: &[&str] = &[
+    "Explain the layered kernel design in this workspace",
+    "Use /skills to inspect installed external skills",
+    "Review the current worktree and call out the riskiest diff",
+    "Check effective tool policy with /permissions",
+    "Trace delegate work with /tasks running",
+    "Review approval hotspots with /approvals attention",
+    "Resume a previous thread with /resume <session-id>",
+    "Compact the current session with /compact when context gets heavy",
+];
+
+const ACTIVE_COMPOSER_PLACEHOLDERS: &[&str] = &[
+    "Summarize what changed in this session before we continue",
+    "Turn the latest idea into a concrete patch plan",
+    "Inspect the current branch and tell me where the risky edge is",
+    "Open the next blocked delegate with /tasks overdue",
+    "Resolve the next queued approval from /approvals",
+    "Check whether this session is over-permitted with /permissions",
+    "Switch back to another thread with /resume <session-id>",
+    "Compare the transcript story against the actual diff",
+];
+
+const COMPOSER_PLACEHOLDER_ROTATION_SECONDS: u64 = 45;
+
+const DIRTY_WORKTREE_COMPOSER_PLACEHOLDERS: &[&str] = &[
+    "Review the current worktree and call out the riskiest diff",
+    "Open /diff status before the next edit",
+    "Compare the transcript story against the actual diff",
+];
+
+const HOT_CONTEXT_COMPOSER_PLACEHOLDERS: &[&str] = &[
+    "Context is getting heavy; run /compact before the next long turn",
+    "Use /compact to compress this session before pushing more context",
+];
+
+const SESSION_RESUME_COMPOSER_PLACEHOLDERS: &[&str] = &[
+    "There are other visible threads; inspect them with /resume",
+    "Switch back to another thread with /resume <session-id>",
+];
+
+const RUNNING_TASK_COMPOSER_PLACEHOLDERS: &[&str] = &[
+    "Delegate work is active; inspect it with /tasks running",
+    "Trace the current child sessions through /tasks running",
+];
+
+const OVERDUE_TASK_COMPOSER_PLACEHOLDERS: &[&str] = &[
+    "A delegate looks overdue; inspect it with /tasks overdue",
+    "Check blocked delegate work through /tasks overdue",
+];
+
+const PENDING_APPROVAL_COMPOSER_PLACEHOLDERS: &[&str] = &[
+    "There are queued approvals; inspect them with /approvals",
+    "Review pending approval requests before the next risky action",
+];
+
+const ATTENTION_APPROVAL_COMPOSER_PLACEHOLDERS: &[&str] = &[
+    "An approval needs attention; inspect it with /approvals attention",
+    "Resolve the next risky approval from /approvals attention",
+];
+
+const EXPLICIT_POLICY_COMPOSER_PLACEHOLDERS: &[&str] = &[
+    "This session has an explicit tool policy; inspect it with /permissions",
+    "Check whether the current session is over- or under-permitted with /permissions",
+];
+
+fn choose_placeholder(
+    placeholders: &[&str],
+    session_id: &str,
+    message_count: usize,
+) -> Option<String> {
+    let rotation_bucket = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() / COMPOSER_PLACEHOLDER_ROTATION_SECONDS)
+        .unwrap_or(0);
+    let session_seed = session_id.bytes().fold(0_u64, |acc, byte| {
+        acc.wrapping_mul(131).wrapping_add(u64::from(byte))
+    });
+    let index = ((session_seed ^ message_count as u64).wrapping_add(rotation_bucket)
+        % placeholders.len() as u64) as usize;
+
+    placeholders
+        .get(index)
+        .map(|placeholder| (*placeholder).to_owned())
+}
+
+fn composer_placeholder(pane: &state::Pane) -> Option<String> {
+    if pane.agent_running || pane.input_hint_override.is_some() {
+        return None;
+    }
+
+    let context = &pane.composer_suggestion_context;
+    let placeholders = if pane.context_percent() >= 0.72 {
+        HOT_CONTEXT_COMPOSER_PLACEHOLDERS
+    } else if context.attention_approvals.unwrap_or(0) > 0 {
+        ATTENTION_APPROVAL_COMPOSER_PLACEHOLDERS
+    } else if context.pending_approvals.unwrap_or(0) > 0 {
+        PENDING_APPROVAL_COMPOSER_PLACEHOLDERS
+    } else if context.overdue_tasks.unwrap_or(0) > 0 {
+        OVERDUE_TASK_COMPOSER_PLACEHOLDERS
+    } else if context.running_tasks.unwrap_or(0) > 0 {
+        RUNNING_TASK_COMPOSER_PLACEHOLDERS
+    } else if context.worktree_dirty == Some(true) {
+        DIRTY_WORKTREE_COMPOSER_PLACEHOLDERS
+    } else if context.has_explicit_permission_policy == Some(true) {
+        EXPLICIT_POLICY_COMPOSER_PLACEHOLDERS
+    } else if context.visible_sessions.unwrap_or(0) > 1 {
+        SESSION_RESUME_COMPOSER_PLACEHOLDERS
+    } else if pane.messages.is_empty() {
+        STARTER_COMPOSER_PLACEHOLDERS
+    } else {
+        ACTIVE_COMPOSER_PLACEHOLDERS
+    };
+
+    choose_placeholder(placeholders, pane.session_id.as_str(), pane.messages.len())
 }
 
 impl ShellView for state::Shell {
@@ -156,8 +284,20 @@ impl ShellView for state::Shell {
             total: active_tool_inspector.total,
         })
     }
+    fn stats_overlay(&self) -> Option<render::StatsOverlayView<'_>> {
+        let stats_overlay = self.stats_overlay.as_ref()?;
+        Some(render::StatsOverlayView {
+            snapshot: &stats_overlay.snapshot,
+            active_tab: stats_overlay.active_tab,
+            date_range: stats_overlay.date_range,
+            copy_status: stats_overlay.copy_status.as_deref(),
+        })
+    }
     fn slash_command_selection(&self) -> usize {
         self.slash_command_selection
+    }
+    fn slash_palette_entries(&self, draft_prefix: &str) -> Vec<render::SlashPaletteEntry> {
+        slash_palette_entries(self, draft_prefix)
     }
 }
 
@@ -284,6 +424,437 @@ async fn run_turn(
         .await
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ResumeAction {
+    List,
+    Inspect(String),
+    Switch(String),
+}
+
+fn parse_resume_action(args: &str) -> ResumeAction {
+    let trimmed = args.trim();
+    if trimmed.is_empty() {
+        return ResumeAction::List;
+    }
+
+    if let Some(session_id) = trimmed.strip_prefix("inspect ") {
+        let session_id = session_id.trim();
+        if !session_id.is_empty() {
+            return ResumeAction::Inspect(session_id.to_owned());
+        }
+    }
+
+    if let Some(session_id) = trimmed.strip_prefix("switch ") {
+        let session_id = session_id.trim();
+        if !session_id.is_empty() {
+            return ResumeAction::Switch(session_id.to_owned());
+        }
+    }
+
+    ResumeAction::Switch(trimmed.to_owned())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ApprovalResolveDecision {
+    ApproveOnce,
+    ApproveAlways,
+    Deny,
+}
+
+impl ApprovalResolveDecision {
+    fn as_payload_value(&self) -> &'static str {
+        match self {
+            Self::ApproveOnce => "approve_once",
+            Self::ApproveAlways => "approve_always",
+            Self::Deny => "deny",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ApprovalsAction {
+    List {
+        filter: String,
+    },
+    Inspect {
+        approval_request_id: String,
+    },
+    Resolve {
+        approval_request_id: String,
+        decision: ApprovalResolveDecision,
+        session_consent_mode: Option<String>,
+    },
+}
+
+fn parse_approvals_action(args: &str) -> Result<ApprovalsAction, String> {
+    let trimmed = args.trim();
+    if trimmed.is_empty() {
+        return Ok(ApprovalsAction::List {
+            filter: String::new(),
+        });
+    }
+
+    let mut parts = trimmed.split_whitespace();
+    let first = parts.next().unwrap_or_default();
+    if first.eq_ignore_ascii_case("resolve") {
+        let approval_request_id = parts
+            .next()
+            .ok_or_else(|| {
+                "usage: `/approvals resolve <request-id> <approve-once|approve-always|deny> [auto|full]`"
+                    .to_owned()
+            })?
+            .trim()
+            .to_owned();
+        let decision_raw = parts.next().ok_or_else(|| {
+            "usage: `/approvals resolve <request-id> <approve-once|approve-always|deny> [auto|full]`"
+                .to_owned()
+        })?;
+        let decision = match decision_raw.to_ascii_lowercase().as_str() {
+            "approve-once" | "approve_once" => ApprovalResolveDecision::ApproveOnce,
+            "approve-always" | "approve_always" => ApprovalResolveDecision::ApproveAlways,
+            "deny" => ApprovalResolveDecision::Deny,
+            other => {
+                return Err(format!(
+                    "unsupported approval decision `{other}`; use `approve-once`, `approve-always`, or `deny`"
+                ));
+            }
+        };
+        let session_consent_mode = parts.next().map(str::to_ascii_lowercase);
+        if let Some(mode) = session_consent_mode.as_deref()
+            && mode != "auto"
+            && mode != "full"
+        {
+            return Err(format!(
+                "unsupported session consent mode `{mode}`; use `auto` or `full`"
+            ));
+        }
+        if parts.next().is_some() {
+            return Err(
+                "usage: `/approvals resolve <request-id> <approve-once|approve-always|deny> [auto|full]`"
+                    .to_owned(),
+            );
+        }
+
+        return Ok(ApprovalsAction::Resolve {
+            approval_request_id,
+            decision,
+            session_consent_mode,
+        });
+    }
+
+    let known_filters = [
+        "all",
+        "pending",
+        "attention",
+        "approved",
+        "executing",
+        "executed",
+        "denied",
+        "expired",
+        "cancelled",
+    ];
+    if known_filters.contains(&first.to_ascii_lowercase().as_str()) {
+        return Ok(ApprovalsAction::List {
+            filter: first.to_owned(),
+        });
+    }
+
+    Ok(ApprovalsAction::Inspect {
+        approval_request_id: trimmed.to_owned(),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ModelReasoningChoice {
+    Auto,
+    Explicit(crate::config::ReasoningEffort),
+}
+
+impl ModelReasoningChoice {
+    fn display_label(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Explicit(effort) => effort.as_str(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ModelAction {
+    Status,
+    Switch {
+        selector: String,
+        reasoning: Option<ModelReasoningChoice>,
+    },
+}
+
+fn parse_reasoning_choice(raw: &str) -> Option<ModelReasoningChoice> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "auto" => Some(ModelReasoningChoice::Auto),
+        "none" => Some(ModelReasoningChoice::Explicit(
+            crate::config::ReasoningEffort::None,
+        )),
+        "minimal" => Some(ModelReasoningChoice::Explicit(
+            crate::config::ReasoningEffort::Minimal,
+        )),
+        "low" => Some(ModelReasoningChoice::Explicit(
+            crate::config::ReasoningEffort::Low,
+        )),
+        "medium" => Some(ModelReasoningChoice::Explicit(
+            crate::config::ReasoningEffort::Medium,
+        )),
+        "high" => Some(ModelReasoningChoice::Explicit(
+            crate::config::ReasoningEffort::High,
+        )),
+        "xhigh" | "max" => Some(ModelReasoningChoice::Explicit(
+            crate::config::ReasoningEffort::Xhigh,
+        )),
+        _ => None,
+    }
+}
+
+fn parse_model_action(args: &str) -> Result<ModelAction, String> {
+    let trimmed = args.trim();
+    if trimmed.is_empty() {
+        return Ok(ModelAction::Status);
+    }
+
+    let parts = trimmed.split_whitespace().collect::<Vec<_>>();
+    match parts.as_slice() {
+        [selector] => Ok(ModelAction::Switch {
+            selector: selector.trim().to_owned(),
+            reasoning: None,
+        }),
+        [selector, reasoning] => {
+            let reasoning = parse_reasoning_choice(reasoning).ok_or_else(|| {
+                format!(
+                    "unsupported reasoning level `{reasoning}`; use `auto`, `none`, `minimal`, `low`, `medium`, `high`, or `xhigh`"
+                )
+            })?;
+            Ok(ModelAction::Switch {
+                selector: selector.trim().to_owned(),
+                reasoning: Some(reasoning),
+            })
+        }
+        _ => Err(
+            "usage: `/model [selector]` or `/model <selector> <auto|none|minimal|low|medium|high|xhigh>`"
+                .to_owned(),
+        ),
+    }
+}
+
+fn is_async_slash_request(request: &ParsedSlashCommand) -> bool {
+    matches!(request.command, SlashCommand::Compact)
+        || matches!(
+            parse_approvals_action(request.args.as_str()),
+            Ok(ApprovalsAction::Resolve { .. })
+        )
+}
+
+fn is_runtime_slash_request(request: &ParsedSlashCommand) -> bool {
+    matches!(request.command, SlashCommand::Resume)
+        && matches!(
+            parse_resume_action(request.args.as_str()),
+            ResumeAction::Switch(_)
+        )
+        || matches!(request.command, SlashCommand::Model)
+            && matches!(
+                parse_model_action(request.args.as_str()),
+                Ok(ModelAction::Switch { .. })
+            )
+}
+
+async fn run_compact_command(
+    runtime: &super::runtime::TuiRuntime,
+) -> CliResult<(String, Vec<String>)> {
+    let config = runtime
+        .config
+        .reload_provider_runtime_state_from_path(runtime.resolved_path.as_path())?;
+    let selection = resolve_context_engine_selection(&config);
+    let context_engine = resolve_context_engine(Some(selection.id.as_str()))?;
+    let workspace_root = config
+        .tools
+        .file_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|_| config.tools.resolved_file_root());
+    let memory_config =
+        crate::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let compact_diagnostics = crate::memory::run_compact_stage(
+        runtime.session_id.as_str(),
+        workspace_root.as_deref(),
+        &memory_config,
+    )
+    .await?;
+
+    let mut lines = vec![
+        format!("- session: {}", runtime.session_id),
+        format!(
+            "- context engine: {} ({})",
+            selection.id,
+            selection.source.as_str()
+        ),
+        format!("- memory stage: {}", compact_diagnostics.outcome.as_str()),
+    ];
+
+    if let Some(workspace_root) = workspace_root.as_ref() {
+        lines.push(format!("- workspace root: {}", workspace_root.display()));
+    } else {
+        lines.push("- workspace root: unavailable".to_owned());
+    }
+
+    if compact_diagnostics.fallback_activated {
+        lines.push("- durable memory flush: fallback activated".to_owned());
+    }
+
+    if let Some(message) = compact_diagnostics.message.as_deref() {
+        lines.push(format!("- memory note: {message}"));
+    }
+
+    if matches!(
+        compact_diagnostics.outcome,
+        crate::memory::StageOutcome::Fallback
+    ) {
+        if config.conversation.compaction_fail_open() {
+            lines.push("- result: skipped context rewrite because fail-open is enabled".to_owned());
+            return Ok(("context compaction".to_owned(), lines));
+        }
+
+        return Err(format!(
+            "pre-compaction durable memory flush failed: {}",
+            compact_diagnostics
+                .message
+                .as_deref()
+                .unwrap_or("compact stage fallback without error detail")
+        ));
+    }
+
+    context_engine
+        .compact_context(
+            &config,
+            runtime.session_id.as_str(),
+            &[],
+            &runtime.kernel_ctx,
+        )
+        .await?;
+    lines.push("- result: context compaction completed".to_owned());
+
+    Ok(("context compaction".to_owned(), lines))
+}
+
+async fn run_approval_resolve_command(
+    runtime: &super::runtime::TuiRuntime,
+    approval_request_id: &str,
+    decision: ApprovalResolveDecision,
+    session_consent_mode: Option<&str>,
+) -> CliResult<(String, Vec<String>)> {
+    let config = runtime
+        .config
+        .reload_provider_runtime_state_from_path(runtime.resolved_path.as_path())?;
+    let conversation_runtime = DefaultConversationRuntime::from_config_or_env(&config)?;
+    let mut payload = json!({
+        "approval_request_id": approval_request_id,
+        "decision": decision.as_payload_value(),
+    });
+    if let Some(mode) = session_consent_mode
+        && let Some(object) = payload.as_object_mut()
+    {
+        object.insert(
+            "session_consent_mode".to_owned(),
+            Value::String(mode.to_owned()),
+        );
+    }
+
+    let outcome = crate::conversation::execute_approval_tool_with_runtime_support(
+        &config,
+        &conversation_runtime,
+        runtime.session_id.as_str(),
+        ToolCoreRequest {
+            tool_name: "approval_request_resolve".to_owned(),
+            payload,
+        },
+        ConversationRuntimeBinding::kernel(&runtime.kernel_ctx),
+    )
+    .await?;
+
+    let approval_request = outcome
+        .payload
+        .get("approval_request")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let mut lines = approval_request_lines(&approval_request);
+    if let Some(mode) = session_consent_mode {
+        lines.push(format!("- session consent mode: {mode}"));
+    }
+    if let Some(resumed_tool_output) = outcome.payload.get("resumed_tool_output") {
+        let status = resumed_tool_output
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        lines.push(format!("- replayed tool result: {status}"));
+        let tool_payload_preview = json_preview(resumed_tool_output.get("payload"), 120);
+        lines.push(format!("  payload: {tool_payload_preview}"));
+    } else {
+        lines.push("- replayed tool result: not applicable".to_owned());
+    }
+
+    Ok(("approval resolution".to_owned(), lines))
+}
+
+fn prepare_async_slash_command_future(
+    runtime: std::sync::Arc<super::runtime::TuiRuntime>,
+    request: ParsedSlashCommand,
+    tx: mpsc::UnboundedSender<UiEvent>,
+) -> Pin<Box<dyn std::future::Future<Output = ()>>> {
+    Box::pin(async move {
+        let result = if matches!(request.command, SlashCommand::Compact) {
+            if request.args.trim().is_empty() {
+                run_compact_command(runtime.as_ref()).await
+            } else {
+                Err(format!(
+                    "`/compact` does not take arguments, received `{}`",
+                    request.args.trim()
+                ))
+            }
+        } else if matches!(request.command, SlashCommand::Approvals) {
+            match parse_approvals_action(request.args.as_str()) {
+                Ok(ApprovalsAction::Resolve {
+                    approval_request_id,
+                    decision,
+                    session_consent_mode,
+                }) => {
+                    run_approval_resolve_command(
+                        runtime.as_ref(),
+                        approval_request_id.as_str(),
+                        decision,
+                        session_consent_mode.as_deref(),
+                    )
+                    .await
+                }
+                Ok(_) => Err(
+                    "approval async dispatch requires `resolve`; use `/approvals` or `/approvals <id>` for read-only views".to_owned(),
+                ),
+                Err(error) => Err(error),
+            }
+        } else {
+            Err(format!(
+                "async slash command dispatch is not implemented for `{:?}`",
+                request.command
+            ))
+        };
+
+        match result {
+            Ok((title, lines)) => {
+                let _ = tx.send(UiEvent::Surface { title, lines });
+            }
+            Err(error) => {
+                let _ = tx.send(UiEvent::TurnError(error));
+            }
+        }
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Event application
 // ---------------------------------------------------------------------------
@@ -336,14 +907,23 @@ fn apply_ui_event(shell: &mut state::Shell, event: UiEvent) {
             output_tokens,
         } => {
             shell.pane.finalize_response(input_tokens, output_tokens);
+            refresh_composer_suggestion_context(shell);
         }
         UiEvent::ClarifyRequest { question, choices } => {
             shell.pane.clarify_dialog = Some(ClarifyDialog::new(question, choices));
             shell.focus.push(FocusLayer::ClarifyDialog);
         }
+        UiEvent::Surface { title, lines } => {
+            append_surface_message(shell, &title, lines.as_slice());
+            shell
+                .pane
+                .set_status(format!("{title} added to transcript"));
+            refresh_composer_suggestion_context(shell);
+        }
         UiEvent::TurnError(msg) => {
             shell.pane.agent_running = false;
             shell.pane.add_system_message(&format!("Error: {msg}"));
+            refresh_composer_suggestion_context(shell);
         }
     }
 }
@@ -498,22 +1078,573 @@ fn point_in_rect(area: ratatui::layout::Rect, column: u16, row: u16) -> bool {
     within_x && within_y
 }
 
-fn slash_command_matches(
-    textarea: &tui_textarea::TextArea<'_>,
-) -> Vec<(&'static str, &'static str)> {
-    let draft_text = textarea.lines().join("\n");
-    let draft_prefix = draft_text.trim();
+fn command_palette_entries(prefix: &str) -> Vec<render::SlashPaletteEntry> {
+    commands::completions(prefix)
+        .into_iter()
+        .map(|spec| {
+            let label = match spec.argument_hint {
+                Some(argument_hint) => format!("{} {}", spec.name, argument_hint),
+                None => spec.name.to_owned(),
+            };
+            let immediate = commands::parse(spec.name).is_some_and(|request| {
+                !is_async_slash_request(&request)
+                    && !is_runtime_slash_request(&request)
+                    && spec.argument_hint.is_none()
+            });
+
+            render::SlashPaletteEntry {
+                replacement: spec.name.to_owned(),
+                label,
+                meta: spec.category.to_owned(),
+                detail: spec.help.to_owned(),
+                immediate,
+                submit_on_select: false,
+            }
+        })
+        .collect()
+}
+
+fn matches_candidate_query(candidate: &str, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+
+    candidate.to_ascii_lowercase().contains(query)
+}
+
+fn resume_palette_entries(shell: &state::Shell, args: &str) -> Vec<render::SlashPaletteEntry> {
+    let context = &shell.pane.composer_suggestion_context;
+    let action = parse_resume_action(args);
+    let raw_query = match &action {
+        ResumeAction::List => "",
+        ResumeAction::Inspect(query) | ResumeAction::Switch(query) => query.as_str(),
+    };
+    let query = raw_query.trim().to_ascii_lowercase();
+    let inspect_mode = matches!(action, ResumeAction::Inspect(_));
+
+    context
+        .visible_session_suggestions
+        .iter()
+        .filter(|session| {
+            matches_candidate_query(session.session_id.as_str(), query.as_str())
+                || session
+                    .label
+                    .as_deref()
+                    .is_some_and(|label| matches_candidate_query(label, query.as_str()))
+        })
+        .take(6)
+        .map(|session| {
+            let replacement = if inspect_mode {
+                format!("/resume inspect {}", session.session_id)
+            } else {
+                format!("/resume {}", session.session_id)
+            };
+            let mut detail = format!("{} · {}", session.state, session.kind);
+            if let Some(label) = session.label.as_deref() {
+                detail.push_str(&format!(" · {label}"));
+            }
+            render::SlashPaletteEntry {
+                label: replacement.clone(),
+                replacement,
+                meta: if inspect_mode {
+                    "Resume Inspect".to_owned()
+                } else {
+                    "Resume Switch".to_owned()
+                },
+                detail,
+                immediate: false,
+                submit_on_select: true,
+            }
+        })
+        .collect()
+}
+
+fn approval_decision_palette_entries(
+    approval_request_id: &str,
+    decision_query: &str,
+) -> Vec<render::SlashPaletteEntry> {
+    [
+        ("approve-once", "Resolve once and replay the blocked tool"),
+        (
+            "approve-always",
+            "Persist a reusable grant and replay the blocked tool",
+        ),
+        (
+            "deny",
+            "Deny the request without replaying the blocked tool",
+        ),
+    ]
+    .into_iter()
+    .filter(|(decision, _)| matches_candidate_query(decision, decision_query))
+    .map(|(decision, detail)| render::SlashPaletteEntry {
+        replacement: format!("/approvals resolve {approval_request_id} {decision}"),
+        label: format!("/approvals resolve {approval_request_id} {decision}"),
+        meta: "Approval Resolve".to_owned(),
+        detail: detail.to_owned(),
+        immediate: false,
+        submit_on_select: true,
+    })
+    .collect()
+}
+
+fn approval_mode_palette_entries(
+    approval_request_id: &str,
+    mode_query: &str,
+) -> Vec<render::SlashPaletteEntry> {
+    [
+        ("auto", "Set this root session to auto consent"),
+        ("full", "Set this root session to full consent"),
+    ]
+    .into_iter()
+    .filter(|(mode, _)| matches_candidate_query(mode, mode_query))
+    .map(|(mode, detail)| render::SlashPaletteEntry {
+        replacement: format!("/approvals resolve {approval_request_id} approve-once {mode}"),
+        label: format!("/approvals resolve {approval_request_id} approve-once {mode}"),
+        meta: "Approval Mode".to_owned(),
+        detail: detail.to_owned(),
+        immediate: false,
+        submit_on_select: true,
+    })
+    .collect()
+}
+
+fn approvals_palette_entries(shell: &state::Shell, args: &str) -> Vec<render::SlashPaletteEntry> {
+    let context = &shell.pane.composer_suggestion_context;
+    if args.trim().to_ascii_lowercase().starts_with("resolve") {
+        let parts = args.split_whitespace().collect::<Vec<_>>();
+        return match parts.as_slice() {
+            ["resolve"] | ["resolve", ""] => context
+                .approval_request_suggestions
+                .iter()
+                .take(6)
+                .map(|approval| render::SlashPaletteEntry {
+                    replacement: format!(
+                        "/approvals resolve {} approve-once",
+                        approval.approval_request_id
+                    ),
+                    label: format!("/approvals resolve {}", approval.approval_request_id),
+                    meta: "Approval Resolve".to_owned(),
+                    detail: format!(
+                        "{} · {} · {}",
+                        approval.status, approval.tool_name, approval.session_id
+                    ),
+                    immediate: false,
+                    submit_on_select: false,
+                })
+                .collect(),
+            ["resolve", approval_request_id] => {
+                approval_decision_palette_entries(approval_request_id, "")
+            }
+            ["resolve", approval_request_id, decision_query] => {
+                let normalized = decision_query.to_ascii_lowercase();
+                if normalized == "approve-once" || normalized == "approve_once" {
+                    approval_mode_palette_entries(approval_request_id, "")
+                } else {
+                    approval_decision_palette_entries(approval_request_id, normalized.as_str())
+                }
+            }
+            ["resolve", approval_request_id, decision, mode_query] => {
+                let normalized = decision.to_ascii_lowercase();
+                if normalized == "approve-once" || normalized == "approve_once" {
+                    approval_mode_palette_entries(approval_request_id, mode_query)
+                } else {
+                    Vec::new()
+                }
+            }
+            _ => Vec::new(),
+        };
+    }
+
+    match parse_approvals_action(args) {
+        Ok(ApprovalsAction::List { filter }) => {
+            let filter = filter.to_ascii_lowercase();
+            let filter_entries = [
+                ("pending", "Show pending approval requests"),
+                ("attention", "Show approval requests that need attention"),
+                ("all", "Show approval requests across all visible states"),
+            ]
+            .into_iter()
+            .filter(|(name, _)| matches_candidate_query(name, filter.as_str()))
+            .map(|(name, detail)| render::SlashPaletteEntry {
+                replacement: format!("/approvals {name}"),
+                label: format!("/approvals {name}"),
+                meta: "Approval Filter".to_owned(),
+                detail: detail.to_owned(),
+                immediate: false,
+                submit_on_select: true,
+            });
+
+            let approval_entries = context
+                .approval_request_suggestions
+                .iter()
+                .filter(|approval| {
+                    matches_candidate_query(approval.approval_request_id.as_str(), filter.as_str())
+                        || matches_candidate_query(approval.tool_name.as_str(), filter.as_str())
+                        || matches_candidate_query(approval.session_id.as_str(), filter.as_str())
+                })
+                .map(|approval| render::SlashPaletteEntry {
+                    replacement: format!("/approvals {}", approval.approval_request_id),
+                    label: format!("/approvals {}", approval.approval_request_id),
+                    meta: "Approval".to_owned(),
+                    detail: format!(
+                        "{} · {} · {}{}",
+                        approval.status,
+                        approval.tool_name,
+                        approval.session_id,
+                        if approval.needs_attention {
+                            " · attention"
+                        } else {
+                            ""
+                        }
+                    ),
+                    immediate: false,
+                    submit_on_select: true,
+                });
+
+            filter_entries.chain(approval_entries).take(6).collect()
+        }
+        Ok(ApprovalsAction::Inspect {
+            approval_request_id,
+        }) => context
+            .approval_request_suggestions
+            .iter()
+            .filter(|approval| {
+                matches_candidate_query(
+                    approval.approval_request_id.as_str(),
+                    approval_request_id.to_ascii_lowercase().as_str(),
+                ) || matches_candidate_query(
+                    approval.tool_name.as_str(),
+                    approval_request_id.to_ascii_lowercase().as_str(),
+                )
+            })
+            .take(6)
+            .map(|approval| render::SlashPaletteEntry {
+                replacement: format!("/approvals {}", approval.approval_request_id),
+                label: format!("/approvals {}", approval.approval_request_id),
+                meta: "Approval".to_owned(),
+                detail: format!(
+                    "{} · {} · {}{}",
+                    approval.status,
+                    approval.tool_name,
+                    approval.session_id,
+                    if approval.needs_attention {
+                        " · attention"
+                    } else {
+                        ""
+                    }
+                ),
+                immediate: false,
+                submit_on_select: true,
+            })
+            .collect(),
+        Ok(ApprovalsAction::Resolve { .. }) | Err(_) => Vec::new(),
+    }
+}
+
+fn tasks_palette_entries(shell: &state::Shell, args: &str) -> Vec<render::SlashPaletteEntry> {
+    let query = args.trim().to_ascii_lowercase();
+    let filter_entries = [
+        ("running", "Show active delegate task sessions"),
+        ("overdue", "Show overdue delegate task sessions"),
+        ("queued", "Show queued delegate task sessions"),
+        ("failed", "Show failed delegate task sessions"),
+        ("completed", "Show completed delegate task sessions"),
+    ]
+    .into_iter()
+    .filter(|(name, _)| matches_candidate_query(name, query.as_str()))
+    .map(|(name, detail)| render::SlashPaletteEntry {
+        replacement: format!("/tasks {name}"),
+        label: format!("/tasks {name}"),
+        meta: "Task Filter".to_owned(),
+        detail: detail.to_owned(),
+        immediate: false,
+        submit_on_select: true,
+    });
+
+    let session_entries = shell
+        .pane
+        .composer_suggestion_context
+        .visible_session_suggestions
+        .iter()
+        .filter(|session| session.kind == "delegate_child")
+        .filter(|session| {
+            matches_candidate_query(session.session_id.as_str(), query.as_str())
+                || session
+                    .label
+                    .as_deref()
+                    .is_some_and(|label| matches_candidate_query(label, query.as_str()))
+                || session
+                    .task_phase
+                    .as_deref()
+                    .is_some_and(|phase| matches_candidate_query(phase, query.as_str()))
+                || (query == "overdue" && session.overdue)
+        })
+        .map(|session| {
+            let mut detail = format!(
+                "{}{}",
+                session
+                    .task_phase
+                    .as_deref()
+                    .unwrap_or(session.state.as_str()),
+                if session.overdue { " · overdue" } else { "" }
+            );
+            if let Some(label) = session.label.as_deref() {
+                detail.push_str(&format!(" · {label}"));
+            }
+            render::SlashPaletteEntry {
+                replacement: format!("/tasks {}", session.session_id),
+                label: format!("/tasks {}", session.session_id),
+                meta: "Task Session".to_owned(),
+                detail,
+                immediate: false,
+                submit_on_select: true,
+            }
+        });
+
+    filter_entries.chain(session_entries).take(6).collect()
+}
+
+fn permissions_palette_entries(shell: &state::Shell, args: &str) -> Vec<render::SlashPaletteEntry> {
+    let query = args.trim().to_ascii_lowercase();
+
+    shell
+        .pane
+        .composer_suggestion_context
+        .visible_session_suggestions
+        .iter()
+        .filter(|session| {
+            matches_candidate_query(session.session_id.as_str(), query.as_str())
+                || session
+                    .label
+                    .as_deref()
+                    .is_some_and(|label| matches_candidate_query(label, query.as_str()))
+        })
+        .take(6)
+        .map(|session| {
+            let mut detail = format!("{} · {}", session.state, session.kind);
+            if let Some(label) = session.label.as_deref() {
+                detail.push_str(&format!(" · {label}"));
+            }
+            render::SlashPaletteEntry {
+                replacement: format!("/permissions {}", session.session_id),
+                label: format!("/permissions {}", session.session_id),
+                meta: "Permissions".to_owned(),
+                detail,
+                immediate: false,
+                submit_on_select: true,
+            }
+        })
+        .collect()
+}
+
+fn model_effort_palette_entries(
+    suggestion: &state::ModelSelectionSuggestion,
+    effort_query: &str,
+) -> Vec<render::SlashPaletteEntry> {
+    let query = effort_query.trim().to_ascii_lowercase();
+    let current_effort = suggestion.current_reasoning_effort.as_deref();
+
+    let auto_entry = render::SlashPaletteEntry {
+        replacement: format!("/model {} auto", suggestion.profile_id),
+        label: format!("/model {} auto", suggestion.selector),
+        meta: "Reasoning".to_owned(),
+        detail: if current_effort.is_none() {
+            "Use the provider default reasoning effort (current)".to_owned()
+        } else {
+            "Use the provider default reasoning effort".to_owned()
+        },
+        immediate: false,
+        submit_on_select: true,
+    };
+
+    let effort_entries = suggestion
+        .reasoning_efforts
+        .iter()
+        .filter(|effort| matches_candidate_query(effort, query.as_str()))
+        .map(|effort| render::SlashPaletteEntry {
+            replacement: format!("/model {} {}", suggestion.profile_id, effort),
+            label: format!("/model {} {}", suggestion.selector, effort),
+            meta: "Reasoning".to_owned(),
+            detail: if current_effort == Some(effort.as_str()) {
+                "Apply this reasoning effort (current)".to_owned()
+            } else {
+                "Apply this reasoning effort".to_owned()
+            },
+            immediate: false,
+            submit_on_select: true,
+        });
+
+    matches_candidate_query("auto", query.as_str())
+        .then_some(auto_entry)
+        .into_iter()
+        .chain(effort_entries)
+        .take(7)
+        .collect()
+}
+
+fn model_palette_entries(shell: &state::Shell, args: &str) -> Vec<render::SlashPaletteEntry> {
+    let suggestions = &shell
+        .pane
+        .composer_suggestion_context
+        .model_selection_suggestions;
+    match parse_model_action(args) {
+        Ok(ModelAction::Status) => suggestions
+            .iter()
+            .take(8)
+            .map(|suggestion| {
+                let detail = format!(
+                    "{} · {}{}{}",
+                    suggestion.model,
+                    suggestion.kind,
+                    if suggestion.active { " · current" } else { "" },
+                    if suggestion.reasoning_efforts.is_empty() {
+                        ""
+                    } else {
+                        " · reasoning"
+                    }
+                );
+                let requires_reasoning_step = suggestion.reasoning_efforts.len() > 1;
+                render::SlashPaletteEntry {
+                    replacement: format!("/model {}", suggestion.profile_id),
+                    label: format!("/model {}", suggestion.selector),
+                    meta: "Model".to_owned(),
+                    detail,
+                    immediate: false,
+                    submit_on_select: !requires_reasoning_step,
+                }
+            })
+            .collect(),
+        Ok(ModelAction::Switch {
+            selector,
+            reasoning,
+        }) => {
+            if reasoning.is_some() {
+                return Vec::new();
+            }
+
+            let query = selector.trim().to_ascii_lowercase();
+            let exact = suggestions.iter().find(|suggestion| {
+                suggestion.selector.eq_ignore_ascii_case(selector.as_str())
+                    || suggestion
+                        .profile_id
+                        .eq_ignore_ascii_case(selector.as_str())
+                    || suggestion.model.eq_ignore_ascii_case(selector.as_str())
+            });
+            if let Some(suggestion) = exact
+                && suggestion.reasoning_efforts.len() > 1
+            {
+                let entries = model_effort_palette_entries(suggestion, "");
+                if !entries.is_empty() {
+                    return entries;
+                }
+            }
+
+            suggestions
+                .iter()
+                .filter(|suggestion| {
+                    matches_candidate_query(suggestion.selector.as_str(), query.as_str())
+                        || matches_candidate_query(suggestion.profile_id.as_str(), query.as_str())
+                        || matches_candidate_query(suggestion.model.as_str(), query.as_str())
+                        || matches_candidate_query(suggestion.kind.as_str(), query.as_str())
+                })
+                .take(8)
+                .map(|suggestion| {
+                    let detail = format!(
+                        "{} · {}{}{}",
+                        suggestion.model,
+                        suggestion.kind,
+                        if suggestion.active { " · current" } else { "" },
+                        if suggestion.reasoning_efforts.is_empty() {
+                            ""
+                        } else {
+                            " · reasoning"
+                        }
+                    );
+                    let requires_reasoning_step = suggestion.reasoning_efforts.len() > 1;
+                    render::SlashPaletteEntry {
+                        replacement: format!("/model {}", suggestion.profile_id),
+                        label: format!("/model {}", suggestion.selector),
+                        meta: "Model".to_owned(),
+                        detail,
+                        immediate: false,
+                        submit_on_select: !requires_reasoning_step,
+                    }
+                })
+                .collect()
+        }
+        Err(_) => {
+            let parts = args.split_whitespace().collect::<Vec<_>>();
+            if let [selector, reasoning_query, ..] = parts.as_slice()
+                && let Some(suggestion) = suggestions.iter().find(|suggestion| {
+                    suggestion.selector.eq_ignore_ascii_case(selector)
+                        || suggestion.profile_id.eq_ignore_ascii_case(selector)
+                        || suggestion.model.eq_ignore_ascii_case(selector)
+                })
+            {
+                return model_effort_palette_entries(suggestion, reasoning_query);
+            }
+            Vec::new()
+        }
+    }
+}
+
+fn slash_palette_entries(
+    shell: &state::Shell,
+    draft_prefix: &str,
+) -> Vec<render::SlashPaletteEntry> {
     if !draft_prefix.starts_with('/') {
         return Vec::new();
     }
 
-    commands::completions(draft_prefix)
+    if let Some(parsed) = commands::parse(draft_prefix) {
+        if matches!(parsed.command, SlashCommand::Resume) {
+            let entries = resume_palette_entries(shell, parsed.args.as_str());
+            if !entries.is_empty() {
+                return entries;
+            }
+        }
+        if matches!(parsed.command, SlashCommand::Approvals) {
+            let entries = approvals_palette_entries(shell, parsed.args.as_str());
+            if !entries.is_empty() {
+                return entries;
+            }
+        }
+        if matches!(parsed.command, SlashCommand::Model) {
+            let entries = model_palette_entries(shell, parsed.args.as_str());
+            if !entries.is_empty() {
+                return entries;
+            }
+        }
+        if matches!(parsed.command, SlashCommand::Tasks) {
+            let entries = tasks_palette_entries(shell, parsed.args.as_str());
+            if !entries.is_empty() {
+                return entries;
+            }
+        }
+        if matches!(parsed.command, SlashCommand::Permissions) {
+            let entries = permissions_palette_entries(shell, parsed.args.as_str());
+            if !entries.is_empty() {
+                return entries;
+            }
+        }
+    }
+
+    command_palette_entries(draft_prefix)
+}
+
+fn slash_command_matches(
+    shell: &state::Shell,
+    textarea: &tui_textarea::TextArea<'_>,
+) -> Vec<render::SlashPaletteEntry> {
+    let draft_text = textarea.lines().join("\n");
+    slash_palette_entries(shell, draft_text.trim())
 }
 
 fn slash_command_palette_area(
+    shell: &state::Shell,
     textarea: &tui_textarea::TextArea<'_>,
 ) -> Option<ratatui::layout::Rect> {
-    let matches = slash_command_matches(textarea);
+    let matches = slash_command_matches(shell, textarea);
     if matches.is_empty() {
         return None;
     }
@@ -536,29 +1667,29 @@ fn slash_command_palette_area(
 fn apply_selected_slash_command(
     shell: &mut state::Shell,
     textarea: &mut tui_textarea::TextArea<'_>,
-) -> bool {
-    let matches = slash_command_matches(textarea);
+) -> Option<String> {
+    let matches = slash_command_matches(shell, textarea);
     if matches.is_empty() {
-        return false;
+        return None;
     }
 
     let selected_index = shell.slash_command_selection % matches.len();
-    let selected_command_name = matches
-        .get(selected_index)
-        .map(|(command_name, _)| *command_name);
-    let Some(selected_command_name) = selected_command_name else {
-        return false;
-    };
-    let parsed_command = commands::parse(selected_command_name);
-    let Some(parsed_command) = parsed_command else {
-        return false;
-    };
+    let selected_entry = matches.get(selected_index);
+    let selected_entry = selected_entry?;
 
     textarea.select_all();
     textarea.delete_str(usize::MAX);
-    handle_slash_command(shell, parsed_command);
-
-    true
+    if selected_entry.immediate {
+        let parsed_command = commands::parse(selected_entry.replacement.as_str());
+        let parsed_command = parsed_command?;
+        handle_slash_command(shell, parsed_command);
+        Some(String::new())
+    } else if selected_entry.submit_on_select {
+        Some(selected_entry.replacement.clone())
+    } else {
+        textarea.insert_str(selected_entry.replacement.as_str());
+        Some(String::new())
+    }
 }
 
 fn cycle_slash_command_selection(
@@ -566,7 +1697,7 @@ fn cycle_slash_command_selection(
     textarea: &mut tui_textarea::TextArea<'_>,
     direction: i8,
 ) -> bool {
-    let matches = slash_command_matches(textarea);
+    let matches = slash_command_matches(shell, textarea);
     if matches.is_empty() {
         return false;
     }
@@ -586,10 +1717,11 @@ fn cycle_slash_command_selection(
 }
 
 fn slash_command_index_at_mouse_row(
+    shell: &state::Shell,
     textarea: &tui_textarea::TextArea<'_>,
     mouse_row: u16,
 ) -> Option<usize> {
-    let palette_area = slash_command_palette_area(textarea)?;
+    let palette_area = slash_command_palette_area(shell, textarea)?;
     let inner_top = palette_area.y.saturating_add(1);
     let inner_bottom = palette_area
         .y
@@ -611,6 +1743,1932 @@ fn transcript_line_count(shell: &state::Shell) -> usize {
     let plain_lines = transcript_plain_lines(shell);
 
     plain_lines.len()
+}
+
+fn focus_layer_label(layer: FocusLayer) -> &'static str {
+    match layer {
+        FocusLayer::Composer => "compose",
+        FocusLayer::Transcript => "review",
+        FocusLayer::Help => "help",
+        FocusLayer::StatsOverlay => "stats",
+        FocusLayer::ToolInspector => "tool",
+        FocusLayer::ClarifyDialog => "question",
+    }
+}
+
+fn append_surface_message(shell: &mut state::Shell, title: &str, lines: &[String]) {
+    let mut message_lines = Vec::with_capacity(lines.len().saturating_add(2));
+    message_lines.push(title.to_owned());
+    message_lines.push(String::new());
+    message_lines.extend(lines.iter().cloned());
+    shell.pane.add_surface_lines(message_lines.as_slice());
+    shell.pane.scroll_offset = 0;
+}
+
+fn model_status_lines(config: &crate::config::LoongClawConfig) -> Vec<String> {
+    let active_provider_id = config.active_provider_id().unwrap_or("(none)");
+    let model = config
+        .provider
+        .resolved_model()
+        .unwrap_or_else(|| "(unknown)".to_owned());
+    let reasoning_effort = config
+        .provider
+        .reasoning_effort
+        .map(|effort| effort.as_str().to_owned())
+        .unwrap_or_else(|| "auto".to_owned());
+    let mut lines = vec![
+        format!("- active provider: {active_provider_id}"),
+        format!("- model: {model}"),
+        format!("- provider kind: {}", config.provider.kind.as_str()),
+        format!("- wire api: {}", config.provider.wire_api.as_str()),
+        format!("- reasoning effort: {reasoning_effort}"),
+    ];
+    let allowed_efforts = provider_reasoning_effort_options(&config.provider)
+        .into_iter()
+        .map(|effort| effort.as_str().to_owned())
+        .collect::<Vec<_>>();
+    if allowed_efforts.is_empty() {
+        lines.push("- reasoning levels: not supported for this provider".to_owned());
+    } else {
+        lines.push(format!(
+            "- reasoning levels: auto, {}",
+            allowed_efforts.join(", ")
+        ));
+    }
+    lines
+}
+
+fn show_model_surface(shell: &mut state::Shell, args: &str) {
+    match parse_model_action(args) {
+        Ok(ModelAction::Status) => {
+            let Some(config) = shell.runtime_config.as_ref() else {
+                shell.pane.add_system_message(
+                    "Model view is unavailable before the chat runtime is initialized.",
+                );
+                return;
+            };
+            let lines = model_status_lines(config);
+            append_surface_message(shell, "model status", lines.as_slice());
+            shell
+                .pane
+                .set_status("Model details added to transcript".to_owned());
+        }
+        Ok(ModelAction::Switch { selector, .. }) => {
+            shell.pane.add_system_message(&format!(
+                "Use `/model {selector}` from the composer submit path to switch models."
+            ));
+        }
+        Err(error) => shell.pane.add_system_message(&error),
+    }
+}
+
+fn open_stats_overlay(shell: &mut state::Shell, args: &str) {
+    let options = match stats::parse_stats_open_options(args) {
+        Ok(options) => options,
+        Err(error) => {
+            shell.pane.add_system_message(&error);
+            return;
+        }
+    };
+    let Some(config) = shell.runtime_config.as_ref() else {
+        shell.pane.add_system_message(
+            "Stats view is unavailable before the chat runtime is initialized.",
+        );
+        return;
+    };
+    let current_session_id = shell.pane.session_id.clone();
+    let snapshot = match stats::load_stats_snapshot(config, current_session_id.as_str()) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            shell
+                .pane
+                .add_system_message(&format!("Unable to load stats: {error}"));
+            return;
+        }
+    };
+
+    shell.stats_overlay = Some(state::StatsOverlayState::new(
+        snapshot,
+        options.tab,
+        options.date_range,
+    ));
+    if !shell.focus.has(FocusLayer::StatsOverlay) {
+        shell.focus.push(FocusLayer::StatsOverlay);
+    }
+    shell.pane.set_status("Stats overlay opened".to_owned());
+}
+
+fn close_stats_overlay(shell: &mut state::Shell) {
+    shell.stats_overlay = None;
+    if shell.focus.top() == FocusLayer::StatsOverlay {
+        shell.focus.pop();
+    }
+}
+
+fn show_session_surface(shell: &mut state::Shell) {
+    let total_lines = transcript_line_count(shell);
+    let selected_lines = shell.pane.transcript_selection_line_count(total_lines);
+    let tool_calls = shell.pane.tool_call_count();
+    let focus_label = focus_layer_label(shell.focus.top());
+    let lines = vec![
+        format!("- session: {}", shell.pane.session_id),
+        format!("- focus: {focus_label}"),
+        format!("- messages: {}", shell.pane.messages.len()),
+        format!("- transcript lines: {total_lines}"),
+        format!("- selected lines: {selected_lines}"),
+        format!("- tool calls: {tool_calls}"),
+    ];
+
+    append_surface_message(shell, "session status", lines.as_slice());
+    shell
+        .pane
+        .set_status("Session details added to transcript".to_owned());
+}
+
+fn show_runtime_status_surface(shell: &mut state::Shell) {
+    let model = if shell.pane.model.is_empty() {
+        "(unknown)".to_owned()
+    } else {
+        shell.pane.model.clone()
+    };
+    let total_tokens = shell.pane.total_tokens();
+    let context_percent = shell.pane.context_percent() * 100.0;
+    let tool_calls = shell.pane.tool_call_count();
+    let focus_label = focus_layer_label(shell.focus.top());
+    let thinking_label = if shell.show_thinking {
+        "visible"
+    } else {
+        "hidden"
+    };
+    let lines = vec![
+        format!("- session: {}", shell.pane.session_id),
+        format!("- model: {model}"),
+        format!("- tokens: {total_tokens}"),
+        format!("- context usage: {context_percent:.1}%"),
+        format!("- tool calls: {tool_calls}"),
+        format!("- focus: {focus_label}"),
+        format!("- thinking blocks: {thinking_label}"),
+    ];
+
+    append_surface_message(shell, "runtime status", lines.as_slice());
+    shell
+        .pane
+        .set_status("Runtime status added to transcript".to_owned());
+}
+
+fn show_context_surface(shell: &mut state::Shell) {
+    let model = if shell.pane.model.is_empty() {
+        "(unknown)".to_owned()
+    } else {
+        shell.pane.model.clone()
+    };
+    let input_tokens = shell.pane.input_tokens;
+    let output_tokens = shell.pane.output_tokens;
+    let total_tokens = shell.pane.total_tokens();
+    let context_length = shell.pane.context_length;
+    let context_label = if context_length == 0 {
+        "unknown".to_owned()
+    } else {
+        context_length.to_string()
+    };
+    let context_percent = shell.pane.context_percent() * 100.0;
+    let lines = vec![
+        format!("- model: {model}"),
+        format!("- input tokens: {input_tokens}"),
+        format!("- output tokens: {output_tokens}"),
+        format!("- total tokens: {total_tokens}"),
+        format!("- context window: {context_label}"),
+        format!("- context usage: {context_percent:.1}%"),
+    ];
+
+    append_surface_message(shell, "context status", lines.as_slice());
+    shell
+        .pane
+        .set_status("Context details added to transcript".to_owned());
+}
+
+fn tool_runtime_config_from_shell(
+    shell: &state::Shell,
+) -> Option<crate::tools::runtime_config::ToolRuntimeConfig> {
+    let config = shell.runtime_config.as_ref()?;
+    let config_path = shell.runtime_config_path.as_deref();
+
+    Some(
+        crate::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(config, config_path),
+    )
+}
+
+fn execute_shell_app_tool(
+    shell: &state::Shell,
+    tool_name: &str,
+    payload: Value,
+) -> Result<loongclaw_contracts::ToolCoreOutcome, String> {
+    let config = shell.runtime_config.as_ref().ok_or_else(|| {
+        "App tool surface is unavailable before the chat runtime is initialized.".to_owned()
+    })?;
+    let memory_config =
+        crate::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+
+    crate::tools::execute_app_tool_with_config(
+        ToolCoreRequest {
+            tool_name: tool_name.to_owned(),
+            payload,
+        },
+        shell.pane.session_id.as_str(),
+        &memory_config,
+        &config.tools,
+    )
+}
+
+fn execute_shell_core_tool(
+    shell: &state::Shell,
+    tool_name: &str,
+    payload: Value,
+) -> Result<loongclaw_contracts::ToolCoreOutcome, String> {
+    let runtime_config = tool_runtime_config_from_shell(shell).ok_or_else(|| {
+        "Core tool surface is unavailable before the chat runtime is initialized.".to_owned()
+    })?;
+
+    crate::tools::execute_tool_core_with_config(
+        ToolCoreRequest {
+            tool_name: tool_name.to_owned(),
+            payload,
+        },
+        &runtime_config,
+    )
+}
+
+fn provider_supports_reasoning_effort(provider: &crate::config::ProviderConfig) -> bool {
+    matches!(
+        provider.kind.protocol_family(),
+        crate::config::ProviderProtocolFamily::OpenAiChatCompletions
+    )
+}
+
+fn provider_reasoning_effort_options(
+    provider: &crate::config::ProviderConfig,
+) -> Vec<crate::config::ReasoningEffort> {
+    if !provider_supports_reasoning_effort(provider) {
+        return Vec::new();
+    }
+
+    provider
+        .kind
+        .allowed_reasoning_efforts()
+        .map(|allowed| allowed.to_vec())
+        .unwrap_or_else(|| {
+            vec![
+                crate::config::ReasoningEffort::None,
+                crate::config::ReasoningEffort::Minimal,
+                crate::config::ReasoningEffort::Low,
+                crate::config::ReasoningEffort::Medium,
+                crate::config::ReasoningEffort::High,
+                crate::config::ReasoningEffort::Xhigh,
+            ]
+        })
+}
+
+fn persist_model_selection_to_config(
+    config_path: &Path,
+    selector: &str,
+    reasoning: Option<ModelReasoningChoice>,
+) -> Result<(crate::config::LoongClawConfig, Option<String>, String), String> {
+    let path_string = config_path.to_string_lossy().to_string();
+    let (_, mut loaded) = crate::config::load(Some(path_string.as_str()))?;
+    let previous_active_provider = loaded.active_provider_id().map(str::to_owned);
+    let selected_profile_id = loaded.switch_active_provider(selector)?;
+
+    if let Some(choice) = reasoning {
+        let updated_reasoning_effort = match choice {
+            ModelReasoningChoice::Auto => None,
+            ModelReasoningChoice::Explicit(effort) => Some(effort),
+        };
+
+        loaded.provider.reasoning_effort = updated_reasoning_effort;
+        if let Some(profile) = loaded.providers.get_mut(&selected_profile_id) {
+            profile.provider.reasoning_effort = updated_reasoning_effort;
+        }
+    }
+    crate::config::write(Some(path_string.as_str()), &loaded, true)?;
+    Ok((loaded, previous_active_provider, selected_profile_id))
+}
+
+fn worktree_root_for_suggestions(shell: &state::Shell) -> Option<PathBuf> {
+    if let Some(config) = shell.runtime_config.as_ref()
+        && config
+            .tools
+            .file_root
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Some(config.tools.resolved_file_root());
+    }
+
+    std::env::current_dir().ok()
+}
+
+fn matched_count_from_outcome(outcome: &loongclaw_contracts::ToolCoreOutcome) -> Option<usize> {
+    outcome
+        .payload
+        .get("matched_count")
+        .and_then(Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+}
+
+fn parse_visible_session_suggestions(
+    outcome: &loongclaw_contracts::ToolCoreOutcome,
+) -> Vec<state::VisibleSessionSuggestion> {
+    outcome
+        .payload
+        .get("sessions")
+        .and_then(Value::as_array)
+        .map(|sessions| {
+            sessions
+                .iter()
+                .filter_map(|session| {
+                    Some(state::VisibleSessionSuggestion {
+                        session_id: session.get("session_id")?.as_str()?.to_owned(),
+                        label: session
+                            .get("label")
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned),
+                        state: session
+                            .get("state")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown")
+                            .to_owned(),
+                        kind: session
+                            .get("kind")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown")
+                            .to_owned(),
+                        task_phase: session
+                            .get("delegate_lifecycle")
+                            .and_then(|value| value.get("phase"))
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned),
+                        overdue: session
+                            .get("delegate_lifecycle")
+                            .and_then(|value| value.get("staleness"))
+                            .and_then(|value| value.get("state"))
+                            .and_then(Value::as_str)
+                            == Some("overdue"),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn parse_approval_request_suggestions(
+    outcome: &loongclaw_contracts::ToolCoreOutcome,
+) -> Vec<state::ApprovalRequestSuggestion> {
+    outcome
+        .payload
+        .get("requests")
+        .and_then(Value::as_array)
+        .map(|requests| {
+            requests
+                .iter()
+                .filter_map(|request| {
+                    Some(state::ApprovalRequestSuggestion {
+                        approval_request_id: request
+                            .get("approval_request_id")?
+                            .as_str()?
+                            .to_owned(),
+                        tool_name: request
+                            .get("tool_name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown")
+                            .to_owned(),
+                        status: request
+                            .get("status")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown")
+                            .to_owned(),
+                        session_id: request
+                            .get("session_id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown")
+                            .to_owned(),
+                        needs_attention: request
+                            .get("attention")
+                            .and_then(|value| value.get("needs_attention"))
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn parse_model_selection_suggestions(
+    config: &crate::config::LoongClawConfig,
+) -> Vec<state::ModelSelectionSuggestion> {
+    if config.providers.is_empty() {
+        let reasoning_efforts = provider_reasoning_effort_options(&config.provider)
+            .into_iter()
+            .map(|effort| effort.as_str().to_owned())
+            .collect::<Vec<_>>();
+        return vec![state::ModelSelectionSuggestion {
+            selector: config
+                .provider
+                .resolved_model()
+                .unwrap_or_else(|| "auto".to_owned()),
+            profile_id: config.active_provider_id().unwrap_or("default").to_owned(),
+            kind: config.provider.kind.as_str().to_owned(),
+            model: config.provider.model.clone(),
+            active: true,
+            reasoning_efforts,
+            current_reasoning_effort: config
+                .provider
+                .reasoning_effort
+                .map(|effort| effort.as_str().to_owned()),
+        }];
+    }
+
+    let active_provider_id = config.active_provider_id().map(str::to_owned);
+    config
+        .providers
+        .iter()
+        .map(|(profile_id, profile)| {
+            let selector = config
+                .preferred_provider_selector(profile_id)
+                .unwrap_or_else(|| profile_id.clone());
+            let reasoning_efforts = provider_reasoning_effort_options(&profile.provider)
+                .into_iter()
+                .map(|effort| effort.as_str().to_owned())
+                .collect::<Vec<_>>();
+            state::ModelSelectionSuggestion {
+                selector,
+                profile_id: profile_id.clone(),
+                kind: profile.provider.kind.as_str().to_owned(),
+                model: profile.provider.model.clone(),
+                active: active_provider_id.as_deref() == Some(profile_id.as_str()),
+                reasoning_efforts,
+                current_reasoning_effort: profile
+                    .provider
+                    .reasoning_effort
+                    .map(|effort| effort.as_str().to_owned()),
+            }
+        })
+        .collect()
+}
+
+fn refresh_composer_suggestion_context(shell: &mut state::Shell) {
+    let model_selection_suggestions = shell
+        .runtime_config
+        .as_ref()
+        .map(parse_model_selection_suggestions)
+        .unwrap_or_default();
+    let worktree_dirty = worktree_root_for_suggestions(shell).and_then(|root| {
+        git_output(&["status", "--short"], root.as_path())
+            .ok()
+            .map(|status| !status.trim().is_empty())
+    });
+
+    let visible_session_outcome = execute_shell_app_tool(
+        shell,
+        "sessions_list",
+        json!({
+            "limit": session_surface_limit(shell),
+            "include_delegate_lifecycle": true,
+        }),
+    )
+    .ok();
+    let visible_sessions = visible_session_outcome
+        .as_ref()
+        .and_then(matched_count_from_outcome);
+    let visible_session_suggestions = visible_session_outcome
+        .as_ref()
+        .map(parse_visible_session_suggestions)
+        .unwrap_or_default();
+
+    let running_tasks = execute_shell_app_tool(
+        shell,
+        "sessions_list",
+        json!({
+            "limit": 1,
+            "kind": "delegate_child",
+            "state": "running",
+            "include_delegate_lifecycle": true,
+        }),
+    )
+    .ok()
+    .and_then(|outcome| matched_count_from_outcome(&outcome));
+
+    let overdue_tasks = execute_shell_app_tool(
+        shell,
+        "sessions_list",
+        json!({
+            "limit": 1,
+            "kind": "delegate_child",
+            "overdue_only": true,
+            "include_delegate_lifecycle": true,
+        }),
+    )
+    .ok()
+    .and_then(|outcome| matched_count_from_outcome(&outcome));
+
+    let approval_outcome =
+        execute_shell_app_tool(shell, "approval_requests_list", json!({ "limit": 8 })).ok();
+    let (pending_approvals, attention_approvals) = match approval_outcome.as_ref() {
+        Some(outcome) => (
+            matched_count_from_outcome(outcome),
+            outcome
+                .payload
+                .get("attention_summary")
+                .and_then(|value| value.get("needs_attention_count"))
+                .and_then(Value::as_u64)
+                .and_then(|count| usize::try_from(count).ok()),
+        ),
+        None => (None, None),
+    };
+    let approval_request_suggestions = approval_outcome
+        .as_ref()
+        .map(parse_approval_request_suggestions)
+        .unwrap_or_default();
+
+    let has_explicit_permission_policy =
+        execute_shell_app_tool(shell, "session_tool_policy_status", json!({}))
+            .ok()
+            .and_then(|outcome| {
+                outcome
+                    .payload
+                    .get("policy")
+                    .and_then(|value| value.get("has_policy"))
+                    .and_then(Value::as_bool)
+            });
+
+    shell.pane.composer_suggestion_context = state::ComposerSuggestionContext {
+        worktree_dirty,
+        visible_sessions,
+        visible_session_suggestions,
+        model_selection_suggestions,
+        running_tasks,
+        overdue_tasks,
+        pending_approvals,
+        attention_approvals,
+        approval_request_suggestions,
+        has_explicit_permission_policy,
+    };
+}
+
+fn session_surface_limit(shell: &state::Shell) -> usize {
+    shell
+        .runtime_config
+        .as_ref()
+        .map(|config| config.tools.sessions.list_limit.clamp(1, 8))
+        .unwrap_or(8)
+}
+
+fn format_unix_timestamp(timestamp: i64) -> String {
+    OffsetDateTime::from_unix_timestamp(timestamp)
+        .ok()
+        .and_then(|value| value.format(&Rfc3339).ok())
+        .unwrap_or_else(|| timestamp.to_string())
+}
+
+fn summarize_string_items(items: &[String], limit: usize) -> String {
+    if items.is_empty() {
+        return "(none)".to_owned();
+    }
+
+    let preview: Vec<String> = items.iter().take(limit).cloned().collect();
+    let remaining = items.len().saturating_sub(preview.len());
+    let mut summary = preview.join(", ");
+    if remaining > 0 {
+        summary.push_str(&format!(", +{remaining} more"));
+    }
+    summary
+}
+
+fn json_string_items(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn json_value_present(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Null) | None => false,
+        Some(Value::Array(items)) => !items.is_empty(),
+        Some(Value::Object(items)) => !items.is_empty(),
+        Some(Value::String(text)) => !text.trim().is_empty(),
+        Some(_) => true,
+    }
+}
+
+fn json_preview(value: Option<&Value>, max_chars: usize) -> String {
+    let Some(value) = value else {
+        return "(none)".to_owned();
+    };
+    if matches!(value, Value::Null) {
+        return "(none)".to_owned();
+    }
+
+    let raw = serde_json::to_string(value).unwrap_or_else(|_| "<unrenderable>".to_owned());
+    let preview: String = raw.chars().take(max_chars).collect();
+    if raw.chars().count() > max_chars {
+        format!("{preview}...")
+    } else {
+        preview
+    }
+}
+
+fn push_session_summary_lines(lines: &mut Vec<String>, session: &Value, current_session_id: &str) {
+    let session_id = session
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("(unknown)");
+    let state = session
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let kind = session
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let mut summary = format!(
+        "- {session_id}{} · {state} · {kind}",
+        if session_id == current_session_id {
+            " (current)"
+        } else {
+            ""
+        }
+    );
+
+    if let Some(turn_count) = session.get("turn_count").and_then(Value::as_u64) {
+        summary.push_str(&format!(" · turns {turn_count}"));
+    }
+
+    if let Some(delegate_lifecycle) = session.get("delegate_lifecycle") {
+        if let Some(phase) = delegate_lifecycle.get("phase").and_then(Value::as_str) {
+            summary.push_str(&format!(" · task {phase}"));
+        }
+        if delegate_lifecycle
+            .get("staleness")
+            .and_then(|value| value.get("state"))
+            .and_then(Value::as_str)
+            == Some("overdue")
+        {
+            summary.push_str(" · overdue");
+        }
+    }
+
+    lines.push(summary);
+
+    if let Some(label) = session
+        .get("label")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("  label: {label}"));
+    }
+
+    if let Some(updated_at) = session.get("updated_at").and_then(Value::as_i64) {
+        lines.push(format!("  updated: {}", format_unix_timestamp(updated_at)));
+    }
+
+    if let Some(last_error) = session
+        .get("last_error")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("  error: {last_error}"));
+    }
+}
+
+fn session_inspection_lines(payload: &Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    let session = payload.get("session").cloned().unwrap_or(Value::Null);
+    let session_id = session
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("(unknown)");
+    let state = session
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let kind = session
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+
+    lines.push(format!("- session: {session_id}"));
+    lines.push(format!("- state: {state}"));
+    lines.push(format!("- kind: {kind}"));
+
+    if let Some(parent_session_id) = session
+        .get("parent_session_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("- parent: {parent_session_id}"));
+    }
+
+    if let Some(label) = session
+        .get("label")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("- label: {label}"));
+    }
+
+    if let Some(updated_at) = session.get("updated_at").and_then(Value::as_i64) {
+        lines.push(format!("- updated: {}", format_unix_timestamp(updated_at)));
+    }
+
+    if let Some(last_error) = session
+        .get("last_error")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("- last error: {last_error}"));
+    }
+
+    if let Some(terminal_outcome_state) = payload
+        .get("terminal_outcome_state")
+        .and_then(Value::as_str)
+    {
+        lines.push(format!("- terminal outcome: {terminal_outcome_state}"));
+    }
+
+    if let Some(missing_reason) = payload
+        .get("terminal_outcome_missing_reason")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("- recovery hint: {missing_reason}"));
+    }
+
+    if let Some(delegate_lifecycle) = payload.get("delegate_lifecycle") {
+        if let Some(phase) = delegate_lifecycle.get("phase").and_then(Value::as_str) {
+            let mode = delegate_lifecycle
+                .get("mode")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            lines.push(format!("- delegate lifecycle: {phase} ({mode})"));
+        }
+        if let Some(timeout_seconds) = delegate_lifecycle
+            .get("timeout_seconds")
+            .and_then(Value::as_u64)
+        {
+            lines.push(format!("- timeout seconds: {timeout_seconds}"));
+        }
+        if let Some(staleness_state) = delegate_lifecycle
+            .get("staleness")
+            .and_then(|value| value.get("state"))
+            .and_then(Value::as_str)
+        {
+            lines.push(format!("- staleness: {staleness_state}"));
+        }
+    }
+
+    let recent_event_kinds = payload
+        .get("recent_events")
+        .and_then(Value::as_array)
+        .map(|events| {
+            events
+                .iter()
+                .take(3)
+                .filter_map(|event| event.get("event_kind").and_then(Value::as_str))
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if !recent_event_kinds.is_empty() {
+        lines.push(format!(
+            "- recent events: {}",
+            recent_event_kinds.join(", ")
+        ));
+    }
+
+    lines
+}
+
+fn session_history_messages(payload: &Value) -> Vec<Message> {
+    payload
+        .get("turns")
+        .and_then(Value::as_array)
+        .map(|turns| {
+            turns
+                .iter()
+                .filter_map(|turn| {
+                    let role = turn.get("role").and_then(Value::as_str)?;
+                    let content = turn
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let message = match role {
+                        "user" => Message::user(content),
+                        "assistant" => Message {
+                            role: super::message::Role::Assistant,
+                            parts: vec![super::message::MessagePart::Text(content.to_owned())],
+                        },
+                        _ => Message::system(content),
+                    };
+                    Some(message)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn activate_resumed_session(
+    shell: &mut state::Shell,
+    runtime: &super::runtime::TuiRuntime,
+    transcript: Vec<Message>,
+    system_message: &str,
+) {
+    shell.runtime_config = Some(runtime.config.clone());
+    shell.runtime_config_path = Some(runtime.resolved_path.clone());
+    shell.pane.session_id = runtime.session_id.clone();
+    shell.pane.model = runtime.model_label.clone();
+    shell.pane.context_length = state::context_length_for_model(&runtime.model_label);
+    shell.pane.input_tokens = 0;
+    shell.pane.output_tokens = 0;
+    shell.pane.streaming_active = false;
+    shell.pane.agent_running = false;
+    shell.pane.loop_state.clear();
+    shell.pane.loop_action.clear();
+    shell.pane.loop_iteration = 0;
+    shell.pane.status_message = None;
+    shell.pane.staged_message = None;
+    shell.pane.tool_inspector = None;
+    shell.pane.transcript_review.cursor_line = 0;
+    shell.pane.transcript_review.anchor_line = None;
+    shell.pane.clear_input_hint_override();
+    shell.focus.focus_composer();
+    shell.pane.messages = transcript;
+    shell.pane.add_system_message(system_message);
+    shell.pane.scroll_offset = 0;
+    refresh_composer_suggestion_context(shell);
+}
+
+fn approval_request_lines(request: &Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    let approval_request_id = request
+        .get("approval_request_id")
+        .and_then(Value::as_str)
+        .unwrap_or("(unknown)");
+    let tool_name = request
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let session_id = request
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let status = request
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+
+    lines.push(format!(
+        "- {approval_request_id} · {status} · {tool_name} · {session_id}"
+    ));
+
+    if let Some(reason) = request
+        .get("reason")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            request
+                .get("governance_snapshot")
+                .and_then(|value| value.get("reason"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+        })
+    {
+        lines.push(format!("  reason: {reason}"));
+    }
+
+    if let Some(rule_id) = request
+        .get("rule_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            request
+                .get("governance_snapshot")
+                .and_then(|value| value.get("rule_id"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+        })
+    {
+        lines.push(format!("  rule: {rule_id}"));
+    }
+
+    if let Some(requested_at) = request.get("requested_at").and_then(Value::as_i64) {
+        lines.push(format!(
+            "  requested: {}",
+            format_unix_timestamp(requested_at)
+        ));
+    }
+
+    if let Some(last_error) = request
+        .get("last_error")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("  error: {last_error}"));
+    }
+
+    if let Some(attention) = request.get("attention") {
+        let needs_attention = attention
+            .get("needs_attention")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if needs_attention {
+            let severity = attention
+                .get("highest_escalation_level")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let action = attention
+                .get("primary_action")
+                .and_then(Value::as_str)
+                .unwrap_or("review");
+            lines.push(format!("  attention: {severity} · {action}"));
+        }
+    }
+
+    lines
+}
+
+fn show_resume_surface(shell: &mut state::Shell, args: &str) {
+    match parse_resume_action(args) {
+        ResumeAction::List => {
+            let outcome = match execute_shell_app_tool(
+                shell,
+                "sessions_list",
+                json!({
+                    "limit": session_surface_limit(shell),
+                    "include_delegate_lifecycle": true,
+                }),
+            ) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    shell
+                        .pane
+                        .add_system_message(&format!("Unable to list resume candidates: {error}"));
+                    return;
+                }
+            };
+
+            let matched_count = outcome
+                .payload
+                .get("matched_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let returned_count = outcome
+                .payload
+                .get("returned_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let mut lines = vec![
+                format!("- current session: {}", shell.pane.session_id),
+                format!("- visible sessions: {returned_count}/{matched_count}"),
+            ];
+            let sessions = outcome
+                .payload
+                .get("sessions")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if sessions.is_empty() {
+                lines.push("- no visible sessions".to_owned());
+            } else {
+                for session in &sessions {
+                    push_session_summary_lines(&mut lines, session, shell.pane.session_id.as_str());
+                }
+                lines.push("- inspect with `/resume inspect <session-id>`".to_owned());
+                lines.push("- switch with `/resume <session-id>`".to_owned());
+            }
+
+            append_surface_message(shell, "resume candidates", lines.as_slice());
+            shell
+                .pane
+                .set_status("Resume candidates added to transcript".to_owned());
+        }
+        ResumeAction::Inspect(target_session_id) => {
+            let outcome = match execute_shell_app_tool(
+                shell,
+                "session_status",
+                json!({ "session_id": target_session_id }),
+            ) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    shell.pane.add_system_message(&format!(
+                        "Unable to inspect resume target `{target_session_id}`: {error}"
+                    ));
+                    return;
+                }
+            };
+
+            let lines = session_inspection_lines(&outcome.payload);
+            append_surface_message(shell, "resume target", lines.as_slice());
+            shell.pane.set_status(format!(
+                "Resume target `{target_session_id}` added to transcript"
+            ));
+        }
+        ResumeAction::Switch(target_session_id) => {
+            shell.pane.add_system_message(&format!(
+                "Use `/resume {target_session_id}` from the composer submit path to switch sessions."
+            ));
+        }
+    }
+}
+
+fn show_tasks_surface(shell: &mut state::Shell, args: &str) {
+    let raw = args.trim();
+    let filter = raw.to_ascii_lowercase();
+    let known_filters = [
+        "",
+        "all",
+        "overdue",
+        "queued",
+        "running",
+        "failed",
+        "completed",
+        "timed_out",
+    ];
+
+    if !known_filters.contains(&filter.as_str()) {
+        let outcome =
+            match execute_shell_app_tool(shell, "session_status", json!({ "session_id": raw })) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    shell.pane.add_system_message(&format!(
+                        "Unable to inspect task session `{raw}`: {error}"
+                    ));
+                    return;
+                }
+            };
+        let lines = session_inspection_lines(&outcome.payload);
+        append_surface_message(shell, "task session", lines.as_slice());
+        shell
+            .pane
+            .set_status(format!("Task session `{raw}` added to transcript"));
+        return;
+    }
+
+    let mut payload = json!({
+        "limit": session_surface_limit(shell),
+        "kind": "delegate_child",
+        "include_delegate_lifecycle": true,
+    });
+    if let Some(object) = payload.as_object_mut() {
+        match filter.as_str() {
+            "overdue" => {
+                object.insert("overdue_only".to_owned(), Value::Bool(true));
+            }
+            "queued" => {
+                object.insert("state".to_owned(), Value::String("ready".to_owned()));
+            }
+            "running" | "failed" | "completed" | "timed_out" => {
+                object.insert("state".to_owned(), Value::String(filter.clone()));
+            }
+            "" | "all" => {}
+            _ => {}
+        }
+    }
+
+    let outcome = match execute_shell_app_tool(shell, "sessions_list", payload) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            shell
+                .pane
+                .add_system_message(&format!("Unable to list task sessions: {error}"));
+            return;
+        }
+    };
+
+    let matched_count = outcome
+        .payload
+        .get("matched_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let returned_count = outcome
+        .payload
+        .get("returned_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let scope_label = if filter.is_empty() {
+        "all"
+    } else {
+        filter.as_str()
+    };
+    let mut lines = vec![
+        format!("- scope: {scope_label}"),
+        format!("- matched tasks: {returned_count}/{matched_count}"),
+    ];
+    let sessions = outcome
+        .payload
+        .get("sessions")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if sessions.is_empty() {
+        lines.push("- no delegate task sessions matched".to_owned());
+    } else {
+        for session in &sessions {
+            push_session_summary_lines(&mut lines, session, shell.pane.session_id.as_str());
+        }
+    }
+
+    append_surface_message(shell, "delegate tasks", lines.as_slice());
+    shell
+        .pane
+        .set_status("Delegate tasks added to transcript".to_owned());
+}
+
+fn show_approvals_surface(shell: &mut state::Shell, args: &str) {
+    let raw = args.trim();
+    match parse_approvals_action(raw) {
+        Ok(ApprovalsAction::Inspect {
+            approval_request_id,
+        }) => {
+            let outcome = match execute_shell_app_tool(
+                shell,
+                "approval_request_status",
+                json!({ "approval_request_id": approval_request_id }),
+            ) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    shell.pane.add_system_message(&format!(
+                        "Unable to inspect approval request `{approval_request_id}`: {error}"
+                    ));
+                    return;
+                }
+            };
+            let approval_request = outcome
+                .payload
+                .get("approval_request")
+                .cloned()
+                .unwrap_or(Value::Null);
+            let lines = approval_request_lines(&approval_request);
+            append_surface_message(shell, "approval request", lines.as_slice());
+            shell.pane.set_status(format!(
+                "Approval request `{approval_request_id}` added to transcript"
+            ));
+        }
+        Ok(ApprovalsAction::List { filter }) => {
+            let filter = filter.to_ascii_lowercase();
+            let mut payload = json!({ "limit": session_surface_limit(shell) });
+            if let Some(object) = payload.as_object_mut() {
+                match filter.as_str() {
+                    "" | "pending" => {
+                        object.insert("status".to_owned(), Value::String("pending".to_owned()));
+                    }
+                    "attention" => {
+                        object.insert(
+                            "grant_attention".to_owned(),
+                            Value::String("needs_attention".to_owned()),
+                        );
+                    }
+                    "all" => {}
+                    "approved" | "executing" | "executed" | "denied" | "expired" | "cancelled" => {
+                        object.insert("status".to_owned(), Value::String(filter.clone()));
+                    }
+                    _ => {}
+                }
+            }
+
+            let outcome = match execute_shell_app_tool(shell, "approval_requests_list", payload) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    shell
+                        .pane
+                        .add_system_message(&format!("Unable to list approval requests: {error}"));
+                    return;
+                }
+            };
+
+            let matched_count = outcome
+                .payload
+                .get("matched_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let returned_count = outcome
+                .payload
+                .get("returned_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let needs_attention_count = outcome
+                .payload
+                .get("attention_summary")
+                .and_then(|value| value.get("needs_attention_count"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let scope_label = if filter.is_empty() {
+                "pending"
+            } else {
+                filter.as_str()
+            };
+            let mut lines = vec![
+                format!("- scope: {scope_label}"),
+                format!("- matched requests: {returned_count}/{matched_count}"),
+                format!("- needs attention: {needs_attention_count}"),
+            ];
+            let requests = outcome
+                .payload
+                .get("requests")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if requests.is_empty() {
+                lines.push("- no approval requests matched".to_owned());
+            } else {
+                for request in &requests {
+                    lines.extend(approval_request_lines(request));
+                }
+                lines.push(
+                    "- resolve with `/approvals resolve <request-id> <approve-once|approve-always|deny>`"
+                        .to_owned(),
+                );
+            }
+
+            append_surface_message(shell, "approval requests", lines.as_slice());
+            shell
+                .pane
+                .set_status("Approval requests added to transcript".to_owned());
+        }
+        Ok(ApprovalsAction::Resolve {
+            approval_request_id,
+            ..
+        }) => {
+            shell.pane.add_system_message(&format!(
+                "Use `/approvals resolve {approval_request_id} ...` from the composer submit path to resolve this request."
+            ));
+        }
+        Err(error) => {
+            shell.pane.add_system_message(&error);
+        }
+    }
+}
+
+fn session_history_limit(shell: &state::Shell) -> usize {
+    shell
+        .runtime_config
+        .as_ref()
+        .map(|config| config.tools.sessions.history_limit.max(1))
+        .unwrap_or(50)
+}
+
+fn switch_resumed_session(
+    owned_runtime: &mut Option<std::sync::Arc<super::runtime::TuiRuntime>>,
+    shell: &mut state::Shell,
+    target_session_id: &str,
+) -> Result<(), String> {
+    let current_runtime = resolve_active_runtime(owned_runtime.as_ref())
+        .ok_or_else(|| "active TUI runtime is unavailable".to_owned())?;
+    let target_session_id = target_session_id.trim();
+    if target_session_id.is_empty() {
+        return Err("resume target session id cannot be empty".to_owned());
+    }
+    if target_session_id == current_runtime.session_id {
+        shell
+            .pane
+            .set_status(format!("Already on session `{target_session_id}`"));
+        return Ok(());
+    }
+
+    let status_outcome = execute_shell_app_tool(
+        shell,
+        "session_status",
+        json!({ "session_id": target_session_id }),
+    )?;
+    let history_outcome = execute_shell_app_tool(
+        shell,
+        "sessions_history",
+        json!({
+            "session_id": target_session_id,
+            "limit": session_history_limit(shell),
+        }),
+    )?;
+    let next_runtime = std::sync::Arc::new(current_runtime.switched_session(target_session_id));
+    let transcript = session_history_messages(&history_outcome.payload);
+    let session = status_outcome
+        .payload
+        .get("session")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let state = session
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let label_suffix = session
+        .get("label")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(|label| format!(" · {label}"))
+        .unwrap_or_default();
+    let system_message = format!("Resumed session `{target_session_id}` ({state}{label_suffix}).");
+
+    activate_resumed_session(shell, next_runtime.as_ref(), transcript, &system_message);
+    shell
+        .pane
+        .set_status(format!("Switched to session `{target_session_id}`"));
+    *owned_runtime = Some(next_runtime);
+    Ok(())
+}
+
+fn apply_model_runtime_config(
+    owned_runtime: &mut Option<std::sync::Arc<super::runtime::TuiRuntime>>,
+    shell: &mut state::Shell,
+    updated_config: crate::config::LoongClawConfig,
+) -> Result<(), String> {
+    let current_runtime = resolve_active_runtime(owned_runtime.as_ref())
+        .ok_or_else(|| "active TUI runtime is unavailable".to_owned())?;
+    let next_runtime =
+        std::sync::Arc::new(current_runtime.with_provider_runtime_config(updated_config.clone()));
+    shell.runtime_config = Some(updated_config);
+    shell.runtime_config_path = Some(next_runtime.resolved_path.clone());
+    shell.pane.model = next_runtime.model_label.clone();
+    shell.pane.context_length = state::context_length_for_model(&next_runtime.model_label);
+    refresh_composer_suggestion_context(shell);
+    *owned_runtime = Some(next_runtime);
+    Ok(())
+}
+
+fn refresh_model_runtime_environment(
+    owned_runtime: &Option<std::sync::Arc<super::runtime::TuiRuntime>>,
+) -> Result<(), String> {
+    let active_runtime = resolve_active_runtime(owned_runtime.as_ref())
+        .ok_or_else(|| "active TUI runtime is unavailable".to_owned())?;
+    let active_config = &active_runtime.config;
+    let resolved_path = &active_runtime.resolved_path;
+    crate::runtime_env::initialize_runtime_environment(active_config, Some(resolved_path));
+    Ok(())
+}
+
+fn switch_model_selection(
+    owned_runtime: &mut Option<std::sync::Arc<super::runtime::TuiRuntime>>,
+    shell: &mut state::Shell,
+    selector: &str,
+    reasoning: Option<ModelReasoningChoice>,
+) -> Result<(), String> {
+    let target_selector = selector.trim();
+    if target_selector.is_empty() {
+        return Err("model selector cannot be empty".to_owned());
+    }
+    let config_path = shell
+        .runtime_config_path
+        .clone()
+        .ok_or_else(|| "model switching requires a resolved runtime config path".to_owned())?;
+    let (updated_config, previous_active_provider, selected_profile_id) =
+        persist_model_selection_to_config(config_path.as_path(), target_selector, reasoning)?;
+    apply_model_runtime_config(owned_runtime, shell, updated_config.clone())?;
+
+    let mut lines = model_status_lines(&updated_config);
+    if let Some(previous_active_provider) = previous_active_provider
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("- previous provider: {previous_active_provider}"));
+    }
+    lines.push(format!("- selector: {target_selector}"));
+    if !selected_profile_id.eq_ignore_ascii_case(target_selector) {
+        lines.push(format!("- resolved profile: {selected_profile_id}"));
+    }
+
+    append_surface_message(shell, "model status", lines.as_slice());
+    shell
+        .pane
+        .set_status(format!("Switched model with selector `{target_selector}`"));
+    Ok(())
+}
+
+fn show_permissions_surface(shell: &mut state::Shell, args: &str) {
+    let target_session_id = args.trim();
+    let payload = if target_session_id.is_empty() {
+        json!({})
+    } else {
+        json!({ "session_id": target_session_id })
+    };
+    let outcome = match execute_shell_app_tool(shell, "session_tool_policy_status", payload) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            let label = if target_session_id.is_empty() {
+                "current session".to_owned()
+            } else {
+                format!("session `{target_session_id}`")
+            };
+            shell.pane.add_system_message(&format!(
+                "Unable to inspect permissions for {label}: {error}"
+            ));
+            return;
+        }
+    };
+
+    let policy = outcome
+        .payload
+        .get("policy")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let target_session_id = outcome
+        .payload
+        .get("target_session_id")
+        .and_then(Value::as_str)
+        .unwrap_or(shell.pane.session_id.as_str());
+    let base_tool_ids = json_string_items(policy.get("base_tool_ids"));
+    let effective_tool_ids = json_string_items(policy.get("effective_tool_ids"));
+    let requested_tool_ids = json_string_items(policy.get("requested_tool_ids"));
+    let mut lines = vec![
+        format!("- session: {target_session_id}"),
+        format!(
+            "- explicit policy: {}",
+            if policy
+                .get("has_policy")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                "yes"
+            } else {
+                "no"
+            }
+        ),
+        format!("- base tools: {}", base_tool_ids.len()),
+        format!("- effective tools: {}", effective_tool_ids.len()),
+        format!(
+            "- requested tools: {}",
+            summarize_string_items(requested_tool_ids.as_slice(), 6)
+        ),
+        format!(
+            "- effective tool preview: {}",
+            summarize_string_items(effective_tool_ids.as_slice(), 6)
+        ),
+    ];
+
+    if let Some(updated_at) = policy.get("updated_at").and_then(Value::as_i64) {
+        lines.push(format!("- updated: {}", format_unix_timestamp(updated_at)));
+    }
+
+    lines.push(format!(
+        "- requested narrowing: {}",
+        if json_value_present(policy.get("requested_runtime_narrowing")) {
+            json_preview(policy.get("requested_runtime_narrowing"), 96)
+        } else {
+            "(none)".to_owned()
+        }
+    ));
+    lines.push(format!(
+        "- delegate narrowing: {}",
+        if json_value_present(policy.get("delegate_runtime_narrowing")) {
+            json_preview(policy.get("delegate_runtime_narrowing"), 96)
+        } else {
+            "(none)".to_owned()
+        }
+    ));
+    lines.push(format!(
+        "- effective narrowing: {}",
+        if json_value_present(policy.get("effective_runtime_narrowing")) {
+            json_preview(policy.get("effective_runtime_narrowing"), 96)
+        } else {
+            "(none)".to_owned()
+        }
+    ));
+
+    append_surface_message(shell, "session permissions", lines.as_slice());
+    shell
+        .pane
+        .set_status("Session permissions added to transcript".to_owned());
+}
+
+fn render_tool_status_label(status: &super::message::ToolStatus) -> String {
+    match status {
+        super::message::ToolStatus::Running { started } => {
+            format!("running ({:.1}s)", started.elapsed().as_secs_f32())
+        }
+        super::message::ToolStatus::Done {
+            success,
+            duration_ms,
+            ..
+        } => {
+            let result = if *success { "done" } else { "failed" };
+            format!("{result} ({}ms)", duration_ms)
+        }
+    }
+}
+
+fn show_tools_surface(shell: &mut state::Shell) {
+    let tool_call_count = shell.pane.tool_call_count();
+    let recent_tool_calls = shell.pane.recent_tool_calls(3);
+    let mut lines = vec![format!("- tool calls recorded: {tool_call_count}")];
+
+    if recent_tool_calls.is_empty() {
+        lines.push("- no tool calls yet".to_owned());
+    } else {
+        for tool_call in recent_tool_calls {
+            let args_preview = if tool_call.args_preview.is_empty() {
+                "(no args)".to_owned()
+            } else {
+                tool_call.args_preview.to_owned()
+            };
+            let args_preview = args_preview.replace('\n', " ");
+            lines.push(format!(
+                "- {} · {} · {}",
+                tool_call.tool_name,
+                render_tool_status_label(tool_call.status),
+                args_preview
+            ));
+        }
+        lines.push("- use Ctrl+O or `/tools open` for full latest tool details".to_owned());
+    }
+
+    append_surface_message(shell, "tool activity", lines.as_slice());
+    shell
+        .pane
+        .set_status("Tool activity added to transcript".to_owned());
+}
+
+fn show_skills_surface(shell: &mut state::Shell, args: &str) {
+    let Some(runtime_config) = tool_runtime_config_from_shell(shell) else {
+        shell.pane.add_system_message(
+            "Skills view is unavailable before the chat runtime is initialized.",
+        );
+        return;
+    };
+
+    let skill_id = args.trim();
+    if skill_id.is_empty() {
+        let outcome = match crate::tools::external_skills_operator_list_with_config(&runtime_config)
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                shell
+                    .pane
+                    .add_system_message(&format!("Unable to list skills: {error}"));
+                return;
+            }
+        };
+
+        let mut lines = Vec::new();
+        if let Some(skills) = outcome
+            .payload
+            .get("skills")
+            .and_then(|value| value.as_array())
+        {
+            lines.push(format!("- active skills: {}", skills.len()));
+            for skill in skills.iter().take(8) {
+                let skill_id = skill
+                    .get("skill_id")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("(unknown)");
+                let summary = skill
+                    .get("summary")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                lines.push(format!("- {skill_id}: {summary}"));
+            }
+        }
+        if let Some(shadowed) = outcome
+            .payload
+            .get("shadowed_skills")
+            .and_then(|value| value.as_array())
+        {
+            lines.push(format!("- shadowed skills: {}", shadowed.len()));
+        }
+
+        append_surface_message(shell, "skills status", lines.as_slice());
+        shell
+            .pane
+            .set_status("Skills status added to transcript".to_owned());
+        return;
+    }
+
+    let outcome =
+        match crate::tools::external_skills_operator_inspect_with_config(skill_id, &runtime_config)
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                shell
+                    .pane
+                    .add_system_message(&format!("Unable to inspect skill `{skill_id}`: {error}"));
+                return;
+            }
+        };
+
+    let mut lines = Vec::new();
+    if let Some(skill) = outcome.payload.get("skill") {
+        if let Some(skill_id) = skill.get("skill_id").and_then(|value| value.as_str()) {
+            lines.push(format!("- skill: {skill_id}"));
+        }
+        if let Some(scope) = skill.get("scope").and_then(|value| value.as_str()) {
+            lines.push(format!("- scope: {scope}"));
+        }
+        if let Some(summary) = skill.get("summary").and_then(|value| value.as_str()) {
+            lines.push(format!("- summary: {summary}"));
+        }
+    }
+    if let Some(preview) = outcome
+        .payload
+        .get("instructions_preview")
+        .and_then(|value| value.as_str())
+    {
+        lines.push("- preview:".to_owned());
+        lines.extend(preview.lines().map(|line| format!("  {line}")));
+    }
+
+    append_surface_message(shell, "skill details", lines.as_slice());
+    shell
+        .pane
+        .set_status(format!("Skill `{skill_id}` details added to transcript"));
+}
+
+fn show_commands_surface(shell: &mut state::Shell) {
+    let mut lines = Vec::new();
+
+    for spec in commands::discoverable_command_specs() {
+        let mut command_label = spec.name.to_owned();
+        if let Some(argument_hint) = spec.argument_hint {
+            command_label.push(' ');
+            command_label.push_str(argument_hint);
+        }
+        lines.push(format!(
+            "- {command_label} [{}]: {}",
+            spec.category, spec.help
+        ));
+        if !spec.aliases.is_empty() {
+            lines.push(format!("  aliases: {}", spec.aliases.join(", ")));
+        }
+    }
+
+    append_surface_message(shell, "command catalog", lines.as_slice());
+    shell
+        .pane
+        .set_status("Command catalog added to transcript".to_owned());
+}
+
+fn default_transcript_export_path() -> PathBuf {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+
+    std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(format!("loongclaw-transcript-{timestamp}.txt"))
+}
+
+fn resolve_transcript_export_path(args: &str) -> PathBuf {
+    let trimmed = args.trim();
+    if trimmed.is_empty() {
+        return default_transcript_export_path();
+    }
+
+    PathBuf::from(trimmed)
+}
+
+fn latest_copyable_output(shell: &state::Shell) -> Option<String> {
+    let message = shell
+        .pane
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role != super::message::Role::User)?;
+    let mut lines = Vec::new();
+
+    match message.role {
+        super::message::Role::Assistant => {
+            for part in &message.parts {
+                match part {
+                    super::message::MessagePart::Text(text) => {
+                        lines.extend(text.lines().map(ToOwned::to_owned));
+                    }
+                    super::message::MessagePart::ThinkBlock(_)
+                    | super::message::MessagePart::ToolCall { .. } => {}
+                }
+            }
+        }
+        super::message::Role::System | super::message::Role::Surface => {
+            for part in &message.parts {
+                if let super::message::MessagePart::Text(text) = part {
+                    lines.extend(text.lines().map(ToOwned::to_owned));
+                }
+            }
+        }
+        super::message::Role::User => {}
+    }
+
+    if lines.is_empty() {
+        return None;
+    }
+
+    Some(lines.join("\n"))
+}
+
+enum ExportTarget {
+    Latest,
+    Transcript,
+}
+
+fn resolve_export_request(args: &str) -> (ExportTarget, PathBuf) {
+    let trimmed = args.trim();
+    if trimmed.is_empty() {
+        return (ExportTarget::Transcript, default_transcript_export_path());
+    }
+
+    let mut parts = trimmed.split_whitespace();
+    let Some(first) = parts.next() else {
+        return (ExportTarget::Transcript, default_transcript_export_path());
+    };
+    let remainder = parts.collect::<Vec<_>>().join(" ");
+
+    match first.to_ascii_lowercase().as_str() {
+        "latest" => {
+            let path = if remainder.trim().is_empty() {
+                resolve_transcript_export_path("loongclaw-latest-output.txt")
+            } else {
+                resolve_transcript_export_path(remainder.as_str())
+            };
+            (ExportTarget::Latest, path)
+        }
+        "transcript" => {
+            let path = if remainder.trim().is_empty() {
+                default_transcript_export_path()
+            } else {
+                resolve_transcript_export_path(remainder.as_str())
+            };
+            (ExportTarget::Transcript, path)
+        }
+        _ => (
+            ExportTarget::Transcript,
+            resolve_transcript_export_path(trimmed),
+        ),
+    }
+}
+
+fn export_transcript(shell: &mut state::Shell, args: &str) {
+    let (target, export_path) = resolve_export_request(args);
+    let export_body = match target {
+        ExportTarget::Latest => latest_copyable_output(shell),
+        ExportTarget::Transcript => {
+            let plain_lines = transcript_plain_lines(shell);
+            (!plain_lines.is_empty()).then(|| plain_lines.join("\n"))
+        }
+    };
+
+    let Some(export_body) = export_body else {
+        shell.pane.set_status("Nothing to export".to_owned());
+        return;
+    };
+
+    match fs::write(&export_path, export_body) {
+        Ok(()) => {
+            let export_target = match target {
+                ExportTarget::Latest => "latest output",
+                ExportTarget::Transcript => "transcript",
+            };
+            let lines = vec![
+                format!("- path: {}", export_path.display()),
+                format!("- target: {export_target}"),
+            ];
+            append_surface_message(shell, "export status", lines.as_slice());
+            shell
+                .pane
+                .set_status(format!("Exported to {}", export_path.display()));
+        }
+        Err(error) => {
+            shell.pane.set_status(format!("Export failed: {error}"));
+        }
+    }
+}
+
+const DIFF_OUTPUT_LINE_LIMIT: usize = 120;
+
+fn git_output(args: &[&str], cwd: &std::path::Path) -> Result<String, String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .map_err(|error| format!("failed to run `git {}`: {error}", args.join(" ")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        if stderr.is_empty() {
+            return Err(format!(
+                "`git {}` exited with status {}",
+                args.join(" "),
+                output.status
+            ));
+        }
+        return Err(stderr);
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn normalize_diff_mode(args: &str) -> Result<&str, String> {
+    let trimmed = args.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("status") {
+        return Ok("status");
+    }
+    if trimmed.eq_ignore_ascii_case("full") {
+        return Ok("full");
+    }
+
+    Err(format!(
+        "unsupported diff mode `{trimmed}`; use `status` or `full`"
+    ))
+}
+
+fn build_diff_surface_lines(cwd: &std::path::Path, mode: &str) -> Result<Vec<String>, String> {
+    let status = git_output(&["status", "--short"], cwd)?;
+    let diff = if mode == "full" {
+        git_output(
+            &["diff", "--no-ext-diff", "--stat", "--patch", "--no-color"],
+            cwd,
+        )?
+    } else {
+        git_output(&["diff", "--no-ext-diff", "--stat", "--no-color"], cwd)?
+    };
+
+    let mut lines = vec![format!("- cwd: {}", cwd.display())];
+
+    if status.trim().is_empty() && diff.trim().is_empty() {
+        lines.push("- working tree clean".to_owned());
+        return Ok(lines);
+    }
+
+    if !status.trim().is_empty() {
+        lines.push("- status:".to_owned());
+        lines.extend(status.lines().map(|line| format!("  {line}")));
+    }
+
+    if !diff.trim().is_empty() {
+        lines.push(format!("- diff ({mode}):"));
+        let diff_lines = diff.lines().collect::<Vec<_>>();
+        let truncated = diff_lines.len() > DIFF_OUTPUT_LINE_LIMIT;
+        lines.extend(
+            diff_lines
+                .iter()
+                .take(DIFF_OUTPUT_LINE_LIMIT)
+                .map(|line| format!("  {line}")),
+        );
+        if truncated {
+            lines.push(format!(
+                "  ... truncated after {} lines",
+                DIFF_OUTPUT_LINE_LIMIT
+            ));
+        }
+    }
+
+    Ok(lines)
+}
+
+fn show_diff_surface(shell: &mut state::Shell, args: &str) {
+    let mode = match normalize_diff_mode(args) {
+        Ok(mode) => mode,
+        Err(error) => {
+            shell.pane.add_system_message(&error);
+            return;
+        }
+    };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let lines = match build_diff_surface_lines(cwd.as_path(), mode) {
+        Ok(lines) => lines,
+        Err(error) => {
+            shell
+                .pane
+                .add_system_message(&format!("Unable to show diff: {error}"));
+            return;
+        }
+    };
+
+    append_surface_message(shell, "working tree diff", lines.as_slice());
+    shell.pane.set_status("Diff added to transcript".to_owned());
+}
+
+enum CopyMode {
+    Latest,
+    Selection,
+    Transcript,
+}
+
+fn resolve_copy_mode(args: &str) -> Result<CopyMode, String> {
+    let trimmed = args.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("latest") {
+        return Ok(CopyMode::Latest);
+    }
+    if trimmed.eq_ignore_ascii_case("selection") {
+        return Ok(CopyMode::Selection);
+    }
+    if trimmed.eq_ignore_ascii_case("transcript") || trimmed.eq_ignore_ascii_case("all") {
+        return Ok(CopyMode::Transcript);
+    }
+
+    Err(format!(
+        "unsupported copy mode `{trimmed}`; use `latest`, `selection`, or `transcript`"
+    ))
 }
 
 fn apply_transcript_navigation(
@@ -766,23 +3824,27 @@ fn copy_text_to_terminal_clipboard(text: &str) -> CliResult<()> {
     Ok(())
 }
 
-fn copy_transcript_selection(shell: &mut state::Shell) {
+fn copy_transcript_selection(shell: &mut state::Shell, mode: CopyMode) {
     let plain_lines = transcript_plain_lines(shell);
-    let copied_text = shell.pane.transcript_copy_text(plain_lines.as_slice());
+    let copied_text = match mode {
+        CopyMode::Latest => latest_copyable_output(shell),
+        CopyMode::Selection => shell.pane.transcript_copy_text(plain_lines.as_slice()),
+        CopyMode::Transcript => Some(plain_lines.join("\n")),
+    };
 
     let Some(copied_text) = copied_text else {
         shell.pane.set_status("Nothing to copy".to_owned());
         return;
     };
 
-    let copied_line_count = shell
-        .pane
-        .transcript_selection_line_count(plain_lines.len());
-    let effective_line_count = if copied_line_count == 0 {
-        1
-    } else {
-        copied_line_count
+    let copied_line_count = match mode {
+        CopyMode::Latest => copied_text.lines().count(),
+        CopyMode::Selection => shell
+            .pane
+            .transcript_selection_line_count(plain_lines.len()),
+        CopyMode::Transcript => plain_lines.len(),
     };
+    let effective_line_count = copied_line_count.max(1);
     let line_label = if effective_line_count == 1 {
         "line"
     } else {
@@ -791,9 +3853,14 @@ fn copy_transcript_selection(shell: &mut state::Shell) {
 
     match copy_text_to_terminal_clipboard(copied_text.as_str()) {
         Ok(()) => {
-            shell
-                .pane
-                .set_status(format!("Copied {effective_line_count} {line_label}"));
+            let copy_scope = match mode {
+                CopyMode::Latest => "latest output",
+                CopyMode::Selection => "selection",
+                CopyMode::Transcript => "transcript",
+            };
+            shell.pane.set_status(format!(
+                "Copied {copy_scope}: {effective_line_count} {line_label}"
+            ));
         }
         Err(error) => {
             shell.pane.set_status(format!("Copy failed: {error}"));
@@ -809,7 +3876,7 @@ fn apply_terminal_event(
     submit_text: &mut Option<String>,
 ) {
     if let Event::Mouse(mouse_event) = event {
-        apply_mouse_event(shell, textarea, mouse_event);
+        apply_mouse_event(shell, textarea, mouse_event, submit_text);
         return;
     }
 
@@ -844,6 +3911,57 @@ fn apply_terminal_event(
                     _ => {}
                 }
             }
+            return;
+        }
+        FocusLayer::StatsOverlay => {
+            if key.code == KeyCode::Esc || key.code == KeyCode::Char('q') {
+                close_stats_overlay(shell);
+                return;
+            }
+
+            if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                if let Some(stats_overlay) = shell.stats_overlay.as_mut() {
+                    let copied_text = stats::render_copy_text(
+                        &stats_overlay.snapshot,
+                        stats_overlay.active_tab,
+                        stats_overlay.date_range,
+                    );
+                    let copy_result = copy_text_to_terminal_clipboard(copied_text.as_str());
+                    match copy_result {
+                        Ok(()) => {
+                            stats_overlay.copy_status = Some("copied".to_owned());
+                            shell.pane.set_status("Stats copied".to_owned());
+                        }
+                        Err(error) => {
+                            stats_overlay.copy_status = Some("copy failed".to_owned());
+                            shell.pane.set_status(format!("Copy failed: {error}"));
+                        }
+                    }
+                }
+                return;
+            }
+
+            if key.code == KeyCode::Tab || key.code == KeyCode::Right {
+                if let Some(stats_overlay) = shell.stats_overlay.as_mut() {
+                    stats_overlay.active_tab = stats_overlay.active_tab.next();
+                }
+                return;
+            }
+
+            if key.code == KeyCode::BackTab || key.code == KeyCode::Left {
+                if let Some(stats_overlay) = shell.stats_overlay.as_mut() {
+                    stats_overlay.active_tab = stats_overlay.active_tab.previous();
+                }
+                return;
+            }
+
+            if key.code == KeyCode::Char('r') && key.modifiers.is_empty() {
+                if let Some(stats_overlay) = shell.stats_overlay.as_mut() {
+                    stats_overlay.date_range = stats_overlay.date_range.next();
+                }
+                return;
+            }
+
             return;
         }
         FocusLayer::ToolInspector => {
@@ -944,7 +4062,7 @@ fn apply_terminal_event(
                     return;
                 }
                 KeyCode::Char('y') if key.modifiers.is_empty() => {
-                    copy_transcript_selection(shell);
+                    copy_transcript_selection(shell, CopyMode::Selection);
                     return;
                 }
                 KeyCode::Backspace
@@ -985,7 +4103,7 @@ fn apply_terminal_event(
     }
 
     // --- Global shortcuts ---------------------------------------------
-    let composer_has_slash_matches = !slash_command_matches(textarea).is_empty();
+    let composer_has_slash_matches = !slash_command_matches(shell, textarea).is_empty();
     if composer_has_slash_matches {
         #[allow(clippy::wildcard_enum_match_arm)]
         match key.code {
@@ -1065,17 +4183,45 @@ fn apply_terminal_event(
         }
 
         // Slash commands are handled immediately regardless of agent state.
-        if let Some(cmd) = commands::parse(trimmed) {
-            if matches!(cmd, SlashCommand::Unknown(_)) {
-                let applied_selected_command = apply_selected_slash_command(shell, textarea);
-                if applied_selected_command {
+        if let Some(request) = commands::parse(trimmed) {
+            if matches!(request.command, SlashCommand::Unknown(_)) {
+                let palette_selection = apply_selected_slash_command(shell, textarea);
+                if let Some(selection_submit) = palette_selection {
                     shell.slash_command_selection = 0;
+                    if !selection_submit.is_empty() {
+                        *submit_text = Some(selection_submit);
+                    }
                     return;
                 }
             }
             textarea.select_all();
             textarea.delete_str(usize::MAX);
-            handle_slash_command(shell, cmd);
+            if is_async_slash_request(&request) || is_runtime_slash_request(&request) {
+                if shell.pane.agent_running {
+                    let message = if matches!(request.command, SlashCommand::Resume) {
+                        "Cannot switch sessions while a response is already in progress."
+                    } else if matches!(request.command, SlashCommand::Model) {
+                        "Cannot switch models while a response is already in progress."
+                    } else {
+                        "Cannot run this command while a response is already in progress."
+                    };
+                    shell.pane.add_system_message(message);
+                } else {
+                    *submit_text = Some(trimmed.to_owned());
+                    let status = if matches!(request.command, SlashCommand::Resume) {
+                        "Switching sessions..."
+                    } else if matches!(request.command, SlashCommand::Model) {
+                        "Switching model..."
+                    } else if matches!(request.command, SlashCommand::Approvals) {
+                        "Resolving approval request..."
+                    } else {
+                        "Running context compaction..."
+                    };
+                    shell.pane.set_status(status.to_owned());
+                }
+            } else {
+                handle_slash_command(shell, request);
+            }
             shell.slash_command_selection = 0;
             return;
         }
@@ -1136,11 +4282,12 @@ fn apply_mouse_event(
     shell: &mut state::Shell,
     textarea: &mut tui_textarea::TextArea<'_>,
     mouse_event: MouseEvent,
+    submit_text: &mut Option<String>,
 ) {
     let shell_areas = terminal_shell_areas(textarea);
     let column = mouse_event.column;
     let row = mouse_event.row;
-    let slash_palette_area = slash_command_palette_area(textarea);
+    let slash_palette_area = slash_command_palette_area(shell, textarea);
 
     if shell.focus.top() == FocusLayer::ToolInspector {
         match mouse_event.kind {
@@ -1157,6 +4304,10 @@ fn apply_mouse_event(
             | MouseEventKind::ScrollLeft
             | MouseEventKind::ScrollRight => {}
         }
+        return;
+    }
+
+    if shell.focus.top() == FocusLayer::StatsOverlay {
         return;
     }
 
@@ -1178,14 +4329,17 @@ fn apply_mouse_event(
             if let Some(palette_area) = slash_palette_area
                 && point_in_rect(palette_area, column, row)
             {
-                let command_index = slash_command_index_at_mouse_row(textarea, row);
+                let command_index = slash_command_index_at_mouse_row(shell, textarea, row);
                 let Some(command_index) = command_index else {
                     return;
                 };
                 shell.slash_command_selection = command_index;
-                let applied_selected_command = apply_selected_slash_command(shell, textarea);
-                if applied_selected_command {
+                let palette_selection = apply_selected_slash_command(shell, textarea);
+                if let Some(selection_submit) = palette_selection {
                     shell.slash_command_selection = 0;
+                    if !selection_submit.is_empty() {
+                        *submit_text = Some(selection_submit);
+                    }
                 }
                 return;
             }
@@ -1270,10 +4424,30 @@ fn apply_mouse_event(
     }
 }
 
-fn handle_slash_command(shell: &mut state::Shell, cmd: SlashCommand) {
-    match cmd {
+fn handle_slash_command(shell: &mut state::Shell, request: ParsedSlashCommand) {
+    match request.command {
         SlashCommand::Exit => {
             shell.running = false;
+        }
+        SlashCommand::Commands => {
+            show_commands_surface(shell);
+        }
+        SlashCommand::Compact => {
+            shell.pane.add_system_message(
+                "Context compaction runs asynchronously. Submit `/compact` from the composer.",
+            );
+        }
+        SlashCommand::Resume => {
+            show_resume_surface(shell, request.args.as_str());
+        }
+        SlashCommand::Tasks => {
+            show_tasks_surface(shell, request.args.as_str());
+        }
+        SlashCommand::Approvals => {
+            show_approvals_surface(shell, request.args.as_str());
+        }
+        SlashCommand::Permissions => {
+            show_permissions_surface(shell, request.args.as_str());
         }
         SlashCommand::Clear => {
             shell.pane.messages.clear();
@@ -1287,31 +4461,60 @@ fn handle_slash_command(shell: &mut state::Shell, cmd: SlashCommand) {
             }
             // Help is rendered as an overlay — no transcript message needed.
         }
+        SlashCommand::Export => {
+            export_transcript(shell, request.args.as_str());
+        }
+        SlashCommand::Diff => {
+            show_diff_surface(shell, request.args.as_str());
+        }
         SlashCommand::Model => {
-            let model = if shell.pane.model.is_empty() {
-                "(unknown)".to_owned()
-            } else {
-                shell.pane.model.clone()
-            };
-            shell.pane.set_status(format!("Model: {model}"));
+            show_model_surface(shell, request.args.as_str());
+        }
+        SlashCommand::Stats => {
+            open_stats_overlay(shell, request.args.as_str());
+        }
+        SlashCommand::Session => {
+            show_session_surface(shell);
         }
         SlashCommand::Status => {
-            let model = if shell.pane.model.is_empty() {
-                "(unknown)".to_owned()
-            } else {
-                shell.pane.model.clone()
-            };
-            let total_tokens = shell.pane.total_tokens();
-            let session_id = shell.pane.session_id.clone();
-            shell.pane.set_status(format!(
-                "Session {session_id} | {model} | {total_tokens} tokens"
-            ));
+            show_runtime_status_surface(shell);
+        }
+        SlashCommand::Context => {
+            show_context_surface(shell);
+        }
+        SlashCommand::Skills => {
+            show_skills_surface(shell, request.args.as_str());
         }
         SlashCommand::Review => {
             toggle_transcript_review(shell);
         }
         SlashCommand::Tools => {
-            open_tool_inspector(shell);
+            if request.args.trim().eq_ignore_ascii_case("open") {
+                open_tool_inspector(shell);
+            } else {
+                show_tools_surface(shell);
+            }
+        }
+        SlashCommand::Thinking => {
+            match request.args.trim().to_ascii_lowercase().as_str() {
+                "" | "toggle" => {
+                    shell.show_thinking = !shell.show_thinking;
+                }
+                "on" => {
+                    shell.show_thinking = true;
+                }
+                "off" => {
+                    shell.show_thinking = false;
+                }
+                other => {
+                    shell.pane.add_system_message(&format!(
+                        "Unknown thinking mode: {other}. Use `on`, `off`, or `toggle`."
+                    ));
+                    return;
+                }
+            }
+            let label = if shell.show_thinking { "on" } else { "off" };
+            shell.pane.set_status(format!("Thinking display: {label}"));
         }
         SlashCommand::Latest => {
             shell.pane.scroll_offset = 0;
@@ -1321,17 +4524,10 @@ fn handle_slash_command(shell: &mut state::Shell, cmd: SlashCommand) {
             shell.pane.scroll_offset = u16::MAX;
             shell.pane.set_status("Viewing oldest output".to_owned());
         }
-        SlashCommand::Copy => {
-            copy_transcript_selection(shell);
-        }
-        SlashCommand::ThinkOn => {
-            shell.show_thinking = true;
-            shell.pane.set_status("Thinking blocks enabled".into());
-        }
-        SlashCommand::ThinkOff => {
-            shell.show_thinking = false;
-            shell.pane.set_status("Thinking blocks disabled".into());
-        }
+        SlashCommand::Copy => match resolve_copy_mode(request.args.as_str()) {
+            Ok(mode) => copy_transcript_selection(shell, mode),
+            Err(error) => shell.pane.add_system_message(&error),
+        },
         SlashCommand::Unknown(name) => {
             shell
                 .pane
@@ -1381,6 +4577,8 @@ fn activate_chat_surface(
     system_message: Option<String>,
 ) {
     shell.pane.messages.clear();
+    shell.runtime_config = Some(runtime.config.clone());
+    shell.runtime_config_path = Some(runtime.resolved_path.clone());
     shell.pane.model = runtime.model_label.clone();
     shell.pane.context_length = state::context_length_for_model(&runtime.model_label);
     shell.pane.clear_input_hint_override();
@@ -1392,6 +4590,7 @@ fn activate_chat_surface(
     shell
         .pane
         .add_system_message("Welcome to LoongClaw TUI. Type a message and press Enter.");
+    refresh_composer_suggestion_context(shell);
 }
 
 fn handle_boot_key_event(
@@ -1571,6 +4770,86 @@ fn prepare_chat_turn_future(
     })
 }
 
+fn process_submitted_chat_text(
+    owned_runtime: &mut Option<std::sync::Arc<super::runtime::TuiRuntime>>,
+    shell: &mut state::Shell,
+    text: &str,
+    tx: &mpsc::UnboundedSender<UiEvent>,
+    turn_future: &mut Pin<Box<dyn std::future::Future<Output = ()> + '_>>,
+    turn_active: &mut bool,
+) -> CliResult<()> {
+    let Some(runtime) = resolve_active_runtime(owned_runtime.as_ref()) else {
+        return Ok(());
+    };
+
+    if let Some(request) = commands::parse(text) {
+        if is_runtime_slash_request(&request) {
+            if matches!(request.command, SlashCommand::Resume) {
+                if let ResumeAction::Switch(target_session_id) =
+                    parse_resume_action(request.args.as_str())
+                {
+                    match switch_resumed_session(owned_runtime, shell, target_session_id.as_str()) {
+                        Ok(()) => {
+                            *turn_active = false;
+                            *turn_future = Box::pin(std::future::pending());
+                        }
+                        Err(error) => {
+                            shell.pane.add_system_message(&format!(
+                                "Unable to resume session `{target_session_id}`: {error}"
+                            ));
+                        }
+                    }
+                }
+            } else if matches!(request.command, SlashCommand::Model) {
+                match parse_model_action(request.args.as_str()) {
+                    Ok(ModelAction::Switch {
+                        selector,
+                        reasoning,
+                    }) => {
+                        match switch_model_selection(
+                            owned_runtime,
+                            shell,
+                            selector.as_str(),
+                            reasoning,
+                        ) {
+                            Ok(()) => {
+                                if let Err(error) = refresh_model_runtime_environment(owned_runtime)
+                                {
+                                    shell.pane.add_system_message(&format!(
+                                        "Model switched, but runtime environment refresh failed: {error}"
+                                    ));
+                                }
+                                *turn_active = false;
+                                *turn_future = Box::pin(std::future::pending());
+                            }
+                            Err(error) => {
+                                shell.pane.add_system_message(&format!(
+                                    "Unable to switch model `{selector}`: {error}"
+                                ));
+                            }
+                        }
+                    }
+                    Ok(ModelAction::Status) => {}
+                    Err(error) => shell.pane.add_system_message(&error),
+                }
+            }
+            return Ok(());
+        }
+
+        *turn_future = if is_async_slash_request(&request) {
+            prepare_async_slash_command_future(runtime, request, tx.clone())
+        } else {
+            prepare_chat_turn_future(runtime, text.to_string(), tx.clone())
+        };
+    } else {
+        *turn_future = prepare_chat_turn_future(runtime, text.to_string(), tx.clone());
+    }
+
+    *turn_active = true;
+    shell.pane.agent_running = true;
+    Ok(())
+}
+
 async fn run_inner(
     initial_runtime: Option<super::runtime::TuiRuntime>,
     config_path: Option<&str>,
@@ -1719,10 +4998,15 @@ async fn run_inner(
                 )
                 .await?;
                 shell.dirty = true;
-            } else if let Some(runtime) = resolve_active_runtime(owned_runtime.as_ref()) {
-                turn_future = prepare_chat_turn_future(runtime, text.to_string(), tx.clone());
-                turn_active = true;
-                shell.pane.agent_running = true;
+            } else {
+                process_submitted_chat_text(
+                    &mut owned_runtime,
+                    &mut shell,
+                    text,
+                    &tx,
+                    &mut turn_future,
+                    &mut turn_active,
+                )?;
             }
         }
 
@@ -1809,10 +5093,15 @@ async fn run_inner(
                 )
                 .await?;
                 shell.dirty = true;
-            } else if let Some(runtime) = resolve_active_runtime(owned_runtime.as_ref()) {
-                turn_future = prepare_chat_turn_future(runtime, text.to_string(), tx.clone());
-                turn_active = true;
-                shell.pane.agent_running = true;
+            } else {
+                process_submitted_chat_text(
+                    &mut owned_runtime,
+                    &mut shell,
+                    text,
+                    &tx,
+                    &mut turn_future,
+                    &mut turn_active,
+                )?;
             }
         }
     }
@@ -1824,8 +5113,13 @@ async fn run_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat::tui::message::{MessagePart, Role};
+    use crate::chat::tui::runtime;
 
     use crossterm::event::{KeyEventKind, KeyEventState};
+    use std::fs;
+    use std::path::Path;
+    use tempfile::tempdir;
 
     fn plain_key(code: KeyCode) -> KeyEvent {
         KeyEvent {
@@ -1833,6 +5127,159 @@ mod tests {
             modifiers: KeyModifiers::NONE,
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
+        }
+    }
+
+    struct CurrentDirGuard {
+        original: PathBuf,
+    }
+
+    impl Drop for CurrentDirGuard {
+        fn drop(&mut self) {
+            std::env::set_current_dir(&self.original).expect("restore current dir");
+        }
+    }
+
+    fn set_current_dir_for_test(path: &Path) -> CurrentDirGuard {
+        let original = std::env::current_dir().expect("read current dir");
+        std::env::set_current_dir(path).expect("set current dir");
+        CurrentDirGuard { original }
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    fn shell_runtime_config_for_test(temp_root: &Path) -> crate::config::LoongClawConfig {
+        let mut config = crate::config::LoongClawConfig::default();
+        config.memory.sqlite_path = temp_root.join("memory.sqlite3").display().to_string();
+        config.tools.sessions.enabled = true;
+        config.tools.sessions.allow_mutation = true;
+        config.tools.sessions.list_limit = 16;
+        config.tools.file_root = Some(temp_root.display().to_string());
+        config
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    fn shell_memory_test_lock() -> &'static std::sync::Mutex<()> {
+        static SHELL_MEMORY_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
+            std::sync::OnceLock::new();
+        SHELL_MEMORY_TEST_LOCK.get_or_init(|| std::sync::Mutex::new(()))
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    fn attach_shell_runtime_config(
+        shell: &mut state::Shell,
+        config: &crate::config::LoongClawConfig,
+        temp_root: &Path,
+    ) {
+        let config_path = temp_root.join("loongclaw.toml");
+        fs::write(
+            &config_path,
+            crate::config::render(config).expect("render shell test config"),
+        )
+        .expect("write config path");
+        shell.runtime_config = Some(config.clone());
+        shell.runtime_config_path = Some(config_path);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    fn scoped_test_id(temp_root: &Path, base: &str) -> String {
+        let suffix = temp_root
+            .file_name()
+            .map(|value| value.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "temp".to_owned());
+        format!("{base}-{suffix}")
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    fn session_repo_for_config(
+        config: &crate::config::LoongClawConfig,
+    ) -> crate::session::repository::SessionRepository {
+        let sqlite_path = config.memory.sqlite_path.trim();
+        if !sqlite_path.is_empty() {
+            let sqlite_path = std::path::Path::new(sqlite_path);
+            let _ = crate::memory::drop_cached_sqlite_runtime(sqlite_path);
+            let _ = fs::remove_file(sqlite_path);
+        }
+        let memory_config =
+            crate::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+        crate::session::repository::SessionRepository::new(&memory_config).expect("session repo")
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    fn ensure_root_session(repo: &crate::session::repository::SessionRepository, session_id: &str) {
+        repo.ensure_session(crate::session::repository::NewSessionRecord {
+            session_id: session_id.to_owned(),
+            kind: crate::session::repository::SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root session".to_owned()),
+            state: crate::session::repository::SessionState::Ready,
+        })
+        .expect("ensure root session");
+    }
+
+    fn latest_message_text(shell: &state::Shell) -> String {
+        shell
+            .pane
+            .messages
+            .last()
+            .and_then(|message| message.parts.first())
+            .and_then(|part| match part {
+                MessagePart::Text(text) => Some(text.clone()),
+                MessagePart::ThinkBlock(_) | MessagePart::ToolCall { .. } => None,
+            })
+            .unwrap_or_default()
+    }
+
+    fn sample_stats_snapshot_for_test() -> stats::StatsSnapshot {
+        let today = chrono::Utc::now().date_naive();
+        let earlier = today - chrono::Duration::days(1);
+        let mut earlier_models = std::collections::BTreeMap::new();
+        earlier_models.insert(
+            "gpt-5".to_owned(),
+            stats::ModelTokenAccumulator {
+                input_tokens: 120,
+                output_tokens: 80,
+            },
+        );
+        let mut current_models = std::collections::BTreeMap::new();
+        current_models.insert(
+            "o4-mini".to_owned(),
+            stats::ModelTokenAccumulator {
+                input_tokens: 140,
+                output_tokens: 110,
+            },
+        );
+
+        stats::StatsSnapshot {
+            visible_sessions: 2,
+            root_sessions: 1,
+            delegate_sessions: 1,
+            running_delegate_sessions: 1,
+            pending_approvals: 1,
+            usage_event_count: 2,
+            first_activity_date: Some(earlier),
+            last_activity_date: Some(today),
+            longest_session: Some(stats::SessionDurationStat {
+                session_id: "sess-root".to_owned(),
+                label: Some("Root".to_owned()),
+                duration_seconds: 3600,
+            }),
+            active_dates: vec![earlier, today],
+            daily_points: vec![
+                stats::DailyTokenPoint {
+                    date: earlier,
+                    total_input_tokens: 120,
+                    total_output_tokens: 80,
+                    total_tokens: 200,
+                    model_tokens: earlier_models,
+                },
+                stats::DailyTokenPoint {
+                    date: today,
+                    total_input_tokens: 140,
+                    total_output_tokens: 110,
+                    total_tokens: 250,
+                    model_tokens: current_models,
+                },
+            ],
         }
     }
 
@@ -2240,7 +5687,7 @@ mod tests {
         let mut submit_text: Option<String> = None;
         let enter_event = Event::Key(plain_key(KeyCode::Enter));
 
-        textarea.insert_str("/re");
+        textarea.insert_str("/rev");
         shell.slash_command_selection = 0;
 
         apply_terminal_event(
@@ -2252,6 +5699,480 @@ mod tests {
         );
 
         assert_eq!(shell.focus.top(), FocusLayer::Transcript);
+    }
+
+    #[test]
+    fn enter_with_compact_submits_async_slash_command() {
+        let mut shell = state::Shell::new("sess-compact");
+        let mut textarea = tui_textarea::TextArea::default();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut submit_text: Option<String> = None;
+        let enter_event = Event::Key(plain_key(KeyCode::Enter));
+
+        textarea.insert_str("/compact");
+
+        apply_terminal_event(
+            &mut shell,
+            &mut textarea,
+            enter_event,
+            &tx,
+            &mut submit_text,
+        );
+
+        let status = shell
+            .pane
+            .status_message
+            .as_ref()
+            .map(|(message, _)| message.as_str());
+
+        assert_eq!(submit_text.as_deref(), Some("/compact"));
+        assert_eq!(textarea.lines(), vec![""]);
+        assert_eq!(status, Some("Running context compaction..."));
+    }
+
+    #[test]
+    fn enter_with_resume_submits_runtime_switch_request() {
+        let mut shell = state::Shell::new("sess-resume");
+        let mut textarea = tui_textarea::TextArea::default();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut submit_text: Option<String> = None;
+        let enter_event = Event::Key(plain_key(KeyCode::Enter));
+
+        textarea.insert_str("/resume child-session");
+
+        apply_terminal_event(
+            &mut shell,
+            &mut textarea,
+            enter_event,
+            &tx,
+            &mut submit_text,
+        );
+
+        let status = shell
+            .pane
+            .status_message
+            .as_ref()
+            .map(|(message, _)| message.as_str());
+
+        assert_eq!(submit_text.as_deref(), Some("/resume child-session"));
+        assert_eq!(status, Some("Switching sessions..."));
+    }
+
+    #[test]
+    fn selecting_resume_palette_candidate_fills_composer() {
+        let mut shell = state::Shell::new("sess-resume");
+        let mut textarea = tui_textarea::TextArea::default();
+        textarea.insert_str("/resume child");
+        shell
+            .pane
+            .composer_suggestion_context
+            .visible_session_suggestions = vec![state::VisibleSessionSuggestion {
+            session_id: "child-session".to_owned(),
+            label: Some("Child work".to_owned()),
+            state: "completed".to_owned(),
+            kind: "delegate_child".to_owned(),
+            task_phase: Some("completed".to_owned()),
+            overdue: false,
+        }];
+
+        let applied = apply_selected_slash_command(&mut shell, &mut textarea);
+
+        assert_eq!(applied.as_deref(), Some("/resume child-session"));
+        assert_eq!(textarea.lines().join("\n"), "");
+        assert!(shell.pane.messages.is_empty());
+    }
+
+    #[test]
+    fn compact_command_is_rejected_while_agent_is_running() {
+        let mut shell = state::Shell::new("sess-compact");
+        let mut textarea = tui_textarea::TextArea::default();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut submit_text: Option<String> = None;
+        let enter_event = Event::Key(plain_key(KeyCode::Enter));
+
+        shell.pane.agent_running = true;
+        textarea.insert_str("/compact");
+
+        apply_terminal_event(
+            &mut shell,
+            &mut textarea,
+            enter_event,
+            &tx,
+            &mut submit_text,
+        );
+
+        let rendered_system_message = shell
+            .pane
+            .messages
+            .last()
+            .and_then(|message| message.parts.first())
+            .and_then(|part| match part {
+                MessagePart::Text(text) => Some(text.as_str()),
+                MessagePart::ThinkBlock(_) | MessagePart::ToolCall { .. } => None,
+            })
+            .unwrap_or("");
+
+        assert!(submit_text.is_none());
+        assert!(rendered_system_message.contains("already in progress"));
+    }
+
+    #[test]
+    fn approvals_resolve_action_is_async() {
+        let request = ParsedSlashCommand {
+            command: SlashCommand::Approvals,
+            args: "resolve apr_123 approve-once auto".to_owned(),
+        };
+
+        assert!(is_async_slash_request(&request));
+    }
+
+    #[test]
+    fn approvals_resolve_palette_suggests_request_ids() {
+        let mut shell = state::Shell::new("sess-approvals");
+        shell
+            .pane
+            .composer_suggestion_context
+            .approval_request_suggestions = vec![state::ApprovalRequestSuggestion {
+            approval_request_id: "apr_123".to_owned(),
+            tool_name: "delegate_async".to_owned(),
+            status: "pending".to_owned(),
+            session_id: "root-session".to_owned(),
+            needs_attention: true,
+        }];
+
+        let entries = slash_palette_entries(&shell, "/approvals resolve");
+
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.replacement.contains("apr_123")),
+            "resolve palette should suggest approval ids: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn model_palette_suggests_model_candidates() {
+        let mut shell = state::Shell::new("sess-model");
+        shell
+            .pane
+            .composer_suggestion_context
+            .model_selection_suggestions = vec![state::ModelSelectionSuggestion {
+            selector: "openai-reasoning".to_owned(),
+            profile_id: "openai-reasoning".to_owned(),
+            kind: "openai".to_owned(),
+            model: "o4-mini".to_owned(),
+            active: true,
+            reasoning_efforts: vec!["none".to_owned(), "low".to_owned(), "medium".to_owned()],
+            current_reasoning_effort: Some("medium".to_owned()),
+        }];
+
+        let entries = slash_palette_entries(&shell, "/model openai");
+
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.replacement == "/model openai-reasoning"),
+            "model palette should surface configured model selectors: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn model_palette_suggests_reasoning_efforts_for_selected_model() {
+        let mut shell = state::Shell::new("sess-model");
+        shell
+            .pane
+            .composer_suggestion_context
+            .model_selection_suggestions = vec![state::ModelSelectionSuggestion {
+            selector: "openai-reasoning".to_owned(),
+            profile_id: "openai-reasoning".to_owned(),
+            kind: "openai".to_owned(),
+            model: "o4-mini".to_owned(),
+            active: true,
+            reasoning_efforts: vec!["none".to_owned(), "low".to_owned(), "medium".to_owned()],
+            current_reasoning_effort: Some("medium".to_owned()),
+        }];
+
+        let entries = slash_palette_entries(&shell, "/model openai-reasoning");
+
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.replacement == "/model openai-reasoning medium"),
+            "model palette should surface reasoning efforts after selecting a reasoning-capable model: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn enter_with_model_submits_runtime_switch_request() {
+        let mut shell = state::Shell::new("sess-model");
+        let mut textarea = tui_textarea::TextArea::default();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut submit_text: Option<String> = None;
+        let enter_event = Event::Key(plain_key(KeyCode::Enter));
+
+        textarea.insert_str("/model openai-reasoning");
+
+        apply_terminal_event(
+            &mut shell,
+            &mut textarea,
+            enter_event,
+            &tx,
+            &mut submit_text,
+        );
+
+        let status = shell
+            .pane
+            .status_message
+            .as_ref()
+            .map(|(message, _)| message.as_str());
+
+        assert_eq!(submit_text.as_deref(), Some("/model openai-reasoning"));
+        assert_eq!(status, Some("Switching model..."));
+    }
+
+    #[test]
+    #[cfg(feature = "memory-sqlite")]
+    fn switch_model_selection_updates_runtime_and_reasoning_effort() {
+        let _guard = shell_memory_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp_dir = tempdir().expect("tempdir");
+        let config_path = temp_dir.path().join("loongclaw.toml");
+        let mut config = crate::config::LoongClawConfig::default();
+        let mut openai_main =
+            crate::config::ProviderConfig::fresh_for_kind(crate::config::ProviderKind::Openai);
+        openai_main.model = "gpt-5".to_owned();
+        config.set_active_provider_profile(
+            "openai-main",
+            crate::config::ProviderProfileConfig {
+                default_for_kind: true,
+                provider: openai_main.clone(),
+            },
+        );
+        let mut openai_reasoning =
+            crate::config::ProviderConfig::fresh_for_kind(crate::config::ProviderKind::Openai);
+        openai_reasoning.model = "o4-mini".to_owned();
+        config.providers.insert(
+            "openai-reasoning".to_owned(),
+            crate::config::ProviderProfileConfig {
+                default_for_kind: false,
+                provider: openai_reasoning,
+            },
+        );
+        config.provider = openai_main;
+        config.active_provider = Some("openai-main".to_owned());
+        std::fs::write(
+            &config_path,
+            crate::config::render(&config).expect("render config"),
+        )
+        .expect("write config");
+
+        let runtime = runtime::TuiRuntime {
+            resolved_path: config_path.clone(),
+            config: config.clone(),
+            session_id: scoped_test_id(temp_dir.path(), "ops-root"),
+            session_address: crate::conversation::ConversationSessionAddress::from_session_id(
+                scoped_test_id(temp_dir.path(), "ops-root"),
+            ),
+            turn_coordinator: crate::conversation::ConversationTurnCoordinator::new(),
+            kernel_ctx: crate::context::bootstrap_kernel_context_with_config(
+                "tui-model-switch-test",
+                crate::context::DEFAULT_TOKEN_TTL_S,
+                &config,
+            )
+            .expect("bootstrap kernel context"),
+            model_label: config
+                .provider
+                .resolved_model()
+                .unwrap_or_else(|| "auto".to_owned()),
+        };
+
+        let mut shell = state::Shell::new(scoped_test_id(temp_dir.path(), "ops-root").as_str());
+        attach_shell_runtime_config(&mut shell, &config, temp_dir.path());
+        let mut owned_runtime = Some(std::sync::Arc::new(runtime));
+        switch_model_selection(
+            &mut owned_runtime,
+            &mut shell,
+            "openai-reasoning",
+            Some(ModelReasoningChoice::Explicit(
+                crate::config::ReasoningEffort::Low,
+            )),
+        )
+        .expect("switch model");
+
+        let reloaded =
+            crate::config::load(Some(config_path.to_str().expect("utf8 path"))).expect("reload");
+        let reloaded = reloaded.1;
+
+        assert_eq!(reloaded.active_provider_id(), Some("openai-reasoning"));
+        assert_eq!(
+            reloaded.provider.reasoning_effort,
+            Some(crate::config::ReasoningEffort::Low)
+        );
+        assert_eq!(shell.pane.model, "o4-mini");
+        assert_eq!(
+            owned_runtime
+                .as_ref()
+                .map(|runtime| runtime.config.provider.reasoning_effort),
+            Some(Some(crate::config::ReasoningEffort::Low))
+        );
+        assert!(
+            latest_message_text(&shell).contains("openai-reasoning"),
+            "switch should append model status surface"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "memory-sqlite")]
+    fn stats_command_opens_overlay() {
+        let _guard = shell_memory_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp_dir = tempdir().expect("tempdir");
+        let config = shell_runtime_config_for_test(temp_dir.path());
+        let memory_config =
+            crate::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+        let repo = session_repo_for_config(&config);
+        let root_session_id = scoped_test_id(temp_dir.path(), "ops-root");
+        ensure_root_session(&repo, root_session_id.as_str());
+        let usage_event = crate::memory::build_conversation_event_content(
+            crate::conversation::analytics::TURN_USAGE_EVENT_NAME,
+            json!({
+                "model": "gpt-5",
+                "input_tokens": 120,
+                "output_tokens": 80,
+            }),
+        );
+        crate::memory::replace_session_turns_direct(
+            root_session_id.as_str(),
+            &[crate::memory::WindowTurn {
+                role: "assistant".to_owned(),
+                content: usage_event,
+                ts: Some(chrono::Utc::now().timestamp()),
+            }],
+            &memory_config,
+        )
+        .expect("seed usage event");
+
+        let mut shell = state::Shell::new(root_session_id.as_str());
+        attach_shell_runtime_config(&mut shell, &config, temp_dir.path());
+
+        handle_slash_command(
+            &mut shell,
+            ParsedSlashCommand {
+                command: SlashCommand::Stats,
+                args: "models 30d".to_owned(),
+            },
+        );
+
+        assert_eq!(shell.focus.top(), FocusLayer::StatsOverlay);
+        assert!(shell.stats_overlay.is_some());
+        assert_eq!(
+            shell.stats_overlay.as_ref().map(|state| state.active_tab),
+            Some(stats::StatsTab::Models)
+        );
+        assert_eq!(
+            shell.stats_overlay.as_ref().map(|state| state.date_range),
+            Some(stats::StatsDateRange::Last30Days)
+        );
+    }
+
+    #[test]
+    fn stats_overlay_keyboard_cycles_tab_and_range() {
+        let mut shell = state::Shell::new("sess-stats");
+        shell.stats_overlay = Some(state::StatsOverlayState::new(
+            sample_stats_snapshot_for_test(),
+            stats::StatsTab::Overview,
+            stats::StatsDateRange::All,
+        ));
+        shell.focus.push(FocusLayer::StatsOverlay);
+        let mut textarea = tui_textarea::TextArea::default();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut submit_text: Option<String> = None;
+
+        apply_terminal_event(
+            &mut shell,
+            &mut textarea,
+            Event::Key(plain_key(KeyCode::Tab)),
+            &tx,
+            &mut submit_text,
+        );
+        assert_eq!(
+            shell.stats_overlay.as_ref().map(|state| state.active_tab),
+            Some(stats::StatsTab::Models)
+        );
+
+        apply_terminal_event(
+            &mut shell,
+            &mut textarea,
+            Event::Key(plain_key(KeyCode::Char('r'))),
+            &tx,
+            &mut submit_text,
+        );
+        assert_eq!(
+            shell.stats_overlay.as_ref().map(|state| state.date_range),
+            Some(stats::StatsDateRange::Last7Days)
+        );
+
+        apply_terminal_event(
+            &mut shell,
+            &mut textarea,
+            Event::Key(plain_key(KeyCode::Esc)),
+            &tx,
+            &mut submit_text,
+        );
+        assert!(shell.stats_overlay.is_none());
+        assert_eq!(shell.focus.top(), FocusLayer::Composer);
+    }
+
+    #[test]
+    fn tasks_palette_suggests_delegate_sessions() {
+        let mut shell = state::Shell::new("sess-tasks");
+        shell
+            .pane
+            .composer_suggestion_context
+            .visible_session_suggestions = vec![state::VisibleSessionSuggestion {
+            session_id: "delegate:task-7".to_owned(),
+            label: Some("Background review".to_owned()),
+            state: "running".to_owned(),
+            kind: "delegate_child".to_owned(),
+            task_phase: Some("running".to_owned()),
+            overdue: false,
+        }];
+
+        let entries = slash_palette_entries(&shell, "/tasks run");
+
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.replacement.contains("delegate:task-7")),
+            "tasks palette should surface delegate sessions: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn permissions_palette_suggests_visible_sessions() {
+        let mut shell = state::Shell::new("sess-permissions");
+        shell
+            .pane
+            .composer_suggestion_context
+            .visible_session_suggestions = vec![state::VisibleSessionSuggestion {
+            session_id: "child-session".to_owned(),
+            label: Some("Child work".to_owned()),
+            state: "completed".to_owned(),
+            kind: "delegate_child".to_owned(),
+            task_phase: Some("completed".to_owned()),
+            overdue: false,
+        }];
+
+        let entries = slash_palette_entries(&shell, "/permissions child");
+
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.replacement == "/permissions child-session"),
+            "permissions palette should surface visible sessions: {entries:?}"
+        );
     }
 
     #[test]
@@ -2276,9 +6197,9 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         let mut submit_text: Option<String> = None;
 
-        textarea.insert_str("/re");
+        textarea.insert_str("/rev");
 
-        let palette_area = slash_command_palette_area(&textarea).expect("palette area");
+        let palette_area = slash_command_palette_area(&shell, &textarea).expect("palette area");
         let click_row = palette_area.y.saturating_add(1);
         let click_col = palette_area.x.saturating_add(2);
         let click_event = Event::Mouse(mouse_event(
@@ -2337,5 +6258,650 @@ mod tests {
 
         assert_eq!(shell.focus.top(), FocusLayer::ToolInspector);
         assert_eq!(selected_tool_id, Some("tool-1"));
+    }
+
+    #[test]
+    fn status_command_appends_runtime_surface_message() {
+        let mut shell = state::Shell::new("sess-7");
+        shell.pane.model = "gpt-5".to_owned();
+        shell.pane.input_tokens = 120;
+        shell.pane.output_tokens = 80;
+        shell.pane.context_length = 1000;
+
+        handle_slash_command(
+            &mut shell,
+            ParsedSlashCommand {
+                command: SlashCommand::Status,
+                args: String::new(),
+            },
+        );
+
+        let rendered_surface = shell
+            .pane
+            .messages
+            .last()
+            .and_then(|message| message.parts.first())
+            .and_then(|part| match part {
+                MessagePart::Text(text) => Some(text.as_str()),
+                MessagePart::ThinkBlock(_) | MessagePart::ToolCall { .. } => None,
+            })
+            .unwrap_or("");
+
+        assert!(rendered_surface.contains("runtime status"));
+        assert!(rendered_surface.contains("- session: sess-7"));
+        assert!(rendered_surface.contains("- model: gpt-5"));
+        assert!(rendered_surface.contains("- tokens: 200"));
+    }
+
+    #[test]
+    fn surface_ui_event_appends_surface_message_and_status() {
+        let mut shell = state::Shell::new("sess-surface");
+
+        apply_ui_event(
+            &mut shell,
+            UiEvent::Surface {
+                title: "context compaction".to_owned(),
+                lines: vec![
+                    "- session: sess-surface".to_owned(),
+                    "- result: context compaction completed".to_owned(),
+                ],
+            },
+        );
+
+        let rendered_surface = shell
+            .pane
+            .messages
+            .last()
+            .and_then(|message| message.parts.first())
+            .and_then(|part| match part {
+                MessagePart::Text(text) => Some(text.as_str()),
+                MessagePart::ThinkBlock(_) | MessagePart::ToolCall { .. } => None,
+            })
+            .unwrap_or("");
+        let status = shell
+            .pane
+            .status_message
+            .as_ref()
+            .map(|(message, _)| message.as_str());
+
+        assert!(rendered_surface.contains("context compaction"));
+        assert!(rendered_surface.contains("- session: sess-surface"));
+        assert_eq!(status, Some("context compaction added to transcript"));
+    }
+
+    #[test]
+    fn composer_placeholder_prefers_compact_when_context_is_hot() {
+        let mut pane = state::Pane::new("sess-hot");
+        pane.context_length = 100;
+        pane.input_tokens = 45;
+        pane.output_tokens = 35;
+
+        let placeholder = composer_placeholder(&pane).expect("placeholder");
+
+        assert!(
+            placeholder.contains("/compact"),
+            "high context usage should steer toward compaction: {placeholder}"
+        );
+    }
+
+    #[test]
+    fn composer_placeholder_prefers_attention_approvals_over_generic_prompts() {
+        let mut pane = state::Pane::new("sess-approvals");
+        pane.composer_suggestion_context.attention_approvals = Some(2);
+        pane.composer_suggestion_context.pending_approvals = Some(3);
+        pane.messages
+            .push(crate::chat::tui::message::Message::system("already active"));
+
+        let placeholder = composer_placeholder(&pane).expect("placeholder");
+
+        assert!(
+            placeholder.contains("/approvals attention"),
+            "attention-heavy approvals should drive the prompt: {placeholder}"
+        );
+    }
+
+    #[test]
+    fn composer_placeholder_prefers_overdue_tasks_before_dirty_worktree() {
+        let mut pane = state::Pane::new("sess-tasks");
+        pane.composer_suggestion_context.overdue_tasks = Some(1);
+        pane.composer_suggestion_context.worktree_dirty = Some(true);
+        pane.messages
+            .push(crate::chat::tui::message::Message::system("already active"));
+
+        let placeholder = composer_placeholder(&pane).expect("placeholder");
+
+        assert!(
+            placeholder.contains("/tasks overdue"),
+            "overdue delegate work should outrank generic dirty-worktree advice: {placeholder}"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "memory-sqlite")]
+    fn resume_command_lists_visible_sessions() {
+        let _guard = shell_memory_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp_dir = tempdir().expect("tempdir");
+        let config = shell_runtime_config_for_test(temp_dir.path());
+        let repo = session_repo_for_config(&config);
+        let root_session_id = scoped_test_id(temp_dir.path(), "ops-root");
+        let delegate_session_id = scoped_test_id(temp_dir.path(), "delegate-task-1");
+        ensure_root_session(&repo, root_session_id.as_str());
+        repo.create_session_with_event(crate::session::repository::CreateSessionWithEventRequest {
+            session: crate::session::repository::NewSessionRecord {
+                session_id: delegate_session_id.clone(),
+                kind: crate::session::repository::SessionKind::DelegateChild,
+                parent_session_id: Some(root_session_id.clone()),
+                label: Some("Research PR".to_owned()),
+                state: crate::session::repository::SessionState::Ready,
+            },
+            event_kind: "delegate_queued".to_owned(),
+            actor_session_id: Some(root_session_id.clone()),
+            event_payload_json: json!({ "task": "Research PR" }),
+        })
+        .expect("create delegate child");
+
+        let mut shell = state::Shell::new(root_session_id.as_str());
+        attach_shell_runtime_config(&mut shell, &config, temp_dir.path());
+
+        handle_slash_command(
+            &mut shell,
+            ParsedSlashCommand {
+                command: SlashCommand::Resume,
+                args: String::new(),
+            },
+        );
+
+        let rendered_surface = latest_message_text(&shell);
+
+        assert!(rendered_surface.contains("resume candidates"));
+        assert!(rendered_surface.contains(root_session_id.as_str()));
+        assert!(rendered_surface.contains(delegate_session_id.as_str()));
+        assert!(rendered_surface.contains("task queued"));
+    }
+
+    #[test]
+    #[cfg(feature = "memory-sqlite")]
+    fn switch_resumed_session_restores_target_history() {
+        let _guard = shell_memory_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp_dir = tempdir().expect("tempdir");
+        let config = shell_runtime_config_for_test(temp_dir.path());
+        let repo = session_repo_for_config(&config);
+        let memory_config =
+            crate::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+        let root_session_id = scoped_test_id(temp_dir.path(), "ops-root");
+        let child_session_id = scoped_test_id(temp_dir.path(), "child-session");
+        ensure_root_session(&repo, root_session_id.as_str());
+        repo.create_session_with_event(crate::session::repository::CreateSessionWithEventRequest {
+            session: crate::session::repository::NewSessionRecord {
+                session_id: child_session_id.clone(),
+                kind: crate::session::repository::SessionKind::DelegateChild,
+                parent_session_id: Some(root_session_id.clone()),
+                label: Some("Child work".to_owned()),
+                state: crate::session::repository::SessionState::Completed,
+            },
+            event_kind: "delegate_completed".to_owned(),
+            actor_session_id: Some(root_session_id.clone()),
+            event_payload_json: json!({ "task": "Child work" }),
+        })
+        .expect("create child session");
+        crate::memory::append_turn_direct(
+            child_session_id.as_str(),
+            "user",
+            "hello child",
+            &memory_config,
+        )
+        .expect("append child user turn");
+        crate::memory::append_turn_direct(
+            child_session_id.as_str(),
+            "assistant",
+            "child reply",
+            &memory_config,
+        )
+        .expect("append child assistant turn");
+
+        let config_path = temp_dir.path().join("loongclaw.toml");
+        fs::write(&config_path, "# shell switch test\n").expect("write config file");
+        let runtime = runtime::TuiRuntime {
+            resolved_path: config_path,
+            config: config.clone(),
+            session_id: root_session_id.clone(),
+            session_address: crate::conversation::ConversationSessionAddress::from_session_id(
+                root_session_id.clone(),
+            ),
+            turn_coordinator: crate::conversation::ConversationTurnCoordinator::new(),
+            kernel_ctx: crate::context::bootstrap_kernel_context_with_config(
+                "tui-switch-test",
+                crate::context::DEFAULT_TOKEN_TTL_S,
+                &config,
+            )
+            .expect("bootstrap kernel context"),
+            model_label: "auto".to_owned(),
+        };
+
+        let mut shell = state::Shell::new(root_session_id.as_str());
+        attach_shell_runtime_config(&mut shell, &config, temp_dir.path());
+        let mut owned_runtime = Some(std::sync::Arc::new(runtime));
+
+        switch_resumed_session(&mut owned_runtime, &mut shell, child_session_id.as_str())
+            .expect("switch session");
+
+        assert_eq!(shell.pane.session_id, child_session_id.as_str());
+        assert_eq!(
+            owned_runtime
+                .as_ref()
+                .map(|runtime| runtime.session_id.as_str()),
+            Some(child_session_id.as_str())
+        );
+        assert!(
+            shell
+                .pane
+                .messages
+                .iter()
+                .any(|message| matches!(message.role, Role::User)
+                    && matches!(message.parts.first(), Some(MessagePart::Text(text)) if text == "hello child")),
+            "resumed transcript should include child user turn"
+        );
+        assert!(
+            shell
+                .pane
+                .messages
+                .iter()
+                .any(|message| matches!(message.role, Role::Assistant)
+                    && matches!(message.parts.first(), Some(MessagePart::Text(text)) if text == "child reply")),
+            "resumed transcript should include child assistant turn"
+        );
+        assert!(
+            latest_message_text(&shell)
+                .contains(format!("Resumed session `{}`", child_session_id).as_str()),
+            "switch should append a session resume system message"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "memory-sqlite")]
+    fn tasks_command_lists_delegate_sessions() {
+        let _guard = shell_memory_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp_dir = tempdir().expect("tempdir");
+        let config = shell_runtime_config_for_test(temp_dir.path());
+        let repo = session_repo_for_config(&config);
+        let root_session_id = scoped_test_id(temp_dir.path(), "ops-root");
+        let delegate_session_id = scoped_test_id(temp_dir.path(), "delegate-task-2");
+        ensure_root_session(&repo, root_session_id.as_str());
+        repo.create_session_with_event(crate::session::repository::CreateSessionWithEventRequest {
+            session: crate::session::repository::NewSessionRecord {
+                session_id: delegate_session_id.clone(),
+                kind: crate::session::repository::SessionKind::DelegateChild,
+                parent_session_id: Some(root_session_id.clone()),
+                label: Some("Long-running task".to_owned()),
+                state: crate::session::repository::SessionState::Running,
+            },
+            event_kind: "delegate_started".to_owned(),
+            actor_session_id: Some(root_session_id.clone()),
+            event_payload_json: json!({ "task": "Long-running task" }),
+        })
+        .expect("create running delegate child");
+
+        let mut shell = state::Shell::new(root_session_id.as_str());
+        attach_shell_runtime_config(&mut shell, &config, temp_dir.path());
+
+        handle_slash_command(
+            &mut shell,
+            ParsedSlashCommand {
+                command: SlashCommand::Tasks,
+                args: "running".to_owned(),
+            },
+        );
+
+        let rendered_surface = latest_message_text(&shell);
+
+        assert!(rendered_surface.contains("delegate tasks"));
+        assert!(rendered_surface.contains(delegate_session_id.as_str()));
+        assert!(rendered_surface.contains("task running"));
+    }
+
+    #[test]
+    #[cfg(feature = "memory-sqlite")]
+    fn approvals_command_lists_pending_requests() {
+        let _guard = shell_memory_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp_dir = tempdir().expect("tempdir");
+        let config = shell_runtime_config_for_test(temp_dir.path());
+        let repo = session_repo_for_config(&config);
+        let root_session_id = scoped_test_id(temp_dir.path(), "ops-root");
+        let approval_request_id = scoped_test_id(temp_dir.path(), "apr-123");
+        ensure_root_session(&repo, root_session_id.as_str());
+        repo.ensure_approval_request(crate::session::repository::NewApprovalRequestRecord {
+            approval_request_id: approval_request_id.clone(),
+            session_id: root_session_id.clone(),
+            turn_id: "turn-1".to_owned(),
+            tool_call_id: "tool-call-1".to_owned(),
+            tool_name: "delegate_async".to_owned(),
+            approval_key: "tool:delegate_async".to_owned(),
+            request_payload_json: json!({
+                "tool_name": "delegate_async",
+                "payload": { "task": "Inspect issue" }
+            }),
+            governance_snapshot_json: json!({
+                "reason": "approval required for delegate_async",
+                "rule_id": "delegate_review"
+            }),
+        })
+        .expect("create approval request");
+
+        let mut shell = state::Shell::new(root_session_id.as_str());
+        attach_shell_runtime_config(&mut shell, &config, temp_dir.path());
+
+        handle_slash_command(
+            &mut shell,
+            ParsedSlashCommand {
+                command: SlashCommand::Approvals,
+                args: String::new(),
+            },
+        );
+
+        let rendered_surface = latest_message_text(&shell);
+
+        assert!(rendered_surface.contains("approval requests"));
+        assert!(rendered_surface.contains(approval_request_id.as_str()));
+        assert!(rendered_surface.contains("delegate_async"));
+    }
+
+    #[test]
+    #[cfg(feature = "memory-sqlite")]
+    fn permissions_command_reports_session_tool_policy() {
+        let _guard = shell_memory_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp_dir = tempdir().expect("tempdir");
+        let config = shell_runtime_config_for_test(temp_dir.path());
+        let repo = session_repo_for_config(&config);
+        let root_session_id = scoped_test_id(temp_dir.path(), "ops-root");
+        ensure_root_session(&repo, root_session_id.as_str());
+        repo.upsert_session_tool_policy(crate::session::repository::NewSessionToolPolicyRecord {
+            session_id: root_session_id.clone(),
+            requested_tool_ids: vec!["session_events".to_owned(), "session_status".to_owned()],
+            runtime_narrowing: crate::tools::runtime_config::ToolRuntimeNarrowing::default(),
+        })
+        .expect("set session tool policy");
+
+        let mut shell = state::Shell::new(root_session_id.as_str());
+        attach_shell_runtime_config(&mut shell, &config, temp_dir.path());
+
+        handle_slash_command(
+            &mut shell,
+            ParsedSlashCommand {
+                command: SlashCommand::Permissions,
+                args: String::new(),
+            },
+        );
+
+        let rendered_surface = latest_message_text(&shell);
+
+        assert!(rendered_surface.contains("session permissions"));
+        assert!(rendered_surface.contains(format!("- session: {root_session_id}").as_str()));
+        assert!(rendered_surface.contains("session_events"));
+        assert!(rendered_surface.contains("session_status"));
+    }
+
+    #[test]
+    fn session_command_appends_selection_and_tool_summary() {
+        let mut shell = state::Shell::new("sess-9");
+        shell.pane.add_user_message("hello");
+        shell
+            .pane
+            .start_tool_call("tool-1", "shell.exec", "git status --short");
+        shell.pane.complete_tool_call("tool-1", true, "clean", 5);
+        shell.focus.focus_transcript();
+        shell.pane.transcript_review.cursor_line = 1;
+        shell.pane.transcript_review.anchor_line = Some(0);
+
+        handle_slash_command(
+            &mut shell,
+            ParsedSlashCommand {
+                command: SlashCommand::Session,
+                args: String::new(),
+            },
+        );
+
+        let rendered_surface = shell
+            .pane
+            .messages
+            .last()
+            .and_then(|message| message.parts.first())
+            .and_then(|part| match part {
+                MessagePart::Text(text) => Some(text.as_str()),
+                MessagePart::ThinkBlock(_) | MessagePart::ToolCall { .. } => None,
+            })
+            .unwrap_or("");
+
+        assert!(rendered_surface.contains("session status"));
+        assert!(rendered_surface.contains("- session: sess-9"));
+        assert!(rendered_surface.contains("- focus: review"));
+        assert!(rendered_surface.contains("- tool calls: 1"));
+    }
+
+    #[test]
+    fn context_command_appends_context_surface_message() {
+        let mut shell = state::Shell::new("sess-ctx");
+        shell.pane.model = "gpt-5".to_owned();
+        shell.pane.input_tokens = 300;
+        shell.pane.output_tokens = 200;
+        shell.pane.context_length = 2000;
+
+        handle_slash_command(
+            &mut shell,
+            ParsedSlashCommand {
+                command: SlashCommand::Context,
+                args: String::new(),
+            },
+        );
+
+        let rendered_surface = shell
+            .pane
+            .messages
+            .last()
+            .and_then(|message| message.parts.first())
+            .and_then(|part| match part {
+                MessagePart::Text(text) => Some(text.as_str()),
+                MessagePart::ThinkBlock(_) | MessagePart::ToolCall { .. } => None,
+            })
+            .unwrap_or("");
+
+        assert!(rendered_surface.contains("context status"));
+        assert!(rendered_surface.contains("- input tokens: 300"));
+        assert!(rendered_surface.contains("- output tokens: 200"));
+        assert!(rendered_surface.contains("- total tokens: 500"));
+        assert!(rendered_surface.contains("- context usage: 25.0%"));
+    }
+
+    #[test]
+    fn tools_command_appends_tool_activity_surface() {
+        let mut shell = state::Shell::new("sess-tools");
+        shell
+            .pane
+            .start_tool_call("tool-1", "shell.exec", "git status --short");
+        shell.pane.complete_tool_call("tool-1", true, "clean", 5);
+
+        handle_slash_command(
+            &mut shell,
+            ParsedSlashCommand {
+                command: SlashCommand::Tools,
+                args: String::new(),
+            },
+        );
+
+        let rendered_surface = shell
+            .pane
+            .messages
+            .last()
+            .and_then(|message| message.parts.first())
+            .and_then(|part| match part {
+                MessagePart::Text(text) => Some(text.as_str()),
+                MessagePart::ThinkBlock(_) | MessagePart::ToolCall { .. } => None,
+            })
+            .unwrap_or("");
+
+        assert!(rendered_surface.contains("tool activity"));
+        assert!(rendered_surface.contains("shell.exec"));
+        assert!(rendered_surface.contains("git status --short"));
+    }
+
+    #[test]
+    fn thinking_command_toggles_visibility_from_args() {
+        let mut shell = state::Shell::new("sess-thinking");
+        shell.show_thinking = true;
+
+        handle_slash_command(
+            &mut shell,
+            ParsedSlashCommand {
+                command: SlashCommand::Thinking,
+                args: "off".to_owned(),
+            },
+        );
+        assert!(!shell.show_thinking);
+
+        handle_slash_command(
+            &mut shell,
+            ParsedSlashCommand {
+                command: SlashCommand::Thinking,
+                args: "toggle".to_owned(),
+            },
+        );
+        assert!(shell.show_thinking);
+    }
+
+    #[test]
+    fn commands_command_appends_catalog_surface_message() {
+        let mut shell = state::Shell::new("sess-cmd");
+
+        handle_slash_command(
+            &mut shell,
+            ParsedSlashCommand {
+                command: SlashCommand::Commands,
+                args: String::new(),
+            },
+        );
+
+        let rendered_surface = shell
+            .pane
+            .messages
+            .last()
+            .and_then(|message| message.parts.first())
+            .and_then(|part| match part {
+                MessagePart::Text(text) => Some(text.as_str()),
+                MessagePart::ThinkBlock(_) | MessagePart::ToolCall { .. } => None,
+            })
+            .unwrap_or("");
+
+        assert!(rendered_surface.contains("command catalog"));
+        assert!(rendered_surface.contains("/diff [status|full] [Status]"));
+        assert!(rendered_surface.contains("/export [latest|transcript] [path] [General]"));
+        assert!(rendered_surface.contains("/context [Status]"));
+    }
+
+    #[test]
+    fn export_command_writes_transcript_to_requested_path() {
+        let temp_dir = tempdir().expect("tempdir");
+        let export_path = temp_dir.path().join("transcript.txt");
+        let export_arg = export_path.display().to_string();
+        let mut shell = state::Shell::new("sess-export");
+        shell.pane.add_user_message("hello");
+        shell.pane.add_system_message("world");
+
+        handle_slash_command(
+            &mut shell,
+            ParsedSlashCommand {
+                command: SlashCommand::Export,
+                args: export_arg,
+            },
+        );
+
+        let written = fs::read_to_string(&export_path).expect("exported transcript");
+        assert!(written.contains("hello"));
+        assert!(written.contains("world"));
+    }
+
+    #[test]
+    fn copy_command_can_copy_full_transcript() {
+        let mut shell = state::Shell::new("sess-copy");
+        shell.pane.add_user_message("alpha");
+        shell.pane.add_system_message("beta");
+
+        handle_slash_command(
+            &mut shell,
+            ParsedSlashCommand {
+                command: SlashCommand::Copy,
+                args: "transcript".to_owned(),
+            },
+        );
+
+        let status = shell
+            .pane
+            .status_message
+            .as_ref()
+            .map(|(message, _)| message.as_str())
+            .unwrap_or("");
+
+        assert!(status.contains("Copied transcript"));
+    }
+
+    #[test]
+    fn diff_command_appends_working_tree_surface_from_git_repo() {
+        let temp_dir = tempdir().expect("tempdir");
+        let repo_root = temp_dir.path();
+        let _cwd_guard = set_current_dir_for_test(repo_root);
+
+        Command::new("git")
+            .args(["init"])
+            .output()
+            .expect("git init");
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .output()
+            .expect("git config email");
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .output()
+            .expect("git config name");
+        fs::write(repo_root.join("demo.txt"), "alpha\n").expect("write initial file");
+        Command::new("git")
+            .args(["add", "demo.txt"])
+            .output()
+            .expect("git add");
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .output()
+            .expect("git commit");
+        fs::write(repo_root.join("demo.txt"), "alpha\nbeta\n").expect("write modified file");
+
+        let mut shell = state::Shell::new("sess-diff");
+        handle_slash_command(
+            &mut shell,
+            ParsedSlashCommand {
+                command: SlashCommand::Diff,
+                args: "status".to_owned(),
+            },
+        );
+
+        let rendered_surface = shell
+            .pane
+            .messages
+            .last()
+            .and_then(|message| message.parts.first())
+            .and_then(|part| match part {
+                MessagePart::Text(text) => Some(text.as_str()),
+                MessagePart::ThinkBlock(_) | MessagePart::ToolCall { .. } => None,
+            })
+            .unwrap_or("");
+
+        assert!(rendered_surface.contains("working tree diff"));
+        assert!(rendered_surface.contains("demo.txt"));
     }
 }

@@ -2,12 +2,13 @@ use std::borrow::Cow;
 
 use ratatui::{
     Frame,
-    layout::{Margin, Rect},
+    layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
+    symbols,
     text::{Line, Span},
     widgets::{
-        Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
-        block::Position as TitlePosition,
+        Axis, Block, Borders, Chart, Clear, Dataset, GraphType, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Wrap, block::Position as TitlePosition,
     },
 };
 
@@ -19,6 +20,7 @@ use super::input::{self, InputView};
 use super::layout;
 use super::message::{ToolStatus, format_tool_args_preview};
 use super::spinner::{self, SpinnerView};
+use super::stats;
 use super::status_bar::{self, StatusBarView};
 use super::theme::Palette;
 
@@ -31,6 +33,24 @@ pub(super) struct ToolInspectorView<'a> {
     pub(super) scroll_offset: u16,
     pub(super) position: usize,
     pub(super) total: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SlashPaletteEntry {
+    pub(super) replacement: String,
+    pub(super) label: String,
+    pub(super) meta: String,
+    pub(super) detail: String,
+    pub(super) immediate: bool,
+    pub(super) submit_on_select: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct StatsOverlayView<'a> {
+    pub(super) snapshot: &'a stats::StatsSnapshot,
+    pub(super) active_tab: stats::StatsTab,
+    pub(super) date_range: stats::StatsDateRange,
+    pub(super) copy_status: Option<&'a str>,
 }
 
 // ---------------------------------------------------------------------------
@@ -48,7 +68,9 @@ pub(super) trait ShellView {
     fn focus(&self) -> &FocusStack;
     fn clarify_dialog(&self) -> Option<&ClarifyDialog>;
     fn tool_inspector(&self) -> Option<ToolInspectorView<'_>>;
+    fn stats_overlay(&self) -> Option<StatsOverlayView<'_>>;
     fn slash_command_selection(&self) -> usize;
+    fn slash_palette_entries(&self, draft_prefix: &str) -> Vec<SlashPaletteEntry>;
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +123,7 @@ pub(super) fn draw(
 
     render_command_palette(
         frame,
+        state,
         areas.input,
         textarea,
         state.focus().top(),
@@ -128,6 +151,12 @@ pub(super) fn draw(
         && state.focus().has(FocusLayer::ToolInspector)
     {
         render_tool_inspector(tool_inspector, frame, area, palette);
+    }
+
+    if let Some(stats_overlay) = state.stats_overlay()
+        && state.focus().has(FocusLayer::StatsOverlay)
+    {
+        render_stats_overlay(stats_overlay, frame, area, palette);
     }
 
     if state.focus().has(FocusLayer::Help) {
@@ -218,6 +247,7 @@ fn compact_focus_label(focus: FocusLayer) -> &'static str {
         FocusLayer::Composer => "COMPOSE",
         FocusLayer::Transcript => "REVIEW",
         FocusLayer::Help => "HELP",
+        FocusLayer::StatsOverlay => "STATS",
         FocusLayer::ToolInspector => "TOOL",
         FocusLayer::ClarifyDialog => "QUESTION",
     }
@@ -231,8 +261,460 @@ fn compact_scroll_label(scroll_offset: u16) -> &'static str {
     }
 }
 
+fn render_stats_overlay(
+    stats_overlay: StatsOverlayView<'_>,
+    frame: &mut Frame<'_>,
+    area: Rect,
+    palette: &Palette,
+) {
+    if area.width < 60 || area.height < 18 {
+        return;
+    }
+
+    let max_width = area.width.saturating_sub(4);
+    let preferred_width = area.width.saturating_mul(4) / 5;
+    let popup_width = preferred_width.max(72).min(max_width);
+
+    let max_height = area.height.saturating_sub(2);
+    let preferred_height = area.height.saturating_mul(4) / 5;
+    let popup_height = preferred_height.max(18).min(max_height);
+
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let footer_hint = match stats_overlay.copy_status {
+        Some(status) => {
+            format!(" Esc close · Tab switch · r cycle range · Ctrl+S copy · {status} ")
+        }
+        None => " Esc close · Tab switch · r cycle range · Ctrl+S copy ".to_owned(),
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(palette.brand))
+        .title(Span::styled(
+            " Stats ",
+            Style::default()
+                .fg(palette.brand)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .title_position(TitlePosition::Top)
+        .title(Span::styled(
+            footer_hint,
+            Style::default()
+                .fg(palette.dim)
+                .add_modifier(Modifier::ITALIC),
+        ))
+        .title_position(TitlePosition::Bottom)
+        .style(Style::default().bg(Color::Rgb(0x1a, 0x1a, 0x1a)));
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(8),
+        ])
+        .split(inner);
+
+    let [tabs_area, date_range_area, body_area] = sections.as_ref() else {
+        return;
+    };
+
+    render_stats_tab_row(frame, *tabs_area, stats_overlay, palette);
+    render_stats_date_range_row(frame, *date_range_area, stats_overlay, palette);
+
+    match stats_overlay.active_tab {
+        stats::StatsTab::Overview => {
+            render_stats_overview_body(frame, *body_area, stats_overlay, palette);
+        }
+        stats::StatsTab::Models => {
+            render_stats_models_body(frame, *body_area, stats_overlay, palette);
+        }
+    }
+}
+
+fn render_stats_tab_row(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    stats_overlay: StatsOverlayView<'_>,
+    palette: &Palette,
+) {
+    let tabs = [stats::StatsTab::Overview, stats::StatsTab::Models];
+    let mut spans = Vec::new();
+
+    for (index, tab) in tabs.iter().enumerate() {
+        let is_active = *tab == stats_overlay.active_tab;
+        let label = tab.label();
+        let style = if is_active {
+            Style::default()
+                .fg(palette.brand)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else {
+            Style::default().fg(palette.dim)
+        };
+        spans.push(Span::styled(format!(" {label} "), style));
+
+        if index + 1 < tabs.len() {
+            spans.push(Span::styled("  ", Style::default().fg(palette.dim)));
+        }
+    }
+
+    let line = Line::from(spans);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+fn render_stats_date_range_row(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    stats_overlay: StatsOverlayView<'_>,
+    palette: &Palette,
+) {
+    let ranges = [
+        stats::StatsDateRange::All,
+        stats::StatsDateRange::Last7Days,
+        stats::StatsDateRange::Last30Days,
+    ];
+    let mut spans = Vec::new();
+
+    for (index, date_range) in ranges.iter().enumerate() {
+        let is_active = *date_range == stats_overlay.date_range;
+        let label = date_range.label();
+        let style = if is_active {
+            Style::default()
+                .fg(palette.warning)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(palette.dim)
+        };
+        spans.push(Span::styled(label.to_owned(), style));
+
+        if index + 1 < ranges.len() {
+            spans.push(Span::styled(" · ", Style::default().fg(palette.dim)));
+        }
+    }
+
+    let line = Line::from(spans);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+fn render_stats_overview_body(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    stats_overlay: StatsOverlayView<'_>,
+    palette: &Palette,
+) {
+    let range_view = stats_overlay.snapshot.range_view(stats_overlay.date_range);
+    let total_tokens_label = stats::format_compact_tokens(range_view.total_tokens);
+    let total_input_label = stats::format_compact_tokens(range_view.total_input_tokens);
+    let total_output_label = stats::format_compact_tokens(range_view.total_output_tokens);
+    let top_model_label = range_view
+        .top_model
+        .as_ref()
+        .map(|entry| entry.model.clone())
+        .unwrap_or_else(|| "(none)".to_owned());
+    let longest_session_label = stats_overlay
+        .snapshot
+        .longest_session
+        .as_ref()
+        .map(render_stats_duration)
+        .unwrap_or_else(|| "(none)".to_owned());
+    let first_activity_label = stats_overlay
+        .snapshot
+        .first_activity_date
+        .map(stats::short_date_label)
+        .unwrap_or_else(|| "(none)".to_owned());
+    let last_activity_label = stats_overlay
+        .snapshot
+        .last_activity_date
+        .map(stats::short_date_label)
+        .unwrap_or_else(|| "(none)".to_owned());
+
+    let left_lines = vec![
+        stats_metric_line(
+            "Visible sessions",
+            stats_overlay.snapshot.visible_sessions.to_string(),
+            palette,
+        ),
+        stats_metric_line(
+            "Delegate sessions",
+            stats_overlay.snapshot.delegate_sessions.to_string(),
+            palette,
+        ),
+        stats_metric_line(
+            "Pending approvals",
+            stats_overlay.snapshot.pending_approvals.to_string(),
+            palette,
+        ),
+        stats_metric_line(
+            "Running tasks",
+            stats_overlay.snapshot.running_delegate_sessions.to_string(),
+            palette,
+        ),
+        stats_metric_line("Active days", range_view.active_days.to_string(), palette),
+        stats_metric_line(
+            "Current streak",
+            range_view.current_streak.to_string(),
+            palette,
+        ),
+    ];
+    let right_lines = vec![
+        stats_metric_line("Total tokens", total_tokens_label, palette),
+        stats_metric_line("Input tokens", total_input_label, palette),
+        stats_metric_line("Output tokens", total_output_label, palette),
+        stats_metric_line("Top model", top_model_label, palette),
+        stats_metric_line("Longest session", longest_session_label, palette),
+        stats_metric_line(
+            "Activity window",
+            format!("{first_activity_label} → {last_activity_label}"),
+            palette,
+        ),
+    ];
+
+    let body_sections = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area);
+    let [left_area, right_area] = body_sections.as_ref() else {
+        return;
+    };
+
+    frame.render_widget(Paragraph::new(left_lines), *left_area);
+    frame.render_widget(Paragraph::new(right_lines), *right_area);
+
+    if stats_overlay.snapshot.usage_event_count == 0 {
+        let note_line = Line::from(vec![
+            Span::styled(
+                " No persisted provider usage events yet. ",
+                Style::default()
+                    .fg(palette.warning)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "New turns will populate the models view.",
+                Style::default().fg(palette.dim),
+            ),
+        ]);
+        let note_area = Rect::new(
+            area.x,
+            area.y + area.height.saturating_sub(2),
+            area.width,
+            1,
+        );
+        frame.render_widget(Paragraph::new(note_line), note_area);
+    }
+}
+
+fn render_stats_models_body(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    stats_overlay: StatsOverlayView<'_>,
+    palette: &Palette,
+) {
+    let range_view = stats_overlay.snapshot.range_view(stats_overlay.date_range);
+    let body_sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(10),
+            Constraint::Length(1),
+            Constraint::Min(4),
+        ])
+        .split(area);
+    let [title_area, chart_area, legend_area, list_area] = body_sections.as_ref() else {
+        return;
+    };
+
+    let title = Line::styled(
+        " Tokens per Day",
+        Style::default()
+            .fg(palette.text)
+            .add_modifier(Modifier::BOLD),
+    );
+    frame.render_widget(Paragraph::new(title), *title_area);
+
+    let maybe_chart = range_view.chart_view(3);
+    if let Some(chart_view) = maybe_chart {
+        render_stats_chart(frame, *chart_area, &chart_view, palette);
+        render_stats_chart_legend(frame, *legend_area, &chart_view, palette);
+    } else {
+        let empty_line = Line::styled(
+            "No persisted model usage yet.",
+            Style::default().fg(palette.dim),
+        );
+        frame.render_widget(Paragraph::new(empty_line), *chart_area);
+    }
+
+    let model_lines = range_view
+        .model_totals
+        .iter()
+        .take(6)
+        .map(|entry| render_stats_model_line(entry, palette))
+        .collect::<Vec<_>>();
+
+    let content = if model_lines.is_empty() {
+        vec![Line::styled(
+            "No model totals available for this range.",
+            Style::default().fg(palette.dim),
+        )]
+    } else {
+        model_lines
+    };
+
+    frame.render_widget(Paragraph::new(content), *list_area);
+}
+
+fn render_stats_chart(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    chart_view: &stats::StatsChartView,
+    palette: &Palette,
+) {
+    let series_colors = [palette.info, palette.success, palette.warning];
+    let mut datasets = Vec::new();
+
+    for (index, series) in chart_view.series.iter().enumerate() {
+        let color = series_colors
+            .get(index % series_colors.len())
+            .copied()
+            .unwrap_or(palette.text);
+        let dataset = Dataset::default()
+            .name(series.label.clone())
+            .marker(symbols::Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(Style::default().fg(color))
+            .data(series.points.as_slice());
+        datasets.push(dataset);
+    }
+
+    let x_end = chart_view
+        .series
+        .first()
+        .map(|series| series.points.len().saturating_sub(1) as f64)
+        .unwrap_or(0.0);
+    let y_max = chart_view.max_tokens as f64;
+    let mid_y = (chart_view.max_tokens / 2).max(1);
+
+    let x_labels = vec![
+        Span::styled(
+            chart_view.start_label.clone(),
+            Style::default().fg(palette.dim),
+        ),
+        Span::styled(
+            chart_view.middle_label.clone(),
+            Style::default().fg(palette.dim),
+        ),
+        Span::styled(
+            chart_view.end_label.clone(),
+            Style::default().fg(palette.dim),
+        ),
+    ];
+    let y_labels = vec![
+        Span::styled("0".to_owned(), Style::default().fg(palette.dim)),
+        Span::styled(
+            stats::format_compact_tokens(mid_y),
+            Style::default().fg(palette.dim),
+        ),
+        Span::styled(
+            stats::format_compact_tokens(chart_view.max_tokens),
+            Style::default().fg(palette.dim),
+        ),
+    ];
+    let chart = Chart::new(datasets)
+        .x_axis(
+            Axis::default()
+                .bounds([0.0, x_end.max(1.0)])
+                .labels(x_labels),
+        )
+        .y_axis(
+            Axis::default()
+                .bounds([0.0, y_max.max(1.0)])
+                .labels(y_labels),
+        );
+
+    frame.render_widget(chart, area);
+}
+
+fn render_stats_chart_legend(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    chart_view: &stats::StatsChartView,
+    palette: &Palette,
+) {
+    let series_colors = [palette.info, palette.success, palette.warning];
+    let mut spans = Vec::new();
+
+    for (index, series) in chart_view.series.iter().enumerate() {
+        let color = series_colors
+            .get(index % series_colors.len())
+            .copied()
+            .unwrap_or(palette.text);
+        spans.push(Span::styled("● ", Style::default().fg(color)));
+        spans.push(Span::styled(
+            series.label.clone(),
+            Style::default().fg(palette.text),
+        ));
+
+        if index + 1 < chart_view.series.len() {
+            spans.push(Span::styled("  ", Style::default().fg(palette.dim)));
+        }
+    }
+
+    let line = Line::from(spans);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+fn render_stats_model_line(entry: &stats::ModelTokenTotal, palette: &Palette) -> Line<'static> {
+    let total_label = stats::format_compact_tokens(entry.total_tokens);
+    let input_label = stats::format_compact_tokens(entry.input_tokens);
+    let output_label = stats::format_compact_tokens(entry.output_tokens);
+    let model_label = format!(" {} ", entry.model);
+    let usage_label = format!(
+        "{} total · in {} · out {}",
+        total_label, input_label, output_label,
+    );
+
+    Line::from(vec![
+        Span::styled(model_label, Style::default().fg(palette.text)),
+        Span::styled("· ", Style::default().fg(palette.dim)),
+        Span::styled(usage_label, Style::default().fg(palette.dim)),
+    ])
+}
+
+fn stats_metric_line(label: &str, value: String, palette: &Palette) -> Line<'static> {
+    let label_text = format!(" {:<18}", label);
+    let value_text = format!(" {value}");
+
+    Line::from(vec![
+        Span::styled(label_text, Style::default().fg(palette.dim)),
+        Span::styled(
+            value_text,
+            Style::default()
+                .fg(palette.text)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])
+}
+
+fn render_stats_duration(duration: &stats::SessionDurationStat) -> String {
+    let hours = duration.duration_seconds / 3600;
+    let minutes = (duration.duration_seconds % 3600) / 60;
+
+    if hours > 0 {
+        return format!("{hours}h {minutes}m");
+    }
+
+    format!("{minutes}m")
+}
+
 fn render_command_palette(
     frame: &mut Frame<'_>,
+    state: &impl ShellView,
     input_area: Rect,
     textarea: &tui_textarea::TextArea<'_>,
     focus: FocusLayer,
@@ -249,7 +731,7 @@ fn render_command_palette(
         return;
     }
 
-    let matches = commands::completions(draft_prefix);
+    let matches = state.slash_palette_entries(draft_prefix);
     if matches.is_empty() {
         return;
     }
@@ -281,7 +763,7 @@ fn render_command_palette(
     frame.render_widget(block, popup_area);
 
     let mut lines = Vec::new();
-    for (index, (command_name, command_help)) in visible_matches.into_iter().enumerate() {
+    for (index, entry) in visible_matches.into_iter().enumerate() {
         let is_selected = index == selected_index;
         let command_style = if is_selected {
             Style::default()
@@ -297,10 +779,14 @@ fn render_command_palette(
         } else {
             Style::default().fg(palette.dim)
         };
-        let command_span = Span::styled(format!("{command_name:<12}"), command_style);
+        let command_span = Span::styled(format!("{:<28}", entry.label), command_style);
         let separator_span = Span::styled(" ", Style::default().fg(palette.separator));
-        let help_span = Span::styled(command_help.to_owned(), help_style);
-        let line = Line::from(vec![command_span, separator_span, help_span]);
+        let category_span = Span::styled(
+            format!("[{}] ", entry.meta),
+            Style::default().fg(palette.dim),
+        );
+        let help_span = Span::styled(entry.detail, help_style);
+        let line = Line::from(vec![command_span, separator_span, category_span, help_span]);
         lines.push(line);
     }
 
@@ -442,65 +928,66 @@ fn render_clarify_dialog(
 // ---------------------------------------------------------------------------
 
 fn render_help_overlay(frame: &mut Frame<'_>, area: Rect, palette: &Palette) {
-    let help_items: &[(&str, &[(&str, &str)])] = &[
-        (
-            "General",
-            &[
-                ("/help", "Toggle this help"),
-                ("/clear", "Clear conversation"),
-                ("/model", "Show current model"),
-                ("/status", "Show session and token status"),
-                ("/review", "Toggle transcript review"),
-                ("/tools", "Open latest tool details"),
-                ("/latest", "Jump to latest transcript output"),
-                ("/top", "Jump to oldest transcript output"),
-                ("/copy", "Copy selection or cursor line"),
-                ("/think-on", "Show thinking blocks"),
-                ("/think-off", "Hide thinking blocks"),
-                ("/exit", "Exit the TUI"),
-            ],
-        ),
-        (
-            "Shortcuts",
-            &[
-                ("Enter", "Send message"),
-                ("Shift+Enter", "New line"),
-                ("Up/Down", "Scroll history when empty"),
-                ("PageUp/Dn", "Page scroll history"),
-                ("Home/End", "Jump top/latest when empty"),
-                ("Ctrl+R", "Toggle transcript review"),
-                ("Ctrl+O", "Open latest tool details"),
-                ("Ctrl+C", "Interrupt / cancel"),
-                ("Esc", "Close dialogs"),
-            ],
-        ),
-        (
-            "Transcript",
-            &[
-                ("Mouse wheel", "Scroll transcript"),
-                ("Drag left", "Update line selection"),
-                ("Enter on tool", "Open selected tool details"),
-            ],
-        ),
-    ];
-
     let mut content_lines: Vec<Line<'_>> = Vec::new();
-    for (section, items) in help_items {
-        if !content_lines.is_empty() {
-            content_lines.push(Line::default());
-        }
-        content_lines.push(Line::styled(
-            format!(" {section}"),
-            Style::default()
-                .fg(palette.brand)
-                .add_modifier(Modifier::BOLD),
-        ));
-        for (cmd, desc) in *items {
-            content_lines.push(Line::from(vec![
-                Span::styled(format!("  {cmd:<16}"), Style::default().fg(palette.text)),
-                Span::styled(format!(" {desc}"), Style::default().fg(palette.dim)),
-            ]));
-        }
+    content_lines.push(Line::styled(
+        " Shortcuts".to_owned(),
+        Style::default()
+            .fg(palette.brand)
+            .add_modifier(Modifier::BOLD),
+    ));
+    for (key, desc) in [
+        ("Enter / Shift+Enter", "Send message / new line"),
+        ("Up/Down PgUp/Dn", "Scroll transcript"),
+        ("Home/End", "Jump top or latest"),
+        ("Ctrl+R", "Toggle transcript review"),
+        ("Ctrl+O", "Open latest tool details"),
+        ("Ctrl+C", "Interrupt / cancel"),
+        ("Esc", "Close dialogs"),
+    ] {
+        content_lines.push(Line::from(vec![
+            Span::styled(format!("  {key:<16}"), Style::default().fg(palette.text)),
+            Span::styled(format!(" {desc}"), Style::default().fg(palette.dim)),
+        ]));
+    }
+
+    content_lines.push(Line::styled(
+        " Commands".to_owned(),
+        Style::default()
+            .fg(palette.brand)
+            .add_modifier(Modifier::BOLD),
+    ));
+    for spec in commands::discoverable_command_specs() {
+        let command_label = match spec.argument_hint {
+            Some(argument_hint) => format!("{} {}", spec.name, argument_hint),
+            None => spec.name.to_owned(),
+        };
+        content_lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:<20}", command_label),
+                Style::default().fg(palette.text),
+            ),
+            Span::styled(
+                format!("[{}] ", spec.category),
+                Style::default().fg(palette.info),
+            ),
+            Span::styled(spec.help.to_owned(), Style::default().fg(palette.dim)),
+        ]));
+    }
+
+    content_lines.push(Line::styled(
+        " Transcript".to_owned(),
+        Style::default()
+            .fg(palette.brand)
+            .add_modifier(Modifier::BOLD),
+    ));
+    for (key, desc) in [
+        ("Mouse wheel / drag", "Scroll or update line selection"),
+        ("Enter on tool", "Open selected tool details"),
+    ] {
+        content_lines.push(Line::from(vec![
+            Span::styled(format!("  {key:<16}"), Style::default().fg(palette.text)),
+            Span::styled(format!(" {desc}"), Style::default().fg(palette.dim)),
+        ]));
     }
 
     let popup_width = 60u16.min(area.width.saturating_sub(4));
@@ -780,6 +1267,7 @@ fn tool_inspector_output<'a>(status: &'a ToolStatus) -> Cow<'a, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat::tui::commands;
     use crate::chat::tui::dialog::ClarifyDialog;
     use crate::chat::tui::message::{Message, ToolStatus};
     use ratatui::{Terminal, backend::TestBackend};
@@ -904,6 +1392,7 @@ mod tests {
         show_thinking: bool,
         focus: FocusStack,
         clarify_dialog: Option<ClarifyDialog>,
+        stats_overlay: Option<StatsOverlayView<'static>>,
         tool_inspector: Option<TestToolInspector>,
         slash_command_selection: usize,
     }
@@ -915,6 +1404,7 @@ mod tests {
                 show_thinking: false,
                 focus: FocusStack::new(),
                 clarify_dialog: None,
+                stats_overlay: None,
                 tool_inspector: None,
                 slash_command_selection: 0,
             }
@@ -949,8 +1439,27 @@ mod tests {
                 total: inspector.total,
             })
         }
+        fn stats_overlay(&self) -> Option<StatsOverlayView<'_>> {
+            self.stats_overlay
+        }
         fn slash_command_selection(&self) -> usize {
             self.slash_command_selection
+        }
+        fn slash_palette_entries(&self, draft_prefix: &str) -> Vec<SlashPaletteEntry> {
+            commands::completions(draft_prefix)
+                .into_iter()
+                .map(|spec| SlashPaletteEntry {
+                    replacement: spec.name.to_owned(),
+                    label: match spec.argument_hint {
+                        Some(argument_hint) => format!("{} {}", spec.name, argument_hint),
+                        None => spec.name.to_owned(),
+                    },
+                    meta: spec.category.to_owned(),
+                    detail: spec.help.to_owned(),
+                    immediate: false,
+                    submit_on_select: false,
+                })
+                .collect()
         }
     }
 
@@ -966,6 +1475,61 @@ mod tests {
             }
         }
         out
+    }
+
+    fn sample_stats_snapshot() -> stats::StatsSnapshot {
+        let today = chrono::Utc::now().date_naive();
+        let first_date = today - chrono::Duration::days(2);
+        let second_date = today - chrono::Duration::days(1);
+        let mut first_models = std::collections::BTreeMap::new();
+        first_models.insert(
+            "gpt-5".to_owned(),
+            stats::ModelTokenAccumulator {
+                input_tokens: 120,
+                output_tokens: 80,
+            },
+        );
+        let mut second_models = std::collections::BTreeMap::new();
+        second_models.insert(
+            "o4-mini".to_owned(),
+            stats::ModelTokenAccumulator {
+                input_tokens: 180,
+                output_tokens: 140,
+            },
+        );
+
+        stats::StatsSnapshot {
+            visible_sessions: 2,
+            root_sessions: 1,
+            delegate_sessions: 1,
+            running_delegate_sessions: 1,
+            pending_approvals: 1,
+            usage_event_count: 2,
+            first_activity_date: Some(first_date),
+            last_activity_date: Some(second_date),
+            longest_session: Some(stats::SessionDurationStat {
+                session_id: "sess-1".to_owned(),
+                label: Some("Root".to_owned()),
+                duration_seconds: 5400,
+            }),
+            active_dates: vec![first_date, second_date],
+            daily_points: vec![
+                stats::DailyTokenPoint {
+                    date: first_date,
+                    total_input_tokens: 120,
+                    total_output_tokens: 80,
+                    total_tokens: 200,
+                    model_tokens: first_models,
+                },
+                stats::DailyTokenPoint {
+                    date: second_date,
+                    total_input_tokens: 180,
+                    total_output_tokens: 140,
+                    total_tokens: 320,
+                    model_tokens: second_models,
+                },
+            ],
+        }
     }
 
     #[test]
@@ -1011,6 +1575,41 @@ mod tests {
         assert!(
             text.contains("Ctrl+R"),
             "help overlay should advertise transcript review shortcut"
+        );
+    }
+
+    #[test]
+    fn draw_with_stats_overlay() {
+        let backend = TestBackend::new(100, 34);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut focus = FocusStack::new();
+        focus.push(FocusLayer::StatsOverlay);
+        let shell = TestShell {
+            focus,
+            stats_overlay: Some(StatsOverlayView {
+                snapshot: Box::leak(Box::new(sample_stats_snapshot())),
+                active_tab: stats::StatsTab::Models,
+                date_range: stats::StatsDateRange::All,
+                copy_status: Some("copied"),
+            }),
+            ..TestShell::idle()
+        };
+        let palette = Palette::dark();
+        let textarea = tui_textarea::TextArea::default();
+
+        terminal
+            .draw(|f| {
+                draw(f, &shell, &textarea, &palette);
+            })
+            .expect("draw");
+
+        let text = buffer_text(&terminal);
+        assert!(text.contains("Stats"), "stats overlay should be visible");
+        assert!(text.contains("Overview"), "stats tabs should render");
+        assert!(text.contains("Models"), "stats tabs should render");
+        assert!(
+            text.contains("Tokens per Day"),
+            "stats chart title should render"
         );
     }
 
@@ -1161,7 +1760,7 @@ mod tests {
         let shell = TestShell::idle();
         let palette = Palette::dark();
         let mut textarea = tui_textarea::TextArea::default();
-        textarea.insert_str("/re");
+        textarea.insert_str("/rev");
 
         terminal
             .draw(|f| {

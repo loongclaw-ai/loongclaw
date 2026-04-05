@@ -16,6 +16,7 @@ pub(crate) mod runtime;
 pub(super) mod shell;
 pub(super) mod spinner;
 pub(super) mod state;
+pub(super) mod stats;
 pub(super) mod status_bar;
 pub(super) mod terminal;
 pub(super) mod theme;

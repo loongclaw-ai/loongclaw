@@ -10,6 +10,8 @@ use super::safe_lane_failure::{
 };
 use super::turn_budget::SafeLaneFailureRouteReason;
 
+pub(crate) const TURN_USAGE_EVENT_NAME: &str = "turn_usage";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SafeLaneFinalStatus {

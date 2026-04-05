@@ -151,6 +151,7 @@ fn focus_state_span(focus: FocusLayer, palette: &Palette) -> Span<'static> {
         FocusLayer::Composer => ("COMPOSE", palette.info),
         FocusLayer::Transcript => ("REVIEW", palette.warning),
         FocusLayer::Help => ("HELP", palette.brand),
+        FocusLayer::StatsOverlay => ("STATS", palette.brand),
         FocusLayer::ToolInspector => ("TOOL", palette.tool_running),
         FocusLayer::ClarifyDialog => ("QUESTION", palette.warning),
     };

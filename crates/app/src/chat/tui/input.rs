@@ -1,9 +1,9 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::Style,
-    text::Span,
-    widgets::{Block, Borders, block::Position as TitlePosition},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph, block::Position as TitlePosition},
 };
 
 use super::focus::FocusLayer;
@@ -22,6 +22,13 @@ pub(super) trait InputView {
     fn input_hint(&self) -> Option<&str> {
         None
     }
+    fn input_placeholder(&self) -> Option<String> {
+        None
+    }
+}
+
+fn textarea_is_empty(textarea: &tui_textarea::TextArea<'_>) -> bool {
+    textarea.lines().iter().all(|line| line.is_empty())
 }
 
 pub(super) fn render_input(
@@ -45,6 +52,7 @@ pub(super) fn render_input(
         }
         FocusLayer::Composer
         | FocusLayer::Help
+        | FocusLayer::StatsOverlay
         | FocusLayer::ToolInspector
         | FocusLayer::ClarifyDialog => {
             if pane.agent_running() && pane.has_staged_message() {
@@ -74,6 +82,19 @@ pub(super) fn render_input(
 
     // Render textarea widget inside the block's inner area.
     frame.render_widget(textarea, inner);
+
+    if focus == FocusLayer::Composer
+        && textarea_is_empty(textarea)
+        && let Some(placeholder) = pane.input_placeholder()
+    {
+        let placeholder = Paragraph::new(Line::from(Span::styled(
+            placeholder,
+            Style::default()
+                .fg(palette.separator)
+                .add_modifier(Modifier::ITALIC),
+        )));
+        frame.render_widget(placeholder, inner);
+    }
 }
 
 #[cfg(test)]
@@ -108,6 +129,20 @@ mod tests {
         }
         fn transcript_selection_line_count(&self) -> usize {
             self.selection_count
+        }
+    }
+
+    struct PlaceholderInput;
+
+    impl InputView for PlaceholderInput {
+        fn agent_running(&self) -> bool {
+            false
+        }
+        fn has_staged_message(&self) -> bool {
+            false
+        }
+        fn input_placeholder(&self) -> Option<String> {
+            Some("Explain the layered kernel design in this workspace".to_owned())
         }
     }
 
@@ -280,6 +315,35 @@ mod tests {
         assert!(
             text.contains("Esc clear"),
             "selection hint should mention clearing selection: {text:?}"
+        );
+    }
+
+    #[test]
+    fn empty_composer_renders_placeholder_inside_input_box() {
+        let backend = TestBackend::new(72, 5);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let pane = PlaceholderInput;
+        let palette = Palette::dark();
+        let textarea = tui_textarea::TextArea::default();
+
+        terminal
+            .draw(|f| {
+                render_input(
+                    f,
+                    f.area(),
+                    &textarea,
+                    &pane,
+                    FocusLayer::Composer,
+                    &palette,
+                );
+            })
+            .expect("draw");
+
+        let text = buffer_text(&terminal);
+
+        assert!(
+            text.contains("Explain the layered kernel design"),
+            "placeholder text should render inside the empty composer: {text:?}"
         );
     }
 }
