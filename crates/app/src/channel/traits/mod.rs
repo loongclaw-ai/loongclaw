@@ -37,8 +37,8 @@ pub mod messaging;
 // Re-export commonly used types
 pub use calendar::{Availability, CalendarApi, CalendarEvent, TimeRange};
 pub use documents::{
-    Document, DocumentContent, DocumentCreateApi, DocumentReadApi, DocumentSearchApi,
-    DocumentWriteApi, DocumentsApi,
+    Document, DocumentAppendApi, DocumentContent, DocumentCreateApi, DocumentReadApi,
+    DocumentSearchApi, DocumentsApi,
 };
 pub use error::{ApiError, ApiResult};
 pub use messaging::{
