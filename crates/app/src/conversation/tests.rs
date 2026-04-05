@@ -12421,6 +12421,8 @@ async fn default_app_tool_dispatcher_executes_session_wait_for_visible_terminal_
 
     let mut config = test_config();
     config.memory.sqlite_path = db_path.display().to_string();
+    enable_guided_autonomy(&mut config);
+    preapprove_tool_call(&mut config, "delegate_async");
     let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
     let repo = crate::session::repository::SessionRepository::new(&memory_config)
         .expect("session repository");
@@ -20424,7 +20426,6 @@ async fn handle_turn_with_runtime_requires_approval_before_shell_exec_execution(
     )
     .with_durable_memory_config(memory_config.clone());
     let coordinator = ConversationTurnCoordinator::new();
-
     let reply = coordinator
         .handle_turn_with_runtime(
             &config,
@@ -20502,9 +20503,6 @@ async fn handle_turn_with_runtime_approval_request_resolve_replays_shell_exec_fo
     })
     .expect("create root session");
 
-    let kernel_ctx =
-        crate::context::bootstrap_kernel_context_with_config("shell-approval-once", 60, &config)
-            .expect("bootstrap kernel context");
     let (command, args, expected_stdout) = shell_exec_test_command();
     let args_json = json!({
         "command": command,
@@ -20568,6 +20566,7 @@ async fn handle_turn_with_runtime_approval_request_resolve_replays_shell_exec_fo
     )
     .with_durable_memory_config(memory_config.clone());
     let coordinator = ConversationTurnCoordinator::new();
+    let kernel_ctx = test_kernel_context("conversation-delegate-worktree-clean");
 
     let reply = coordinator
         .handle_turn_with_runtime(
@@ -20875,7 +20874,6 @@ async fn handle_turn_with_runtime_approval_request_resolve_deny_does_not_replay_
     )
     .with_durable_memory_config(memory_config.clone());
     let coordinator = ConversationTurnCoordinator::new();
-
     let reply = coordinator
         .handle_turn_with_runtime(
             &config,
@@ -22179,6 +22177,7 @@ async fn handle_turn_with_runtime_executes_delegate_async_via_coordinator_withou
     );
 
     let coordinator = ConversationTurnCoordinator::new();
+    let kernel_ctx = test_kernel_context("conversation-delegate-async-queued");
     let runtime_for_task = runtime.clone();
     let queued_call = tokio::spawn(async move {
         coordinator
@@ -22188,7 +22187,7 @@ async fn handle_turn_with_runtime_executes_delegate_async_via_coordinator_withou
                 "show raw json tool output",
                 ProviderErrorMode::Propagate,
                 runtime_for_task.as_ref(),
-                ConversationRuntimeBinding::direct(),
+                ConversationRuntimeBinding::kernel(&kernel_ctx),
             )
             .await
     });
@@ -22402,6 +22401,8 @@ async fn handle_turn_with_runtime_delegate_async_profile_shapes_child_execution_
 
     let mut config = test_config();
     config.memory.sqlite_path = db_path.display().to_string();
+    enable_guided_autonomy(&mut config);
+    preapprove_tool_call(&mut config, "delegate_async");
     config.tools.delegate.allow_shell_in_child = true;
     let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
     let repo = crate::session::repository::SessionRepository::new(&memory_config)
@@ -22440,6 +22441,7 @@ async fn handle_turn_with_runtime_delegate_async_profile_shapes_child_execution_
     );
 
     let coordinator = ConversationTurnCoordinator::new();
+    let kernel_ctx = test_kernel_context("conversation-delegate-async-profile-shaping");
     let runtime_for_task = runtime.clone();
     let queued_call = tokio::spawn(async move {
         coordinator
@@ -22449,7 +22451,7 @@ async fn handle_turn_with_runtime_delegate_async_profile_shapes_child_execution_
                 "show raw json tool output",
                 ProviderErrorMode::Propagate,
                 runtime_for_task.as_ref(),
-                ConversationRuntimeBinding::direct(),
+                ConversationRuntimeBinding::kernel(&kernel_ctx),
             )
             .await
     });
@@ -22521,6 +22523,8 @@ async fn handle_turn_with_runtime_delegate_async_projects_queued_event_to_parent
 
     let mut config = test_config();
     config.memory.sqlite_path = db_path.display().to_string();
+    enable_guided_autonomy(&mut config);
+    preapprove_tool_call(&mut config, "delegate_async");
     let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
     let repo = crate::session::repository::SessionRepository::new(&memory_config)
         .expect("session repository");
@@ -22558,6 +22562,7 @@ async fn handle_turn_with_runtime_delegate_async_projects_queued_event_to_parent
     );
 
     let coordinator = ConversationTurnCoordinator::new();
+    let kernel_ctx = test_kernel_context("conversation-delegate-async-queued-projection");
     let runtime_for_task = runtime.clone();
     let queued_call = tokio::spawn(async move {
         coordinator
@@ -22567,7 +22572,7 @@ async fn handle_turn_with_runtime_delegate_async_projects_queued_event_to_parent
                 "show raw json tool output",
                 ProviderErrorMode::Propagate,
                 runtime_for_task.as_ref(),
-                ConversationRuntimeBinding::direct(),
+                ConversationRuntimeBinding::kernel(&kernel_ctx),
             )
             .await
     });
@@ -22609,6 +22614,8 @@ async fn handle_turn_with_runtime_delegate_async_projects_terminal_event_to_pare
 
     let mut config = test_config();
     config.memory.sqlite_path = db_path.display().to_string();
+    enable_guided_autonomy(&mut config);
+    preapprove_tool_call(&mut config, "delegate_async");
     let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
     let repo = crate::session::repository::SessionRepository::new(&memory_config)
         .expect("session repository");
@@ -23289,6 +23296,8 @@ async fn handle_turn_with_runtime_delegate_supports_worktree_isolation_for_clean
     let mut config = test_config();
     config.memory.sqlite_path = db_path.display().to_string();
     config.tools.file_root = Some(repo_root.display().to_string());
+    enable_guided_autonomy(&mut config);
+    preapprove_tool_call(&mut config, "delegate");
     let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
     let repo = crate::session::repository::SessionRepository::new(&memory_config)
         .expect("session repository");
@@ -23328,6 +23337,7 @@ async fn handle_turn_with_runtime_delegate_supports_worktree_isolation_for_clean
     )
     .with_durable_memory_config(memory_config.clone());
     let coordinator = ConversationTurnCoordinator::new();
+    let kernel_ctx = test_kernel_context("conversation-delegate-worktree-clean");
 
     let reply = coordinator
         .handle_turn_with_runtime(
@@ -23336,7 +23346,7 @@ async fn handle_turn_with_runtime_delegate_supports_worktree_isolation_for_clean
             "show raw json tool output",
             ProviderErrorMode::Propagate,
             &runtime,
-            ConversationRuntimeBinding::direct(),
+            ConversationRuntimeBinding::kernel(&kernel_ctx),
         )
         .await
         .expect("worktree isolation reply");
@@ -23410,6 +23420,8 @@ async fn handle_turn_with_runtime_delegate_async_worktree_isolation_retains_dirt
     let mut config = test_config();
     config.memory.sqlite_path = db_path.display().to_string();
     config.tools.file_root = Some(repo_root.display().to_string());
+    enable_guided_autonomy(&mut config);
+    preapprove_tool_call(&mut config, "delegate_async");
 
     let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
     let repo = crate::session::repository::SessionRepository::new(&memory_config)
@@ -23472,12 +23484,7 @@ async fn handle_turn_with_runtime_delegate_async_worktree_isolation_retains_dirt
         "install local async delegate runtime"
     );
 
-    let kernel_ctx = crate::context::bootstrap_kernel_context_with_config(
-        "delegate-worktree-async",
-        60,
-        &config,
-    )
-    .expect("bootstrap kernel context");
+    let kernel_ctx = test_kernel_context("delegate-worktree-async");
     let coordinator = ConversationTurnCoordinator::new();
     let reply = coordinator
         .handle_turn_with_runtime(
