@@ -1970,7 +1970,6 @@ mod tests {
             "web.fetch",
             "web.search",
         ]);
-
         assert_eq!(names, expected);
     }
 
