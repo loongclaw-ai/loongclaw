@@ -343,7 +343,6 @@ fn observed_version_matches_expected(observed_version: &str, expected_version: &
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
-#[cfg(unix)]
 pub(crate) fn browser_companion_temp_dir(label: &str) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT_TEMP_DIR_SEED: AtomicU64 = AtomicU64::new(1);
@@ -357,9 +356,9 @@ pub(crate) fn browser_companion_temp_dir(label: &str) -> PathBuf {
 }
 
 #[cfg(test)]
-#[cfg(unix)]
 pub(crate) fn write_browser_companion_script(script_path: &Path, body: &str) {
     use std::io::Write;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     let mut file = std::fs::File::create(script_path).expect("create browser companion script");
     file.write_all(body.as_bytes())
@@ -367,18 +366,29 @@ pub(crate) fn write_browser_companion_script(script_path: &Path, body: &str) {
     file.sync_all()
         .expect("sync browser companion script to disk");
     drop(file);
-    let mut permissions = std::fs::metadata(script_path)
-        .expect("script metadata")
-        .permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(script_path, permissions).expect("chmod browser companion script");
+    #[cfg(unix)]
+    {
+        let mut permissions = std::fs::metadata(script_path)
+            .expect("script metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(script_path, permissions).expect("chmod browser companion script");
+    }
 }
 
 #[cfg(test)]
-#[cfg(unix)]
 pub(crate) fn fake_browser_companion_version_command(version: &str) -> String {
     let temp_dir = browser_companion_temp_dir("fake-command");
+    #[cfg(windows)]
+    let script_path = temp_dir.join("browser-companion.cmd");
+    #[cfg(not(windows))]
     let script_path = temp_dir.join("browser-companion");
+    #[cfg(windows)]
+    let script_body = format!(
+        "@echo off\r\necho loongclaw-browser-companion {}\r\n",
+        version
+    );
+    #[cfg(not(windows))]
     let script_body = format!(
         "#!/bin/sh\necho 'loongclaw-browser-companion {}'\n",
         version

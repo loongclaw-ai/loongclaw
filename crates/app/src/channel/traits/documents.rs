@@ -71,20 +71,11 @@ pub trait DocumentReadApi: Send + Sync {
     async fn get_document_content(&self, id: &str) -> ApiResult<Option<DocumentContent>>;
 }
 
-/// Trait for document write capabilities.
+/// Trait for document append capabilities.
 #[async_trait]
-pub trait DocumentWriteApi: Send + Sync {
-    /// Update document content.
-    async fn update_document(&self, id: &str, content: &DocumentContent) -> ApiResult<()>;
-
+pub trait DocumentAppendApi: Send + Sync {
     /// Append content to an existing document.
     async fn append_to_document(&self, id: &str, content: &DocumentContent) -> ApiResult<()>;
-
-    /// Delete a document.
-    async fn delete_document(&self, id: &str) -> ApiResult<()>;
-
-    /// Move document to a different parent.
-    async fn move_document(&self, id: &str, new_parent_id: &str) -> ApiResult<Document>;
 }
 
 /// Trait for document search and listing capabilities.
@@ -161,7 +152,7 @@ pub trait DocumentsApi: Send + Sync {
 mod tests {
     fn assert_document_create_api<T: super::DocumentCreateApi>() {}
     fn assert_document_read_api<T: super::DocumentReadApi>() {}
-    fn assert_document_write_api<T: super::DocumentWriteApi>() {}
+    fn assert_document_append_api<T: super::DocumentAppendApi>() {}
     fn assert_document_search_api<T: super::DocumentSearchApi>() {}
 
     #[test]
@@ -195,32 +186,12 @@ mod tests {
         }
 
         #[async_trait::async_trait]
-        impl super::DocumentWriteApi for TestDocumentsApi {
-            async fn update_document(
-                &self,
-                _id: &str,
-                _content: &super::DocumentContent,
-            ) -> super::ApiResult<()> {
-                panic!("compile-time assertion only")
-            }
-
+        impl super::DocumentAppendApi for TestDocumentsApi {
             async fn append_to_document(
                 &self,
                 _id: &str,
                 _content: &super::DocumentContent,
             ) -> super::ApiResult<()> {
-                panic!("compile-time assertion only")
-            }
-
-            async fn delete_document(&self, _id: &str) -> super::ApiResult<()> {
-                panic!("compile-time assertion only")
-            }
-
-            async fn move_document(
-                &self,
-                _id: &str,
-                _new_parent_id: &str,
-            ) -> super::ApiResult<super::Document> {
                 panic!("compile-time assertion only")
             }
         }
@@ -246,7 +217,7 @@ mod tests {
 
         assert_document_create_api::<TestDocumentsApi>();
         assert_document_read_api::<TestDocumentsApi>();
-        assert_document_write_api::<TestDocumentsApi>();
+        assert_document_append_api::<TestDocumentsApi>();
         assert_document_search_api::<TestDocumentsApi>();
     }
 }

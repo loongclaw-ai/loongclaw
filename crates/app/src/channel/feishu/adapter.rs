@@ -21,7 +21,7 @@ use crate::channel::feishu::api::{
 };
 use crate::channel::feishu::send::deliver_feishu_message_body;
 use crate::channel::traits::documents::{
-    Document, DocumentContent, DocumentCreateApi, DocumentReadApi, DocumentType, DocumentWriteApi,
+    Document, DocumentAppendApi, DocumentContent, DocumentCreateApi, DocumentReadApi, DocumentType,
     DocumentsApi,
 };
 use crate::channel::traits::error::{ApiError, ApiResult};
@@ -448,30 +448,19 @@ impl FeishuAdapter {
             .resolve_api_tenant_access_token(TenantAccessTokenResolution::PreferCached)
             .await?;
 
-        // Prefer the real parent message detail when available, but honor explicit chat context
-        // from inbound-driven reply targets when the parent message can no longer be queried.
-        let fallback_parent_session = target
-            .feishu_reply_chat_id()
-            .map(|chat_id| ChannelSession::new(ChannelPlatform::Feishu, chat_id.to_owned()));
-
-        let parent_session = match self
-            .with_auth_retry(token.clone(), |access_token| {
-                async move {
-                    fetch_message_detail(&self.client, access_token.as_str(), message_id).await
-                }
-            })
-            .await
-        {
-            Ok(parent_detail) => ChannelSession::new(
-                ChannelPlatform::Feishu,
-                parent_detail.chat_id.unwrap_or_default(),
-            ),
-            Err(ApiError::NotFound(_)) => fallback_parent_session.ok_or_else(|| {
-                ApiError::NotFound(format!(
-                    "reply target `{message_id}` requires parent chat context when message detail is unavailable"
-                ))
-            })?,
-            Err(api_err) => return Err(api_err),
+        let parent_session = match target.feishu_reply_chat_id() {
+            Some(chat_id) => ChannelSession::new(ChannelPlatform::Feishu, chat_id.to_owned()),
+            None => {
+                let parent_detail = self
+                    .with_auth_retry(token.clone(), |access_token| async move {
+                        fetch_message_detail(&self.client, access_token.as_str(), message_id).await
+                    })
+                    .await?;
+                ChannelSession::new(
+                    ChannelPlatform::Feishu,
+                    parent_detail.chat_id.unwrap_or_default(),
+                )
+            }
         };
 
         let receipt = self
@@ -994,42 +983,13 @@ impl DocumentReadApi for FeishuAdapter {
 }
 
 #[async_trait]
-impl DocumentWriteApi for FeishuAdapter {
-    /// Updates document content.
-    ///
-    /// Not supported by Feishu; use append_to_document instead.
-    async fn update_document(&self, _id: &str, _content: &DocumentContent) -> ApiResult<()> {
-        // Feishu doesn't support updating entire document content
-        // Recommend using append_to_document instead
-        Err(ApiError::NotSupported(
-            "update_document not supported by Feishu; use append_to_document instead".to_owned(),
-        ))
-    }
-
+impl DocumentAppendApi for FeishuAdapter {
     /// Appends content blocks to a Feishu document.
     ///
     /// Converts the content to Feishu blocks and inserts them.
     /// Supports Text and Markdown content types.
     async fn append_to_document(&self, id: &str, content: &DocumentContent) -> ApiResult<()> {
         self.append_to_document_via_api(id, content).await
-    }
-
-    /// Lists documents in a container.
-    ///
-    /// Not supported by Feishu.
-    async fn delete_document(&self, _id: &str) -> ApiResult<()> {
-        Err(ApiError::NotSupported(
-            "delete_document not supported by Feishu".to_owned(),
-        ))
-    }
-
-    /// Moves a document to a different parent.
-    ///
-    /// Not supported by Feishu.
-    async fn move_document(&self, _id: &str, _new_parent_id: &str) -> ApiResult<Document> {
-        Err(ApiError::NotSupported(
-            "move_document not supported by Feishu".to_owned(),
-        ))
     }
 }
 
@@ -1061,11 +1021,15 @@ impl DocumentsApi for FeishuAdapter {
     }
 
     async fn update_document(&self, id: &str, content: &DocumentContent) -> ApiResult<()> {
-        DocumentWriteApi::update_document(self, id, content).await
+        let _ = id;
+        let _ = content;
+        Err(ApiError::NotSupported(
+            "update_document not supported by Feishu; use append_to_document instead".to_owned(),
+        ))
     }
 
     async fn append_to_document(&self, id: &str, content: &DocumentContent) -> ApiResult<()> {
-        DocumentWriteApi::append_to_document(self, id, content).await
+        DocumentAppendApi::append_to_document(self, id, content).await
     }
 
     /// Lists documents in a container.
@@ -1095,11 +1059,18 @@ impl DocumentsApi for FeishuAdapter {
     }
 
     async fn delete_document(&self, id: &str) -> ApiResult<()> {
-        DocumentWriteApi::delete_document(self, id).await
+        let _ = id;
+        Err(ApiError::NotSupported(
+            "delete_document not supported by Feishu".to_owned(),
+        ))
     }
 
     async fn move_document(&self, id: &str, new_parent_id: &str) -> ApiResult<Document> {
-        DocumentWriteApi::move_document(self, id, new_parent_id).await
+        let _ = id;
+        let _ = new_parent_id;
+        Err(ApiError::NotSupported(
+            "move_document not supported by Feishu".to_owned(),
+        ))
     }
 }
 
@@ -1154,7 +1125,7 @@ fn convert_feishu_document_snapshot_to_document(
 mod tests {
     use super::*;
     use crate::channel::traits::{
-        DocumentCreateApi, DocumentReadApi, DocumentWriteApi, MessageDeleteApi, MessageEditApi,
+        DocumentAppendApi, DocumentCreateApi, DocumentReadApi, MessageDeleteApi, MessageEditApi,
         MessageQueryApi, MessageSendApi,
     };
     use crate::config::LoongClawConfig;
@@ -1242,7 +1213,7 @@ mod tests {
     fn assert_message_delete_api<T: MessageDeleteApi>() {}
     fn assert_document_create_api<T: DocumentCreateApi>() {}
     fn assert_document_read_api<T: DocumentReadApi>() {}
-    fn assert_document_write_api<T: DocumentWriteApi>() {}
+    fn assert_document_append_api<T: DocumentAppendApi>() {}
 
     #[test]
     fn feishu_ack_reaction_picker_only_returns_valid_candidates() {
@@ -1323,7 +1294,7 @@ mod tests {
         assert_message_delete_api::<FeishuAdapter>();
         assert_document_create_api::<FeishuAdapter>();
         assert_document_read_api::<FeishuAdapter>();
-        assert_document_write_api::<FeishuAdapter>();
+        assert_document_append_api::<FeishuAdapter>();
     }
 
     #[tokio::test]
@@ -1834,13 +1805,9 @@ mod tests {
         );
 
         let requests = requests.lock().await.clone();
-        assert_eq!(requests.len(), 3);
+        assert_eq!(requests.len(), 2);
         assert_eq!(
             requests[1].path,
-            "/open-apis/im/v1/messages/om_parent_reply_missing"
-        );
-        assert_eq!(
-            requests[2].path,
             "/open-apis/im/v1/messages/om_parent_reply_missing/reply"
         );
 
@@ -2640,7 +2607,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn feishu_adapter_document_write_api_appends_markdown_content() {
+    async fn feishu_adapter_document_append_api_appends_markdown_content() {
         let requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
         let state = MockServerState {
             requests: requests.clone(),
@@ -2722,7 +2689,7 @@ mod tests {
         let (base_url, server) = spawn_mock_feishu_server(router).await;
         let adapter = FeishuAdapter::new(&resolved_config(&base_url)).expect("build adapter");
 
-        DocumentWriteApi::append_to_document(
+        DocumentAppendApi::append_to_document(
             &adapter,
             "doxcnAppend",
             &DocumentContent::Markdown("Appended content".to_owned()),
