@@ -89,6 +89,7 @@ impl FilePolicyExtension {
         };
 
         let effective_root = self.canon_root.as_deref().unwrap_or(root);
+        let normalized_effective_root = super::normalize_without_fs(effective_root);
 
         let candidate = Path::new(raw_path);
         let combined = if candidate.is_absolute() {
@@ -99,7 +100,7 @@ impl FilePolicyExtension {
 
         // 1. Try full canonicalize (works when the path already exists).
         if let Ok(canon) = combined.canonicalize() {
-            return !canon.starts_with(effective_root);
+            return !canon.starts_with(&normalized_effective_root);
         }
 
         // 1.5. Path is a symlink but canonicalize failed (dangling target) —
@@ -109,10 +110,15 @@ impl FilePolicyExtension {
                 let resolved = if target.is_absolute() {
                     target
                 } else {
-                    combined.parent().unwrap_or(effective_root).join(&target)
+                    let raw_parent = combined.parent().unwrap_or(effective_root);
+                    let symlink_parent = match raw_parent.canonicalize() {
+                        Ok(parent) => parent,
+                        Err(_) => return true,
+                    };
+                    symlink_parent.join(&target)
                 };
                 let normalized_target = super::normalize_without_fs(&resolved);
-                return !normalized_target.starts_with(effective_root);
+                return !normalized_target.starts_with(&normalized_effective_root);
             }
             // Cannot read the link — conservatively deny.
             return true;
@@ -123,45 +129,38 @@ impl FilePolicyExtension {
         //    as `file.write "nested/new.txt"` and keeps `/var` vs
         //    `/private/var` aliases aligned on macOS.
         if let Some(reconstructed_path) = reconstruct_from_existing_ancestor(&combined) {
-            return !reconstructed_path.starts_with(effective_root);
+            let normalized_reconstructed = super::normalize_without_fs(&reconstructed_path);
+            return !normalized_reconstructed.starts_with(&normalized_effective_root);
         }
 
         // 3. Neither path nor parent exists — fall back to pure normalization.
         let normalized = super::normalize_without_fs(&combined);
-        !normalized.starts_with(effective_root)
+        !normalized.starts_with(&normalized_effective_root)
     }
 
     fn raw_paths_for_request<'a>(
         tool_name: &str,
         payload: &'a serde_json::Map<String, serde_json::Value>,
     ) -> Vec<&'a str> {
+        let tool_name = super::canonical_tool_name(tool_name);
         let mut raw_paths = Vec::new();
 
         if tool_name == "config.import" {
-            let input_path = payload.get("input_path");
-            let input_path = input_path.and_then(serde_json::Value::as_str).unwrap_or("");
-            if !input_path.is_empty() {
+            let input_path = trimmed_non_empty_path(payload.get("input_path"));
+            if let Some(input_path) = input_path {
                 raw_paths.push(input_path);
             }
 
-            let mode_requires_write =
-                super::config_import::config_import_mode_requires_write_object(payload);
-            if mode_requires_write {
-                let output_path = payload.get("output_path");
-                let output_path = output_path
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("");
-                if !output_path.is_empty() {
-                    raw_paths.push(output_path);
-                }
+            let output_path = trimmed_non_empty_path(payload.get("output_path"));
+            if let Some(output_path) = output_path {
+                raw_paths.push(output_path);
             }
 
             return raw_paths;
         }
 
-        let raw_path = payload.get("path");
-        let raw_path = raw_path.and_then(serde_json::Value::as_str).unwrap_or("");
-        if !raw_path.is_empty() {
+        let raw_path = trimmed_non_empty_path(payload.get("path"));
+        if let Some(raw_path) = raw_path {
             raw_paths.push(raw_path);
         }
 
@@ -215,6 +214,13 @@ fn reconstruct_from_existing_ancestor(path: &Path) -> Option<PathBuf> {
     }
 
     Some(reconstructed)
+}
+
+fn trimmed_non_empty_path(value: Option<&serde_json::Value>) -> Option<&str> {
+    let raw_value = value.and_then(serde_json::Value::as_str);
+    let trimmed_value = raw_value.map(str::trim);
+
+    trimmed_value.filter(|value| !value.is_empty())
 }
 
 pub(crate) fn authorize_direct_file_payload(
@@ -637,6 +643,32 @@ mod tests {
     }
 
     #[test]
+    fn config_import_plan_checks_trimmed_output_preview_path() {
+        let root_dir = tempfile::tempdir().expect("tempdir");
+        let ext = FilePolicyExtension::new(Some(root_dir.path().to_path_buf()));
+        let pack = test_pack();
+        let token = token_with_caps(BTreeSet::from([
+            Capability::InvokeTool,
+            Capability::FilesystemRead,
+        ]));
+        let caps = BTreeSet::from([Capability::InvokeTool]);
+        let params = json!({
+            "tool_name": "config.import",
+            "payload": {
+                "mode": "plan",
+                "input_path": "subdir/config.toml",
+                "output_path": " ../../etc/passwd "
+            }
+        });
+        let ctx = make_context(&pack, &token, &caps, Some(&params));
+        let result = ext.authorize_extension(&ctx);
+        assert!(matches!(
+            result.unwrap_err(),
+            PolicyError::ExtensionDenied { .. }
+        ));
+    }
+
+    #[test]
     fn config_import_apply_requires_filesystem_write() {
         let ext = FilePolicyExtension::new(None);
         let pack = test_pack();
@@ -669,6 +701,56 @@ mod tests {
             !ext.path_escapes_root("nested/generated/loongclaw.toml"),
             "nested new path under the file root should stay allowed"
         );
+    }
+
+    #[test]
+    fn lexical_parent_segments_after_missing_path_still_escape_root() {
+        let root_dir = tempfile::tempdir().expect("tempdir");
+        let nested_dir = root_dir.path().join("nested");
+        std::fs::create_dir_all(&nested_dir).expect("create nested dir");
+
+        let ext = FilePolicyExtension::new(Some(root_dir.path().to_path_buf()));
+
+        assert!(
+            ext.path_escapes_root("nested/missing/../../../outside.txt"),
+            "lexical parent segments should not bypass the file root after ancestor reconstruction"
+        );
+    }
+
+    #[test]
+    fn allows_path_within_lexically_normalized_missing_root() {
+        let root_dir = tempfile::tempdir().expect("tempdir");
+        let raw_root = root_dir.path().join("missing").join("..");
+        let ext = FilePolicyExtension::new(Some(raw_root));
+
+        assert!(
+            !ext.path_escapes_root("inside.txt"),
+            "normalized missing-root paths should still allow in-root files"
+        );
+    }
+
+    #[test]
+    fn direct_file_payload_authorization_accepts_config_import_aliases() {
+        let root_dir = tempfile::tempdir().expect("tempdir");
+        let runtime_config = crate::tools::runtime_config::ToolRuntimeConfig {
+            file_root: Some(root_dir.path().to_path_buf()),
+            ..crate::tools::runtime_config::ToolRuntimeConfig::default()
+        };
+        let payload_value = json!({
+            "mode": "apply",
+            "input_path": "legacy-config.toml",
+            "output_path": "../outside.toml"
+        });
+        let payload = payload_value
+            .as_object()
+            .cloned()
+            .expect("payload should be an object");
+
+        let error = authorize_direct_file_payload("claw.migrate", &payload, &runtime_config)
+            .expect_err("alias should still reuse config.import direct file policy checks");
+
+        assert!(error.starts_with("policy_denied: "));
+        assert!(error.contains("outside.toml"));
     }
 
     // ── Symlink-aware filesystem tests ──────────────────────────────────
@@ -752,6 +834,33 @@ mod tests {
 
         let ext = FilePolicyExtension::new(Some(root_dir.path().to_path_buf()));
         assert!(!ext.path_escapes_root(link.to_str().unwrap()));
+    }
+
+    #[test]
+    fn denies_dangling_relative_symlink_via_symlinked_parent_directory() {
+        let outside = tempfile::tempdir().unwrap();
+        let outside_parent = outside.path().join("real-parent");
+        std::fs::create_dir_all(&outside_parent).unwrap();
+
+        let nested_link = outside_parent.join("dangling_relative_link");
+        let relative_target = Path::new("..").join("secret.txt");
+        if !try_symlink(&relative_target, &nested_link) {
+            return;
+        }
+
+        let root_dir = tempfile::tempdir().unwrap();
+        let linked_parent = root_dir.path().join("linked-parent");
+        if !try_symlink_dir(&outside_parent, &linked_parent) {
+            return;
+        }
+
+        let escaped_path = linked_parent.join("dangling_relative_link");
+        let ext = FilePolicyExtension::new(Some(root_dir.path().to_path_buf()));
+
+        assert!(
+            ext.path_escapes_root(escaped_path.to_str().unwrap()),
+            "relative dangling targets must resolve against the canonical symlink parent"
+        );
     }
 
     #[test]

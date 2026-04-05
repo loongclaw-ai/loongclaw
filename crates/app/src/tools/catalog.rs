@@ -2166,7 +2166,7 @@ fn config_import_definition(descriptor: &ToolDescriptor) -> Value {
                     },
                     "output_path": {
                         "type": "string",
-                        "description": "Target config path. Required in apply/apply_selected/rollback_last_apply modes."
+                        "description": "Optional target config path. In plan, when present, config.import reads this path to preview the merged result. Required in apply/apply_selected/rollback_last_apply modes."
                     },
                     "force": {
                         "type": "boolean",
