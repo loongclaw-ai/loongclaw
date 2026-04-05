@@ -3,8 +3,8 @@ use std::process::{Command as BlockingCommand, Output, Stdio};
 use std::time::Duration;
 
 use loongclaw_app as mvp;
-use wait_timeout::ChildExt;
 use mvp::process_launch::resolve_command_invocation;
+use wait_timeout::ChildExt;
 
 pub(crate) const BROWSER_COMPANION_INSTALL_CHECK_NAME: &str = "browser companion install";
 pub(crate) const BROWSER_COMPANION_RUNTIME_GATE_CHECK_NAME: &str = "browser companion runtime gate";

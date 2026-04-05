@@ -1361,6 +1361,8 @@ impl Commands {
             Self::RuntimeCapability { .. } => "runtime_capability",
             Self::ListContextEngines { .. } => "list_context_engines",
             Self::ListMemorySystems { .. } => "list_memory_systems",
+            Self::ListMcpServers { .. } => "list_mcp_servers",
+            Self::ShowMcpServer { .. } => "show_mcp_server",
             Self::ListAcpBackends { .. } => "list_acp_backends",
             Self::ListAcpSessions { .. } => "list_acp_sessions",
             Self::AcpStatus { .. } => "acp_status",
