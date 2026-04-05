@@ -8852,7 +8852,7 @@ async fn handle_turn_with_runtime_safe_lane_plan_skips_runtime_events_when_disab
         .expect("safe lane plan should produce a reply");
 
     let persisted = runtime.persisted.lock().expect("persisted lock");
-    let event_names = persisted
+    let safe_lane_event_count = persisted
         .iter()
         .filter_map(|(_, role, content)| {
             if role != "assistant" {
@@ -8863,14 +8863,13 @@ async fn handle_turn_with_runtime_safe_lane_plan_skips_runtime_events_when_disab
                 return None;
             }
             let event_name = parsed.get("event")?.as_str()?;
-            let is_expected_suppressed_event =
-                event_name == "turn_checkpoint" || event_name == "trust_binding_missing";
-            (!is_expected_suppressed_event).then_some(event_name.to_owned())
+            let is_safe_lane_event = super::analytics::is_safe_lane_event_name(event_name);
+            is_safe_lane_event.then_some(())
         })
-        .collect::<Vec<_>>();
-    assert!(
-        event_names.is_empty(),
-        "unexpected safe lane runtime events: {event_names:?}; persisted={persisted:?}"
+        .count();
+    assert_eq!(
+        safe_lane_event_count, 0,
+        "unexpected safe-lane runtime events: {persisted:?}"
     );
 }
 

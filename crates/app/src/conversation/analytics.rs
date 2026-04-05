@@ -1393,7 +1393,7 @@ fn classify_turn_checkpoint_session_state(
     }
 }
 
-fn is_safe_lane_event_name(event_name: &str) -> bool {
+pub(super) fn is_safe_lane_event_name(event_name: &str) -> bool {
     matches!(
         event_name,
         "lane_selected"
