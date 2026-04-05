@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::io::{ErrorKind, Write};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -124,8 +125,10 @@ impl BrowserCompanionRunner for CommandBrowserCompanionRunner {
         let encoded = serde_json::to_vec(request)
             .map_err(|error| format!("browser_companion_request_encode_failed: {error}"))?;
         let mut child = retry_executable_file_busy(|| {
-            let mut process = Command::new(command);
+            let (spawn_command, spawn_args) = resolve_spawn_program(command);
+            let mut process = Command::new(spawn_command);
             process
+                .args(&spawn_args)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
@@ -163,6 +166,58 @@ impl BrowserCompanionRunner for CommandBrowserCompanionRunner {
                 .unwrap_or_else(|| "companion reported failure".to_owned())
         ))
     }
+}
+
+fn resolve_spawn_program(command: &str) -> (String, Vec<String>) {
+    resolve_shebang_program(command).unwrap_or_else(|| (command.to_owned(), Vec::new()))
+}
+
+fn resolve_shebang_program(command: &str) -> Option<(String, Vec<String>)> {
+    let path = Path::new(command);
+    if !path.is_file() {
+        return None;
+    }
+
+    let bytes = std::fs::read(path).ok()?;
+    if !bytes.starts_with(b"#!") {
+        return None;
+    }
+
+    let line_end = bytes
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .unwrap_or(bytes.len());
+    let raw_line = std::str::from_utf8(bytes.get(2..line_end)?).ok()?.trim();
+    if raw_line.is_empty() {
+        return None;
+    }
+
+    let parts = raw_line
+        .split_whitespace()
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        return None;
+    }
+
+    let first_part = parts.first()?;
+    let env_program = Path::new(first_part.as_str())
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == "env");
+
+    let (spawn_command, extra_args) = if env_program {
+        let interpreter = parts.get(1)?.clone();
+        let extra_args = parts.iter().skip(2).cloned().collect::<Vec<_>>();
+        (interpreter, extra_args)
+    } else {
+        let extra_args = parts.iter().skip(1).cloned().collect::<Vec<_>>();
+        (first_part.clone(), extra_args)
+    };
+
+    let mut spawn_args = extra_args;
+    spawn_args.push(command.to_owned());
+    Some((spawn_command, spawn_args))
 }
 
 fn retry_executable_file_busy<T, F>(mut operation: F) -> std::io::Result<T>
@@ -263,6 +318,10 @@ where
         stdin.write_all(encoded).map_err(|error| {
             cleanup();
             format!("browser_companion_stdin_write_failed: {error}")
+        })?;
+        stdin.flush().map_err(|error| {
+            cleanup();
+            format!("browser_companion_stdin_flush_failed: {error}")
         })?;
     }
 
@@ -590,11 +649,13 @@ fn remove_browser_companion_session(scope_id: &str, session_id: &str) -> Result<
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        io,
-        sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-        time::Duration,
-    };
+    use std::fs;
+    use std::io;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use loongclaw_contracts::ToolCoreRequest;
     use serde_json::{Value, json};
@@ -723,6 +784,88 @@ mod tests {
     fn pause_before_browser_companion_spawn_retry_succeeds_without_runtime() {
         super::pause_before_browser_companion_spawn_retry(Duration::ZERO)
             .expect("pause should work without a tokio runtime");
+    }
+
+    #[cfg(unix)]
+    fn unique_browser_companion_test_dir(prefix: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
+        path.push(format!("{prefix}-{nanos}"));
+        fs::create_dir_all(&path).expect("create browser companion test dir");
+        path
+    }
+
+    #[cfg(unix)]
+    fn write_shell_test_script(root: &Path, name: &str, body: &str) -> PathBuf {
+        let path = root.join(name);
+        fs::write(&path, body).expect("write browser companion test script");
+        let mut permissions = fs::metadata(&path)
+            .expect("stat browser companion test script")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions).expect("chmod browser companion test script");
+        path
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn resolve_shebang_program_uses_declared_interpreter_for_shell_script() {
+        let root = unique_browser_companion_test_dir("lc-browser-shebang-shell");
+        let script = write_shell_test_script(&root, "browser-companion", "#!/bin/sh\necho ok\n");
+
+        let (command, args) = super::resolve_shebang_program(script.to_str().expect("script path"))
+            .expect("shell script should resolve through shebang");
+
+        assert_eq!(command, "/bin/sh");
+        assert_eq!(args, vec![script.display().to_string()]);
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn command_runner_executes_shell_script_via_declared_interpreter() {
+        let root = unique_browser_companion_test_dir("lc-browser-runner-shell");
+        let request_path = root.join("request.json");
+        let script = write_shell_test_script(
+            &root,
+            "browser-companion",
+            &format!(
+                "#!/bin/sh\nBODY=\"$(cat)\"\nprintf '%s' \"$BODY\" > \"{}\"\nprintf '%s' '{{\"ok\":true,\"result\":{{\"page_url\":\"https://example.com\"}}}}'\n",
+                request_path.display()
+            ),
+        );
+        let request = super::BrowserCompanionProtocolRequest {
+            protocol: super::BROWSER_COMPANION_PROTOCOL,
+            tool_name: "browser.companion.session.start".to_owned(),
+            operation: "session.start",
+            action_class: "read",
+            session_scope: "scope".to_owned(),
+            session_id: "session".to_owned(),
+            arguments: json!({"url": "https://example.com"}),
+        };
+
+        let value = super::BrowserCompanionRunner::invoke(
+            &super::CommandBrowserCompanionRunner,
+            script.to_str().expect("script path"),
+            5,
+            &request,
+        )
+        .expect("shell-script browser companion should execute");
+
+        assert_eq!(value["page_url"], json!("https://example.com"));
+        let recorded: Value = serde_json::from_str(
+            &fs::read_to_string(&request_path).expect("browser companion request log"),
+        )
+        .expect("browser companion request log should be valid json");
+        assert_eq!(
+            recorded["tool_name"],
+            json!("browser.companion.session.start")
+        );
+
+        fs::remove_dir_all(root).ok();
     }
 
     struct OkRunner;

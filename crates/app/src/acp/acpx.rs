@@ -565,8 +565,10 @@ impl AcpRuntimeBackend for AcpxCliProbeBackend {
             }));
         }
 
-        let mut probe = Command::new(&command);
-        probe.arg("--version");
+        let (probe_command, mut probe_args) = resolve_spawn_program(&command);
+        probe_args.push("--version".to_owned());
+        let mut probe = Command::new(&probe_command);
+        probe.args(&probe_args);
         if let Some(cwd) = cwd {
             probe.current_dir(cwd);
         }
@@ -1448,9 +1450,11 @@ async fn spawn_acpx_child(
     pipe_stdin: bool,
 ) -> CliResult<tokio::process::Child> {
     retry_executable_file_busy(|| {
-        let mut process = Command::new(command);
+        let (spawn_command, mut spawn_args) = resolve_spawn_program(command);
+        spawn_args.extend(args.iter().cloned());
+        let mut process = Command::new(spawn_command);
         process
-            .args(args)
+            .args(&spawn_args)
             .current_dir(cwd)
             .stdin(if pipe_stdin {
                 Stdio::piped()
@@ -1463,6 +1467,58 @@ async fn spawn_acpx_child(
     })
     .await
     .map_err(|error| map_spawn_error(command, cwd, error))
+}
+
+fn resolve_spawn_program(command: &str) -> (String, Vec<String>) {
+    resolve_shebang_program(command).unwrap_or_else(|| (command.to_owned(), Vec::new()))
+}
+
+fn resolve_shebang_program(command: &str) -> Option<(String, Vec<String>)> {
+    let path = Path::new(command);
+    if !path.is_file() {
+        return None;
+    }
+
+    let bytes = std::fs::read(path).ok()?;
+    if !bytes.starts_with(b"#!") {
+        return None;
+    }
+
+    let line_end = bytes
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .unwrap_or(bytes.len());
+    let raw_line = std::str::from_utf8(bytes.get(2..line_end)?).ok()?.trim();
+    if raw_line.is_empty() {
+        return None;
+    }
+
+    let parts = raw_line
+        .split_whitespace()
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        return None;
+    }
+
+    let first_part = parts.first()?;
+    let env_program = Path::new(first_part.as_str())
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == "env");
+
+    let (spawn_command, extra_args) = if env_program {
+        let interpreter = parts.get(1)?.clone();
+        let extra_args = parts.iter().skip(2).cloned().collect::<Vec<_>>();
+        (interpreter, extra_args)
+    } else {
+        let extra_args = parts.iter().skip(1).cloned().collect::<Vec<_>>();
+        (first_part.clone(), extra_args)
+    };
+
+    let mut spawn_args = extra_args;
+    spawn_args.push(command.to_owned());
+    Some((spawn_command, spawn_args))
 }
 
 async fn retry_executable_file_busy<T, F>(mut operation: F) -> std::io::Result<T>
@@ -1846,6 +1902,44 @@ mod tests {
             .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp"))
             .count();
         assert_eq!(staging_entries, 0, "staging files should be cleaned up");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn resolve_shebang_program_uses_declared_interpreter_for_shell_scripts() {
+        let temp_dir = unique_temp_dir("loongclaw-acpx-shebang-shell");
+        let script_path = temp_dir.join("fake-acpx");
+        write_executable_script_atomically(&script_path, "#!/bin/sh\necho ok\n")
+            .expect("write fake shell acpx script");
+
+        let (command, args) = resolve_shebang_program(script_path.to_str().expect("script path"))
+            .expect("shebang script should resolve");
+
+        assert_eq!(command, "/bin/sh");
+        assert_eq!(
+            args,
+            vec![script_path.display().to_string()],
+            "shell script should execute through the declared interpreter"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn resolve_shebang_program_uses_env_resolved_interpreter_for_python_scripts() {
+        let temp_dir = unique_temp_dir("loongclaw-acpx-shebang-python");
+        let script_path = temp_dir.join("fake-acpx");
+        write_executable_script_atomically(&script_path, "#!/usr/bin/env python3\nprint('ok')\n")
+            .expect("write fake python acpx script");
+
+        let (command, args) = resolve_shebang_program(script_path.to_str().expect("script path"))
+            .expect("env shebang script should resolve");
+
+        assert_eq!(command, "python3");
+        assert_eq!(
+            args,
+            vec![script_path.display().to_string()],
+            "env shebang should delegate to the declared interpreter"
+        );
     }
 
     #[tokio::test]
