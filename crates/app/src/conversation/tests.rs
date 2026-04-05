@@ -8260,6 +8260,14 @@ async fn handle_turn_with_runtime_safe_lane_plan_path_bypasses_turn_step_limit()
         !reply.contains("max_tool_steps_exceeded"),
         "plan path should not use TurnEngine max_tool_steps gate, got: {reply}"
     );
+
+    let persisted = runtime.persisted.lock().expect("persisted lock").clone();
+    let payloads =
+        persisted_conversation_event_payloads_by_name(&persisted, "trust_binding_missing");
+
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0]["failure_code"], "no_kernel_context");
+    assert_eq!(payloads[0]["trust_event"]["provenance_ref"], "direct");
 }
 
 #[tokio::test]
@@ -10272,6 +10280,249 @@ async fn handle_turn_with_runtime_tool_failure_completion_error_uses_raw_reason_
             .lock()
             .expect("completion calls lock"),
         1
+    );
+}
+
+#[tokio::test]
+async fn handle_turn_with_runtime_direct_core_tool_persists_trust_binding_missing_event() {
+    let runtime = FakeRuntime::with_turn_and_completion(
+        vec![],
+        Ok(ProviderTurn {
+            assistant_text: "Reading the file now.".to_owned(),
+            tool_intents: vec![provider_tool_intent(
+                "file.read",
+                json!({"path": "note.md"}),
+                "session-trust-binding",
+                "turn-trust-binding",
+                "call-trust-binding",
+            )],
+            raw_meta: Value::Null,
+        }),
+        Err("completion_unavailable".to_owned()),
+    );
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &test_config(),
+            "session-trust-binding",
+            "read note.md",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            ConversationRuntimeBinding::direct(),
+        )
+        .await
+        .expect("direct binding fallback should still return assistant text");
+
+    assert!(
+        reply.contains("no_kernel_context"),
+        "expected direct binding denial, got: {reply}"
+    );
+
+    let persisted = runtime.persisted.lock().expect("persisted lock").clone();
+    let payloads =
+        persisted_conversation_event_payloads_by_name(&persisted, "trust_binding_missing");
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0]["failure_code"], "no_kernel_context");
+    assert_eq!(
+        payloads[0]["trust_event"]["event_kind"],
+        "provenance_mismatch"
+    );
+    assert_eq!(
+        payloads[0]["trust_event"]["actor_kind"],
+        "conversation_runtime"
+    );
+    assert_eq!(
+        payloads[0]["trust_event"]["provenance_kind"],
+        "runtime_binding"
+    );
+    assert_eq!(payloads[0]["trust_event"]["provenance_ref"], "direct");
+}
+
+fn provider_failover_error_fixture() -> String {
+    let error = concat!(
+        "provider request failed for every model candidate ",
+        "(last_reason=rate_limited) | provider_failover=",
+        "{\"reason\":\"rate_limited\",",
+        "\"stage\":\"status_failure\",",
+        "\"model\":\"gpt-4o\",",
+        "\"attempt\":2,",
+        "\"max_attempts\":3,",
+        "\"status_code\":429}",
+    );
+
+    error.to_owned()
+}
+
+fn provider_auth_rejected_error_fixture() -> String {
+    let error = concat!(
+        "provider request failed for every model candidate ",
+        "(last_reason=auth_rejected) | provider_failover=",
+        "{\"reason\":\"auth_rejected\",",
+        "\"stage\":\"status_failure\",",
+        "\"model\":\"gpt-4o\",",
+        "\"attempt\":1,",
+        "\"max_attempts\":3,",
+        "\"status_code\":401}",
+    );
+
+    error.to_owned()
+}
+
+#[tokio::test]
+async fn handle_turn_with_runtime_inline_provider_error_persists_provider_failover_trust_event() {
+    let runtime = FakeRuntime::new(vec![], Err(provider_failover_error_fixture()));
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &test_config(),
+            "session-provider-failover-inline",
+            "hello",
+            ProviderErrorMode::InlineMessage,
+            &runtime,
+            ConversationRuntimeBinding::direct(),
+        )
+        .await
+        .expect("inline provider error should still return assistant text");
+
+    assert!(reply.contains("[provider_error]"));
+
+    let persisted = runtime.persisted.lock().expect("persisted lock").clone();
+    let payloads =
+        persisted_conversation_event_payloads_by_name(&persisted, "trust_provider_failover");
+
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0]["provider_id"], "openai");
+    assert_eq!(payloads[0]["binding"], "advisory_only");
+    assert_eq!(payloads[0]["provider_failover"]["reason"], "rate_limited");
+    assert_eq!(payloads[0]["provider_failover"]["model"], "gpt-4o");
+    assert_eq!(payloads[0]["trust_event"]["event_kind"], "trust_attested");
+    assert_eq!(payloads[0]["trust_event"]["actor_kind"], "provider_runtime");
+    assert_eq!(payloads[0]["trust_event"]["trust_state_hint"], "degraded");
+    assert_eq!(
+        payloads[0]["trust_event"]["provenance_ref"],
+        "advisory_only"
+    );
+    assert_eq!(payloads[0]["trust_event"]["reason_code"], "rate_limited");
+}
+
+#[tokio::test]
+async fn handle_turn_with_runtime_propagated_provider_error_persists_provider_failover_trust_event()
+{
+    let runtime = FakeRuntime::new(vec![], Err(provider_failover_error_fixture()));
+    let kernel_ctx = test_kernel_context("provider-failover-trust-event");
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let error = coordinator
+        .handle_turn_with_runtime(
+            &test_config(),
+            "session-provider-failover-propagated",
+            "hello",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            ConversationRuntimeBinding::kernel(&kernel_ctx),
+        )
+        .await
+        .expect_err("propagated provider error should still return the raw error");
+
+    assert!(error.contains("provider_failover="));
+
+    let persisted = runtime.persisted.lock().expect("persisted lock").clone();
+    let payloads =
+        persisted_conversation_event_payloads_by_name(&persisted, "trust_provider_failover");
+
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0]["binding"], "kernel");
+    assert_eq!(payloads[0]["trust_event"]["provenance_ref"], "kernel");
+    assert_eq!(
+        payloads[0]["trust_event"]["evidence_ref"],
+        "provider:openai:model:gpt-4o:stage:status_failure"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_turn_with_runtime_discovery_first_followup_provider_error_persists_provider_failover_trust_event()
+ {
+    let kernel_ctx = test_kernel_context("provider-failover-followup-trust-event");
+    let runtime = FakeRuntime::with_turns_and_completions(
+        vec![],
+        vec![
+            Ok(ProviderTurn {
+                assistant_text: "Let me search for the right tool first.".to_owned(),
+                tool_intents: vec![provider_tool_intent(
+                    "tool.search",
+                    json!({"query": "read note.md", "limit": 3}),
+                    "session-provider-failover-followup",
+                    "turn-provider-failover-followup",
+                    "call-provider-failover-followup-search",
+                )],
+                raw_meta: Value::Null,
+            }),
+            Err(provider_failover_error_fixture()),
+        ],
+        vec![],
+    );
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &test_config(),
+            "session-provider-failover-followup",
+            "search for the right tool, then read note.md",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            ConversationRuntimeBinding::kernel(&kernel_ctx),
+        )
+        .await
+        .expect("followup provider error should fall back to the last raw reply");
+
+    assert_eq!(*runtime.turn_calls.lock().expect("turn calls lock"), 2);
+    assert!(
+        !reply.is_empty(),
+        "followup provider error should keep the last raw reply"
+    );
+
+    let persisted = runtime.persisted.lock().expect("persisted lock").clone();
+    let payloads =
+        persisted_conversation_event_payloads_by_name(&persisted, "trust_provider_failover");
+
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0]["binding"], "kernel");
+    assert_eq!(payloads[0]["provider_failover"]["reason"], "rate_limited");
+    assert_eq!(payloads[0]["trust_event"]["provenance_ref"], "kernel");
+    assert_eq!(payloads[0]["trust_event"]["reason_code"], "rate_limited");
+}
+
+#[tokio::test]
+async fn handle_turn_with_runtime_auth_rejected_provider_error_marks_rejected_trust_state() {
+    let runtime = FakeRuntime::new(vec![], Err(provider_auth_rejected_error_fixture()));
+
+    let coordinator = ConversationTurnCoordinator::new();
+    let reply = coordinator
+        .handle_turn_with_runtime(
+            &test_config(),
+            "session-provider-failover-auth-rejected",
+            "hello",
+            ProviderErrorMode::InlineMessage,
+            &runtime,
+            ConversationRuntimeBinding::direct(),
+        )
+        .await
+        .expect("inline provider error should still return assistant text");
+
+    assert!(reply.contains("[provider_error]"));
+
+    let persisted = runtime.persisted.lock().expect("persisted lock").clone();
+    let payloads =
+        persisted_conversation_event_payloads_by_name(&persisted, "trust_provider_failover");
+
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0]["provider_failover"]["reason"], "auth_rejected");
+    assert_eq!(payloads[0]["trust_event"]["trust_state_hint"], "rejected");
+    assert_eq!(
+        payloads[0]["trust_event"]["evidence_ref"],
+        "provider:openai:model:gpt-4o:stage:status_failure"
     );
 }
 
@@ -12562,6 +12813,7 @@ async fn autonomy_policy_turn_engine_guided_acquisition_requires_approval_for_ca
         .expect("load approval request")
         .expect("approval request should exist");
     let governance_snapshot = stored_request.governance_snapshot_json;
+    let trust_event = &stored_request.request_payload_json["trust_event"];
     assert_eq!(stored_request.tool_name, "external_skills.install");
     assert_eq!(stored_request.approval_key, "tool:external_skills.install");
     assert_eq!(governance_snapshot["policy_source"], "autonomy_policy");
@@ -12580,6 +12832,18 @@ async fn autonomy_policy_turn_engine_guided_acquisition_requires_approval_for_ca
     assert_eq!(
         governance_snapshot["reason_code"],
         "autonomy_policy_capability_acquisition_requires_approval"
+    );
+    assert_eq!(trust_event["event_kind"], "approval_required");
+    assert_eq!(trust_event["actor_kind"], "conversation_runtime");
+    assert_eq!(trust_event["trust_state_hint"], "unknown");
+    assert_eq!(trust_event["provenance_ref"], "kernel");
+    assert_eq!(
+        trust_event["reason_code"],
+        "autonomy_policy_capability_acquisition_requires_approval"
+    );
+    assert_eq!(
+        trust_event["evidence_ref"],
+        format!("approval_request:{approval_request_id}")
     );
 
     let installed_skill_path = workspace_root
@@ -17810,6 +18074,23 @@ async fn handle_turn_with_runtime_requires_approval_before_delegate_execution() 
         reply.contains(requests[0].approval_request_id.as_str()),
         "reply should surface approval request id, got: {reply}"
     );
+    let stored = repo
+        .load_approval_request(&requests[0].approval_request_id)
+        .expect("load approval request")
+        .expect("approval request row");
+    let payload = &stored.request_payload_json;
+    assert_eq!(
+        payload["approval_request_id"],
+        requests[0].approval_request_id
+    );
+    assert_eq!(payload["approval_key"], "tool:delegate");
+    assert_eq!(payload["tool_name"], "delegate");
+    assert_eq!(payload["trust_event"]["event_kind"], "approval_required");
+    assert_eq!(payload["trust_event"]["provenance_ref"], "kernel");
+    assert_eq!(
+        payload["trust_event"]["reason_code"],
+        "autonomy_policy_topology_mutation_requires_approval"
+    );
     assert!(
         repo.list_visible_sessions("root-session")
             .expect("list sessions")
@@ -18036,6 +18317,29 @@ async fn handle_turn_with_runtime_kernel_delegate_calls_subagent_lifecycle_hooks
     assert_eq!(
         child.state,
         crate::session::repository::SessionState::Completed
+    );
+    let events = repo
+        .list_recent_events(&child.session_id, 10)
+        .expect("list child events");
+    let delegate_started_event = events
+        .iter()
+        .find(|event| event.event_kind == "delegate_started")
+        .expect("delegate_started event");
+    assert_eq!(
+        delegate_started_event.payload_json["trust_event"]["event_kind"],
+        "delegation_created"
+    );
+    assert_eq!(
+        delegate_started_event.payload_json["trust_event"]["actor_kind"],
+        "delegate_child_runtime"
+    );
+    assert_eq!(
+        delegate_started_event.payload_json["trust_event"]["source_surface"],
+        "delegate.inline"
+    );
+    assert_eq!(
+        delegate_started_event.payload_json["trust_event"]["provenance_ref"],
+        "root-session"
     );
 
     assert_eq!(
@@ -18759,7 +19063,6 @@ async fn handle_turn_with_runtime_requires_approval_before_shell_exec_execution(
         reply.contains(requests[0].approval_request_id.as_str()),
         "reply should surface approval request id, got: {reply}"
     );
-
     let stored = repo
         .load_approval_request(&requests[0].approval_request_id)
         .expect("load approval request")
@@ -18770,9 +19073,14 @@ async fn handle_turn_with_runtime_requires_approval_before_shell_exec_execution(
     let payload_command = stored.request_payload_json["args_json"]["command"]
         .as_str()
         .expect("request payload command");
+    let trust_event = &stored.request_payload_json["trust_event"];
 
     assert_eq!(payload_tool_name, "shell.exec");
     assert_eq!(payload_command, command);
+    assert_eq!(trust_event["event_kind"], "approval_required");
+    assert_eq!(trust_event["actor_kind"], "conversation_runtime");
+    assert_eq!(trust_event["provenance_ref"], "kernel");
+    assert_eq!(trust_event["reason_code"], "shell_exec_requires_approval");
 }
 
 #[cfg(all(feature = "memory-sqlite", feature = "tool-shell"))]
@@ -20547,6 +20855,22 @@ async fn handle_turn_with_runtime_executes_delegate_async_via_coordinator_withou
         .expect("list child events");
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].event_kind, "delegate_queued");
+    assert_eq!(
+        events[0].payload_json["trust_event"]["event_kind"],
+        "delegation_created"
+    );
+    assert_eq!(
+        events[0].payload_json["trust_event"]["actor_kind"],
+        "delegate_child_runtime"
+    );
+    assert_eq!(
+        events[0].payload_json["trust_event"]["source_surface"],
+        "delegate.async"
+    );
+    assert_eq!(
+        events[0].payload_json["trust_event"]["provenance_ref"],
+        "root-session"
+    );
     assert!(
         repo.load_terminal_outcome(&child.session_id)
             .expect("load terminal outcome")

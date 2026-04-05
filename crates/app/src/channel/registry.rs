@@ -63,7 +63,7 @@ pub use plugin_bridge::{
     ChannelPluginBridgeContract, ChannelPluginBridgeDiscovery,
     ChannelPluginBridgeDiscoveryAmbiguityStatus, ChannelPluginBridgeDiscoveryStatus,
     ChannelPluginBridgeManifestStatus, ChannelPluginBridgeManifestValidation,
-    ChannelPluginBridgeStableTarget,
+    ChannelPluginBridgeSelectionStatus, ChannelPluginBridgeStableTarget,
 };
 use plugin_bridge::{
     channel_surface_plugin_bridge_discovery_by_id, plugin_bridge_contract_from_descriptor,

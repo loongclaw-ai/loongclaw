@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::env;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -8,9 +9,11 @@ use std::time::Duration;
 use dialoguer::console::{Term, user_attended};
 use dialoguer::theme::ColorfulTheme;
 use dialoguer::{Confirm, Error as DialoguerError, FuzzySelect, Input, Select};
+use kernel::ToolCoreRequest;
 use loongclaw_app as mvp;
 use loongclaw_contracts::SecretRef;
 use loongclaw_spec::CliResult;
+use serde_json::json;
 
 use crate::onboard_finalize::{
     ConfigWritePlan, build_onboarding_success_summary_with_memory, prepare_output_path_for_write,
@@ -70,6 +73,7 @@ const ONBOARD_SINGLE_LINE_INPUT_HINT: &str = "- single-line input only";
 const ONBOARD_PASTE_DRAIN_WINDOW_ENV: &str = "LOONGCLAW_ONBOARD_PASTE_DRAIN_WINDOW_MS";
 const DEFAULT_ONBOARD_PASTE_DRAIN_WINDOW: Duration = Duration::from_millis(75);
 const ONBOARD_LINE_READER_BUFFER_SIZE: usize = 64;
+const PREINSTALLED_SKILLS_PROMPT_LABEL: &str = "preinstalled skills";
 
 #[derive(Debug, Clone)]
 pub struct OnboardCommandOptions {
@@ -931,6 +935,176 @@ fn prompt_optional(
     Ok(Some(trimmed.to_owned()))
 }
 
+fn render_preinstalled_skills_selection_screen_lines_with_style(
+    width: usize,
+    color_enabled: bool,
+) -> Vec<String> {
+    let options = mvp::tools::bundled_preinstall_targets()
+        .iter()
+        .map(|target| OnboardScreenOption {
+            key: target.install_id.to_owned(),
+            label: target.display_name.to_owned(),
+            detail_lines: vec![target.summary.to_owned()],
+            recommended: target.recommended,
+        })
+        .collect();
+    render_onboard_choice_screen(
+        OnboardHeaderStyle::Compact,
+        width,
+        "optional add-ons",
+        "preinstalled skills",
+        None,
+        vec![
+            "- choose zero or more bundled skills to install into the managed runtime".to_owned(),
+            "- type comma-separated ids, for example: find-skills,agent-browser".to_owned(),
+        ],
+        options,
+        vec!["- press Enter to skip".to_owned()],
+        true,
+        color_enabled,
+    )
+}
+
+fn parse_preinstalled_skill_selection(raw: &str) -> CliResult<Vec<String>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut selected = Vec::new();
+    let mut seen = BTreeSet::new();
+    for token in trimmed
+        .split(',')
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+    {
+        let Some(choice) = mvp::tools::bundled_preinstall_targets()
+            .iter()
+            .find(|choice| choice.install_id.eq_ignore_ascii_case(token))
+        else {
+            let supported = mvp::tools::bundled_preinstall_targets()
+                .iter()
+                .map(|choice| choice.install_id)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "unsupported preinstalled skill selection `{token}`. choose from: {supported}"
+            ));
+        };
+        for skill_id in choice.skill_ids {
+            if seen.insert((*skill_id).to_owned()) {
+                selected.push((*skill_id).to_owned());
+            }
+        }
+    }
+    Ok(selected)
+}
+
+fn resolve_preinstalled_skill_selection(
+    options: &OnboardCommandOptions,
+    ui: &mut impl OnboardUi,
+    context: &OnboardRuntimeContext,
+) -> CliResult<Vec<String>> {
+    if options.non_interactive {
+        return Ok(Vec::new());
+    }
+
+    print_lines(
+        ui,
+        render_preinstalled_skills_selection_screen_lines_with_style(context.render_width, true),
+    )?;
+    let raw = ui.prompt_allow_empty(PREINSTALLED_SKILLS_PROMPT_LABEL)?;
+    parse_preinstalled_skill_selection(raw.as_str())
+}
+
+fn onboarding_default_external_skills_install_root(output_path: &Path) -> PathBuf {
+    let base_dir = output_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    base_dir.join("external-skills-installed")
+}
+
+fn apply_selected_preinstalled_skills_to_config(
+    config: &mut mvp::config::LoongClawConfig,
+    output_path: &Path,
+    selected_skill_ids: &[String],
+) {
+    if selected_skill_ids.is_empty() {
+        return;
+    }
+    config.external_skills.enabled = true;
+    config.external_skills.auto_expose_installed = true;
+    if config.external_skills.install_root.is_none() {
+        config.external_skills.install_root = Some(
+            onboarding_default_external_skills_install_root(output_path)
+                .display()
+                .to_string(),
+        );
+    }
+}
+
+fn install_root_for_onboarded_skills(
+    config: &mvp::config::LoongClawConfig,
+    config_path: &Path,
+) -> PathBuf {
+    config
+        .external_skills
+        .resolved_install_root()
+        .unwrap_or_else(|| onboarding_default_external_skills_install_root(config_path))
+}
+
+fn install_selected_preinstalled_skills(
+    config_path: &Path,
+    config: &mvp::config::LoongClawConfig,
+    selected_skill_ids: &[String],
+) -> CliResult<()> {
+    if selected_skill_ids.is_empty() {
+        return Ok(());
+    }
+
+    let install_root = install_root_for_onboarded_skills(config, config_path);
+    let tool_runtime_config = mvp::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(
+        config,
+        Some(config_path),
+    );
+    let mut installed_now = Vec::new();
+
+    for skill_id in selected_skill_ids {
+        if install_root.join(skill_id).join("SKILL.md").is_file() {
+            continue;
+        }
+        let request = ToolCoreRequest {
+            tool_name: "external_skills.install".to_owned(),
+            payload: json!({
+                "bundled_skill_id": skill_id,
+                "replace": false,
+            }),
+        };
+        if let Err(error) = mvp::tools::execute_tool_core_with_config(request, &tool_runtime_config)
+        {
+            for installed_skill_id in installed_now.iter().rev() {
+                let _ = mvp::tools::execute_tool_core_with_config(
+                    ToolCoreRequest {
+                        tool_name: "external_skills.remove".to_owned(),
+                        payload: json!({
+                            "skill_id": installed_skill_id,
+                        }),
+                    },
+                    &tool_runtime_config,
+                );
+            }
+            return Err(format!(
+                "failed to install selected bundled skill `{skill_id}`: {error}"
+            ));
+        }
+        installed_now.push(skill_id.clone());
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportSurfaceLevel {
     Ready,
@@ -1333,6 +1507,13 @@ pub async fn run_onboard_cli_with_ui(
             web_search_credential_selection,
         );
     }
+    let selected_preinstalled_skill_ids =
+        resolve_preinstalled_skill_selection(&options, ui, context)?;
+    apply_selected_preinstalled_skills_to_config(
+        &mut config,
+        &output_path,
+        &selected_preinstalled_skill_ids,
+    );
 
     let workspace_guidance = context
         .workspace_root
@@ -1497,6 +1678,19 @@ pub async fn run_onboard_cli_with_ui(
     let memory_path_display = Some(memory_path.display().to_string());
     #[cfg(not(feature = "memory-sqlite"))]
     let memory_path_display: Option<String> = None;
+
+    if let Err(error) =
+        install_selected_preinstalled_skills(&path, &config, &selected_preinstalled_skill_ids)
+    {
+        if let Some(write_recovery) = write_recovery.as_ref() {
+            return Err(rollback_onboard_write_failure(
+                &output_path,
+                write_recovery,
+                error,
+            ));
+        }
+        return Err(error);
+    }
 
     if let Some(write_recovery) = write_recovery.as_ref() {
         write_recovery.finish_success();
@@ -6226,6 +6420,26 @@ mod tests {
             Ok(ensure_onboard_input_not_cancelled(value)?.trim().to_owned())
         }
 
+        fn prompt_allow_empty(&mut self, label: &str) -> CliResult<String> {
+            match self.inputs.front() {
+                Some(value)
+                    if label == PREINSTALLED_SKILLS_PROMPT_LABEL
+                        && parse_preinstalled_skill_selection(value.as_str()).is_err() =>
+                {
+                    Ok(String::new())
+                }
+                Some(_) => {
+                    let value = self
+                        .inputs
+                        .pop_front()
+                        .ok_or_else(|| "missing allow-empty test input".to_owned())?;
+                    Ok(ensure_onboard_input_not_cancelled(value)?.trim().to_owned())
+                }
+                None if label == PREINSTALLED_SKILLS_PROMPT_LABEL => Ok(String::new()),
+                None => Err("missing allow-empty test input".to_owned()),
+            }
+        }
+
         fn prompt_confirm(&mut self, _message: &str, default: bool) -> CliResult<bool> {
             let Some(value) = self.inputs.pop_front() else {
                 return Ok(default);
@@ -6284,6 +6498,13 @@ mod tests {
 
         fn prompt_required(&mut self, _label: &str) -> CliResult<String> {
             Err("test expected interactive select widget instead of prompt_required".to_owned())
+        }
+
+        fn prompt_allow_empty(&mut self, label: &str) -> CliResult<String> {
+            if label == PREINSTALLED_SKILLS_PROMPT_LABEL {
+                return Ok(String::new());
+            }
+            Err("test expected interactive select widget instead of prompt_allow_empty".to_owned())
         }
 
         fn prompt_confirm(&mut self, _message: &str, _default: bool) -> CliResult<bool> {
@@ -8167,6 +8388,48 @@ mod tests {
 
         assert_eq!(selected.kind, mvp::config::ProviderKind::StepPlan);
         assert_eq!(selected.base_url, "https://api.stepfun.ai");
+    }
+
+    #[test]
+    fn preinstalled_skills_screen_only_surfaces_the_onboarding_subset() {
+        let lines = render_preinstalled_skills_selection_screen_lines_with_style(100, false);
+        let joined = lines.join("\n");
+
+        for expected in [
+            "systematic-debugging",
+            "plan",
+            "github-issues",
+            "Anthropic Office pack",
+            "Minimax Office pack",
+        ] {
+            assert!(
+                joined.contains(expected),
+                "expected onboarding preinstall screen to advertise `{expected}`: {joined}"
+            );
+        }
+
+        for hidden in [
+            "native-mcp)",
+            "mcporter)",
+            "docx)",
+            "pdf)",
+            "pptx)",
+            "xlsx)",
+        ] {
+            assert!(
+                !joined.contains(hidden),
+                "did not expect onboarding preinstall screen to advertise `{hidden}`: {joined}"
+            );
+        }
+    }
+
+    #[test]
+    fn onboarding_preinstall_targets_are_derived_from_app_registry() {
+        let anthropic = mvp::tools::bundled_preinstall_targets()
+            .iter()
+            .find(|target| target.install_id == "anthropic-office")
+            .expect("anthropic office pack should be exposed by app registry");
+        assert_eq!(anthropic.skill_ids, &["docx", "pdf", "pptx", "xlsx"]);
     }
 
     #[test]

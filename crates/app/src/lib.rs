@@ -20,6 +20,7 @@ mod runtime_self_continuity;
 mod secrets;
 pub mod session;
 pub mod tools;
+pub(crate) mod trust;
 pub mod tui_surface;
 
 mod process_env;

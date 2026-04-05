@@ -40,6 +40,7 @@ mod catalog;
 mod claw_migrate;
 pub(crate) mod delegate;
 mod direct_policy_preflight;
+pub(crate) mod download_guard;
 mod external_skills;
 mod external_skills_scan;
 mod external_skills_sources;
@@ -95,6 +96,11 @@ pub(crate) const BROWSER_SESSION_SCOPE_FIELD: &str = "__loongclaw_browser_scope"
 pub const BROWSER_COMPANION_PREVIEW_SKILL_ID: &str =
     bundled_skills::BROWSER_COMPANION_PREVIEW_SKILL_ID;
 pub const BROWSER_COMPANION_COMMAND: &str = bundled_skills::BROWSER_COMPANION_COMMAND;
+pub use bundled_skills::{
+    BundledPreinstallTarget, BundledPreinstallTargetKind, BundledSkillPack,
+    bundled_preinstall_targets, bundled_skill_pack, bundled_skill_pack_memberships,
+    bundled_skill_packs,
+};
 
 const BROWSER_COMPANION_TOOL_PREFIX: &str = "browser.companion.";
 const DELEGATE_ASYNC_TOOL_NAME: &str = "delegate_async";
@@ -739,6 +745,7 @@ fn execute_discoverable_tool_core_with_config(
     request: ToolCoreRequest,
     config: &runtime_config::ToolRuntimeConfig,
 ) -> Result<ToolCoreOutcome, String> {
+    let request = normalize_shell_request_for_execution(request);
     let tool_name = request.tool_name.clone();
     direct_policy_preflight::run(&request, config)?;
     let timeout_seconds = config.tool_execution.timeout_for_tool(&tool_name);

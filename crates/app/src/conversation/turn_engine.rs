@@ -31,6 +31,8 @@ use crate::tools::{
     governance_profile_for_descriptor, runtime_tool_view, runtime_tool_view_for_config,
     tool_catalog,
 };
+#[cfg(feature = "memory-sqlite")]
+use crate::trust::{approval_required_trust_event, embed_trust_event_payload};
 
 use super::autonomy_policy::{
     AUTONOMY_POLICY_SOURCE, AutonomyTurnBudgetState, PolicyDecision, PolicyDecisionInput,
@@ -755,20 +757,37 @@ impl DefaultAppToolDispatcher {
         session_context: &SessionContext,
         intent: &ToolIntent,
         descriptor: &crate::tools::ToolDescriptor,
+        approval_request_id: &str,
+        approval_key: &str,
+        rule_id: &str,
+        binding: ConversationRuntimeBinding<'_>,
     ) -> serde_json::Value {
-        json!({
+        let payload = json!({
             "session_id": session_context.session_id,
             "parent_session_id": session_context.parent_session_id,
             "turn_id": intent.turn_id,
             "tool_call_id": intent.tool_call_id,
             "tool_name": descriptor.name,
+            "approval_key": approval_key,
+            "approval_request_id": approval_request_id,
             "args_json": intent.args_json,
             "source": intent.source,
             "execution_kind": match descriptor.execution_kind {
                 ToolExecutionKind::Core => "core",
                 ToolExecutionKind::App => "app",
             },
-        })
+        });
+        let provenance_ref = approval_request_provenance_ref(binding);
+        let trust_event = approval_required_trust_event(
+            &session_context.session_id,
+            "conversation.approval",
+            provenance_ref,
+            rule_id,
+            Some(approval_request_id),
+            Some(descriptor.name),
+        );
+
+        embed_trust_event_payload(payload, trust_event)
     }
 
     #[cfg(feature = "memory-sqlite")]
@@ -781,6 +800,7 @@ impl DefaultAppToolDispatcher {
         reason: &str,
         rule_id: &str,
         governance_snapshot_json: serde_json::Value,
+        binding: ConversationRuntimeBinding<'_>,
     ) -> Result<ApprovalRequirement, String> {
         let repo = SessionRepository::new(&self.memory_config)?;
         let kind = if session_context.parent_session_id.is_some() {
@@ -798,8 +818,15 @@ impl DefaultAppToolDispatcher {
 
         let approval_request_id =
             governed_approval_request_id(session_context, descriptor.name, intent);
-        let request_payload_json =
-            Self::approval_request_payload_json(session_context, intent, descriptor);
+        let request_payload_json = Self::approval_request_payload_json(
+            session_context,
+            intent,
+            descriptor,
+            &approval_request_id,
+            approval_key,
+            rule_id,
+            binding,
+        );
         let stored = repo.ensure_approval_request(NewApprovalRequestRecord {
             approval_request_id,
             session_id: session_context.session_id.clone(),
@@ -842,6 +869,7 @@ impl DefaultAppToolDispatcher {
         session_context: &SessionContext,
         intent: &ToolIntent,
         descriptor: &crate::tools::ToolDescriptor,
+        binding: ConversationRuntimeBinding<'_>,
     ) -> Result<Option<ApprovalRequirement>, String> {
         let governance = governance_profile_for_descriptor(descriptor);
         if descriptor.execution_kind != ToolExecutionKind::App
@@ -901,6 +929,7 @@ impl DefaultAppToolDispatcher {
             approval_mode: governance.approval_mode.as_str(),
             reason: &reason,
             rule_id,
+            provenance_ref: approval_request_provenance_ref(binding),
         };
         let stored = approval_runtime.ensure_governed_tool_approval_request(approval_request)?;
         let requirement = ApprovalRequirement::governed_tool(
@@ -919,8 +948,9 @@ impl DefaultAppToolDispatcher {
         session_context: &SessionContext,
         intent: &ToolIntent,
         descriptor: &crate::tools::ToolDescriptor,
+        binding: ConversationRuntimeBinding<'_>,
     ) -> Result<Option<ApprovalRequirement>, String> {
-        let _ = (session_context, intent, descriptor);
+        let _ = (session_context, intent, descriptor, binding);
         Ok(None)
     }
 
@@ -968,6 +998,7 @@ impl DefaultAppToolDispatcher {
         session_context: &SessionContext,
         intent: &ToolIntent,
         descriptor: &crate::tools::ToolDescriptor,
+        binding: ConversationRuntimeBinding<'_>,
     ) -> Result<GovernedToolPreflight, String> {
         let governance = governance_profile_for_descriptor(descriptor);
         if descriptor.execution_kind != ToolExecutionKind::App
@@ -1011,19 +1042,15 @@ impl DefaultAppToolDispatcher {
             descriptor.name
         );
         let rule_id = "governed_tool_requires_approval";
-        let request_payload_json = json!({
-            "session_id": session_context.session_id,
-            "parent_session_id": session_context.parent_session_id,
-            "turn_id": intent.turn_id,
-            "tool_call_id": intent.tool_call_id,
-            "tool_name": descriptor.name,
-            "args_json": intent.args_json,
-            "source": intent.source,
-            "execution_kind": match descriptor.execution_kind {
-                ToolExecutionKind::Core => "core",
-                ToolExecutionKind::App => "app",
-            },
-        });
+        let request_payload_json = Self::approval_request_payload_json(
+            session_context,
+            intent,
+            descriptor,
+            &approval_request_id,
+            &approval_key,
+            rule_id,
+            binding,
+        );
         let governance_snapshot_json = json!({
             "governance_scope": governance.scope.as_str(),
             "risk_class": governance.risk_class.as_str(),
@@ -1058,6 +1085,7 @@ impl DefaultAppToolDispatcher {
         intent: &ToolIntent,
         request: &ToolCoreRequest,
         descriptor: &crate::tools::ToolDescriptor,
+        binding: ConversationRuntimeBinding<'_>,
     ) -> Result<GovernedToolPreflight, String> {
         if descriptor.name != crate::tools::SHELL_EXEC_TOOL_NAME {
             return Ok(GovernedToolPreflight::Allowed);
@@ -1075,9 +1103,18 @@ impl DefaultAppToolDispatcher {
         if trimmed_command.is_empty() {
             return Ok(GovernedToolPreflight::Allowed);
         }
-        let normalized_command =
-            crate::tools::shell_policy_ext::validate_shell_command_name(trimmed_command)
-                .map_err(|reason| format!("tool_preflight_denied: {reason}"))?;
+        let normalized_command = crate::tools::shell_policy_ext::validate_shell_command_name(
+            trimmed_command,
+        )
+        .map_err(|reason| {
+            if crate::tools::shell_policy_ext::is_repairable_tool_input_reason(reason.as_str()) {
+                let stripped = crate::tools::shell_policy_ext::strip_repairable_tool_input_prefix(
+                    reason.as_str(),
+                );
+                return format!("tool_preflight_denied: tool input needs repair: {stripped}");
+            }
+            format!("tool_preflight_denied: {reason}")
+        })?;
 
         let shell_deny = &self.tool_config.shell_deny;
         let hard_denied = shell_deny
@@ -1148,16 +1185,15 @@ impl DefaultAppToolDispatcher {
             "operator approval required before running shell command `{normalized_command}` via `shell.exec`"
         );
         let rule_id = crate::tools::shell_policy_ext::SHELL_EXEC_APPROVAL_RULE_ID;
-        let request_payload_json = json!({
-            "session_id": session_context.session_id,
-            "parent_session_id": session_context.parent_session_id,
-            "turn_id": intent.turn_id,
-            "tool_call_id": intent.tool_call_id,
-            "tool_name": descriptor.name,
-            "args_json": request.payload,
-            "source": intent.source,
-            "execution_kind": "core",
-        });
+        let request_payload_json = Self::approval_request_payload_json(
+            session_context,
+            intent,
+            descriptor,
+            &approval_request_id,
+            &approval_key,
+            rule_id,
+            binding,
+        );
         let governance = governance_profile_for_descriptor(descriptor);
         let governance_snapshot_json = json!({
             "governance_scope": governance.scope.as_str(),
@@ -1193,6 +1229,7 @@ impl DefaultAppToolDispatcher {
         intent: &ToolIntent,
         request: &ToolCoreRequest,
         descriptor: &crate::tools::ToolDescriptor,
+        binding: ConversationRuntimeBinding<'_>,
     ) -> Result<GovernedToolPreflight, String> {
         let governance = governance_profile_for_descriptor(descriptor);
         if governance.approval_mode != ToolApprovalMode::PolicyDriven {
@@ -1205,11 +1242,21 @@ impl DefaultAppToolDispatcher {
                 intent,
                 request,
                 descriptor,
+                binding,
             );
         }
 
-        self.governed_app_tool_preflight(session_context, intent, descriptor)
+        self.governed_app_tool_preflight(session_context, intent, descriptor, binding)
     }
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn approval_request_provenance_ref(binding: ConversationRuntimeBinding<'_>) -> &'static str {
+    if binding.is_kernel_bound() {
+        return "kernel";
+    }
+
+    "advisory_only"
 }
 
 fn governed_approval_request_id(
@@ -1348,6 +1395,7 @@ impl AppToolDispatcher for DefaultAppToolDispatcher {
                             reason.as_str(),
                             rule_id,
                             governance_snapshot_json,
+                            binding,
                         )?;
                         let decision = Self::autonomy_policy_approval_required_decision(
                             descriptor.name,
@@ -1508,6 +1556,7 @@ impl AppToolDispatcher for DefaultAppToolDispatcher {
                     session_context,
                     intent,
                     descriptor,
+                    binding,
                 );
             };
 
@@ -1527,6 +1576,7 @@ impl AppToolDispatcher for DefaultAppToolDispatcher {
                 reason.as_str(),
                 rule_id,
                 governance_snapshot_json,
+                binding,
             )?;
 
             Ok(Some(requirement))
@@ -1549,13 +1599,17 @@ impl AppToolDispatcher for DefaultAppToolDispatcher {
 
         #[cfg(feature = "memory-sqlite")]
         {
-            let _ = binding;
             if descriptor.name != crate::tools::SHELL_EXEC_TOOL_NAME {
                 return Ok(ToolExecutionPreflight::ready(request));
             }
 
-            let preflight =
-                self.governed_tool_preflight(session_context, intent, &request, descriptor)?;
+            let preflight = self.governed_tool_preflight(
+                session_context,
+                intent,
+                &request,
+                descriptor,
+                binding,
+            )?;
             match preflight {
                 GovernedToolPreflight::Allowed => Ok(ToolExecutionPreflight::ready(request)),
                 GovernedToolPreflight::NeedsApproval(requirement) => {
@@ -3504,6 +3558,7 @@ mod tests {
         let engine = TurnEngine::new(4);
         let runtime = tokio::runtime::Runtime::new().expect("test runtime");
         let prepared_intent = runtime.block_on(async {
+            let autonomy_budget_state = AutonomyTurnBudgetState::default();
             engine
                 .prepare_tool_intent(
                     &intent,
@@ -3511,7 +3566,7 @@ mod tests {
                     &session_context,
                     &DefaultAppToolDispatcher::runtime(),
                     ConversationRuntimeBinding::kernel(&harness.kernel_ctx),
-                    &AutonomyTurnBudgetState::default(),
+                    &autonomy_budget_state,
                     None,
                 )
                 .await

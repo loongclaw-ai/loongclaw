@@ -105,6 +105,7 @@ mod onboard_web_search;
 mod onboarding_model_policy;
 pub mod operator_prompt;
 pub mod personalize_cli;
+mod plugin_bridge_account_summary;
 pub mod plugins_cli;
 mod provider_credential_policy;
 mod provider_model_probe_policy;
@@ -1372,6 +1373,7 @@ impl Commands {
             Self::SlackSend { .. } => "slack_send",
             Self::LineSend { .. } => "line_send",
             Self::WhatsappSend { .. } => "whatsapp_send",
+            Self::WhatsappServe { .. } => "whatsapp_serve",
             Self::EmailSend { .. } => "email_send",
             Self::WebhookSend { .. } => "webhook_send",
             Self::GoogleChatSend { .. } => "google_chat_send",
