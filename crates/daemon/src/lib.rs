@@ -829,13 +829,15 @@ pub enum Commands {
     },
     #[command(
         about = "Run the loopback-only internal control-plane skeleton",
-        long_about = "Run the loopback-only internal control-plane skeleton.\n\nThis Phase 1 control-plane surface binds 127.0.0.1 only and exposes a contract bridge between `crates/protocol`, `crates/app`, and `crates/daemon`. Baseline endpoints are `/readyz`, `/healthz`, `/control/ping`, `POST /control/connect`, `/control/snapshot`, and `/control/events`. When `--config` is provided, repository-backed `/session/list`, `/session/read`, `/approval/list`, `/acp/session/list`, and `/acp/session/read` views become available for the selected session root."
+        long_about = "Run the internal control-plane skeleton.\n\nBy default this control-plane listener binds 127.0.0.1 only. You may provide `--bind <host:port>` to override the listener address, but non-loopback binds require `--config` plus `control_plane.allow_remote=true` and a configured `control_plane.shared_token`. Baseline endpoints are `/readyz`, `/healthz`, `/control/challenge`, `/control/connect`, `/control/subscribe`, `/control/snapshot`, and `/control/events`. When `--config` is provided, repository-backed `/session/list`, `/session/read`, `/approval/list`, `/pairing/list`, `/pairing/resolve`, `/acp/session/list`, and `/acp/session/read` views become available for the selected session root."
     )]
     ControlPlaneServe {
         #[arg(long)]
         config: Option<String>,
         #[arg(long)]
         session: Option<String>,
+        #[arg(long)]
+        bind: Option<String>,
         #[arg(long, default_value_t = 0)]
         port: u16,
     },
