@@ -345,8 +345,9 @@ fn collect_runtime_plugins_doctor_checks(
             .map(|plugin| plugin.plugin_id.as_str())
             .collect::<Vec<_>>();
         format!(
-            "inventory_status={} discovered={} translated={} ready={} setup_incomplete={} blocked={} blocked_ids={} setup_incomplete_ids={}",
+            "inventory_status={} readiness_evaluation={} discovered={} translated={} ready={} setup_incomplete={} blocked={} blocked_ids={} setup_incomplete_ids={}",
             state.inventory_status.as_str(),
+            state.readiness_evaluation,
             state.discovered_plugin_count,
             state.translated_plugin_count,
             state.ready_plugin_count,
@@ -4287,7 +4288,7 @@ mod tests {
         let checks = vec![DoctorCheck {
             name: "runtime plugins inventory".to_owned(),
             level: DoctorCheckLevel::Warn,
-            detail: "inventory_status=ok discovered=1 translated=1 ready=0 setup_incomplete=1 blocked=0 blocked_ids=- setup_incomplete_ids=demo-plugin".to_owned(),
+            detail: "inventory_status=ok readiness_evaluation=default_bridge_support_matrix discovered=1 translated=1 ready=0 setup_incomplete=1 blocked=0 blocked_ids=- setup_incomplete_ids=demo-plugin".to_owned(),
         }];
         let config = mvp::config::LoongClawConfig::default();
 
