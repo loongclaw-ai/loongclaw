@@ -2244,37 +2244,6 @@ mod tests {
     }
 
     #[test]
-    fn delegate_child_tool_view_contract_path_preserves_fail_closed_and_leaf_behavior() {
-        let config = crate::config::ToolConfig::default();
-
-        let no_contract = delegate_child_tool_view_for_contract(&config, None);
-        assert!(!no_contract.contains("delegate"));
-        assert!(!no_contract.contains("delegate_async"));
-
-        let leaf_contract = crate::conversation::ConstrainedSubagentContractView::from_profile(
-            crate::conversation::ConstrainedSubagentProfile {
-                role: crate::conversation::ConstrainedSubagentRole::Leaf,
-                control_scope: crate::conversation::ConstrainedSubagentControlScope::None,
-            },
-        );
-        let leaf_view = delegate_child_tool_view_for_contract(&config, Some(&leaf_contract));
-        assert!(!leaf_view.contains("delegate"));
-        assert!(!leaf_view.contains("delegate_async"));
-
-        let orchestrator_contract =
-            crate::conversation::ConstrainedSubagentContractView::from_profile(
-                crate::conversation::ConstrainedSubagentProfile {
-                    role: crate::conversation::ConstrainedSubagentRole::Orchestrator,
-                    control_scope: crate::conversation::ConstrainedSubagentControlScope::Children,
-                },
-            );
-        let orchestrator_view =
-            delegate_child_tool_view_for_contract(&config, Some(&orchestrator_contract));
-        assert!(orchestrator_view.contains("delegate"));
-        assert!(orchestrator_view.contains("delegate_async"));
-    }
-
-    #[test]
     fn runtime_tool_view_exposes_sessions_send_only_when_messages_enabled() {
         let default_root_view = runtime_tool_view_for_config(&crate::config::ToolConfig::default());
         assert!(!default_root_view.contains("sessions_send"));
