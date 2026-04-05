@@ -1,7 +1,7 @@
 # Architecture Drift Report 2026-04
 
 ## Summary
-- Generated at: 2026-04-05T07:15:43Z
+- Generated at: 2026-04-05T12:06:34Z
 - Report month: `2026-04`
 - Baseline report: docs/releases/architecture-drift-2026-03.md
 - Hotspots tracked: 14
@@ -18,10 +18,10 @@
 | memory_mod | `foundation` | `crates/app/src/memory/mod.rs` | 355 | 650 | 295 | 14 | 16 | 2 | 87.5% | WATCH | 356 | -0.3% | PASS | 14 |
 | acp_manager | `operational_density` | `crates/app/src/acp/manager.rs` | 3391 | 3600 | 209 | 8 | 12 | 4 | 94.2% | WATCH | 3383 | 0.2% | PASS | 8 |
 | acpx_runtime | `operational_density` | `crates/app/src/acp/acpx.rs` | 2741 | 2800 | 59 | 56 | 65 | 9 | 97.9% | TIGHT | 2698 | 1.6% | PASS | 56 |
-| channel_registry | `structural_size` | `crates/app/src/channel/registry.rs` | 10464 | 10500 | 36 | 88 | 90 | 2 | 99.7% | TIGHT | 9922 | 5.5% | PASS | 88 |
+| channel_registry | `structural_size` | `crates/app/src/channel/registry.rs` | 10222 | 10500 | 278 | 72 | 90 | 18 | 97.4% | TIGHT | 9922 | 3.0% | PASS | 88 |
 | channel_config | `structural_size` | `crates/app/src/config/channels.rs` | 9716 | 9800 | 84 | 90 | 90 | 0 | 100.0% | TIGHT | 9796 | -0.8% | PASS | 90 |
 | chat_runtime | `structural_size,operational_density` | `crates/app/src/chat.rs` | 6976 | 7300 | 324 | 147 | 160 | 13 | 95.6% | TIGHT | 6936 | 0.6% | PASS | 146 |
-| channel_mod | `structural_size,operational_density` | `crates/app/src/channel/mod.rs` | 1784 | 6400 | 4616 | 0 | 110 | 110 | 27.9% | HEALTHY | 1779 | 0.3% | PASS | 0 |
+| channel_mod | `structural_size,operational_density` | `crates/app/src/channel/mod.rs` | 1785 | 6400 | 4615 | 0 | 110 | 110 | 27.9% | HEALTHY | 1779 | 0.3% | PASS | 0 |
 | turn_coordinator | `structural_size,operational_density` | `crates/app/src/conversation/turn_coordinator.rs` | 10801 | 11200 | 399 | 97 | 120 | 23 | 96.4% | TIGHT | 10831 | -0.3% | PASS | 98 |
 | tools_mod | `structural_size` | `crates/app/src/tools/mod.rs` | 14999 | 15000 | 1 | 53 | 70 | 17 | 100.0% | TIGHT | 14472 | 3.6% | PASS | 54 |
 | daemon_lib | `structural_size` | `crates/daemon/src/lib.rs` | 6482 | 6500 | 18 | 210 | 210 | 0 | 100.0% | TIGHT | 6324 | 2.5% | PASS | 210 |
@@ -29,7 +29,7 @@
 
 ## Prioritization Signals
 - BREACH hotspots (>100% of any tracked budget): none
-- TIGHT hotspots (>=95% of any tracked budget): spec_runtime (100.0%), spec_execution (96.4%), acpx_runtime (97.9%), channel_registry (99.7%), channel_config (100.0%), chat_runtime (95.6%), turn_coordinator (96.4%), tools_mod (100.0%), daemon_lib (100.0%), onboard_cli (99.8%)
+- TIGHT hotspots (>=95% of any tracked budget): spec_runtime (100.0%), spec_execution (96.4%), acpx_runtime (97.9%), channel_registry (97.4%), channel_config (100.0%), chat_runtime (95.6%), turn_coordinator (96.4%), tools_mod (100.0%), daemon_lib (100.0%), onboard_cli (99.8%)
 - WATCH hotspots (>=85% and <95% of any tracked budget): memory_mod (87.5%), acp_manager (94.2%)
 - Mixed-class hotspots (size plus operational density): chat_runtime, channel_mod, turn_coordinator
 
@@ -64,10 +64,10 @@
 <!-- arch-hotspot key=memory_mod lines=355 functions=14 -->
 <!-- arch-hotspot key=acp_manager lines=3391 functions=8 -->
 <!-- arch-hotspot key=acpx_runtime lines=2741 functions=56 -->
-<!-- arch-hotspot key=channel_registry lines=10464 functions=88 -->
+<!-- arch-hotspot key=channel_registry lines=10222 functions=72 -->
 <!-- arch-hotspot key=channel_config lines=9716 functions=90 -->
 <!-- arch-hotspot key=chat_runtime lines=6976 functions=147 -->
-<!-- arch-hotspot key=channel_mod lines=1784 functions=0 -->
+<!-- arch-hotspot key=channel_mod lines=1785 functions=0 -->
 <!-- arch-hotspot key=turn_coordinator lines=10801 functions=97 -->
 <!-- arch-hotspot key=tools_mod lines=14999 functions=53 -->
 <!-- arch-hotspot key=daemon_lib lines=6482 functions=210 -->
