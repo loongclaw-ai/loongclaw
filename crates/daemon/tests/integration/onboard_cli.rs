@@ -6282,6 +6282,7 @@ fn detected_setup_write_confirmation_screen_uses_quick_review_progress_copy() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn onboard_current_setup_shortcut_flow_skips_detailed_edit_screens() {
+    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
     let workspace_root = unique_temp_path("current-shortcut-workspace");
     std::fs::create_dir_all(&workspace_root).expect("create workspace root");
     std::fs::write(workspace_root.join("AGENTS.md"), "# local guidance\n")
@@ -6363,6 +6364,7 @@ async fn onboard_current_setup_shortcut_flow_skips_detailed_edit_screens() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn onboard_current_setup_shortcut_can_install_selected_bundled_skills() {
+    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
     let output_path = unique_temp_path("current-shortcut-preinstall-config.toml");
     let mut existing = mvp::config::LoongClawConfig::default();
     existing.provider.model = "gpt-4.1".to_owned();
@@ -6432,6 +6434,7 @@ async fn onboard_current_setup_shortcut_can_install_selected_bundled_skills() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn onboard_current_setup_shortcut_can_install_minimax_office_pack() {
+    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
     let output_path = unique_temp_path("current-shortcut-minimax-office-config.toml");
     let mut existing = mvp::config::LoongClawConfig::default();
     existing.provider.model = "gpt-4.1".to_owned();
@@ -6487,6 +6490,7 @@ async fn onboard_current_setup_shortcut_can_install_minimax_office_pack() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn onboard_detected_setup_shortcut_flow_skips_detailed_edit_screens() {
+    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
     let workspace_root = unique_temp_path("detected-shortcut-workspace");
     std::fs::create_dir_all(&workspace_root).expect("create workspace root");
     std::fs::write(workspace_root.join("AGENTS.md"), "# local guidance\n")
