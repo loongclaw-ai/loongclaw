@@ -23,14 +23,8 @@ where
         .collect::<Vec<_>>();
 
     #[cfg(unix)]
-    if let Some((interpreter, shebang_args)) = resolve_shebang_invocation(command) {
-        let mut resolved_args = shebang_args;
-        resolved_args.push(OsString::from(command));
-        resolved_args.extend(collected_args);
-        return ResolvedCommandInvocation {
-            program: interpreter,
-            args: resolved_args,
-        };
+    if let Some(invocation) = resolve_shebang_invocation(command, &collected_args) {
+        return invocation;
     }
 
     ResolvedCommandInvocation {
@@ -40,13 +34,26 @@ where
 }
 
 #[cfg(unix)]
-fn resolve_shebang_invocation(command: &str) -> Option<(OsString, Vec<OsString>)> {
+fn resolve_shebang_invocation(
+    command: &str,
+    collected_args: &[OsString],
+) -> Option<ResolvedCommandInvocation> {
     let script_path = resolve_existing_command_path(command)?;
     let shebang = read_shebang(script_path.as_path())?;
     let mut parts = shebang.split_whitespace();
     let interpreter = parts.next()?;
-    let args = parts.map(OsString::from).collect::<Vec<_>>();
-    Some((OsString::from(interpreter), args))
+    let mut resolved_args = parts.map(OsString::from).collect::<Vec<_>>();
+    let script_arg = script_path.into_os_string();
+    resolved_args.push(script_arg);
+    for argument in collected_args {
+        let cloned_argument = argument.clone();
+        resolved_args.push(cloned_argument);
+    }
+
+    Some(ResolvedCommandInvocation {
+        program: OsString::from(interpreter),
+        args: resolved_args,
+    })
 }
 
 #[cfg(unix)]
@@ -81,6 +88,8 @@ fn read_shebang(path: &Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::path::Path;
     #[cfg(unix)]
     use std::path::PathBuf;
 
@@ -144,6 +153,38 @@ mod tests {
             vec![
                 std::ffi::OsString::from("python3"),
                 PathBuf::from(&script_path).into_os_string(),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_command_invocation_uses_resolved_path_for_path_discovered_scripts() {
+        let root = crate::test_support::unique_temp_dir("loongclaw-process-launch-path");
+        let bin_dir = root.join("bin");
+        let script_path = bin_dir.join("path-script");
+        std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+        crate::test_support::write_executable_script_atomically(
+            &script_path,
+            "#!/bin/sh\nexit 0\n",
+        )
+        .expect("write path-discovered script");
+
+        let mut env = crate::test_support::ScopedEnv::new();
+        let original_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut path_entries = vec![PathBuf::from(&bin_dir)];
+        path_entries.extend(std::env::split_paths(Path::new(&original_path)).collect::<Vec<_>>());
+        let joined_path = std::env::join_paths(path_entries).expect("join PATH");
+        env.set("PATH", joined_path);
+
+        let resolved = resolve_command_invocation("path-script", ["--flag"]);
+
+        assert_eq!(resolved.program, std::ffi::OsString::from("/bin/sh"));
+        assert_eq!(
+            resolved.args,
+            vec![
+                script_path.into_os_string(),
+                std::ffi::OsString::from("--flag"),
             ]
         );
     }
