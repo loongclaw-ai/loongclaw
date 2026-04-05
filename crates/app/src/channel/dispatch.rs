@@ -101,7 +101,6 @@ use crate::context::{DEFAULT_TOKEN_TTL_S, bootstrap_kernel_context_with_config};
     feature = "channel-imessage",
     feature = "channel-nostr",
 ))]
-use crate::config::ChannelResolvedAccountRoute;
 #[cfg(feature = "channel-dingtalk")]
 use crate::config::ResolvedDingtalkChannelConfig;
 #[cfg(feature = "channel-discord")]
@@ -163,6 +162,10 @@ use crate::conversation::{
 ))]
 use crate::conversation::{ConversationTurnCoordinator, ProviderErrorMode};
 
+pub(super) use super::commands::{
+    ChannelCommandContext, ChannelResolvedRuntimeAccount, ChannelSendCommandSpec,
+    run_channel_send_command, run_channel_serve_command_with_stop,
+};
 #[cfg(feature = "channel-dingtalk")]
 use super::dingtalk;
 #[cfg(feature = "channel-discord")]
@@ -173,7 +176,6 @@ use super::email;
 use super::feishu;
 #[cfg(feature = "channel-google-chat")]
 use super::google_chat;
-use super::http;
 #[cfg(feature = "channel-imessage")]
 use super::imessage;
 #[cfg(feature = "channel-irc")]
@@ -193,7 +195,6 @@ use super::registry::{
     WECOM_COMMAND_FAMILY_DESCRIPTOR,
 };
 use super::runtime_state;
-use super::runtime_state::ChannelOperationRuntimeTracker;
 use super::serve_runtime::{
     ChannelServeCommandSpec, ChannelServeRuntimeSpec, ChannelServeStopHandle,
     with_channel_serve_runtime_with_stop,
@@ -247,181 +248,9 @@ use super::types::{
     feature = "channel-whatsapp",
 ))]
 use super::types::{
-    ChannelCommandFuture, ChannelResolvedAcpTurnHints, KnownChannelSessionSendTarget,
+    ChannelResolvedAcpTurnHints, KnownChannelSessionSendTarget,
     parse_known_channel_session_send_target, process_channel_batch,
 };
-
-#[cfg(any(
-    feature = "channel-telegram",
-    feature = "channel-discord",
-    feature = "channel-dingtalk",
-    feature = "channel-email",
-    feature = "channel-feishu",
-    feature = "channel-google-chat",
-    feature = "channel-webhook",
-    feature = "channel-line",
-    feature = "channel-matrix",
-    feature = "channel-mattermost",
-    feature = "channel-nextcloud-talk",
-    feature = "channel-signal",
-    feature = "channel-slack",
-    feature = "channel-synology-chat",
-    feature = "channel-irc",
-    feature = "channel-twitch",
-    feature = "channel-teams",
-    feature = "channel-wecom",
-    feature = "channel-whatsapp",
-    feature = "channel-imessage",
-    feature = "channel-nostr"
-))]
-#[derive(Debug, Clone)]
-pub(super) struct ChannelCommandContext<R> {
-    pub(super) resolved_path: PathBuf,
-    pub(super) config: LoongClawConfig,
-    pub(super) resolved: R,
-    pub(super) route: ChannelResolvedAccountRoute,
-}
-
-#[cfg(any(
-    feature = "channel-telegram",
-    feature = "channel-discord",
-    feature = "channel-dingtalk",
-    feature = "channel-email",
-    feature = "channel-feishu",
-    feature = "channel-google-chat",
-    feature = "channel-webhook",
-    feature = "channel-line",
-    feature = "channel-matrix",
-    feature = "channel-mattermost",
-    feature = "channel-nextcloud-talk",
-    feature = "channel-signal",
-    feature = "channel-slack",
-    feature = "channel-synology-chat",
-    feature = "channel-irc",
-    feature = "channel-twitch",
-    feature = "channel-teams",
-    feature = "channel-wecom",
-    feature = "channel-whatsapp",
-    feature = "channel-imessage",
-    feature = "channel-nostr"
-))]
-impl<R> ChannelCommandContext<R> {
-    fn emit_route_notice(&self, channel_id: &str) {
-        if let Some(notice) = render_channel_route_notice(channel_id, &self.route) {
-            #[allow(clippy::print_stderr)]
-            {
-                eprintln!("warning: {notice}");
-            }
-        }
-    }
-
-    fn outbound_http_policy(&self) -> http::ChannelOutboundHttpPolicy {
-        http::outbound_http_policy_from_config(&self.config)
-    }
-}
-
-#[cfg(any(
-    feature = "channel-telegram",
-    feature = "channel-feishu",
-    feature = "channel-matrix",
-    feature = "channel-wecom",
-    feature = "channel-whatsapp"
-))]
-pub(super) trait ChannelResolvedRuntimeAccount {
-    fn runtime_account_id(&self) -> &str;
-    fn runtime_account_label(&self) -> &str;
-}
-
-#[cfg(feature = "channel-telegram")]
-impl ChannelResolvedRuntimeAccount for ResolvedTelegramChannelConfig {
-    fn runtime_account_id(&self) -> &str {
-        self.account.id.as_str()
-    }
-
-    fn runtime_account_label(&self) -> &str {
-        self.account.label.as_str()
-    }
-}
-
-#[cfg(feature = "channel-feishu")]
-impl ChannelResolvedRuntimeAccount for ResolvedFeishuChannelConfig {
-    fn runtime_account_id(&self) -> &str {
-        self.account.id.as_str()
-    }
-
-    fn runtime_account_label(&self) -> &str {
-        self.account.label.as_str()
-    }
-}
-
-#[cfg(feature = "channel-matrix")]
-impl ChannelResolvedRuntimeAccount for ResolvedMatrixChannelConfig {
-    fn runtime_account_id(&self) -> &str {
-        self.account.id.as_str()
-    }
-
-    fn runtime_account_label(&self) -> &str {
-        self.account.label.as_str()
-    }
-}
-
-#[cfg(feature = "channel-wecom")]
-impl ChannelResolvedRuntimeAccount for ResolvedWecomChannelConfig {
-    fn runtime_account_id(&self) -> &str {
-        self.account.id.as_str()
-    }
-
-    fn runtime_account_label(&self) -> &str {
-        self.account.label.as_str()
-    }
-}
-
-#[cfg(any(
-    feature = "channel-telegram",
-    feature = "channel-discord",
-    feature = "channel-dingtalk",
-    feature = "channel-email",
-    feature = "channel-feishu",
-    feature = "channel-google-chat",
-    feature = "channel-webhook",
-    feature = "channel-line",
-    feature = "channel-matrix",
-    feature = "channel-mattermost",
-    feature = "channel-nextcloud-talk",
-    feature = "channel-signal",
-    feature = "channel-slack",
-    feature = "channel-twitch",
-    feature = "channel-irc",
-    feature = "channel-synology-chat",
-    feature = "channel-teams",
-    feature = "channel-wecom",
-    feature = "channel-whatsapp",
-    feature = "channel-imessage",
-    feature = "channel-nostr"
-))]
-pub(super) async fn run_channel_send_command<R, F, G>(
-    context: ChannelCommandContext<R>,
-    spec: ChannelSendCommandSpec,
-    send: F,
-    render_success: G,
-) -> CliResult<()>
-where
-    F: for<'a> FnOnce(&'a ChannelCommandContext<R>) -> ChannelCommandFuture<'a>,
-    G: FnOnce(&ChannelCommandContext<R>) -> String,
-{
-    crate::runtime_env::initialize_runtime_environment(
-        &context.config,
-        Some(context.resolved_path.as_path()),
-    );
-    context.emit_route_notice(spec.channel_id);
-    send(&context).await?;
-
-    #[allow(clippy::print_stdout)]
-    {
-        println!("{}", render_success(&context));
-    }
-    Ok(())
-}
 
 #[cfg(any(
     feature = "channel-dingtalk",
@@ -1116,91 +945,6 @@ fn build_nostr_command_context(
         resolved,
         route,
     })
-}
-
-#[cfg(any(
-    feature = "channel-telegram",
-    feature = "channel-discord",
-    feature = "channel-dingtalk",
-    feature = "channel-email",
-    feature = "channel-feishu",
-    feature = "channel-google-chat",
-    feature = "channel-webhook",
-    feature = "channel-line",
-    feature = "channel-matrix",
-    feature = "channel-mattermost",
-    feature = "channel-nextcloud-talk",
-    feature = "channel-signal",
-    feature = "channel-slack",
-    feature = "channel-irc",
-    feature = "channel-synology-chat",
-    feature = "channel-twitch",
-    feature = "channel-wecom",
-    feature = "channel-whatsapp",
-    feature = "channel-teams",
-    feature = "channel-imessage",
-    feature = "channel-nostr"
-))]
-#[derive(Debug, Clone, Copy)]
-pub(super) struct ChannelSendCommandSpec {
-    pub(super) channel_id: &'static str,
-}
-
-#[cfg(any(
-    feature = "channel-telegram",
-    feature = "channel-feishu",
-    feature = "channel-matrix",
-    feature = "channel-wecom",
-    feature = "channel-whatsapp"
-))]
-pub(super) async fn run_channel_serve_command_with_stop<R, V, F>(
-    context: ChannelCommandContext<R>,
-    spec: ChannelServeCommandSpec,
-    validate: V,
-    stop: ChannelServeStopHandle,
-    initialize_runtime_environment: bool,
-    run: F,
-) -> CliResult<()>
-where
-    R: ChannelResolvedRuntimeAccount,
-    V: FnOnce(&R) -> CliResult<()>,
-    F: for<'a> FnOnce(
-        &'a ChannelCommandContext<R>,
-        KernelContext,
-        Arc<ChannelOperationRuntimeTracker>,
-        ChannelServeStopHandle,
-    ) -> ChannelCommandFuture<'a>,
-{
-    validate(&context.resolved)?;
-    if initialize_runtime_environment {
-        crate::runtime_env::initialize_runtime_environment(
-            &context.config,
-            Some(context.resolved_path.as_path()),
-        );
-    }
-    let kernel_ctx = bootstrap_kernel_context_with_config(
-        spec.family.runtime.serve_bootstrap_agent_id,
-        DEFAULT_TOKEN_TTL_S,
-        &context.config,
-    )?;
-    let runtime_account_id = context.resolved.runtime_account_id().to_owned();
-    let runtime_account_label = context.resolved.runtime_account_label().to_owned();
-
-    with_channel_serve_runtime_with_stop(
-        ChannelServeRuntimeSpec {
-            platform: spec.family.runtime.platform,
-            operation_id: spec.family.serve().id,
-            account_id: runtime_account_id.as_str(),
-            account_label: runtime_account_label.as_str(),
-        },
-        stop,
-        move |runtime, stop| async move {
-            let channel_id = spec.family.channel_id();
-            context.emit_route_notice(channel_id);
-            run(&context, kernel_ctx, runtime, stop).await
-        },
-    )
-    .await
 }
 
 #[cfg(feature = "channel-telegram")]
@@ -3592,42 +3336,6 @@ fn normalized_feishu_callback_context(
         return None;
     }
     Some(normalized)
-}
-
-#[cfg(any(
-    feature = "channel-telegram",
-    feature = "channel-discord",
-    feature = "channel-feishu",
-    feature = "channel-dingtalk",
-    feature = "channel-email",
-    feature = "channel-matrix",
-    feature = "channel-google-chat",
-    feature = "channel-webhook",
-    feature = "channel-line",
-    feature = "channel-mattermost",
-    feature = "channel-nextcloud-talk",
-    feature = "channel-signal",
-    feature = "channel-slack",
-    feature = "channel-synology-chat",
-    feature = "channel-twitch",
-    feature = "channel-teams",
-    feature = "channel-wecom",
-    feature = "channel-whatsapp",
-    feature = "channel-imessage",
-    feature = "channel-nostr"
-))]
-pub(super) fn render_channel_route_notice(
-    channel_id: &str,
-    route: &ChannelResolvedAccountRoute,
-) -> Option<String> {
-    if !route.uses_implicit_fallback_default() {
-        return None;
-    }
-    let config_key = channel_id.replace('-', "_");
-    Some(format!(
-        "{} omitted --account and routed to configured account `{}` via fallback default selection; set {}.default_account or pass --account to avoid routing surprises",
-        channel_id, route.selected_configured_account_id, config_key
-    ))
 }
 
 #[cfg(feature = "channel-telegram")]
