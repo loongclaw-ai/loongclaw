@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use chrono::Utc;
+use std::future::Future;
 
 use crate::CliResult;
 use crate::channel::feishu::api::FeishuClient;
@@ -312,6 +313,27 @@ impl FeishuAdapter {
         convert_cli_result(self.client.get_tenant_access_token().await)
     }
 
+    async fn with_auth_retry<T, F, Fut>(&self, token: String, operation: F) -> ApiResult<T>
+    where
+        F: Fn(String) -> Fut,
+        Fut: Future<Output = CliResult<T>>,
+    {
+        match operation(token).await {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                let api_err = convert_string_error_to_api_error(&error);
+                if matches!(api_err, ApiError::Auth(_)) {
+                    let fresh_token = self
+                        .resolve_api_tenant_access_token(TenantAccessTokenResolution::Fresh)
+                        .await?;
+                    convert_cli_result(operation(fresh_token).await)
+                } else {
+                    Err(api_err)
+                }
+            }
+        }
+    }
+
     async fn send_message_via_api(
         &self,
         target: &ChannelOutboundTarget,
@@ -327,11 +349,6 @@ impl FeishuAdapter {
 
         // Convert content to Feishu format
         let body = convert_message_content_to_feishu(content)?;
-
-        // Get tenant access token
-        let token = self
-            .resolve_api_tenant_access_token(TenantAccessTokenResolution::PreferCached)
-            .await?;
 
         // Extract receive parameters
         let (receive_id, receive_id_type) = extract_receive_params(target)?;
@@ -349,16 +366,27 @@ impl FeishuAdapter {
             send_target = send_target.with_idempotency_key(uuid);
         }
 
-        let receipt = convert_cli_result(
-            deliver_feishu_message_body(
-                &self.client,
-                &token,
-                self.receive_id_type.as_str(),
-                &send_target,
-                &body,
-            )
-            .await,
-        )?;
+        // Try with cached token first; retry with fresh token if auth fails
+        let token = self
+            .resolve_api_tenant_access_token(TenantAccessTokenResolution::PreferCached)
+            .await?;
+
+        let receipt = self
+            .with_auth_retry(token.clone(), |access_token| {
+                let send_target = send_target.clone();
+                let body = body.clone();
+                async move {
+                    deliver_feishu_message_body(
+                        &self.client,
+                        access_token.as_str(),
+                        self.receive_id_type.as_str(),
+                        &send_target,
+                        &body,
+                    )
+                    .await
+                }
+            })
+            .await?;
 
         // Build the normalized message directly from the send receipt and target.
         Ok(Message {
@@ -393,42 +421,6 @@ impl FeishuAdapter {
             ));
         }
 
-        // Get tenant access token
-        let token = self
-            .resolve_api_tenant_access_token(TenantAccessTokenResolution::PreferCached)
-            .await?;
-
-        // Prefer the real parent message detail when available, but honor explicit chat context
-        // from inbound-driven reply targets when the parent message can no longer be queried.
-        let fallback_parent_session = target
-            .feishu_reply_chat_id()
-            .map(|chat_id| ChannelSession::new(ChannelPlatform::Feishu, chat_id.to_owned()));
-
-        let parent_session = match fetch_message_detail(&self.client, &token, message_id).await {
-            Ok(parent_detail) => ChannelSession::new(
-                ChannelPlatform::Feishu,
-                parent_detail.chat_id.unwrap_or_default(),
-            ),
-            Err(error) => match convert_string_error_to_api_error(&error) {
-                ApiError::NotFound(_) => fallback_parent_session.ok_or_else(|| {
-                    ApiError::NotFound(format!(
-                        "reply target `{message_id}` requires parent chat context when message detail is unavailable"
-                    ))
-                })?,
-                api_error @ ApiError::Auth(_)
-                | api_error @ ApiError::RateLimited { .. }
-                | api_error @ ApiError::InvalidRequest(_)
-                | api_error @ ApiError::Network(_)
-                | api_error @ ApiError::Server(_)
-                | api_error @ ApiError::NotSupported(_)
-                | api_error @ ApiError::Platform { .. }
-                | api_error @ ApiError::Other(_) => return Err(api_error),
-            },
-        };
-
-        // Convert content to Feishu format
-        let body = convert_message_content_to_feishu(content)?;
-
         // Callers can override thread behavior per-send; otherwise preserve target defaults.
         let reply_in_thread = options
             .as_ref()
@@ -448,16 +440,56 @@ impl FeishuAdapter {
             reply_target = reply_target.with_idempotency_key(uuid);
         }
 
-        let receipt = convert_cli_result(
-            deliver_feishu_message_body(
-                &self.client,
-                &token,
-                self.receive_id_type.as_str(),
-                &reply_target,
-                &body,
-            )
-            .await,
-        )?;
+        // Convert content to Feishu format
+        let body = convert_message_content_to_feishu(content)?;
+
+        // Try with cached token first; retry with fresh token if auth fails
+        let token = self
+            .resolve_api_tenant_access_token(TenantAccessTokenResolution::PreferCached)
+            .await?;
+
+        // Prefer the real parent message detail when available, but honor explicit chat context
+        // from inbound-driven reply targets when the parent message can no longer be queried.
+        let fallback_parent_session = target
+            .feishu_reply_chat_id()
+            .map(|chat_id| ChannelSession::new(ChannelPlatform::Feishu, chat_id.to_owned()));
+
+        let parent_session = match self
+            .with_auth_retry(token.clone(), |access_token| {
+                async move {
+                    fetch_message_detail(&self.client, access_token.as_str(), message_id).await
+                }
+            })
+            .await
+        {
+            Ok(parent_detail) => ChannelSession::new(
+                ChannelPlatform::Feishu,
+                parent_detail.chat_id.unwrap_or_default(),
+            ),
+            Err(ApiError::NotFound(_)) => fallback_parent_session.ok_or_else(|| {
+                ApiError::NotFound(format!(
+                    "reply target `{message_id}` requires parent chat context when message detail is unavailable"
+                ))
+            })?,
+            Err(api_err) => return Err(api_err),
+        };
+
+        let receipt = self
+            .with_auth_retry(token, |access_token| {
+                let reply_target = reply_target.clone();
+                let body = body.clone();
+                async move {
+                    deliver_feishu_message_body(
+                        &self.client,
+                        access_token.as_str(),
+                        self.receive_id_type.as_str(),
+                        &reply_target,
+                        &body,
+                    )
+                    .await
+                }
+            })
+            .await?;
 
         Ok(Message {
             id: receipt.message_id,
@@ -1548,6 +1580,66 @@ mod tests {
         assert_eq!(
             requests[2].authorization.as_deref(),
             Some("Bearer t-token-api-2")
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn feishu_adapter_auth_retry_helper_retries_with_fresh_token_after_auth_error() {
+        let requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
+        let state = MockServerState {
+            requests: requests.clone(),
+        };
+        let router = Router::new().route(
+            "/open-apis/auth/v3/tenant_access_token/internal",
+            post({
+                let state = state.clone();
+                move |request| {
+                    let state = state.clone();
+                    async move {
+                        record_request(State(state), request).await;
+                        Json(json!({
+                            "code": 0,
+                            "tenant_access_token": "t-token-helper-fresh"
+                        }))
+                    }
+                }
+            }),
+        );
+        let (base_url, server) = spawn_mock_feishu_server(router).await;
+        let adapter = FeishuAdapter::new(&resolved_config(&base_url)).expect("build adapter");
+        let attempts = Arc::new(Mutex::new(Vec::<String>::new()));
+
+        let result = adapter
+            .with_auth_retry("t-token-helper-stale".to_owned(), {
+                let attempts = attempts.clone();
+                move |token: String| {
+                    let attempts = attempts.clone();
+                    async move {
+                        attempts.lock().await.push(token.clone());
+                        if token == "t-token-helper-stale" {
+                            Err("authentication failed: invalid token".to_owned())
+                        } else {
+                            Ok("ok".to_owned())
+                        }
+                    }
+                }
+            })
+            .await
+            .expect("helper should retry with fresh token");
+
+        assert_eq!(result, "ok");
+        assert_eq!(
+            attempts.lock().await.as_slice(),
+            ["t-token-helper-stale", "t-token-helper-fresh"]
+        );
+
+        let requests = requests.lock().await.clone();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].path,
+            "/open-apis/auth/v3/tenant_access_token/internal"
         );
 
         server.abort();
