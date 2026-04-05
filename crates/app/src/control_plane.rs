@@ -2163,6 +2163,35 @@ mod tests {
     }
 
     #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn pairing_registry_does_not_mutate_memory_when_rejection_persistence_fails() {
+        let request = ControlPlanePairingRequestRecord {
+            pairing_request_id: "pair-1".to_owned(),
+            device_id: "device-1".to_owned(),
+            client_id: "cli".to_owned(),
+            public_key: "pk-1".to_owned(),
+            role: "operator".to_owned(),
+            requested_scopes: BTreeSet::from(["operator.read".to_owned()]),
+            status: ControlPlanePairingStatus::Pending,
+            requested_at_ms: 1,
+            resolved_at_ms: None,
+            issued_token_id: None,
+            device_token: None,
+        };
+        let registry =
+            broken_pairing_registry_with_request("reject-persist-failure", request.clone());
+
+        let error = registry
+            .resolve_request("pair-1", false)
+            .expect_err("resolve_request should surface persistence failure");
+
+        assert!(!error.trim().is_empty());
+
+        let requests = registry.list_requests(None, 10);
+        assert_eq!(requests, vec![request]);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
     fn isolated_memory_config(test_name: &str) -> MemoryRuntimeConfig {
         let base = std::env::temp_dir().join(format!(
             "loongclaw-control-plane-view-{test_name}-{}",
