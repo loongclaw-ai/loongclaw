@@ -200,12 +200,9 @@ impl McpRegistry {
             for origin in next.snapshot.origins.drain(..) {
                 push_origin(&mut existing.snapshot.origins, origin);
             }
-
-            let should_adopt_stdio_launch_spec = existing.stdio_launch_spec.is_none();
-
-            if should_adopt_stdio_launch_spec {
-                existing.stdio_launch_spec = next.stdio_launch_spec;
-            }
+            // Keep the first-seen transport authoritative for a given canonical
+            // server name so the runtime snapshot and injectable launch spec
+            // cannot drift to different transports.
 
             return;
         }
@@ -335,8 +332,8 @@ fn transport_snapshot(transport: &McpServerTransportConfig) -> McpTransportSnaps
             env,
             cwd,
         } => McpTransportSnapshot::Stdio {
-            command: command.clone(),
-            args: args.clone(),
+            command: redact_stdio_command(command),
+            args: redact_stdio_args(args),
             cwd: cwd.as_ref().map(|value| value.display().to_string()),
             env_var_names: env.keys().cloned().collect(),
         },
@@ -346,12 +343,139 @@ fn transport_snapshot(transport: &McpServerTransportConfig) -> McpTransportSnaps
             http_headers,
             env_http_headers,
         } => McpTransportSnapshot::StreamableHttp {
-            url: url.clone(),
+            url: redact_transport_url(url),
             bearer_token_env_var: bearer_token_env_var.clone(),
             http_header_names: http_headers.keys().cloned().collect(),
             env_http_header_names: env_http_headers.keys().cloned().collect(),
         },
     }
+}
+
+fn redact_stdio_command(command: &str) -> String {
+    redact_transport_value(command)
+}
+
+fn redact_stdio_args(args: &[String]) -> Vec<String> {
+    let mut redacted_args = Vec::new();
+    let mut redact_next_value = false;
+
+    for argument in args {
+        if redact_next_value {
+            let redacted_value = "<redacted>".to_owned();
+            redacted_args.push(redacted_value);
+            redact_next_value = false;
+            continue;
+        }
+
+        let maybe_assignment = split_flag_assignment(argument);
+        if let Some((flag, value)) = maybe_assignment {
+            let is_sensitive = argument_key_looks_sensitive(flag);
+            let rendered_value = if is_sensitive {
+                "<redacted>".to_owned()
+            } else {
+                redact_transport_value(value)
+            };
+            let rendered_argument = format!("{flag}={rendered_value}");
+            redacted_args.push(rendered_argument);
+            continue;
+        }
+
+        let is_sensitive_flag = argument_key_looks_sensitive(argument);
+        if is_sensitive_flag {
+            redacted_args.push(argument.clone());
+            redact_next_value = true;
+            continue;
+        }
+
+        let redacted_argument = redact_transport_value(argument);
+        redacted_args.push(redacted_argument);
+    }
+
+    redacted_args
+}
+
+fn split_flag_assignment(argument: &str) -> Option<(&str, &str)> {
+    if !argument.starts_with('-') {
+        return None;
+    }
+
+    argument.split_once('=')
+}
+
+fn argument_key_looks_sensitive(argument: &str) -> bool {
+    if !argument.starts_with('-') {
+        return false;
+    }
+
+    let trimmed = argument.trim_start_matches('-');
+    let normalized = trimmed.replace(['_', '.'], "-").to_ascii_lowercase();
+    let parts = normalized
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+
+    let contains_secret_label = parts.iter().any(|part| {
+        matches!(
+            *part,
+            "token" | "secret" | "password" | "passwd" | "authorization" | "cookie" | "bearer"
+        )
+    });
+    if contains_secret_label {
+        return true;
+    }
+
+    let contains_key = parts.contains(&"key");
+    let contains_sensitive_scope = parts
+        .iter()
+        .any(|part| matches!(*part, "api" | "access" | "client" | "private" | "session"));
+
+    contains_key && contains_sensitive_scope
+}
+
+fn redact_transport_value(value: &str) -> String {
+    let looks_like_url = value.contains("://");
+    if looks_like_url {
+        return redact_transport_url(value);
+    }
+
+    value.to_owned()
+}
+
+fn redact_transport_url(raw: &str) -> String {
+    let parsed = reqwest::Url::parse(raw);
+    let Ok(mut parsed) = parsed else {
+        return raw.to_owned();
+    };
+
+    let has_username = !parsed.username().is_empty();
+    if has_username {
+        let _ = parsed.set_username("<redacted>");
+    }
+
+    let has_password = parsed.password().is_some();
+    if has_password {
+        let _ = parsed.set_password(Some("<redacted>"));
+    }
+
+    let query_keys = parsed
+        .query_pairs()
+        .map(|(name, _value)| name.into_owned())
+        .collect::<Vec<_>>();
+    if !query_keys.is_empty() {
+        parsed.set_query(None);
+        let mut query_pairs = parsed.query_pairs_mut();
+        for query_key in query_keys {
+            query_pairs.append_pair(query_key.as_str(), "<redacted>");
+        }
+        drop(query_pairs);
+    }
+
+    let has_fragment = parsed.fragment().is_some();
+    if has_fragment {
+        parsed.set_fragment(Some("<redacted>"));
+    }
+
+    parsed.to_string()
 }
 
 fn transport_kind_label(transport: &McpTransportSnapshot) -> &'static str {
@@ -574,6 +698,66 @@ mod tests {
     }
 
     #[test]
+    fn registry_keeps_config_transport_authoritative_for_same_name_conflicts() {
+        let config = LoongClawConfig {
+            mcp: McpConfig {
+                servers: BTreeMap::from([(
+                    "shared".to_owned(),
+                    McpServerConfig {
+                        transport: McpServerTransportConfig::StreamableHttp {
+                            url: "https://mcp.example.com".to_owned(),
+                            bearer_token_env_var: Some("MCP_TOKEN".to_owned()),
+                            http_headers: BTreeMap::new(),
+                            env_http_headers: BTreeMap::new(),
+                        },
+                        enabled: true,
+                        required: false,
+                        startup_timeout_ms: None,
+                        tool_timeout_ms: None,
+                        enabled_tools: Vec::new(),
+                        disabled_tools: Vec::new(),
+                    },
+                )]),
+            },
+            acp: AcpConfig {
+                backends: crate::config::AcpBackendProfilesConfig {
+                    acpx: Some(crate::config::AcpxBackendConfig {
+                        mcp_servers: BTreeMap::from([(
+                            "shared".to_owned(),
+                            AcpxMcpServerConfig {
+                                command: "npx".to_owned(),
+                                args: vec!["@modelcontextprotocol/server-filesystem".to_owned()],
+                                env: BTreeMap::new(),
+                            },
+                        )]),
+                        ..crate::config::AcpxBackendConfig::default()
+                    }),
+                },
+                ..AcpConfig::default()
+            },
+            ..LoongClawConfig::default()
+        };
+
+        let registry = McpRegistry::from_config(&config).expect("registry");
+        let snapshot = registry.snapshot();
+        let server = snapshot
+            .servers
+            .iter()
+            .find(|server| server.name == "shared")
+            .expect("shared server");
+        let selected_names = vec!["shared".to_owned()];
+        let error = registry
+            .resolve_injectable_stdio_launch_specs(&selected_names)
+            .expect_err("config transport should remain authoritative");
+
+        assert!(matches!(
+            server.transport,
+            McpTransportSnapshot::StreamableHttp { .. }
+        ));
+        assert!(error.contains("streamable_http"), "error={error}");
+    }
+
+    #[test]
     fn registry_resolves_injectable_stdio_launch_specs_from_shared_mcp_config() {
         let config = LoongClawConfig {
             mcp: McpConfig {
@@ -662,5 +846,59 @@ mod tests {
             .expect_err("http server must be rejected for ACPX injection");
 
         assert!(error.contains("streamable_http"), "error={error}");
+    }
+
+    #[test]
+    fn transport_snapshot_redacts_sensitive_stdio_arguments() {
+        let transport = McpServerTransportConfig::Stdio {
+            command: "uvx".to_owned(),
+            args: vec![
+                "--api-key=secret".to_owned(),
+                "--token".to_owned(),
+                "token-value".to_owned(),
+                "https://mcp.example.com?access_token=secret".to_owned(),
+            ],
+            env: BTreeMap::new(),
+            cwd: Some(PathBuf::from("/workspace/repo")),
+        };
+
+        let snapshot = transport_snapshot(&transport);
+
+        assert_eq!(
+            snapshot,
+            McpTransportSnapshot::Stdio {
+                command: "uvx".to_owned(),
+                args: vec![
+                    "--api-key=<redacted>".to_owned(),
+                    "--token".to_owned(),
+                    "<redacted>".to_owned(),
+                    "https://mcp.example.com/?access_token=%3Credacted%3E".to_owned(),
+                ],
+                cwd: Some("/workspace/repo".to_owned()),
+                env_var_names: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn transport_snapshot_redacts_sensitive_http_url_components() {
+        let transport = McpServerTransportConfig::StreamableHttp {
+            url: "https://alice:secret@mcp.example.com/path?token=secret&mode=read#frag".to_owned(),
+            bearer_token_env_var: Some("MCP_TOKEN".to_owned()),
+            http_headers: BTreeMap::new(),
+            env_http_headers: BTreeMap::new(),
+        };
+
+        let snapshot = transport_snapshot(&transport);
+
+        assert_eq!(
+            snapshot,
+            McpTransportSnapshot::StreamableHttp {
+                url: "https://%3Credacted%3E:%3Credacted%3E@mcp.example.com/path?token=%3Credacted%3E&mode=%3Credacted%3E#%3Credacted%3E".to_owned(),
+                bearer_token_env_var: Some("MCP_TOKEN".to_owned()),
+                http_header_names: Vec::new(),
+                env_http_header_names: Vec::new(),
+            }
+        );
     }
 }

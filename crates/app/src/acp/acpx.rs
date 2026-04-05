@@ -85,6 +85,8 @@ struct AcpxMcpServerEntry {
     command: String,
     args: Vec<String>,
     env: Vec<AcpxMcpServerEnvEntry>,
+    #[serde(default)]
+    cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -575,16 +577,21 @@ impl AcpRuntimeBackend for AcpxCliProbeBackend {
             }));
         }
 
-        let mut probe = Command::new(&command);
-        probe.arg("--version");
-        if let Some(cwd) = cwd {
-            probe.current_dir(cwd);
-        }
+        let probe_cwd = resolve_effective_cwd(None, cwd.as_deref())?;
+        let version_args = vec!["--version".to_owned()];
+        let version_probe = run_process(
+            command.as_str(),
+            &version_args,
+            probe_cwd.as_str(),
+            config.acp.startup_timeout_ms(),
+            None,
+        )
+        .await;
 
-        match probe.output().await {
+        match version_probe {
             Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                let stdout = output.stdout.trim().to_owned();
+                let stderr = output.stderr.trim().to_owned();
                 let observed = match (stdout.is_empty(), stderr.is_empty()) {
                     (false, true) => stdout,
                     (true, false) => stderr,
@@ -595,8 +602,7 @@ impl AcpRuntimeBackend for AcpxCliProbeBackend {
                 diagnostics.insert(
                     "exit_status".to_owned(),
                     output
-                        .status
-                        .code()
+                        .exit_code
                         .map_or_else(|| "signal".to_owned(), |code| code.to_string()),
                 );
 
@@ -606,14 +612,15 @@ impl AcpRuntimeBackend for AcpxCliProbeBackend {
                         value.eq_ignore_ascii_case(ACPX_VERSION_ANY) || observed.contains(value)
                     })
                     .unwrap_or(true);
-                let healthy = output.status.success() && version_matches && mcp_proxy_ready;
+                let exited_successfully = output.exit_code == Some(0);
+                let healthy = exited_successfully && version_matches && mcp_proxy_ready;
                 diagnostics.insert(
                     "status".to_owned(),
                     if !mcp_proxy_ready {
                         "mcp_proxy_unavailable".to_owned()
                     } else if healthy {
                         "ready".to_owned()
-                    } else if !output.status.success() {
+                    } else if !exited_successfully {
                         "execution_failed".to_owned()
                     } else {
                         "version_mismatch".to_owned()
@@ -625,15 +632,16 @@ impl AcpRuntimeBackend for AcpxCliProbeBackend {
                 }))
             }
             Err(error) => {
+                let is_missing_command = error.starts_with("acpx command not found:");
                 diagnostics.insert(
                     "status".to_owned(),
-                    if error.kind() == ErrorKind::NotFound {
+                    if is_missing_command {
                         "missing_command".to_owned()
                     } else {
                         "spawn_failed".to_owned()
                     },
                 );
-                diagnostics.insert("error".to_owned(), error.to_string());
+                diagnostics.insert("error".to_owned(), error);
                 Ok(Some(AcpDoctorReport {
                     healthy: false,
                     diagnostics,
@@ -906,6 +914,7 @@ fn acpx_mcp_server_entry_from_registry_server(
         command: server.command,
         args: server.args,
         env: env_entries,
+        cwd: server.cwd,
     }
 }
 
@@ -1765,6 +1774,8 @@ mod tests {
 
     use super::*;
     use crate::config::{AcpBackendProfilesConfig, AcpConfig, AcpxBackendConfig, LoongClawConfig};
+    #[cfg(unix)]
+    use crate::test_support::ScopedEnv;
 
     #[cfg(unix)]
     const ACPX_FAKE_RUNTIME_STARTUP_TIMEOUT_MS: u64 = 60_000;
@@ -2246,6 +2257,84 @@ exit 0
 
         let _ = std::fs::remove_file(&script_path);
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn doctor_accepts_path_discovered_fake_version_command() {
+        let _guard = acpx_test_lock();
+        let temp_dir = unique_temp_dir("loongclaw-acpx-probe-path");
+        let bin_dir = temp_dir.join("bin");
+        let script_path = bin_dir.join("fake-acpx");
+        std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+        write_executable_script_atomically(&script_path, "#!/bin/sh\necho 'acpx 0.1.16'\n")
+            .expect("write fake acpx script");
+
+        let mut env = ScopedEnv::new();
+        let original_path = std::env::var_os("PATH").unwrap_or_default();
+        let original_entries = std::env::split_paths(&original_path);
+        let mut path_entries = vec![bin_dir.clone()];
+        path_entries.extend(original_entries);
+        let joined_path = std::env::join_paths(path_entries).expect("join PATH");
+        env.set("PATH", joined_path);
+
+        let backend = AcpxCliProbeBackend;
+        let config = LoongClawConfig {
+            acp: AcpConfig {
+                backends: AcpBackendProfilesConfig {
+                    acpx: Some(AcpxBackendConfig {
+                        command: Some("fake-acpx".to_owned()),
+                        expected_version: Some("0.1.16".to_owned()),
+                        cwd: Some(temp_dir.display().to_string()),
+                        ..AcpxBackendConfig::default()
+                    }),
+                },
+                ..AcpConfig::default()
+            },
+            ..LoongClawConfig::default()
+        };
+
+        let report = backend
+            .doctor(&config)
+            .await
+            .expect("doctor should not fail")
+            .expect("doctor report");
+
+        assert!(report.healthy, "doctor should use launcher path");
+        assert_eq!(
+            report.diagnostics.get("command"),
+            Some(&"fake-acpx".to_owned())
+        );
+        assert_eq!(report.diagnostics.get("status"), Some(&"ready".to_owned()));
+    }
+
+    #[test]
+    fn build_mcp_proxy_agent_command_preserves_server_cwd() {
+        let server = AcpxMcpServerEntry {
+            name: "docs".to_owned(),
+            command: "uvx".to_owned(),
+            args: vec!["context7-mcp".to_owned()],
+            env: vec![AcpxMcpServerEnvEntry {
+                name: "API_TOKEN".to_owned(),
+                value: "secret".to_owned(),
+            }],
+            cwd: Some("/workspace/docs".to_owned()),
+        };
+
+        let command = build_mcp_proxy_agent_command("npx @zed-industries/codex-acp", &[server])
+            .expect("proxy command");
+        let payload_marker = "--payload ";
+        let payload_index = command.find(payload_marker).expect("payload marker");
+        let encoded_payload = &command[payload_index + payload_marker.len()..];
+        let decoded_payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(encoded_payload)
+            .expect("decode payload");
+        let payload: Value = serde_json::from_slice(&decoded_payload).expect("parse payload");
+
+        assert_eq!(
+            payload["mcpServers"][0]["cwd"],
+            Value::String("/workspace/docs".to_owned())
+        );
     }
 
     #[tokio::test]

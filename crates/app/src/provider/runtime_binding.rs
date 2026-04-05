@@ -54,6 +54,8 @@ impl<'a> ProviderRuntimeBinding<'a> {
 
 #[cfg(test)]
 mod tests {
+    use crate::context::bootstrap_test_kernel_context;
+
     use super::ProviderRuntimeBinding;
 
     #[test]
