@@ -267,8 +267,17 @@ async fn main() {
         Commands::ControlPlaneServe {
             config,
             session,
+            bind,
             port,
-        } => run_control_plane_serve_cli(config.as_deref(), session.as_deref(), port).await,
+        } => {
+            run_control_plane_serve_cli(
+                config.as_deref(),
+                session.as_deref(),
+                bind.as_deref(),
+                port,
+            )
+            .await
+        }
         Commands::Audit {
             config,
             json,

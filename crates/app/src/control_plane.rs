@@ -801,18 +801,22 @@ impl ControlPlanePairingRegistry {
             .cloned()
             && approved.public_key == public_key
         {
-            let hashed_token = device_token.map(hash_control_plane_device_token);
-            return match device_token {
-                Some(_)
-                    if hashed_token
-                        .as_deref()
-                        .is_some_and(|token_hash| token_hash == approved.token_hash) =>
-                {
-                    Ok(ControlPlanePairingConnectDecision::Authorized)
-                }
-                Some(_) => Ok(ControlPlanePairingConnectDecision::DeviceTokenInvalid),
-                None => Ok(ControlPlanePairingConnectDecision::DeviceTokenRequired),
-            };
+            let requires_repairing =
+                approved_device_requires_pairing(&approved, role.as_str(), &requested_scopes);
+            if !requires_repairing {
+                let hashed_token = device_token.map(hash_control_plane_device_token);
+                return match device_token {
+                    Some(_)
+                        if hashed_token
+                            .as_deref()
+                            .is_some_and(|token_hash| token_hash == approved.token_hash) =>
+                    {
+                        Ok(ControlPlanePairingConnectDecision::Authorized)
+                    }
+                    Some(_) => Ok(ControlPlanePairingConnectDecision::DeviceTokenInvalid),
+                    None => Ok(ControlPlanePairingConnectDecision::DeviceTokenRequired),
+                };
+            }
         }
 
         let mut requests = self
@@ -825,6 +829,8 @@ impl ControlPlanePairingRegistry {
                 record.status == ControlPlanePairingStatus::Pending
                     && record.device_id == device_id
                     && record.public_key == public_key
+                    && record.role == role
+                    && record.requested_scopes == requested_scopes
             })
             .cloned()
         {
@@ -1105,6 +1111,19 @@ fn hash_control_plane_device_token(token: &str) -> String {
     digest.update(token.as_bytes());
     let bytes = digest.finalize();
     hex::encode(bytes)
+}
+
+fn approved_device_requires_pairing(
+    approved: &ControlPlaneApprovedDeviceRecord,
+    requested_role: &str,
+    requested_scopes: &BTreeSet<String>,
+) -> bool {
+    let same_role = approved.role == requested_role;
+    if !same_role {
+        return true;
+    }
+    let scopes_within_approved = requested_scopes.is_subset(&approved.approved_scopes);
+    !scopes_within_approved
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -1953,6 +1972,53 @@ mod tests {
             )
             .expect("evaluate connect");
         assert_eq!(authorized, ControlPlanePairingConnectDecision::Authorized);
+    }
+
+    #[test]
+    fn pairing_registry_requires_repairing_for_scope_upgrade() {
+        let registry = ControlPlanePairingRegistry::new();
+        let initial_scopes = BTreeSet::from(["operator.read".to_owned()]);
+        let pending = registry
+            .evaluate_connect("device-1", "cli", "pk-1", "operator", &initial_scopes, None)
+            .expect("evaluate connect");
+        let request_id = match pending {
+            ControlPlanePairingConnectDecision::PairingRequired { request, .. } => {
+                request.pairing_request_id.clone()
+            }
+            other @ ControlPlanePairingConnectDecision::Authorized
+            | other @ ControlPlanePairingConnectDecision::DeviceTokenRequired
+            | other @ ControlPlanePairingConnectDecision::DeviceTokenInvalid => {
+                panic!("expected pairing request, got {other:?}")
+            }
+        };
+        let approved = registry
+            .resolve_request(&request_id, true)
+            .expect("resolve request")
+            .expect("approved request");
+        let device_token = approved.device_token.expect("device token");
+
+        let upgraded_scopes =
+            BTreeSet::from(["operator.read".to_owned(), "operator.acp".to_owned()]);
+        let upgraded = registry
+            .evaluate_connect(
+                "device-1",
+                "cli",
+                "pk-1",
+                "operator",
+                &upgraded_scopes,
+                Some(&device_token),
+            )
+            .expect("evaluate connect");
+        let upgraded_request = match upgraded {
+            ControlPlanePairingConnectDecision::PairingRequired { request, .. } => request,
+            other @ ControlPlanePairingConnectDecision::Authorized
+            | other @ ControlPlanePairingConnectDecision::DeviceTokenRequired
+            | other @ ControlPlanePairingConnectDecision::DeviceTokenInvalid => {
+                panic!("expected upgraded pairing request, got {other:?}")
+            }
+        };
+        assert_eq!(upgraded_request.role, "operator");
+        assert_eq!(upgraded_request.requested_scopes, upgraded_scopes);
     }
 
     #[cfg(feature = "memory-sqlite")]

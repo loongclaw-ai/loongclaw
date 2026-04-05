@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::CliResult;
 use crate::mcp::McpConfig;
+use crate::secrets::DefaultSecretResolver;
+use loongclaw_contracts::{SecretRef, SecretResolver};
 
 use super::{
     OnebotChannelConfig, QqbotChannelConfig, WeixinChannelConfig,
@@ -156,8 +158,36 @@ pub struct LoongClawConfig {
     pub memory: MemoryConfig,
     #[serde(default)]
     pub audit: AuditConfig,
+    #[serde(default, skip_serializing_if = "ControlPlaneConfig::is_default")]
+    pub control_plane: ControlPlaneConfig,
     #[serde(default)]
     pub acp: AcpConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ControlPlaneConfig {
+    #[serde(default)]
+    pub allow_remote: bool,
+    #[serde(default)]
+    pub shared_token: Option<SecretRef>,
+}
+
+impl ControlPlaneConfig {
+    fn is_default(config: &Self) -> bool {
+        *config == Self::default()
+    }
+
+    pub fn resolved_shared_token(&self) -> CliResult<Option<String>> {
+        let Some(secret_ref) = self.shared_token.as_ref() else {
+            return Ok(None);
+        };
+        let resolver = DefaultSecretResolver::default();
+        let resolved_value = resolver
+            .resolve(secret_ref)
+            .map_err(|error| format!("resolve control-plane shared token failed: {error}"))?;
+        let shared_token = resolved_value.map(|secret| secret.into_inner());
+        Ok(shared_token)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -64,6 +64,29 @@ const CONTROL_PLANE_PACK_DOMAIN: &str = "control";
 const CONTROL_PLANE_PACK_VERSION: &str = "1.0.0";
 const CONTROL_PLANE_PRIMARY_ADAPTER: &str = "control-plane";
 const CONTROL_PLANE_KEEPALIVE_TEXT: &str = "keep-alive";
+const CONTROL_PLANE_REMOTE_BOOTSTRAP_SCOPES: [ControlPlaneScope; 2] = [
+    ControlPlaneScope::OperatorRead,
+    ControlPlaneScope::OperatorPairing,
+];
+
+#[derive(Debug, Clone)]
+struct ControlPlaneExposurePolicy {
+    bind_addr: SocketAddr,
+    shared_token: Option<String>,
+}
+
+impl ControlPlaneExposurePolicy {
+    fn requires_remote_auth(&self) -> bool {
+        !self.bind_addr.ip().is_loopback()
+    }
+}
+
+fn default_loopback_exposure_policy() -> ControlPlaneExposurePolicy {
+    ControlPlaneExposurePolicy {
+        bind_addr: default_control_plane_bind_addr(0),
+        shared_token: None,
+    }
+}
 
 struct ControlPlaneKernelAuthority {
     kernel: LoongClawKernel<StaticPolicyEngine>,
@@ -79,6 +102,7 @@ struct ControlPlaneHttpState {
     challenge_registry: Arc<mvp::control_plane::ControlPlaneChallengeRegistry>,
     pairing_registry: Arc<mvp::control_plane::ControlPlanePairingRegistry>,
     kernel_authority: Arc<ControlPlaneKernelAuthority>,
+    exposure_policy: Arc<ControlPlaneExposurePolicy>,
     #[cfg(feature = "memory-sqlite")]
     repository_view: Option<Arc<mvp::control_plane::ControlPlaneRepositoryView>>,
     #[cfg(feature = "memory-sqlite")]
@@ -259,6 +283,59 @@ fn control_plane_pack() -> VerticalPackManifest {
 
 fn default_control_plane_bind_addr(port: u16) -> SocketAddr {
     SocketAddr::from((Ipv4Addr::LOCALHOST, port))
+}
+
+fn resolve_control_plane_bind_addr(
+    bind_override: Option<&str>,
+    port: u16,
+) -> Result<SocketAddr, String> {
+    let Some(raw_bind_addr) = bind_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(default_control_plane_bind_addr(port));
+    };
+    raw_bind_addr.parse::<SocketAddr>().map_err(|error| {
+        format!("parse control-plane bind address `{raw_bind_addr}` failed: {error}")
+    })
+}
+
+fn build_control_plane_exposure_policy(
+    bind_addr: SocketAddr,
+    config: Option<&mvp::config::LoongClawConfig>,
+) -> Result<ControlPlaneExposurePolicy, String> {
+    let is_loopback = bind_addr.ip().is_loopback();
+    if is_loopback {
+        return Ok(ControlPlaneExposurePolicy {
+            bind_addr,
+            shared_token: None,
+        });
+    }
+
+    let Some(config) = config else {
+        return Err(
+            "non-loopback control-plane bind requires --config with control_plane.allow_remote=true"
+                .to_owned(),
+        );
+    };
+
+    if !config.control_plane.allow_remote {
+        return Err(
+            "non-loopback control-plane bind requires control_plane.allow_remote=true".to_owned(),
+        );
+    }
+
+    let shared_token = config.control_plane.resolved_shared_token()?;
+    let Some(shared_token) = shared_token else {
+        return Err(
+            "non-loopback control-plane bind requires control_plane.shared_token".to_owned(),
+        );
+    };
+
+    Ok(ControlPlaneExposurePolicy {
+        bind_addr,
+        shared_token: Some(shared_token),
+    })
 }
 
 fn default_policy() -> ControlPlanePolicy {
@@ -654,12 +731,13 @@ fn map_pairing_request(
 fn principal_from_connect(
     request: &ControlPlaneConnectRequest,
     connection_id: String,
+    granted_scopes: std::collections::BTreeSet<ControlPlaneScope>,
 ) -> ControlPlanePrincipal {
     ControlPlanePrincipal {
         connection_id,
         client_id: request.client.id.clone(),
         role: request.role,
-        scopes: request.scopes.clone(),
+        scopes: granted_scopes,
         device_id: request
             .device
             .as_ref()
@@ -779,13 +857,13 @@ fn control_plane_subscribe_stream(
 fn connection_principal_from_connect(
     request: &ControlPlaneConnectRequest,
     connection_id: String,
+    granted_scopes: &std::collections::BTreeSet<ControlPlaneScope>,
 ) -> mvp::control_plane::ControlPlaneConnectionPrincipal {
     mvp::control_plane::ControlPlaneConnectionPrincipal {
         connection_id,
         client_id: request.client.id.clone(),
         role: request.role.as_str().to_owned(),
-        scopes: request
-            .scopes
+        scopes: granted_scopes
             .iter()
             .map(|scope| scope.as_str().to_owned())
             .collect::<std::collections::BTreeSet<_>>(),
@@ -794,6 +872,23 @@ fn connection_principal_from_connect(
             .as_ref()
             .map(|device| device.device_id.clone()),
     }
+}
+
+fn granted_connect_scopes(
+    state: &ControlPlaneHttpState,
+    request: &ControlPlaneConnectRequest,
+) -> std::collections::BTreeSet<ControlPlaneScope> {
+    let remote_bootstrap = state.exposure_policy.requires_remote_auth() && request.device.is_none();
+    if !remote_bootstrap {
+        return request.scopes.clone();
+    }
+
+    let allowed_scopes = std::collections::BTreeSet::from(CONTROL_PLANE_REMOTE_BOOTSTRAP_SCOPES);
+    let requested_scopes = request.scopes.clone();
+    requested_scopes
+        .intersection(&allowed_scopes)
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>()
 }
 
 fn extract_connection_token(headers: &HeaderMap) -> Option<String> {
@@ -1056,6 +1151,59 @@ fn verify_connect_device_challenge(
     })
 }
 
+fn verify_remote_connect_bootstrap_auth(
+    state: &ControlPlaneHttpState,
+    request: &ControlPlaneConnectRequest,
+) -> Result<(), Box<Response>> {
+    let requires_remote_auth = state.exposure_policy.requires_remote_auth();
+    if !requires_remote_auth {
+        return Ok(());
+    }
+
+    let device_present = request.device.is_some();
+    if device_present {
+        return Ok(());
+    }
+
+    let shared_token = state
+        .exposure_policy
+        .shared_token
+        .as_deref()
+        .ok_or_else(|| {
+            Box::new(connect_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ControlPlaneConnectErrorCode::SharedTokenRequired,
+                "remote control-plane posture is missing exposure shared token",
+            ))
+        })?;
+
+    let presented_token = request
+        .auth
+        .as_ref()
+        .and_then(|auth| auth.token.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let Some(presented_token) = presented_token else {
+        return Err(Box::new(connect_error_response(
+            StatusCode::UNAUTHORIZED,
+            ControlPlaneConnectErrorCode::SharedTokenRequired,
+            "remote non-loopback operator connect requires auth.token",
+        )));
+    };
+
+    let token_matches =
+        mvp::crypto::timing_safe_eq(presented_token.as_bytes(), shared_token.as_bytes());
+    if !token_matches {
+        return Err(Box::new(connect_error_response(
+            StatusCode::UNAUTHORIZED,
+            ControlPlaneConnectErrorCode::SharedTokenInvalid,
+            "remote non-loopback operator connect presented an invalid auth.token",
+        )));
+    }
+
+    Ok(())
+}
+
 fn pairing_required_response(
     request: &mvp::control_plane::ControlPlanePairingRequestRecord,
 ) -> Response {
@@ -1079,6 +1227,22 @@ fn device_token_error_response(
 ) -> Response {
     (
         StatusCode::UNAUTHORIZED,
+        Json(ControlPlaneConnectErrorResponse {
+            code,
+            error: error.into(),
+            pairing_request_id: None,
+        }),
+    )
+        .into_response()
+}
+
+fn connect_error_response(
+    status: StatusCode,
+    code: ControlPlaneConnectErrorCode,
+    error: impl Into<String>,
+) -> Response {
+    (
+        status,
         Json(ControlPlaneConnectErrorResponse {
             code,
             error: error.into(),
@@ -1216,6 +1380,9 @@ async fn control_connect(
             format!("protocol mismatch: expected protocol {CONTROL_PLANE_PROTOCOL_VERSION}"),
         );
     }
+    if let Err(response) = verify_remote_connect_bootstrap_auth(&state, &request) {
+        return *response;
+    }
     if let Err(response) = verify_connect_device_challenge(&state, &request) {
         return *response;
     }
@@ -1281,10 +1448,15 @@ async fn control_connect(
         "cp-{:016x}",
         state.connection_counter.fetch_add(1, Ordering::Relaxed) + 1
     );
-    let principal = principal_from_connect(&request, connection_id.clone());
+    let granted_scopes = granted_connect_scopes(&state, &request);
+    let principal = principal_from_connect(&request, connection_id.clone(), granted_scopes.clone());
     let lease = state
         .connection_registry
-        .issue(connection_principal_from_connect(&request, connection_id));
+        .issue(connection_principal_from_connect(
+            &request,
+            connection_id,
+            &granted_scopes,
+        ));
     let scoped_capabilities = connection_scoped_capabilities(&lease);
     let agent_id = lease.principal.client_id.clone();
     let issue_result =
@@ -1635,6 +1807,7 @@ fn build_control_plane_router_with_runtime(
     repository_view: Option<Arc<mvp::control_plane::ControlPlaneRepositoryView>>,
     acp_view: Option<Arc<mvp::control_plane::ControlPlaneAcpView>>,
     pairing_registry: Arc<mvp::control_plane::ControlPlanePairingRegistry>,
+    exposure_policy: ControlPlaneExposurePolicy,
 ) -> Result<Router, String> {
     let kernel_authority = Arc::new(ControlPlaneKernelAuthority::new()?);
     let state = ControlPlaneHttpState {
@@ -1644,6 +1817,7 @@ fn build_control_plane_router_with_runtime(
         challenge_registry: Arc::new(mvp::control_plane::ControlPlaneChallengeRegistry::new()),
         pairing_registry,
         kernel_authority,
+        exposure_policy: Arc::new(exposure_policy),
         repository_view,
         acp_view,
     };
@@ -1675,12 +1849,20 @@ fn build_control_plane_router_with_views(
     acp_view: Option<Arc<mvp::control_plane::ControlPlaneAcpView>>,
 ) -> Result<Router, String> {
     let pairing_registry = Arc::new(mvp::control_plane::ControlPlanePairingRegistry::new());
-    build_control_plane_router_with_runtime(manager, repository_view, acp_view, pairing_registry)
+    let exposure_policy = default_loopback_exposure_policy();
+    build_control_plane_router_with_runtime(
+        manager,
+        repository_view,
+        acp_view,
+        pairing_registry,
+        exposure_policy,
+    )
 }
 
 #[cfg(not(feature = "memory-sqlite"))]
 fn build_control_plane_router_without_repository(
     manager: Arc<mvp::control_plane::ControlPlaneManager>,
+    exposure_policy: ControlPlaneExposurePolicy,
 ) -> Result<Router, String> {
     let kernel_authority = Arc::new(ControlPlaneKernelAuthority::new()?);
     let state = ControlPlaneHttpState {
@@ -1690,6 +1872,7 @@ fn build_control_plane_router_without_repository(
         challenge_registry: Arc::new(mvp::control_plane::ControlPlaneChallengeRegistry::new()),
         pairing_registry: Arc::new(mvp::control_plane::ControlPlanePairingRegistry::new()),
         kernel_authority,
+        exposure_policy: Arc::new(exposure_policy),
     };
 
     let router = Router::new()
@@ -1721,24 +1904,37 @@ pub fn build_control_plane_router(
     }
     #[cfg(not(feature = "memory-sqlite"))]
     {
-        build_control_plane_router_without_repository(manager)
+        let exposure_policy = default_loopback_exposure_policy();
+        build_control_plane_router_without_repository(manager, exposure_policy)
     }
 }
 
 pub async fn run_control_plane_serve_cli(
     config_path: Option<&str>,
     current_session_id: Option<&str>,
+    bind_override: Option<&str>,
     port: u16,
 ) -> CliResult<()> {
     if current_session_id.is_some() && config_path.is_none() {
         return Err("control-plane-serve --session requires --config".to_owned());
     }
+    let bind_addr = resolve_control_plane_bind_addr(bind_override, port)?;
+    let loaded_config = match config_path {
+        Some(config_path) => {
+            let (resolved_path, config) = mvp::config::load(Some(config_path))?;
+            Some((resolved_path, config))
+        }
+        None => None,
+    };
+    let exposure_policy = build_control_plane_exposure_policy(
+        bind_addr,
+        loaded_config.as_ref().map(|(_, config)| config),
+    )?;
     let manager = Arc::new(mvp::control_plane::ControlPlaneManager::new());
     manager.set_runtime_ready(true);
     #[cfg(feature = "memory-sqlite")]
-    let (repository_view, acp_view) = match config_path {
-        Some(config_path) => {
-            let (resolved_path, config) = mvp::config::load(Some(config_path))?;
+    let (repository_view, acp_view) = match loaded_config.as_ref() {
+        Some((resolved_path, config)) => {
             let memory_config =
                 mvp::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(
                     &config.memory,
@@ -1753,16 +1949,16 @@ pub async fn run_control_plane_serve_cli(
                     mvp::control_plane::ControlPlaneRepositoryView::new(memory_config, session_id),
                 )),
                 Some(Arc::new(mvp::control_plane::ControlPlaneAcpView::new(
-                    config, session_id,
+                    config.clone(),
+                    session_id,
                 ))),
             )
         }
         None => (None, None),
     };
     #[cfg(feature = "memory-sqlite")]
-    let pairing_registry = match config_path {
-        Some(config_path) => {
-            let (_, config) = mvp::config::load(Some(config_path))?;
+    let pairing_registry = match loaded_config.as_ref() {
+        Some((_, config)) => {
             let memory_config =
                 mvp::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(
                     &config.memory,
@@ -1782,10 +1978,10 @@ pub async fn run_control_plane_serve_cli(
         repository_view,
         acp_view,
         pairing_registry,
+        exposure_policy,
     )?;
     #[cfg(not(feature = "memory-sqlite"))]
-    let router = build_control_plane_router_without_repository(manager)?;
-    let bind_addr = default_control_plane_bind_addr(port);
+    let router = build_control_plane_router_without_repository(manager, exposure_policy)?;
     let listener = tokio::net::TcpListener::bind(bind_addr)
         .await
         .map_err(|error| format!("bind control-plane listener failed: {error}"))?;
@@ -1803,6 +1999,7 @@ pub async fn run_control_plane_serve_cli(
 mod tests {
     use super::*;
     use futures_util::StreamExt;
+    use loongclaw_contracts::SecretRef;
 
     fn build_control_plane_router(manager: Arc<mvp::control_plane::ControlPlaneManager>) -> Router {
         super::build_control_plane_router(manager).expect("router")
@@ -1816,6 +2013,36 @@ mod tests {
     ) -> Router {
         super::build_control_plane_router_with_views(manager, repository_view, acp_view)
             .expect("router")
+    }
+
+    fn remote_control_plane_config(shared_token: &str) -> mvp::config::LoongClawConfig {
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.control_plane.allow_remote = true;
+        config.control_plane.shared_token = Some(SecretRef::Inline(shared_token.to_owned()));
+        config
+    }
+
+    fn non_loopback_bind_addr() -> SocketAddr {
+        SocketAddr::from(([0, 0, 0, 0], 4317))
+    }
+
+    fn build_remote_control_plane_router(
+        manager: Arc<mvp::control_plane::ControlPlaneManager>,
+        shared_token: &str,
+    ) -> Router {
+        let config = remote_control_plane_config(shared_token);
+        let bind_addr = non_loopback_bind_addr();
+        let exposure_policy =
+            build_control_plane_exposure_policy(bind_addr, Some(&config)).expect("policy");
+        let pairing_registry = Arc::new(mvp::control_plane::ControlPlanePairingRegistry::new());
+        super::build_control_plane_router_with_runtime(
+            manager,
+            None,
+            None,
+            pairing_registry,
+            exposure_policy,
+        )
+        .expect("router")
     }
 
     async fn connect_token(
@@ -2187,6 +2414,30 @@ mod tests {
         assert_eq!(addr.port(), 0);
     }
 
+    #[test]
+    fn resolve_control_plane_bind_addr_accepts_explicit_override() {
+        let bind_addr =
+            resolve_control_plane_bind_addr(Some("0.0.0.0:4317"), 0).expect("bind addr");
+        assert_eq!(bind_addr, non_loopback_bind_addr());
+    }
+
+    #[test]
+    fn non_loopback_exposure_requires_explicit_remote_opt_in() {
+        let config = mvp::config::LoongClawConfig::default();
+        let error = build_control_plane_exposure_policy(non_loopback_bind_addr(), Some(&config))
+            .expect_err("remote bind should require explicit opt-in");
+        assert!(error.contains("control_plane.allow_remote=true"));
+    }
+
+    #[test]
+    fn non_loopback_exposure_requires_shared_token() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        config.control_plane.allow_remote = true;
+        let error = build_control_plane_exposure_policy(non_loopback_bind_addr(), Some(&config))
+            .expect_err("remote bind should require shared token");
+        assert!(error.contains("control_plane.shared_token"));
+    }
+
     #[tokio::test]
     async fn readyz_returns_ok() {
         let manager = Arc::new(mvp::control_plane::ControlPlaneManager::new());
@@ -2297,6 +2548,229 @@ mod tests {
         assert_eq!(
             connect.policy.tick_interval_ms,
             CONTROL_PLANE_TICK_INTERVAL_MS
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_control_connect_requires_shared_token_for_non_device_operator() {
+        let manager = Arc::new(mvp::control_plane::ControlPlaneManager::new());
+        manager.set_runtime_ready(true);
+        let router = build_remote_control_plane_router(manager, "bootstrap-token");
+        let request = ControlPlaneConnectRequest {
+            min_protocol: CONTROL_PLANE_PROTOCOL_VERSION,
+            max_protocol: CONTROL_PLANE_PROTOCOL_VERSION,
+            client: ControlPlaneClientIdentity {
+                id: "cli".to_owned(),
+                version: "1.0.0".to_owned(),
+                mode: "operator_ui".to_owned(),
+                platform: "macos".to_owned(),
+                display_name: Some("LoongClaw CLI".to_owned()),
+            },
+            role: ControlPlaneRole::Operator,
+            scopes: std::collections::BTreeSet::from([ControlPlaneScope::OperatorRead]),
+            caps: std::collections::BTreeSet::new(),
+            commands: std::collections::BTreeSet::new(),
+            permissions: std::collections::BTreeMap::new(),
+            auth: None,
+            device: None,
+        };
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/control/connect")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&request).expect("encode request"),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("connect response");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let error: ControlPlaneConnectErrorResponse =
+            serde_json::from_slice(&body).expect("error json");
+        assert_eq!(
+            error.code,
+            ControlPlaneConnectErrorCode::SharedTokenRequired
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_control_connect_rejects_invalid_shared_token() {
+        let manager = Arc::new(mvp::control_plane::ControlPlaneManager::new());
+        manager.set_runtime_ready(true);
+        let router = build_remote_control_plane_router(manager, "bootstrap-token");
+        let request = ControlPlaneConnectRequest {
+            min_protocol: CONTROL_PLANE_PROTOCOL_VERSION,
+            max_protocol: CONTROL_PLANE_PROTOCOL_VERSION,
+            client: ControlPlaneClientIdentity {
+                id: "cli".to_owned(),
+                version: "1.0.0".to_owned(),
+                mode: "operator_ui".to_owned(),
+                platform: "macos".to_owned(),
+                display_name: Some("LoongClaw CLI".to_owned()),
+            },
+            role: ControlPlaneRole::Operator,
+            scopes: std::collections::BTreeSet::from([ControlPlaneScope::OperatorRead]),
+            caps: std::collections::BTreeSet::new(),
+            commands: std::collections::BTreeSet::new(),
+            permissions: std::collections::BTreeMap::new(),
+            auth: Some(loongclaw_protocol::ControlPlaneAuthClaims {
+                token: Some("wrong-token".to_owned()),
+                device_token: None,
+                bootstrap_token: None,
+                password: None,
+            }),
+            device: None,
+        };
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/control/connect")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&request).expect("encode request"),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("connect response");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let error: ControlPlaneConnectErrorResponse =
+            serde_json::from_slice(&body).expect("error json");
+        assert_eq!(error.code, ControlPlaneConnectErrorCode::SharedTokenInvalid);
+    }
+
+    #[tokio::test]
+    async fn remote_control_connect_accepts_valid_shared_token() {
+        let manager = Arc::new(mvp::control_plane::ControlPlaneManager::new());
+        manager.set_runtime_ready(true);
+        let router = build_remote_control_plane_router(manager, "bootstrap-token");
+        let request = ControlPlaneConnectRequest {
+            min_protocol: CONTROL_PLANE_PROTOCOL_VERSION,
+            max_protocol: CONTROL_PLANE_PROTOCOL_VERSION,
+            client: ControlPlaneClientIdentity {
+                id: "cli".to_owned(),
+                version: "1.0.0".to_owned(),
+                mode: "operator_ui".to_owned(),
+                platform: "macos".to_owned(),
+                display_name: Some("LoongClaw CLI".to_owned()),
+            },
+            role: ControlPlaneRole::Operator,
+            scopes: std::collections::BTreeSet::from([ControlPlaneScope::OperatorRead]),
+            caps: std::collections::BTreeSet::new(),
+            commands: std::collections::BTreeSet::new(),
+            permissions: std::collections::BTreeMap::new(),
+            auth: Some(loongclaw_protocol::ControlPlaneAuthClaims {
+                token: Some("bootstrap-token".to_owned()),
+                device_token: None,
+                bootstrap_token: None,
+                password: None,
+            }),
+            device: None,
+        };
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/control/connect")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&request).expect("encode request"),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("connect response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let connect: ControlPlaneConnectResponse =
+            serde_json::from_slice(&body).expect("connect json");
+        assert_eq!(connect.principal.client_id, "cli");
+    }
+
+    #[tokio::test]
+    async fn remote_control_connect_clamps_bootstrap_scopes_to_safe_subset() {
+        let manager = Arc::new(mvp::control_plane::ControlPlaneManager::new());
+        manager.set_runtime_ready(true);
+        let router = build_remote_control_plane_router(manager, "bootstrap-token");
+        let request = ControlPlaneConnectRequest {
+            min_protocol: CONTROL_PLANE_PROTOCOL_VERSION,
+            max_protocol: CONTROL_PLANE_PROTOCOL_VERSION,
+            client: ControlPlaneClientIdentity {
+                id: "cli".to_owned(),
+                version: "1.0.0".to_owned(),
+                mode: "operator_ui".to_owned(),
+                platform: "macos".to_owned(),
+                display_name: Some("LoongClaw CLI".to_owned()),
+            },
+            role: ControlPlaneRole::Operator,
+            scopes: std::collections::BTreeSet::from([
+                ControlPlaneScope::OperatorRead,
+                ControlPlaneScope::OperatorAdmin,
+                ControlPlaneScope::OperatorPairing,
+            ]),
+            caps: std::collections::BTreeSet::new(),
+            commands: std::collections::BTreeSet::new(),
+            permissions: std::collections::BTreeMap::new(),
+            auth: Some(loongclaw_protocol::ControlPlaneAuthClaims {
+                token: Some("bootstrap-token".to_owned()),
+                device_token: None,
+                bootstrap_token: None,
+                password: None,
+            }),
+            device: None,
+        };
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/control/connect")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&request).expect("encode request"),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("connect response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let connect: ControlPlaneConnectResponse =
+            serde_json::from_slice(&body).expect("connect json");
+        assert!(
+            connect
+                .principal
+                .scopes
+                .contains(&ControlPlaneScope::OperatorRead)
+        );
+        assert!(
+            connect
+                .principal
+                .scopes
+                .contains(&ControlPlaneScope::OperatorPairing)
+        );
+        assert!(
+            !connect
+                .principal
+                .scopes
+                .contains(&ControlPlaneScope::OperatorAdmin)
         );
     }
 
@@ -2592,6 +3066,154 @@ mod tests {
             .await
             .expect("reconnect response");
         assert_eq!(reconnect.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn control_connect_requires_repairing_for_scope_upgrade() {
+        let manager = Arc::new(mvp::control_plane::ControlPlaneManager::new());
+        manager.set_runtime_ready(true);
+        let router = build_control_plane_router(manager);
+
+        let initial_scopes = std::collections::BTreeSet::from([ControlPlaneScope::OperatorRead]);
+        let challenge = issue_challenge(&router).await;
+        let device = signed_device_for_request(
+            "cli",
+            ControlPlaneRole::Operator,
+            initial_scopes.clone(),
+            &challenge,
+        );
+        let initial_request = ControlPlaneConnectRequest {
+            min_protocol: CONTROL_PLANE_PROTOCOL_VERSION,
+            max_protocol: CONTROL_PLANE_PROTOCOL_VERSION,
+            client: ControlPlaneClientIdentity {
+                id: "cli".to_owned(),
+                version: "1.0.0".to_owned(),
+                mode: "operator_ui".to_owned(),
+                platform: "macos".to_owned(),
+                display_name: Some("LoongClaw CLI".to_owned()),
+            },
+            role: ControlPlaneRole::Operator,
+            scopes: initial_scopes.clone(),
+            caps: std::collections::BTreeSet::new(),
+            commands: std::collections::BTreeSet::new(),
+            permissions: std::collections::BTreeMap::new(),
+            auth: None,
+            device: Some(device),
+        };
+
+        let pairing_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/control/connect")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&initial_request).expect("encode request"),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("pairing response");
+        let pairing_body = to_bytes(pairing_response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let pairing_error: ControlPlaneConnectErrorResponse =
+            serde_json::from_slice(&pairing_body).expect("pairing error json");
+        let pairing_request_id = pairing_error
+            .pairing_request_id
+            .expect("pairing request id");
+
+        let operator_token = connect_token(
+            &router,
+            std::collections::BTreeSet::from([ControlPlaneScope::OperatorPairing]),
+        )
+        .await;
+        let resolve_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/pairing/resolve")
+                    .method("POST")
+                    .header("authorization", format!("Bearer {operator_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&ControlPlanePairingResolveRequest {
+                            pairing_request_id,
+                            approve: true,
+                        })
+                        .expect("encode resolve request"),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("resolve response");
+        let resolve_body = to_bytes(resolve_response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let resolve: ControlPlanePairingResolveResponse =
+            serde_json::from_slice(&resolve_body).expect("resolve json");
+        let device_token = resolve.device_token.expect("device token");
+
+        let upgraded_scopes = std::collections::BTreeSet::from([
+            ControlPlaneScope::OperatorRead,
+            ControlPlaneScope::OperatorAcp,
+        ]);
+        let upgrade_challenge = issue_challenge(&router).await;
+        let upgrade_device = signed_device_for_request(
+            "cli",
+            ControlPlaneRole::Operator,
+            upgraded_scopes.clone(),
+            &upgrade_challenge,
+        );
+        let upgrade_request = ControlPlaneConnectRequest {
+            min_protocol: CONTROL_PLANE_PROTOCOL_VERSION,
+            max_protocol: CONTROL_PLANE_PROTOCOL_VERSION,
+            client: ControlPlaneClientIdentity {
+                id: "cli".to_owned(),
+                version: "1.0.0".to_owned(),
+                mode: "operator_ui".to_owned(),
+                platform: "macos".to_owned(),
+                display_name: Some("LoongClaw CLI".to_owned()),
+            },
+            role: ControlPlaneRole::Operator,
+            scopes: upgraded_scopes,
+            caps: std::collections::BTreeSet::new(),
+            commands: std::collections::BTreeSet::new(),
+            permissions: std::collections::BTreeMap::new(),
+            auth: Some(loongclaw_protocol::ControlPlaneAuthClaims {
+                token: None,
+                device_token: Some(device_token),
+                bootstrap_token: None,
+                password: None,
+            }),
+            device: Some(upgrade_device),
+        };
+
+        let upgrade_response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/control/connect")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&upgrade_request).expect("encode request"),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("upgrade response");
+        assert_eq!(upgrade_response.status(), StatusCode::FORBIDDEN);
+        let upgrade_body = to_bytes(upgrade_response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let upgrade_error: ControlPlaneConnectErrorResponse =
+            serde_json::from_slice(&upgrade_body).expect("upgrade error json");
+        assert_eq!(
+            upgrade_error.code,
+            ControlPlaneConnectErrorCode::PairingRequired
+        );
+        assert!(upgrade_error.pairing_request_id.is_some());
     }
 
     #[tokio::test]
