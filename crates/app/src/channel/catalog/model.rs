@@ -87,6 +87,8 @@ pub struct ChannelCatalogOperation {
     pub availability: ChannelCatalogOperationAvailability,
     pub tracks_runtime: bool,
     pub requirements: &'static [ChannelCatalogOperationRequirement],
+    #[serde(skip)]
+    pub(crate) default_target_kind: Option<ChannelCatalogTargetKind>,
     pub supported_target_kinds: &'static [ChannelCatalogTargetKind],
 }
 
@@ -96,7 +98,8 @@ impl ChannelCatalogOperation {
     }
 
     pub fn default_target_kind(self) -> Option<ChannelCatalogTargetKind> {
-        self.supported_target_kinds.first().copied()
+        self.default_target_kind
+            .or_else(|| self.supported_target_kinds.first().copied())
     }
 }
 
@@ -216,5 +219,32 @@ impl ChannelCatalogImplementationStatus {
             Self::PluginBacked => "plugin_backed",
             Self::Stub => "stub",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_catalog_operation_prefers_explicit_default_target_kind() {
+        let operation = ChannelCatalogOperation {
+            id: CHANNEL_OPERATION_SEND_ID,
+            label: "direct send",
+            command: "feishu-send",
+            availability: ChannelCatalogOperationAvailability::Implemented,
+            tracks_runtime: false,
+            requirements: &[],
+            default_target_kind: Some(ChannelCatalogTargetKind::MessageReply),
+            supported_target_kinds: &[
+                ChannelCatalogTargetKind::ReceiveId,
+                ChannelCatalogTargetKind::MessageReply,
+            ],
+        };
+
+        assert_eq!(
+            operation.default_target_kind(),
+            Some(ChannelCatalogTargetKind::MessageReply)
+        );
     }
 }

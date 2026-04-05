@@ -245,6 +245,7 @@ const TELEGRAM_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: TELEGRAM_SEND_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
 };
 
@@ -255,6 +256,7 @@ const TELEGRAM_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperatio
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: true,
     requirements: TELEGRAM_SERVE_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
 };
 
@@ -354,6 +356,7 @@ const FEISHU_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: FEISHU_SEND_REQUIREMENTS,
+    default_target_kind: Some(ChannelCatalogTargetKind::ReceiveId),
     supported_target_kinds: &[
         ChannelCatalogTargetKind::ReceiveId,
         ChannelCatalogTargetKind::MessageReply,
@@ -367,6 +370,7 @@ const FEISHU_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation 
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: true,
     requirements: FEISHU_SERVE_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::MessageReply],
 };
 
@@ -518,6 +522,7 @@ const MATRIX_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: MATRIX_SEND_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
 };
 
@@ -528,6 +533,7 @@ const MATRIX_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation 
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: true,
     requirements: MATRIX_SERVE_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
 };
 
@@ -552,6 +558,7 @@ const WECOM_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: WECOM_SEND_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
 };
 
@@ -562,6 +569,7 @@ const WECOM_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: true,
     requirements: WECOM_SERVE_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
 };
 
@@ -767,6 +775,7 @@ const DISCORD_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation 
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: DISCORD_SEND_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
 };
 
@@ -777,6 +786,7 @@ const DISCORD_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: true,
     requirements: DISCORD_SERVE_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
 };
 
@@ -876,6 +886,7 @@ const SLACK_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: SLACK_SEND_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
 };
 
@@ -886,6 +897,7 @@ const SLACK_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: true,
     requirements: SLACK_SERVE_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
 };
 
@@ -966,6 +978,7 @@ const LINE_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: LINE_SEND_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Address],
 };
 const LINE_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
@@ -975,6 +988,7 @@ const LINE_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: true,
     requirements: LINE_SERVE_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Address],
 };
 pub const LINE_CATALOG_COMMAND_FAMILY_DESCRIPTOR: ChannelCatalogCommandFamilyDescriptor =
@@ -1159,6 +1173,7 @@ const DINGTALK_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: DINGTALK_SEND_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Endpoint],
 };
 const DINGTALK_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
@@ -1168,6 +1183,7 @@ const DINGTALK_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperatio
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: true,
     requirements: DINGTALK_SERVE_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Endpoint],
 };
 pub const DINGTALK_CATALOG_COMMAND_FAMILY_DESCRIPTOR: ChannelCatalogCommandFamilyDescriptor =
@@ -1277,6 +1293,7 @@ const WHATSAPP_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: WHATSAPP_SEND_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Address],
 };
 const WHATSAPP_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
@@ -1286,6 +1303,7 @@ const WHATSAPP_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperatio
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: true,
     requirements: WHATSAPP_SERVE_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Address],
 };
 pub const WHATSAPP_CATALOG_COMMAND_FAMILY_DESCRIPTOR: ChannelCatalogCommandFamilyDescriptor =
@@ -1446,6 +1464,7 @@ const EMAIL_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: EMAIL_SEND_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Address],
 };
 const EMAIL_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
@@ -1455,6 +1474,7 @@ const EMAIL_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: true,
     requirements: EMAIL_SERVE_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Address],
 };
 const EMAIL_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
@@ -1544,6 +1564,7 @@ const WEBHOOK_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation 
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: WEBHOOK_SEND_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Endpoint],
 };
 const WEBHOOK_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
@@ -1553,6 +1574,7 @@ const WEBHOOK_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: true,
     requirements: WEBHOOK_SERVE_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Endpoint],
 };
 
@@ -1621,6 +1643,7 @@ const GOOGLE_CHAT_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperat
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: GOOGLE_CHAT_SEND_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Endpoint],
 };
 const GOOGLE_CHAT_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
@@ -1630,6 +1653,7 @@ const GOOGLE_CHAT_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOpera
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: true,
     requirements: GOOGLE_CHAT_SERVE_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Endpoint],
 };
 pub const GOOGLE_CHAT_CATALOG_COMMAND_FAMILY_DESCRIPTOR: ChannelCatalogCommandFamilyDescriptor =
@@ -1719,6 +1743,7 @@ const SIGNAL_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: SIGNAL_SEND_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Address],
 };
 const SIGNAL_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
@@ -1728,6 +1753,7 @@ const SIGNAL_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation 
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: true,
     requirements: SIGNAL_SERVE_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Address],
 };
 pub const SIGNAL_CATALOG_COMMAND_FAMILY_DESCRIPTOR: ChannelCatalogCommandFamilyDescriptor =
@@ -1833,6 +1859,7 @@ const TEAMS_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: TEAMS_SEND_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Endpoint],
 };
 const TEAMS_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
@@ -1842,6 +1869,7 @@ const TEAMS_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: true,
     requirements: TEAMS_SERVE_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
 };
 pub const TEAMS_CATALOG_COMMAND_FAMILY_DESCRIPTOR: ChannelCatalogCommandFamilyDescriptor =
@@ -1936,6 +1964,7 @@ const MATTERMOST_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperati
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: MATTERMOST_SEND_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
 };
 const MATTERMOST_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
@@ -1945,6 +1974,7 @@ const MATTERMOST_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperat
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: true,
     requirements: MATTERMOST_SERVE_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
 };
 pub const MATTERMOST_CATALOG_COMMAND_FAMILY_DESCRIPTOR: ChannelCatalogCommandFamilyDescriptor =
@@ -2027,6 +2057,7 @@ const NEXTCLOUD_TALK_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOpe
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: NEXTCLOUD_TALK_SEND_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
 };
 const NEXTCLOUD_TALK_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
@@ -2036,6 +2067,7 @@ const NEXTCLOUD_TALK_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOp
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: true,
     requirements: NEXTCLOUD_TALK_SERVE_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
 };
 pub const NEXTCLOUD_TALK_CATALOG_COMMAND_FAMILY_DESCRIPTOR: ChannelCatalogCommandFamilyDescriptor =
@@ -2130,6 +2162,7 @@ const SYNOLOGY_CHAT_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOper
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: SYNOLOGY_CHAT_SEND_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Address],
 };
 const SYNOLOGY_CHAT_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
@@ -2139,6 +2172,7 @@ const SYNOLOGY_CHAT_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOpe
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: true,
     requirements: SYNOLOGY_CHAT_SERVE_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Address],
 };
 pub const SYNOLOGY_CHAT_CATALOG_COMMAND_FAMILY_DESCRIPTOR: ChannelCatalogCommandFamilyDescriptor =
@@ -2216,6 +2250,7 @@ const IRC_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: IRC_SEND_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
 };
 const IRC_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
@@ -2225,6 +2260,7 @@ const IRC_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: true,
     requirements: IRC_SERVE_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
 };
 pub const IRC_CATALOG_COMMAND_FAMILY_DESCRIPTOR: ChannelCatalogCommandFamilyDescriptor =
@@ -2316,6 +2352,7 @@ const IMESSAGE_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: IMESSAGE_SEND_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
 };
 const IMESSAGE_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
@@ -2325,6 +2362,7 @@ const IMESSAGE_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperatio
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: true,
     requirements: IMESSAGE_SERVE_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
 };
 pub const IMESSAGE_CATALOG_COMMAND_FAMILY_DESCRIPTOR: ChannelCatalogCommandFamilyDescriptor =
@@ -2401,6 +2439,7 @@ const TLON_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     availability: ChannelCatalogOperationAvailability::Implemented,
     tracks_runtime: false,
     requirements: TLON_SEND_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
 };
 const TLON_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
@@ -2410,6 +2449,7 @@ const TLON_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: true,
     requirements: TLON_SERVE_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
 };
 pub const TLON_CATALOG_COMMAND_FAMILY_DESCRIPTOR: ChannelCatalogCommandFamilyDescriptor =
@@ -2495,6 +2535,7 @@ const ZALO_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: false,
     requirements: ZALO_SEND_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Address],
 };
 const ZALO_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
@@ -2504,6 +2545,7 @@ const ZALO_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: true,
     requirements: ZALO_SERVE_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Address],
 };
 const ZALO_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
@@ -2575,6 +2617,7 @@ const ZALO_PERSONAL_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOper
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: false,
     requirements: ZALO_PERSONAL_SEND_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Address],
 };
 const ZALO_PERSONAL_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
@@ -2584,6 +2627,7 @@ const ZALO_PERSONAL_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOpe
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: true,
     requirements: ZALO_PERSONAL_SERVE_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Address],
 };
 const ZALO_PERSONAL_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
@@ -2669,6 +2713,7 @@ const WEBCHAT_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation 
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: false,
     requirements: WEBCHAT_SEND_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
 };
 const WEBCHAT_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
@@ -2678,6 +2723,7 @@ const WEBCHAT_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation
     availability: ChannelCatalogOperationAvailability::Stub,
     tracks_runtime: true,
     requirements: WEBCHAT_SERVE_REQUIREMENTS,
+    default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
 };
 const WEBCHAT_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
@@ -8339,6 +8385,32 @@ mod tests {
     }
 
     #[test]
+    fn multi_target_channel_catalog_operations_declare_explicit_default_target_kind() {
+        let catalog = list_channel_catalog();
+        for entry in catalog {
+            for operation in entry.operations {
+                if operation.supported_target_kinds.len() < 2 {
+                    continue;
+                }
+
+                let default_target_kind = operation.default_target_kind.unwrap_or_else(|| {
+                    panic!(
+                        "{}:{} must declare an explicit default_target_kind",
+                        entry.id, operation.id
+                    )
+                });
+
+                assert!(
+                    operation.supports_target_kind(default_target_kind),
+                    "{}:{} default target kind must be supported by the operation",
+                    entry.id,
+                    operation.id
+                );
+            }
+        }
+    }
+
+    #[test]
     fn channel_catalog_surfaces_expose_union_of_supported_target_kinds() {
         let catalog = list_channel_catalog();
         let telegram = catalog
@@ -9210,6 +9282,7 @@ mod tests {
                         availability: ChannelCatalogOperationAvailability::Implemented,
                         tracks_runtime: false,
                         requirements: &[],
+                        default_target_kind: None,
                         supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
                     },
                     ChannelCatalogOperation {
@@ -9219,6 +9292,7 @@ mod tests {
                         availability: ChannelCatalogOperationAvailability::Implemented,
                         tracks_runtime: true,
                         requirements: &[],
+                        default_target_kind: None,
                         supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
                     },
                 ],
@@ -9244,6 +9318,7 @@ mod tests {
                         availability: ChannelCatalogOperationAvailability::Implemented,
                         tracks_runtime: false,
                         requirements: &[],
+                        default_target_kind: None,
                         supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
                     },
                     ChannelCatalogOperation {
@@ -9253,6 +9328,7 @@ mod tests {
                         availability: ChannelCatalogOperationAvailability::Stub,
                         tracks_runtime: false,
                         requirements: &[],
+                        default_target_kind: None,
                         supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
                     },
                 ],
