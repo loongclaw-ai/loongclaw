@@ -1790,6 +1790,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn expected_tool_request_error_classifies_validation_failures() {
+        assert!(super::is_expected_tool_request_error(
+            "tool_not_found: unknown tool `missing`"
+        ));
+        assert!(super::is_expected_tool_request_error(
+            "invalid_tool_lease: malformed lease"
+        ));
+        assert!(super::is_expected_tool_request_error(
+            "tool `tool.invoke` payload._loongclaw is reserved for trusted internal tool context; retry without that field"
+        ));
+    }
+
+    #[test]
+    fn expected_tool_request_error_leaves_runtime_failures_as_warnable() {
+        assert!(!super::is_expected_tool_request_error(
+            "network_error: remote tool execution failed"
+        ));
+    }
+
     fn unique_tool_temp_dir(prefix: &str) -> PathBuf {
         unique_temp_dir(prefix)
     }

@@ -51,6 +51,14 @@ fn error_code(error: &str) -> String {
     "unclassified".to_owned()
 }
 
+fn redacted_command_name(command: &Commands) -> String {
+    let rendered = format!("{command:?}");
+    let end = rendered
+        .find([' ', '{', '('])
+        .unwrap_or(rendered.len());
+    rendered[..end].to_owned()
+}
+
 #[tokio::main]
 async fn main() {
     let _stdin_guard = StdinGuard;
@@ -1055,7 +1063,7 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::error_code;
+    use super::{error_code, redacted_command_name};
     use loongclaw_daemon::{Commands, MultiChannelServeChannelAccount};
 
     #[test]
@@ -1093,5 +1101,24 @@ mod tests {
 
         assert_eq!(error_code(stable_error), "config_file_missing");
         assert_eq!(error_code(unstable_error), "unclassified");
+    }
+
+    #[test]
+    fn redacted_command_name_omits_struct_field_values() {
+        let command = Commands::RunTask {
+            objective: "ship feature".to_owned(),
+            payload: "{\"secret\":\"value\"}".to_owned(),
+        };
+
+        let redacted = redacted_command_name(&command);
+
+        assert_eq!(redacted, "RunTask");
+    }
+
+    #[test]
+    fn redacted_command_name_handles_unit_variants() {
+        let redacted = redacted_command_name(&Commands::Welcome);
+
+        assert_eq!(redacted, "Welcome");
     }
 }
