@@ -13,7 +13,11 @@ use super::payload::{optional_payload_limit, optional_payload_string, required_p
 
 use crate::config::{SessionVisibility, ToolConfig};
 #[cfg(feature = "memory-sqlite")]
-use crate::conversation::ConstrainedSubagentExecution;
+use crate::conversation::{
+    ConstrainedSubagentContractView, ConstrainedSubagentExecution, ConstrainedSubagentHandle,
+    ConstrainedSubagentIdentity, ConstrainedSubagentProfile,
+    coordination_actions_for_subagent_handle,
+};
 use crate::memory;
 use crate::memory::runtime_config::MemoryRuntimeConfig;
 #[cfg(feature = "memory-sqlite")]
@@ -60,6 +64,7 @@ pub(super) struct SessionInspectionSnapshot {
     pub terminal_outcome: Option<SessionTerminalOutcomeRecord>,
     pub recent_events: Vec<SessionEventRecord>,
     pub delegate_events: Vec<SessionEventRecord>,
+    pub subagent_contract: Option<ConstrainedSubagentContractView>,
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -379,6 +384,12 @@ fn execute_sessions_list(
         } else {
             None
         };
+        let subagent_contract = resolve_subagent_contract_for_session(
+            &repo,
+            &session,
+            delegate_lifecycle.as_ref(),
+            tool_config,
+        )?;
         if request.overdue_only
             && !delegate_lifecycle
                 .as_ref()
@@ -388,7 +399,7 @@ fn execute_sessions_list(
         {
             continue;
         }
-        listed_sessions.push((session, delegate_lifecycle));
+        listed_sessions.push((session, delegate_lifecycle, subagent_contract));
     }
 
     let matched_count = listed_sessions.len();
@@ -403,10 +414,11 @@ fn execute_sessions_list(
             "returned_count": returned_count,
             "sessions": listed_sessions
                 .into_iter()
-                .map(|(session, delegate_lifecycle)| {
+                .map(|(session, delegate_lifecycle, subagent_contract)| {
                     session_summary_json_with_delegate_lifecycle(
                         session,
                         delegate_lifecycle,
+                        subagent_contract,
                         include_delegate_lifecycle,
                     )
                 })
@@ -1228,6 +1240,14 @@ pub(super) fn observe_visible_session_with_policies(
         )?
         .ok_or_else(|| format!("session_not_found: `{target_session_id}`"))?;
     let delegate_events = load_delegate_lifecycle_events(&repo, &session)?;
+    let delegate_lifecycle =
+        session_delegate_lifecycle_at(&session, delegate_events.as_slice(), current_unix_ts());
+    let subagent_contract = resolve_subagent_contract_for_session(
+        &repo,
+        &session,
+        delegate_lifecycle.as_ref(),
+        tool_config,
+    )?;
 
     Ok(SessionObservationSnapshot {
         inspection: SessionInspectionSnapshot {
@@ -1235,9 +1255,68 @@ pub(super) fn observe_visible_session_with_policies(
             terminal_outcome,
             recent_events,
             delegate_events,
+            subagent_contract,
         },
         tail_events,
     })
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn resolve_subagent_contract_for_session(
+    repo: &SessionRepository,
+    session: &SessionSummaryRecord,
+    delegate_lifecycle: Option<&SessionDelegateLifecycleRecord>,
+    tool_config: &ToolConfig,
+) -> Result<Option<ConstrainedSubagentContractView>, String> {
+    if session.kind != SessionKind::DelegateChild {
+        return Ok(None);
+    }
+    if let Some(contract) =
+        delegate_lifecycle.and_then(resolve_subagent_contract_from_delegate_lifecycle)
+    {
+        return Ok(Some(attach_session_label_identity(contract, session)));
+    }
+    if session.parent_session_id.is_none() {
+        return Ok(None);
+    }
+    let depth = match repo.session_lineage_depth(&session.session_id) {
+        Ok(depth) => depth,
+        Err(error)
+            if error.starts_with("session_lineage_broken:")
+                || error.starts_with("session_lineage_cycle_detected:") =>
+        {
+            return Ok(None);
+        }
+        Err(error) => {
+            return Err(format!(
+                "compute session lineage depth for subagent profile failed: {error}"
+            ));
+        }
+    };
+    Ok(Some(attach_session_label_identity(
+        ConstrainedSubagentContractView::from_profile(ConstrainedSubagentProfile::for_child_depth(
+            depth,
+            tool_config.delegate.max_depth,
+        )),
+        session,
+    )))
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn attach_session_label_identity(
+    mut contract: ConstrainedSubagentContractView,
+    session: &SessionSummaryRecord,
+) -> ConstrainedSubagentContractView {
+    if contract.identity.is_none() {
+        let nickname = session.label.clone();
+        if nickname.is_some() {
+            contract = contract.with_identity(ConstrainedSubagentIdentity {
+                nickname,
+                specialization: None,
+            });
+        }
+    }
+    contract
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -1279,6 +1358,11 @@ pub(super) fn session_inspection_payload(snapshot: SessionInspectionSnapshot) ->
         "missing" => session_terminal_outcome_missing_reason(recovery.as_ref()),
         _ => None,
     };
+    let subagent_handle = subagent_handle_for_session(
+        &snapshot.session,
+        snapshot.subagent_contract.as_ref(),
+        delegate_lifecycle.as_ref(),
+    );
     json!({
         "session": {
             "session_id": snapshot.session.session_id,
@@ -1294,6 +1378,16 @@ pub(super) fn session_inspection_payload(snapshot: SessionInspectionSnapshot) ->
         },
         "terminal_outcome_state": terminal_outcome_state,
         "terminal_outcome_missing_reason": terminal_outcome_missing_reason,
+        "subagent_profile": snapshot
+            .subagent_contract
+            .as_ref()
+            .and_then(ConstrainedSubagentContractView::resolved_profile),
+        "subagent_identity": snapshot
+            .subagent_contract
+            .as_ref()
+            .and_then(ConstrainedSubagentContractView::resolved_identity),
+        "subagent_contract": snapshot.subagent_contract,
+        "subagent": subagent_handle,
         "delegate_lifecycle": delegate_lifecycle.map(session_delegate_lifecycle_json),
         "recovery": recovery.map(recovery_json),
         "terminal_outcome": snapshot.terminal_outcome.map(session_terminal_outcome_json),
@@ -2122,12 +2216,28 @@ fn session_delegate_lifecycle_json(lifecycle: SessionDelegateLifecycleRecord) ->
         "queued_at": lifecycle.queued_at,
         "started_at": lifecycle.started_at,
         "timeout_seconds": lifecycle.timeout_seconds,
-        "execution": lifecycle.execution,
+        "contract": lifecycle
+            .execution
+            .as_ref()
+            .map(ConstrainedSubagentExecution::contract_view),
+        "execution": lifecycle
+            .execution
+            .map(ConstrainedSubagentExecution::with_resolved_profile),
         "staleness": lifecycle.staleness.map(session_delegate_staleness_json),
         "cancellation": lifecycle
             .cancellation
             .map(session_delegate_cancellation_json),
     })
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn resolve_subagent_contract_from_delegate_lifecycle(
+    lifecycle: &SessionDelegateLifecycleRecord,
+) -> Option<ConstrainedSubagentContractView> {
+    lifecycle
+        .execution
+        .as_ref()
+        .map(ConstrainedSubagentExecution::contract_view)
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -2557,10 +2667,39 @@ fn session_summary_json(session: SessionSummaryRecord) -> Value {
 fn session_summary_json_with_delegate_lifecycle(
     session: SessionSummaryRecord,
     delegate_lifecycle: Option<SessionDelegateLifecycleRecord>,
+    subagent_contract: Option<ConstrainedSubagentContractView>,
     include_delegate_lifecycle: bool,
 ) -> Value {
+    let subagent = subagent_handle_for_session(
+        &session,
+        subagent_contract.as_ref(),
+        delegate_lifecycle.as_ref(),
+    );
     let mut payload = session_summary_json(session);
     if include_delegate_lifecycle && let Some(object) = payload.as_object_mut() {
+        object.insert(
+            "subagent_profile".to_owned(),
+            subagent_contract
+                .as_ref()
+                .and_then(ConstrainedSubagentContractView::resolved_profile)
+                .map(|profile| json!(profile))
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "subagent_identity".to_owned(),
+            subagent_contract
+                .as_ref()
+                .and_then(ConstrainedSubagentContractView::resolved_identity)
+                .map(|identity| json!(identity))
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "subagent_contract".to_owned(),
+            subagent_contract
+                .map(|contract| json!(contract))
+                .unwrap_or(Value::Null),
+        );
+        object.insert("subagent".to_owned(), json!(subagent));
         object.insert(
             "delegate_lifecycle".to_owned(),
             delegate_lifecycle
@@ -2569,6 +2708,69 @@ fn session_summary_json_with_delegate_lifecycle(
         );
     }
     payload
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn subagent_handle_for_session(
+    session: &SessionSummaryRecord,
+    subagent_contract: Option<&ConstrainedSubagentContractView>,
+    delegate_lifecycle: Option<&SessionDelegateLifecycleRecord>,
+) -> Option<ConstrainedSubagentHandle> {
+    if session.kind != SessionKind::DelegateChild {
+        return None;
+    }
+    let phase = delegate_lifecycle.map(|lifecycle| lifecycle.phase.to_owned());
+    Some(
+        ConstrainedSubagentHandle::new(session.session_id.clone())
+            .with_parent_session_id(session.parent_session_id.clone())
+            .with_label(session.label.clone())
+            .with_state(Some(session.state.as_str().to_owned()))
+            .with_phase(phase.clone())
+            .with_identity(
+                subagent_contract
+                    .and_then(ConstrainedSubagentContractView::resolved_identity)
+                    .cloned(),
+            )
+            .with_contract(subagent_contract.cloned())
+            .with_coordination(subagent_handle_coordination_actions(
+                session,
+                phase.as_deref(),
+                delegate_lifecycle,
+                subagent_contract,
+            )),
+    )
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn subagent_handle_coordination_actions(
+    session: &SessionSummaryRecord,
+    phase: Option<&str>,
+    delegate_lifecycle: Option<&SessionDelegateLifecycleRecord>,
+    subagent_contract: Option<&ConstrainedSubagentContractView>,
+) -> Vec<crate::conversation::ConstrainedSubagentCoordinationAction> {
+    let is_async = delegate_lifecycle
+        .map(|lifecycle| lifecycle.mode == "async")
+        .unwrap_or_else(|| {
+            matches!(
+                subagent_contract.and_then(|contract| contract.mode),
+                Some(crate::conversation::ConstrainedSubagentMode::Async)
+            )
+        });
+    let overdue = matches!(
+        delegate_lifecycle.and_then(|lifecycle| lifecycle.staleness.as_ref()),
+        Some(staleness) if staleness.state == "overdue"
+    );
+    let mode = if is_async {
+        Some(crate::conversation::ConstrainedSubagentMode::Async)
+    } else {
+        subagent_contract.and_then(|contract| contract.mode)
+    };
+    coordination_actions_for_subagent_handle(
+        session_state_is_terminal(session.state),
+        phase,
+        mode,
+        overdue,
+    )
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -3113,6 +3315,32 @@ mod tests {
             .collect();
         assert_eq!(ids, vec!["overdue-child"]);
         assert_eq!(outcome.payload["matched_count"], 1);
+        assert_eq!(sessions[0]["subagent_profile"]["role"], "leaf");
+        assert_eq!(sessions[0]["subagent_profile"]["control_scope"], "none");
+        assert_eq!(sessions[0]["subagent_identity"]["nickname"], "Overdue");
+        assert_eq!(sessions[0]["subagent"]["session_id"], "overdue-child");
+        assert_eq!(sessions[0]["subagent"]["state"], "running");
+        assert_eq!(sessions[0]["subagent"]["phase"], "running");
+        assert_eq!(
+            sessions[0]["subagent"]["coordination"],
+            json!([
+                {"kind": "inspect_status", "tool_name": "session_status"},
+                {"kind": "read_history", "tool_name": "sessions_history"},
+                {"kind": "read_events", "tool_name": "session_events"},
+                {"kind": "wait", "tool_name": "session_wait"},
+                {"kind": "cancel", "tool_name": "session_cancel"},
+                {"kind": "recover", "tool_name": "session_recover"}
+            ])
+        );
+        assert_eq!(sessions[0]["subagent_contract"]["profile"]["role"], "leaf");
+        assert_eq!(
+            sessions[0]["subagent_contract"]["profile"]["control_scope"],
+            "none"
+        );
+        assert_eq!(
+            sessions[0]["subagent_contract"]["identity"]["nickname"],
+            "Overdue"
+        );
         assert_eq!(sessions[0]["delegate_lifecycle"]["mode"], "async");
         assert_eq!(sessions[0]["delegate_lifecycle"]["phase"], "running");
         assert_eq!(
@@ -3122,6 +3350,111 @@ mod tests {
         assert_eq!(
             sessions[0]["delegate_lifecycle"]["staleness"]["reference"],
             "started"
+        );
+    }
+
+    #[test]
+    fn sessions_list_includes_top_level_subagent_profile_when_execution_present() {
+        let config = isolated_memory_config("sessions-list-subagent-profile");
+        let repo = SessionRepository::new(&config).expect("repository");
+        repo.create_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create root");
+        repo.create_session(NewSessionRecord {
+            session_id: "child-session".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Child".to_owned()),
+            state: SessionState::Running,
+        })
+        .expect("create child");
+        repo.append_event(NewSessionEvent {
+            session_id: "child-session".to_owned(),
+            event_kind: "delegate_started".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: json!({
+                "task": "research",
+                "label": "Child",
+                "execution": {
+                    "mode": "inline",
+                    "depth": 1,
+                    "max_depth": 2,
+                    "active_children": 0,
+                    "max_active_children": 2,
+                    "timeout_seconds": 60,
+                    "allow_shell_in_child": false,
+                    "child_tool_allowlist": ["file.read"],
+                    "kernel_bound": false,
+                    "identity": {
+                        "nickname": "Child",
+                        "specialization": "reviewer"
+                    },
+                    "profile": {
+                        "role": "orchestrator",
+                        "control_scope": "children"
+                    }
+                }
+            }),
+        })
+        .expect("append started event");
+
+        let outcome = execute_session_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "sessions_list".to_owned(),
+                payload: json!({
+                    "kind": "delegate_child",
+                    "include_delegate_lifecycle": true
+                }),
+            },
+            "root-session",
+            &config,
+        )
+        .expect("sessions_list outcome");
+
+        let sessions = outcome.payload["sessions"]
+            .as_array()
+            .expect("sessions array");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0]["subagent_profile"]["role"], "orchestrator");
+        assert_eq!(sessions[0]["subagent_profile"]["control_scope"], "children");
+        assert_eq!(sessions[0]["subagent_identity"]["nickname"], "Child");
+        assert_eq!(
+            sessions[0]["subagent_identity"]["specialization"],
+            "reviewer"
+        );
+        assert_eq!(sessions[0]["subagent"]["session_id"], "child-session");
+        assert_eq!(sessions[0]["subagent"]["state"], "running");
+        assert_eq!(sessions[0]["subagent"]["phase"], "running");
+        assert_eq!(
+            sessions[0]["subagent"]["identity"]["specialization"],
+            "reviewer"
+        );
+        assert_eq!(
+            sessions[0]["subagent"]["coordination"],
+            json!([
+                {"kind": "inspect_status", "tool_name": "session_status"},
+                {"kind": "read_history", "tool_name": "sessions_history"},
+                {"kind": "read_events", "tool_name": "session_events"},
+                {"kind": "wait", "tool_name": "session_wait"}
+            ])
+        );
+        assert_eq!(sessions[0]["subagent_contract"]["mode"], "inline");
+        assert_eq!(
+            sessions[0]["subagent_contract"]["profile"]["role"],
+            "orchestrator"
+        );
+        assert_eq!(
+            sessions[0]["subagent_contract"]["identity"]["specialization"],
+            "reviewer"
+        );
+        assert_eq!(
+            sessions[0]["delegate_lifecycle"]["contract"]["profile"]["control_scope"],
+            "children"
         );
     }
 
@@ -4587,14 +4920,22 @@ mod tests {
                     "max_depth": 2,
                     "active_children": 0,
                     "max_active_children": 3,
-                    "timeout_seconds": 60,
-                    "allow_shell_in_child": false,
-                    "child_tool_allowlist": ["file.read", "file.write", "file.edit"],
-                    "kernel_bound": false,
-                    "runtime_narrowing": {
-                        "web_fetch": {
-                            "allowed_domains": ["docs.example.com"],
-                            "allow_private_hosts": false
+                "timeout_seconds": 60,
+                "allow_shell_in_child": false,
+                "child_tool_allowlist": ["file.read", "file.write", "file.edit"],
+                "kernel_bound": false,
+                "identity": {
+                    "nickname": "Child",
+                    "specialization": "researcher"
+                },
+                "profile": {
+                    "role": "orchestrator",
+                    "control_scope": "children"
+                },
+                "runtime_narrowing": {
+                    "web_fetch": {
+                        "allowed_domains": ["docs.example.com"],
+                        "allow_private_hosts": false
                         },
                         "browser": {
                             "max_sessions": 1
@@ -4617,6 +4958,38 @@ mod tests {
         )
         .expect("session_status outcome");
 
+        assert_eq!(outcome.payload["subagent_profile"]["role"], "orchestrator");
+        assert_eq!(
+            outcome.payload["subagent_profile"]["control_scope"],
+            "children"
+        );
+        assert_eq!(outcome.payload["subagent_identity"]["nickname"], "Child");
+        assert_eq!(
+            outcome.payload["subagent_identity"]["specialization"],
+            "researcher"
+        );
+        assert_eq!(outcome.payload["subagent"]["session_id"], "child-session");
+        assert_eq!(outcome.payload["subagent"]["state"], "ready");
+        assert_eq!(outcome.payload["subagent"]["phase"], "queued");
+        assert_eq!(
+            outcome.payload["subagent"]["coordination"],
+            json!([
+                {"kind": "inspect_status", "tool_name": "session_status"},
+                {"kind": "read_history", "tool_name": "sessions_history"},
+                {"kind": "read_events", "tool_name": "session_events"},
+                {"kind": "wait", "tool_name": "session_wait"},
+                {"kind": "cancel", "tool_name": "session_cancel"}
+            ])
+        );
+        assert_eq!(outcome.payload["subagent_contract"]["mode"], "async");
+        assert_eq!(
+            outcome.payload["subagent_contract"]["profile"]["role"],
+            "orchestrator"
+        );
+        assert_eq!(
+            outcome.payload["subagent_contract"]["identity"]["specialization"],
+            "researcher"
+        );
         assert_eq!(outcome.payload["delegate_lifecycle"]["mode"], "async");
         assert_eq!(outcome.payload["delegate_lifecycle"]["phase"], "queued");
         assert_eq!(outcome.payload["delegate_lifecycle"]["timeout_seconds"], 60);
@@ -4661,6 +5034,26 @@ mod tests {
         assert_eq!(
             outcome.payload["delegate_lifecycle"]["execution"]["kernel_bound"],
             false
+        );
+        assert_eq!(
+            outcome.payload["delegate_lifecycle"]["execution"]["profile"]["role"],
+            "orchestrator"
+        );
+        assert_eq!(
+            outcome.payload["delegate_lifecycle"]["execution"]["profile"]["control_scope"],
+            "children"
+        );
+        assert_eq!(
+            outcome.payload["delegate_lifecycle"]["contract"]["profile"]["role"],
+            "orchestrator"
+        );
+        assert_eq!(
+            outcome.payload["delegate_lifecycle"]["contract"]["identity"]["nickname"],
+            "Child"
+        );
+        assert_eq!(
+            outcome.payload["delegate_lifecycle"]["contract"]["runtime_binding"],
+            "direct"
         );
         assert_eq!(
             outcome.payload["delegate_lifecycle"]["execution"]["runtime_narrowing"]["web_fetch"]["allowed_domains"],

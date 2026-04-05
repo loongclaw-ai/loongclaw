@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::process;
 use std::{
     collections::BTreeMap,
     env,
@@ -463,7 +465,37 @@ fn resolve_user_home(
 }
 
 pub(super) fn default_loongclaw_home() -> PathBuf {
+    if let Some(path) = env::var_os("LOONGCLAW_HOME") {
+        return PathBuf::from(path);
+    }
+    #[cfg(test)]
+    {
+        test_default_loongclaw_home()
+    }
+    #[cfg(not(test))]
     get_user_home().join(".loongclaw")
+}
+
+#[cfg(test)]
+fn test_default_loongclaw_home() -> PathBuf {
+    let test_label = std::thread::current()
+        .name()
+        .map(sanitize_test_home_segment)
+        .filter(|label| !label.is_empty())
+        .unwrap_or_else(|| format!("pid-{}", process::id()));
+    let path = env::temp_dir().join("loongclaw-test-home").join(test_label);
+    let _ = std::fs::create_dir_all(&path);
+    path
+}
+
+#[cfg(test)]
+fn sanitize_test_home_segment(raw: &str) -> String {
+    raw.chars()
+        .map(|ch| match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' => ch,
+            _ => '-',
+        })
+        .collect()
 }
 
 pub fn expand_path(raw: &str) -> PathBuf {
@@ -731,6 +763,7 @@ fn normalize_dollar_prefixed_env_name(raw: &str, fallback: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::ScopedEnv;
 
     #[test]
     fn message_template_interpolation_replaces_known_placeholders() {
@@ -833,5 +866,15 @@ mod tests {
             PathBuf::from("."),
             "get_user_home() should return \".\" when both HOME and USERPROFILE are absent"
         );
+    }
+
+    #[test]
+    fn default_loongclaw_home_prefers_explicit_env_override() {
+        let mut env = ScopedEnv::new();
+        let home =
+            std::env::temp_dir().join(format!("loongclaw-home-override-{}", std::process::id()));
+        env.set("LOONGCLAW_HOME", &home);
+
+        assert_eq!(default_loongclaw_home(), home);
     }
 }

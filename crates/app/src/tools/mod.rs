@@ -66,11 +66,11 @@ pub use catalog::{
     ToolExecutionKind, ToolGovernanceProfile, ToolGovernanceScope, ToolRiskClass,
     ToolSchedulingClass, ToolView, capability_action_class_for_descriptor,
     capability_action_class_for_tool_name, delegate_child_tool_view_for_config,
-    delegate_child_tool_view_for_config_with_delegate, governance_profile_for_descriptor,
-    governance_profile_for_tool_name, planned_delegate_child_tool_view, planned_root_tool_view,
-    runtime_tool_view, runtime_tool_view_for_config,
-    runtime_tool_view_for_config_with_external_skills, runtime_tool_view_for_runtime_config,
-    tool_catalog,
+    delegate_child_tool_view_for_contract, delegate_child_tool_view_for_profile,
+    governance_profile_for_descriptor, governance_profile_for_tool_name,
+    planned_delegate_child_tool_view, planned_root_tool_view, runtime_tool_view,
+    runtime_tool_view_for_config, runtime_tool_view_for_config_with_external_skills,
+    runtime_tool_view_for_runtime_config, tool_catalog,
 };
 #[cfg(feature = "feishu-integration")]
 pub(crate) use feishu::{DeferredFeishuCardUpdate, drain_deferred_feishu_card_updates};
@@ -2043,7 +2043,18 @@ mod tests {
         assert!(!child_view.contains("delegate"));
         assert!(!child_view.contains("delegate_async"));
 
-        let depth_budgeted_child = delegate_child_tool_view_for_config_with_delegate(&config, true);
+        let depth_budgeted_child = delegate_child_tool_view_for_contract(
+            &config,
+            Some(
+                &crate::conversation::ConstrainedSubagentContractView::from_profile(
+                    crate::conversation::ConstrainedSubagentProfile {
+                        role: crate::conversation::ConstrainedSubagentRole::Orchestrator,
+                        control_scope:
+                            crate::conversation::ConstrainedSubagentControlScope::Children,
+                    },
+                ),
+            ),
+        );
         assert!(depth_budgeted_child.contains("delegate"));
         assert!(depth_budgeted_child.contains("delegate_async"));
     }

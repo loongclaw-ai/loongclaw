@@ -21,7 +21,7 @@ use crate::session::repository::{
 };
 use crate::tools::{
     ToolApprovalMode, ToolExecutionKind, ToolSchedulingClass, ToolView,
-    delegate_child_tool_view_for_config, delegate_child_tool_view_for_config_with_delegate,
+    delegate_child_tool_view_for_config, delegate_child_tool_view_for_contract,
     governance_profile_for_descriptor, runtime_tool_view, runtime_tool_view_for_config,
     tool_catalog,
 };
@@ -349,18 +349,30 @@ impl DefaultAppToolDispatcher {
         let repo = SessionRepository::new(&self.memory_config)?;
         if let Some(session) = repo.load_session(&session_context.session_id)? {
             if session.parent_session_id.is_some() {
-                let depth = repo
-                    .session_lineage_depth(&session_context.session_id)
-                    .map_err(|error| {
-                        format!(
-                            "compute session lineage depth for dispatcher tool view failed: {error}"
+                let subagent_contract = match session_context.resolved_subagent_contract() {
+                    Some(subagent_contract) => Some(subagent_contract),
+                    None => {
+                        let depth = repo
+                            .session_lineage_depth(&session_context.session_id)
+                            .map_err(|error| {
+                                format!(
+                                    "compute session lineage depth for dispatcher tool view failed: {error}"
+                                )
+                            })?;
+                        Some(
+                            crate::conversation::ConstrainedSubagentContractView::from_profile(
+                                crate::conversation::ConstrainedSubagentProfile::for_child_depth(
+                                    depth,
+                                    self.tool_config.delegate.max_depth,
+                                ),
+                            ),
                         )
-                    })?;
-                let allow_nested_delegate = depth < self.tool_config.delegate.max_depth;
+                    }
+                };
                 return Ok(with_runtime_ready_browser_companion_tools(
-                    delegate_child_tool_view_for_config_with_delegate(
+                    delegate_child_tool_view_for_contract(
                         &self.tool_config,
-                        allow_nested_delegate,
+                        subagent_contract.as_ref(),
                     ),
                     &session_context.tool_view,
                 ));
@@ -714,12 +726,9 @@ fn inject_runtime_narrowing_context(
     payload: serde_json::Value,
     session_context: &SessionContext,
 ) -> serde_json::Value {
-    let Some(runtime_narrowing) = session_context.runtime_narrowing.as_ref() else {
+    let Some(runtime_narrowing) = session_context.subagent_runtime_narrowing() else {
         return payload;
     };
-    if runtime_narrowing.is_empty() {
-        return payload;
-    }
 
     let serde_json::Value::Object(mut object) = payload else {
         return payload;

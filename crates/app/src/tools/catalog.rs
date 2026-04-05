@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 
 use super::runtime_config::ToolRuntimeConfig;
 use crate::config::ToolConfig;
+use crate::conversation::{ConstrainedSubagentContractView, ConstrainedSubagentProfile};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum ToolExecutionKind {
@@ -1073,12 +1074,22 @@ pub fn planned_delegate_child_tool_view() -> ToolView {
 }
 
 pub fn delegate_child_tool_view_for_config(config: &ToolConfig) -> ToolView {
-    delegate_child_tool_view_for_config_with_delegate(config, false)
+    delegate_child_tool_view_for_profile(config, None)
 }
 
-pub fn delegate_child_tool_view_for_config_with_delegate(
+pub fn delegate_child_tool_view_for_contract(
     config: &ToolConfig,
-    allow_delegate: bool,
+    subagent_contract: Option<&ConstrainedSubagentContractView>,
+) -> ToolView {
+    delegate_child_tool_view_for_profile(
+        config,
+        subagent_contract.and_then(ConstrainedSubagentContractView::resolved_profile),
+    )
+}
+
+pub fn delegate_child_tool_view_for_profile(
+    config: &ToolConfig,
+    subagent_profile: Option<ConstrainedSubagentProfile>,
 ) -> ToolView {
     let catalog = tool_catalog();
     let mut names = Vec::new();
@@ -1114,6 +1125,10 @@ pub fn delegate_child_tool_view_for_config_with_delegate(
             _ => {}
         }
     }
+
+    let allow_delegate = subagent_profile
+        .map(ConstrainedSubagentProfile::allows_child_delegation)
+        .unwrap_or(false);
 
     if allow_delegate
         && config.delegate.enabled
@@ -2525,6 +2540,10 @@ fn delegate_definition(descriptor: &ToolDescriptor) -> Value {
                         "type": "string",
                         "description": "Optional human-readable label for the child session."
                     },
+                    "specialization": {
+                        "type": "string",
+                        "description": "Optional specialization hint for the child session, such as researcher or reviewer."
+                    },
                     "timeout_seconds": {
                         "type": "integer",
                         "minimum": 1,
@@ -2555,6 +2574,10 @@ fn delegate_async_definition(descriptor: &ToolDescriptor) -> Value {
                     "label": {
                         "type": "string",
                         "description": "Optional human-readable label for the child session."
+                    },
+                    "specialization": {
+                        "type": "string",
+                        "description": "Optional specialization hint for the background child session, such as researcher or reviewer."
                     },
                     "timeout_seconds": {
                         "type": "integer",
@@ -2602,7 +2625,9 @@ fn tool_argument_hint(name: &str) -> &'static str {
         "file.edit" => "path:string,old_string:string,new_string:string,replace_all?:boolean",
         "shell.exec" => "command:string,args?:string[],timeout_ms?:integer,cwd?:string",
         "provider.switch" => "selector?:string",
-        "delegate" | "delegate_async" => "task:string,label?:string,timeout_seconds?:integer",
+        "delegate" | "delegate_async" => {
+            "task:string,label?:string,specialization?:string,timeout_seconds?:integer"
+        }
         "session_archive" | "session_cancel" | "session_events" | "session_recover"
         | "session_status" | "session_wait" | "sessions_history" => "session_id:string",
         "sessions_list" => "limit?:integer,state?:string",
@@ -2690,6 +2715,7 @@ fn tool_parameter_types(name: &str) -> &'static [(&'static str, &'static str)] {
         "delegate" | "delegate_async" => &[
             ("task", "string"),
             ("label", "string"),
+            ("specialization", "string"),
             ("timeout_seconds", "integer"),
         ],
         "session_archive" | "session_cancel" | "session_events" | "session_recover"
