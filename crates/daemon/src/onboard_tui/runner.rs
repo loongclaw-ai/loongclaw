@@ -2240,10 +2240,7 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
         vec![
             (
                 ProviderTransportChoice::ChatCompletions,
-                SelectionItem::new(
-                    "Chat Completions",
-                    Some("broad OpenAI-compatible default"),
-                ),
+                SelectionItem::new("Chat Completions", Some("broad OpenAI-compatible default")),
             ),
             (
                 ProviderTransportChoice::Responses,
@@ -2267,7 +2264,9 @@ impl<E: OnboardEventSource> RatatuiOnboardRunner<E> {
         choice: ProviderTransportChoice,
     ) {
         provider.wire_api = match choice {
-            ProviderTransportChoice::ChatCompletions => mvp::config::ProviderWireApi::ChatCompletions,
+            ProviderTransportChoice::ChatCompletions => {
+                mvp::config::ProviderWireApi::ChatCompletions
+            }
             ProviderTransportChoice::Responses => mvp::config::ProviderWireApi::Responses,
         };
     }
@@ -11324,7 +11323,10 @@ mod tests {
         let result = runner.run_authentication_step(&mut draft).unwrap();
 
         assert_eq!(result, OnboardFlowStepAction::Next);
-        assert_eq!(draft.config.provider.kind, mvp::config::ProviderKind::Custom);
+        assert_eq!(
+            draft.config.provider.kind,
+            mvp::config::ProviderKind::Custom
+        );
         assert_eq!(
             draft.config.provider.wire_api,
             mvp::config::ProviderWireApi::Responses
