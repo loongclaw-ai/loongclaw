@@ -507,4 +507,21 @@ mod tests {
             "1.5.0"
         ));
     }
+
+    #[test]
+    fn observed_version_matches_expected_rejects_partial_numeric_matches() {
+        assert!(!observed_version_matches_expected(
+            "loongclaw-browser-companion 11.5.0",
+            "1.5.0"
+        ));
+    }
+
+    #[test]
+    fn browser_companion_probe_timeout_duration_saturates() {
+        let timeout_duration = browser_companion_probe_timeout_duration(u64::MAX);
+        let expected_duration = Duration::from_secs(u64::MAX);
+        let expected_duration = expected_duration.saturating_add(Duration::from_millis(500));
+
+        assert_eq!(timeout_duration, expected_duration);
+    }
 }
