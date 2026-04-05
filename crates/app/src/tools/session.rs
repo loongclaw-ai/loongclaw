@@ -3316,22 +3316,67 @@ fn session_search_hit_json(
 
 #[cfg(feature = "memory-sqlite")]
 fn session_search_snippet(content: &str, query: &str, max_chars: usize) -> String {
-    if content.chars().count() <= max_chars {
+    let content_chars = content.chars().count();
+    if content_chars <= max_chars {
         return content.to_owned();
     }
 
     if let Some(start) = content.find(query) {
         let end = start.saturating_add(query.len()).min(content.len());
-        let prefix = trim_chars_from_end(&content[..start], max_chars / 3);
-        let suffix = trim_chars_from_start(&content[end..], max_chars / 2);
+        let matched = &content[start..end];
+        let matched_chars = matched.chars().count();
+        if matched_chars >= max_chars {
+            return trim_chars_from_start(matched, max_chars);
+        }
+
+        let prefix_source = &content[..start];
+        let suffix_source = &content[end..];
+        let prefix_source_chars = prefix_source.chars().count();
+        let suffix_source_chars = suffix_source.chars().count();
+        let remaining_chars = max_chars.saturating_sub(matched_chars);
+        let mut prefix_budget = remaining_chars / 3;
+        let mut suffix_budget = remaining_chars.saturating_sub(prefix_budget);
+        prefix_budget = prefix_budget.min(prefix_source_chars);
+        suffix_budget = suffix_budget.min(suffix_source_chars);
+
+        loop {
+            let prefix_trimmed = prefix_budget < prefix_source_chars;
+            let suffix_trimmed = suffix_budget < suffix_source_chars;
+            let prefix_marker_chars = usize::from(prefix_trimmed) * 3;
+            let suffix_marker_chars = usize::from(suffix_trimmed) * 3;
+            let snippet_chars = prefix_budget
+                + matched_chars
+                + suffix_budget
+                + prefix_marker_chars
+                + suffix_marker_chars;
+            if snippet_chars <= max_chars {
+                break;
+            }
+            if suffix_budget > prefix_budget && suffix_budget > 0 {
+                suffix_budget = suffix_budget.saturating_sub(1);
+                continue;
+            }
+            if prefix_budget > 0 {
+                prefix_budget = prefix_budget.saturating_sub(1);
+                continue;
+            }
+            if suffix_budget > 0 {
+                suffix_budget = suffix_budget.saturating_sub(1);
+                continue;
+            }
+            break;
+        }
+
+        let prefix = trim_chars_from_end(prefix_source, prefix_budget);
+        let suffix = trim_chars_from_start(suffix_source, suffix_budget);
         let mut snippet = String::new();
-        if prefix.len() < start {
+        if prefix.chars().count() < prefix_source_chars {
             snippet.push_str("...");
         }
         snippet.push_str(&prefix);
-        snippet.push_str(&content[start..end]);
+        snippet.push_str(matched);
         snippet.push_str(&suffix);
-        if end + suffix.len() < content.len() {
+        if suffix.chars().count() < suffix_source_chars {
             snippet.push_str("...");
         }
         return snippet;
@@ -3768,6 +3813,77 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0]["session"]["session_id"], "archived-child");
         assert_eq!(visible_outcome.payload["filters"]["include_archived"], true);
+    }
+
+    #[test]
+    fn session_search_includes_legacy_root_hits_when_turn_history_exists() {
+        let config = isolated_memory_config("session-search-legacy-root");
+        let repo = SessionRepository::new(&config).expect("repository");
+        repo.create_session(NewSessionRecord {
+            session_id: "child-session".to_owned(),
+            kind: SessionKind::DelegateChild,
+            parent_session_id: Some("telegram:123".to_owned()),
+            label: Some("Child".to_owned()),
+            state: SessionState::Running,
+        })
+        .expect("create child");
+
+        append_turn_direct(
+            "telegram:123",
+            "user",
+            "deploy freeze starts Friday",
+            &config,
+        )
+        .expect("append legacy root hit");
+        append_turn_direct(
+            "child-session",
+            "assistant",
+            "deploy freeze checklist updated",
+            &config,
+        )
+        .expect("append child hit");
+
+        let outcome = execute_session_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "session_search".to_owned(),
+                payload: json!({
+                    "query": "deploy freeze",
+                    "limit": 10
+                }),
+            },
+            "telegram:123",
+            &config,
+        )
+        .expect("session_search outcome");
+
+        let hits = outcome.payload["hits"].as_array().expect("hits array");
+        let hit_session_ids = hits
+            .iter()
+            .filter_map(|hit| hit.get("session"))
+            .filter_map(|session| session.get("session_id"))
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+
+        assert_eq!(outcome.payload["returned_count"], 2);
+        assert!(hit_session_ids.contains(&"telegram:123"));
+        assert!(hit_session_ids.contains(&"child-session"));
+    }
+
+    #[test]
+    fn session_search_snippet_respects_max_chars_for_long_query() {
+        let prefix = "prefix ".repeat(30);
+        let query = "deploy freeze checklist updated with a surprisingly long match";
+        let suffix = " suffix".repeat(30);
+        let content = format!("{prefix}{query}{suffix}");
+
+        let snippet = super::session_search_snippet(&content, query, 80);
+
+        assert!(snippet.contains(query));
+        assert!(
+            snippet.chars().count() <= 80,
+            "snippet exceeded max chars: {}",
+            snippet.chars().count()
+        );
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -798,13 +798,17 @@ impl SessionRepository {
     ) -> Result<Vec<SessionSearchHit>, String> {
         let current_session_id = normalize_required_text(current_session_id, "current_session_id")?;
         let query = normalize_required_text(query, "query")?;
-        let limit = limit.max(1).min(i64::MAX as usize) as i64;
+        let limit = limit.min(i64::MAX as usize) as i64;
         let conn = self.open_connection()?;
         let mut stmt = conn
             .prepare(
                 "WITH RECURSIVE visible(session_id) AS (
                     SELECT session_id
                     FROM sessions
+                    WHERE session_id = ?1
+                    UNION
+                    SELECT session_id
+                    FROM turns
                     WHERE session_id = ?1
                     UNION
                     SELECT s.session_id
@@ -818,35 +822,6 @@ impl SessionRepository {
                     WHERE event_kind = 'session_archived'
                     GROUP BY session_id
                  ),
-                 visible_sessions AS (
-                    SELECT
-                        s.session_id,
-                        s.kind,
-                        s.parent_session_id,
-                        s.label,
-                        s.state,
-                        s.created_at,
-                        s.updated_at,
-                        s.last_error,
-                        archived.archived_at,
-                        COUNT(t.id) AS turn_count,
-                        MAX(t.ts) AS last_turn_at
-                    FROM sessions s
-                    JOIN visible v ON v.session_id = s.session_id
-                    LEFT JOIN archived ON archived.session_id = s.session_id
-                    LEFT JOIN turns t ON t.session_id = s.session_id
-                    WHERE (?3 OR archived.archived_at IS NULL)
-                    GROUP BY
-                        s.session_id,
-                        s.kind,
-                        s.parent_session_id,
-                        s.label,
-                        s.state,
-                        s.created_at,
-                        s.updated_at,
-                        s.last_error,
-                        archived.archived_at
-                 ),
                  hits AS (
                     SELECT
                         t.id AS turn_id,
@@ -856,31 +831,24 @@ impl SessionRepository {
                         t.content,
                         t.ts
                     FROM turns t
-                    JOIN visible_sessions vs ON vs.session_id = t.session_id
-                    WHERE instr(t.content, ?4) > 0
-                       OR instr(lower(t.content), lower(?4)) > 0
+                    JOIN visible v ON v.session_id = t.session_id
+                    LEFT JOIN archived ON archived.session_id = t.session_id
+                    WHERE (?3 OR archived.archived_at IS NULL)
+                      AND (
+                        instr(t.content, ?4) > 0
+                        OR instr(lower(t.content), lower(?4)) > 0
+                      )
                     ORDER BY t.ts DESC, t.id DESC
                     LIMIT ?5
                  )
                  SELECT
-                    vs.session_id,
-                    vs.kind,
-                    vs.parent_session_id,
-                    vs.label,
-                    vs.state,
-                    vs.created_at,
-                    vs.updated_at,
-                    vs.last_error,
-                    vs.archived_at,
-                    vs.turn_count,
-                    vs.last_turn_at,
                     hits.turn_id,
+                    hits.session_id,
                     hits.session_turn_index,
                     hits.role,
                     hits.content,
                     hits.ts
                  FROM hits
-                 JOIN visible_sessions vs ON vs.session_id = hits.session_id
                  ORDER BY hits.ts DESC, hits.turn_id DESC",
             )
             .map_err(|error| format!("prepare visible session search query failed: {error}"))?;
@@ -894,33 +862,42 @@ impl SessionRepository {
                     limit
                 ],
                 |row| {
-                    Ok(RawSessionSearchHit {
-                        session_id: row.get(0)?,
-                        kind: row.get(1)?,
-                        parent_session_id: row.get(2)?,
-                        label: row.get(3)?,
-                        state: row.get(4)?,
-                        created_at: row.get(5)?,
-                        updated_at: row.get(6)?,
-                        last_error: row.get(7)?,
-                        archived_at: row.get(8)?,
-                        turn_count: row.get(9)?,
-                        last_turn_at: row.get(10)?,
-                        turn_id: row.get(11)?,
-                        session_turn_index: row.get(12)?,
-                        role: row.get(13)?,
-                        content: row.get(14)?,
-                        ts: row.get(15)?,
+                    Ok(RawSessionSearchTurnHit {
+                        turn_id: row.get(0)?,
+                        session_id: row.get(1)?,
+                        session_turn_index: row.get(2)?,
+                        role: row.get(3)?,
+                        content: row.get(4)?,
+                        ts: row.get(5)?,
                     })
                 },
             )
             .map_err(|error| format!("query visible session search failed: {error}"))?;
 
         let mut hits = Vec::new();
+        let mut session_cache = BTreeMap::new();
         for row in rows {
             let raw =
                 row.map_err(|error| format!("decode visible session search row failed: {error}"))?;
-            hits.push(SessionSearchHit::try_from_raw(raw)?);
+            let cached_session = session_cache.get(&raw.session_id).cloned();
+            let session = match cached_session {
+                Some(session) => session,
+                None => {
+                    let loaded_session = Self::load_session_summary_with_legacy_fallback_with_conn(
+                        &conn,
+                        &raw.session_id,
+                    )?
+                    .ok_or_else(|| {
+                        format!(
+                            "visible session search summary missing for `{}`",
+                            raw.session_id
+                        )
+                    })?;
+                    session_cache.insert(raw.session_id.clone(), loaded_session.clone());
+                    loaded_session
+                }
+            };
+            hits.push(SessionSearchHit::from_turn_hit(raw, session));
         }
         Ok(hits)
     }
@@ -2460,19 +2437,9 @@ struct RawSessionSummaryRecord {
 }
 
 #[derive(Debug)]
-struct RawSessionSearchHit {
-    session_id: String,
-    kind: String,
-    parent_session_id: Option<String>,
-    label: Option<String>,
-    state: String,
-    created_at: i64,
-    updated_at: i64,
-    last_error: Option<String>,
-    archived_at: Option<i64>,
-    turn_count: i64,
-    last_turn_at: Option<i64>,
+struct RawSessionSearchTurnHit {
     turn_id: i64,
+    session_id: String,
     session_turn_index: i64,
     role: String,
     content: String,
@@ -2590,27 +2557,15 @@ impl SessionEventRecord {
 }
 
 impl SessionSearchHit {
-    fn try_from_raw(raw: RawSessionSearchHit) -> Result<Self, String> {
-        Ok(Self {
-            session: SessionSummaryRecord::try_from_raw(RawSessionSummaryRecord {
-                session_id: raw.session_id,
-                kind: raw.kind,
-                parent_session_id: raw.parent_session_id,
-                label: raw.label,
-                state: raw.state,
-                created_at: raw.created_at,
-                updated_at: raw.updated_at,
-                last_error: raw.last_error,
-                archived_at: raw.archived_at,
-                turn_count: raw.turn_count,
-                last_turn_at: raw.last_turn_at,
-            })?,
+    fn from_turn_hit(raw: RawSessionSearchTurnHit, session: SessionSummaryRecord) -> Self {
+        Self {
+            session,
             turn_id: raw.turn_id,
             session_turn_index: raw.session_turn_index.max(0) as usize,
             role: raw.role,
             content: raw.content,
             ts: raw.ts,
-        })
+        }
     }
 }
 
