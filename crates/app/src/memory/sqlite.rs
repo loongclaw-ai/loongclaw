@@ -831,13 +831,13 @@ pub(super) fn ensure_memory_db_ready_with_diagnostics(
         let user_version = read_sqlite_user_version(conn)?;
         let current_schema_ready = user_version == SQLITE_MEMORY_SCHEMA_VERSION
             && sqlite_current_schema_objects_ready(conn)?;
-        ensure_turn_session_index_and_state_metadata(conn)?;
-        ensure_approval_lifecycle_tables(conn)?;
-        ensure_session_tool_consent_storage(conn)?;
-        ensure_session_tool_policy_storage(conn)?;
-        ensure_summary_checkpoint_storage_layout(conn)?;
-        ensure_canonical_record_storage(conn)?;
         if user_version < SQLITE_MEMORY_SCHEMA_VERSION || !current_schema_ready {
+            ensure_turn_session_index_and_state_metadata(conn)?;
+            ensure_approval_lifecycle_tables(conn)?;
+            ensure_session_tool_consent_storage(conn)?;
+            ensure_session_tool_policy_storage(conn)?;
+            ensure_summary_checkpoint_storage_layout(conn)?;
+            ensure_canonical_record_storage(conn)?;
             write_sqlite_user_version(conn, SQLITE_MEMORY_SCHEMA_VERSION)?;
         }
         Ok(())

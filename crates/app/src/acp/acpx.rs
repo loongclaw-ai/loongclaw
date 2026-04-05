@@ -2137,6 +2137,19 @@ exit 0
 
     #[test]
     fn build_mcp_proxy_agent_command_preserves_server_cwd() {
+        fn decode_quoted_command_part(value: &str) -> String {
+            let trimmed = value.trim();
+            let quoted = trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2;
+            if !quoted {
+                return trimmed.to_owned();
+            }
+
+            let inner = &trimmed[1..trimmed.len() - 1];
+            let unescaped_backslashes = inner.replace("\\\\", "\\");
+            let unescaped_quotes = unescaped_backslashes.replace("\\\"", "\"");
+            unescaped_quotes
+        }
+
         let server = AcpxMcpServerEntry {
             name: "docs".to_owned(),
             command: "uvx".to_owned(),
@@ -2153,6 +2166,7 @@ exit 0
         let payload_marker = "--payload-file ";
         let payload_index = command.find(payload_marker).expect("payload marker");
         let payload_path = &command[payload_index + payload_marker.len()..];
+        let payload_path = decode_quoted_command_part(payload_path);
         let payload_bytes = std::fs::read(payload_path).expect("read payload file");
         let payload: Value = serde_json::from_slice(&payload_bytes).expect("parse payload");
 
