@@ -1,6 +1,7 @@
 use crate::config::LoongClawConfig;
 
 mod catalog;
+mod commands;
 #[cfg(feature = "channel-dingtalk")]
 mod dingtalk;
 #[cfg(feature = "channel-discord")]
@@ -139,6 +140,8 @@ mod dispatch;
 use crate::CliResult;
 #[cfg(test)]
 use crate::conversation::ConversationIngressPrivateContext;
+#[cfg(test)]
+use commands::context::render_channel_route_notice;
 #[cfg(any(
     feature = "channel-telegram",
     feature = "channel-feishu",
@@ -171,7 +174,7 @@ use dispatch::{ChannelCommandContext, ChannelSendCommandSpec, run_channel_send_c
 use dispatch::{
     build_feishu_command_context, build_telegram_command_context, channel_message_ingress_context,
     process_inbound_with_runtime_and_feedback, reload_channel_turn_config,
-    render_channel_route_notice, validate_feishu_security_config, validate_matrix_security_config,
+    validate_feishu_security_config, validate_matrix_security_config,
     validate_telegram_security_config,
 };
 pub use dispatch::{
