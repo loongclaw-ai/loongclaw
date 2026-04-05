@@ -1932,7 +1932,7 @@ fn build_doctor_next_steps_with_path_env(
         push_unique_step(
             &mut steps,
             format!(
-                "Review runtime plugin roots in config, then re-run diagnostics: {rerun_command}"
+                "Review runtime plugin roots and support policy in config, then re-run diagnostics: {rerun_command}"
             ),
         );
         push_unique_step(
@@ -1950,7 +1950,7 @@ fn build_doctor_next_steps_with_path_env(
         push_unique_step(
             &mut steps,
             format!(
-                "Review [runtime_plugins].roots and package manifests, then re-run diagnostics: {rerun_command}"
+                "Review [runtime_plugins].roots, [runtime_plugins].supported_bridges, [runtime_plugins].supported_adapter_families, and package manifests, then re-run diagnostics: {rerun_command}"
             ),
         );
     }
@@ -4305,7 +4305,7 @@ mod tests {
         );
         assert!(
             next_steps.iter().any(|step| {
-                step == "Review [runtime_plugins].roots and package manifests, then re-run diagnostics: loongclaw doctor --config '/tmp/loongclaw.toml'"
+                step == "Review [runtime_plugins].roots, [runtime_plugins].supported_bridges, [runtime_plugins].supported_adapter_families, and package manifests, then re-run diagnostics: loongclaw doctor --config '/tmp/loongclaw.toml'"
             }),
             "doctor should surface a concrete repair loop for runtime plugin inventory issues: {next_steps:#?}"
         );
