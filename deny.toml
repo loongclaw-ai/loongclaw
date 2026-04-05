@@ -26,6 +26,11 @@ allow = [
     "Zlib",
     "CDLA-Permissive-2.0",
 ]
+exceptions = [
+    # Keep the global allow-list narrow: this 0BSD exception is currently only
+    # needed for quoted_printable through lettre.
+    { crate = "quoted_printable", allow = ["0BSD"] },
+]
 confidence-threshold = 0.8
 
 [bans]
