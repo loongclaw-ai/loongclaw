@@ -697,6 +697,8 @@ pub fn execute_tool_core_with_config(
             );
         }
     }
+
+    result
 }
 
 fn trusted_runtime_narrowing_from_payload(

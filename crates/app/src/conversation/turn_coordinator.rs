@@ -2748,13 +2748,17 @@ async fn prepare_provider_turn_continue_phase<R: ConversationRuntime + ?Sized>(
         ingress,
     )
     .await;
-    emit_runtime_binding_trust_event_if_needed(
-        runtime,
-        session_id,
-        &lane_execution.turn_result,
-        binding,
-    )
-    .await;
+    let should_emit_binding_trust_event =
+        !matches!(lane, ExecutionLane::Safe) || config.conversation.safe_lane_emit_runtime_events;
+    if should_emit_binding_trust_event {
+        emit_runtime_binding_trust_event_if_needed(
+            runtime,
+            session_id,
+            &lane_execution.turn_result,
+            binding,
+        )
+        .await;
+    }
     observe_provider_turn_tool_batch_terminal(observer, &lane_execution.tool_events);
     let loop_verdict = turn_loop_state.observe_turn(turn_loop_policy, &turn);
     let followup_config =
