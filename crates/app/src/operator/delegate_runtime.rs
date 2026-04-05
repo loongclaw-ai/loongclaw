@@ -1,14 +1,18 @@
+use std::path::PathBuf;
+
 use serde_json::Value;
 
 use crate::config::LoongClawConfig;
 use crate::conversation::{
     ConstrainedSubagentContractView, ConstrainedSubagentExecution, ConstrainedSubagentIdentity,
-    ConstrainedSubagentMode, ConstrainedSubagentProfile, ConversationRuntimeBinding,
+    ConstrainedSubagentIsolation, ConstrainedSubagentMode, ConstrainedSubagentProfile,
+    ConversationRuntimeBinding, DelegateBuiltinProfile,
 };
 use crate::runtime_self_continuity::RuntimeSelfContinuity;
 use crate::session::repository::{
     CreateSessionWithEventRequest, NewSessionRecord, SessionKind, SessionRepository, SessionState,
 };
+use crate::tools::runtime_config::ToolRuntimeNarrowing;
 use crate::trust::{
     delegate_child_trust_event, embed_trust_event_payload, extract_trust_event_payload,
 };
@@ -19,6 +23,17 @@ use super::session_graph::OperatorSessionGraph;
 pub(crate) struct DelegateChildLifecycleSeed {
     pub execution: ConstrainedSubagentExecution,
     pub request: CreateSessionWithEventRequest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DelegateChildExecutionPolicy {
+    pub isolation: ConstrainedSubagentIsolation,
+    pub profile: Option<DelegateBuiltinProfile>,
+    pub timeout_seconds: u64,
+    pub allow_shell_in_child: bool,
+    pub child_tool_allowlist: Vec<String>,
+    pub runtime_narrowing: ToolRuntimeNarrowing,
+    pub workspace_root: Option<PathBuf>,
 }
 
 pub(crate) fn load_delegate_execution(
@@ -95,7 +110,6 @@ pub(crate) fn build_delegate_child_lifecycle_seed(
     config: &LoongClawConfig,
     binding: ConversationRuntimeBinding<'_>,
     mode: ConstrainedSubagentMode,
-    timeout_seconds: u64,
     next_child_depth: usize,
     active_children: usize,
     parent_session_id: &str,
@@ -104,15 +118,16 @@ pub(crate) fn build_delegate_child_lifecycle_seed(
     task: &str,
     runtime_self_continuity: Option<&RuntimeSelfContinuity>,
     identity: Option<ConstrainedSubagentIdentity>,
+    execution_policy: DelegateChildExecutionPolicy,
 ) -> DelegateChildLifecycleSeed {
     let execution = build_delegate_child_execution(
         config,
         binding,
         mode,
-        timeout_seconds,
         next_child_depth,
         active_children,
         identity,
+        &execution_policy,
     );
     let request = build_delegate_child_request(
         parent_session_id,
@@ -122,6 +137,7 @@ pub(crate) fn build_delegate_child_lifecycle_seed(
         runtime_self_continuity,
         &execution,
         mode,
+        execution_policy.profile,
     );
 
     DelegateChildLifecycleSeed { execution, request }
@@ -131,12 +147,11 @@ fn build_delegate_child_execution(
     config: &LoongClawConfig,
     binding: ConversationRuntimeBinding<'_>,
     mode: ConstrainedSubagentMode,
-    timeout_seconds: u64,
     next_child_depth: usize,
     active_children: usize,
     identity: Option<ConstrainedSubagentIdentity>,
+    execution_policy: &DelegateChildExecutionPolicy,
 ) -> ConstrainedSubagentExecution {
-    let runtime_narrowing = config.tools.delegate.child_runtime.runtime_narrowing();
     let kernel_bound = binding.is_kernel_bound();
     let profile = ConstrainedSubagentProfile::for_child_depth(
         next_child_depth,
@@ -145,14 +160,16 @@ fn build_delegate_child_execution(
 
     ConstrainedSubagentExecution {
         mode,
+        isolation: execution_policy.isolation,
         depth: next_child_depth,
         max_depth: config.tools.delegate.max_depth,
         active_children,
         max_active_children: config.tools.delegate.max_active_children,
-        timeout_seconds,
-        allow_shell_in_child: config.tools.delegate.allow_shell_in_child,
-        child_tool_allowlist: config.tools.delegate.child_tool_allowlist.clone(),
-        runtime_narrowing,
+        timeout_seconds: execution_policy.timeout_seconds,
+        allow_shell_in_child: execution_policy.allow_shell_in_child,
+        child_tool_allowlist: execution_policy.child_tool_allowlist.clone(),
+        workspace_root: execution_policy.workspace_root.clone(),
+        runtime_narrowing: execution_policy.runtime_narrowing.clone(),
         kernel_bound,
         identity,
         profile: Some(profile),
@@ -167,6 +184,7 @@ fn build_delegate_child_request(
     runtime_self_continuity: Option<&RuntimeSelfContinuity>,
     execution: &ConstrainedSubagentExecution,
     mode: ConstrainedSubagentMode,
+    profile: Option<DelegateBuiltinProfile>,
 ) -> CreateSessionWithEventRequest {
     let session_state = delegate_child_session_state(mode);
     let event_kind = delegate_child_event_kind(mode);
@@ -178,6 +196,7 @@ fn build_delegate_child_request(
         child_label.as_deref(),
         runtime_self_continuity,
         execution,
+        profile,
         source_surface,
     );
     let session = NewSessionRecord {
@@ -224,13 +243,15 @@ fn build_delegate_child_event_payload(
     child_label: Option<&str>,
     runtime_self_continuity: Option<&RuntimeSelfContinuity>,
     execution: &ConstrainedSubagentExecution,
+    profile: Option<DelegateBuiltinProfile>,
     source_surface: &str,
 ) -> Value {
     let trust_event =
         delegate_child_trust_event(parent_session_id, child_session_id, source_surface);
-    let event_payload_json = execution.spawn_payload_with_runtime_self_continuity(
+    let event_payload_json = execution.spawn_payload_with_profile_and_runtime_self_continuity(
         task,
         child_label,
+        profile,
         runtime_self_continuity,
     );
     let payload_with_trust =
