@@ -457,6 +457,7 @@ async fn main() {
             session,
             query,
             limit,
+            output,
             include_archived,
             json,
         } => run_session_search_cli(
@@ -464,6 +465,7 @@ async fn main() {
             session.as_deref(),
             &query,
             limit,
+            output.as_deref(),
             include_archived,
             json,
         ),
