@@ -1721,7 +1721,11 @@ pub(super) fn session_inspection_payload(snapshot: SessionInspectionSnapshot) ->
     let Some(object) = payload.as_object_mut() else {
         return payload;
     };
-    object.extend(subagent_surface_fields(subagent_handle.as_ref()));
+    insert_subagent_surface_fields(
+        object,
+        snapshot.subagent_contract.as_ref(),
+        subagent_handle.as_ref(),
+    );
     payload
 }
 
