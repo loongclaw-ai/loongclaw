@@ -7742,9 +7742,7 @@ mod tests {
             runtime_narrowing: crate::tools::runtime_config::ToolRuntimeNarrowing::default(),
             kernel_bound: false,
             identity: None,
-            profile: Some(crate::conversation::ConstrainedSubagentProfile::for_child_depth(
-                1, 1,
-            )),
+            profile: Some(crate::conversation::ConstrainedSubagentProfile::for_child_depth(1, 1)),
         };
         repo.create_session(NewSessionRecord {
             session_id: "root-session".to_owned(),
@@ -7862,9 +7860,7 @@ mod tests {
             runtime_narrowing: crate::tools::runtime_config::ToolRuntimeNarrowing::default(),
             kernel_bound: false,
             identity: None,
-            profile: Some(crate::conversation::ConstrainedSubagentProfile::for_child_depth(
-                1, 1,
-            )),
+            profile: Some(crate::conversation::ConstrainedSubagentProfile::for_child_depth(1, 1)),
         };
         repo.create_session(NewSessionRecord {
             session_id: "root-session".to_owned(),
