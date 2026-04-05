@@ -388,7 +388,11 @@ fn build_builtin_retrieval_request(
             MemoryScope::Agent,
             MemoryScope::User,
         ],
-        budget_items: config.sliding_window.min(6),
+        budget_items: if recent_window.is_empty() {
+            6
+        } else {
+            config.sliding_window
+        },
         allowed_kinds: vec![
             DerivedMemoryKind::Profile,
             DerivedMemoryKind::Fact,

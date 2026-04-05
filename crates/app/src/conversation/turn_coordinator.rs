@@ -80,6 +80,7 @@ use super::subagent::{
 };
 use super::tool_discovery_state::{TOOL_DISCOVERY_REFRESHED_EVENT_NAME, ToolDiscoveryState};
 use super::trust_projection::{
+    build_delegate_queued_child_session_request, build_delegate_started_child_session_request,
     emit_provider_failover_trust_event_if_needed, emit_runtime_binding_trust_event_if_needed,
 };
 use super::turn_budget::{
@@ -138,9 +139,9 @@ use crate::session::recovery::{
 use crate::session::repository::TransitionApprovalRequestIfCurrentRequest;
 #[cfg(feature = "memory-sqlite")]
 use crate::session::repository::{
-    ApprovalDecision, ApprovalRequestStatus, CreateSessionWithEventRequest,
-    FinalizeSessionTerminalRequest, NewSessionEvent, NewSessionRecord, SessionKind,
-    SessionRepository, SessionState, TransitionSessionWithEventIfCurrentRequest,
+    ApprovalDecision, ApprovalRequestStatus, FinalizeSessionTerminalRequest, NewSessionEvent,
+    NewSessionRecord, SessionKind, SessionRepository, SessionState,
+    TransitionSessionWithEventIfCurrentRequest,
 };
 
 #[derive(Default)]
@@ -4160,27 +4161,16 @@ pub(super) async fn execute_delegate_tool<R: ConversationRuntime + ?Sized>(
                         active_children,
                         workspace_root.clone(),
                     );
-                    Ok((
-                        CreateSessionWithEventRequest {
-                            session: NewSessionRecord {
-                                session_id: child_session_id.clone(),
-                                kind: SessionKind::DelegateChild,
-                                parent_session_id: Some(session_context.session_id.clone()),
-                                label: child_label.clone(),
-                                state: SessionState::Running,
-                            },
-                            event_kind: "delegate_started".to_owned(),
-                            actor_session_id: Some(session_context.session_id.clone()),
-                            event_payload_json: execution
-                                .spawn_payload_with_profile_and_runtime_self_continuity(
-                                    &delegate_request.task,
-                                    child_label.as_deref(),
-                                    delegate_policy.profile,
-                                    runtime_self_continuity.as_ref(),
-                                ),
-                        },
-                        execution,
-                    ))
+                    let request = build_delegate_started_child_session_request(
+                        &session_context.session_id,
+                        &child_session_id,
+                        child_label.clone(),
+                        &delegate_request.task,
+                        delegate_policy.profile,
+                        runtime_self_continuity.as_ref(),
+                        &execution,
+                    );
+                    Ok((request, execution))
                 },
             )?;
             workspace_cleanup_owned_by_child_for_work
@@ -4265,27 +4255,16 @@ async fn enqueue_delegate_async_with_runtime<R: ConversationRuntime + ?Sized>(
                     active_children,
                     workspace_root.clone(),
                 );
-                Ok((
-                    CreateSessionWithEventRequest {
-                        session: NewSessionRecord {
-                            session_id: child_session_id.clone(),
-                            kind: SessionKind::DelegateChild,
-                            parent_session_id: Some(session_context.session_id.clone()),
-                            label: child_label.clone(),
-                            state: SessionState::Ready,
-                        },
-                        event_kind: "delegate_queued".to_owned(),
-                        actor_session_id: Some(session_context.session_id.clone()),
-                        event_payload_json: execution
-                            .spawn_payload_with_profile_and_runtime_self_continuity(
-                                &delegate_request.task,
-                                child_label.as_deref(),
-                                delegate_policy.profile,
-                                runtime_self_continuity.as_ref(),
-                            ),
-                    },
-                    execution,
-                ))
+                let request = build_delegate_queued_child_session_request(
+                    &session_context.session_id,
+                    &child_session_id,
+                    child_label.clone(),
+                    &delegate_request.task,
+                    delegate_policy.profile,
+                    runtime_self_continuity.as_ref(),
+                    &execution,
+                );
+                Ok((request, execution))
             },
         )
         .inspect_err(|_error| {
