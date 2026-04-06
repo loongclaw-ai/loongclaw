@@ -2709,8 +2709,6 @@ mod tests {
     use std::ffi::OsString;
     use std::fs::Permissions;
     #[cfg(unix)]
-    use std::io::Write;
-    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     #[cfg(unix)]
@@ -2898,21 +2896,6 @@ mod tests {
         std::fs::create_dir_all(&plugin_directory).expect("create managed bridge plugin directory");
         std::fs::write(&manifest_path, encoded_manifest)
             .expect("write managed bridge plugin manifest");
-    }
-
-    #[cfg(unix)]
-    fn write_browser_companion_script(script_path: &Path, body: &str) {
-        let mut file = std::fs::File::create(script_path).expect("create browser companion script");
-        file.write_all(body.as_bytes())
-            .expect("write browser companion script");
-        file.sync_all()
-            .expect("sync browser companion script to disk");
-        drop(file);
-        let mut permissions = std::fs::metadata(script_path)
-            .expect("script metadata")
-            .permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(script_path, permissions).expect("chmod browser companion script");
     }
 
     #[cfg(unix)]
@@ -5372,16 +5355,12 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn browser_companion_doctor_checks_warn_when_expected_version_mismatches() {
         let _env_guard = BrowserCompanionEnvGuard::runtime_gate_closed();
-        let temp_dir = browser_companion_temp_dir("version-mismatch");
-        let script_path = temp_dir.join("browser-companion");
-        write_browser_companion_script(
-            &script_path,
-            "#!/bin/sh\necho 'loongclaw-browser-companion 1.4.0'\n",
-        );
 
         let mut config = mvp::config::LoongClawConfig::default();
         config.tools.browser_companion.enabled = true;
-        config.tools.browser_companion.command = Some(script_path.display().to_string());
+        config.tools.browser_companion.command = Some(
+            crate::browser_companion_diagnostics::fake_browser_companion_version_command("1.4.0"),
+        );
         config.tools.browser_companion.expected_version = Some("1.5.0".to_owned());
 
         let checks = collect_browser_companion_doctor_checks(&config).await;
@@ -5403,16 +5382,12 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn browser_companion_doctor_checks_warn_when_runtime_gate_is_closed() {
         let _env_guard = BrowserCompanionEnvGuard::runtime_gate_closed();
-        let temp_dir = browser_companion_temp_dir("runtime-gate");
-        let script_path = temp_dir.join("browser-companion");
-        write_browser_companion_script(
-            &script_path,
-            "#!/bin/sh\necho 'loongclaw-browser-companion 1.5.0'\n",
-        );
 
         let mut config = mvp::config::LoongClawConfig::default();
         config.tools.browser_companion.enabled = true;
-        config.tools.browser_companion.command = Some(script_path.display().to_string());
+        config.tools.browser_companion.command = Some(
+            crate::browser_companion_diagnostics::fake_browser_companion_version_command("1.5.0"),
+        );
         config.tools.browser_companion.expected_version = Some("1.5.0".to_owned());
 
         let checks = collect_browser_companion_doctor_checks(&config).await;
@@ -5431,16 +5406,12 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn browser_companion_doctor_checks_pass_when_runtime_gate_is_open() {
         let _env_guard = BrowserCompanionEnvGuard::runtime_gate_open();
-        let temp_dir = browser_companion_temp_dir("runtime-ready");
-        let script_path = temp_dir.join("browser-companion");
-        write_browser_companion_script(
-            &script_path,
-            "#!/bin/sh\necho 'loongclaw-browser-companion 1.5.0'\n",
-        );
 
         let mut config = mvp::config::LoongClawConfig::default();
         config.tools.browser_companion.enabled = true;
-        config.tools.browser_companion.command = Some(script_path.display().to_string());
+        config.tools.browser_companion.command = Some(
+            crate::browser_companion_diagnostics::fake_browser_companion_version_command("1.5.0"),
+        );
         config.tools.browser_companion.expected_version = Some("1.5.0".to_owned());
 
         let checks = collect_browser_companion_doctor_checks(&config).await;

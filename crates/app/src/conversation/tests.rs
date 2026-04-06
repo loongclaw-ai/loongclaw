@@ -2579,6 +2579,338 @@ fn default_runtime_session_context_errors_when_session_repository_is_unavailable
     std::fs::remove_dir_all(&db_path).ok();
 }
 
+#[cfg(feature = "memory-sqlite")]
+#[test]
+fn default_runtime_session_context_uses_persisted_subagent_profile() {
+    let mut config = test_config();
+    config.memory.sqlite_path = unique_memory_sqlite_path("persisted-profile");
+    let memory_config =
+        crate::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "child-session".to_owned(),
+        kind: crate::session::repository::SessionKind::DelegateChild,
+        parent_session_id: Some("root-session".to_owned()),
+        label: Some("Child".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create child session");
+    repo.append_event(crate::session::repository::NewSessionEvent {
+        session_id: "child-session".to_owned(),
+        event_kind: "delegate_queued".to_owned(),
+        actor_session_id: Some("root-session".to_owned()),
+        payload_json: json!({
+            "task": "research",
+            "label": "Child",
+            "execution": {
+                "mode": "async",
+                "depth": 1,
+                "max_depth": 3,
+                "active_children": 0,
+                "max_active_children": 3,
+                "timeout_seconds": 60,
+                "allow_shell_in_child": false,
+                "child_tool_allowlist": ["file.read"],
+                "kernel_bound": false,
+                "identity": {
+                    "nickname": "Child",
+                    "specialization": "reviewer"
+                },
+                "profile": {
+                    "role": "leaf",
+                    "control_scope": "none"
+                }
+            }
+        }),
+    })
+    .expect("append delegate event");
+
+    let runtime = DefaultConversationRuntime::default();
+    let session_context = runtime
+        .session_context(
+            &config,
+            "child-session",
+            ConversationRuntimeBinding::direct(),
+        )
+        .expect("session context");
+
+    let subagent_execution = session_context
+        .subagent_execution
+        .as_ref()
+        .expect("subagent execution should be restored");
+
+    assert_eq!(subagent_execution.depth, 1);
+    assert_eq!(subagent_execution.max_depth, 3);
+    assert_eq!(
+        session_context.resolved_subagent_profile(),
+        Some(crate::conversation::ConstrainedSubagentProfile {
+            role: crate::conversation::ConstrainedSubagentRole::Leaf,
+            control_scope: crate::conversation::ConstrainedSubagentControlScope::None,
+        })
+    );
+    assert_eq!(
+        session_context
+            .resolved_subagent_contract()
+            .and_then(|contract| contract.profile),
+        Some(crate::conversation::ConstrainedSubagentProfile {
+            role: crate::conversation::ConstrainedSubagentRole::Leaf,
+            control_scope: crate::conversation::ConstrainedSubagentControlScope::None,
+        })
+    );
+    assert_eq!(
+        session_context
+            .resolved_subagent_identity()
+            .and_then(|identity| identity.specialization.as_deref()),
+        Some("reviewer")
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[test]
+fn default_runtime_session_context_derives_subagent_profile_for_legacy_child_without_lifecycle_event()
+ {
+    let mut config = test_config();
+    config.tools.delegate.max_depth = 3;
+    config.memory.sqlite_path = unique_memory_sqlite_path("legacy-derived-profile");
+    let memory_config =
+        crate::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "child-session".to_owned(),
+        kind: crate::session::repository::SessionKind::DelegateChild,
+        parent_session_id: Some("root-session".to_owned()),
+        label: Some("Child".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create child session");
+
+    let runtime = DefaultConversationRuntime::default();
+    let session_context = runtime
+        .session_context(
+            &config,
+            "child-session",
+            ConversationRuntimeBinding::direct(),
+        )
+        .expect("session context");
+
+    assert!(session_context.subagent_execution.is_none());
+    assert_eq!(
+        session_context.resolved_subagent_profile(),
+        Some(crate::conversation::ConstrainedSubagentProfile {
+            role: crate::conversation::ConstrainedSubagentRole::Orchestrator,
+            control_scope: crate::conversation::ConstrainedSubagentControlScope::Children,
+        })
+    );
+    assert_eq!(
+        session_context
+            .resolved_subagent_contract()
+            .and_then(|contract| contract.profile),
+        Some(crate::conversation::ConstrainedSubagentProfile {
+            role: crate::conversation::ConstrainedSubagentRole::Orchestrator,
+            control_scope: crate::conversation::ConstrainedSubagentControlScope::Children,
+        })
+    );
+    assert_eq!(
+        session_context
+            .resolved_subagent_identity()
+            .and_then(|identity| identity.nickname.as_deref()),
+        Some("Child")
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[test]
+fn default_runtime_tool_view_respects_persisted_leaf_subagent_profile() {
+    let mut config = test_config();
+    config.tools.delegate.max_depth = 3;
+    config.memory.sqlite_path = unique_memory_sqlite_path("persisted-leaf-profile");
+    let memory_config =
+        crate::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let repo = crate::session::repository::SessionRepository::new(&memory_config)
+        .expect("session repository");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create root session");
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: "child-session".to_owned(),
+        kind: crate::session::repository::SessionKind::DelegateChild,
+        parent_session_id: Some("root-session".to_owned()),
+        label: Some("Child".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })
+    .expect("create child session");
+    repo.append_event(crate::session::repository::NewSessionEvent {
+        session_id: "child-session".to_owned(),
+        event_kind: "delegate_started".to_owned(),
+        actor_session_id: Some("root-session".to_owned()),
+        payload_json: json!({
+            "task": "research",
+            "label": "Child",
+            "execution": {
+                "mode": "inline",
+                "depth": 1,
+                "max_depth": 3,
+                "active_children": 0,
+                "max_active_children": 3,
+                "timeout_seconds": 60,
+                "allow_shell_in_child": false,
+                "child_tool_allowlist": ["file.read", "file.write"],
+                "kernel_bound": false,
+                "profile": {
+                    "role": "leaf",
+                    "control_scope": "none"
+                }
+            }
+        }),
+    })
+    .expect("append delegate event");
+
+    let runtime = DefaultConversationRuntime::default();
+    let child_view = runtime
+        .tool_view(
+            &config,
+            "child-session",
+            ConversationRuntimeBinding::direct(),
+        )
+        .expect("child tool view");
+
+    assert!(child_view.contains("file.read"));
+    assert!(child_view.contains("file.write"));
+    assert!(!child_view.contains("delegate"));
+    assert!(!child_view.contains("delegate_async"));
+}
+
+#[test]
+fn session_context_keeps_execution_and_contract_in_sync_when_child_contract_is_overridden() {
+    let execution = crate::conversation::ConstrainedSubagentExecution {
+        mode: crate::conversation::ConstrainedSubagentMode::Inline,
+        depth: 1,
+        max_depth: 3,
+        active_children: 0,
+        max_active_children: 2,
+        timeout_seconds: 60,
+        allow_shell_in_child: false,
+        child_tool_allowlist: vec!["web.fetch".to_owned()],
+        runtime_narrowing: crate::tools::runtime_config::ToolRuntimeNarrowing::default(),
+        kernel_bound: false,
+        identity: None,
+        profile: Some(crate::conversation::ConstrainedSubagentProfile {
+            role: crate::conversation::ConstrainedSubagentRole::Orchestrator,
+            control_scope: crate::conversation::ConstrainedSubagentControlScope::Children,
+        }),
+    };
+    let runtime_narrowing = crate::tools::runtime_config::ToolRuntimeNarrowing {
+        web_fetch: crate::tools::runtime_config::WebFetchRuntimeNarrowing {
+            allowed_domains: BTreeSet::from(["docs.example.com".to_owned()]),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let session_context = SessionContext::child(
+        "child-session",
+        "root-session",
+        crate::tools::delegate_child_tool_view_for_config(&crate::config::ToolConfig::default()),
+    )
+    .with_subagent_execution(execution)
+    .with_subagent_profile(crate::conversation::ConstrainedSubagentProfile {
+        role: crate::conversation::ConstrainedSubagentRole::Leaf,
+        control_scope: crate::conversation::ConstrainedSubagentControlScope::None,
+    })
+    .with_runtime_narrowing(runtime_narrowing);
+
+    assert_eq!(
+        session_context
+            .subagent_execution
+            .as_ref()
+            .and_then(|execution| execution.profile),
+        Some(crate::conversation::ConstrainedSubagentProfile {
+            role: crate::conversation::ConstrainedSubagentRole::Leaf,
+            control_scope: crate::conversation::ConstrainedSubagentControlScope::None,
+        })
+    );
+    assert_eq!(
+        session_context
+            .subagent_runtime_narrowing()
+            .map(|narrowing| narrowing.web_fetch.allowed_domains.clone()),
+        Some(BTreeSet::from(["docs.example.com".to_owned()]))
+    );
+    assert_eq!(
+        session_context
+            .resolved_subagent_contract()
+            .and_then(|contract| contract.profile),
+        Some(crate::conversation::ConstrainedSubagentProfile {
+            role: crate::conversation::ConstrainedSubagentRole::Leaf,
+            control_scope: crate::conversation::ConstrainedSubagentControlScope::None,
+        })
+    );
+}
+
+#[test]
+fn session_context_with_subagent_execution_preserves_prior_runtime_narrowing() {
+    let execution = crate::conversation::ConstrainedSubagentExecution {
+        mode: crate::conversation::ConstrainedSubagentMode::Inline,
+        depth: 1,
+        max_depth: 3,
+        active_children: 0,
+        max_active_children: 2,
+        timeout_seconds: 60,
+        allow_shell_in_child: false,
+        child_tool_allowlist: vec!["web.fetch".to_owned()],
+        runtime_narrowing: crate::tools::runtime_config::ToolRuntimeNarrowing::default(),
+        kernel_bound: false,
+        identity: None,
+        profile: None,
+    };
+    let runtime_narrowing = crate::tools::runtime_config::ToolRuntimeNarrowing {
+        web_fetch: crate::tools::runtime_config::WebFetchRuntimeNarrowing {
+            allowed_domains: BTreeSet::from(["docs.example.com".to_owned()]),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let session_context = SessionContext::child(
+        "child-session",
+        "root-session",
+        crate::tools::delegate_child_tool_view_for_config(&crate::config::ToolConfig::default()),
+    )
+    .with_runtime_narrowing(runtime_narrowing.clone())
+    .with_subagent_execution(execution);
+
+    let execution_runtime_narrowing = session_context
+        .subagent_execution
+        .as_ref()
+        .map(|execution| execution.runtime_narrowing.clone());
+    let session_runtime_narrowing = session_context.runtime_narrowing.clone();
+    let effective_runtime_narrowing = session_context.subagent_runtime_narrowing().cloned();
+
+    assert_eq!(execution_runtime_narrowing, Some(runtime_narrowing.clone()));
+    assert_eq!(session_runtime_narrowing, Some(runtime_narrowing.clone()));
+    assert_eq!(effective_runtime_narrowing, Some(runtime_narrowing));
+}
+
 #[tokio::test]
 async fn default_runtime_delegates_bootstrap_and_ingest_to_context_engine_with_kernel() {
     let calls = Arc::new(Mutex::new(Vec::new()));
@@ -8397,6 +8729,12 @@ async fn handle_turn_with_runtime_safe_lane_plan_persists_runtime_events_when_en
 
 #[tokio::test]
 async fn handle_turn_with_runtime_safe_lane_plan_skips_runtime_events_when_disabled() {
+    let mut env = crate::test_support::ScopedEnv::new();
+    let temp_home = crate::test_support::unique_temp_dir("safe-lane-runtime-events-home");
+    std::fs::create_dir_all(&temp_home).expect("create safe-lane runtime-events home");
+    env.set("HOME", &temp_home);
+    env.remove("LOONGCLAW_HOME");
+
     let runtime = FakeRuntime::with_turn_and_completion(
         vec![],
         Ok(ProviderTurn {
@@ -8432,7 +8770,7 @@ async fn handle_turn_with_runtime_safe_lane_plan_skips_runtime_events_when_disab
         .expect("safe lane plan should produce a reply");
 
     let persisted = runtime.persisted.lock().expect("persisted lock");
-    let event_count = persisted
+    let event_names = persisted
         .iter()
         .filter_map(|(_, role, content)| {
             if role != "assistant" {
@@ -8442,10 +8780,16 @@ async fn handle_turn_with_runtime_safe_lane_plan_skips_runtime_events_when_disab
             if parsed.get("type")?.as_str()? != "conversation_event" {
                 return None;
             }
-            (parsed.get("event")?.as_str()? != "turn_checkpoint").then_some(())
+            let event_name = parsed.get("event")?.as_str()?;
+            let is_expected_suppressed_event =
+                event_name == "turn_checkpoint" || event_name == "trust_binding_missing";
+            (!is_expected_suppressed_event).then_some(event_name.to_owned())
         })
-        .count();
-    assert_eq!(event_count, 0, "unexpected runtime events: {persisted:?}");
+        .collect::<Vec<_>>();
+    assert!(
+        event_names.is_empty(),
+        "unexpected safe lane runtime events: {event_names:?}; persisted={persisted:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -17597,7 +17941,7 @@ async fn handle_turn_with_runtime_child_session_injects_runtime_narrowing_into_k
         .execute_turn_in_context(
             &turn,
             &session_context,
-            &DefaultAppToolDispatcher::runtime(),
+            &DefaultAppToolDispatcher::with_config(memory_config.clone(), config.clone()),
             ConversationRuntimeBinding::kernel(&kernel_ctx),
             None,
         )
@@ -20134,6 +20478,7 @@ async fn spawn_background_delegate_with_runtime_creates_missing_root_session_sco
         "task-root",
         "collect repo health",
         Some("health-check".to_owned()),
+        None,
         Some(42),
         ConversationRuntimeBinding::direct(),
     )
@@ -20229,6 +20574,7 @@ async fn spawn_background_delegate_with_runtime_uses_default_timeout_when_omitte
         &runtime,
         "task-root",
         "sync release checklist",
+        None,
         None,
         None,
         ConversationRuntimeBinding::direct(),

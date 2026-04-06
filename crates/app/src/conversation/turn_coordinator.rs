@@ -75,7 +75,8 @@ use super::session_history::{
 };
 #[cfg(feature = "memory-sqlite")]
 use super::subagent::{
-    ConstrainedSubagentExecution, ConstrainedSubagentMode, ConstrainedSubagentTerminalReason,
+    ConstrainedSubagentExecution, ConstrainedSubagentIdentity, ConstrainedSubagentMode,
+    ConstrainedSubagentProfile, ConstrainedSubagentTerminalReason,
 };
 use super::tool_discovery_state::{TOOL_DISCOVERY_REFRESHED_EVENT_NAME, ToolDiscoveryState};
 use super::trust_projection::{
@@ -2763,13 +2764,17 @@ async fn prepare_provider_turn_continue_phase<R: ConversationRuntime + ?Sized>(
         ingress,
     )
     .await;
-    emit_runtime_binding_trust_event_if_needed(
-        runtime,
-        session_id,
-        &lane_execution.turn_result,
-        binding,
-    )
-    .await;
+    let should_emit_binding_trust_event =
+        !matches!(lane, ExecutionLane::Safe) || config.conversation.safe_lane_emit_runtime_events;
+    if should_emit_binding_trust_event {
+        emit_runtime_binding_trust_event_if_needed(
+            runtime,
+            session_id,
+            &lane_execution.turn_result,
+            binding,
+        )
+        .await;
+    }
     observe_provider_turn_tool_batch_terminal(observer, &lane_execution.tool_events);
     let loop_verdict = turn_loop_state.observe_turn(turn_loop_policy, &turn);
     let followup_config =
@@ -3984,6 +3989,8 @@ pub(super) async fn execute_delegate_tool<R: ConversationRuntime + ?Sized>(
         &payload,
         config.tools.delegate.timeout_seconds,
     )?;
+    let subagent_identity =
+        crate::tools::delegate::subagent_identity_for_delegate_request(&delegate_request);
     let child_session_id = crate::tools::delegate::next_delegate_session_id();
     let child_label = delegate_request.label.clone();
     let repo = SessionRepository::new(&MemoryRuntimeConfig::from_memory_config(&config.memory))?;
@@ -4003,6 +4010,7 @@ pub(super) async fn execute_delegate_tool<R: ConversationRuntime + ?Sized>(
                     let execution = constrained_subagent_execution_for_delegate(
                         config,
                         binding,
+                        subagent_identity.clone(),
                         ConstrainedSubagentMode::Inline,
                         delegate_request.timeout_seconds,
                         next_child_depth,
@@ -4042,9 +4050,7 @@ async fn enqueue_delegate_async_with_runtime<R: ConversationRuntime + ?Sized>(
     config: &LoongClawConfig,
     runtime: &R,
     session_context: &SessionContext,
-    task: String,
-    label: Option<String>,
-    timeout_seconds: u64,
+    delegate_request: crate::tools::delegate::DelegateRequest,
     binding: ConversationRuntimeBinding<'_>,
 ) -> Result<loongclaw_contracts::ToolCoreOutcome, String> {
     if !config.tools.delegate.enabled {
@@ -4056,8 +4062,10 @@ async fn enqueue_delegate_async_with_runtime<R: ConversationRuntime + ?Sized>(
     let spawner = runtime
         .async_delegate_spawner(config)
         .ok_or_else(|| "delegate_async_not_configured".to_owned())?;
+    let subagent_identity =
+        crate::tools::delegate::subagent_identity_for_delegate_request(&delegate_request);
     let child_session_id = crate::tools::delegate::next_delegate_session_id();
-    let child_label = label.clone();
+    let child_label = delegate_request.label.clone();
     let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
     let repo = SessionRepository::new(&memory_config)?;
 
@@ -4073,8 +4081,9 @@ async fn enqueue_delegate_async_with_runtime<R: ConversationRuntime + ?Sized>(
             let execution = constrained_subagent_execution_for_delegate(
                 config,
                 binding,
+                subagent_identity.clone(),
                 ConstrainedSubagentMode::Async,
-                timeout_seconds,
+                delegate_request.timeout_seconds,
                 next_child_depth,
                 active_children,
             );
@@ -4082,7 +4091,7 @@ async fn enqueue_delegate_async_with_runtime<R: ConversationRuntime + ?Sized>(
                 &session_context.session_id,
                 &child_session_id,
                 child_label.clone(),
-                &task,
+                &delegate_request.task,
                 runtime_self_continuity.as_ref(),
                 &execution,
             );
@@ -4090,22 +4099,25 @@ async fn enqueue_delegate_async_with_runtime<R: ConversationRuntime + ?Sized>(
         },
     )?;
 
+    let queued_contract = execution.contract_view();
     let request = AsyncDelegateSpawnRequest {
         child_session_id: child_session_id.clone(),
         parent_session_id: session_context.session_id.clone(),
-        task,
+        task: delegate_request.task,
         label: child_label,
         execution,
         runtime_self_continuity,
-        timeout_seconds,
+        timeout_seconds: delegate_request.timeout_seconds,
         binding: OwnedConversationRuntimeBinding::from_borrowed(binding),
     };
     spawn_async_delegate_detached(runtime_handle, memory_config, spawner, request);
 
     Ok(crate::tools::delegate::delegate_async_queued_outcome(
         child_session_id,
-        label,
-        timeout_seconds,
+        Some(session_context.session_id.clone()),
+        delegate_request.label,
+        Some(&queued_contract),
+        delegate_request.timeout_seconds,
     ))
 }
 
@@ -4116,6 +4128,7 @@ pub async fn spawn_background_delegate_with_runtime<R: ConversationRuntime + ?Si
     session_id: &str,
     task: &str,
     label: Option<String>,
+    specialization: Option<String>,
     timeout_seconds: Option<u64>,
     binding: ConversationRuntimeBinding<'_>,
 ) -> Result<loongclaw_contracts::ToolCoreOutcome, String> {
@@ -4123,6 +4136,7 @@ pub async fn spawn_background_delegate_with_runtime<R: ConversationRuntime + ?Si
     let delegate_request = crate::tools::delegate::normalize_delegate_request(
         task,
         label.as_deref(),
+        specialization.as_deref(),
         timeout_seconds,
         config.tools.delegate.timeout_seconds,
     )?;
@@ -4130,9 +4144,7 @@ pub async fn spawn_background_delegate_with_runtime<R: ConversationRuntime + ?Si
         config,
         runtime,
         &session_context,
-        delegate_request.task,
-        delegate_request.label,
-        delegate_request.timeout_seconds,
+        delegate_request,
         binding,
     )
     .await
@@ -4145,6 +4157,7 @@ pub async fn spawn_background_delegate_with_runtime<R: ConversationRuntime + ?Si
     _session_id: &str,
     _task: &str,
     _label: Option<String>,
+    _specialization: Option<String>,
     _timeout_seconds: Option<u64>,
     _binding: ConversationRuntimeBinding<'_>,
 ) -> Result<loongclaw_contracts::ToolCoreOutcome, String> {
@@ -4167,16 +4180,8 @@ pub(super) async fn execute_delegate_async_tool<R: ConversationRuntime + ?Sized>
         &payload,
         config.tools.delegate.timeout_seconds,
     )?;
-    enqueue_delegate_async_with_runtime(
-        config,
-        runtime,
-        session_context,
-        delegate_request.task,
-        delegate_request.label,
-        delegate_request.timeout_seconds,
-        binding,
-    )
-    .await
+    enqueue_delegate_async_with_runtime(config, runtime, session_context, delegate_request, binding)
+        .await
 }
 
 #[cfg(not(feature = "memory-sqlite"))]
@@ -4239,9 +4244,12 @@ pub(crate) async fn run_started_delegate_child_turn_with_runtime<
                 .load_session_summary(child_session_id)?
                 .map(|session| session.turn_count)
                 .unwrap_or_default();
+            let subagent_contract = execution.contract_view();
             let outcome = crate::tools::delegate::delegate_success_outcome(
                 child_session_id.to_owned(),
+                Some(parent_session_id.to_owned()),
                 child_label,
+                Some(&subagent_contract),
                 final_output,
                 turn_count,
                 duration_ms,
@@ -4267,9 +4275,12 @@ pub(crate) async fn run_started_delegate_child_turn_with_runtime<
             Ok(outcome)
         }
         Ok(Ok(Err(error))) => {
+            let subagent_contract = execution.contract_view();
             let outcome = crate::tools::delegate::delegate_error_outcome(
                 child_session_id.to_owned(),
+                Some(parent_session_id.to_owned()),
                 child_label,
+                Some(&subagent_contract),
                 error.clone(),
                 duration_ms,
             );
@@ -4295,9 +4306,12 @@ pub(crate) async fn run_started_delegate_child_turn_with_runtime<
         }
         Ok(Err(panic_payload)) => {
             let panic_error = format_delegate_child_panic(panic_payload);
+            let subagent_contract = execution.contract_view();
             let outcome = crate::tools::delegate::delegate_error_outcome(
                 child_session_id.to_owned(),
+                Some(parent_session_id.to_owned()),
                 child_label,
+                Some(&subagent_contract),
                 panic_error.clone(),
                 duration_ms,
             );
@@ -4323,9 +4337,12 @@ pub(crate) async fn run_started_delegate_child_turn_with_runtime<
         }
         Err(_) => {
             let timeout_error = "delegate_timeout".to_owned();
+            let subagent_contract = execution.contract_view();
             let outcome = crate::tools::delegate::delegate_timeout_outcome(
                 child_session_id.to_owned(),
+                Some(parent_session_id.to_owned()),
                 child_label,
+                Some(&subagent_contract),
                 duration_ms,
             );
             finalize_delegate_child_terminal_with_recovery(
@@ -4361,9 +4378,12 @@ fn finalize_async_delegate_spawn_failure(
     error: String,
 ) -> Result<(), String> {
     let repo = SessionRepository::new(memory_config)?;
+    let subagent_contract = execution.contract_view();
     let outcome = crate::tools::delegate::delegate_error_outcome(
         child_session_id.to_owned(),
+        Some(parent_session_id.to_owned()),
         label,
+        Some(&subagent_contract),
         error.clone(),
         0,
     );
@@ -4513,11 +4533,17 @@ fn spawn_async_delegate_detached(
 fn constrained_subagent_execution_for_delegate(
     config: &LoongClawConfig,
     binding: ConversationRuntimeBinding<'_>,
+    subagent_identity: Option<ConstrainedSubagentIdentity>,
     mode: ConstrainedSubagentMode,
     timeout_seconds: u64,
     next_child_depth: usize,
     active_children: usize,
 ) -> ConstrainedSubagentExecution {
+    let subagent_profile = ConstrainedSubagentProfile::for_child_depth(
+        next_child_depth,
+        config.tools.delegate.max_depth,
+    );
+
     ConstrainedSubagentExecution {
         mode,
         depth: next_child_depth,
@@ -4529,6 +4555,8 @@ fn constrained_subagent_execution_for_delegate(
         child_tool_allowlist: config.tools.delegate.child_tool_allowlist.clone(),
         runtime_narrowing: config.tools.delegate.child_runtime.runtime_narrowing(),
         kernel_bound: binding.is_kernel_bound(),
+        identity: subagent_identity,
+        profile: Some(subagent_profile),
     }
 }
 
@@ -7737,6 +7765,8 @@ mod tests {
             ],
             runtime_narrowing: crate::tools::runtime_config::ToolRuntimeNarrowing::default(),
             kernel_bound: false,
+            identity: None,
+            profile: Some(crate::conversation::ConstrainedSubagentProfile::for_child_depth(1, 1)),
         };
         repo.create_session(NewSessionRecord {
             session_id: "root-session".to_owned(),
@@ -7853,6 +7883,8 @@ mod tests {
             ],
             runtime_narrowing: crate::tools::runtime_config::ToolRuntimeNarrowing::default(),
             kernel_bound: false,
+            identity: None,
+            profile: Some(crate::conversation::ConstrainedSubagentProfile::for_child_depth(1, 1)),
         };
         repo.create_session(NewSessionRecord {
             session_id: "root-session".to_owned(),

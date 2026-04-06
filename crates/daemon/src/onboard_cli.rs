@@ -6267,7 +6267,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::ffi::OsString;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, MutexGuard};
 
     use crate::test_support::ScopedEnv;
@@ -6330,17 +6330,6 @@ mod tests {
         OnboardRuntimeContext::new_for_tests(80, None, std::iter::empty::<PathBuf>())
     }
 
-    fn browser_companion_temp_dir(label: &str) -> PathBuf {
-        static NEXT_TEMP_DIR_SEED: AtomicU64 = AtomicU64::new(1);
-        let seed = NEXT_TEMP_DIR_SEED.fetch_add(1, Ordering::Relaxed);
-        let temp_dir = std::env::temp_dir().join(format!(
-            "loongclaw-browser-companion-onboard-{label}-{}-{seed}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&temp_dir).expect("create browser companion onboard temp dir");
-        temp_dir
-    }
-
     fn uuid_shaped_secret_fixture() -> String {
         let first = "9f479837";
         let second = "0a12";
@@ -6348,53 +6337,6 @@ mod tests {
         let fourth = "89ab";
         let fifth = "cdef01234567";
         format!("{first}-{second}-{third}-{fourth}-{fifth}")
-    }
-
-    fn browser_companion_script_path(temp_dir: &Path) -> PathBuf {
-        #[cfg(windows)]
-        {
-            temp_dir.join("browser-companion.cmd")
-        }
-        #[cfg(not(windows))]
-        {
-            temp_dir.join("browser-companion")
-        }
-    }
-
-    fn write_browser_companion_version_script(temp_dir: &Path, version: &str) -> PathBuf {
-        let script_path = browser_companion_script_path(temp_dir);
-
-        #[cfg(windows)]
-        {
-            let script_body = format!(
-                "@echo off\r\nif \"%~1\"==\"--version\" (\r\n  echo loongclaw-browser-companion {version}\r\n  exit /b 0\r\n)\r\necho unexpected arguments 1>&2\r\nexit /b 1\r\n"
-            );
-            std::fs::write(&script_path, script_body).expect("write browser companion script");
-        }
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let script_body = format!(
-                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo 'loongclaw-browser-companion {version}'\n  exit 0\nfi\necho 'unexpected arguments' >&2\nexit 1\n"
-            );
-            let mut file =
-                std::fs::File::create(&script_path).expect("create browser companion script");
-            file.write_all(script_body.as_bytes())
-                .expect("write browser companion script");
-            file.sync_all()
-                .expect("sync browser companion script to disk");
-            drop(file);
-
-            let metadata = std::fs::metadata(&script_path).expect("script metadata");
-            let mut permissions = metadata.permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&script_path, permissions)
-                .expect("chmod browser companion script");
-        }
-
-        script_path
     }
 
     impl OnboardUi for TestOnboardUi {
@@ -6817,13 +6759,13 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn browser_companion_onboard_preflight_warns_when_runtime_gate_is_closed() {
         let _env_guard = BrowserCompanionEnvGuard::runtime_gate_closed();
-        let temp_dir = browser_companion_temp_dir("runtime-gate");
-        let script_path = write_browser_companion_version_script(&temp_dir, "1.5.0");
 
         let mut config = mvp::config::LoongClawConfig::default();
         config.provider.api_key = Some(SecretRef::Inline("inline-openai-key".to_owned()));
         config.tools.browser_companion.enabled = true;
-        config.tools.browser_companion.command = Some(script_path.display().to_string());
+        config.tools.browser_companion.command = Some(
+            crate::browser_companion_diagnostics::fake_browser_companion_version_command("1.5.0"),
+        );
         config.tools.browser_companion.expected_version = Some("1.5.0".to_owned());
 
         let checks = run_preflight_checks(&config, true).await;
@@ -6841,13 +6783,13 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn browser_companion_onboard_preflight_passes_when_runtime_gate_is_open() {
         let _env_guard = BrowserCompanionEnvGuard::runtime_gate_open();
-        let temp_dir = browser_companion_temp_dir("runtime-ready");
-        let script_path = write_browser_companion_version_script(&temp_dir, "1.5.0");
 
         let mut config = mvp::config::LoongClawConfig::default();
         config.provider.api_key = Some(SecretRef::Inline("inline-openai-key".to_owned()));
         config.tools.browser_companion.enabled = true;
-        config.tools.browser_companion.command = Some(script_path.display().to_string());
+        config.tools.browser_companion.command = Some(
+            crate::browser_companion_diagnostics::fake_browser_companion_version_command("1.5.0"),
+        );
         config.tools.browser_companion.expected_version = Some("1.5.0".to_owned());
 
         let checks = run_preflight_checks(&config, true).await;

@@ -1,5 +1,6 @@
 use crate::config::LoongClawConfig;
 
+mod catalog;
 #[cfg(feature = "channel-dingtalk")]
 mod dingtalk;
 #[cfg(feature = "channel-discord")]
