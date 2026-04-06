@@ -1277,7 +1277,7 @@ impl ToolRuntimeConfig {
                 ConstrainedSubagentControlScope::Children => "children",
                 ConstrainedSubagentControlScope::None => "none",
             };
-            lines.push(format!("- subagent role: {role}"));
+            lines.push(format!("- subagent orchestration posture: {role}"));
             lines.push(format!("- subagent control scope: {control_scope}"));
         }
 
@@ -3174,6 +3174,7 @@ mod tests {
                 specialization: Some("researcher".to_owned()),
             }),
             profile: Some(ConstrainedSubagentProfile::for_child_depth(1, 2)),
+            agent_role: None,
         };
 
         let contract = execution.contract_view();
@@ -3194,7 +3195,7 @@ Plan within these child-session runtime limits:\n\
 - child shell.exec: denied\n\
 - child tool allowlist: web.fetch\n\
 - child runtime binding: direct\n\
-- subagent role: orchestrator\n\
+- subagent orchestration posture: orchestrator\n\
 - subagent control scope: children\n\
 - web.fetch private hosts: denied\n\
 - web.fetch allowed domains: none (effective intersection is empty)\n\
@@ -3350,7 +3351,7 @@ Treat these as enforced limits for this child session."
             summary,
             "[delegate_child_runtime_contract]\n\
 Plan within these child-session runtime limits:\n\
-- subagent role: leaf\n\
+- subagent orchestration posture: leaf\n\
 - subagent control scope: none\n\
 Treat these as enforced limits for this child session."
         );
