@@ -20,6 +20,8 @@ use crate::memory::runtime_config::MemoryRuntimeConfig;
 #[cfg(feature = "memory-sqlite")]
 use crate::operator::approval_runtime::{GovernedToolApprovalRequest, OperatorApprovalRuntime};
 #[cfg(feature = "memory-sqlite")]
+use crate::operator::delegate_runtime::resolve_delegate_child_contract;
+#[cfg(feature = "memory-sqlite")]
 use crate::operator::session_graph::OperatorSessionGraph;
 #[cfg(feature = "memory-sqlite")]
 use crate::session::repository::{
@@ -657,34 +659,11 @@ impl DefaultAppToolDispatcher {
             if session.parent_session_id.is_some() {
                 let subagent_contract = match session_context.resolved_subagent_contract() {
                     Some(subagent_contract) => Some(subagent_contract),
-                    None => {
-                        let session_graph = OperatorSessionGraph::new(&repo);
-                        match session_graph.lineage_depth(&session_context.session_id) {
-                            Ok(depth) => {
-                                let subagent_profile =
-                                    crate::conversation::ConstrainedSubagentProfile::for_child_depth(
-                                        depth,
-                                        self.tool_config.delegate.max_depth,
-                                    );
-                                Some(
-                                    crate::conversation::ConstrainedSubagentContractView::from_profile(
-                                        subagent_profile,
-                                    ),
-                                )
-                            }
-                            Err(error)
-                                if error.starts_with("session_lineage_broken:")
-                                    || error.starts_with("session_lineage_cycle_detected:") =>
-                            {
-                                None
-                            }
-                            Err(error) => {
-                                return Err(format!(
-                                    "compute session lineage depth for dispatcher tool view failed: {error}"
-                                ));
-                            }
-                        }
-                    }
+                    None => resolve_delegate_child_contract(
+                        &repo,
+                        &session_context.session_id,
+                        self.tool_config.delegate.max_depth,
+                    )?,
                 };
                 return Ok(with_runtime_ready_browser_companion_tools(
                     delegate_child_tool_view_for_contract(
@@ -703,32 +682,11 @@ impl DefaultAppToolDispatcher {
             .load_session_summary_with_legacy_fallback(&session_context.session_id)?
             .is_some_and(|session| session.kind == SessionKind::DelegateChild)
         {
-            let session_graph = OperatorSessionGraph::new(&repo);
-            let subagent_contract = match session_graph.lineage_depth(&session_context.session_id) {
-                Ok(depth) => {
-                    let subagent_profile =
-                        crate::conversation::ConstrainedSubagentProfile::for_child_depth(
-                            depth,
-                            self.tool_config.delegate.max_depth,
-                        );
-                    Some(
-                        crate::conversation::ConstrainedSubagentContractView::from_profile(
-                            subagent_profile,
-                        ),
-                    )
-                }
-                Err(error)
-                    if error.starts_with("session_lineage_broken:")
-                        || error.starts_with("session_lineage_cycle_detected:") =>
-                {
-                    None
-                }
-                Err(error) => {
-                    return Err(format!(
-                        "compute session lineage depth for dispatcher tool view failed: {error}"
-                    ));
-                }
-            };
+            let subagent_contract = resolve_delegate_child_contract(
+                &repo,
+                &session_context.session_id,
+                self.tool_config.delegate.max_depth,
+            )?;
             return Ok(with_runtime_ready_browser_companion_tools(
                 delegate_child_tool_view_for_contract(
                     &self.tool_config,
@@ -1711,6 +1669,7 @@ impl AppToolDispatcher for DefaultAppToolDispatcher {
         }
 
         let effective_tool_config = self.effective_tool_config_for_session(session_context);
+
         #[cfg(feature = "memory-sqlite")]
         if canonical_tool_name == "session_continue" {
             let app_config = self
@@ -1807,19 +1766,8 @@ fn augment_tool_payload_for_kernel(
     payload: serde_json::Value,
     session_context: &SessionContext,
 ) -> AugmentedToolPayload {
-    let augmented_tool_search = inject_tool_search_visibility_context_trusted(
-        canonical_tool_name,
-        payload,
-        session_context,
-        false,
-    );
-    let payload_after_tool_search = augmented_tool_search.payload;
-    let tool_search_trusted = augmented_tool_search.trusted_internal_context;
-    let augmented_runtime_narrowing = inject_runtime_narrowing_context_trusted(
-        payload_after_tool_search,
-        session_context,
-        tool_search_trusted,
-    );
+    let augmented_runtime_narrowing =
+        inject_runtime_narrowing_context_trusted(payload, session_context, false);
     let payload_after_runtime_narrowing = augmented_runtime_narrowing.payload;
     let runtime_narrowing_trusted = augmented_runtime_narrowing.trusted_internal_context;
     let augmented_workspace_root = inject_workspace_root_context_trusted(
@@ -1866,67 +1814,13 @@ fn augment_tool_payload_for_kernel(
     }
 }
 
-fn inject_tool_search_visibility_context_trusted(
-    canonical_tool_name: &str,
-    payload: serde_json::Value,
-    session_context: &SessionContext,
-    preserve_existing_internal_context: bool,
-) -> AugmentedToolPayload {
-    if canonical_tool_name != "tool.search" {
-        return AugmentedToolPayload {
-            payload,
-            trusted_internal_context: preserve_existing_internal_context,
-        };
-    }
-
-    let serde_json::Value::Object(mut object) = payload else {
-        return AugmentedToolPayload {
-            payload,
-            trusted_internal_context: preserve_existing_internal_context,
-        };
-    };
-
-    let mut internal = if preserve_existing_internal_context {
-        object
-            .remove(crate::tools::LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY)
-            .and_then(|value| value.as_object().cloned())
-            .unwrap_or_default()
-    } else {
-        serde_json::Map::new()
-    };
-    let mut tool_search_context = internal
-        .remove(crate::tools::LOONGCLAW_INTERNAL_TOOL_SEARCH_KEY)
-        .and_then(|value| value.as_object().cloned())
-        .unwrap_or_default();
-    let visible_tool_ids = session_context
-        .tool_view
-        .tool_names()
-        .map(|tool_name| serde_json::Value::String(tool_name.to_owned()))
-        .collect::<Vec<_>>();
-    tool_search_context.insert(
-        crate::tools::LOONGCLAW_INTERNAL_TOOL_SEARCH_VISIBLE_TOOL_IDS_KEY.to_owned(),
-        serde_json::Value::Array(visible_tool_ids),
-    );
-    internal.insert(
-        crate::tools::LOONGCLAW_INTERNAL_TOOL_SEARCH_KEY.to_owned(),
-        serde_json::Value::Object(tool_search_context),
-    );
-    object.insert(
-        crate::tools::LOONGCLAW_INTERNAL_TOOL_CONTEXT_KEY.to_owned(),
-        serde_json::Value::Object(internal),
-    );
-    AugmentedToolPayload {
-        payload: serde_json::Value::Object(object),
-        trusted_internal_context: true,
-    }
-}
-
 fn inject_runtime_narrowing_context_trusted(
     payload: serde_json::Value,
     session_context: &SessionContext,
     preserve_existing_internal_context: bool,
 ) -> AugmentedToolPayload {
-    let Some(runtime_narrowing) = session_context.runtime_narrowing.as_ref() else {
+    let resolved_runtime_narrowing = session_context.resolved_runtime_narrowing();
+    let Some(runtime_narrowing) = resolved_runtime_narrowing else {
         return AugmentedToolPayload {
             payload,
             trusted_internal_context: preserve_existing_internal_context,
@@ -4298,16 +4192,16 @@ mod tests {
         let tool_view = runtime_tool_view_for_config(&tool_config);
         let session_context = SessionContext::root_with_tool_view("root-session", tool_view);
         let dispatcher = DefaultAppToolDispatcher::new(memory_config.clone(), tool_config);
-        let kernel_ctx = kernel_context("turn-engine-claw-migrate-auto");
+        let kernel_ctx = kernel_context("turn-engine-config-import-auto");
 
         let result = TurnEngine::new(4)
             .execute_turn_in_context(
                 &provider_tool_turn(
-                    "claw.migrate",
+                    "config.import",
                     json!({}),
                     "root-session",
-                    "turn-claw-migrate-auto",
-                    "call-claw-migrate-auto",
+                    "turn-config-import-auto",
+                    "call-config-import-auto",
                 ),
                 &session_context,
                 &dispatcher,
@@ -4319,10 +4213,10 @@ mod tests {
         let TurnResult::NeedsApproval(requirement) = result else {
             panic!("expected NeedsApproval, got {result:?}");
         };
-        assert_eq!(requirement.tool_name.as_deref(), Some("claw.migrate"));
+        assert_eq!(requirement.tool_name.as_deref(), Some("config.import"));
         assert_eq!(
             requirement.approval_key.as_deref(),
-            Some("tool:claw.migrate")
+            Some("tool:config.import")
         );
         assert_eq!(
             requirement.rule_id.as_str(),
@@ -4337,7 +4231,7 @@ mod tests {
             .expect("load approval request")
             .expect("approval request row");
         assert_eq!(stored.status, ApprovalRequestStatus::Pending);
-        assert_eq!(stored.tool_name, "claw.migrate");
+        assert_eq!(stored.tool_name, "config.import");
         assert_eq!(stored.request_payload_json["execution_kind"], "core");
     }
 
@@ -4364,16 +4258,16 @@ mod tests {
         let tool_view = runtime_tool_view_for_config(&tool_config);
         let session_context = SessionContext::root_with_tool_view("root-session", tool_view);
         let dispatcher = DefaultAppToolDispatcher::new(memory_config.clone(), tool_config);
-        let kernel_ctx = kernel_context("turn-engine-claw-migrate-full");
+        let kernel_ctx = kernel_context("turn-engine-config-import-full");
 
         let result = TurnEngine::new(4)
             .execute_turn_in_context(
                 &provider_tool_turn(
-                    "claw.migrate",
+                    "config.import",
                     json!({}),
                     "root-session",
-                    "turn-claw-migrate-full",
-                    "call-claw-migrate-full",
+                    "turn-config-import-full",
+                    "call-config-import-full",
                 ),
                 &session_context,
                 &dispatcher,
@@ -4388,7 +4282,7 @@ mod tests {
         assert!(
             failure
                 .reason
-                .contains("claw.migrate requires payload.input_path"),
+                .contains("config.import requires payload.input_path"),
             "expected execution to reach the core tool, got: {failure:?}"
         );
     }

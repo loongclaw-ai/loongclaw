@@ -8,9 +8,7 @@ use serde_json::{Value, json};
 
 use super::runtime_config::ToolRuntimeConfig;
 use crate::config::ToolConfig;
-use crate::conversation::ConstrainedSubagentContractView;
-#[cfg(test)]
-use crate::conversation::ConstrainedSubagentProfile;
+use crate::conversation::{ConstrainedSubagentContractView, ConstrainedSubagentProfile};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum ToolExecutionKind {
@@ -469,17 +467,17 @@ fn build_tool_catalog() -> ToolCatalog {
             provider_definition_builder: tool_invoke_definition,
         },
         ToolDescriptor {
-            name: "claw.migrate",
-            provider_name: "claw_migrate",
-            aliases: &[],
-            description: "Migrate legacy Claw configs into native LoongClaw settings",
+            name: "config.import",
+            provider_name: "config_import",
+            aliases: &["claw.migrate", "claw_migrate"],
+            description: "Import legacy agent workspace config, profile, and external-skills mapping state into native LoongClaw settings",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
             exposure: ToolExposureClass::Discoverable,
             visibility_gate: ToolVisibilityGate::Always,
             capability_action_class: CapabilityActionClass::ExecuteExisting,
             policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
-            provider_definition_builder: claw_migrate_definition,
+            provider_definition_builder: config_import_definition,
         },
         ToolDescriptor {
             name: "external_skills.fetch",
@@ -1499,7 +1497,64 @@ pub fn delegate_child_tool_view_for_config(config: &ToolConfig) -> ToolView {
     )
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+pub fn delegate_child_tool_view_for_contract(
+    config: &ToolConfig,
+    subagent_contract: Option<&ConstrainedSubagentContractView>,
+) -> ToolView {
+    let child_tool_allowlist = subagent_contract
+        .map(|contract| contract.child_tool_allowlist.as_slice())
+        .filter(|allowlist| !allowlist.is_empty())
+        .unwrap_or(config.delegate.child_tool_allowlist.as_slice());
+    let allow_shell_in_child = subagent_contract
+        .and_then(|contract| contract.allow_shell_in_child)
+        .unwrap_or(config.delegate.allow_shell_in_child);
+    let allow_delegate = subagent_contract
+        .map(ConstrainedSubagentContractView::allows_child_delegation)
+        .unwrap_or(false);
+    delegate_child_tool_view_with_constraints(
+        config,
+        child_tool_allowlist,
+        allow_shell_in_child,
+        allow_delegate,
+    )
+}
+
+pub fn delegate_child_tool_view_for_runtime_config_and_contract(
+    config: &ToolConfig,
+    runtime_config: &ToolRuntimeConfig,
+    subagent_contract: Option<&ConstrainedSubagentContractView>,
+) -> ToolView {
+    let child_tool_allowlist = subagent_contract
+        .map(|contract| contract.child_tool_allowlist.as_slice())
+        .filter(|allowlist| !allowlist.is_empty())
+        .unwrap_or(config.delegate.child_tool_allowlist.as_slice());
+    let allow_shell_in_child = subagent_contract
+        .and_then(|contract| contract.allow_shell_in_child)
+        .unwrap_or(config.delegate.allow_shell_in_child);
+    let allow_delegate = subagent_contract
+        .map(ConstrainedSubagentContractView::allows_child_delegation)
+        .unwrap_or(false);
+    build_delegate_child_tool_view(
+        config,
+        Some(runtime_config),
+        child_tool_allowlist,
+        allow_shell_in_child,
+        allow_delegate,
+    )
+}
+
+pub fn delegate_child_tool_view_for_profile(
+    config: &ToolConfig,
+    _subagent_profile: Option<ConstrainedSubagentProfile>,
+) -> ToolView {
+    delegate_child_tool_view_with_constraints(
+        config,
+        &config.delegate.child_tool_allowlist,
+        config.delegate.allow_shell_in_child,
+        false,
+    )
+}
+
 pub fn delegate_child_tool_view_for_runtime_config(
     config: &ToolConfig,
     runtime_config: &ToolRuntimeConfig,
@@ -1511,24 +1566,8 @@ pub fn delegate_child_tool_view_for_config_with_delegate(
     config: &ToolConfig,
     allow_delegate: bool,
 ) -> ToolView {
-    build_delegate_child_tool_view(
+    delegate_child_tool_view_with_constraints(
         config,
-        None,
-        &config.delegate.child_tool_allowlist,
-        config.delegate.allow_shell_in_child,
-        allow_delegate,
-    )
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn delegate_child_tool_view_for_runtime_config_with_delegate(
-    config: &ToolConfig,
-    runtime_config: &ToolRuntimeConfig,
-    allow_delegate: bool,
-) -> ToolView {
-    build_delegate_child_tool_view(
-        config,
-        Some(runtime_config),
         &config.delegate.child_tool_allowlist,
         config.delegate.allow_shell_in_child,
         allow_delegate,
@@ -1550,19 +1589,16 @@ pub fn delegate_child_tool_view_with_constraints(
     )
 }
 
-pub fn delegate_child_tool_view_for_contract(
+pub fn delegate_child_tool_view_for_runtime_config_with_delegate(
     config: &ToolConfig,
-    contract: Option<&ConstrainedSubagentContractView>,
+    runtime_config: &ToolRuntimeConfig,
+    allow_delegate: bool,
 ) -> ToolView {
-    let Some(contract) = contract else {
-        return delegate_child_tool_view_for_config_with_delegate(config, false);
-    };
-    let allow_delegate = contract.allows_child_delegation();
-    let allow_shell_in_child = contract.allow_shell_in_child.unwrap_or(false);
-    delegate_child_tool_view_with_constraints(
+    build_delegate_child_tool_view(
         config,
-        &contract.child_tool_allowlist,
-        allow_shell_in_child,
+        Some(runtime_config),
+        &config.delegate.child_tool_allowlist,
+        config.delegate.allow_shell_in_child,
         allow_delegate,
     )
 }
@@ -2137,18 +2173,18 @@ fn tool_invoke_definition(descriptor: &ToolDescriptor) -> Value {
     })
 }
 
-fn claw_migrate_definition(descriptor: &ToolDescriptor) -> Value {
+fn config_import_definition(descriptor: &ToolDescriptor) -> Value {
     json!({
         "type": "function",
         "function": {
             "name": descriptor.provider_name,
-            "description": "Import, discover, plan, merge, apply, and rollback legacy Claw workspace migration into native LoongClaw config.",
+            "description": "Import, discover, plan, merge, apply, and roll back legacy agent workspace config and related external-skills state into native LoongClaw config.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "input_path": {
                         "type": "string",
-                        "description": "Path to the legacy Claw workspace, config root, or portable migration file. Required for all modes except rollback_last_apply."
+                        "description": "Path to the legacy agent workspace, config root, or portable import file. Required for all modes except rollback_last_apply."
                     },
                     "mode": {
                         "type": "string",
@@ -2168,7 +2204,7 @@ fn claw_migrate_definition(descriptor: &ToolDescriptor) -> Value {
                     "source": {
                         "type": "string",
                         "enum": ["auto", "nanobot", "openclaw", "picoclaw", "zeroclaw", "nanoclaw"],
-                        "description": "Optional source hint for plan/apply modes. Defaults to automatic detection."
+                        "description": "Optional claw-family source hint for plan/apply modes. Defaults to automatic detection."
                     },
                     "source_id": {
                         "type": "string",
@@ -2196,7 +2232,7 @@ fn claw_migrate_definition(descriptor: &ToolDescriptor) -> Value {
                     },
                     "output_path": {
                         "type": "string",
-                        "description": "Target config path. Required in apply/apply_selected/rollback_last_apply modes."
+                        "description": "Optional target config path. In plan, when present, config.import reads this path to preview the merged result. Required in apply/apply_selected/rollback_last_apply modes."
                     },
                     "force": {
                         "type": "boolean",
@@ -3480,7 +3516,7 @@ fn delegate_definition(descriptor: &ToolDescriptor) -> Value {
                     "isolation": {
                         "type": "string",
                         "enum": ["shared", "worktree"],
-                        "description": "Optional child workspace isolation mode. `shared` reuses the current workspace root. `worktree` is reserved for a dedicated git worktree-backed child root and currently returns a not-supported error until that runtime lane lands."
+                        "description": "Optional child workspace isolation mode. `shared` reuses the current workspace root. `worktree` uses a dedicated git worktree-backed child root."
                     },
                     "timeout_seconds": {
                         "type": "integer",
@@ -3521,7 +3557,7 @@ fn delegate_async_definition(descriptor: &ToolDescriptor) -> Value {
                     "isolation": {
                         "type": "string",
                         "enum": ["shared", "worktree"],
-                        "description": "Optional child workspace isolation mode. `shared` reuses the current workspace root. `worktree` is reserved for a dedicated git worktree-backed child root and currently returns a not-supported error until that runtime lane lands."
+                        "description": "Optional child workspace isolation mode. `shared` reuses the current workspace root. `worktree` uses a dedicated git worktree-backed child root."
                     },
                     "timeout_seconds": {
                         "type": "integer",
@@ -3686,7 +3722,9 @@ fn tool_argument_hint(name: &str) -> &'static str {
         "feishu.whoami" => "account_id?:string,open_id?:string",
         "tool.search" => "query?:string,exact_tool_id?:string,limit?:integer",
         "tool.invoke" => "tool_id:string,lease:string,arguments:object",
-        "claw.migrate" => "input_path?:string,mode?:string,source?:string",
+        "config.import" => {
+            "input_path?:string,output_path?:string,mode?:string,source?:string,source_id?:string,primary_source_id?:string,safe_profile_merge?:boolean,apply_external_skills_plan?:boolean,force?:boolean"
+        }
         "external_skills.fetch" => {
             "reference?:string,url?:string,approval_granted?:boolean,save_as?:string,max_bytes?:integer"
         }
@@ -3722,10 +3760,17 @@ fn tool_argument_hint(name: &str) -> &'static str {
         "delegate" | "delegate_async" => {
             "task:string,label?:string,profile?:string,isolation?:string,timeout_seconds?:integer"
         }
+        "session_tool_policy_status" | "session_tool_policy_clear" => "session_id?:string",
+        "session_tool_policy_set" => {
+            "session_id?:string,tool_ids?:string[],runtime_narrowing?:object"
+        }
         "session_archive" | "session_cancel" | "session_events" | "session_recover"
         | "session_status" | "session_wait" | "sessions_history" => "session_id:string",
-        "session_continue" => "session_id:string,input:string,timeout_seconds?:integer",
+        "session_search" => {
+            "query:string,session_id?:string,max_results?:integer,include_archived?:boolean,include_turns?:boolean,include_events?:boolean"
+        }
         "sessions_list" => "limit?:integer,offset?:integer,state?:string",
+        "session_continue" => "session_id:string,input:string,timeout_seconds?:integer",
         "sessions_send" => "session_id:string,text:string",
         "web.search" => "query:string,provider?:string,max_results?:integer",
         _ => "",
@@ -4051,10 +4096,16 @@ fn tool_parameter_types(name: &str) -> &'static [(&'static str, &'static str)] {
             ("lease", "string"),
             ("arguments", "object"),
         ],
-        "claw.migrate" => &[
+        "config.import" => &[
             ("input_path", "string"),
+            ("output_path", "string"),
             ("mode", "string"),
             ("source", "string"),
+            ("source_id", "string"),
+            ("primary_source_id", "string"),
+            ("safe_profile_merge", "boolean"),
+            ("apply_external_skills_plan", "boolean"),
+            ("force", "boolean"),
         ],
         "external_skills.fetch" => &[
             ("reference", "string"),
@@ -4243,6 +4294,7 @@ fn tool_required_fields(name: &str) -> &'static [&'static str] {
         "session_archive" | "session_cancel" | "session_events" | "session_recover"
         | "session_status" | "session_wait" | "sessions_history" => &["session_id"],
         "session_continue" => &["session_id", "input"],
+        "session_search" => &["query"],
         "sessions_send" => &["session_id", "text"],
         "web.search" => &["query"],
         _ => &[],
@@ -4290,7 +4342,7 @@ fn tool_tags(name: &str) -> &'static [&'static str] {
         "feishu.whoami" => &["feishu", "identity", "read"],
         "tool.search" => &["core", "discover", "search"],
         "tool.invoke" => &["core", "dispatch", "invoke"],
-        "claw.migrate" => &["migration", "migrate", "config", "legacy"],
+        "config.import" => &["config", "import", "migration", "workspace", "legacy"],
         "external_skills.fetch" => &["skills", "download", "external", "fetch"],
         "external_skills.resolve" => &["skills", "resolve", "normalize", "external"],
         "external_skills.search" => &["skills", "search", "inventory", "discover"],
@@ -4327,6 +4379,7 @@ fn tool_tags(name: &str) -> &'static [&'static str] {
             &["session", "history", "runtime"]
         }
         "session_continue" => &["session", "continue", "delegate", "child"],
+        "session_search" => &["session", "search", "history", "memory", "canonical"],
         "sessions_send" => &["session", "message", "channel"],
         "web.search" => &["web", "search", "discover", "external"],
         _ => &[],
@@ -4633,10 +4686,8 @@ mod tests {
     #[test]
     fn delegate_child_tool_view_for_contract_allows_nested_delegate_when_profile_permits() {
         let config = ToolConfig::default();
-        let contract = ConstrainedSubagentContractView::from_profile(ConstrainedSubagentProfile {
-            role: crate::conversation::ConstrainedSubagentRole::Orchestrator,
-            control_scope: crate::conversation::ConstrainedSubagentControlScope::Children,
-        });
+        let contract =
+            ConstrainedSubagentContractView::from_profile(ConstrainedSubagentProfile::Orchestrator);
         let child_view = delegate_child_tool_view_for_contract(&config, Some(&contract));
 
         assert!(child_view.contains("delegate"));
@@ -4862,11 +4913,25 @@ mod tests {
     }
 
     #[test]
+    fn config_import_alias_resolves_descriptor_governance() {
+        let catalog = tool_catalog();
+        let descriptor = catalog
+            .descriptor("config.import")
+            .expect("config.import descriptor");
+        let expected_policy = governance_profile_for_descriptor(descriptor);
+        let legacy_alias_policy = governance_profile_for_tool_name("claw.migrate");
+
+        assert!(descriptor.aliases.contains(&"claw.migrate"));
+        assert!(descriptor.aliases.contains(&"claw_migrate"));
+        assert_eq!(legacy_alias_policy, expected_policy);
+    }
+
+    #[test]
     fn autonomy_capability_action_is_independent_from_governance_profile() {
         let catalog = tool_catalog();
         let migrate = catalog
-            .descriptor("claw.migrate")
-            .expect("claw.migrate descriptor");
+            .descriptor("config.import")
+            .expect("config.import descriptor");
         let provider_switch = catalog
             .descriptor("provider.switch")
             .expect("provider.switch descriptor");
@@ -4898,7 +4963,7 @@ mod tests {
             ("tool.search", CapabilityActionClass::Discover),
             ("tool_search", CapabilityActionClass::Discover),
             ("tool.invoke", CapabilityActionClass::ExecuteExisting),
-            ("claw.migrate", CapabilityActionClass::ExecuteExisting),
+            ("config.import", CapabilityActionClass::ExecuteExisting),
             (
                 "external_skills.fetch",
                 CapabilityActionClass::CapabilityFetch,
@@ -4924,7 +4989,6 @@ mod tests {
             ),
             ("session_archive", CapabilityActionClass::SessionMutation),
             ("session_cancel", CapabilityActionClass::SessionMutation),
-            ("session_continue", CapabilityActionClass::SessionMutation),
             ("session_events", CapabilityActionClass::ExecuteExisting),
             (
                 "session_tool_policy_status",

@@ -8,11 +8,14 @@ use serde_json::Value;
 
 use crate::CliResult;
 use crate::KernelContext;
+#[cfg(feature = "memory-sqlite")]
+use crate::operator::delegate_runtime::derive_subagent_profile_from_lineage;
 use crate::runtime_self_continuity::{self, RuntimeSelfContinuity};
 use crate::tools::runtime_config::ToolRuntimeNarrowing;
 use crate::tools::{
     ToolView, delegate_child_tool_view_for_config,
     delegate_child_tool_view_for_config_with_delegate, delegate_child_tool_view_for_contract,
+    delegate_child_tool_view_with_constraints,
 };
 
 use super::super::memory;
@@ -113,11 +116,9 @@ impl SessionContext {
     pub fn with_runtime_narrowing(mut self, runtime_narrowing: ToolRuntimeNarrowing) -> Self {
         if !runtime_narrowing.is_empty() {
             self.runtime_narrowing = Some(runtime_narrowing.clone());
-            if let Some(subagent_execution) = self.subagent_execution.as_mut() {
-                subagent_execution.runtime_narrowing = runtime_narrowing.clone();
-            }
             let contract = self.subagent_contract.take().unwrap_or_default();
             self.subagent_contract = Some(contract.with_runtime_narrowing(runtime_narrowing));
+            self.synchronize_runtime_narrowing_views();
         }
         self
     }
@@ -127,18 +128,43 @@ impl SessionContext {
         mut self,
         subagent_execution: ConstrainedSubagentExecution,
     ) -> Self {
+        let existing_contract = self.subagent_contract.take();
+        let existing_workspace_root = self.workspace_root.clone();
+        let existing_identity = existing_contract
+            .as_ref()
+            .and_then(ConstrainedSubagentContractView::resolved_identity)
+            .cloned();
+        let existing_profile = existing_contract
+            .as_ref()
+            .and_then(|contract| contract.profile);
+        let existing_runtime_narrowing = existing_contract
+            .as_ref()
+            .map(|contract| contract.runtime_narrowing.clone())
+            .filter(|runtime_narrowing| !runtime_narrowing.is_empty());
         let mut subagent_execution = subagent_execution.with_resolved_profile();
         if subagent_execution.identity.is_none()
-            && let Some(identity) = self
-                .subagent_contract
-                .as_ref()
-                .and_then(ConstrainedSubagentContractView::resolved_identity)
-                .cloned()
+            && let Some(identity) = existing_identity
         {
             subagent_execution.identity = Some(identity);
         }
-        self.subagent_contract = Some(subagent_execution.contract_view());
+        let mut merged_contract = subagent_execution.contract_view();
+        if merged_contract.profile.is_none()
+            && let Some(profile) = existing_profile
+        {
+            merged_contract = merged_contract.with_profile(profile);
+        }
+        if merged_contract.runtime_narrowing.is_empty()
+            && let Some(runtime_narrowing) = existing_runtime_narrowing
+        {
+            merged_contract = merged_contract.with_runtime_narrowing(runtime_narrowing);
+        }
+        if self.workspace_root.is_none() {
+            let execution_workspace_root = subagent_execution.workspace_root.clone();
+            self.workspace_root = execution_workspace_root.or(existing_workspace_root);
+        }
+        self.subagent_contract = Some(merged_contract);
         self.subagent_execution = Some(subagent_execution);
+        self.synchronize_runtime_narrowing_views();
         self
     }
 
@@ -149,6 +175,7 @@ impl SessionContext {
         }
         let contract = self.subagent_contract.take().unwrap_or_default();
         self.subagent_contract = Some(contract.with_profile(subagent_profile));
+        self.synchronize_runtime_narrowing_views();
         self
     }
 
@@ -165,7 +192,12 @@ impl SessionContext {
         }
         let contract = self.subagent_contract.take().unwrap_or_default();
         self.subagent_contract = Some(contract.with_identity(subagent_identity));
+        self.synchronize_runtime_narrowing_views();
         self
+    }
+
+    pub fn resolved_runtime_narrowing(&self) -> Option<&ToolRuntimeNarrowing> {
+        self.resolve_runtime_narrowing_ref()
     }
 
     pub fn resolved_subagent_profile(&self) -> Option<ConstrainedSubagentProfile> {
@@ -196,32 +228,21 @@ impl SessionContext {
             .as_ref()
             .map(ConstrainedSubagentExecution::contract_view)
             .or(self.subagent_contract.clone())?;
-        if let Some(stored_contract) = self.subagent_contract.as_ref() {
-            if contract.profile.is_none()
-                && let Some(profile) = stored_contract.profile
-            {
-                contract = contract.with_profile(profile);
-            }
-            if contract.runtime_narrowing.is_empty()
-                && !stored_contract.runtime_narrowing.is_empty()
-            {
-                contract =
-                    contract.with_runtime_narrowing(stored_contract.runtime_narrowing.clone());
-            }
+        if let Some(stored_contract) = self.subagent_contract.as_ref()
+            && contract.profile.is_none()
+            && let Some(profile) = stored_contract.profile
+        {
+            contract = contract.with_profile(profile);
+        }
+        let resolved_runtime_narrowing = self.resolved_runtime_narrowing().cloned();
+        if let Some(runtime_narrowing) = resolved_runtime_narrowing {
+            contract = contract.with_runtime_narrowing(runtime_narrowing);
         }
         (!contract.is_empty()).then_some(contract)
     }
 
     pub fn subagent_runtime_narrowing(&self) -> Option<&ToolRuntimeNarrowing> {
-        self.subagent_execution
-            .as_ref()
-            .map(|execution| &execution.runtime_narrowing)
-            .or_else(|| {
-                self.subagent_contract
-                    .as_ref()
-                    .map(|contract| &contract.runtime_narrowing)
-            })
-            .filter(|narrowing| !narrowing.is_empty())
+        self.resolved_runtime_narrowing()
     }
 
     #[must_use]
@@ -234,6 +255,55 @@ impl SessionContext {
         }
         self
     }
+
+    fn resolve_runtime_narrowing_owned(&self) -> Option<ToolRuntimeNarrowing> {
+        let resolved_runtime_narrowing = self.resolve_runtime_narrowing_ref();
+        resolved_runtime_narrowing.cloned()
+    }
+
+    fn synchronize_runtime_narrowing_views(&mut self) {
+        let resolved_runtime_narrowing = self.resolve_runtime_narrowing_owned();
+        let execution_runtime_narrowing = resolved_runtime_narrowing.clone().unwrap_or_default();
+        let contract_runtime_narrowing = execution_runtime_narrowing.clone();
+
+        self.runtime_narrowing = resolved_runtime_narrowing;
+        if let Some(subagent_execution) = self.subagent_execution.as_mut() {
+            subagent_execution.runtime_narrowing = execution_runtime_narrowing;
+        }
+        if let Some(subagent_contract) = self.subagent_contract.as_mut() {
+            subagent_contract.runtime_narrowing = contract_runtime_narrowing;
+        }
+    }
+
+    fn resolve_runtime_narrowing_ref(&self) -> Option<&ToolRuntimeNarrowing> {
+        let session_runtime_narrowing =
+            non_empty_runtime_narrowing_ref(self.runtime_narrowing.as_ref());
+        if let Some(session_runtime_narrowing) = session_runtime_narrowing {
+            return Some(session_runtime_narrowing);
+        }
+
+        let execution_runtime_narrowing_source = self
+            .subagent_execution
+            .as_ref()
+            .map(|execution| &execution.runtime_narrowing);
+        let execution_runtime_narrowing =
+            non_empty_runtime_narrowing_ref(execution_runtime_narrowing_source);
+        if let Some(execution_runtime_narrowing) = execution_runtime_narrowing {
+            return Some(execution_runtime_narrowing);
+        }
+
+        let contract_runtime_narrowing_source = self
+            .subagent_contract
+            .as_ref()
+            .map(|contract| &contract.runtime_narrowing);
+        non_empty_runtime_narrowing_ref(contract_runtime_narrowing_source)
+    }
+}
+
+fn non_empty_runtime_narrowing_ref(
+    runtime_narrowing: Option<&ToolRuntimeNarrowing>,
+) -> Option<&ToolRuntimeNarrowing> {
+    runtime_narrowing.filter(|runtime_narrowing| !runtime_narrowing.is_empty())
 }
 
 fn normalize_session_id(session_id: String) -> String {
@@ -246,38 +316,43 @@ fn normalize_session_id(session_id: String) -> String {
 }
 
 #[cfg(feature = "memory-sqlite")]
-fn load_delegate_execution_contract(
-    repo: &SessionRepository,
-    session_id: &str,
-) -> Result<Option<ConstrainedSubagentExecution>, String> {
-    let contract = load_delegate_contract(repo, session_id)?;
-    let execution = contract.map(|(execution, _profile)| execution);
-    Ok(execution)
+fn open_session_repository(config: &LoongClawConfig) -> CliResult<SessionRepository> {
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    SessionRepository::new(&memory_config)
+        .map_err(|error| format!("open session repository failed: {error}"))
 }
 
 #[cfg(feature = "memory-sqlite")]
-fn derive_subagent_profile_from_lineage(
-    repo: &SessionRepository,
-    session_id: &str,
-    max_depth: usize,
-) -> Result<Option<ConstrainedSubagentProfile>, String> {
-    let depth = match repo.session_lineage_depth(session_id) {
-        Ok(depth) => depth,
-        Err(error)
-            if error.starts_with("session_lineage_broken:")
-                || error.starts_with("session_lineage_cycle_detected:") =>
-        {
-            return Ok(None);
+fn apply_runtime_self_continuity(
+    session_context: SessionContext,
+    runtime_self_continuity: Option<RuntimeSelfContinuity>,
+) -> SessionContext {
+    match runtime_self_continuity {
+        Some(runtime_self_continuity) => {
+            session_context.with_runtime_self_continuity(runtime_self_continuity)
         }
-        Err(error) => {
-            return Err(format!(
-                "compute session lineage depth for subagent profile failed: {error}"
-            ));
-        }
+        None => session_context,
+    }
+}
+
+fn apply_delegate_session_contract(
+    session_context: SessionContext,
+    profile: Option<DelegateBuiltinProfile>,
+    workspace_root: Option<PathBuf>,
+    runtime_narrowing: Option<ToolRuntimeNarrowing>,
+    runtime_self_continuity: Option<RuntimeSelfContinuity>,
+) -> SessionContext {
+    let session_context = match profile {
+        Some(profile) => session_context.with_profile(profile),
+        None => session_context,
     };
-    Ok(Some(ConstrainedSubagentProfile::for_child_depth(
-        depth, max_depth,
-    )))
+    let session_context = match workspace_root {
+        Some(workspace_root) => session_context.with_workspace_root(workspace_root),
+        None => session_context,
+    };
+    let runtime_narrowing = runtime_narrowing.unwrap_or_default();
+    let session_context = session_context.with_runtime_narrowing(runtime_narrowing);
+    apply_runtime_self_continuity(session_context, runtime_self_continuity)
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -312,15 +387,20 @@ fn merge_effective_runtime_narrowing(
     let policy_runtime_narrowing = session_tool_policy.and_then(|policy| {
         (!policy.runtime_narrowing.is_empty()).then_some(policy.runtime_narrowing.clone())
     });
+    crate::tools::runtime_config::merge_runtime_narrowing_sources(
+        delegate_runtime_narrowing,
+        policy_runtime_narrowing,
+    )
+}
 
-    match (delegate_runtime_narrowing, policy_runtime_narrowing) {
-        (Some(delegate_runtime_narrowing), Some(policy_runtime_narrowing)) => {
-            Some(delegate_runtime_narrowing.intersect(&policy_runtime_narrowing))
-        }
-        (Some(delegate_runtime_narrowing), None) => Some(delegate_runtime_narrowing),
-        (None, Some(policy_runtime_narrowing)) => Some(policy_runtime_narrowing),
-        (None, None) => None,
-    }
+#[cfg(feature = "memory-sqlite")]
+fn load_delegate_execution_contract(
+    repo: &SessionRepository,
+    session_id: &str,
+) -> Result<Option<ConstrainedSubagentExecution>, String> {
+    let contract = load_delegate_contract(repo, session_id)?;
+    let execution = contract.map(|(execution, _profile)| execution);
+    Ok(execution)
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -359,6 +439,18 @@ fn load_delegate_contract(
 }
 
 #[cfg(feature = "memory-sqlite")]
+fn load_delegate_runtime_narrowing(
+    repo: &SessionRepository,
+    session_id: &str,
+) -> Result<Option<ToolRuntimeNarrowing>, String> {
+    Ok(
+        load_delegate_execution_contract(repo, session_id)?.and_then(|execution| {
+            (!execution.runtime_narrowing.is_empty()).then_some(execution.runtime_narrowing)
+        }),
+    )
+}
+
+#[cfg(feature = "memory-sqlite")]
 fn load_delegate_workspace_root(
     repo: &SessionRepository,
     session_id: &str,
@@ -385,16 +477,7 @@ struct PersistedSessionSnapshot {
     subagent_execution: Option<ConstrainedSubagentExecution>,
     session_tool_policy: Option<SessionToolPolicyRecord>,
     delegate_runtime_narrowing: Option<ToolRuntimeNarrowing>,
-    delegate_profile: Option<DelegateBuiltinProfile>,
-    workspace_root: Option<PathBuf>,
     runtime_self_continuity: Option<RuntimeSelfContinuity>,
-}
-
-#[cfg(feature = "memory-sqlite")]
-fn open_session_repository(config: &LoongClawConfig) -> CliResult<SessionRepository> {
-    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
-    SessionRepository::new(&memory_config)
-        .map_err(|error| format!("open session repository failed: {error}"))
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -417,20 +500,7 @@ fn load_persisted_session_snapshot(
             None
         };
         let delegate_runtime_narrowing = if is_delegate_child {
-            subagent_execution.as_ref().and_then(|execution| {
-                (!execution.runtime_narrowing.is_empty())
-                    .then_some(execution.runtime_narrowing.clone())
-            })
-        } else {
-            None
-        };
-        let delegate_profile = if is_delegate_child {
-            load_delegate_profile(repo, session_id)?
-        } else {
-            None
-        };
-        let workspace_root = if is_delegate_child {
-            load_delegate_workspace_root(repo, session_id)?
+            load_delegate_runtime_narrowing(repo, session_id)?
         } else {
             None
         };
@@ -443,8 +513,6 @@ fn load_persisted_session_snapshot(
             subagent_execution,
             session_tool_policy,
             delegate_runtime_narrowing,
-            delegate_profile,
-            workspace_root,
             runtime_self_continuity,
         };
         return Ok(Some(snapshot));
@@ -465,19 +533,7 @@ fn load_persisted_session_snapshot(
         None
     };
     let delegate_runtime_narrowing = if is_delegate_child {
-        subagent_execution.as_ref().and_then(|execution| {
-            (!execution.runtime_narrowing.is_empty()).then_some(execution.runtime_narrowing.clone())
-        })
-    } else {
-        None
-    };
-    let delegate_profile = if is_delegate_child {
-        load_delegate_profile(repo, session_id)?
-    } else {
-        None
-    };
-    let workspace_root = if is_delegate_child {
-        load_delegate_workspace_root(repo, session_id)?
+        load_delegate_runtime_narrowing(repo, session_id)?
     } else {
         None
     };
@@ -490,11 +546,78 @@ fn load_persisted_session_snapshot(
         subagent_execution,
         session_tool_policy,
         delegate_runtime_narrowing,
-        delegate_profile,
-        workspace_root,
         runtime_self_continuity,
     };
     Ok(Some(snapshot))
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn load_persisted_session_context(
+    config: &LoongClawConfig,
+    session_id: &str,
+    tool_view: &ToolView,
+) -> Result<Option<SessionContext>, String> {
+    let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+    let Ok(repo) = SessionRepository::new(&memory_config) else {
+        return Ok(None);
+    };
+
+    let loaded_session = repo
+        .load_session(session_id)
+        .map_err(|error| format!("load session context failed: {error}"))?;
+    if let Some(session) = loaded_session {
+        let runtime_self_continuity = load_session_runtime_self_continuity(&repo, session_id)?;
+        if let Some(parent_session_id) = session.parent_session_id {
+            let runtime_narrowing = load_delegate_runtime_narrowing(&repo, session_id)?;
+            let profile = load_delegate_profile(&repo, session_id)?;
+            let workspace_root = load_delegate_workspace_root(&repo, session_id)?;
+            let session_context =
+                SessionContext::child(session.session_id, parent_session_id, tool_view.clone());
+            let session_context = apply_delegate_session_contract(
+                session_context,
+                profile,
+                workspace_root,
+                runtime_narrowing,
+                runtime_self_continuity,
+            );
+            return Ok(Some(session_context));
+        }
+
+        let session_context =
+            SessionContext::root_with_tool_view(session.session_id, tool_view.clone());
+        let session_context =
+            apply_runtime_self_continuity(session_context, runtime_self_continuity);
+        return Ok(Some(session_context));
+    }
+
+    let loaded_summary = repo
+        .load_session_summary_with_legacy_fallback(session_id)
+        .map_err(|error| format!("load legacy session context failed: {error}"))?;
+    let Some(summary) = loaded_summary else {
+        return Ok(None);
+    };
+
+    let runtime_self_continuity = load_session_runtime_self_continuity(&repo, session_id)?;
+    if let Some(parent_session_id) = summary.parent_session_id {
+        let runtime_narrowing = load_delegate_runtime_narrowing(&repo, session_id)?;
+        let profile = load_delegate_profile(&repo, session_id)?;
+        let workspace_root = load_delegate_workspace_root(&repo, session_id)?;
+        let session_context =
+            SessionContext::child(summary.session_id, parent_session_id, tool_view.clone());
+        let session_context = apply_delegate_session_contract(
+            session_context,
+            profile,
+            workspace_root,
+            runtime_narrowing,
+            runtime_self_continuity,
+        );
+        return Ok(Some(session_context));
+    }
+
+    let session_context =
+        SessionContext::root_with_tool_view(summary.session_id, tool_view.clone());
+    let session_context = apply_runtime_self_continuity(session_context, runtime_self_continuity);
+    Ok(Some(session_context))
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -510,7 +633,8 @@ fn build_base_tool_view_from_snapshot(
         ));
     };
 
-    if snapshot.is_delegate_child {
+    let is_delegate_child = snapshot.parent_session_id.is_some() || snapshot.is_delegate_child;
+    if is_delegate_child {
         if let Some(subagent_execution) = snapshot.subagent_execution.as_ref() {
             let derived_contract = subagent_execution.contract_view();
             return Ok(delegate_child_tool_view_for_contract(
@@ -537,79 +661,6 @@ fn build_base_tool_view_from_snapshot(
     Ok(crate::tools::runtime_tool_view_from_loongclaw_config(
         config,
     ))
-}
-
-#[cfg(feature = "memory-sqlite")]
-fn build_session_context_from_snapshot(
-    config: &LoongClawConfig,
-    repo: &SessionRepository,
-    session_id: &str,
-    base_tool_view: ToolView,
-    snapshot: PersistedSessionSnapshot,
-) -> CliResult<SessionContext> {
-    let tool_view = apply_session_tool_policy_to_tool_view(
-        base_tool_view,
-        snapshot.session_tool_policy.as_ref(),
-    );
-    let runtime_narrowing = merge_effective_runtime_narrowing(
-        snapshot.delegate_runtime_narrowing.clone(),
-        snapshot.session_tool_policy.as_ref(),
-    );
-    let mut session_context = match snapshot.parent_session_id.clone() {
-        Some(parent_session_id) => {
-            SessionContext::child(snapshot.session_id.clone(), parent_session_id, tool_view)
-        }
-        None => SessionContext::root_with_tool_view(snapshot.session_id.clone(), tool_view),
-    };
-    if let Some(profile) = snapshot.delegate_profile {
-        session_context = session_context.with_profile(profile);
-    }
-    if let Some(workspace_root) = snapshot.workspace_root {
-        session_context = session_context.with_workspace_root(workspace_root);
-    }
-    if snapshot.is_delegate_child {
-        if let Some(label) = snapshot.label {
-            session_context = session_context.with_subagent_identity(ConstrainedSubagentIdentity {
-                nickname: Some(label),
-                specialization: None,
-            });
-        }
-        if let Some(subagent_execution) = snapshot.subagent_execution {
-            session_context = session_context.with_subagent_execution(subagent_execution);
-        } else if let Some(subagent_profile) =
-            derive_subagent_profile_from_lineage(repo, session_id, config.tools.delegate.max_depth)?
-        {
-            session_context = session_context.with_subagent_profile(subagent_profile);
-        }
-    }
-    if let Some(runtime_narrowing) = runtime_narrowing {
-        session_context = session_context.with_runtime_narrowing(runtime_narrowing);
-    }
-    if let Some(runtime_self_continuity) = snapshot.runtime_self_continuity {
-        session_context = session_context.with_runtime_self_continuity(runtime_self_continuity);
-    }
-    Ok(session_context)
-}
-
-#[cfg(feature = "memory-sqlite")]
-fn load_persisted_session_context(
-    config: &LoongClawConfig,
-    session_id: &str,
-    tool_view: &ToolView,
-) -> CliResult<Option<SessionContext>> {
-    let repo = open_session_repository(config)?;
-    let snapshot = load_persisted_session_snapshot(&repo, session_id)?;
-    let Some(snapshot) = snapshot else {
-        return Ok(None);
-    };
-    let session_context = build_session_context_from_snapshot(
-        config,
-        &repo,
-        session_id,
-        tool_view.clone(),
-        snapshot,
-    )?;
-    Ok(Some(session_context))
 }
 
 #[derive(Clone)]
@@ -1317,30 +1368,67 @@ where
             let snapshot = load_persisted_session_snapshot(&repo, session_id)?;
             let base_tool_view =
                 build_base_tool_view_from_snapshot(config, &repo, session_id, snapshot.as_ref())?;
+            let session_tool_policy = snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.session_tool_policy.as_ref());
+            let tool_view =
+                apply_session_tool_policy_to_tool_view(base_tool_view, session_tool_policy);
 
             if let Some(snapshot) = snapshot {
-                return build_session_context_from_snapshot(
-                    config,
-                    &repo,
-                    session_id,
-                    base_tool_view,
-                    snapshot,
+                let runtime_narrowing = merge_effective_runtime_narrowing(
+                    snapshot.delegate_runtime_narrowing.clone(),
+                    snapshot.session_tool_policy.as_ref(),
                 );
+                let mut session_context = match snapshot.parent_session_id {
+                    Some(parent_session_id) => {
+                        SessionContext::child(snapshot.session_id, parent_session_id, tool_view)
+                    }
+                    None => SessionContext::root_with_tool_view(snapshot.session_id, tool_view),
+                };
+                if snapshot.is_delegate_child {
+                    if let Some(label) = snapshot.label {
+                        session_context =
+                            session_context.with_subagent_identity(ConstrainedSubagentIdentity {
+                                nickname: Some(label),
+                                specialization: None,
+                            });
+                    }
+                    if let Some(delegate_profile) = load_delegate_profile(&repo, session_id)? {
+                        session_context = session_context.with_profile(delegate_profile);
+                    }
+                    if let Some(workspace_root) = load_delegate_workspace_root(&repo, session_id)? {
+                        session_context = session_context.with_workspace_root(workspace_root);
+                    }
+                    if let Some(subagent_execution) = snapshot.subagent_execution {
+                        session_context =
+                            session_context.with_subagent_execution(subagent_execution);
+                    } else if let Some(subagent_profile) = derive_subagent_profile_from_lineage(
+                        &repo,
+                        session_id,
+                        config.tools.delegate.max_depth,
+                    )? {
+                        session_context = session_context.with_subagent_profile(subagent_profile);
+                    }
+                }
+                if let Some(runtime_narrowing) = runtime_narrowing {
+                    session_context = session_context.with_runtime_narrowing(runtime_narrowing);
+                }
+                if let Some(runtime_self_continuity) = snapshot.runtime_self_continuity {
+                    session_context =
+                        session_context.with_runtime_self_continuity(runtime_self_continuity);
+                }
+                return Ok(session_context);
             }
 
-            Ok(SessionContext::root_with_tool_view(
-                session_id,
-                base_tool_view,
-            ))
+            Ok(SessionContext::root_with_tool_view(session_id, tool_view))
         }
 
         #[cfg(not(feature = "memory-sqlite"))]
-        {
-            let tool_view = self.tool_view(config, session_id, _binding)?;
-            Ok(SessionContext::root_with_tool_view(session_id, tool_view))
-        }
-    }
+        let tool_view = self.tool_view(config, session_id, _binding)?;
 
+        #[cfg(not(feature = "memory-sqlite"))]
+        Ok(SessionContext::root_with_tool_view(session_id, tool_view))
+    }
     fn tool_view(
         &self,
         config: &LoongClawConfig,
@@ -1349,16 +1437,60 @@ where
     ) -> CliResult<ToolView> {
         #[cfg(feature = "memory-sqlite")]
         {
-            let repo = open_session_repository(config)?;
-            let snapshot = load_persisted_session_snapshot(&repo, session_id)?;
-            let base_tool_view =
-                build_base_tool_view_from_snapshot(config, &repo, session_id, snapshot.as_ref())?;
-            let session_tool_policy = snapshot
-                .as_ref()
-                .and_then(|snapshot| snapshot.session_tool_policy.as_ref());
-            Ok(apply_session_tool_policy_to_tool_view(
-                base_tool_view,
-                session_tool_policy,
+            let memory_config = MemoryRuntimeConfig::from_memory_config(&config.memory);
+            if let Ok(repo) = SessionRepository::new(&memory_config) {
+                if let Some(session) = repo
+                    .load_session(session_id)
+                    .map_err(|error| format!("load session tool-view context failed: {error}"))?
+                {
+                    if session.parent_session_id.is_some() {
+                        if let Some(execution) =
+                            load_delegate_execution_contract(&repo, session_id)?
+                        {
+                            let allow_nested_delegate = execution.depth < execution.max_depth;
+                            return Ok(delegate_child_tool_view_with_constraints(
+                                &config.tools,
+                                &execution.child_tool_allowlist,
+                                execution.allow_shell_in_child,
+                                allow_nested_delegate,
+                            ));
+                        }
+
+                        let depth = match repo.session_lineage_depth(session_id) {
+                            Ok(depth) => depth,
+                            Err(error)
+                                if error.starts_with("session_lineage_broken:")
+                                    || error.starts_with("session_lineage_cycle_detected:") =>
+                            {
+                                return Ok(delegate_child_tool_view_for_config_with_delegate(
+                                    &config.tools,
+                                    false,
+                                ));
+                            }
+                            Err(error) => {
+                                return Err(format!(
+                                    "compute session lineage depth for tool view failed: {error}"
+                                ));
+                            }
+                        };
+                        let allow_nested_delegate = depth < config.tools.delegate.max_depth;
+                        return Ok(delegate_child_tool_view_for_config_with_delegate(
+                            &config.tools,
+                            allow_nested_delegate,
+                        ));
+                    }
+                } else if repo
+                    .load_session_summary_with_legacy_fallback(session_id)
+                    .map_err(|error| {
+                        format!("load legacy session tool-view context failed: {error}")
+                    })?
+                    .is_some_and(|session| session.kind == SessionKind::DelegateChild)
+                {
+                    return Ok(delegate_child_tool_view_for_config(&config.tools));
+                }
+            }
+            Ok(crate::tools::runtime_tool_view_from_loongclaw_config(
+                config,
             ))
         }
 
@@ -1615,13 +1747,10 @@ fn delegate_child_runtime_contract_prompt_summary(
     session_context: &SessionContext,
 ) -> Option<String> {
     session_context.parent_session_id.as_ref()?;
+    session_context.subagent_runtime_narrowing()?;
     let subagent_contract = session_context.resolved_subagent_contract();
-    let subagent_contract = subagent_contract?;
-    if subagent_contract.runtime_narrowing.is_empty() {
-        return None;
-    }
     crate::tools::runtime_config::ToolRuntimeConfig::from_loongclaw_config(config, None)
-        .delegate_child_prompt_summary(Some(&subagent_contract))
+        .delegate_child_prompt_summary(subagent_contract.as_ref())
 }
 
 fn delegate_child_profile_prompt_summary(session_context: &SessionContext) -> Option<String> {
