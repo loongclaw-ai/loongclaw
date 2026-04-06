@@ -26,7 +26,8 @@ explicit promotion or rejection decision.
       runtime state or changing the persisted run schema.
 - [ ] Product docs describe `runtime-experiment` as the record layer above
       `runtime-snapshot` and `runtime-restore`, not as an autonomous optimizer
-      or automatic promotion system.
+      or automatic promotion system, and as a lower layer than any future
+      `runtime-evaluator` surface.
 
 ## Out of Scope
 
@@ -35,3 +36,4 @@ explicit promotion or rejection decision.
 - Automatic promotion, rollback, or branch management policy
 - Snapshot indexing, artifact discovery, or bundled archive management
 - Evaluator pipelines, dashboards, or autonomous skill-optimization loops
+- Keep or discard automation beyond recording the experiment outcome itself

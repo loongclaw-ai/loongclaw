@@ -338,6 +338,7 @@ Acceptance criteria:
 - shell/file/web/browser tools obey policy constraints and emit auditable outcomes
 - advertised tools match the actually invokable runtime surface for the current config and compiled features
 - channel/provider modules can be toggled by feature flags without core code edits
+- future evaluator, archive, or learning-adjacent surfaces stay read-only until reviewed promotion explicitly permits a lower-layer change
 
 ## Quality Gate Matrix (Always On)
 
@@ -417,6 +418,123 @@ Options:
 - Combine with D2 (persistent sink replaces in-memory for production)
 
 Trade-off: if D2 lands, this becomes test-only infrastructure. May not be worth optimizing independently.
+
+The following reference-driven items stay public and outcome-focused here. Any
+detailed competitive analysis should live in issue threads or the separate
+knowledge-base repository instead of expanding the main repository docs.
+
+### R0: Governed skill registry with progressive disclosure
+
+LoongClaw already has managed skills, bundled skills, and truth-based tool
+advertising, but it still lacks one canonical registry contract that separates
+discovery metadata, install/acquisition metadata, and assistant-visible
+invocation through progressive disclosure.
+
+Candidates:
+- unify bundled, managed, and fetched skills under one registry view with
+  provenance, pack identity, and capability requirements
+- expose discovery/install metadata before invocation surfaces become
+  assistant-visible
+- keep invocation truth derived from runtime policy rather than static metadata
+- align future product-mode guidance and skill acquisition flows around the
+  same registry contract
+
+Trade-off: this raises the product quality of the skill surface, but only if it
+stays truthful and does not collapse discovery, install, and invocation into
+one prompt-heavy blob.
+
+Tracking: #1014
+
+### R1: Governed external memory provider registry
+
+The current memory lane is stronger on continuity boundaries than it is on
+provider pluggability. LoongClaw now has runtime-self continuity, durable
+recall, and context-engine seams, but still lacks one governed contract for
+external memory providers with explicit source identity, scope, provenance, and
+policy-audited recall injection.
+
+Candidates:
+- add a memory-provider registry with typed provider metadata and capability
+  declarations
+- record provenance on recalled blocks so operators can tell which provider and
+  scope produced each advisory memory injection
+- keep runtime-self guidance and resolved runtime identity above all provider
+  recall paths
+- add recall evaluation fixtures so provider quality can be compared before
+  promotion
+
+Trade-off: external provider flexibility improves competitive parity, but a
+weakly governed import path would erode LoongClaw's identity and policy
+boundaries.
+
+Tracking: #1015
+
+### R2: Runtime evaluator lane above experiment and capability records
+
+`runtime-experiment` and `runtime-capability` now provide the record and
+planning layers, but operators still lack one staged evaluator surface that can
+record smoke, canary, and full evidence before a promotion decision.
+
+Candidates:
+- add a `runtime-evaluator` artifact and CLI surface for staged evaluation runs
+- support explicit `keep`, `discard`, and `retry` outcomes instead of implied
+  success heuristics
+- keep evaluator artifacts read-only and evidence-first, with no automatic
+  mutation in the first slice
+- reuse benchmark fixtures where possible so evaluator suites and benchmark
+  suites do not drift apart
+
+Trade-off: this adds one more operator-facing layer, but it closes the current
+gap between experiment records and any later promotion loop.
+
+Tracking: #1019, #1016
+
+### R3: Feedback trajectory artifacts for hindsight and learning-ready loops
+
+The runtime now emits richer audit and experiment evidence, but it still does
+not capture one normalized feedback trajectory artifact that preserves user
+corrections, tool outcomes, next-state transitions, and operator notes in one
+learning-ready record.
+
+Candidates:
+- define a per-run or per-turn feedback artifact with stable references to
+  prompts, tool calls, and observed outcomes
+- separate evaluative signals from directive or hindsight signals instead of
+  collapsing them into one opaque score
+- keep the first slice offline and reviewable rather than jumping directly to
+  online RL or automatic policy mutation
+- make the artifact reusable by future evaluator, hindsight, and retrieval
+  studies
+
+Trade-off: if this stays too implicit, later evaluator and learning work will
+depend on ad-hoc log scraping; if it grows too ambitious too early, it will
+pull LoongClaw into premature online-training complexity.
+
+Tracking: #1017
+
+### R4: Keep evaluator/trainer separation above live serving
+
+If LoongClaw later moves from evidence-first evaluation into learning loops, it
+should preserve the same separation highlighted by OpenClaw-RL: live serving,
+feedback capture, evaluator/judge execution, and trainer execution should
+remain distinct lanes with reviewed promotion as the only path back into active
+runtime behavior.
+
+Candidates:
+- define a control-plane contract that consumes evaluator and feedback artifacts
+  rather than scraping raw logs ad hoc
+- keep trainer work async or offline instead of coupling it to the live turn
+  path
+- preserve rollback, auditability, and replayability as first-class acceptance
+  gates
+- keep kernel/policy/audit mutation explicitly out of scope for the initial
+  learning architecture
+
+Trade-off: this makes the long-term learning story more complex on paper, but
+it prevents future optimization work from bypassing LoongClaw's governance
+model.
+
+Tracking: #1018
 
 ### D6: Retire governed/direct runtime drift
 

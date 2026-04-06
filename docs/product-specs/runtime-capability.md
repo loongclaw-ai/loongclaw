@@ -40,8 +40,8 @@ experiment should be crystallized into a reusable lower-layer capability.
       runtime state.
 - [ ] Product docs describe `runtime-capability` as the governed review layer
       above `runtime-experiment`, with `index`/readiness and `plan` forming the
-      dry-run planning ladder below any future promotion executor or automated
-      promotion loop.
+      dry-run planning ladder below any future `runtime-evaluator`, promotion
+      executor, or automated promotion loop.
 
 ## Out of Scope
 
