@@ -139,9 +139,9 @@ use crate::session::recovery::{
 use crate::session::repository::TransitionApprovalRequestIfCurrentRequest;
 #[cfg(feature = "memory-sqlite")]
 use crate::session::repository::{
-    ApprovalDecision, ApprovalRequestStatus, CreateSessionWithEventRequest,
-    FinalizeSessionTerminalRequest, NewSessionEvent, NewSessionRecord, SessionKind,
-    SessionRepository, SessionState, TransitionSessionWithEventIfCurrentRequest,
+    ApprovalDecision, ApprovalRequestStatus, FinalizeSessionTerminalRequest, NewSessionEvent,
+    NewSessionRecord, SessionKind, SessionRepository, SessionState,
+    TransitionSessionWithEventIfCurrentRequest,
 };
 
 #[derive(Default)]
@@ -4244,41 +4244,41 @@ async fn enqueue_delegate_async_with_runtime<R: ConversationRuntime + ?Sized>(
         prepare_delegate_workspace_root(config, &child_session_id, delegate_policy.isolation)?;
     let (_, execution) = repo
         .create_delegate_child_session_with_event_if_within_limit(
-        &session_context.session_id,
-        config.tools.delegate.max_active_children,
-        |active_children| {
-            let execution_policy = DelegateChildExecutionPolicy {
-                isolation: delegate_policy.isolation,
-                profile: delegate_policy.profile,
-                timeout_seconds: delegate_policy.timeout_seconds,
-                allow_shell_in_child: delegate_policy.allow_shell_in_child,
-                child_tool_allowlist: delegate_policy.child_tool_allowlist.clone(),
-                runtime_narrowing: delegate_policy.runtime_narrowing.clone(),
-                workspace_root: workspace_root.clone(),
-            };
-            let seed = build_delegate_child_lifecycle_seed(
-                config,
-                binding,
-                ConstrainedSubagentMode::Async,
-                next_child_depth,
-                active_children,
-                &session_context.session_id,
-                &child_session_id,
-                child_label.clone(),
-                &delegate_request.task,
-                runtime_self_continuity.as_ref(),
-                subagent_identity.clone(),
-                execution_policy,
+            &session_context.session_id,
+            config.tools.delegate.max_active_children,
+            |active_children| {
+                let execution_policy = DelegateChildExecutionPolicy {
+                    isolation: delegate_policy.isolation,
+                    profile: delegate_policy.profile,
+                    timeout_seconds: delegate_policy.timeout_seconds,
+                    allow_shell_in_child: delegate_policy.allow_shell_in_child,
+                    child_tool_allowlist: delegate_policy.child_tool_allowlist.clone(),
+                    runtime_narrowing: delegate_policy.runtime_narrowing.clone(),
+                    workspace_root: workspace_root.clone(),
+                };
+                let seed = build_delegate_child_lifecycle_seed(
+                    config,
+                    binding,
+                    ConstrainedSubagentMode::Async,
+                    next_child_depth,
+                    active_children,
+                    &session_context.session_id,
+                    &child_session_id,
+                    child_label.clone(),
+                    &delegate_request.task,
+                    runtime_self_continuity.as_ref(),
+                    subagent_identity.clone(),
+                    execution_policy,
+                );
+                Ok((seed.request, seed.execution))
+            },
+        )
+        .inspect_err(|_error| {
+            let _ = cleanup_prepared_delegate_workspace_root(
+                delegate_policy.isolation,
+                workspace_root.as_deref(),
             );
-            Ok((seed.request, seed.execution))
-        },
-    )
-    .inspect_err(|_error| {
-        let _ = cleanup_prepared_delegate_workspace_root(
-            delegate_policy.isolation,
-            workspace_root.as_deref(),
-        );
-    })?;
+        })?;
 
     let queued_execution = execution.clone();
     let queued_workspace_root = execution.workspace_root.clone();

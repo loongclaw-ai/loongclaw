@@ -378,11 +378,19 @@ mod tests {
     #[test]
     fn build_delegate_child_lifecycle_seed_uses_mode_specific_state_and_event_kind() {
         let config = LoongClawConfig::default();
+        let execution_policy = DelegateChildExecutionPolicy {
+            isolation: ConstrainedSubagentIsolation::Shared,
+            profile: None,
+            timeout_seconds: 42,
+            allow_shell_in_child: false,
+            child_tool_allowlist: config.tools.delegate.child_tool_allowlist.clone(),
+            runtime_narrowing: config.tools.delegate.child_runtime.runtime_narrowing(),
+            workspace_root: None,
+        };
         let seed = build_delegate_child_lifecycle_seed(
             &config,
             ConversationRuntimeBinding::direct(),
             ConstrainedSubagentMode::Async,
-            42,
             1,
             0,
             "parent-session",
@@ -391,6 +399,7 @@ mod tests {
             "research",
             None,
             None,
+            execution_policy,
         );
 
         assert_eq!(seed.request.session.state, SessionState::Ready);
@@ -403,11 +412,19 @@ mod tests {
     #[test]
     fn build_delegate_child_lifecycle_seed_embeds_delegate_trust_event() {
         let config = LoongClawConfig::default();
+        let execution_policy = DelegateChildExecutionPolicy {
+            isolation: ConstrainedSubagentIsolation::Shared,
+            profile: None,
+            timeout_seconds: 60,
+            allow_shell_in_child: false,
+            child_tool_allowlist: config.tools.delegate.child_tool_allowlist.clone(),
+            runtime_narrowing: config.tools.delegate.child_runtime.runtime_narrowing(),
+            workspace_root: None,
+        };
         let seed = build_delegate_child_lifecycle_seed(
             &config,
             ConversationRuntimeBinding::direct(),
             ConstrainedSubagentMode::Inline,
-            60,
             1,
             0,
             "parent-session",
@@ -416,6 +433,7 @@ mod tests {
             "research",
             None,
             None,
+            execution_policy,
         );
 
         let trust_event = extract_trust_event_payload(&seed.request.event_payload_json);
