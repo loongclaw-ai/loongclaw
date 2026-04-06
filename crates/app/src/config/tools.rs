@@ -964,7 +964,7 @@ impl WebSearchToolConfig {
     pub fn configured_api_key_for_provider(&self, provider: &str) -> Option<&str> {
         let normalized_provider = normalize_web_search_provider(provider).unwrap_or(provider);
 
-        let configured_api_key = match normalized_provider {
+        match normalized_provider {
             WEB_SEARCH_PROVIDER_BRAVE => self.brave_api_key.as_deref(),
             WEB_SEARCH_PROVIDER_TAVILY => self.tavily_api_key.as_deref(),
             WEB_SEARCH_PROVIDER_PERPLEXITY => self.perplexity_api_key.as_deref(),
@@ -972,9 +972,7 @@ impl WebSearchToolConfig {
             WEB_SEARCH_PROVIDER_FIRECRAWL => self.firecrawl_api_key.as_deref(),
             WEB_SEARCH_PROVIDER_JINA => self.jina_api_key.as_deref(),
             _ => None,
-        };
-
-        configured_api_key
+        }
     }
 
     pub fn set_configured_api_key_for_provider(
