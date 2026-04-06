@@ -1,13 +1,13 @@
 import { useTranslation } from "react-i18next";
 
-export type AbilitiesSection = "personalization" | "channels" | "skills";
+export type AbilitiesSection = "personalization" | "channels" | "skills" | "mascot";
 
 interface AbilitiesNavProps {
   activeSection: AbilitiesSection;
   onChange: (section: AbilitiesSection) => void;
 }
 
-const SECTION_ORDER: AbilitiesSection[] = ["personalization", "channels", "skills"];
+const SECTION_ORDER: AbilitiesSection[] = ["personalization", "channels", "skills", "mascot"];
 
 export function AbilitiesNav({ activeSection, onChange }: AbilitiesNavProps) {
   const { t } = useTranslation();

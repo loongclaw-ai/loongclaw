@@ -2,6 +2,7 @@ import { useState } from "react";
 import "../../../styles/abilities.css";
 import { useWebConnection } from "../../../hooks/useWebConnection";
 import { ChannelsPanel } from "../components/ChannelsPanel";
+import { MascotPanel } from "../components/MascotPanel";
 import { PersonalizationPanel } from "../components/PersonalizationPanel";
 import { SkillsPanel } from "../components/SkillsPanel";
 import { AbilitiesNav, type AbilitiesSection } from "../components/AbilitiesNav";
@@ -41,6 +42,10 @@ export default function AbilitiesPage() {
           onRetry={() => reloadSection("channels")}
         />
       );
+    }
+
+    if (activeSection === "mascot") {
+      return <MascotPanel />;
     }
 
     return (

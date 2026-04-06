@@ -61,10 +61,12 @@ export function useAbilitiesData({
         setChannels((current) =>
           current.loading ? { ...current, loading: false, error: current.error ?? null } : current,
         );
-      } else {
+      } else if (activeSection === "skills") {
         setSkills((current) =>
           current.loading ? { ...current, loading: false, error: current.error ?? null } : current,
         );
+      } else {
+        return;
       }
       return;
     }
@@ -178,8 +180,10 @@ export function useAbilitiesData({
       void loadPersonalization();
     } else if (activeSection === "channels") {
       void loadChannels();
-    } else {
+    } else if (activeSection === "skills") {
       void loadSkills();
+    } else {
+      return;
     }
 
     return () => {
@@ -205,7 +209,9 @@ export function useAbilitiesData({
       setChannels(idleState());
       return;
     }
-    setSkills(idleState());
+    if (section === "skills") {
+      setSkills(idleState());
+    }
   }
 
   function replacePersonalization(data: PersonalizationSnapshot) {

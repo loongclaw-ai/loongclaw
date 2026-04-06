@@ -18,8 +18,13 @@ import { Panel } from "../../../components/surfaces/Panel";
 import { useWebConnection } from "../../../hooks/useWebConnection";
 import { ApiRequestError } from "../../../lib/api/client";
 import { dashboardApi } from "../../dashboard/api";
+import { ChatMascot } from "../components/ChatMascot";
 import { useChatSessions } from "../hooks/useChatSessions";
 import { useChatStream } from "../hooks/useChatStream";
+import {
+  CHAT_MASCOT_TOGGLED_EVENT,
+  readChatMascotEnabled,
+} from "../mascotPreference";
 
 const MarkdownBlock = lazy(async () => {
   const module = await import("../components/MarkdownBlock");
@@ -65,6 +70,7 @@ export default function ChatPage() {
   );
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+  const [showMascot, setShowMascot] = useState(() => readChatMascotEnabled());
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const shouldAutoScrollRef = useRef(true);
@@ -193,6 +199,25 @@ export default function ChatPage() {
       JSON.stringify(sessionTitleOverrides),
     );
   }, [sessionTitleOverrides]);
+
+  useEffect(() => {
+    function handleStorage(event: StorageEvent) {
+      if (event.key) {
+        setShowMascot(readChatMascotEnabled());
+      }
+    }
+
+    function handleMascotToggled() {
+      setShowMascot(readChatMascotEnabled());
+    }
+
+    window.addEventListener("storage", handleStorage);
+    window.addEventListener(CHAT_MASCOT_TOGGLED_EVENT, handleMascotToggled);
+    return () => {
+      window.removeEventListener("storage", handleStorage);
+      window.removeEventListener(CHAT_MASCOT_TOGGLED_EVENT, handleMascotToggled);
+    };
+  }, []);
 
   useEffect(() => {
     if (sessions.length === 0) {
@@ -622,51 +647,55 @@ export default function ChatPage() {
               </div>
             ) : null}
 
-            <form
-              className="composer composer-inline"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void handleSubmit();
-              }}
-            >
-              <div className="composer-shell" style={{ alignItems: "flex-end" }}>
-                <TextareaAutosize
-                  className="composer-input"
-                  minRows={1}
-                  maxRows={8}
-                  placeholder={t("chat.inputPlaceholder")}
-                  value={composerText}
-                  onChange={(event) => {
-                    setComposerText(event.target.value);
-                  }}
-                  onKeyDown={(event) => {
-                    if (
-                      event.key === "Enter" &&
-                      !event.shiftKey &&
-                      !event.nativeEvent.isComposing
-                    ) {
-                      event.preventDefault();
-                      void handleSubmit();
-                    }
-                  }}
-                  disabled={isSubmitting || !canAccessProtectedApi}
-                  style={{ resize: "none" }}
-                />
-                {deletingSessionId ? (
-                  <div className="composer-hint">{t("chat.deleting")}</div>
-                ) : null}
-                <button
-                  type="submit"
-                  className="composer-submit"
-                  disabled={isSubmitting || !composerText.trim() || !canAccessProtectedApi}
-                >
-                  <SendHorizontal size={16} />
-                  <span className="sr-only">
-                    {isSubmitting ? "Sending..." : t("chat.send")}
-                  </span>
-                </button>
-              </div>
-            </form>
+            <div className="chat-composer-dock">
+              {showMascot ? <ChatMascot isChinese={isChinese} /> : null}
+
+              <form
+                className="composer composer-inline"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void handleSubmit();
+                }}
+              >
+                <div className="composer-shell" style={{ alignItems: "flex-end" }}>
+                  <TextareaAutosize
+                    className="composer-input"
+                    minRows={1}
+                    maxRows={8}
+                    placeholder={t("chat.inputPlaceholder")}
+                    value={composerText}
+                    onChange={(event) => {
+                      setComposerText(event.target.value);
+                    }}
+                    onKeyDown={(event) => {
+                      if (
+                        event.key === "Enter" &&
+                        !event.shiftKey &&
+                        !event.nativeEvent.isComposing
+                      ) {
+                        event.preventDefault();
+                        void handleSubmit();
+                      }
+                    }}
+                    disabled={isSubmitting || !canAccessProtectedApi}
+                    style={{ resize: "none" }}
+                  />
+                  {deletingSessionId ? (
+                    <div className="composer-hint">{t("chat.deleting")}</div>
+                  ) : null}
+                  <button
+                    type="submit"
+                    className="composer-submit"
+                    disabled={isSubmitting || !composerText.trim() || !canAccessProtectedApi}
+                  >
+                    <SendHorizontal size={16} />
+                    <span className="sr-only">
+                      {isSubmitting ? "Sending..." : t("chat.send")}
+                    </span>
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
         </Panel>
 
