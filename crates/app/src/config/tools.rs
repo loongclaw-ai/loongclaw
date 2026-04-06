@@ -960,6 +960,45 @@ impl WebToolConfig {
     }
 }
 
+impl WebSearchToolConfig {
+    pub fn configured_api_key_for_provider(&self, provider: &str) -> Option<&str> {
+        let normalized_provider = normalize_web_search_provider(provider).unwrap_or(provider);
+
+        let configured_api_key = match normalized_provider {
+            WEB_SEARCH_PROVIDER_BRAVE => self.brave_api_key.as_deref(),
+            WEB_SEARCH_PROVIDER_TAVILY => self.tavily_api_key.as_deref(),
+            WEB_SEARCH_PROVIDER_PERPLEXITY => self.perplexity_api_key.as_deref(),
+            WEB_SEARCH_PROVIDER_EXA => self.exa_api_key.as_deref(),
+            WEB_SEARCH_PROVIDER_FIRECRAWL => self.firecrawl_api_key.as_deref(),
+            WEB_SEARCH_PROVIDER_JINA => self.jina_api_key.as_deref(),
+            _ => None,
+        };
+
+        configured_api_key
+    }
+
+    pub fn set_configured_api_key_for_provider(
+        &mut self,
+        provider: &str,
+        value: Option<String>,
+    ) -> bool {
+        let normalized_provider = normalize_web_search_provider(provider).unwrap_or(provider);
+
+        let configured_api_key_slot = match normalized_provider {
+            WEB_SEARCH_PROVIDER_BRAVE => &mut self.brave_api_key,
+            WEB_SEARCH_PROVIDER_TAVILY => &mut self.tavily_api_key,
+            WEB_SEARCH_PROVIDER_PERPLEXITY => &mut self.perplexity_api_key,
+            WEB_SEARCH_PROVIDER_EXA => &mut self.exa_api_key,
+            WEB_SEARCH_PROVIDER_FIRECRAWL => &mut self.firecrawl_api_key,
+            WEB_SEARCH_PROVIDER_JINA => &mut self.jina_api_key,
+            _ => return false,
+        };
+
+        *configured_api_key_slot = value;
+        true
+    }
+}
+
 impl DelegateChildWebRuntimeConfig {
     pub fn normalized_allowed_domains(&self) -> Vec<String> {
         normalize_domain_entries(&self.allowed_domains)

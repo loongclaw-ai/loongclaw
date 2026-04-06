@@ -530,21 +530,10 @@ pub(crate) fn configured_web_search_provider_secret<'a>(
     config: &'a mvp::config::LoongClawConfig,
     provider: &str,
 ) -> Option<&'a str> {
-    match provider {
-        mvp::config::WEB_SEARCH_PROVIDER_BRAVE => config.tools.web_search.brave_api_key.as_deref(),
-        mvp::config::WEB_SEARCH_PROVIDER_TAVILY => {
-            config.tools.web_search.tavily_api_key.as_deref()
-        }
-        mvp::config::WEB_SEARCH_PROVIDER_PERPLEXITY => {
-            config.tools.web_search.perplexity_api_key.as_deref()
-        }
-        mvp::config::WEB_SEARCH_PROVIDER_EXA => config.tools.web_search.exa_api_key.as_deref(),
-        mvp::config::WEB_SEARCH_PROVIDER_FIRECRAWL => {
-            config.tools.web_search.firecrawl_api_key.as_deref()
-        }
-        mvp::config::WEB_SEARCH_PROVIDER_JINA => config.tools.web_search.jina_api_key.as_deref(),
-        _ => None,
-    }
+    config
+        .tools
+        .web_search
+        .configured_api_key_for_provider(provider)
 }
 
 fn env_var_has_non_empty_value(env_name: &str) -> bool {

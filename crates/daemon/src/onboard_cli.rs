@@ -2965,27 +2965,10 @@ fn apply_selected_web_search_credential(
         WebSearchCredentialSelection::UseEnv(env_name) => Some(format!("${{{}}}", env_name.trim())),
     };
 
-    match provider {
-        mvp::config::WEB_SEARCH_PROVIDER_BRAVE => {
-            config.tools.web_search.brave_api_key = next_value;
-        }
-        mvp::config::WEB_SEARCH_PROVIDER_TAVILY => {
-            config.tools.web_search.tavily_api_key = next_value;
-        }
-        mvp::config::WEB_SEARCH_PROVIDER_PERPLEXITY => {
-            config.tools.web_search.perplexity_api_key = next_value;
-        }
-        mvp::config::WEB_SEARCH_PROVIDER_EXA => {
-            config.tools.web_search.exa_api_key = next_value;
-        }
-        mvp::config::WEB_SEARCH_PROVIDER_FIRECRAWL => {
-            config.tools.web_search.firecrawl_api_key = next_value;
-        }
-        mvp::config::WEB_SEARCH_PROVIDER_JINA => {
-            config.tools.web_search.jina_api_key = next_value;
-        }
-        _ => {}
-    }
+    let _ = config
+        .tools
+        .web_search
+        .set_configured_api_key_for_provider(provider, next_value);
 }
 
 fn validate_selected_provider_credential_env(
