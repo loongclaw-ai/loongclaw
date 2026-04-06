@@ -4174,7 +4174,7 @@ pub(super) async fn execute_delegate_tool<R: ConversationRuntime + ?Sized>(
                 },
             )?;
             workspace_cleanup_owned_by_child_for_work
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+                .store(true, std::sync::atomic::Ordering::Release);
 
             run_started_delegate_child_turn_with_runtime(
                 config,
@@ -4194,7 +4194,7 @@ pub(super) async fn execute_delegate_tool<R: ConversationRuntime + ?Sized>(
     .await
     .inspect_err(|_error| {
         let cleanup_owned_by_child =
-            workspace_cleanup_owned_by_child.load(std::sync::atomic::Ordering::Relaxed);
+            workspace_cleanup_owned_by_child.load(std::sync::atomic::Ordering::Acquire);
         if cleanup_owned_by_child {
             return;
         }
