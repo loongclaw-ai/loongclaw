@@ -721,6 +721,18 @@ impl Default for ToolRuntimeConfig {
 }
 
 impl ToolRuntimeConfig {
+    pub fn with_file_root_override(&self, file_root: PathBuf) -> Self {
+        let mut overridden = self.clone();
+        overridden.file_root = Some(file_root);
+        overridden
+    }
+
+    pub fn default_working_directory(&self) -> PathBuf {
+        let configured_root = self.file_root.clone();
+        let fallback_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        configured_root.unwrap_or(fallback_root)
+    }
+
     pub fn from_loongclaw_config(config: &LoongClawConfig, config_path: Option<&Path>) -> Self {
         let web_fetch_allowed_domains = config.tools.web.normalized_allowed_domains();
         let web_fetch_enforce_allowed_domains = !web_fetch_allowed_domains.is_empty();
@@ -1265,7 +1277,7 @@ impl ToolRuntimeConfig {
                 ConstrainedSubagentControlScope::Children => "children",
                 ConstrainedSubagentControlScope::None => "none",
             };
-            lines.push(format!("- subagent role: {role}"));
+            lines.push(format!("- subagent orchestration posture: {role}"));
             lines.push(format!("- subagent control scope: {control_scope}"));
         }
 
@@ -2333,6 +2345,7 @@ mod tests {
     #[test]
     fn injected_config_overrides_global() {
         let _env = ScopedEnv::new();
+        std::fs::create_dir_all("/tmp/injected-root").expect("create injected file root");
         let config = ToolRuntimeConfig {
             file_root: Some(PathBuf::from("/tmp/injected-root")),
             shell_allow: BTreeSet::from(["echo".to_owned()]),
@@ -3145,6 +3158,7 @@ mod tests {
         };
         let execution = ConstrainedSubagentExecution {
             mode: crate::conversation::ConstrainedSubagentMode::Async,
+            isolation: crate::conversation::ConstrainedSubagentIsolation::Shared,
             depth: 1,
             max_depth: 2,
             active_children: 0,
@@ -3152,6 +3166,7 @@ mod tests {
             timeout_seconds: 60,
             allow_shell_in_child: false,
             child_tool_allowlist: vec!["web.fetch".to_owned()],
+            workspace_root: None,
             runtime_narrowing: narrowing,
             kernel_bound: false,
             identity: Some(ConstrainedSubagentIdentity {
@@ -3159,6 +3174,7 @@ mod tests {
                 specialization: Some("researcher".to_owned()),
             }),
             profile: Some(ConstrainedSubagentProfile::for_child_depth(1, 2)),
+            agent_role: None,
         };
 
         let contract = execution.contract_view();
@@ -3179,7 +3195,7 @@ Plan within these child-session runtime limits:\n\
 - child shell.exec: denied\n\
 - child tool allowlist: web.fetch\n\
 - child runtime binding: direct\n\
-- subagent role: orchestrator\n\
+- subagent orchestration posture: orchestrator\n\
 - subagent control scope: children\n\
 - web.fetch private hosts: denied\n\
 - web.fetch allowed domains: none (effective intersection is empty)\n\
@@ -3335,7 +3351,7 @@ Treat these as enforced limits for this child session."
             summary,
             "[delegate_child_runtime_contract]\n\
 Plan within these child-session runtime limits:\n\
-- subagent role: leaf\n\
+- subagent orchestration posture: leaf\n\
 - subagent control scope: none\n\
 Treat these as enforced limits for this child session."
         );

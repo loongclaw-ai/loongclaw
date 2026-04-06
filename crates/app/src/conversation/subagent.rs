@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -9,6 +11,98 @@ use crate::tools::runtime_config::ToolRuntimeNarrowing;
 pub enum ConstrainedSubagentMode {
     Inline,
     Async,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ConstrainedSubagentIsolation {
+    #[default]
+    Shared,
+    Worktree,
+}
+
+impl ConstrainedSubagentIsolation {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Shared => "shared",
+            Self::Worktree => "worktree",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DelegateBuiltinProfile {
+    Research,
+    Plan,
+    Verify,
+}
+
+impl DelegateBuiltinProfile {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Research => "research",
+            Self::Plan => "plan",
+            Self::Verify => "verify",
+        }
+    }
+
+    pub fn from_lifecycle_profile(value: &str) -> Option<Self> {
+        match value {
+            "research" => Some(Self::Research),
+            "plan" => Some(Self::Plan),
+            "verify" => Some(Self::Verify),
+            _ => None,
+        }
+    }
+
+    pub const fn default_label(self) -> &'static str {
+        match self {
+            Self::Research => "Research",
+            Self::Plan => "Plan",
+            Self::Verify => "Verify",
+        }
+    }
+
+    pub const fn default_timeout_seconds(self) -> u64 {
+        match self {
+            Self::Research => 60,
+            Self::Plan => 30,
+            Self::Verify => 45,
+        }
+    }
+
+    pub const fn allows_shell_in_child(self) -> bool {
+        matches!(self, Self::Verify)
+    }
+
+    pub fn resolved_agent_role(self, depth: usize, max_depth: usize) -> AgentRole {
+        resolve_agent_role(Some(self), depth, max_depth)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRole {
+    Default,
+    Explorer,
+    Worker,
+    Verifier,
+}
+
+#[allow(dead_code)]
+pub fn resolve_agent_role(
+    profile: Option<DelegateBuiltinProfile>,
+    depth: usize,
+    max_depth: usize,
+) -> AgentRole {
+    let _ = (depth, max_depth);
+    match profile {
+        None => AgentRole::Default,
+        Some(DelegateBuiltinProfile::Research) => AgentRole::Explorer,
+        Some(DelegateBuiltinProfile::Plan) => AgentRole::Worker,
+        Some(DelegateBuiltinProfile::Verify) => AgentRole::Verifier,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -296,6 +390,8 @@ pub struct ConstrainedSubagentContractView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<ConstrainedSubagentProfile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_role: Option<AgentRole>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub depth_budget: Option<ConstrainedSubagentBudgetSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_child_budget: Option<ConstrainedSubagentBudgetSnapshot>,
@@ -317,6 +413,7 @@ impl ConstrainedSubagentContractView {
             mode: Some(execution.mode),
             identity: execution.identity.clone(),
             profile: Some(execution.resolved_profile()),
+            agent_role: execution.agent_role,
             depth_budget: Some(ConstrainedSubagentBudgetSnapshot {
                 current: execution.depth,
                 max: execution.max_depth,
@@ -370,6 +467,11 @@ impl ConstrainedSubagentContractView {
         self
     }
 
+    pub fn with_agent_role(mut self, agent_role: AgentRole) -> Self {
+        self.agent_role = Some(agent_role);
+        self
+    }
+
     pub fn with_runtime_narrowing(mut self, runtime_narrowing: ToolRuntimeNarrowing) -> Self {
         if !runtime_narrowing.is_empty() {
             self.runtime_narrowing = runtime_narrowing;
@@ -385,6 +487,10 @@ impl ConstrainedSubagentContractView {
         self.identity.as_ref()
     }
 
+    pub fn resolved_agent_role(&self) -> Option<AgentRole> {
+        self.agent_role
+    }
+
     pub fn allows_child_delegation(&self) -> bool {
         self.profile
             .map(ConstrainedSubagentProfile::allows_child_delegation)
@@ -395,6 +501,7 @@ impl ConstrainedSubagentContractView {
         self.mode.is_none()
             && self.identity.is_none()
             && self.profile.is_none()
+            && self.agent_role.is_none()
             && self.depth_budget.is_none()
             && self.active_child_budget.is_none()
             && self.timeout_seconds.is_none()
@@ -408,6 +515,8 @@ impl ConstrainedSubagentContractView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConstrainedSubagentExecution {
     pub mode: ConstrainedSubagentMode,
+    #[serde(default)]
+    pub isolation: ConstrainedSubagentIsolation,
     pub depth: usize,
     pub max_depth: usize,
     pub active_children: usize,
@@ -415,6 +524,8 @@ pub struct ConstrainedSubagentExecution {
     pub timeout_seconds: u64,
     pub allow_shell_in_child: bool,
     pub child_tool_allowlist: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "ToolRuntimeNarrowing::is_empty")]
     pub runtime_narrowing: ToolRuntimeNarrowing,
     pub kernel_bound: bool,
@@ -422,6 +533,8 @@ pub struct ConstrainedSubagentExecution {
     pub identity: Option<ConstrainedSubagentIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<ConstrainedSubagentProfile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_role: Option<AgentRole>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -429,6 +542,8 @@ pub struct ConstrainedSubagentSpawnEventPayload {
     pub task: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<DelegateBuiltinProfile>,
     pub execution: ConstrainedSubagentExecution,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_self_continuity: Option<RuntimeSelfContinuity>,
@@ -459,6 +574,17 @@ impl ConstrainedSubagentExecution {
         self
     }
 
+    pub fn resolved_agent_role(&self) -> AgentRole {
+        self.agent_role.unwrap_or(AgentRole::Default)
+    }
+
+    pub fn with_resolved_agent_role(mut self, agent_role: AgentRole) -> Self {
+        if self.agent_role.is_none() {
+            self.agent_role = Some(agent_role);
+        }
+        self
+    }
+
     pub fn allows_nested_delegate_children(&self) -> bool {
         self.resolved_profile().allows_child_delegation() && self.depth < self.max_depth
     }
@@ -468,18 +594,29 @@ impl ConstrainedSubagentExecution {
     }
 
     pub fn spawn_payload(&self, task: &str, label: Option<&str>) -> Value {
-        self.spawn_payload_with_runtime_self_continuity(task, label, None)
+        self.spawn_payload_with_profile_and_runtime_self_continuity(task, label, None, None)
     }
 
-    pub(crate) fn spawn_payload_with_runtime_self_continuity(
+    pub fn spawn_payload_with_profile(
         &self,
         task: &str,
         label: Option<&str>,
+        profile: Option<DelegateBuiltinProfile>,
+    ) -> Value {
+        self.spawn_payload_with_profile_and_runtime_self_continuity(task, label, profile, None)
+    }
+
+    pub(crate) fn spawn_payload_with_profile_and_runtime_self_continuity(
+        &self,
+        task: &str,
+        label: Option<&str>,
+        profile: Option<DelegateBuiltinProfile>,
         runtime_self_continuity: Option<&RuntimeSelfContinuity>,
     ) -> Value {
         json!(ConstrainedSubagentSpawnEventPayload {
             task: task.to_owned(),
             label: label.map(ToOwned::to_owned),
+            profile,
             execution: self.clone(),
             runtime_self_continuity: runtime_self_continuity.cloned(),
         })
@@ -505,6 +642,11 @@ impl ConstrainedSubagentExecution {
         let execution = payload.get("execution")?.clone();
         serde_json::from_value(execution).ok()
     }
+
+    pub fn profile_from_event_payload(payload: &Value) -> Option<DelegateBuiltinProfile> {
+        let profile = payload.get("profile")?.clone();
+        serde_json::from_value(profile).ok()
+    }
 }
 
 #[cfg(test)]
@@ -518,6 +660,7 @@ mod tests {
     fn constrained_subagent_execution_round_trips_event_payload() {
         let execution = ConstrainedSubagentExecution {
             mode: ConstrainedSubagentMode::Async,
+            isolation: ConstrainedSubagentIsolation::Shared,
             depth: 1,
             max_depth: 2,
             active_children: 0,
@@ -529,16 +672,53 @@ mod tests {
                 "file.write".to_owned(),
                 "file.edit".to_owned(),
             ],
+            workspace_root: Some(PathBuf::from("/tmp/child-workspace")),
             runtime_narrowing: ToolRuntimeNarrowing::default(),
             kernel_bound: true,
             identity: None,
             profile: Some(ConstrainedSubagentProfile::for_child_depth(1, 2)),
+            agent_role: Some(AgentRole::Explorer),
         };
 
-        let payload = execution.spawn_payload("research", Some("child"));
+        let payload = execution.spawn_payload_with_profile(
+            "research",
+            Some("child"),
+            Some(DelegateBuiltinProfile::Research),
+        );
         assert_eq!(
             ConstrainedSubagentExecution::from_event_payload(&payload),
             Some(execution)
+        );
+        assert_eq!(
+            ConstrainedSubagentExecution::profile_from_event_payload(&payload),
+            Some(DelegateBuiltinProfile::Research)
+        );
+        assert_eq!(
+            ConstrainedSubagentExecution::from_event_payload(&payload)
+                .expect("execution")
+                .agent_role,
+            Some(AgentRole::Explorer)
+        );
+    }
+
+    #[test]
+    fn resolve_agent_role_maps_builtin_profiles_and_keeps_role_stable_at_leaf_depth() {
+        assert_eq!(resolve_agent_role(None, 0, 2), AgentRole::Default);
+        assert_eq!(
+            resolve_agent_role(Some(DelegateBuiltinProfile::Research), 1, 2),
+            AgentRole::Explorer
+        );
+        assert_eq!(
+            resolve_agent_role(Some(DelegateBuiltinProfile::Plan), 1, 2),
+            AgentRole::Worker
+        );
+        assert_eq!(
+            resolve_agent_role(Some(DelegateBuiltinProfile::Verify), 1, 2),
+            AgentRole::Verifier
+        );
+        assert_eq!(
+            resolve_agent_role(Some(DelegateBuiltinProfile::Plan), 2, 2),
+            AgentRole::Worker
         );
     }
 
@@ -546,6 +726,7 @@ mod tests {
     fn constrained_subagent_execution_preserves_runtime_self_continuity_in_spawn_payload() {
         let execution = ConstrainedSubagentExecution {
             mode: ConstrainedSubagentMode::Inline,
+            isolation: ConstrainedSubagentIsolation::Shared,
             depth: 1,
             max_depth: 2,
             active_children: 0,
@@ -553,10 +734,12 @@ mod tests {
             timeout_seconds: 30,
             allow_shell_in_child: false,
             child_tool_allowlist: vec!["web.fetch".to_owned()],
+            workspace_root: None,
             runtime_narrowing: ToolRuntimeNarrowing::default(),
             kernel_bound: false,
             identity: None,
             profile: Some(ConstrainedSubagentProfile::for_child_depth(1, 2)),
+            agent_role: None,
         };
         let continuity = RuntimeSelfContinuity {
             runtime_self: RuntimeSelfModel {
@@ -575,9 +758,10 @@ mod tests {
             ),
         };
 
-        let payload = execution.spawn_payload_with_runtime_self_continuity(
+        let payload = execution.spawn_payload_with_profile_and_runtime_self_continuity(
             "research",
             Some("child"),
+            None,
             Some(&continuity),
         );
 
@@ -599,6 +783,7 @@ mod tests {
     fn constrained_subagent_execution_derives_legacy_profile_from_depth_budget() {
         let execution = ConstrainedSubagentExecution {
             mode: ConstrainedSubagentMode::Async,
+            isolation: ConstrainedSubagentIsolation::Shared,
             depth: 1,
             max_depth: 3,
             active_children: 0,
@@ -606,10 +791,12 @@ mod tests {
             timeout_seconds: 60,
             allow_shell_in_child: false,
             child_tool_allowlist: vec!["file.read".to_owned()],
+            workspace_root: None,
             runtime_narrowing: ToolRuntimeNarrowing::default(),
             kernel_bound: false,
             identity: None,
             profile: None,
+            agent_role: None,
         };
 
         assert_eq!(
@@ -633,6 +820,7 @@ mod tests {
         };
         let execution = ConstrainedSubagentExecution {
             mode: ConstrainedSubagentMode::Inline,
+            isolation: ConstrainedSubagentIsolation::Shared,
             depth: 2,
             max_depth: 3,
             active_children: 1,
@@ -640,6 +828,7 @@ mod tests {
             timeout_seconds: 45,
             allow_shell_in_child: true,
             child_tool_allowlist: vec!["file.read".to_owned(), "shell.exec".to_owned()],
+            workspace_root: None,
             runtime_narrowing: runtime_narrowing.clone(),
             kernel_bound: true,
             identity: Some(ConstrainedSubagentIdentity {
@@ -647,6 +836,7 @@ mod tests {
                 specialization: Some("reviewer".to_owned()),
             }),
             profile: Some(ConstrainedSubagentProfile::for_child_depth(2, 3)),
+            agent_role: None,
         };
 
         assert_eq!(
@@ -658,6 +848,7 @@ mod tests {
                     specialization: Some("reviewer".to_owned()),
                 }),
                 profile: Some(ConstrainedSubagentProfile::for_child_depth(2, 3)),
+                agent_role: None,
                 depth_budget: Some(ConstrainedSubagentBudgetSnapshot { current: 2, max: 3 }),
                 active_child_budget: Some(ConstrainedSubagentBudgetSnapshot { current: 1, max: 4 }),
                 timeout_seconds: Some(45),
