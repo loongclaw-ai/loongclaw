@@ -1,9 +1,10 @@
 use std::io::ErrorKind;
 use std::process::Command as StdCommand;
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use loongclaw_app as mvp;
+use wait_timeout::ChildExt;
 
 pub(crate) const BROWSER_COMPANION_INSTALL_CHECK_NAME: &str = "browser companion install";
 pub(crate) const BROWSER_COMPANION_RUNTIME_GATE_CHECK_NAME: &str = "browser companion runtime gate";
@@ -284,39 +285,26 @@ fn run_browser_companion_probe_once(
         }
     };
 
-    let started_at = Instant::now();
-    loop {
-        let try_wait_result = child.try_wait();
-        match try_wait_result {
-            Ok(Some(_status)) => {
-                let output_result = child.wait_with_output();
-                let output = output_result
-                    .map_err(|error| BrowserCompanionProbeError::SpawnFailed(error.to_string()))?;
-                let observed = observed_output(&output.stdout, &output.stderr);
-                if output.status.success() {
-                    return Ok(observed);
-                }
-                return Err(BrowserCompanionProbeError::Exited {
-                    observed,
-                    exit_status: output.status.code(),
-                });
-            }
-            Ok(None) => {
-                let elapsed = started_at.elapsed();
-                let timed_out = elapsed >= timeout;
-                if timed_out {
-                    let kill_result = child.kill();
-                    let _ = kill_result;
-                    let wait_result = child.wait();
-                    let _ = wait_result;
-                    return Err(BrowserCompanionProbeError::TimedOut);
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(error) => {
-                return Err(BrowserCompanionProbeError::SpawnFailed(error.to_string()));
-            }
-        }
+    let status = child
+        .wait_timeout(timeout)
+        .map_err(|error| BrowserCompanionProbeError::SpawnFailed(error.to_string()))?;
+    let Some(_status) = status else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(BrowserCompanionProbeError::TimedOut);
+    };
+
+    let output = child
+        .wait_with_output()
+        .map_err(|error| BrowserCompanionProbeError::SpawnFailed(error.to_string()))?;
+    let observed = observed_output(&output.stdout, &output.stderr);
+    if output.status.success() {
+        Ok(observed)
+    } else {
+        Err(BrowserCompanionProbeError::Exited {
+            observed,
+            exit_status: output.status.code(),
+        })
     }
 }
 
