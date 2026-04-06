@@ -82,11 +82,20 @@ pub use runtime::{
 };
 pub use task_supervisor::TaskSupervisor;
 pub use tool::{
-    CoreToolAdapter, ToolCoreOutcome, ToolCoreRequest, ToolExtensionAdapter, ToolExtensionOutcome,
-    ToolExtensionRequest, ToolPlane, ToolTier,
+    CoreToolAdapter, ToolConcurrencyClass, ToolCoreOutcome, ToolCoreRequest, ToolExtensionAdapter,
+    ToolExtensionOutcome, ToolExtensionRequest, ToolPlane, ToolTier,
 };
 
 pub mod test_support;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[test]
+fn unknown_concurrency_class_requires_serial_execution() {
+    assert!(!ToolConcurrencyClass::ReadOnly.requires_serial_execution());
+    assert!(ToolConcurrencyClass::Mutating.requires_serial_execution());
+    assert!(ToolConcurrencyClass::Unknown.requires_serial_execution());
+    assert_eq!(ToolConcurrencyClass::Unknown.as_str(), "unknown");
+}
