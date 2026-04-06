@@ -12,6 +12,10 @@ impl<'a> OperatorSessionGraph<'a> {
         Self { repo }
     }
 
+    pub(crate) fn lineage_depth(&self, session_id: &str) -> Result<usize, String> {
+        self.repo.session_lineage_depth(session_id)
+    }
+
     pub(crate) fn lineage_root_session_id(
         &self,
         session_id: &str,
@@ -50,6 +54,24 @@ impl<'a> OperatorSessionGraph<'a> {
         }
 
         Ok(parent_session_id.to_owned())
+    }
+
+    pub(crate) fn next_delegate_child_depth(
+        &self,
+        session_id: &str,
+        max_depth: usize,
+    ) -> Result<usize, String> {
+        let current_depth = self.lineage_depth(session_id)?;
+        let next_child_depth = current_depth.saturating_add(1);
+
+        if next_child_depth > max_depth {
+            let error = format!(
+                "delegate_depth_exceeded: next child depth {next_child_depth} exceeds configured max_depth {max_depth}"
+            );
+            return Err(error);
+        }
+
+        Ok(next_child_depth)
     }
 }
 
