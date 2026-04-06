@@ -316,6 +316,7 @@ pub const WEB_SEARCH_PROVIDER_BRAVE: &str = "brave";
 pub const WEB_SEARCH_PROVIDER_TAVILY: &str = "tavily";
 pub const WEB_SEARCH_PROVIDER_PERPLEXITY: &str = "perplexity";
 pub const WEB_SEARCH_PROVIDER_EXA: &str = "exa";
+pub const WEB_SEARCH_PROVIDER_FIRECRAWL: &str = "firecrawl";
 pub const WEB_SEARCH_PROVIDER_JINA: &str = "jina";
 pub const DEFAULT_WEB_SEARCH_PROVIDER: &str = WEB_SEARCH_PROVIDER_DUCKDUCKGO;
 #[cfg(feature = "tool-websearch")]
@@ -327,15 +328,17 @@ pub(crate) const WEB_SEARCH_PROVIDER_SCHEMA_VALUES: &[&str] = &[
     WEB_SEARCH_PROVIDER_PERPLEXITY,
     "perplexity_search",
     WEB_SEARCH_PROVIDER_EXA,
+    WEB_SEARCH_PROVIDER_FIRECRAWL,
     WEB_SEARCH_PROVIDER_JINA,
     "jinaai",
     "jina-ai",
 ];
-pub const WEB_SEARCH_PROVIDER_VALID_VALUES: &str = "duckduckgo (or ddg), brave, tavily, perplexity (or perplexity_search), exa, jina (or jinaai / jina-ai)";
+pub const WEB_SEARCH_PROVIDER_VALID_VALUES: &str = "duckduckgo (or ddg), brave, tavily, perplexity (or perplexity_search), exa, firecrawl, jina (or jinaai / jina-ai)";
 pub const WEB_SEARCH_BRAVE_API_KEY_ENV: &str = "BRAVE_API_KEY";
 pub const WEB_SEARCH_TAVILY_API_KEY_ENV: &str = "TAVILY_API_KEY";
 pub const WEB_SEARCH_PERPLEXITY_API_KEY_ENV: &str = "PERPLEXITY_API_KEY";
 pub const WEB_SEARCH_EXA_API_KEY_ENV: &str = "EXA_API_KEY";
+pub const WEB_SEARCH_FIRECRAWL_API_KEY_ENV: &str = "FIRECRAWL_API_KEY";
 pub const WEB_SEARCH_JINA_API_KEY_ENV: &str = "JINA_API_KEY";
 pub const WEB_SEARCH_JINA_AUTH_TOKEN_ENV: &str = "JINA_AUTH_TOKEN";
 pub(crate) const MIN_WEB_SEARCH_TIMEOUT_SECONDS: usize = 1;
@@ -358,6 +361,7 @@ const WEB_SEARCH_BRAVE_API_KEY_ENV_NAMES: &[&str] = &[WEB_SEARCH_BRAVE_API_KEY_E
 const WEB_SEARCH_TAVILY_API_KEY_ENV_NAMES: &[&str] = &[WEB_SEARCH_TAVILY_API_KEY_ENV];
 const WEB_SEARCH_PERPLEXITY_API_KEY_ENV_NAMES: &[&str] = &[WEB_SEARCH_PERPLEXITY_API_KEY_ENV];
 const WEB_SEARCH_EXA_API_KEY_ENV_NAMES: &[&str] = &[WEB_SEARCH_EXA_API_KEY_ENV];
+const WEB_SEARCH_FIRECRAWL_API_KEY_ENV_NAMES: &[&str] = &[WEB_SEARCH_FIRECRAWL_API_KEY_ENV];
 const WEB_SEARCH_JINA_API_KEY_ENV_NAMES: &[&str] =
     &[WEB_SEARCH_JINA_API_KEY_ENV, WEB_SEARCH_JINA_AUTH_TOKEN_ENV];
 
@@ -403,6 +407,14 @@ const WEB_SEARCH_PROVIDER_DESCRIPTORS: &[WebSearchProviderDescriptor] = &[
         api_key_env_names: WEB_SEARCH_EXA_API_KEY_ENV_NAMES,
     },
     WebSearchProviderDescriptor {
+        id: WEB_SEARCH_PROVIDER_FIRECRAWL,
+        display_name: "Firecrawl Search",
+        description: "search API with optional scraped result content from Firecrawl",
+        requires_api_key: true,
+        default_api_key_env: Some(WEB_SEARCH_FIRECRAWL_API_KEY_ENV),
+        api_key_env_names: WEB_SEARCH_FIRECRAWL_API_KEY_ENV_NAMES,
+    },
+    WebSearchProviderDescriptor {
         id: WEB_SEARCH_PROVIDER_JINA,
         display_name: "Jina Search",
         description: "grounded search digest via s.jina.ai",
@@ -430,6 +442,8 @@ pub struct WebSearchToolConfig {
     pub perplexity_api_key: Option<String>,
     #[serde(default)]
     pub exa_api_key: Option<String>,
+    #[serde(default)]
+    pub firecrawl_api_key: Option<String>,
     #[serde(default)]
     pub jina_api_key: Option<String>,
 }
@@ -625,6 +639,7 @@ impl Default for WebSearchToolConfig {
             tavily_api_key: None,
             perplexity_api_key: None,
             exa_api_key: None,
+            firecrawl_api_key: None,
             jina_api_key: None,
         }
     }
@@ -868,6 +883,7 @@ pub fn normalize_web_search_provider(raw: &str) -> Option<&'static str> {
         "tavily" => Some(WEB_SEARCH_PROVIDER_TAVILY),
         "perplexity" | "perplexity_search" => Some(WEB_SEARCH_PROVIDER_PERPLEXITY),
         "exa" => Some(WEB_SEARCH_PROVIDER_EXA),
+        "firecrawl" => Some(WEB_SEARCH_PROVIDER_FIRECRAWL),
         "jina" | "jinaai" | "jina-ai" => Some(WEB_SEARCH_PROVIDER_JINA),
         _ => None,
     }
@@ -906,7 +922,7 @@ pub fn parse_autonomy_profile(raw: &str) -> Option<AutonomyProfile> {
 #[cfg(feature = "tool-websearch")]
 pub(crate) fn web_search_provider_parameter_description() -> String {
     format!(
-        "Search provider. Defaults to '{DEFAULT_WEB_SEARCH_PROVIDER}'. Supported providers: {WEB_SEARCH_PROVIDER_VALID_VALUES}. DuckDuckGo works without a key. Brave, Tavily, Perplexity, Exa, and Jina use tools.web_search.brave_api_key / tools.web_search.tavily_api_key / tools.web_search.perplexity_api_key / tools.web_search.exa_api_key / tools.web_search.jina_api_key or the {WEB_SEARCH_BRAVE_API_KEY_ENV} / {WEB_SEARCH_TAVILY_API_KEY_ENV} / {WEB_SEARCH_PERPLEXITY_API_KEY_ENV} / {WEB_SEARCH_EXA_API_KEY_ENV} / {WEB_SEARCH_JINA_API_KEY_ENV} / {WEB_SEARCH_JINA_AUTH_TOKEN_ENV} environment variable fallbacks."
+        "Search provider. Defaults to '{DEFAULT_WEB_SEARCH_PROVIDER}'. Supported providers: {WEB_SEARCH_PROVIDER_VALID_VALUES}. DuckDuckGo works without a key. Brave, Tavily, Perplexity, Exa, Firecrawl, and Jina use tools.web_search.brave_api_key / tools.web_search.tavily_api_key / tools.web_search.perplexity_api_key / tools.web_search.exa_api_key / tools.web_search.firecrawl_api_key / tools.web_search.jina_api_key or the {WEB_SEARCH_BRAVE_API_KEY_ENV} / {WEB_SEARCH_TAVILY_API_KEY_ENV} / {WEB_SEARCH_PERPLEXITY_API_KEY_ENV} / {WEB_SEARCH_EXA_API_KEY_ENV} / {WEB_SEARCH_FIRECRAWL_API_KEY_ENV} / {WEB_SEARCH_JINA_API_KEY_ENV} / {WEB_SEARCH_JINA_AUTH_TOKEN_ENV} environment variable fallbacks."
     )
 }
 
@@ -941,6 +957,43 @@ impl WebToolConfig {
 
     pub fn normalized_blocked_domains(&self) -> Vec<String> {
         normalize_domain_entries(&self.blocked_domains)
+    }
+}
+
+impl WebSearchToolConfig {
+    pub fn configured_api_key_for_provider(&self, provider: &str) -> Option<&str> {
+        let normalized_provider = normalize_web_search_provider(provider).unwrap_or(provider);
+
+        match normalized_provider {
+            WEB_SEARCH_PROVIDER_BRAVE => self.brave_api_key.as_deref(),
+            WEB_SEARCH_PROVIDER_TAVILY => self.tavily_api_key.as_deref(),
+            WEB_SEARCH_PROVIDER_PERPLEXITY => self.perplexity_api_key.as_deref(),
+            WEB_SEARCH_PROVIDER_EXA => self.exa_api_key.as_deref(),
+            WEB_SEARCH_PROVIDER_FIRECRAWL => self.firecrawl_api_key.as_deref(),
+            WEB_SEARCH_PROVIDER_JINA => self.jina_api_key.as_deref(),
+            _ => None,
+        }
+    }
+
+    pub fn set_configured_api_key_for_provider(
+        &mut self,
+        provider: &str,
+        value: Option<String>,
+    ) -> bool {
+        let normalized_provider = normalize_web_search_provider(provider).unwrap_or(provider);
+
+        let configured_api_key_slot = match normalized_provider {
+            WEB_SEARCH_PROVIDER_BRAVE => &mut self.brave_api_key,
+            WEB_SEARCH_PROVIDER_TAVILY => &mut self.tavily_api_key,
+            WEB_SEARCH_PROVIDER_PERPLEXITY => &mut self.perplexity_api_key,
+            WEB_SEARCH_PROVIDER_EXA => &mut self.exa_api_key,
+            WEB_SEARCH_PROVIDER_FIRECRAWL => &mut self.firecrawl_api_key,
+            WEB_SEARCH_PROVIDER_JINA => &mut self.jina_api_key,
+            _ => return false,
+        };
+
+        *configured_api_key_slot = value;
+        true
     }
 }
 
@@ -1141,6 +1194,7 @@ mod tests {
         assert!(config.web_search.tavily_api_key.is_none());
         assert!(config.web_search.perplexity_api_key.is_none());
         assert!(config.web_search.exa_api_key.is_none());
+        assert!(config.web_search.firecrawl_api_key.is_none());
         assert!(config.web_search.jina_api_key.is_none());
     }
 
@@ -1190,13 +1244,19 @@ mod tests {
             Some("perplexity")
         );
         assert_eq!(normalize_web_search_provider("exa"), Some("exa"));
+        assert_eq!(
+            normalize_web_search_provider("firecrawl"),
+            Some("firecrawl")
+        );
         assert_eq!(normalize_web_search_provider("jina-ai"), Some("jina"));
         assert_eq!(normalize_web_search_provider("unknown"), None);
         assert_eq!(DEFAULT_WEB_SEARCH_PROVIDER, WEB_SEARCH_PROVIDER_DUCKDUCKGO);
         assert!(WEB_SEARCH_PROVIDER_SCHEMA_VALUES.contains(&"perplexity_search"));
+        assert!(WEB_SEARCH_PROVIDER_SCHEMA_VALUES.contains(&"firecrawl"));
         assert!(WEB_SEARCH_PROVIDER_SCHEMA_VALUES.contains(&"jinaai"));
         assert!(WEB_SEARCH_PROVIDER_SCHEMA_VALUES.contains(&"jina-ai"));
         assert!(WEB_SEARCH_PROVIDER_VALID_VALUES.contains("perplexity_search"));
+        assert!(WEB_SEARCH_PROVIDER_VALID_VALUES.contains("firecrawl"));
         assert!(WEB_SEARCH_PROVIDER_VALID_VALUES.contains("jinaai / jina-ai"));
     }
 
@@ -1213,6 +1273,12 @@ mod tests {
             Some(WEB_SEARCH_TAVILY_API_KEY_ENV)
         );
 
+        let firecrawl = web_search_provider_descriptor("firecrawl").expect("firecrawl descriptor");
+        assert_eq!(
+            firecrawl.default_api_key_env,
+            Some(WEB_SEARCH_FIRECRAWL_API_KEY_ENV)
+        );
+
         let jina = web_search_provider_descriptor("jina").expect("jina descriptor");
         assert_eq!(jina.api_key_env_names, WEB_SEARCH_JINA_API_KEY_ENV_NAMES);
     }
@@ -1226,11 +1292,13 @@ mod tests {
         assert!(description.contains("tools.web_search.tavily_api_key"));
         assert!(description.contains("tools.web_search.perplexity_api_key"));
         assert!(description.contains("tools.web_search.exa_api_key"));
+        assert!(description.contains("tools.web_search.firecrawl_api_key"));
         assert!(description.contains("tools.web_search.jina_api_key"));
         assert!(description.contains(WEB_SEARCH_BRAVE_API_KEY_ENV));
         assert!(description.contains(WEB_SEARCH_TAVILY_API_KEY_ENV));
         assert!(description.contains(WEB_SEARCH_PERPLEXITY_API_KEY_ENV));
         assert!(description.contains(WEB_SEARCH_EXA_API_KEY_ENV));
+        assert!(description.contains(WEB_SEARCH_FIRECRAWL_API_KEY_ENV));
         assert!(description.contains(WEB_SEARCH_JINA_API_KEY_ENV));
         assert!(description.contains(WEB_SEARCH_JINA_AUTH_TOKEN_ENV));
         assert!(description.contains(DEFAULT_WEB_SEARCH_PROVIDER));

@@ -426,20 +426,34 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn rustc_version_probe() -> (String, String, String) {
+        let output = std::process::Command::new("rustc")
+            .arg("--version")
+            .output()
+            .expect("run rustc --version");
+        let observed_version = observed_output(&output.stdout, &output.stderr);
+        let version_token = observed_version
+            .split_whitespace()
+            .nth(1)
+            .expect("rustc --version should include a semantic version")
+            .to_owned();
+        let partial_components = version_token.split('.').collect::<Vec<_>>();
+        let partial_version =
+            partial_components[..partial_components.len().saturating_sub(1)].join(".");
+
+        ("rustc".to_owned(), observed_version, partial_version)
+    }
+
+    #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
     async fn collect_browser_companion_diagnostics_rejects_partial_expected_version_matches() {
         let _env_guard = BrowserCompanionEnvGuard::runtime_gate_closed();
-        let temp_dir = browser_companion_temp_dir("partial-version-match");
-        let script_path = temp_dir.join("browser-companion");
-        write_browser_companion_script(
-            &script_path,
-            "#!/bin/sh\necho 'loongclaw-browser-companion 11.5.0'\n",
-        );
+        let (command, actual_observed_version, partial_version) = rustc_version_probe();
 
         let mut config = mvp::config::LoongClawConfig::default();
         config.tools.browser_companion.enabled = true;
-        config.tools.browser_companion.command = Some(script_path.display().to_string());
-        config.tools.browser_companion.expected_version = Some("1.5.0".to_owned());
+        config.tools.browser_companion.command = Some(command);
+        config.tools.browser_companion.expected_version = Some(partial_version.clone());
 
         let diagnostics = collect_browser_companion_diagnostics(&config)
             .await
@@ -452,8 +466,8 @@ mod tests {
                     ref expected_version,
                     ref observed_version,
                     ..
-                } if expected_version == "1.5.0"
-                    && observed_version == "loongclaw-browser-companion 11.5.0"
+                } if expected_version == &partial_version
+                    && observed_version == &actual_observed_version
             ),
             "partial version matches should still warn as mismatches: {diagnostics:#?}"
         );

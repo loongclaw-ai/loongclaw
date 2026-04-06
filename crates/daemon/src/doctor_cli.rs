@@ -84,6 +84,9 @@ pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
     ));
 
     checks.push(provider_transport_doctor_check(&config.provider));
+    if config.tools.web_search.enabled {
+        checks.push(web_search_provider_doctor_check(&config));
+    }
 
     if options.skip_model_probe {
         checks.push(DoctorCheck {
@@ -1788,6 +1791,52 @@ fn provider_credentials_doctor_check(
     }
 }
 
+fn web_search_provider_doctor_check(config: &mvp::config::LoongClawConfig) -> DoctorCheck {
+    if !config.tools.web_search.enabled {
+        return DoctorCheck {
+            name: "web search provider".to_owned(),
+            level: DoctorCheckLevel::Pass,
+            detail: "tools.web_search.enabled=false".to_owned(),
+        };
+    }
+
+    let configured_provider = config.tools.web_search.default_provider.as_str();
+    let normalized_provider = mvp::config::normalize_web_search_provider(configured_provider);
+    let provider = normalized_provider.unwrap_or(mvp::config::DEFAULT_WEB_SEARCH_PROVIDER);
+    let provider_label = crate::onboard_web_search::web_search_provider_display_name(provider);
+    let credential_summary =
+        crate::onboard_web_search::summarize_web_search_provider_credential(config, provider);
+    let credential_available =
+        crate::onboard_web_search::web_search_provider_has_available_credential(config, provider);
+
+    if credential_available {
+        let detail = credential_summary
+            .map(|summary| format!("{provider_label}: {}", summary.value))
+            .unwrap_or_else(|| provider_label.clone());
+
+        return DoctorCheck {
+            name: "web search provider".to_owned(),
+            level: DoctorCheckLevel::Pass,
+            detail,
+        };
+    }
+
+    let detail = credential_summary
+        .map(|summary| {
+            format!(
+                "{provider_label}: {}. web.search will stay unavailable until the provider credential is supplied",
+                summary.value
+            )
+        })
+        .unwrap_or_else(|| provider_label.clone());
+
+    DoctorCheck {
+        name: "web search provider".to_owned(),
+        level: DoctorCheckLevel::Warn,
+        detail,
+    }
+}
+
 fn doctor_check_from_provider_model_probe_failure(
     probe_failure: provider_model_probe_policy::ProviderModelProbeFailure,
 ) -> DoctorCheck {
@@ -2064,6 +2113,31 @@ fn build_doctor_next_steps_with_channel_surfaces_and_path_env(
                 format!("Set provider credentials in env: {}", hints.join(" or ")),
             );
         }
+    }
+
+    if checks
+        .iter()
+        .any(|check| check.name == "web search provider" && check.level != DoctorCheckLevel::Pass)
+    {
+        let configured_provider = config.tools.web_search.default_provider.as_str();
+        let normalized_provider = mvp::config::normalize_web_search_provider(configured_provider);
+        let provider = normalized_provider.unwrap_or(mvp::config::DEFAULT_WEB_SEARCH_PROVIDER);
+        let descriptor = mvp::config::web_search_provider_descriptor(provider);
+        let default_env_name = descriptor.and_then(|value| value.default_api_key_env);
+
+        if let Some(default_env_name) = default_env_name {
+            push_unique_step(
+                &mut steps,
+                format!("Set web search credential in env: {default_env_name}"),
+            );
+        }
+
+        push_unique_step(
+            &mut steps,
+            format!(
+                "Or rerun onboarding to review the web search provider choice: {rerun_onboard_command}"
+            ),
+        );
     }
 
     let provider_model_probe_recovery =
@@ -2977,6 +3051,30 @@ mod tests {
                 None => remove_browser_companion_env_var(key),
             }
         }
+    }
+
+    #[cfg(unix)]
+    fn rustc_version_probe() -> (String, String, String, String) {
+        let output = std::process::Command::new("rustc")
+            .arg("--version")
+            .output()
+            .expect("run rustc --version");
+        let observed_version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        let exact_version = observed_version
+            .split_whitespace()
+            .nth(1)
+            .expect("rustc --version should include a semantic version")
+            .to_owned();
+        let version_components = exact_version.split('.').collect::<Vec<_>>();
+        let partial_version =
+            version_components[..version_components.len().saturating_sub(1)].join(".");
+
+        (
+            "rustc".to_owned(),
+            observed_version,
+            exact_version,
+            partial_version,
+        )
     }
 
     #[test]
@@ -5259,6 +5357,60 @@ mod tests {
     }
 
     #[test]
+    fn web_search_provider_doctor_check_warns_when_firecrawl_credential_is_missing() {
+        let mut env = ScopedEnv::new();
+        let mut config = mvp::config::LoongClawConfig::default();
+        let provider_id = mvp::config::WEB_SEARCH_PROVIDER_FIRECRAWL.to_owned();
+        let configured_secret = "${FIRECRAWL_API_KEY}".to_owned();
+
+        env.remove("FIRECRAWL_API_KEY");
+        config.tools.web_search.default_provider = provider_id;
+        config.tools.web_search.firecrawl_api_key = Some(configured_secret);
+
+        let check = web_search_provider_doctor_check(&config);
+
+        assert_eq!(check.name, "web search provider");
+        assert_eq!(check.level, DoctorCheckLevel::Warn);
+        assert!(check.detail.contains("Firecrawl Search"));
+        assert!(check.detail.contains("FIRECRAWL_API_KEY"));
+        assert!(check.detail.contains("web.search will stay unavailable"));
+    }
+
+    #[test]
+    fn web_search_provider_doctor_check_passes_when_firecrawl_credential_is_available() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        let provider_id = mvp::config::WEB_SEARCH_PROVIDER_FIRECRAWL.to_owned();
+        let configured_secret = "${FIRECRAWL_API_KEY}".to_owned();
+        let mut env = ScopedEnv::new();
+
+        env.set("FIRECRAWL_API_KEY", "firecrawl-test-token");
+        config.tools.web_search.default_provider = provider_id;
+        config.tools.web_search.firecrawl_api_key = Some(configured_secret);
+
+        let check = web_search_provider_doctor_check(&config);
+
+        assert_eq!(check.name, "web search provider");
+        assert_eq!(check.level, DoctorCheckLevel::Pass);
+        assert!(check.detail.contains("Firecrawl Search"));
+        assert!(check.detail.contains("FIRECRAWL_API_KEY"));
+    }
+
+    #[test]
+    fn web_search_provider_doctor_check_passes_when_tool_is_disabled() {
+        let mut config = mvp::config::LoongClawConfig::default();
+
+        config.tools.web_search.enabled = false;
+        config.tools.web_search.default_provider =
+            mvp::config::WEB_SEARCH_PROVIDER_FIRECRAWL.to_owned();
+
+        let check = web_search_provider_doctor_check(&config);
+
+        assert_eq!(check.name, "web search provider");
+        assert_eq!(check.level, DoctorCheckLevel::Pass);
+        assert_eq!(check.detail, "tools.web_search.enabled=false");
+    }
+
+    #[test]
     fn build_doctor_next_steps_shell_quotes_config_paths_with_single_quotes() {
         let checks = vec![DoctorCheck {
             name: "memory path".to_owned(),
@@ -5332,6 +5484,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn build_doctor_next_steps_guides_missing_web_search_credentials() {
+        let checks = vec![DoctorCheck {
+            name: "web search provider".to_owned(),
+            level: DoctorCheckLevel::Warn,
+            detail: "Firecrawl Search: FIRECRAWL_API_KEY (expected). web.search will stay unavailable until the provider credential is supplied".to_owned(),
+        }];
+        let mut config = mvp::config::LoongClawConfig::default();
+
+        config.tools.web_search.default_provider =
+            mvp::config::WEB_SEARCH_PROVIDER_FIRECRAWL.to_owned();
+
+        let next_steps = build_doctor_next_steps_with_path_env(
+            &checks,
+            Path::new("/tmp/loongclaw.toml"),
+            &config,
+            false,
+            Some(std::ffi::OsStr::new("")),
+        );
+
+        assert!(
+            next_steps
+                .iter()
+                .any(|step| step == "Set web search credential in env: FIRECRAWL_API_KEY"),
+            "doctor should surface the missing Firecrawl env binding as a concrete next step: {next_steps:#?}"
+        );
+        assert!(
+            next_steps.iter().any(|step| {
+                step == "Or rerun onboarding to review the web search provider choice: loongclaw onboard --config '/tmp/loongclaw.toml'"
+            }),
+            "doctor should keep the onboarding recovery path explicit for web search credentials: {next_steps:#?}"
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
     async fn browser_companion_doctor_checks_warn_when_command_is_missing() {
@@ -5355,13 +5541,12 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn browser_companion_doctor_checks_warn_when_expected_version_mismatches() {
         let _env_guard = BrowserCompanionEnvGuard::runtime_gate_closed();
+        let (command, observed_version, _exact_version, partial_version) = rustc_version_probe();
 
         let mut config = mvp::config::LoongClawConfig::default();
         config.tools.browser_companion.enabled = true;
-        config.tools.browser_companion.command = Some(
-            crate::browser_companion_diagnostics::fake_browser_companion_version_command("1.4.0"),
-        );
-        config.tools.browser_companion.expected_version = Some("1.5.0".to_owned());
+        config.tools.browser_companion.command = Some(command);
+        config.tools.browser_companion.expected_version = Some(partial_version.clone());
 
         let checks = collect_browser_companion_doctor_checks(&config).await;
 
@@ -5369,10 +5554,12 @@ mod tests {
             checks.iter().any(|check| {
                 check.name == "browser companion install"
                     && check.level == DoctorCheckLevel::Warn
-                    && check.detail.contains("expected_version=1.5.0")
                     && check
                         .detail
-                        .contains("observed_version=loongclaw-browser-companion 1.4.0")
+                        .contains(format!("expected_version={partial_version}").as_str())
+                    && check
+                        .detail
+                        .contains(format!("observed_version={observed_version}").as_str())
             }),
             "doctor should surface version mismatches for the managed companion lane: {checks:#?}"
         );
@@ -5382,13 +5569,12 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn browser_companion_doctor_checks_warn_when_runtime_gate_is_closed() {
         let _env_guard = BrowserCompanionEnvGuard::runtime_gate_closed();
+        let (command, _observed_version, exact_version, _partial_version) = rustc_version_probe();
 
         let mut config = mvp::config::LoongClawConfig::default();
         config.tools.browser_companion.enabled = true;
-        config.tools.browser_companion.command = Some(
-            crate::browser_companion_diagnostics::fake_browser_companion_version_command("1.5.0"),
-        );
-        config.tools.browser_companion.expected_version = Some("1.5.0".to_owned());
+        config.tools.browser_companion.command = Some(command);
+        config.tools.browser_companion.expected_version = Some(exact_version);
 
         let checks = collect_browser_companion_doctor_checks(&config).await;
 
@@ -5406,13 +5592,12 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn browser_companion_doctor_checks_pass_when_runtime_gate_is_open() {
         let _env_guard = BrowserCompanionEnvGuard::runtime_gate_open();
+        let (command, _observed_version, exact_version, _partial_version) = rustc_version_probe();
 
         let mut config = mvp::config::LoongClawConfig::default();
         config.tools.browser_companion.enabled = true;
-        config.tools.browser_companion.command = Some(
-            crate::browser_companion_diagnostics::fake_browser_companion_version_command("1.5.0"),
-        );
-        config.tools.browser_companion.expected_version = Some("1.5.0".to_owned());
+        config.tools.browser_companion.command = Some(command);
+        config.tools.browser_companion.expected_version = Some(exact_version);
 
         let checks = collect_browser_companion_doctor_checks(&config).await;
 
