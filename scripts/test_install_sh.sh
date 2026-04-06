@@ -757,6 +757,38 @@ run_release_override_install_and_onboard_prefers_unique_ready_firecrawl_credenti
   assert_contains "$marker" "web_search_provider=firecrawl"
 }
 
+run_release_override_install_and_onboard_preserves_signal_source_when_firecrawl_and_exa_both_exist_test() {
+  local fixture install_dir output_file marker
+  fixture="$(make_release_fixture "v0.1.2")"
+  trap 'rm -rf "$fixture"' RETURN
+  install_dir="$fixture/install"
+  output_file="$fixture/install-web-search-firecrawl-exa-ambiguous.out"
+  marker="$fixture/onboard-web-search-firecrawl-exa-ambiguous.log"
+  : >"$marker"
+  make_install_curl_stub_bin "$fixture" "success" "__FAIL__"
+
+  (
+    cd "$REPO_ROOT"
+    PATH="$fixture/fake-bin:$PATH" \
+      LANG="C.UTF-8" \
+      TZ="UTC" \
+      ONBOARD_MARKER="$marker" \
+      LOONGCLAW_INSTALL_RELEASE_BASE_URL="file://$fixture/releases" \
+      BRAVE_API_KEY="" \
+      TAVILY_API_KEY="" \
+      PERPLEXITY_API_KEY="" \
+      EXA_API_KEY="exa-test-token" \
+      FIRECRAWL_API_KEY="firecrawl-test-token" \
+      JINA_API_KEY="" \
+      JINA_AUTH_TOKEN="" \
+      LOONGCLAW_WEB_SEARCH_PROVIDER="" \
+      bash "$SCRIPT_UNDER_TEST" --version v0.1.2 --prefix "$install_dir" --onboard >"$output_file" 2>&1
+  )
+
+  assert_contains "$output_file" "Onboarding web search default: DuckDuckGo (detected)"
+  assert_contains "$marker" "web_search_provider=duckduckgo"
+}
+
 run_release_override_install_and_onboard_preserves_signal_source_when_multiple_credentials_exist_test() {
   local fixture install_dir output_file marker
   fixture="$(make_release_fixture "v0.1.2")"
@@ -870,6 +902,7 @@ run_release_override_install_and_onboard_detects_duckduckgo_default_test
 run_release_override_install_and_onboard_prefers_tavily_for_domestic_hosts_test
 run_release_override_install_and_onboard_prefers_unique_ready_credential_test
 run_release_override_install_and_onboard_prefers_unique_ready_firecrawl_credential_test
+run_release_override_install_and_onboard_preserves_signal_source_when_firecrawl_and_exa_both_exist_test
 run_release_override_install_and_onboard_preserves_signal_source_when_multiple_credentials_exist_test
 run_checksum_mismatch_fails_test
 run_missing_release_guidance_test

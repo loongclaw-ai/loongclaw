@@ -84,7 +84,9 @@ pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
     ));
 
     checks.push(provider_transport_doctor_check(&config.provider));
-    checks.push(web_search_provider_doctor_check(&config));
+    if config.tools.web_search.enabled {
+        checks.push(web_search_provider_doctor_check(&config));
+    }
 
     if options.skip_model_probe {
         checks.push(DoctorCheck {
@@ -1790,6 +1792,14 @@ fn provider_credentials_doctor_check(
 }
 
 fn web_search_provider_doctor_check(config: &mvp::config::LoongClawConfig) -> DoctorCheck {
+    if !config.tools.web_search.enabled {
+        return DoctorCheck {
+            name: "web search provider".to_owned(),
+            level: DoctorCheckLevel::Pass,
+            detail: "tools.web_search.enabled=false".to_owned(),
+        };
+    }
+
     let configured_provider = config.tools.web_search.default_provider.as_str();
     let normalized_provider = mvp::config::normalize_web_search_provider(configured_provider);
     let provider = normalized_provider.unwrap_or(mvp::config::DEFAULT_WEB_SEARCH_PROVIDER);
@@ -5386,6 +5396,21 @@ mod tests {
     }
 
     #[test]
+    fn web_search_provider_doctor_check_passes_when_tool_is_disabled() {
+        let mut config = mvp::config::LoongClawConfig::default();
+
+        config.tools.web_search.enabled = false;
+        config.tools.web_search.default_provider =
+            mvp::config::WEB_SEARCH_PROVIDER_FIRECRAWL.to_owned();
+
+        let check = web_search_provider_doctor_check(&config);
+
+        assert_eq!(check.name, "web search provider");
+        assert_eq!(check.level, DoctorCheckLevel::Pass);
+        assert_eq!(check.detail, "tools.web_search.enabled=false");
+    }
+
+    #[test]
     fn build_doctor_next_steps_shell_quotes_config_paths_with_single_quotes() {
         let checks = vec![DoctorCheck {
             name: "memory path".to_owned(),
@@ -5523,7 +5548,6 @@ mod tests {
         config.tools.browser_companion.command = Some(command);
         config.tools.browser_companion.expected_version = Some(partial_version.clone());
 
-
         let checks = collect_browser_companion_doctor_checks(&config).await;
 
         assert!(
@@ -5552,7 +5576,6 @@ mod tests {
         config.tools.browser_companion.command = Some(command);
         config.tools.browser_companion.expected_version = Some(exact_version);
 
-
         let checks = collect_browser_companion_doctor_checks(&config).await;
 
         assert!(
@@ -5575,7 +5598,6 @@ mod tests {
         config.tools.browser_companion.enabled = true;
         config.tools.browser_companion.command = Some(command);
         config.tools.browser_companion.expected_version = Some(exact_version);
-
 
         let checks = collect_browser_companion_doctor_checks(&config).await;
 

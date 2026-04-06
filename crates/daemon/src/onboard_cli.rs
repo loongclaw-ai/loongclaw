@@ -1505,7 +1505,7 @@ pub async fn run_onboard_cli_with_ui(
             &mut config,
             selected_web_search_provider.as_str(),
             web_search_credential_selection,
-        );
+        )?;
     }
     let selected_preinstalled_skill_ids =
         resolve_preinstalled_skill_selection(&options, ui, context)?;
@@ -2958,17 +2958,25 @@ fn apply_selected_web_search_credential(
     config: &mut mvp::config::LoongClawConfig,
     provider: &str,
     selection: WebSearchCredentialSelection,
-) {
+) -> CliResult<()> {
     let next_value = match selection {
-        WebSearchCredentialSelection::KeepCurrent => return,
+        WebSearchCredentialSelection::KeepCurrent => return Ok(()),
         WebSearchCredentialSelection::ClearConfigured => None,
         WebSearchCredentialSelection::UseEnv(env_name) => Some(format!("${{{}}}", env_name.trim())),
     };
 
-    let _ = config
+    let updated = config
         .tools
         .web_search
         .set_configured_api_key_for_provider(provider, next_value);
+
+    if !updated {
+        let message =
+            format!("unsupported web.search provider `{provider}`; credential update was skipped");
+        return Err(message);
+    }
+
+    Ok(())
 }
 
 fn validate_selected_provider_credential_env(
@@ -7557,7 +7565,8 @@ mod tests {
             &mut config,
             mvp::config::WEB_SEARCH_PROVIDER_TAVILY,
             WebSearchCredentialSelection::UseEnv("TEAM_TAVILY_KEY".to_owned()),
-        );
+        )
+        .expect("apply tavily web search credential");
 
         assert_eq!(
             config.tools.web_search.tavily_api_key.as_deref(),
@@ -7572,10 +7581,25 @@ mod tests {
         let credential_env = "TEAM_FIRECRAWL_KEY".to_owned();
         let selection = WebSearchCredentialSelection::UseEnv(credential_env);
 
-        apply_selected_web_search_credential(&mut config, provider, selection);
+        apply_selected_web_search_credential(&mut config, provider, selection)
+            .expect("apply firecrawl web search credential");
 
         let configured_credential = config.tools.web_search.firecrawl_api_key.as_deref();
         assert_eq!(configured_credential, Some("${TEAM_FIRECRAWL_KEY}"));
+    }
+
+    #[test]
+    fn apply_selected_web_search_credential_rejects_unknown_provider() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        let error = apply_selected_web_search_credential(
+            &mut config,
+            "unknown-provider",
+            WebSearchCredentialSelection::UseEnv("TEAM_UNKNOWN_KEY".to_owned()),
+        )
+        .expect_err("reject unsupported web search provider");
+
+        assert!(error.contains("unsupported web.search provider"));
+        assert!(error.contains("unknown-provider"));
     }
 
     #[test]
