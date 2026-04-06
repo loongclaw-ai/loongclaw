@@ -167,27 +167,7 @@ impl SessionContext {
     }
 
     pub fn resolved_runtime_narrowing(&self) -> Option<&ToolRuntimeNarrowing> {
-        let session_runtime_narrowing =
-            non_empty_runtime_narrowing_ref(self.runtime_narrowing.as_ref());
-        if let Some(session_runtime_narrowing) = session_runtime_narrowing {
-            return Some(session_runtime_narrowing);
-        }
-
-        let execution_runtime_narrowing = self
-            .subagent_execution
-            .as_ref()
-            .map(|execution| &execution.runtime_narrowing);
-        let execution_runtime_narrowing =
-            non_empty_runtime_narrowing_ref(execution_runtime_narrowing);
-        if let Some(execution_runtime_narrowing) = execution_runtime_narrowing {
-            return Some(execution_runtime_narrowing);
-        }
-
-        let contract_runtime_narrowing = self
-            .subagent_contract
-            .as_ref()
-            .map(|contract| &contract.runtime_narrowing);
-        non_empty_runtime_narrowing_ref(contract_runtime_narrowing)
+        self.resolve_runtime_narrowing_ref()
     }
 
     pub fn resolved_subagent_profile(&self) -> Option<ConstrainedSubagentProfile> {
@@ -247,27 +227,8 @@ impl SessionContext {
     }
 
     fn resolve_runtime_narrowing_owned(&self) -> Option<ToolRuntimeNarrowing> {
-        let session_runtime_narrowing =
-            non_empty_runtime_narrowing_owned(self.runtime_narrowing.clone());
-        if let Some(session_runtime_narrowing) = session_runtime_narrowing {
-            return Some(session_runtime_narrowing);
-        }
-
-        let execution_runtime_narrowing = self
-            .subagent_execution
-            .as_ref()
-            .map(|execution| execution.runtime_narrowing.clone());
-        let execution_runtime_narrowing =
-            non_empty_runtime_narrowing_owned(execution_runtime_narrowing);
-        if let Some(execution_runtime_narrowing) = execution_runtime_narrowing {
-            return Some(execution_runtime_narrowing);
-        }
-
-        let contract_runtime_narrowing = self
-            .subagent_contract
-            .as_ref()
-            .map(|contract| contract.runtime_narrowing.clone());
-        non_empty_runtime_narrowing_owned(contract_runtime_narrowing)
+        let resolved_runtime_narrowing = self.resolve_runtime_narrowing_ref();
+        resolved_runtime_narrowing.cloned()
     }
 
     fn synchronize_runtime_narrowing_views(&mut self) {
@@ -283,17 +244,35 @@ impl SessionContext {
             subagent_contract.runtime_narrowing = contract_runtime_narrowing;
         }
     }
+
+    fn resolve_runtime_narrowing_ref(&self) -> Option<&ToolRuntimeNarrowing> {
+        let session_runtime_narrowing =
+            non_empty_runtime_narrowing_ref(self.runtime_narrowing.as_ref());
+        if let Some(session_runtime_narrowing) = session_runtime_narrowing {
+            return Some(session_runtime_narrowing);
+        }
+
+        let execution_runtime_narrowing_source = self
+            .subagent_execution
+            .as_ref()
+            .map(|execution| &execution.runtime_narrowing);
+        let execution_runtime_narrowing =
+            non_empty_runtime_narrowing_ref(execution_runtime_narrowing_source);
+        if let Some(execution_runtime_narrowing) = execution_runtime_narrowing {
+            return Some(execution_runtime_narrowing);
+        }
+
+        let contract_runtime_narrowing_source = self
+            .subagent_contract
+            .as_ref()
+            .map(|contract| &contract.runtime_narrowing);
+        non_empty_runtime_narrowing_ref(contract_runtime_narrowing_source)
+    }
 }
 
 fn non_empty_runtime_narrowing_ref(
     runtime_narrowing: Option<&ToolRuntimeNarrowing>,
 ) -> Option<&ToolRuntimeNarrowing> {
-    runtime_narrowing.filter(|runtime_narrowing| !runtime_narrowing.is_empty())
-}
-
-fn non_empty_runtime_narrowing_owned(
-    runtime_narrowing: Option<ToolRuntimeNarrowing>,
-) -> Option<ToolRuntimeNarrowing> {
     runtime_narrowing.filter(|runtime_narrowing| !runtime_narrowing.is_empty())
 }
 
