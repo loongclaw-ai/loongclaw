@@ -5,7 +5,11 @@ use std::path::Path;
 use loongclaw_contracts::{ToolCoreOutcome, ToolCoreRequest};
 use serde_json::{Map, Value, json};
 
-use crate::memory::{WorkspaceMemoryDocumentLocation, collect_workspace_memory_document_locations};
+use crate::memory::{
+    MemoryContextProvenance, MemoryProvenanceSourceKind, MemoryRecallMode, MemoryScope,
+    WORKSPACE_RECALL_MEMORY_SYSTEM_ID, WorkspaceMemoryDocumentKind,
+    WorkspaceMemoryDocumentLocation, collect_workspace_memory_document_locations,
+};
 
 const DEFAULT_MEMORY_SEARCH_MAX_RESULTS: usize = 5;
 const MAX_MEMORY_SEARCH_RESULTS: usize = 8;
@@ -20,6 +24,7 @@ struct MemorySearchResult {
     end_line: usize,
     snippet: String,
     score: u32,
+    provenance: MemoryContextProvenance,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,6 +180,7 @@ pub(super) fn execute_memory_get_tool_with_config(
             "start_line": start_line,
             "end_line": end_line,
             "text": text,
+            "provenance": memory_location_provenance(matched_location),
         }),
     })
 }
@@ -352,6 +358,7 @@ fn search_memory_location(
         end_line,
         snippet,
         score: best_match.score,
+        provenance: memory_location_provenance(location),
     };
 
     Ok(Some(result))
@@ -463,7 +470,26 @@ fn memory_search_result_payload(result: &MemorySearchResult) -> Value {
         "end_line": result.end_line,
         "snippet": result.snippet,
         "score": result.score,
+        "provenance": result.provenance,
     })
+}
+
+fn memory_location_provenance(
+    location: &WorkspaceMemoryDocumentLocation,
+) -> MemoryContextProvenance {
+    let scope = match location.kind {
+        WorkspaceMemoryDocumentKind::Curated => MemoryScope::Workspace,
+        WorkspaceMemoryDocumentKind::DailyLog => MemoryScope::Session,
+    };
+
+    MemoryContextProvenance::new(
+        WORKSPACE_RECALL_MEMORY_SYSTEM_ID,
+        MemoryProvenanceSourceKind::WorkspaceDocument,
+        Some(location.label.clone()),
+        Some(location.path.display().to_string()),
+        Some(scope),
+        MemoryRecallMode::OperatorInspection,
+    )
 }
 
 fn trim_trailing_line_endings(line: &str) -> &str {

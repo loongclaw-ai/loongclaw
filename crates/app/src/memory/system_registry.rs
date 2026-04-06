@@ -402,7 +402,10 @@ mod tests {
         );
         assert_eq!(
             builtin.supported_recall_modes,
-            vec![MemoryRecallMode::PromptAssembly]
+            vec![
+                MemoryRecallMode::PromptAssembly,
+                MemoryRecallMode::OperatorInspection
+            ]
         );
 
         let workspace_recall = metadata
@@ -417,7 +420,10 @@ mod tests {
         );
         assert_eq!(
             workspace_recall.supported_recall_modes,
-            vec![MemoryRecallMode::PromptAssembly]
+            vec![
+                MemoryRecallMode::PromptAssembly,
+                MemoryRecallMode::OperatorInspection
+            ]
         );
     }
 

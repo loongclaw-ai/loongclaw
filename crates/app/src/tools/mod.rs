@@ -2658,6 +2658,14 @@ mod tests {
                 .is_some_and(|value| !value.is_empty())),
             "expected non-empty snippets: {results:?}"
         );
+        assert!(
+            results.iter().all(|entry| {
+                entry["provenance"]["memory_system_id"] == "workspace_recall"
+                    && entry["provenance"]["source_kind"] == "workspace_document"
+                    && entry["provenance"]["recall_mode"] == "operator_inspection"
+            }),
+            "expected structured operator-inspection provenance: {results:?}"
+        );
     }
 
     #[cfg(feature = "tool-file")]
@@ -2692,6 +2700,19 @@ mod tests {
         assert_eq!(outcome.payload["start_line"], 2);
         assert_eq!(outcome.payload["end_line"], 3);
         assert_eq!(outcome.payload["text"], "line two\nline three");
+        assert_eq!(
+            outcome.payload["provenance"]["memory_system_id"],
+            "workspace_recall"
+        );
+        assert_eq!(
+            outcome.payload["provenance"]["source_kind"],
+            "workspace_document"
+        );
+        assert_eq!(outcome.payload["provenance"]["scope"], "workspace");
+        assert_eq!(
+            outcome.payload["provenance"]["recall_mode"],
+            "operator_inspection"
+        );
     }
 
     #[cfg(feature = "tool-file")]
