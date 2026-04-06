@@ -2978,6 +2978,9 @@ fn apply_selected_web_search_credential(
         mvp::config::WEB_SEARCH_PROVIDER_EXA => {
             config.tools.web_search.exa_api_key = next_value;
         }
+        mvp::config::WEB_SEARCH_PROVIDER_FIRECRAWL => {
+            config.tools.web_search.firecrawl_api_key = next_value;
+        }
         mvp::config::WEB_SEARCH_PROVIDER_JINA => {
             config.tools.web_search.jina_api_key = next_value;
         }
@@ -7577,6 +7580,19 @@ mod tests {
             config.tools.web_search.tavily_api_key.as_deref(),
             Some("${TEAM_TAVILY_KEY}")
         );
+    }
+
+    #[test]
+    fn apply_selected_web_search_credential_updates_firecrawl_field() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        let provider = mvp::config::WEB_SEARCH_PROVIDER_FIRECRAWL;
+        let credential_env = "TEAM_FIRECRAWL_KEY".to_owned();
+        let selection = WebSearchCredentialSelection::UseEnv(credential_env);
+
+        apply_selected_web_search_credential(&mut config, provider, selection);
+
+        let configured_credential = config.tools.web_search.firecrawl_api_key.as_deref();
+        assert_eq!(configured_credential, Some("${TEAM_FIRECRAWL_KEY}"));
     }
 
     #[test]

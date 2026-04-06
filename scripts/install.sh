@@ -370,6 +370,7 @@ install_web_search_provider_display_name() {
     brave) printf 'Brave Search\n' ;;
     perplexity) printf 'Perplexity Search\n' ;;
     exa) printf 'Exa\n' ;;
+    firecrawl) printf 'Firecrawl Search\n' ;;
     jina) printf 'Jina Search\n' ;;
     *) printf '%s\n' "${provider}" ;;
   esac
@@ -455,6 +456,9 @@ install_web_search_provider_has_ready_credential() {
     exa)
       install_env_has_non_empty_value "EXA_API_KEY"
       ;;
+    firecrawl)
+      install_env_has_non_empty_value "FIRECRAWL_API_KEY"
+      ;;
     jina)
       install_env_has_non_empty_value "JINA_API_KEY" \
         || install_env_has_non_empty_value "JINA_AUTH_TOKEN"
@@ -470,7 +474,7 @@ recommend_onboard_web_search_provider_from_credentials() {
   local ready_count=0
   local provider=""
 
-  for provider in brave tavily perplexity exa jina; do
+  for provider in brave tavily perplexity exa firecrawl jina; do
     if ! install_web_search_provider_has_ready_credential "$provider"; then
       continue
     fi

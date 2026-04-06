@@ -2979,6 +2979,30 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    fn rustc_version_probe() -> (String, String, String, String) {
+        let output = std::process::Command::new("rustc")
+            .arg("--version")
+            .output()
+            .expect("run rustc --version");
+        let observed_version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        let exact_version = observed_version
+            .split_whitespace()
+            .nth(1)
+            .expect("rustc --version should include a semantic version")
+            .to_owned();
+        let version_components = exact_version.split('.').collect::<Vec<_>>();
+        let partial_version =
+            version_components[..version_components.len().saturating_sub(1)].join(".");
+
+        (
+            "rustc".to_owned(),
+            observed_version,
+            exact_version,
+            partial_version,
+        )
+    }
+
     #[test]
     fn resolve_secret_prefers_inline_value() {
         let resolved = resolve_secret_value(Some(" inline-key "), Some("SHOULD_NOT_BE_USED"));
@@ -5355,13 +5379,13 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn browser_companion_doctor_checks_warn_when_expected_version_mismatches() {
         let _env_guard = BrowserCompanionEnvGuard::runtime_gate_closed();
+        let (command, observed_version, _exact_version, partial_version) = rustc_version_probe();
 
         let mut config = mvp::config::LoongClawConfig::default();
         config.tools.browser_companion.enabled = true;
-        config.tools.browser_companion.command = Some(
-            crate::browser_companion_diagnostics::fake_browser_companion_version_command("1.4.0"),
-        );
-        config.tools.browser_companion.expected_version = Some("1.5.0".to_owned());
+        config.tools.browser_companion.command = Some(command);
+        config.tools.browser_companion.expected_version = Some(partial_version.clone());
+
 
         let checks = collect_browser_companion_doctor_checks(&config).await;
 
@@ -5369,10 +5393,12 @@ mod tests {
             checks.iter().any(|check| {
                 check.name == "browser companion install"
                     && check.level == DoctorCheckLevel::Warn
-                    && check.detail.contains("expected_version=1.5.0")
                     && check
                         .detail
-                        .contains("observed_version=loongclaw-browser-companion 1.4.0")
+                        .contains(format!("expected_version={partial_version}").as_str())
+                    && check
+                        .detail
+                        .contains(format!("observed_version={observed_version}").as_str())
             }),
             "doctor should surface version mismatches for the managed companion lane: {checks:#?}"
         );
@@ -5382,13 +5408,13 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn browser_companion_doctor_checks_warn_when_runtime_gate_is_closed() {
         let _env_guard = BrowserCompanionEnvGuard::runtime_gate_closed();
+        let (command, _observed_version, exact_version, _partial_version) = rustc_version_probe();
 
         let mut config = mvp::config::LoongClawConfig::default();
         config.tools.browser_companion.enabled = true;
-        config.tools.browser_companion.command = Some(
-            crate::browser_companion_diagnostics::fake_browser_companion_version_command("1.5.0"),
-        );
-        config.tools.browser_companion.expected_version = Some("1.5.0".to_owned());
+        config.tools.browser_companion.command = Some(command);
+        config.tools.browser_companion.expected_version = Some(exact_version);
+
 
         let checks = collect_browser_companion_doctor_checks(&config).await;
 
@@ -5406,13 +5432,13 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn browser_companion_doctor_checks_pass_when_runtime_gate_is_open() {
         let _env_guard = BrowserCompanionEnvGuard::runtime_gate_open();
+        let (command, _observed_version, exact_version, _partial_version) = rustc_version_probe();
 
         let mut config = mvp::config::LoongClawConfig::default();
         config.tools.browser_companion.enabled = true;
-        config.tools.browser_companion.command = Some(
-            crate::browser_companion_diagnostics::fake_browser_companion_version_command("1.5.0"),
-        );
-        config.tools.browser_companion.expected_version = Some("1.5.0".to_owned());
+        config.tools.browser_companion.command = Some(command);
+        config.tools.browser_companion.expected_version = Some(exact_version);
+
 
         let checks = collect_browser_companion_doctor_checks(&config).await;
 

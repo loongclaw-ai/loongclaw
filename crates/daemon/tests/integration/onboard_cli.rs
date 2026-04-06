@@ -1633,6 +1633,75 @@ async fn interactive_onboard_web_search_custom_env_persists_explicit_env_referen
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn interactive_onboard_firecrawl_web_search_custom_env_persists_explicit_env_reference() {
+    let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
+    let _openai_env = unsafe { EnvVarGuard::set_unlocked("OPENAI_API_KEY", "openai-test-token") };
+    let _firecrawl_env =
+        unsafe { EnvVarGuard::set_unlocked("TEAM_FIRECRAWL_KEY", "firecrawl-test-token") };
+    let output_path = unique_temp_path("interactive-firecrawl-web-search-env.toml");
+    let mut existing = mvp::config::LoongClawConfig::default();
+
+    existing.provider.model = "gpt-4.1".to_owned();
+    existing.provider.api_key_env = Some("OPENAI_API_KEY".to_owned());
+    mvp::config::write(output_path.to_str(), &existing, true).expect("write existing config");
+
+    let transcript = run_scripted_onboard_flow(
+        loongclaw_daemon::onboard_cli::OnboardCommandOptions {
+            output: output_path.to_str().map(str::to_owned),
+            force: false,
+            non_interactive: false,
+            accept_risk: true,
+            provider: None,
+            model: None,
+            api_key_env: None,
+            web_search_provider: None,
+            web_search_api_key_env: None,
+            personality: None,
+            memory_profile: None,
+            system_prompt: None,
+            skip_model_probe: true,
+        },
+        vec![
+            "1".to_owned(),
+            "2".to_owned(),
+            provider_choice_input(mvp::config::ProviderKind::Openai),
+            "gpt-4.1".to_owned(),
+            "OPENAI_API_KEY".to_owned(),
+            String::new(),
+            String::new(),
+            String::new(),
+            "firecrawl".to_owned(),
+            "TEAM_FIRECRAWL_KEY".to_owned(),
+            "y".to_owned(),
+            "y".to_owned(),
+            "o".to_owned(),
+        ],
+        None,
+        None,
+    )
+    .await
+    .expect("run scripted onboarding with custom firecrawl web search env");
+
+    let joined = transcript.join("\n");
+    assert!(
+        joined.contains("choose web search credential"),
+        "interactive onboarding should prompt for a web-search credential source when Firecrawl is selected: {transcript:#?}"
+    );
+
+    let (_, config) =
+        mvp::config::load(output_path.to_str()).expect("load onboarding config with firecrawl");
+    assert_eq!(
+        config.tools.web_search.default_provider,
+        mvp::config::WEB_SEARCH_PROVIDER_FIRECRAWL
+    );
+    assert_eq!(
+        config.tools.web_search.firecrawl_api_key.as_deref(),
+        Some("${TEAM_FIRECRAWL_KEY}"),
+        "interactive onboarding should persist the selected Firecrawl env as an explicit env reference"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn interactive_onboard_web_search_blank_input_keeps_inline_credential() {
     let _env_guard = DetectedEnvironmentGuard::without_detected_environment();
     let _openai_env = unsafe { EnvVarGuard::set_unlocked("OPENAI_API_KEY", "openai-test-token") };

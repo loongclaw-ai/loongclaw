@@ -452,12 +452,13 @@ api_key = { env = "PROVIDER_API_KEY" }
 
 Guided onboarding now also lets you choose the default web search backend.
 Supported providers are `duckduckgo`, `brave`, `tavily`, `perplexity`, `exa`,
-and `jina`. If you keep the default choice, LoongClaw uses DuckDuckGo for the
-general case, or Tavily when domestic Chinese locale/network hints suggest it
-is the safer first-run default. When the selected provider requires a key,
-onboarding immediately asks which environment variable should back that
-credential and writes the config as an env reference such as
-`"${TAVILY_API_KEY}"`, instead of asking users to paste the secret inline.
+`firecrawl`, and `jina`. If you keep the default choice, LoongClaw uses
+DuckDuckGo for the general case, or Tavily when domestic Chinese
+locale/network hints suggest it is the safer first-run default. When the
+selected provider requires a key, onboarding immediately asks which environment
+variable should back that credential and writes the config as an env reference
+such as `"${TAVILY_API_KEY}"`, instead of asking users to paste the secret
+inline.
 Non-interactive onboarding also accepts `--web-search-provider <provider>` and
 `--web-search-api-key <ENV_NAME>`. Explicit choices stay explicit: LoongClaw no
 longer silently falls back to DuckDuckGo when the operator explicitly selected
@@ -470,6 +471,7 @@ default_provider = "duckduckgo"
 # tavily_api_key = "${TAVILY_API_KEY}"
 # perplexity_api_key = "${PERPLEXITY_API_KEY}"
 # exa_api_key = "${EXA_API_KEY}"
+# firecrawl_api_key = "${FIRECRAWL_API_KEY}"
 # jina_api_key = "${JINA_API_KEY}"
 # or "${JINA_AUTH_TOKEN}"
 ```
@@ -661,13 +663,14 @@ blocked_domains = ["*.internal.example"]
 
 [tools.web_search]
 enabled = true
-default_provider = "duckduckgo" # or "ddg", "brave", "tavily", "perplexity", "exa", "jina"
+default_provider = "duckduckgo" # or "ddg", "brave", "tavily", "perplexity", "exa", "firecrawl", "jina"
 timeout_seconds = 30
 max_results = 5
 # brave_api_key = "${BRAVE_API_KEY}"
 # tavily_api_key = "${TAVILY_API_KEY}"
 # perplexity_api_key = "${PERPLEXITY_API_KEY}"
 # exa_api_key = "${EXA_API_KEY}"
+# firecrawl_api_key = "${FIRECRAWL_API_KEY}"
 # jina_api_key = "${JINA_API_KEY}"
 # or "${JINA_AUTH_TOKEN}"
 ```
@@ -684,8 +687,8 @@ prefix_rule(pattern=["cargo", "publish"], decision="deny")
 
 Further references:
 
-- `default_provider` accepts `duckduckgo` (or `ddg`), `brave`, `tavily`, `perplexity` (or `perplexity_search`), `exa`, and `jina` (or `jinaai` / `jina-ai`)
-- `BRAVE_API_KEY`, `TAVILY_API_KEY`, `PERPLEXITY_API_KEY`, `EXA_API_KEY`, `JINA_API_KEY`, and `JINA_AUTH_TOKEN` stay supported as environment fallbacks
+- `default_provider` accepts `duckduckgo` (or `ddg`), `brave`, `tavily`, `perplexity` (or `perplexity_search`), `exa`, `firecrawl`, and `jina` (or `jinaai` / `jina-ai`)
+- `BRAVE_API_KEY`, `TAVILY_API_KEY`, `PERPLEXITY_API_KEY`, `EXA_API_KEY`, `FIRECRAWL_API_KEY`, `JINA_API_KEY`, and `JINA_AUTH_TOKEN` stay supported as environment fallbacks
 - [Tool Surface Spec](docs/product-specs/tool-surface.md)
 - [Product Specs](docs/product-specs/index.md)
 - `loong validate-config --config ~/.loongclaw/config.toml --json`

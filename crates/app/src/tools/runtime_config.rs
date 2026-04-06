@@ -596,6 +596,7 @@ pub struct WebSearchRuntimePolicy {
     pub tavily_api_key: Option<String>,
     pub perplexity_api_key: Option<String>,
     pub exa_api_key: Option<String>,
+    pub firecrawl_api_key: Option<String>,
     pub jina_api_key: Option<String>,
     pub timeout_seconds: u64,
     pub max_results: usize,
@@ -610,6 +611,7 @@ impl Default for WebSearchRuntimePolicy {
             tavily_api_key: None,
             perplexity_api_key: None,
             exa_api_key: None,
+            firecrawl_api_key: None,
             jina_api_key: None,
             timeout_seconds: crate::config::DEFAULT_WEB_SEARCH_TIMEOUT_SECONDS,
             max_results: crate::config::DEFAULT_WEB_SEARCH_MAX_RESULTS,
@@ -832,6 +834,12 @@ impl ToolRuntimeConfig {
                         crate::config::WEB_SEARCH_PROVIDER_EXA,
                     ),
                 ),
+                firecrawl_api_key: resolve_web_search_secret_binding(
+                    config.tools.web_search.firecrawl_api_key.as_deref(),
+                    crate::config::web_search_provider_api_key_env_names(
+                        crate::config::WEB_SEARCH_PROVIDER_FIRECRAWL,
+                    ),
+                ),
                 jina_api_key: resolve_web_search_secret_binding(
                     config.tools.web_search.jina_api_key.as_deref(),
                     crate::config::web_search_provider_api_key_env_names(
@@ -969,6 +977,12 @@ impl ToolRuntimeConfig {
                 crate::config::WEB_SEARCH_PROVIDER_EXA,
             ),
         );
+        let web_search_firecrawl_api_key = resolve_web_search_secret_binding(
+            None,
+            crate::config::web_search_provider_api_key_env_names(
+                crate::config::WEB_SEARCH_PROVIDER_FIRECRAWL,
+            ),
+        );
         let web_search_jina_api_key = resolve_web_search_secret_binding(
             None,
             crate::config::web_search_provider_api_key_env_names(
@@ -1074,6 +1088,7 @@ impl ToolRuntimeConfig {
                 tavily_api_key: web_search_tavily_api_key,
                 perplexity_api_key: web_search_perplexity_api_key,
                 exa_api_key: web_search_exa_api_key,
+                firecrawl_api_key: web_search_firecrawl_api_key,
                 jina_api_key: web_search_jina_api_key,
                 timeout_seconds: web_search_timeout_seconds,
                 max_results: web_search_max_results,
@@ -1708,6 +1723,7 @@ mod tests {
             "TAVILY_API_KEY",
             "PERPLEXITY_API_KEY",
             "EXA_API_KEY",
+            "FIRECRAWL_API_KEY",
             "JINA_API_KEY",
             "JINA_AUTH_TOKEN",
             "LOONGCLAW_EXTERNAL_SKILLS_ENABLED",
@@ -2552,6 +2568,10 @@ mod tests {
         );
         env.set(crate::config::WEB_SEARCH_EXA_API_KEY_ENV, "exa-test-key");
         env.set(
+            crate::config::WEB_SEARCH_FIRECRAWL_API_KEY_ENV,
+            "firecrawl-test-key",
+        );
+        env.set(
             crate::config::WEB_SEARCH_JINA_AUTH_TOKEN_ENV,
             "jina-test-key",
         );
@@ -2579,6 +2599,10 @@ mod tests {
         assert_eq!(
             config.web_search.exa_api_key.as_deref(),
             Some("exa-test-key")
+        );
+        assert_eq!(
+            config.web_search.firecrawl_api_key.as_deref(),
+            Some("firecrawl-test-key")
         );
         assert_eq!(
             config.web_search.jina_api_key.as_deref(),
@@ -2609,6 +2633,32 @@ mod tests {
             runtime.web_search.exa_api_key.as_deref(),
             Some("exa-inline-env")
         );
+    }
+
+    #[test]
+    fn from_loongclaw_config_resolves_inline_env_refs_for_firecrawl_web_search_credentials() {
+        let mut env = ScopedEnv::new();
+        clear_tool_runtime_env(&mut env);
+        #[cfg(feature = "feishu-integration")]
+        clear_feishu_runtime_env(&mut env);
+        env.set("TEAM_FIRECRAWL_KEY", "firecrawl-inline-env");
+
+        let mut config = LoongClawConfig::default();
+        let provider_id = crate::config::WEB_SEARCH_PROVIDER_FIRECRAWL.to_owned();
+        let credential_ref = "${TEAM_FIRECRAWL_KEY}".to_owned();
+
+        config.tools.web_search.default_provider = provider_id;
+        config.tools.web_search.firecrawl_api_key = Some(credential_ref);
+
+        let runtime = ToolRuntimeConfig::from_loongclaw_config(&config, None);
+        let runtime_provider = runtime.web_search.default_provider.as_str();
+        let runtime_credential = runtime.web_search.firecrawl_api_key.as_deref();
+
+        assert_eq!(
+            runtime_provider,
+            crate::config::WEB_SEARCH_PROVIDER_FIRECRAWL
+        );
+        assert_eq!(runtime_credential, Some("firecrawl-inline-env"));
     }
 
     #[test]

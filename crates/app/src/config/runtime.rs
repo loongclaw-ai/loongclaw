@@ -35,9 +35,10 @@ use super::{
     },
     tools::{
         DEFAULT_WEB_SEARCH_PROVIDER, ExternalSkillsConfig, ToolConfig,
-        WEB_SEARCH_BRAVE_API_KEY_ENV, WEB_SEARCH_EXA_API_KEY_ENV, WEB_SEARCH_JINA_API_KEY_ENV,
-        WEB_SEARCH_JINA_AUTH_TOKEN_ENV, WEB_SEARCH_PERPLEXITY_API_KEY_ENV,
-        WEB_SEARCH_PROVIDER_VALID_VALUES, WEB_SEARCH_TAVILY_API_KEY_ENV,
+        WEB_SEARCH_BRAVE_API_KEY_ENV, WEB_SEARCH_EXA_API_KEY_ENV, WEB_SEARCH_FIRECRAWL_API_KEY_ENV,
+        WEB_SEARCH_JINA_API_KEY_ENV, WEB_SEARCH_JINA_AUTH_TOKEN_ENV,
+        WEB_SEARCH_PERPLEXITY_API_KEY_ENV, WEB_SEARCH_PROVIDER_VALID_VALUES,
+        WEB_SEARCH_TAVILY_API_KEY_ENV,
     },
 };
 use crate::secrets::{canonicalize_env_secret_reference, secret_ref_env_name};
@@ -2167,6 +2168,7 @@ fn template_web_search_usage_comment() -> String {
 # - Tavily credentials can use `tools.web_search.tavily_api_key = \"${{{WEB_SEARCH_TAVILY_API_KEY_ENV}}}\"` or the `{WEB_SEARCH_TAVILY_API_KEY_ENV}` environment variable.\n\
 # - Perplexity credentials can use `tools.web_search.perplexity_api_key = \"${{{WEB_SEARCH_PERPLEXITY_API_KEY_ENV}}}\"` or the `{WEB_SEARCH_PERPLEXITY_API_KEY_ENV}` environment variable.\n\
 # - Exa credentials can use `tools.web_search.exa_api_key = \"${{{WEB_SEARCH_EXA_API_KEY_ENV}}}\"` or the `{WEB_SEARCH_EXA_API_KEY_ENV}` environment variable.\n\
+# - Firecrawl credentials can use `tools.web_search.firecrawl_api_key = \"${{{WEB_SEARCH_FIRECRAWL_API_KEY_ENV}}}\"` or the `{WEB_SEARCH_FIRECRAWL_API_KEY_ENV}` environment variable.\n\
 # - Jina credentials can use `tools.web_search.jina_api_key = \"${{{WEB_SEARCH_JINA_API_KEY_ENV}}}\"` or the `{WEB_SEARCH_JINA_API_KEY_ENV}` / `{WEB_SEARCH_JINA_AUTH_TOKEN_ENV}` environment variable.\n\
 \n"
     )
@@ -2285,6 +2287,7 @@ bot_token_env = "123456789:telegram-inline-secret-literal"
         assert!(raw.contains(WEB_SEARCH_TAVILY_API_KEY_ENV));
         assert!(raw.contains(WEB_SEARCH_PERPLEXITY_API_KEY_ENV));
         assert!(raw.contains(WEB_SEARCH_EXA_API_KEY_ENV));
+        assert!(raw.contains(WEB_SEARCH_FIRECRAWL_API_KEY_ENV));
         assert!(raw.contains(WEB_SEARCH_JINA_API_KEY_ENV));
         assert!(raw.contains(WEB_SEARCH_JINA_AUTH_TOKEN_ENV));
 

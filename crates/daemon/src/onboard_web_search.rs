@@ -539,6 +539,9 @@ pub(crate) fn configured_web_search_provider_secret<'a>(
             config.tools.web_search.perplexity_api_key.as_deref()
         }
         mvp::config::WEB_SEARCH_PROVIDER_EXA => config.tools.web_search.exa_api_key.as_deref(),
+        mvp::config::WEB_SEARCH_PROVIDER_FIRECRAWL => {
+            config.tools.web_search.firecrawl_api_key.as_deref()
+        }
         mvp::config::WEB_SEARCH_PROVIDER_JINA => config.tools.web_search.jina_api_key.as_deref(),
         _ => None,
     }
@@ -619,6 +622,21 @@ mod tests {
             recommendation.source,
             WebSearchProviderRecommendationSource::Configured
         );
+    }
+
+    #[test]
+    fn configured_web_search_provider_secret_reads_firecrawl_field() {
+        let mut config = mvp::config::LoongClawConfig::default();
+        let secret_value = "${FIRECRAWL_API_KEY}".to_owned();
+
+        config.tools.web_search.firecrawl_api_key = Some(secret_value);
+
+        let configured_secret = configured_web_search_provider_secret(
+            &config,
+            mvp::config::WEB_SEARCH_PROVIDER_FIRECRAWL,
+        );
+
+        assert_eq!(configured_secret, Some("${FIRECRAWL_API_KEY}"));
     }
 
     #[test]
