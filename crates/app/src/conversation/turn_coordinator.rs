@@ -28,7 +28,9 @@ use crate::acp::{
 };
 use crate::memory::runtime_config::MemoryRuntimeConfig;
 #[cfg(feature = "memory-sqlite")]
-use crate::operator::delegate_runtime::create_delegate_child_session;
+use crate::operator::delegate_runtime::{
+    build_delegate_child_lifecycle_seed, next_delegate_child_depth,
+};
 use crate::runtime_self_continuity;
 
 use super::super::config::LoongClawConfig;
