@@ -118,6 +118,7 @@ pub(super) fn render_input(
         | FocusLayer::Help
         | FocusLayer::SessionPicker
         | FocusLayer::StatsOverlay
+        | FocusLayer::DiffOverlay
         | FocusLayer::ToolInspector
         | FocusLayer::ClarifyDialog => {
             let pending_submission_count = pane.pending_submission_count();

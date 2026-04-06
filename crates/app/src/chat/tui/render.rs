@@ -59,6 +59,15 @@ pub(super) struct StatsOverlayView<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub(super) struct DiffOverlayView<'a> {
+    pub(super) mode: &'a str,
+    pub(super) cwd_display: &'a str,
+    pub(super) status_output: &'a str,
+    pub(super) diff_output: &'a str,
+    pub(super) scroll_offset: u16,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub(super) struct SessionPickerView<'a> {
     pub(super) picker: &'a state::SessionPickerState,
     pub(super) current_session_id: &'a str,
@@ -80,6 +89,7 @@ pub(super) trait ShellView {
     fn clarify_dialog(&self) -> Option<&ClarifyDialog>;
     fn tool_inspector(&self) -> Option<ToolInspectorView<'_>>;
     fn stats_overlay(&self) -> Option<StatsOverlayView<'_>>;
+    fn diff_overlay(&self) -> Option<DiffOverlayView<'_>>;
     fn session_picker(&self) -> Option<SessionPickerView<'_>>;
     fn slash_command_selection(&self) -> usize;
     fn slash_palette_entries(&self, draft_prefix: &str) -> Vec<SlashPaletteEntry>;
@@ -169,6 +179,12 @@ pub(super) fn draw(
         && state.focus().has(FocusLayer::StatsOverlay)
     {
         render_stats_overlay(stats_overlay, frame, area, palette);
+    }
+
+    if let Some(diff_overlay) = state.diff_overlay()
+        && state.focus().has(FocusLayer::DiffOverlay)
+    {
+        render_diff_overlay(diff_overlay, frame, area, palette);
     }
 
     if let Some(session_picker) = state.session_picker()
@@ -346,6 +362,7 @@ fn compact_focus_label(focus: FocusLayer) -> &'static str {
         FocusLayer::Help => "HELP",
         FocusLayer::SessionPicker => "PICKER",
         FocusLayer::StatsOverlay => "STATS",
+        FocusLayer::DiffOverlay => "DIFF",
         FocusLayer::ToolInspector => "TOOL",
         FocusLayer::ClarifyDialog => "QUESTION",
     }
@@ -437,6 +454,130 @@ fn render_stats_overlay(
         stats::StatsTab::Sessions => {
             render_stats_sessions_body(frame, *body_area, stats_overlay, palette);
         }
+    }
+}
+
+fn render_diff_overlay(
+    diff_overlay: DiffOverlayView<'_>,
+    frame: &mut Frame<'_>,
+    area: Rect,
+    palette: &Palette,
+) {
+    if area.width < 44 || area.height < 12 {
+        return;
+    }
+
+    let max_width = area.width.saturating_sub(4);
+    let preferred_width = area.width.saturating_mul(5) / 6;
+    let popup_width = preferred_width.max(76).min(max_width);
+
+    let max_height = area.height.saturating_sub(2);
+    let preferred_height = area.height.saturating_mul(5) / 6;
+    let popup_height = preferred_height.max(16).min(max_height);
+
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(palette.separator))
+        .title(Span::styled(
+            " Diff ",
+            Style::default()
+                .fg(palette.info)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .title_position(TitlePosition::Top)
+        .title(Span::styled(
+            " Up/Down scroll · PgUp/PgDn page · Esc close ",
+            Style::default()
+                .fg(palette.dim)
+                .add_modifier(Modifier::ITALIC),
+        ))
+        .title_position(TitlePosition::Bottom)
+        .style(Style::default().bg(palette.surface));
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let mut content_lines: Vec<Line<'static>> = Vec::new();
+    content_lines.push(Line::from(vec![
+        Span::styled(" Workspace: ".to_owned(), Style::default().fg(palette.dim)),
+        Span::styled(
+            diff_overlay.cwd_display.to_owned(),
+            Style::default().fg(palette.text),
+        ),
+    ]));
+    content_lines.push(Line::from(vec![
+        Span::styled(" Mode: ".to_owned(), Style::default().fg(palette.dim)),
+        Span::styled(
+            diff_overlay.mode.to_owned(),
+            Style::default()
+                .fg(palette.brand)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    if !diff_overlay.status_output.trim().is_empty() {
+        content_lines.push(Line::default());
+        content_lines.push(Line::styled(
+            " Status",
+            Style::default()
+                .fg(palette.brand)
+                .add_modifier(Modifier::BOLD),
+        ));
+        for status_line in diff_overlay.status_output.lines() {
+            let line = Line::styled(format!(" {status_line}"), Style::default().fg(palette.dim));
+            content_lines.push(line);
+        }
+    }
+
+    content_lines.push(Line::default());
+    content_lines.push(Line::styled(
+        " Changes",
+        Style::default()
+            .fg(palette.brand)
+            .add_modifier(Modifier::BOLD),
+    ));
+    if diff_overlay.diff_output.trim().is_empty() {
+        content_lines.push(Line::styled(
+            " working tree clean".to_owned(),
+            Style::default().fg(palette.dim),
+        ));
+    } else {
+        let rendered_output_lines = render_tool_output_lines(diff_overlay.diff_output, palette);
+        for rendered_output_line in rendered_output_lines {
+            content_lines.push(rendered_output_line);
+        }
+    }
+
+    let paragraph = Paragraph::new(content_lines).wrap(Wrap { trim: false });
+    let total_lines = paragraph.line_count(inner.width) as u16;
+    let visible_height = inner.height;
+    let max_scroll = total_lines.saturating_sub(visible_height);
+    let scroll_offset = diff_overlay.scroll_offset.min(max_scroll);
+    let paragraph = paragraph.scroll((scroll_offset, 0));
+
+    frame.render_widget(paragraph, inner);
+
+    if total_lines > visible_height {
+        let mut scrollbar_state = ScrollbarState::new(total_lines as usize);
+        scrollbar_state = scrollbar_state.position(scroll_offset as usize);
+
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .style(Style::default().fg(palette.dim));
+
+        frame.render_stateful_widget(
+            scrollbar,
+            inner.inner(Margin {
+                horizontal: 0,
+                vertical: 0,
+            }),
+            &mut scrollbar_state,
+        );
     }
 }
 
@@ -2266,6 +2407,7 @@ mod tests {
         focus: FocusStack,
         clarify_dialog: Option<ClarifyDialog>,
         stats_overlay: Option<StatsOverlayView<'static>>,
+        diff_overlay: Option<DiffOverlayView<'static>>,
         session_picker: Option<state::SessionPickerState>,
         slash_palette_entries_override: Option<Vec<SlashPaletteEntry>>,
         tool_inspector: Option<TestToolInspector>,
@@ -2280,6 +2422,7 @@ mod tests {
                 focus: FocusStack::new(),
                 clarify_dialog: None,
                 stats_overlay: None,
+                diff_overlay: None,
                 session_picker: None,
                 slash_palette_entries_override: None,
                 tool_inspector: None,
@@ -2318,6 +2461,9 @@ mod tests {
         }
         fn stats_overlay(&self) -> Option<StatsOverlayView<'_>> {
             self.stats_overlay
+        }
+        fn diff_overlay(&self) -> Option<DiffOverlayView<'_>> {
+            self.diff_overlay
         }
         fn session_picker(&self) -> Option<SessionPickerView<'_>> {
             let picker = self.session_picker.as_ref()?;
@@ -2511,6 +2657,44 @@ mod tests {
         assert!(
             text.contains("Tokens per Day"),
             "stats chart title should render"
+        );
+    }
+
+    #[test]
+    fn draw_with_diff_overlay() {
+        let backend = TestBackend::new(110, 34);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut focus = FocusStack::new();
+        focus.push(FocusLayer::DiffOverlay);
+        let shell = TestShell {
+            focus,
+            diff_overlay: Some(DiffOverlayView {
+                mode: "full",
+                cwd_display: "issue-689-tui-polish-clean",
+                status_output: " M crates/app/src/chat/tui/render.rs",
+                diff_output: "@@ -1,2 +1,2 @@\n-old line\n+new line",
+                scroll_offset: 0,
+            }),
+            ..TestShell::idle()
+        };
+        let palette = Palette::dark();
+        let textarea = tui_textarea::TextArea::default();
+
+        terminal
+            .draw(|f| {
+                draw(f, &shell, &textarea, &palette);
+            })
+            .expect("draw");
+
+        let text = buffer_text(&terminal);
+        assert!(text.contains("Diff"), "diff overlay should be visible");
+        assert!(
+            text.contains("Workspace:"),
+            "diff overlay should show workspace"
+        );
+        assert!(
+            text.contains("new line"),
+            "diff overlay should render diff content"
         );
     }
 

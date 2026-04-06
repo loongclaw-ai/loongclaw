@@ -5,6 +5,7 @@ pub(crate) enum FocusLayer {
     Help,
     SessionPicker,
     StatsOverlay,
+    DiffOverlay,
     ToolInspector,
     ClarifyDialog,
 }
@@ -94,6 +95,16 @@ mod tests {
         assert_eq!(stack.top(), FocusLayer::ClarifyDialog);
         stack.pop();
         assert_eq!(stack.top(), FocusLayer::Help);
+    }
+
+    #[test]
+    fn diff_overlay_is_tracked_as_overlay_focus() {
+        let mut stack = FocusStack::new();
+
+        stack.push(FocusLayer::DiffOverlay);
+
+        assert_eq!(stack.top(), FocusLayer::DiffOverlay);
+        assert!(stack.has(FocusLayer::DiffOverlay));
     }
 
     #[test]

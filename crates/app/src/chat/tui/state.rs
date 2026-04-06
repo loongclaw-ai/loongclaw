@@ -119,6 +119,15 @@ impl StatsOverlayState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct DiffOverlayState {
+    pub(super) mode: String,
+    pub(super) cwd_display: String,
+    pub(super) status_output: String,
+    pub(super) diff_output: String,
+    pub(super) scroll_offset: u16,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SessionPickerMode {
     Resume,
@@ -1086,6 +1095,7 @@ pub(super) struct Shell {
     pub(super) runtime_config_path: Option<std::path::PathBuf>,
     pub(super) session_picker: Option<SessionPickerState>,
     pub(super) stats_overlay: Option<StatsOverlayState>,
+    pub(super) diff_overlay: Option<DiffOverlayState>,
     pub(super) last_context_poll_at: Instant,
     pub(super) subagent_surface_snapshot: SubagentSurfaceSnapshot,
     pub(super) running: bool,
@@ -1104,6 +1114,7 @@ impl Shell {
             runtime_config_path: None,
             session_picker: None,
             stats_overlay: None,
+            diff_overlay: None,
             last_context_poll_at: Instant::now(),
             subagent_surface_snapshot: SubagentSurfaceSnapshot::default(),
             running: true,

@@ -329,6 +329,16 @@ impl ShellView for state::Shell {
             copy_status: stats_overlay.copy_status.as_deref(),
         })
     }
+    fn diff_overlay(&self) -> Option<render::DiffOverlayView<'_>> {
+        let diff_overlay = self.diff_overlay.as_ref()?;
+        Some(render::DiffOverlayView {
+            mode: diff_overlay.mode.as_str(),
+            cwd_display: diff_overlay.cwd_display.as_str(),
+            status_output: diff_overlay.status_output.as_str(),
+            diff_output: diff_overlay.diff_output.as_str(),
+            scroll_offset: diff_overlay.scroll_offset,
+        })
+    }
     fn session_picker(&self) -> Option<render::SessionPickerView<'_>> {
         let session_picker = self.session_picker.as_ref()?;
         Some(render::SessionPickerView {
@@ -2154,6 +2164,7 @@ fn focus_layer_label(layer: FocusLayer) -> &'static str {
         FocusLayer::Help => "help",
         FocusLayer::SessionPicker => "session-picker",
         FocusLayer::StatsOverlay => "stats",
+        FocusLayer::DiffOverlay => "diff",
         FocusLayer::ToolInspector => "tool",
         FocusLayer::ClarifyDialog => "question",
     }
@@ -2406,6 +2417,37 @@ fn close_stats_overlay(shell: &mut state::Shell) {
     if shell.focus.top() == FocusLayer::StatsOverlay {
         shell.focus.pop();
     }
+}
+
+fn close_diff_overlay(shell: &mut state::Shell) {
+    shell.diff_overlay = None;
+    if shell.focus.top() == FocusLayer::DiffOverlay {
+        shell.focus.pop();
+    }
+}
+
+fn scroll_diff_overlay_up(shell: &mut state::Shell, amount: u16) {
+    let diff_overlay = match shell.diff_overlay.as_mut() {
+        Some(diff_overlay) => diff_overlay,
+        None => return,
+    };
+    let next_offset = diff_overlay.scroll_offset.saturating_sub(amount);
+
+    diff_overlay.scroll_offset = next_offset;
+}
+
+fn scroll_diff_overlay_down(shell: &mut state::Shell, amount: u16) {
+    let diff_overlay = match shell.diff_overlay.as_mut() {
+        Some(diff_overlay) => diff_overlay,
+        None => return,
+    };
+    let next_offset = diff_overlay.scroll_offset.saturating_add(amount);
+
+    diff_overlay.scroll_offset = next_offset;
+}
+
+fn diff_overlay_scroll_step() -> u16 {
+    10
 }
 
 fn open_resume_picker(shell: &mut state::Shell) {
@@ -4690,8 +4732,6 @@ fn export_transcript(shell: &mut state::Shell, args: &str) {
     }
 }
 
-const DIFF_OUTPUT_LINE_LIMIT: usize = 120;
-
 fn git_output(args: &[&str], cwd: &std::path::Path) -> Result<String, String> {
     let output = Command::new("git")
         .args(args)
@@ -4728,50 +4768,6 @@ fn normalize_diff_mode(args: &str) -> Result<&str, String> {
     ))
 }
 
-fn build_diff_surface_lines(cwd: &std::path::Path, mode: &str) -> Result<Vec<String>, String> {
-    let status = git_output(&["status", "--short"], cwd)?;
-    let diff = if mode == "full" {
-        git_output(
-            &["diff", "--no-ext-diff", "--stat", "--patch", "--no-color"],
-            cwd,
-        )?
-    } else {
-        git_output(&["diff", "--no-ext-diff", "--stat", "--no-color"], cwd)?
-    };
-
-    let mut lines = vec![format!("- cwd: {}", cwd.display())];
-
-    if status.trim().is_empty() && diff.trim().is_empty() {
-        lines.push("- working tree clean".to_owned());
-        return Ok(lines);
-    }
-
-    if !status.trim().is_empty() {
-        lines.push("- status:".to_owned());
-        lines.extend(status.lines().map(|line| format!("  {line}")));
-    }
-
-    if !diff.trim().is_empty() {
-        lines.push(format!("- diff ({mode}):"));
-        let diff_lines = diff.lines().collect::<Vec<_>>();
-        let truncated = diff_lines.len() > DIFF_OUTPUT_LINE_LIMIT;
-        lines.extend(
-            diff_lines
-                .iter()
-                .take(DIFF_OUTPUT_LINE_LIMIT)
-                .map(|line| format!("  {line}")),
-        );
-        if truncated {
-            lines.push(format!(
-                "  ... truncated after {} lines",
-                DIFF_OUTPUT_LINE_LIMIT
-            ));
-        }
-    }
-
-    Ok(lines)
-}
-
 fn show_diff_surface(shell: &mut state::Shell, args: &str) {
     let mode = match normalize_diff_mode(args) {
         Ok(mode) => mode,
@@ -4781,18 +4777,62 @@ fn show_diff_surface(shell: &mut state::Shell, args: &str) {
         }
     };
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let lines = match build_diff_surface_lines(cwd.as_path(), mode) {
-        Ok(lines) => lines,
+    let status_output = match git_output(&["status", "--short"], cwd.as_path()) {
+        Ok(output) => output,
         Err(error) => {
             shell
                 .pane
-                .add_system_message(&format!("Unable to show diff: {error}"));
+                .add_system_message(&format!("Unable to inspect working tree status: {error}"));
             return;
         }
     };
+    let diff_output = if mode == "full" {
+        match git_output(
+            &["diff", "--no-ext-diff", "--stat", "--patch", "--no-color"],
+            cwd.as_path(),
+        ) {
+            Ok(output) => output,
+            Err(error) => {
+                shell
+                    .pane
+                    .add_system_message(&format!("Unable to inspect working tree diff: {error}"));
+                return;
+            }
+        }
+    } else {
+        match git_output(
+            &["diff", "--no-ext-diff", "--stat", "--no-color"],
+            cwd.as_path(),
+        ) {
+            Ok(output) => output,
+            Err(error) => {
+                shell
+                    .pane
+                    .add_system_message(&format!("Unable to inspect working tree diff: {error}"));
+                return;
+            }
+        }
+    };
+    let cwd_display = cwd
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| cwd.display().to_string());
+    let diff_overlay = state::DiffOverlayState {
+        mode: mode.to_owned(),
+        cwd_display,
+        status_output,
+        diff_output,
+        scroll_offset: 0,
+    };
 
-    append_surface_message(shell, "working tree diff", lines.as_slice());
-    shell.pane.set_status("Diff added to transcript".to_owned());
+    shell.diff_overlay = Some(diff_overlay);
+    if !shell.focus.has(FocusLayer::DiffOverlay) {
+        shell.focus.push(FocusLayer::DiffOverlay);
+    }
+    shell.pane.set_status("Diff overlay opened".to_owned());
 }
 
 enum CopyMode {
@@ -5307,6 +5347,41 @@ fn apply_terminal_event(
 
             return;
         }
+        FocusLayer::DiffOverlay => {
+            let scroll_step = diff_overlay_scroll_step();
+
+            if key.code == KeyCode::Esc || key.code == KeyCode::Char('q') {
+                close_diff_overlay(shell);
+                return;
+            }
+
+            if key.code == KeyCode::Up {
+                scroll_diff_overlay_up(shell, 1);
+                return;
+            }
+
+            if key.code == KeyCode::Down {
+                scroll_diff_overlay_down(shell, 1);
+                return;
+            }
+
+            if key.code == KeyCode::PageUp {
+                scroll_diff_overlay_up(shell, scroll_step);
+                return;
+            }
+
+            if key.code == KeyCode::PageDown {
+                scroll_diff_overlay_down(shell, scroll_step);
+                return;
+            }
+
+            if key.code == KeyCode::Home
+                && let Some(diff_overlay) = shell.diff_overlay.as_mut()
+            {
+                diff_overlay.scroll_offset = 0;
+            }
+            return;
+        }
         FocusLayer::ToolInspector => {
             let scroll_step = tool_inspector_scroll_step();
 
@@ -5683,6 +5758,10 @@ fn apply_mouse_event(
     }
 
     if shell.focus.top() == FocusLayer::StatsOverlay {
+        return;
+    }
+
+    if shell.focus.top() == FocusLayer::DiffOverlay {
         return;
     }
 
@@ -9568,19 +9647,10 @@ mod tests {
             },
         );
 
-        let rendered_surface = shell
-            .pane
-            .messages
-            .last()
-            .and_then(|message| message.parts.first())
-            .and_then(|part| match part {
-                MessagePart::Text(text) => Some(text.as_str()),
-                MessagePart::SurfaceEvent { title, .. } => Some(title.as_str()),
-                MessagePart::ThinkBlock(_) | MessagePart::ToolCall { .. } => None,
-            })
-            .unwrap_or("");
+        let diff_overlay = shell.diff_overlay.as_ref().expect("diff overlay");
 
-        assert!(rendered_surface.contains("working tree diff"));
-        assert!(rendered_surface.contains("demo.txt"));
+        assert_eq!(shell.focus.top(), FocusLayer::DiffOverlay);
+        assert!(diff_overlay.status_output.contains("demo.txt"));
+        assert!(diff_overlay.diff_output.contains("demo.txt"));
     }
 }

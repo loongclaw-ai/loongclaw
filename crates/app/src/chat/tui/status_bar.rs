@@ -272,6 +272,7 @@ fn focus_state_span(focus: FocusLayer, palette: &Palette) -> Span<'static> {
         FocusLayer::Help => ("HELP", palette.brand),
         FocusLayer::SessionPicker => ("PICKER", palette.brand),
         FocusLayer::StatsOverlay => ("STATS", palette.brand),
+        FocusLayer::DiffOverlay => ("DIFF", palette.info),
         FocusLayer::ToolInspector => ("TOOL", palette.tool_running),
         FocusLayer::ClarifyDialog => ("QUESTION", palette.warning),
     };
